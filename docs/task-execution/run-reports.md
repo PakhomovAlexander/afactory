@@ -44,14 +44,16 @@ pipeline work remains Inconclusive. Pending Attempts, active Integration, a chan
 expired/revoked plan approval refuse. A selected settlement that never reached Task output
 publication is outside this route.
 
-Inspection uses `af/task-inspection@8` when history contains this additive recording transition.
+Task inspection lists this recording transition in its history like any other.
 Show and explain preserve the recorded events and remain read-only; explain retains the
 Inconclusive exit status. See
 [ADR-0086](../adr/0086-record-expired-review-publication-without-restarting-work.md).
 
 The report lists all nodes in compiled order. A completed entry must name its actual published
-Task output. A diagnostic retains at most 65,536 Unicode characters and marks truncation.
-Historical Tasks without reports remain readable; no reports are invented during inspection.
-The contracts are [TaskRunReport@1](../../schemas/task-run-report-v1.json) and
-[TaskDiagnostic@1](../../schemas/task-diagnostic-v1.json), with the authority and compatibility
+Task output. A report for one activated post-Round Integration phase also carries its
+`phase_id` and has exactly one executed or failed node. A diagnostic retains at most 65,536
+Unicode characters and marks truncation.
+A Task without reports remains readable; no reports are invented during inspection.
+The contracts are [TaskRunReport@2](../../schemas/task-run-report-v2.json) and
+[TaskDiagnostic@1](../../schemas/task-diagnostic-v1.json), with the authority and recovery
 decision in [ADR-0065](../adr/0065-persist-task-run-diagnostics-and-recover-domain-publication.md).

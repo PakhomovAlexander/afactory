@@ -1,6 +1,8 @@
 # ADR-0094: Bind Task Review assignments and readable inputs
 
-Status: accepted for the authorized Task correction, 2026-09-14.
+Status: accepted for the authorized Task correction, 2026-09-14. Superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): Review catalog and policy generation one as
+compatibility formats.
 
 The generic Task Review adapter omitted required prior-Finding dispositions and used logical
 reviewer labels as canonical artifact producers. Its Subject context also copied a base64 patch

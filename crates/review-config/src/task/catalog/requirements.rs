@@ -19,11 +19,7 @@ impl TaskPlanCompiler {
                 .filter(|(_, p)| {
                     p.artifact_type == TASK_EVALUATION_V1
                         || (graph.inputs.contains_key("requirements")
-                            && matches!(
-                                p.artifact_type.as_str(),
-                                review_core::contract::REVIEWER_RESULT_V1
-                                    | review_core::contract::REVIEWER_RESULT_V2
-                            ))
+                            && p.artifact_type == review_core::contract::REVIEWER_RESULT_V2)
                 })
                 .collect();
             if evaluator_outputs.is_empty() {

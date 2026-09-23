@@ -1,1 +1,1 @@
-{"type":"object","required":["source","subject","history","checks"],"additionalProperties":{"type":"array","minItems":1,"maxItems":1,"items":{"type":"object"}}}
+{"type":"object","required":["source","subject","history","checks","assignment"],"additionalProperties":{"type":"array","minItems":1,"maxItems":1,"items":{"type":"object"}}}

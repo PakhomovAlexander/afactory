@@ -1284,76 +1284,36 @@ fn installed_planner_bootstrap_is_exact_fixed_and_cannot_be_reclassified_by_wire
 }
 
 #[test]
-fn new_legacy_capture_requires_explicit_safe_wire_budget_but_old_packages_restore() {
-    for budget in [None, Some(0), Some(777), Some(9_007_199_254_740_992)] {
-        let mut f = Fixture::new();
-        let name = "builtin/legacy-author";
-        let mut worker = f.compiler.workers["builtin/document-author"].clone();
-        worker.name = name.into();
-        worker.runner = TaskWorkerRunner::LegacyTaskCommand {
-            command: CommandSpec {
-                program: "/usr/bin/true".into(),
-                args: vec![],
-            },
-            protocol: review_runner::task::legacy::LegacyTaskProtocol::ImplementV1,
-            legacy_budget_tokens: budget,
-        };
+fn worker_manifest_refuses_the_removed_legacy_task_command_runner() {
+    let f = Fixture::new();
+    let worker = f.compiler.workers["builtin/document-author"].clone();
+    let package = |manifest: toml::Table| {
         let files = BTreeMap::from([(
             "worker.toml".into(),
-            toml::to_string(&worker).unwrap().into_bytes(),
+            toml::to_string(&manifest).unwrap().into_bytes(),
         )]);
-        let digest = package_digest_from_files(&files);
-        let pin = TaskPackagePin {
-            version: "1.0.0".into(),
-            digest: digest.clone(),
-            path: "packages/legacy".into(),
-        };
-        let project = files
-            .iter()
-            .map(|(p, b)| (format!("packages/legacy/{p}"), b.clone()))
-            .collect();
-        let result = f.compiler.capture_package(&f.cas, name, &pin, &project);
-        assert_eq!(
-            result.is_ok(),
-            matches!(budget, Some(0 | 777)),
-            "{budget:?}: {result:?}"
-        );
-        if budget.is_none() {
-            // Construct the old captured package using its original serialization. New
-            // capture refuses it, but trusted persisted authority still restores exactly.
-            let old = PackageBytes {
-                schema: "af.task-package/1".into(),
-                name: name.into(),
-                version: "1.0.0".into(),
-                digest: digest.clone(),
-                files,
-            };
-            let id = f
-                .cas
-                .put_artifact(
-                    TASK_PACKAGE_V1,
-                    capture_producer(),
-                    vec![],
-                    None,
-                    serde_json::to_value(&old).unwrap(),
-                )
-                .unwrap()
-                .0;
-            let bytes = f.cas.get(&id).unwrap();
-            f.compiler
-                .restore_package(&f.cas, name, &digest, &id)
-                .unwrap();
-            assert_eq!(f.cas.get(&id).unwrap(), bytes);
-            assert_eq!(f.compiler.workers[name], worker);
-            assert!(
-                !toml::to_string(&worker)
-                    .unwrap()
-                    .contains("legacy_budget_tokens")
-            );
+        PackageBytes {
+            schema: "af.task-package/1".into(),
+            name: worker.name.clone(),
+            version: worker.version.clone(),
+            digest: package_digest_from_files(&files),
+            files,
         }
-    }
-    for invalid in [json!(null), json!(-1), json!(1.5), json!("777")] {
-        let runner = json!({"kind":"legacy_task_command","command":{"program":"/usr/bin/true","args":[]},"protocol":"implement_v1","legacy_budget_tokens":invalid});
-        assert!(serde_json::from_value::<TaskWorkerRunner>(runner).is_err());
-    }
+    };
+    let current = toml::Table::try_from(&worker).unwrap();
+    assert!(TaskPlanCompiler::parse_package(&package(current.clone())).is_ok());
+    let legacy = json!({
+        "kind": "legacy_task_command",
+        "command": {"program": "/usr/bin/true", "args": []},
+        "protocol": "implement_v1",
+        "legacy_budget_tokens": 0,
+    });
+    let mut manifest = current;
+    manifest.insert(
+        "runner".into(),
+        toml::Value::try_from(legacy.clone()).unwrap(),
+    );
+    let error = TaskPlanCompiler::parse_package(&package(manifest)).unwrap_err();
+    assert!(error.contains("legacy_task_command"), "{error}");
+    assert!(serde_json::from_value::<TaskWorkerRunner>(legacy).is_err());
 }

@@ -3,17 +3,15 @@
 use super::*;
 use review_core::task::optimization_experiment::{
     EXPERIMENT_PLAN_DECISION_V1, EXPERIMENT_PREPARED_V1, EXPERIMENT_SPECIFICATION_V1,
-    EXPERIMENTAL_SLOT_V1, EXPERIMENTAL_SLOT_V2, ExperimentAllowanceV1, ExperimentIntervalKindV1,
+    EXPERIMENTAL_SLOT_V2, ExperimentAllowanceV1, ExperimentIntervalKindV1,
     ExperimentMeasurementIntervalV1, ExperimentPlanDecisionV1, ExperimentPreparedV1,
-    ExperimentSpecificationV1, ExperimentalSlotV1, ExperimentalSlotV2,
-    validate_experiment_registration, validate_experiment_registration_v2,
+    ExperimentSpecificationV1, ExperimentalSlotV2, validate_experiment_registration,
 };
 use review_core::task::optimization_light::{
     OPTIMIZATION_EXECUTION_CONFIGURATION_V1, OptimizationExecutionConfigurationV1,
 };
 use review_core::task::runtime::{
-    TASK_RUNTIME_EVIDENCE_V1, TaskCacheLayerV1, TaskCacheResultV1, TaskRuntimeEvidenceV1,
-    TaskRuntimeSpanKindV1,
+    TASK_RUNTIME_EVIDENCE_V1, TaskRuntimeEvidenceV1, TaskRuntimeSpanKindV1,
 };
 use review_graph::task::{
     EXPERIMENT_EXECUTION_PLAN_V1, ExperimentExecutionPlanV1, ExperimentPlannedChildV1,
@@ -119,8 +117,6 @@ pub fn experiment_measured_costs(
     let mut saw_cache = false;
     let mut cache_population_cursor = 0u64;
     let mut cache_lookup_cursor = 0u64;
-    let mut cache_copy_cursor = 0u64;
-    let mut cache_unknown = false;
     let mut toolchain_unknown = false;
     for attempt in attempts {
         for id in &attempt.raw_artifact_ids {
@@ -161,9 +157,10 @@ pub fn experiment_measured_costs(
                 }
             }
             for cache in evidence.caches {
+                // Every cache observation is dependency preparation that populates the cache.
                 saw_cache = true;
+                saw_preparation = true;
                 toolchain_unknown |= cache.toolchain_id.is_none();
-                saw_preparation |= cache.layer == TaskCacheLayerV1::DependencyPreparation;
                 if cache.lookup_ms > 0 {
                     let end = cache_lookup_cursor
                         .checked_add(cache.lookup_ms)
@@ -175,29 +172,16 @@ pub fn experiment_measured_costs(
                     });
                     cache_lookup_cursor = end;
                 }
-                let (kind, cursor) = match cache.result {
-                    TaskCacheResultV1::Prepared | TaskCacheResultV1::Miss => (
-                        ExperimentIntervalKindV1::CachePopulation,
-                        &mut cache_population_cursor,
-                    ),
-                    TaskCacheResultV1::Hit => {
-                        (ExperimentIntervalKindV1::CacheCopy, &mut cache_copy_cursor)
-                    }
-                    TaskCacheResultV1::Unknown => {
-                        cache_unknown = true;
-                        continue;
-                    }
-                };
                 if cache.materialization_ms > 0 {
-                    let end = cursor
+                    let end = cache_population_cursor
                         .checked_add(cache.materialization_ms)
                         .ok_or_else(|| conflict("Cache materialization timing overflow"))?;
                     intervals.push(ExperimentMeasurementIntervalV1 {
-                        kind,
-                        start_ms: *cursor,
+                        kind: ExperimentIntervalKindV1::CachePopulation,
+                        start_ms: cache_population_cursor,
                         end_ms: end,
                     });
-                    *cursor = end;
+                    cache_population_cursor = end;
                 }
             }
         }
@@ -206,7 +190,7 @@ pub fn experiment_measured_costs(
     if !saw_preparation {
         missing_measurements.insert("preparation".into());
     }
-    if !saw_cache || cache_unknown {
+    if !saw_cache {
         missing_measurements.extend(
             ["cache_population", "cache_lookup", "cache_copy"]
                 .into_iter()
@@ -360,7 +344,6 @@ fn validate_derived_worker_package(
 fn validate_child_plan(
     cas: &Cas,
     outer_plan_id: &str,
-    _prepared_id: &str,
     prepared: &ExperimentPreparedV1,
     value: &ExperimentExecutionPlanV1,
 ) -> Result<(), StoreError> {
@@ -469,7 +452,7 @@ impl TaskExecutionProjection {
                     typed(cas, prepared_id, EXPERIMENT_PREPARED_V1)?;
                 prepared.validate().map_err(conflict)?;
                 let plan = child_plan(cas, &prepared.compiled_child_plan_id)?;
-                validate_child_plan(cas, outer_plan_id, prepared_id, &prepared, &plan)?;
+                validate_child_plan(cas, outer_plan_id, &prepared, &plan)?;
                 let slot = self
                     .graph
                     .experimental_slots
@@ -555,27 +538,10 @@ impl TaskExecutionProjection {
                     wall_ms: task.limits.deadline_unix_ms.saturating_sub(now),
                 };
                 let max_children = match slot_envelope.artifact_type.as_str() {
-                    EXPERIMENTAL_SLOT_V1 => {
-                        let slot: ExperimentalSlotV1 =
-                            serde_json::from_value(slot_envelope.payload)?;
-                        validate_experiment_registration(
-                            &recorded.prepared.slot_id,
-                            &slot,
-                            &recorded.prepared.specification_id,
-                            &specification,
-                            prepared_id,
-                            &recorded.prepared,
-                            decision,
-                            now,
-                            &remaining,
-                        )
-                        .map_err(conflict)?;
-                        slot.max_children
-                    }
                     EXPERIMENTAL_SLOT_V2 => {
                         let slot: ExperimentalSlotV2 =
                             serde_json::from_value(slot_envelope.payload)?;
-                        validate_experiment_registration_v2(
+                        validate_experiment_registration(
                             &recorded.prepared.slot_id,
                             &slot,
                             &recorded.prepared.specification_id,
@@ -592,7 +558,7 @@ impl TaskExecutionProjection {
                     _ => return Err(conflict("Unsupported experimental slot generation")),
                 };
                 let plan = child_plan(cas, child_plan_id)?;
-                validate_child_plan(cas, outer_plan_id, prepared_id, &recorded.prepared, &plan)?;
+                validate_child_plan(cas, outer_plan_id, &recorded.prepared, &plan)?;
                 self.budget
                     .register_experimental_children(
                         &recorded.parent_node,
@@ -733,7 +699,7 @@ impl EventStore {
             ));
         }
         authority
-            .validate_experiment_preparation(cas, &state.revision, &plan, prepared_id, &prepared)
+            .validate_experiment_preparation(cas, &state.revision, &plan, &prepared)
             .map_err(conflict)?;
         let fresh = self.checked_task_recording(cas, lease, authority)?.0;
         if fresh.next_sequence != state.next_sequence {
@@ -1160,13 +1126,7 @@ mod derived_package_tests {
         }
 
         fn validate(&self) -> Result<(), StoreError> {
-            validate_child_plan(
-                &self.cas,
-                &self.outer_plan_id,
-                "unused-prepared-id",
-                &self.prepared,
-                &self.plan,
-            )
+            validate_child_plan(&self.cas, &self.outer_plan_id, &self.prepared, &self.plan)
         }
     }
 
@@ -1183,14 +1143,7 @@ mod derived_package_tests {
         *signature = format!("worker/{}", fixture.original_id);
         let mut prepared = fixture.prepared.clone();
         prepared.children[0].worker_package_id = fixture.original_id.clone();
-        validate_child_plan(
-            &fixture.cas,
-            &fixture.outer_plan_id,
-            "unused",
-            &prepared,
-            &normal,
-        )
-        .unwrap();
+        validate_child_plan(&fixture.cas, &fixture.outer_plan_id, &prepared, &normal).unwrap();
         let CompiledOperator::Primitive { signature, .. } = &mut normal
             .children
             .values_mut()
@@ -1203,14 +1156,7 @@ mod derived_package_tests {
         };
         *signature = format!("worker-derived/{}", fixture.original_id);
         assert!(
-            validate_child_plan(
-                &fixture.cas,
-                &fixture.outer_plan_id,
-                "unused",
-                &prepared,
-                &normal,
-            )
-            .is_err()
+            validate_child_plan(&fixture.cas, &fixture.outer_plan_id, &prepared, &normal).is_err()
         );
     }
 

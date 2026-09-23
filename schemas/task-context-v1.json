@@ -75,12 +75,6 @@
                     "$ref": "urn:af:schema:task-contracts:1#/$defs/artifactType"
                   },
                   {
-                    "enum": [
-                      "af/implement-input@1",
-                      "af/evaluate-input@1"
-                    ]
-                  },
-                  {
                     "type": "null"
                   }
                 ]
@@ -111,5 +105,5 @@
       }
     }
   },
-  "$comment": "Existing af/TaskContext@1 payload. Total rendered input is bounded to 1 MiB; Rust checks each four-byte token estimate against its byte count. ContextManifest optional observation references preserve historical null-to-None decoding. The captured Worker contract and Store rederive exact input ports, rendered content, authority, feedback, producer and envelope references; a structurally valid digest is not an authorization. Historical ContextManifest entries also retain af/implement-input@1 and af/evaluate-input@1 rendered-protocol labels; those are observations, not ArtifactEnvelope types."
+  "$comment": "Existing af/TaskContext@1 payload. Total rendered input is bounded to 1 MiB; Rust checks each four-byte token estimate against its byte count. ContextManifest optional observation references preserve historical null-to-None decoding. The captured Worker contract and Store rederive exact input ports, rendered content, authority, feedback, producer and envelope references; a structurally valid digest is not an authorization."
 }

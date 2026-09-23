@@ -8,61 +8,109 @@
 //! The failure being hunted is not a lost event. It is a run that replays into a different state
 //! than it committed, silently, so that "rebuild the ledger" quietly becomes "invent one".
 
+mod support;
+
 use std::path::Path;
 
-use review_core::LegacyStageOutput;
-use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, NewEvent, Status};
+use review_core::ReviewerStageOutput;
+use review_store::{Cas, EventStore, Finding, Ingest, Ledger, LedgerProjection, NewEvent, Status};
+use support::{add_flat_results, opened_round};
 
-fn stage(json: &str) -> LegacyStageOutput {
+fn stage(json: &str) -> ReviewerStageOutput {
     serde_json::from_str(json).unwrap()
 }
 
-fn one_finding(severity: &str, file: &str, title: &str) -> LegacyStageOutput {
+fn one_finding(severity: &str, file: &str, title: &str) -> ReviewerStageOutput {
     stage(&format!(
-        r#"{{"verdict":"request-changes","summary":null,
-            "findings":[{{"severity":"{severity}","file":"{file}","line":7,
+        r#"{{"reports":[{{"severity":"{severity}","file":"{file}","line":7,
                           "title":"{title}","body":"b","fix":"f","confidence":0.9}}],
-            "benchmark_demands":[],"disputes":[]}}"#
+            "benchmark_demands":[],"dispositions":[]}}"#
     ))
 }
 
-fn snapshot(ledger: &Ledger) -> Vec<(String, Status, u32, u32, usize)> {
+type Snapshot = (Vec<Finding>, Vec<review_core::DemandSetEntryV1>);
+
+fn snapshot(ledger: &Ledger) -> Snapshot {
+    (ledger.finding_views(), ledger.demand_views())
+}
+
+fn key_of(ledger: &Ledger, title: &str) -> String {
     ledger
         .findings()
         .into_iter()
-        .map(|f| {
-            (
-                f.key.clone(),
-                f.status,
-                f.news_round,
-                f.last_seen_round,
-                f.reports.len(),
-            )
-        })
-        .collect()
+        .find(|finding| finding.title == title)
+        .unwrap_or_else(|| panic!("no Finding titled `{title}`"))
+        .key
+        .clone()
 }
 
-/// Build a run of a few rounds against a store on disk, then hand back its directory.
-fn build_run(dir: &Path) -> Vec<(String, Status, u32, u32, usize)> {
+/// Admit one reviewer result under a freshly opened Round of `run_id`.
+fn ingest_one(store: &mut EventStore, cas: &Cas, run_id: &str, output: &ReviewerStageOutput) {
+    let round = opened_round(store, cas, run_id);
+    let mut ingest = Ingest::new(store, cas, run_id)
+        .unwrap()
+        .under_round(&round.round_event_id);
+    add_flat_results(
+        &mut ingest,
+        cas,
+        run_id,
+        &round,
+        &[("deep", "01jd8m4qz9k7v3n2p6r8t0w201", output)],
+    )
+    .unwrap();
+}
+
+/// Build a Round against a store on disk and hand back its projection. Two reviewers report
+/// three claims and a Demand; a third reviewer then corroborates one claim and disputes another.
+fn build_run(dir: &Path) -> Snapshot {
     let mut store = EventStore::open(dir.join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.join("cas")).unwrap();
-    let mut ingest = Ingest::new(&mut store, &cas, "run").unwrap();
+    let round = opened_round(&mut store, &cas, "run");
+    let mut ingest = Ingest::new(&mut store, &cas, "run")
+        .unwrap()
+        .under_round(&round.round_event_id);
+    let cross = stage(
+        r#"{"reports":[
+              {"severity":"blocker","file":"src/queue.rs","line":3,"title":"Queue grows without bound",
+               "body":"b","fix":"f","confidence":0.8},
+              {"severity":"minor","file":"src/lib.rs","line":1,"title":"Misleading comment",
+               "body":"b","fix":"f","confidence":0.5}],
+            "benchmark_demands":[{"claim":"Enqueue stays O(1)","why":"the queue is on the hot path",
+                                  "suggested_method":"time 10^6 enqueues"}],
+            "dispositions":[]}"#,
+    );
+    add_flat_results(
+        &mut ingest,
+        &cas,
+        "run",
+        &round,
+        &[
+            (
+                "deep",
+                "01jd8m4qz9k7v3n2p6r8t0w201",
+                &one_finding("major", "src/a.rs", "Retry loop can spin forever"),
+            ),
+            ("cross", "01jd8m4qz9k7v3n2p6r8t0w202", &cross),
+        ],
+    )
+    .unwrap();
 
-    ingest
-        .add_stage_output(
-            "deep-r1",
-            &one_finding("major", "src/a.rs", "Retry loop can spin forever"),
-        )
-        .unwrap();
-    let key = ingest.ledger().findings()[0].key.clone();
-    ingest.resolve(&key, Status::Fixed, Some("capped")).unwrap();
-    ingest.advance().unwrap();
-    ingest
-        .add_stage_output(
-            "deep-r2",
-            &one_finding("blocker", "src/a.rs", "Retry loop can spin forever"),
-        )
-        .unwrap();
+    let retry = key_of(ingest.ledger(), "Retry loop can spin forever");
+    let queue = key_of(ingest.ledger(), "Queue grows without bound");
+    let positions = stage(&format!(
+        r#"{{"reports":[],"benchmark_demands":[],
+            "dispositions":[
+              {{"finding_id":"{retry}","position":"corroborate","reason":"reproduced"}},
+              {{"finding_id":"{queue}","position":"dispute","reason":"the producer is bounded"}}]}}"#
+    ));
+    add_flat_results(
+        &mut ingest,
+        &cas,
+        "run",
+        &round,
+        &[("performance", "01jd8m4qz9k7v3n2p6r8t0w203", &positions)],
+    )
+    .unwrap();
     snapshot(ingest.ledger())
 }
 
@@ -74,18 +122,35 @@ fn the_projection_survives_process_death() {
 
     let store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
-    let rebuilt = snapshot(
-        &LedgerProjection::rebuild(&store, &cas, "run")
-            .unwrap()
-            .into_ledger(),
-    );
+    let ledger = LedgerProjection::rebuild(&store, &cas, "run")
+        .unwrap()
+        .into_ledger();
+    let rebuilt = snapshot(&ledger);
     assert_eq!(live, rebuilt, "rebuild must reproduce the committed state");
+    assert_eq!(
+        ledger
+            .convergence(support::default_policy())
+            .authority_failures_recent,
+        0,
+        "the history is one well-formed Round"
+    );
 
-    // And the reopen-after-fix path really was exercised, so this is not a trivial equality.
-    let (_, status, news_round, last_seen, reports) = &rebuilt[0];
-    assert_eq!(*status, Status::Open, "the fix did not hold");
-    assert_eq!((*news_round, *last_seen), (2, 2));
-    assert_eq!(*reports, 2, "both reports survived");
+    // Every kind of transition really was exercised, so this is not a trivial equality.
+    let (findings, demands) = &rebuilt;
+    let findings: Vec<(&str, Status, usize)> = findings
+        .iter()
+        .map(|f| (f.title.as_str(), f.status, f.reports.len()))
+        .collect();
+    assert_eq!(
+        findings,
+        [
+            ("Retry loop can spin forever", Status::Open, 2),
+            ("Queue grows without bound", Status::Contested, 1),
+            ("Misleading comment", Status::Open, 1),
+        ],
+        "the corroboration attached a second Report and the dispute contested its claim"
+    );
+    assert_eq!(demands.len(), 1);
 }
 
 #[test]
@@ -107,32 +172,52 @@ fn rebuilding_twice_is_the_same_rebuild() {
     assert_eq!(first, second);
 }
 
+/// Claim content comes from the referenced `FindingReport@1` artifact. Fields a writer copies
+/// into the event payload beside `report_id` are never projection authority.
 #[test]
 fn the_report_artifact_not_the_event_copy_is_projection_authority() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
-    let report_id = cas
-        .put_json(&serde_json::json!({
-            "title": "Canonical title",
-            "severity": "blocker",
-            "file": "src/authority.rs",
-            "line": 19,
-            "body": "canonical body",
-            "fix": "canonical fix",
-            "confidence": 0.99,
-            "source": "architecture",
-            "round": 1,
-        }))
+    let round = opened_round(&mut store, &cas, "run");
+    let (report_id, _) = cas
+        .put_artifact(
+            review_core::contract::FINDING_REPORT_V1,
+            review_core::Producer::Attempt {
+                run_id: "run".into(),
+                node_id: "architecture".into(),
+                attempt_id: "01jd8m4qz9k7v3n2p6r8t0w201".into(),
+            },
+            Vec::new(),
+            Some(round.head.clone()),
+            serde_json::to_value(review_core::FindingReport {
+                title: "Canonical title".into(),
+                severity: review_core::Severity::Blocker,
+                locations: vec![review_core::Location {
+                    path: "src/authority.rs".into(),
+                    line: Some(19),
+                    end_line: None,
+                }],
+                body: "canonical body".into(),
+                fix: "canonical fix".into(),
+                confidence: 0.99,
+                failure_trace: None,
+                rule_id: None,
+                occurrence_key: None,
+                relations: Vec::new(),
+            })
+            .unwrap(),
+        )
         .unwrap();
+    let key = review_store::ingest::canonical_finding_id(&report_id);
     store
-        .append_legacy(
+        .append(
             "run",
             &cas,
             NewEvent::new(
                 review_store::ledger::EVENT_FINDING_REPORTED,
                 serde_json::json!({
-                    "key": "claim",
+                    "key": key,
                     "round": 1,
                     "source": "architecture",
                     "severity": "minor",
@@ -144,7 +229,8 @@ fn the_report_artifact_not_the_event_copy_is_projection_authority() {
                     "report_id": report_id,
                 }),
             )
-            .correlating("claim")
+            .caused_by(round.round_event_id)
+            .correlating(key.clone())
             .referencing(vec![report_id]),
         )
         .unwrap();
@@ -152,10 +238,10 @@ fn the_report_artifact_not_the_event_copy_is_projection_authority() {
     let ledger = LedgerProjection::rebuild(&store, &cas, "run")
         .unwrap()
         .into_ledger();
-    let finding = ledger.get("claim").unwrap();
+    let finding = ledger.get(&key).unwrap();
     assert_eq!(finding.title, "Canonical title");
     assert_eq!(finding.body, "canonical body");
-    assert_eq!(finding.fix.as_deref(), Some("canonical fix"));
+    assert_eq!(finding.fix, "canonical fix");
     assert_eq!(finding.file, "src/authority.rs");
     assert_eq!(finding.line, Some(19));
     assert_eq!(finding.severity, review_core::Severity::Blocker);
@@ -176,14 +262,16 @@ fn a_crash_after_publish_but_before_append_leaves_only_garbage() {
     assert!(store.is_empty("run").unwrap());
 
     // The run continues normally; the orphan is inert.
-    let mut ingest = Ingest::new(&mut store, &cas, "run").unwrap();
-    ingest
-        .add_stage_output("deep-r1", &one_finding("major", "src/a.rs", "t"))
-        .unwrap();
+    ingest_one(
+        &mut store,
+        &cas,
+        "run",
+        &one_finding("major", "src/a.rs", "t"),
+    );
     let ledger = LedgerProjection::rebuild(&store, &cas, "run")
         .unwrap()
         .into_ledger();
-    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger.findings().len(), 1);
 
     let referenced: Vec<String> = store
         .replay("run")
@@ -205,10 +293,12 @@ fn a_refused_append_does_not_consume_a_sequence() {
     let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
 
-    let mut ingest = Ingest::new(&mut store, &cas, "run").unwrap();
-    ingest
-        .add_stage_output("deep-r1", &one_finding("major", "src/a.rs", "t"))
-        .unwrap();
+    ingest_one(
+        &mut store,
+        &cas,
+        "run",
+        &one_finding("major", "src/a.rs", "t"),
+    );
 
     let missing = review_store::canonical::blob_content_id(b"not stored");
     let before = store.len("run").unwrap();
@@ -245,16 +335,18 @@ fn runs_are_isolated_in_one_store() {
     let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
 
-    {
-        let mut a = Ingest::new(&mut store, &cas, "run-a").unwrap();
-        a.add_stage_output("deep", &one_finding("major", "src/a.rs", "only in a"))
-            .unwrap();
-    }
-    {
-        let mut b = Ingest::new(&mut store, &cas, "run-b").unwrap();
-        b.add_stage_output("deep", &one_finding("minor", "src/b.rs", "only in b"))
-            .unwrap();
-    }
+    ingest_one(
+        &mut store,
+        &cas,
+        "run-a",
+        &one_finding("major", "src/a.rs", "only in a"),
+    );
+    ingest_one(
+        &mut store,
+        &cas,
+        "run-b",
+        &one_finding("minor", "src/b.rs", "only in b"),
+    );
 
     let a = LedgerProjection::rebuild(&store, &cas, "run-a")
         .unwrap()
@@ -262,8 +354,8 @@ fn runs_are_isolated_in_one_store() {
     let b = LedgerProjection::rebuild(&store, &cas, "run-b")
         .unwrap()
         .into_ledger();
-    assert_eq!(a.len(), 1);
-    assert_eq!(b.len(), 1);
+    assert_eq!(a.findings().len(), 1);
+    assert_eq!(b.findings().len(), 1);
     assert_eq!(a.findings()[0].title, "only in a");
     assert_eq!(b.findings()[0].title, "only in b");
 }

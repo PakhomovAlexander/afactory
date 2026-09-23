@@ -119,7 +119,6 @@ fn absent_protocol_usage_keeps_the_historical_unknown_convention() {
     let events = TaskEvents::parse(
         br#"{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}"#,
     );
-    assert_eq!(events.final_message.as_deref(), Some("OK"));
     assert!(events.error.is_none());
     assert!(events.reported_usage().is_none());
     assert!(

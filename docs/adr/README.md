@@ -7,12 +7,25 @@ its own log, and the kernel's are all here.
 One decision per file, numbered in order of acceptance as `NNNN-kebab-case-title.md`, **immutable
 once accepted**. Each opens with a status line carrying the status and date, states the context,
 lists the considered options with the reasons each was rejected, records the decision, and ends
-with its consequences. A changed decision is a new ADR marked *supersedes* the old one, with links
-both ways — the old file stays as it was.
+with its consequences. A changed decision is a new ADR that names what it supersedes. A partially
+superseded ADR keeps its body as it was and gains a note on its status line linking the new ADR,
+and that status line may be restated when the new ADR spends the transition wording it carried; a
+fully superseded ADR is deleted with its index entry, and git history keeps it. Links to a deleted
+ADR, or to an internal record deleted at GA, are rewritten to point at the superseding ADR or to
+plain text; this is the only edit allowed in another accepted ADR's body
+([ADR-0113](0113-ga-reads-only-what-ga-writes.md), clauses 6 and 8).
 
-To propose one, take the next free number, write it in that shape, add it to the index below, and
-open a pull request; it becomes binding when the pull request merges with the status `accepted`.
-Record the options you rejected and why — that is the part future readers need.
+A number is never reissued: a deleted record leaves its number empty, and the index simply skips
+it. Two records were accepted on the same day under the number 0107 — the warm-layer ADR and the
+release-validation ADR listed beside it. Both keep the number they were accepted under, for
+different reasons: the release-validation record keeps its number by owner decision, and the
+warm-layer record keeps its because renumbering it would rewrite links inside the accepted
+ADR-0108, ADR-0109 and ADR-0110 and in a shipped release section. 0107 is not issued again.
+
+To propose one, take the next number after the highest in the index below, write it in that
+shape, add it to the index, and open a pull request; it becomes binding when the pull request
+merges with the status `accepted`. Record the options you rejected and why — that is the part
+future readers need.
 
 ## Index
 
@@ -20,10 +33,6 @@ Record the options you rejected and why — that is the part future readers need
   method](0001-tree-diff-behind-a-typed-method.md)
 - [0002 — A payload shape change bumps the event type
   version](0002-event-payload-changes-bump-the-type-version.md)
-- [0003 — Gate checks may reach host caches through a root-allowlisted
-  passthrough](0003-gate-caches-pass-through-to-the-host.md)
-- [0004 — Reviewers author patch proposals; the kernel verifies, git
-  applies](0004-reviewers-author-verified-patch-proposals.md)
 - [0005 — Report artifacts are authoritative for finding
   projections](0005-report-artifacts-are-projection-authority.md)
 - [0006 — Finding identity is independent of path and
@@ -43,10 +52,6 @@ Record the options you rejected and why — that is the part future readers need
   claim](0013-scope-is-evaluated-per-active-claim.md)
 - [0014 — Non-fixed resolutions are scoped and
   challengeable](0014-non-fixed-resolutions-are-challengeable.md)
-- [0015 — Safe attempts receive handles, not reusable
-  secrets](0015-safe-attempts-receive-handles-not-secrets.md)
-- [0016 — Provider preflight is a fenced, charged
-  operation](0016-provider-preflight-is-a-fenced-operation.md)
 - [0017 — Record rename truncation and continue the diff
   Subject](0017-record-rename-truncation-and-continue.md)
 - [0018 — Share one bounded infrastructure
@@ -57,12 +62,6 @@ Record the options you rejected and why — that is the part future readers need
   files](0020-stream-cas-materialization-and-clone-duplicates.md)
 - [0021 — Keep the ReviewerResult wire shape
   flat](0021-keep-reviewer-result-wire-shape-flat.md)
-- [0022 — Persist retry feedback as an Attempt
-  input](0022-persist-retry-feedback-as-attempt-input.md)
-- [0023 — Separate retry feedback from terminal
-  diagnostics](0023-separate-retry-feedback-from-terminal-diagnostics.md)
-- [0024 — Version manifest path encoding without changing Snapshot content
-  identity](0024-version-manifest-path-encoding.md)
 - [0025 — Require typed Generation outputs in pipeline version
   2](0025-require-typed-generation-outputs-in-version-2.md)
 - [0026 — Share process supervision through a leaf
@@ -71,10 +70,6 @@ Record the options you rejected and why — that is the part future readers need
   milestone](0027-use-one-correctness-reviewer-per-milestone.md)
 - [0028 — Prioritize wise token use and minimum Worker
   context](0028-prioritize-wise-token-use-and-minimum-worker-context.md)
-- [0029 — Dogfood the candidate `af` before v1 is
-  complete](0029-dogfood-the-candidate-af-before-v1-is-complete.md)
-- [0030 — Complete minimal v1 and v2 before candidate
-  dogfood](0030-complete-minimal-v1-and-v2-before-dogfood.md)
 - [0031 — Deliver verified Tasks only to new local
   worktrees](0031-deliver-verified-tasks-to-new-local-worktrees.md)
 - [0032 — Generate review authority with
@@ -99,8 +94,6 @@ Record the options you rejected and why — that is the part future readers need
   Diffs](0041-make-review-selectors-explicit-and-refuse-empty-diffs.md)
 - [0042 — Require Provider bindings and isolate Claude
   reviewers](0042-require-provider-bindings-and-isolate-claude-reviewers.md)
-- [0043 — Drop legacy `.review/` authority in
-  v0.8.0](0043-drop-legacy-review-authority-in-v0-8-0.md)
 - [0044 — `af` manages itself: dispatch to the pinned release, policy-driven updates, a
   layered configuration](0044-af-manages-itself-and-dispatches-to-the-pinned-release.md)
 - [0045 — One release train, and a pin that binds
@@ -115,13 +108,10 @@ Record the options you rejected and why — that is the part future readers need
   Attempts](0049-run-task-workers-through-shared-durable-attempts.md)
 - [0050 — Reduce Review Tasks with the canonical domain
   Ledger](0050-reduce-review-tasks-with-the-canonical-domain-ledger.md)
-- [0051 — Compile fixed implementation Tasks into the common
-  runtime](0051-compile-fixed-implementation-tasks-into-the-common-runtime.md)
 - [0052 — Capture local bindings and compose Review
   acceptance](0052-capture-local-bindings-and-compose-review-acceptance.md)
 - [0053 — Resolve shared catalogs only during explicit
   sync](0053-resolve-shared-catalogs-only-during-explicit-sync.md)
-
 - [0054 — Keep targeted repair distinct from complete Review](0054-keep-targeted-repair-distinct-from-complete-review.md)
 - [0055 — Select captured Pipelines before generation](0055-select-captured-pipelines-before-generation.md)
 - [0056 — Share planning accounting and authenticate generated plan decisions](0056-share-planning-accounting-and-authenticate-generated-plan-decisions.md)
@@ -154,7 +144,6 @@ Record the options you rejected and why — that is the part future readers need
   Attempts](0077-run-captured-review-operations-under-common-task-attempts.md)
 - [0078 — Bind Review conclusions to exact Task accounting](0078-bind-review-conclusions-to-exact-task-accounting.md)
 - [0079 — Retain exact cumulative charge within one Task Attempt](0079-retain-exact-cumulative-charge-within-one-task-attempt.md)
-- [0080 — Bind Broker evidence to the original Task Attempt](0080-bind-broker-evidence-to-the-original-task-attempt.md)
 - [0081 — Register owned Review children in the common Task runtime](0081-register-owned-review-children-in-the-common-task-runtime.md)
 - [0082 — Continue captured Review Rounds within the original Task](0082-continue-captured-review-rounds-within-the-original-task.md)
 - [0083 — Run post-Round Integration within the original Task](0083-run-post-round-integration-within-the-original-task.md)
@@ -168,14 +157,14 @@ Record the options you rejected and why — that is the part future readers need
 - [0091 — Capture explicit Task Provider admission costs](0091-capture-explicit-task-provider-admission-costs.md)
 - [0092 — Capture common Review admission reservations](0092-capture-common-review-admission-reservations.md)
 - [0093 — Derive CodeTask acceptance from execution and evidence](0093-derive-code-task-acceptance-from-execution-and-evidence.md)
+- [0094 — Bind Task Review assignments and readable
+  inputs](0094-bind-task-review-assignments-and-readable-inputs.md)
 - [0095 — Bind legacy Task context and retry output admission](0095-bind-legacy-task-context-and-retry-output-admission.md)
 - [0096 — Revalidate Task execution evidence on cached
   replay](0096-revalidate-task-execution-evidence-on-cached-replay.md)
 - [0097 — Share validated source reads within one
   operation](0097-share-validated-source-reads-within-one-operation.md)
 - [0098 — Scope Review memos to one domain operation](0098-scope-review-memos-to-one-domain-operation.md)
-- [0094 — Bind Task Review assignments and readable
-  inputs](0094-bind-task-review-assignments-and-readable-inputs.md)
 - [0099 — Select Task Review generation independently of Provider
   costs](0099-select-task-review-generation-independently-of-provider-costs.md)
 - [0100 — Preserve issue hierarchy and selected-field refresh semantics](0100-preserve-issue-hierarchy-and-selected-field-refresh.md)
@@ -193,16 +182,17 @@ Record the options you rejected and why — that is the part future readers need
   Task](0106-authorize-experimental-children-separately.md)
 - [0107 — Carry Worker Notes and Head Deltas as declared warm
   layers](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md)
+- [0107 — Share release validation and overlap builds](0107-share-release-validation-and-overlap-builds.md)
 - [0108 — Carry Gate build caches as explicitly unsafe warm
   layers](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md)
 - [0109 — Re-base Warm Workspaces at stable roots with digest
   verification](0109-rebase-warm-workspaces-at-stable-roots-with-digest-verification.md)
 - [0110 — Capture Claude sessions in two phases and confirm a clean warm Round
   cold](0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md)
-- [0107 — Share release validation and overlap builds](0107-share-release-validation-and-overlap-builds.md)
 - [0111 — Keep Provider bootstrap machine-local and cross-release
   safe](0111-keep-provider-bootstrap-machine-local-and-cross-release-safe.md)
 - [0112 — Refuse agent-mediated Provider logins and separate status from
   usage](0112-refuse-agent-mediated-provider-logins.md)
-- [0113 — Budget CLI Task fixtures for loaded machines, never for a fast
-  one](0113-budget-cli-task-fixtures-for-loaded-machines.md)
+- [0113 — GA reads only what GA writes](0113-ga-reads-only-what-ga-writes.md)
+- [0114 — Budget CLI Task fixtures for loaded machines, never for a fast
+  one](0114-budget-cli-task-fixtures-for-loaded-machines.md)

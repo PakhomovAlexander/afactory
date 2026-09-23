@@ -3,8 +3,7 @@
 //!
 //! Help follows three rules. `af` alone shows the namespaces; `af <namespace>` shows only that
 //! namespace; `af <command> --help` says what the command does, what it never does, its options
-//! grouped by role, and examples. Every existing flag and `--json` shape is unchanged from the
-//! hand-written parser this replaced.
+//! grouped by role, and examples.
 
 use std::path::PathBuf;
 
@@ -14,7 +13,6 @@ use clap_complete::engine::ArgValueCompleter;
 use crate::selfmgmt::{complete_campaign, complete_version};
 
 pub(crate) const REVIEW_PIPELINE: &str = ".af/pipelines/review.toml";
-pub(crate) const IMPLEMENT_PIPELINE: &str = ".af/pipelines/implement.toml";
 
 const AF_ABOUT: &str = "Afactory — deterministic multi-agent review and implementation";
 const AF_LONG_ABOUT: &str = "\
@@ -32,7 +30,7 @@ Namespaces:
   config     show the effective configuration and where each value came from
   self       optimize the current project, or manage af installations
 
-`af help <topic>` explains config, layers, environment, exit-codes, json, self, and trust.";
+`af help <topic>` explains config, layers, environment, exit-codes, json, and self.";
 
 const AF_AFTER_HELP: &str = "\
 Exit codes:
@@ -83,7 +81,7 @@ A Campaign reviews one Subject (a diff or the working tree) against committed `.
 ledger; the remaining commands read or resolve that ledger. Flags given directly to `af review` \
 are shorthand for `af review run`.",
         after_long_help = "Examples:\n  af review plan --json\n  af review --uncommitted\n  af review run --campaign pr-42 --heavy\n  af review ledger --campaign pr-42\n  af review report --campaign pr-42 --format md",
-        override_usage = "af review <COMMAND>\n       af review [--light|--heavy] [RUN OPTIONS]   (shorthand for `af review run`)",
+        override_usage = "af review <COMMAND>\n       af review [--heavy] [RUN OPTIONS]   (shorthand for `af review run`)",
         args_conflicts_with_subcommands = true,
         subcommand_negates_reqs = true,
         arg_required_else_help = true
@@ -114,11 +112,6 @@ Behavior:\n\
   * Without .af/: preview a deterministic multi-review scaffold; --apply atomically creates it.\n\
   * With .af/: validate the selected pipeline, exact pins, Worker packages, graph, and Gates.\n\
   * --refresh-lock: explicitly recompute only the selected pipeline and referenced Worker pins.\n\
-  * With legacy .review/ and no .af/: preview the `.af/` it becomes — pipelines with format \
-upgrades applied, the reviewer packages they reference byte for byte, a project file, a lock; \
---migrate --apply \
-writes it (absent-only) and leaves .review/ for you to delete. Since v0.8.0 `.review/` is no \
-longer read for new Campaigns; scaffolding .af/ beside it is refused.\n\
   * .af/af.lock records the af release that wrote it and the archive digest of that release for \
 every target. Inside such a project any `af` on PATH runs that release, installing it on demand \
 only when the bytes match; --refresh-lock re-pins to the running release, and --af VERSION runs \
@@ -132,7 +125,7 @@ stages of that Campaign or Task. Afactory does not ask for per-call confirmation
 Review Campaigns are light by default: one closed Round, then fix concrete Findings and run the \
 deterministic project gate. Do not start another Campaign. Use `--heavy` only when a human \
 explicitly requests convergence review, and repeat that explicit mode when resuming it.",
-        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus/high; architecture = machine-configured Codex (default)\n  claude  both Workers = Claude Opus/high\n  codex   both Workers = machine-configured Codex\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  af onboard\n  af onboard --gate 'check=make check' --apply\n  af onboard --runner mixed --apply\n  af onboard --refresh-lock\n  af onboard --refresh-lock --af 0.9.0     move the pin to 0.9.0\n  af onboard --migrate --apply"
+        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus/high; architecture = machine-configured Codex (default)\n  claude  both Workers = Claude Opus/high\n  codex   both Workers = machine-configured Codex\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  af onboard\n  af onboard --gate 'check=make check' --apply\n  af onboard --runner mixed --apply\n  af onboard --refresh-lock\n  af onboard --refresh-lock --af 0.9.0     move the pin to 0.9.0"
     )]
     Onboard(OnboardArgs),
     /// Start, inspect, and deliver an implement Task
@@ -140,11 +133,13 @@ explicitly requests convergence review, and repeat that explicit mode when resum
         subcommand_required = true,
         arg_required_else_help = true,
         long_about = "Start, inspect, and deliver an implement Task.\n\n\
-A Task runs one sequential implement pipeline — implementer, read-only Gates, independent \
-evaluator — over a captured source Snapshot and ends at a verified or unverified derived \
-Snapshot. Nothing is written back to the repository unless you `deliver` it, to a new local \
-branch and worktree, after confirming the Task ID.",
-        after_long_help = "Examples:\n  af task start --kind implement --goal \"describe the change\" --json\n  af task list --json\n  af task show TASK_ID\n  af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID"
+A Task file (`--file`) names the Task's ID, kind, goal and limits. The Pipeline and Worker \
+packages it runs are pinned in the committed `.af/task-catalog.toml`; `af catalog init \
+--destination DIR` creates a new starter directory with a working catalog and runnable Task \
+files. The Task runs over a captured source Snapshot and ends at a verified or unverified \
+derived Snapshot. Nothing is written back to the repository unless you `deliver` it, to a new \
+local branch and worktree, after confirming the Task ID.",
+        after_long_help = "Examples:\n  af task start --file ticket.json\n  af task run TASK_ID --confirm-plan PLAN_ID\n  af task list --json\n  af task show TASK_ID\n  af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID"
     )]
     Task {
         #[command(subcommand)]
@@ -181,7 +176,7 @@ digest the lock records. Outside a lock, releases are verified against their sig
 `SHA256SUMS`. Updates are checked by a detached, rate-limited child and applied by the policy \
 in `[self]` (see `af help self`).\n\n\
 Never: touches a binary it did not install, stores a token, changes the version a pinned \
-project runs, or activates a release older than 0.7.1 (the first that can update itself).",
+project runs, or activates a release older than 0.8.0 (the oldest supported release).",
         after_long_help = "Examples:\n  af self status\n  af self update --check\n  af self update\n  af self rollback\n  af self setup-shell --write"
     )]
     SelfCmd {
@@ -202,10 +197,10 @@ directory.",
         #[arg(value_enum)]
         shell: Shell,
     },
-    /// Explain a topic (config, layers, environment, exit-codes, json, self, trust) or a command
+    /// Explain a topic (config, layers, environment, exit-codes, json, self) or a command
     #[command(
         long_about = "Explain a topic or a command.\n\n\
-Topics: config, layers, environment, exit-codes, json, self, trust. Anything else is treated \
+Topics: config, layers, environment, exit-codes, json, self. Anything else is treated \
 as a command path, so `af help review run` equals `af review run --help`.",
         after_long_help = "Examples:\n  af help layers\n  af help exit-codes\n  af help review ledger"
     )]
@@ -227,13 +222,12 @@ pub(crate) struct ReviewNamespace {
     pub(crate) command: Option<ReviewCommand>,
 }
 
-/// Selector, mode, budget, and output options shared by `plan`, `run`, `tui`, and `provider
+/// Selector, mode, budget, and output options shared by `plan`, `run`, `render`, and `provider
 /// doctor`.
 #[derive(Debug, Args, Clone)]
-#[command(group = ArgGroup::new("mode").args(["light", "heavy"]))]
 pub(crate) struct RunArgs {
     /// Versioned Review Task file, executed through the shared Task runtime
-    #[arg(long = "file", value_name = "FILE", help_heading = "Selector", conflicts_with_all = ["pipeline", "campaign", "base", "candidate", "focus", "node", "light", "heavy", "restart_round", "provider", "resume_provider", "provider_admission_tokens", "provider_admission_wall_ms", "git_timeout_secs"])]
+    #[arg(long = "file", value_name = "FILE", help_heading = "Selector", conflicts_with_all = ["pipeline", "campaign", "base", "candidate", "focus", "node", "heavy", "restart_round", "provider", "provider_admission_tokens", "provider_admission_wall_ms", "git_timeout_secs"])]
     pub(crate) task_file: Option<PathBuf>,
     /// Explicit local Worker packages, slot replacements and Provider aliases
     #[arg(
@@ -262,20 +256,10 @@ pub(crate) struct RunArgs {
     #[arg(long, value_name = "NAME", help_heading = "Selector", add = ArgValueCompleter::new(complete_campaign))]
     pub(crate) campaign: Option<String>,
     /// Policy revision: the commit whose `.af/` governs this Campaign
-    #[arg(
-        long,
-        value_name = "REV",
-        help_heading = "Selector",
-        conflicts_with = "authority"
-    )]
+    #[arg(long, value_name = "REV", help_heading = "Selector")]
     pub(crate) policy_rev: Option<String>,
     /// Diff base revision
-    #[arg(
-        long,
-        value_name = "REV",
-        help_heading = "Selector",
-        conflicts_with = "authority"
-    )]
+    #[arg(long, value_name = "REV", help_heading = "Selector")]
     pub(crate) base: Option<String>,
     /// Candidate revision to review (default: HEAD)
     #[arg(
@@ -285,9 +269,6 @@ pub(crate) struct RunArgs {
         conflicts_with = "uncommitted"
     )]
     pub(crate) candidate: Option<String>,
-    /// Compatibility alias: one revision as both policy and diff base
-    #[arg(long, value_name = "REV", help_heading = "Selector")]
-    pub(crate) authority: Option<String>,
     /// Review the working tree (including unstaged changes) against HEAD
     #[arg(long, help_heading = "Selector")]
     pub(crate) uncommitted: bool,
@@ -297,10 +278,7 @@ pub(crate) struct RunArgs {
     /// `render`: the Worker node whose exact input to compose
     #[arg(long, value_name = "NODE", help_heading = "Selector")]
     pub(crate) node: Option<String>,
-    /// One bounded Round with the pipeline's light selection (default)
-    #[arg(long, help_heading = "Mode")]
-    pub(crate) light: bool,
-    /// The pipeline's complete convergence policy
+    /// The pipeline's complete convergence policy, instead of the default single light Round
     #[arg(long, help_heading = "Mode")]
     pub(crate) heavy: bool,
     /// Abandon the open Round and start a fresh one
@@ -325,9 +303,6 @@ pub(crate) struct RunArgs {
         help_heading = "Budget"
     )]
     pub(crate) provider_admission_wall_ms: Option<u64>,
-    /// Resume a fenced provider operation at the given epoch
-    #[arg(long, value_name = "OPERATION_ID:EPOCH", action = ArgAction::Append, help_heading = "Providers")]
-    pub(crate) resume_provider: Vec<String>,
     /// Wall-clock budget for the whole run
     #[arg(long, value_name = "N", help_heading = "Budget")]
     pub(crate) timeout_secs: Option<u64>,
@@ -368,7 +343,7 @@ Campaign ledger.\n\nEach reviewer runs in a private sandbox with an exact, role-
 a token budget reserved before dispatch; results are admitted in canonical order. The exit code \
 is the verdict: 0 pass, 3 fail, 4 incomplete.\n\nNever: mutates the repository, commits, pushes, \
 or contacts anything but the bound providers.",
-        override_usage = "af review run [--light|--heavy] [OPTIONS]",
+        override_usage = "af review run [--heavy] [OPTIONS]",
         after_long_help = "Examples:\n  af review run --uncommitted\n  af review run --campaign pr-42 --policy-rev main --base main --candidate HEAD\n  af review run --heavy --provider correctness=claude-code --json"
     )]
     Run(RunArgs),
@@ -377,7 +352,7 @@ or contacts anything but the bound providers.",
         long_about = "Resolve policy, pipeline, Workers, providers, and the Subject and print the \
 plan.\n\nToken-free and stateless: no sandbox, no model call, no Campaign directory. The plan is \
 exactly what `run` would admit, so it is the right pre-flight for agents and CI.",
-        override_usage = "af review plan [--light|--heavy] [OPTIONS]",
+        override_usage = "af review plan [--heavy] [OPTIONS]",
         after_long_help = "Examples:\n  af review plan\n  af review plan --uncommitted --json"
     )]
     Plan(RunArgs),
@@ -386,16 +361,10 @@ exactly what `run` would admit, so it is the right pre-flight for agents and CI.
         long_about = "Compose the exact input one Worker node would receive — the bytes, their \
 transport, and every artifact the role-scoped manifest names — without a sandbox, a model call, \
 or Campaign state. This is how a human audits what a Worker sees.",
-        override_usage = "af review render --node <NODE> [--light|--heavy] [OPTIONS]",
+        override_usage = "af review render --node <NODE> [--heavy] [OPTIONS]",
         after_long_help = "Examples:\n  af review render --node correctness\n  af review render --node correctness --uncommitted --json"
     )]
     Render(RunArgs),
-    /// Drive a Campaign interactively
-    #[command(
-        override_usage = "af review tui [--light|--heavy] [OPTIONS]",
-        after_long_help = "Examples:\n  af review tui --campaign pr-42"
-    )]
-    Tui(RunArgs),
     /// List the ledger: findings, dispositions, and open demands
     #[command(after_long_help = "Examples:\n  af review ledger --campaign pr-42 --long")]
     Ledger {
@@ -861,9 +830,6 @@ pub(crate) struct OnboardArgs {
     /// Repin the selected pipeline and its Workers after a reviewed edit
     #[arg(long, help_heading = "Action")]
     pub(crate) refresh_lock: bool,
-    /// Move legacy `.review/` policy to `.af/` (preview; add --apply to write)
-    #[arg(long, help_heading = "Action", conflicts_with = "refresh_lock")]
-    pub(crate) migrate: bool,
     /// Run this command under release VERSION, installing it on demand (how a pin moves)
     #[arg(long, value_name = "VERSION", help_heading = "Action")]
     pub(crate) af: Option<String>,
@@ -939,28 +905,17 @@ pub(crate) enum TaskCommand {
         after_long_help = "Examples:\n  af task start --file ticket.json\n  af task explain TASK_ID --tree\n  af task run TASK_ID --confirm-plan sha256:...\n  af task start --file ticket.json --execute --json"
     )]
     Start {
-        /// Task kind (v2 supports exactly `implement`)
-        #[arg(long, value_parser = ["implement"], value_name = "KIND", required_unless_present = "file", conflicts_with = "file")]
-        kind: Option<String>,
-        /// What the implementer must achieve
-        #[arg(
-            long,
-            value_name = "TEXT",
-            required_unless_present = "file",
-            conflicts_with = "file"
-        )]
-        goal: Option<String>,
         /// Versioned Task JSON/TOML file, processed by the common Task runtime
         #[arg(long, value_name = "FILE")]
-        file: Option<PathBuf>,
+        file: PathBuf,
         /// Explicitly execute immediately instead of stopping at the captured plan preview
         #[arg(long)]
         execute: bool,
         /// Capture local Worker tuning for this Task
-        #[arg(long, value_name = "FILE", requires = "file")]
+        #[arg(long, value_name = "FILE")]
         bindings: Option<PathBuf>,
         /// Explicit machine-local read-only issue source accounts
-        #[arg(long, value_name = "FILE", requires = "file")]
+        #[arg(long, value_name = "FILE")]
         source_bindings: Option<PathBuf>,
         /// Repository to work in
         #[arg(
@@ -970,9 +925,6 @@ pub(crate) enum TaskCommand {
             help_heading = "Selector"
         )]
         repo: PathBuf,
-        /// Pipeline definition, relative to the repository
-        #[arg(long, value_name = "FILE", default_value = IMPLEMENT_PIPELINE, help_heading = "Selector", conflicts_with = "file")]
-        pipeline: PathBuf,
         /// Explicit state directory (outside the repository)
         #[arg(long, value_name = "DIR", help_heading = "Selector")]
         state: Option<PathBuf>,
@@ -1286,10 +1238,10 @@ pub(crate) enum SelfCommand {
     /// Install a newer release as the default (or just check for one)
     #[command(
         long_about = "Install a newer release as the default.\n\nDownloads the release for this \
-machine's target, verifies it against the release's SHA256SUMS (signed with the release key \
-since 0.8.0; the signature is required), installs it beside the other versions, and retargets \
-the default symlink atomically. The previous version stays installed for `af self rollback`.\n\n\
-Never: changes what a pinned project runs, activates a release older than 0.7.1, or stores a \
+machine's target, verifies it against the release's SHA256SUMS (signed with the release key; \
+the signature is required), installs it beside the other versions, and retargets the default \
+symlink atomically. The previous version stays installed for `af self rollback`.\n\n\
+Never: changes what a pinned project runs, activates a release older than 0.8.0, or stores a \
 token.",
         after_long_help = "Examples:\n  af self update --check        exit 10 when a newer release exists\n  af self update\n  af self update --version 0.9.0"
     )]

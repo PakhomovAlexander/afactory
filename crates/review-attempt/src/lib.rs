@@ -19,9 +19,7 @@ pub mod budget;
 pub mod fencing;
 pub mod task_budget;
 
-pub use budget::{
-    Budget, BudgetError, BudgetLedger, BudgetRefusal, BudgetScope, Reservation, Scope,
-};
+pub use budget::{Budget, BudgetError, BudgetLedger, BudgetRefusal, BudgetScope, Reservation};
 pub use fencing::{
-    Attempt, AttemptId, AttemptLedger, AttemptState, Epoch, ExactReceipt, Receipt, Selection,
+    Attempt, AttemptId, AttemptLedger, AttemptState, Epoch, ExactReceipt, Selection,
 };

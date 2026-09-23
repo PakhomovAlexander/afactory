@@ -72,16 +72,6 @@ impl ChangeSetV1 {
             })
     }
 
-    /// Match a Report location against the losslessly encoded Change Set path set.
-    ///
-    /// Review adapters normally report an ordinary UTF-8 sandbox path, while a non-UTF-8 path
-    /// can only be named in the Change Set's encoded form. Accept both representations. If a
-    /// percent-bearing string is ambiguous, membership is deliberately a union: projecting a
-    /// claim `in` is the fail-closed result for convergence.
-    pub fn contains_report_path(&self, report_path: &str) -> bool {
-        crate::contains_report_path(&self.changed_paths, report_path)
-    }
-
     pub fn validate(&self) -> Result<(), String> {
         self.validate_scope_shape()?;
         validate_canonical_base64(&self.canonical_patch_base64)

@@ -1,7 +1,5 @@
 //! Typed `.af/af.toml` policy shared by onboarding, review, and Task bootstrap.
 
-use std::collections::BTreeMap;
-
 use review_config::Loaded;
 use review_config::lock::Lockfile;
 use semver::Version;
@@ -13,8 +11,6 @@ pub struct ProjectFile {
     version: u32,
     project: Project,
     defaults: Defaults,
-    #[serde(default)]
-    worker: BTreeMap<String, Worker>,
     /// How changed paths select a pipeline, and what happens when no route or too many match.
     #[serde(default)]
     routing: Option<Routing>,
@@ -68,8 +64,7 @@ pub struct Route {
 /// Manifest pins; printed by `plan` and at Campaign open.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct RouteDecision {
-    /// `explicit` (`--pipeline`), `legacy` (no `.af/af.toml`), `default`, `route`, or
-    /// `oversized`.
+    /// `explicit` (`--pipeline`), `default`, `route`, or `oversized`.
     pub policy: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -93,13 +88,6 @@ impl RouteDecision {
             replaced: None,
         }
     }
-
-    pub(crate) fn legacy(pipeline_path: &str) -> Self {
-        RouteDecision {
-            policy: "legacy",
-            ..Self::explicit(pipeline_path)
-        }
-    }
 }
 
 pub(crate) fn pipeline_path_for(name: &str) -> String {
@@ -117,14 +105,6 @@ struct Project {
 #[serde(deny_unknown_fields)]
 struct Defaults {
     pipeline: String,
-    #[serde(default)]
-    task_pipeline: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Worker {
-    package: String,
 }
 
 impl ProjectFile {
@@ -143,13 +123,6 @@ impl ProjectFile {
             return Err("authority project name must not be empty".into());
         }
         validate_safe_name(&self.defaults.pipeline, "default review pipeline")?;
-        if let Some(task_pipeline) = &self.defaults.task_pipeline {
-            validate_safe_name(task_pipeline, "default Task pipeline")?;
-        }
-        for (name, worker) in &self.worker {
-            validate_safe_name(name, "Worker name")?;
-            validate_safe_name(&worker.package, "Worker package")?;
-        }
         let mut names = std::collections::BTreeSet::new();
         for route in &self.routes {
             validate_safe_name(&route.name, "route name")?;
@@ -258,13 +231,6 @@ impl ProjectFile {
 
     pub fn review_pipeline(&self) -> &str {
         &self.defaults.pipeline
-    }
-
-    pub fn task_pipeline(&self) -> Result<&str, String> {
-        self.defaults
-            .task_pipeline
-            .as_deref()
-            .ok_or_else(|| ".af/af.toml must declare defaults.task_pipeline".into())
     }
 }
 
@@ -442,8 +408,7 @@ mod tests {
     fn project(extra: &str, min_af: &str) -> String {
         format!(
             "version = 1\n[project]\nname = \"demo\"\nmin_af = \"{min_af}\"\n\
-             [defaults]\npipeline = \"review\"\ntask_pipeline = \"implement\"\n\
-             [worker.correctness]\npackage = \"correctness\"\n{extra}"
+             [defaults]\npipeline = \"review\"\n{extra}"
         )
     }
 
@@ -451,17 +416,18 @@ mod tests {
     fn accepts_short_compatible_minimum_version() {
         let parsed = ProjectFile::parse(&project("", "0.6")).unwrap();
         assert_eq!(parsed.review_pipeline(), "review");
-        assert_eq!(parsed.task_pipeline().unwrap(), "implement");
     }
 
     #[test]
     fn rejects_unknown_policy_that_would_be_ignored() {
-        let error = ProjectFile::parse(&project(
+        for extra in [
             "[env.default]\nisolation = \"host\"\nnetwork = \"ambient\"\n",
-            "0.6",
-        ))
-        .unwrap_err();
-        assert!(error.contains("unknown field"), "{error}");
+            "[worker.correctness]\npackage = \"correctness\"\n",
+            "task_pipeline = \"implement\"\n",
+        ] {
+            let error = ProjectFile::parse(&project(extra, "0.6")).unwrap_err();
+            assert!(error.contains("unknown field"), "{error}");
+        }
     }
 
     #[test]

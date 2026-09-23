@@ -13,11 +13,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use review_source_git::{
-    Entry, EntryKind, Manifest, digest_bytes, digest_reader_with_buffer, fs_path,
+    Entry, EntryKind, Manifest, digest_bytes, digest_reader_with_buffer, encode_path, fs_path,
 };
 use review_store::Cas;
 
-use crate::{Mode, Sandbox, ensure_directory_mode, restore_writable_dirs};
+use crate::{Sandbox, ensure_directory_mode, restore_writable_dirs};
 
 /// What a node changed in its sandbox, relative to the snapshot it was given.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -50,7 +50,6 @@ impl MutationSet {
 /// A sandbox after it has been frozen. There is no way back to a writable handle.
 pub struct SealedSandbox {
     root: PathBuf,
-    pub mode: Mode,
     pub baseline: Arc<Manifest>,
     /// The tree as it stood at seal time.
     pub final_manifest: Manifest,
@@ -59,10 +58,6 @@ pub struct SealedSandbox {
 }
 
 impl SealedSandbox {
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     /// Whether the node left the sandbox as it found it. A read-only node that mutated anything
     /// is a contract violation by the node, and worth surfacing rather than tolerating.
     pub fn unchanged(&self) -> bool {
@@ -111,8 +106,7 @@ impl SealedSandbox {
                 size,
             });
         }
-        Manifest::new_with_encoding(entries, self.final_manifest.path_encoding)
-            .map_err(std::io::Error::other)
+        Manifest::new(entries).map_err(std::io::Error::other)
     }
 }
 
@@ -126,13 +120,13 @@ impl Drop for CleanupDir {
         let temp_root = dir.keep();
         remove_tree_parallel(&temp_root);
         // The drop-time walk is an optimization. This fallback handles a caller that writes
-        // through `root()` concurrently and any per-path removal failure without losing cleanup.
+        // into the tree concurrently and any per-path removal failure without losing cleanup.
         let _ = std::fs::remove_dir_all(&temp_root);
     }
 }
 
 pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
-    let (root, baseline, mode, dir) = sandbox.into_parts();
+    let (root, baseline, dir) = sandbox.into_parts();
     let (final_manifest, mutations) = match scan_and_diff(&root, baseline.as_ref()) {
         Ok(result) => result,
         Err(error) => {
@@ -144,7 +138,6 @@ pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
     };
     Ok(SealedSandbox {
         root,
-        mode,
         baseline,
         final_manifest,
         mutations,
@@ -208,7 +201,7 @@ fn scan_and_diff(
     mutations.added.sort();
     mutations.modified.sort();
     mutations.deleted.sort();
-    let manifest = Manifest::new_with_encoding(entries, baseline.path_encoding)
+    let manifest = Manifest::new(entries)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     Ok((manifest, mutations))
 }
@@ -271,7 +264,7 @@ fn classify_directory_entry<'a>(
         return Ok(ClassifiedEntry::Directory(path));
     }
     let relative_path = path.strip_prefix(root).expect("walked path is under root");
-    let relative = baseline.encode_key(path_bytes(relative_path));
+    let relative = encode_path(path_bytes(relative_path));
     let kind = if meta.file_type().is_symlink() {
         EntryKind::Symlink
     } else if is_executable(&meta) {
@@ -420,26 +413,13 @@ fn hash_baseline_candidates(
     )
 }
 
-#[cfg(unix)]
 fn is_executable(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     meta.permissions().mode() & 0o111 != 0
 }
 
-#[cfg(not(unix))]
-fn is_executable(_meta: &std::fs::Metadata) -> bool {
-    false
-}
-
-/// The raw bytes of a path, for lossless encoding. Unix: the OS bytes; elsewhere, a best-effort
-/// UTF-8 view (the byte-exact model does not apply off-unix).
-#[cfg(unix)]
+/// The raw OS bytes of a path, for lossless encoding.
 fn path_bytes(path: &Path) -> &[u8] {
     use std::os::unix::ffi::OsStrExt;
     path.as_os_str().as_bytes()
-}
-
-#[cfg(not(unix))]
-fn path_bytes(path: &Path) -> &[u8] {
-    path.as_os_str().to_str().map(str::as_bytes).unwrap_or(b"")
 }

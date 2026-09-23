@@ -1,6 +1,8 @@
 # Own dynamic shards inside a typed Scatter node
 
-**Status:** accepted (2026-09-01)
+**Status:** accepted (2026-09-01); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): pipeline format 1, one of the static formats it
+lists, no longer loads.
 
 Pipeline format v5 adds `slicer` and `scatter` node kinds without mutating the validated outer DAG
 at runtime. A Slicer deterministically publishes one complete `SliceSet@1` for the exact Round

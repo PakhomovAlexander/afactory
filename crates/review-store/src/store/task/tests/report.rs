@@ -28,6 +28,7 @@ fn run_report_cannot_forge_completion_revision_order_or_history_sequence() {
         task_revision_id: f.revision_id.clone(),
         plan_id: f.plan_id.clone(),
         through_sequence: state.next_sequence,
+        phase_id: None,
         nodes: execution
             .graph
             .order
@@ -85,7 +86,7 @@ fn run_report_cannot_forge_completion_revision_order_or_history_sequence() {
     let save = |value: &TaskRunReportV1| {
         f.cas
             .put_artifact(
-                TASK_RUN_REPORT_V1,
+                TASK_RUN_REPORT_V2,
                 producer(),
                 vec![],
                 None,

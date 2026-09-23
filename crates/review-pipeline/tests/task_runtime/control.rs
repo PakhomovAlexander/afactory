@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 #[test]
 fn precancelled_runtime_records_no_new_invocation_or_attempt() {
     let mut f = Fixture::new(SUCCESS);
-    let host = CapturedTaskHost::capture(
+    let host = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -14,6 +14,7 @@ fn precancelled_runtime_records_no_new_invocation_or_attempt() {
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &DocumentDomain,
+        &BTreeMap::new(),
     )
     .unwrap();
     let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
@@ -48,7 +49,7 @@ fn captured_command_cancellation_retains_both_streams_and_never_retries() {
         ready.to_str().unwrap()
     );
     let mut f = Fixture::new(&script);
-    let host = CapturedTaskHost::capture(
+    let host = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -56,6 +57,7 @@ fn captured_command_cancellation_retains_both_streams_and_never_retries() {
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &DocumentDomain,
+        &BTreeMap::new(),
     )
     .unwrap();
     let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
@@ -175,64 +177,56 @@ fn heartbeat_detects_a_replaced_writer_even_when_its_new_lease_is_far_from_renew
     assert!(result.is_err());
     assert!(cancellation.load(Ordering::Acquire));
     assert!(started.elapsed() < Duration::from_secs(2));
-    assert!(
-        shared
-            .lock()
-            .unwrap()
-            .check_task_lease_current(&f.cas, &new)
-            .is_ok()
-    );
+    assert!(shared.lock().unwrap().task_lease_state(&new).is_ok());
 }
 
 #[test]
-fn unsupported_host_control_refuses_before_execution_and_none_forwards() {
-    struct Host(std::sync::atomic::AtomicUsize);
-    impl TaskOperatorHost for Host {
-        fn prepare_context(
-            &self,
-            _: &Cas,
-            _: &TaskInvocationV1,
-            _: &[String],
-        ) -> Result<String, String> {
-            unreachable!()
-        }
-        fn execute(
-            &self,
-            _: &Cas,
-            _: &TaskInvocationV1,
-            _: Option<&PreparedTaskAttempt>,
-        ) -> TaskWorkOutput {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            TaskWorkOutput {
-                outputs: Ok(BTreeMap::new()),
-                charged_tokens: Some(0),
-                usage: None,
-                usage_observation: None,
-                raw_artifact_ids: vec![],
-                usage_id: None,
-                feedback_id: None,
-            }
-        }
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let cas = Cas::open(dir.path()).unwrap();
-    let host = Host(std::sync::atomic::AtomicUsize::new(0));
+fn a_host_that_cannot_honor_an_interruption_refuses_instead_of_ignoring_it() {
+    // There is no forwarding default any more: every operator takes the cancellation and owes
+    // an explicit refusal when one is raised. PlanningTaskDomain is one of the pure domains that
+    // answer this way, so it stands here for the contract DocumentTaskDomain and the pure
+    // Optimization steps keep too.
+    let f = Fixture::new(SUCCESS);
+    let domain = review_pipeline::task::planning::PlanningTaskDomain {
+        compiler: &f.compiler,
+        task: &f.task,
+        graph: &f.graph,
+    };
     let input = TaskInvocationV1 {
-        plan_id: "a".repeat(64),
+        plan_id: f.plan_id.clone(),
         node: "root.nodes.work".into(),
         inputs: BTreeMap::new(),
     };
-    let flag = AtomicBool::new(false);
-    let refused = host.execute_controlled(&cas, &input, None, None, Some(&flag));
-    assert!(refused.outputs.is_err());
-    assert_eq!(refused.charged_tokens, Some(0));
-    assert_eq!(host.0.load(Ordering::SeqCst), 0);
-    assert!(
-        host.execute_controlled(&cas, &input, None, None, None)
-            .outputs
-            .is_ok()
+    let node = review_graph::task::CompiledNode {
+        operator: review_graph::task::CompiledOperator::Select,
+        contract: review_core::task::pipeline::PipelineContractV1 {
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+        },
+        inputs: BTreeMap::new(),
+        conditions: vec![],
+    };
+    let raised = AtomicBool::new(true);
+    let refused = domain.execute(&f.cas, &input, &node, None, Some(&raised));
+    assert_eq!(
+        refused.outputs.unwrap_err(),
+        "Task execution was cancelled by its host"
     );
-    assert_eq!(host.0.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        refused.charged_tokens,
+        Some(0),
+        "an unhonorable interruption is refused before any work runs"
+    );
+    // The same call without a raised interruption reaches the operator itself, so the refusal
+    // above is the cancellation check and not the domain declining the node.
+    let lowered = AtomicBool::new(false);
+    for cancellation in [None, Some(&lowered)] {
+        let reached = domain.execute(&f.cas, &input, &node, None, cancellation);
+        assert_eq!(
+            reached.outputs.unwrap_err(),
+            "Planning context requires its fixed input-free operator"
+        );
+    }
 }
 
 #[test]
@@ -243,29 +237,22 @@ fn cancellation_between_successful_work_and_selection_retains_spend_but_refuses_
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
-            feedback: &[String],
+            definition: &review_graph::task::CompiledNode,
+            attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
-            self.0.prepare_context(cas, input, feedback)
+            self.0.prepare_context(cas, input, definition, attempt)
         }
         fn execute(
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
+            definition: &review_graph::task::CompiledNode,
             attempt: Option<&PreparedTaskAttempt>,
-        ) -> TaskWorkOutput {
-            self.0.execute(cas, input, attempt)
-        }
-        fn execute_controlled(
-            &self,
-            cas: &Cas,
-            input: &TaskInvocationV1,
-            attempt: Option<&PreparedTaskAttempt>,
-            broker: Option<&dyn review_broker::ExactBrokerClient>,
             cancellation: Option<&AtomicBool>,
         ) -> TaskWorkOutput {
             let mut returned = self
                 .0
-                .execute_controlled(cas, input, attempt, broker, cancellation);
+                .execute(cas, input, definition, attempt, cancellation);
             assert!(returned.outputs.is_ok());
             returned.charged_tokens = Some(7);
             cancellation.unwrap().store(true, Ordering::Release);
@@ -273,7 +260,7 @@ fn cancellation_between_successful_work_and_selection_retains_spend_but_refuses_
         }
     }
     let mut f = Fixture::new(SUCCESS);
-    let inner = CapturedTaskHost::capture(
+    let inner = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -281,6 +268,7 @@ fn cancellation_between_successful_work_and_selection_retains_spend_but_refuses_
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &DocumentDomain,
+        &BTreeMap::new(),
     )
     .unwrap();
     let authority = CapturedTaskAuthority::new(&f.compiler, &inner, &NoTaskDeveloper);

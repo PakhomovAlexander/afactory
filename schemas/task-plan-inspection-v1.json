@@ -44,10 +44,10 @@
       "$ref": "urn:af:schema:task-contracts:1#/$defs/taskRevision"
     },
     "plan": {
-      "$ref": "urn:af:schema:task-inspection:3#/properties/plan"
+      "$ref": "urn:af:schema:task-inspection:11#/properties/plan"
     },
     "graph": {
-      "$ref": "urn:af:schema:task-inspection:3#/properties/graph"
+      "$ref": "urn:af:schema:task-inspection:11#/properties/graph"
     }
   }
 }

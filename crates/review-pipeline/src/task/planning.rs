@@ -54,25 +54,12 @@ impl PlanningTaskDomain<'_> {
     }
 }
 impl TaskOperatorHost for PlanningTaskDomain<'_> {
-    fn execute_controlled(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
-        cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> TaskWorkOutput {
-        if let Err(error) = super::control::check(cancellation) {
-            return super::control::refused(error);
-        }
-        self.execute_with_broker(cas, input, attempt, broker)
-    }
-
     fn prepare_context(
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
-        _: &[String],
+        _: &review_graph::task::CompiledNode,
+        _: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
         Err("Pure planning context does not launch an Attempt".into())
     }
@@ -80,8 +67,13 @@ impl TaskOperatorHost for PlanningTaskDomain<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
+        if let Err(error) = super::control::check(cancellation) {
+            return super::control::refused(error);
+        }
         TaskWorkOutput {
             usage_observation: None,
             usage: None,
@@ -102,7 +94,7 @@ impl TaskDomain for PlanningTaskDomain<'_> {
         &self,
         _: &Cas,
         input: &TaskInvocationV1,
-        _: &[String],
+        _: &review_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         if !matches!(self.graph.nodes.get(&input.node).map(|n| &n.operator),
@@ -121,6 +113,7 @@ impl TaskDomain for PlanningTaskDomain<'_> {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         if task != self.task || plan.preparation.is_none() {
             return Err("Planning output belongs to another Task or execution purpose".into());
@@ -180,24 +173,17 @@ impl TaskOperatorHost for PlanningTaskHost<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        definition: &review_graph::task::CompiledNode,
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        self.inner.prepare_context(cas, input, feedback)
+        self.inner.prepare_context(cas, input, definition, attempt)
     }
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
-    ) -> TaskWorkOutput {
-        self.execute_controlled(cas, input, attempt, None, None)
-    }
-    fn execute_controlled(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         if let Err(error) = super::control::check(cancellation) {
@@ -206,7 +192,7 @@ impl TaskOperatorHost for PlanningTaskHost<'_> {
 
         let mut returned = self
             .inner
-            .execute_controlled(cas, input, attempt, broker, cancellation);
+            .execute(cas, input, definition, attempt, cancellation);
         let Some(attempt) = attempt else {
             return returned;
         };
@@ -278,10 +264,10 @@ impl TaskDomain for PlanningTaskHost<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         context: &str,
     ) -> Result<(), String> {
-        self.inner.validate_context(cas, input, feedback, context)
+        self.inner.validate_context(cas, input, attempt, context)
     }
     fn validate_output(
         &self,
@@ -290,8 +276,10 @@ impl TaskDomain for PlanningTaskHost<'_> {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
-        self.inner.validate_output(cas, task, plan, input, output)
+        self.inner
+            .validate_output(cas, task, plan, input, output, definition)
     }
     fn validate_result(
         &self,

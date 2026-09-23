@@ -16,7 +16,6 @@
 
 pub mod captured_review;
 pub mod lock;
-pub mod pipeline_edit;
 pub mod task;
 
 use std::collections::BTreeMap;
@@ -24,8 +23,8 @@ use std::collections::BTreeMap;
 use review_check::CheckDefinition;
 use review_core::{Arg, Command, Provenance};
 use review_graph::{
-    Dispatch, Node, NodeKind, Pipeline, PlanError, Planned, Port, PortCardinality, PortContract,
-    RunReport, Scheduler, SnapshotAffinity,
+    Node, NodeKind, Pipeline, PlanError, Planned, Port, PortCardinality, PortContract,
+    SnapshotAffinity,
 };
 use review_store::ConvergencePolicy;
 use serde::{Deserialize, Serialize};
@@ -52,7 +51,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Binding(e) => write!(f, "pipeline definition: {e}"),
             ConfigError::UnknownVersion(v) => write!(
                 f,
-                "pipeline definition: unsupported version {v}; this kernel understands versions 1 through 5"
+                "pipeline definition: unsupported version {v}; this kernel understands versions 2 through 5"
             ),
             ConfigError::Lock(e) => write!(f, "pipeline definition: {e}"),
         }
@@ -160,27 +159,25 @@ impl From<NodeKindSpec> for NodeKind {
 pub struct NodeSpec {
     pub id: String,
     pub kind: NodeKindSpec,
-    /// Pipeline-owned classification for benchmark Demands emitted by this reviewer. `None`
-    /// permanently retains the pre-M4 required default for pinned authority created before the
-    /// field existed.
+    /// Pipeline-owned classification for benchmark Demands emitted by this reviewer. Absent
+    /// means Required: a pipeline that omits the field classifies every Demand as required.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub demands: Option<review_core::DemandRequirement>,
     #[serde(default)]
-    pub inputs: Vec<PortContractSpec>,
-    #[serde(default = "default_outputs")]
-    pub outputs: Vec<PortContractSpec>,
+    pub inputs: Vec<TypedPortSpec>,
+    pub outputs: Vec<TypedPortSpec>,
     #[serde(default)]
     pub gated_by: Option<String>,
     /// An inline runner command. A reviewer binds exactly one of `runner` or `package`;
     /// meaningless on any other kind of node.
     #[serde(default)]
     pub runner: Option<CommandSpec>,
-    /// A reviewer package from the registries, pinned in `review.lock`. The runner command
-    /// then comes from the package's digest-verified manifest.
+    /// A reviewer package from the Worker registry (`.af/workers`), pinned in `.af/af.lock`.
+    /// The runner command then comes from the package's digest-verified manifest.
     #[serde(default)]
     pub package: Option<String>,
-    /// Required for every reviewer in pipeline v4. Earlier formats permanently retain their
-    /// pre-M6.3 credential behavior and cannot claim this binding retroactively.
+    /// Required for every reviewer in pipeline v4 and every reviewer or Scatter in v5. Formats
+    /// 2 and 3 make no credential claim and cannot add one retroactively.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ReviewerExecutionSpec>,
     /// Required only on a pipeline-v5 Slicer. The outer graph stays static; this policy fixes
@@ -541,63 +538,20 @@ impl SlicingSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewerExecutionSpec {
-    pub credential_mode: review_core::BrokerCredentialModeV1,
+    pub credential_mode: review_core::CredentialModeV1,
     #[serde(default)]
     pub auto_apply: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub operations: Vec<review_core::BrokerOperationPolicyV1>,
 }
 
 impl ReviewerExecutionSpec {
     fn validate(&self, node: &str) -> Result<(), ConfigError> {
-        let mut names = std::collections::BTreeSet::new();
-        for operation in &self.operations {
-            operation.validate().map_err(|error| {
-                ConfigError::Binding(format!(
-                    "reviewer `{node}` has an invalid Broker operation: {error}"
-                ))
-            })?;
-            if !names.insert(operation.name.as_str()) {
-                return Err(ConfigError::Binding(format!(
-                    "reviewer `{node}` has duplicate Broker operation `{}`",
-                    operation.name
-                )));
-            }
-        }
-        review_core::broker_authority_usage(&self.operations).map_err(|error| {
-            ConfigError::Binding(format!(
-                "reviewer `{node}` has invalid aggregate Broker authority: {error}"
-            ))
-        })?;
-        match self.credential_mode {
-            review_core::BrokerCredentialModeV1::Brokered if !self.operations.is_empty() => {}
-            review_core::BrokerCredentialModeV1::CredentialFree
-            | review_core::BrokerCredentialModeV1::TrustedUnsafe
-                if self.operations.is_empty() => {}
-            review_core::BrokerCredentialModeV1::Brokered => {
-                return Err(ConfigError::Binding(format!(
-                    "brokered reviewer `{node}` must declare at least one bounded operation"
-                )));
-            }
-            _ => {
-                return Err(ConfigError::Binding(format!(
-                    "reviewer `{node}` declares Broker operations without brokered credentials"
-                )));
-            }
-        }
-        if self.auto_apply
-            && self.credential_mode == review_core::BrokerCredentialModeV1::TrustedUnsafe
-        {
+        if self.auto_apply && self.credential_mode == review_core::CredentialModeV1::TrustedUnsafe {
             return Err(ConfigError::Binding(format!(
                 "trusted_unsafe reviewer `{node}` cannot authorize auto_apply"
             )));
         }
         Ok(())
     }
-}
-
-fn default_outputs() -> Vec<PortContractSpec> {
-    vec![PortContractSpec::Name("out".to_string())]
 }
 
 fn validate_diff_change_set_wiring(
@@ -616,7 +570,7 @@ fn validate_diff_change_set_wiring(
         .flat_map(|node| {
             node.outputs
                 .iter()
-                .map(PortContractSpec::build)
+                .map(TypedPortSpec::build)
                 .filter(|port| port.artifact_type == review_core::contract::CHANGE_SET_V1)
                 .map(move |port| (node, port))
         })
@@ -639,7 +593,7 @@ fn validate_diff_change_set_wiring(
         let inputs: Vec<_> = reviewer
             .inputs
             .iter()
-            .map(PortContractSpec::build)
+            .map(TypedPortSpec::build)
             .filter(|port| port.artifact_type == review_core::contract::CHANGE_SET_V1)
             .collect();
         let [reviewer_port] = inputs.as_slice() else {
@@ -668,20 +622,15 @@ fn validate_diff_change_set_wiring(
 fn validate_generation_output_contracts(
     nodes: &[NodeSpec],
     subject: review_core::SubjectKind,
-    version: u32,
 ) -> Result<(), ConfigError> {
-    if version == 1 {
-        return Ok(());
-    }
     let mut change_sets = 0_usize;
     for node in nodes
         .iter()
         .filter(|node| node.kind == NodeKindSpec::Generation)
     {
         let mut prior_findings = 0_usize;
-        for port in node.outputs.iter().map(PortContractSpec::build) {
+        for port in node.outputs.iter().map(TypedPortSpec::build) {
             match port.artifact_type.as_str() {
-                review_core::contract::PRIOR_FINDINGS_V1 => prior_findings += 1,
                 review_core::contract::FINDING_SET_V1 => {
                     if port.cardinality != review_core::PortCardinality::One
                         || !port.optional
@@ -707,10 +656,9 @@ fn validate_generation_output_contracts(
                 }
                 artifact_type => {
                     return Err(ConfigError::Binding(format!(
-                        "generation node `{}` output `{}` has unsupported type `{artifact_type}`; pipeline version 2 requires Generation outputs to use a typed port declaration for `{}`, `{}`, or `{}`",
+                        "generation node `{}` output `{}` has unsupported type `{artifact_type}`; a Generation output is `{}` or `{}`",
                         node.id,
                         port.name,
-                        review_core::contract::PRIOR_FINDINGS_V1,
                         review_core::contract::FINDING_SET_V1,
                         review_core::contract::CHANGE_SET_V1,
                     )));
@@ -719,9 +667,8 @@ fn validate_generation_output_contracts(
         }
         if prior_findings == 0 {
             return Err(ConfigError::Binding(format!(
-                "generation node `{}` must emit an explicit `{}` compatibility view or exact `{}` output",
+                "generation node `{}` must emit an exact `{}` output",
                 node.id,
-                review_core::contract::PRIOR_FINDINGS_V1,
                 review_core::contract::FINDING_SET_V1,
             )));
         }
@@ -735,6 +682,35 @@ fn validate_generation_output_contracts(
     Ok(())
 }
 
+/// The Ledger writes the Round's canonical Finding Set onto its one typed `FindingSet@1`
+/// output, which the next Round reads back from the Ledger receipt. Refusing a Ledger without
+/// that port here fails the pipeline at load rather than mid-Round, after its reviewers ran.
+fn validate_ledger_output_contracts(nodes: &[NodeSpec]) -> Result<(), ConfigError> {
+    for node in nodes
+        .iter()
+        .filter(|node| node.kind == NodeKindSpec::Ledger)
+    {
+        let finding_sets = node
+            .outputs
+            .iter()
+            .map(TypedPortSpec::build)
+            .filter(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
+            .count();
+        if finding_sets != 1 {
+            return Err(ConfigError::Binding(format!(
+                "ledger node `{}` must declare exactly one `{}` output",
+                node.id,
+                review_core::contract::FINDING_SET_V1,
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Every reviewer answers `ReviewerResult@2`, which dispositions exactly the prior Findings it
+/// was assigned, so every reviewer and every Scatter (whose slices are reviewers) must receive
+/// generation's exact `FindingSet@1`. Refusing the wiring here fails the pipeline at plan time
+/// rather than mid-Round, after its Gate has already run.
 fn validate_disposition_wiring(nodes: &[NodeSpec], edges: &[EdgeSpec]) -> Result<(), ConfigError> {
     let finding_set_outputs: Vec<_> = nodes
         .iter()
@@ -742,32 +718,47 @@ fn validate_disposition_wiring(nodes: &[NodeSpec], edges: &[EdgeSpec]) -> Result
         .flat_map(|node| {
             node.outputs
                 .iter()
-                .map(PortContractSpec::build)
+                .map(TypedPortSpec::build)
                 .filter(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
                 .map(move |port| (node, port))
         })
         .collect();
     for reviewer in nodes
         .iter()
-        .filter(|node| node.kind == NodeKindSpec::Reviewer)
+        .filter(|node| matches!(node.kind, NodeKindSpec::Reviewer | NodeKindSpec::Scatter))
     {
-        let uses_v2 = reviewer
-            .outputs
-            .iter()
-            .map(PortContractSpec::build)
-            .any(|port| port.artifact_type == review_core::contract::REVIEWER_RESULT_V2);
-        if !uses_v2 {
-            continue;
+        let role = if reviewer.kind == NodeKindSpec::Scatter {
+            "Scatter"
+        } else {
+            "reviewer"
+        };
+        if reviewer.kind == NodeKindSpec::Reviewer {
+            let outputs: Vec<_> = reviewer.outputs.iter().map(TypedPortSpec::build).collect();
+            let [output] = outputs.as_slice() else {
+                return Err(ConfigError::Binding(format!(
+                    "reviewer `{}` must declare exactly one result output",
+                    reviewer.id
+                )));
+            };
+            if output.artifact_type != review_core::contract::REVIEWER_RESULT_V2 {
+                return Err(ConfigError::Binding(format!(
+                    "reviewer `{}` output `{}` has unsupported result type `{}`; reviewers answer a typed `{}` output",
+                    reviewer.id,
+                    output.name,
+                    output.artifact_type,
+                    review_core::contract::REVIEWER_RESULT_V2,
+                )));
+            }
         }
         let inputs: Vec<_> = reviewer
             .inputs
             .iter()
-            .map(PortContractSpec::build)
+            .map(TypedPortSpec::build)
             .filter(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
             .collect();
         let [input] = inputs.as_slice() else {
             return Err(ConfigError::Binding(format!(
-                "ReviewerResult@2 reviewer `{}` must declare exactly one FindingSet@1 input",
+                "{role} `{}` must declare exactly one FindingSet@1 input",
                 reviewer.id
             )));
         };
@@ -776,7 +767,7 @@ fn validate_disposition_wiring(nodes: &[NodeSpec], edges: &[EdgeSpec]) -> Result
             || input.snapshot_affinity != review_core::SnapshotAffinity::Any
         {
             return Err(ConfigError::Binding(format!(
-                "ReviewerResult@2 reviewer `{}` FindingSet@1 input must be optional, singular, and snapshot-affinity `any`",
+                "{role} `{}` FindingSet@1 input must be optional, singular, and snapshot-affinity `any`",
                 reviewer.id
             )));
         }
@@ -789,7 +780,7 @@ fn validate_disposition_wiring(nodes: &[NodeSpec], edges: &[EdgeSpec]) -> Result
             })
         }) {
             return Err(ConfigError::Binding(format!(
-                "ReviewerResult@2 reviewer `{}` must receive generation's exact FindingSet@1",
+                "{role} `{}` must receive generation's exact FindingSet@1",
                 reviewer.id
             )));
         }
@@ -869,13 +860,13 @@ fn validate_dynamic_wiring(
         let slice_outputs: Vec<_> = node
             .outputs
             .iter()
-            .map(PortContractSpec::build)
+            .map(TypedPortSpec::build)
             .filter(|port| port.artifact_type == review_core::contract::SLICE_SET_V1)
             .collect();
         let slice_inputs: Vec<_> = scatter
             .inputs
             .iter()
-            .map(PortContractSpec::build)
+            .map(TypedPortSpec::build)
             .filter(|port| port.artifact_type == review_core::contract::SLICE_SET_V1)
             .collect();
         let ([slice_output], [slice_input]) = (slice_outputs.as_slice(), slice_inputs.as_slice())
@@ -906,7 +897,7 @@ fn validate_dynamic_wiring(
         let shard_outputs: Vec<_> = scatter
             .outputs
             .iter()
-            .map(PortContractSpec::build)
+            .map(TypedPortSpec::build)
             .filter(|port| port.artifact_type == review_core::contract::SHARD_SET_V1)
             .collect();
         let [shard_output] = shard_outputs.as_slice() else {
@@ -922,7 +913,7 @@ fn validate_dynamic_wiring(
             candidate
                 .inputs
                 .iter()
-                .map(PortContractSpec::build)
+                .map(TypedPortSpec::build)
                 .filter(|port| port.artifact_type == review_core::contract::SHARD_SET_V1)
                 .any(|input| {
                     input.cardinality == PortCardinality::One
@@ -956,7 +947,7 @@ fn validate_dynamic_wiring(
                 let shard_inputs: Vec<_> = reviewer
                     .inputs
                     .iter()
-                    .map(PortContractSpec::build)
+                    .map(TypedPortSpec::build)
                     .filter(|port| port.artifact_type == review_core::contract::SHARD_SET_V1)
                     .collect();
                 let [shard_input] = shard_inputs.as_slice() else {
@@ -994,16 +985,8 @@ fn validate_dynamic_wiring(
     Ok(())
 }
 
-/// A port declaration. The string arm keeps v1 pipeline files readable and expands to an
-/// explicit opaque/one/required/any contract. It remains valid for non-Generation nodes;
-/// built-in Generation outputs require the typed arm because execution dispatches by contract.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum PortContractSpec {
-    Name(String),
-    Typed(TypedPortSpec),
-}
-
+/// A port declaration: every port names its artifact type, cardinality and snapshot affinity,
+/// because execution dispatches by contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TypedPortSpec {
@@ -1016,20 +999,15 @@ pub struct TypedPortSpec {
     pub snapshot_affinity: SnapshotAffinity,
 }
 
-impl PortContractSpec {
+impl TypedPortSpec {
     fn build(&self) -> PortContract {
-        match self {
-            Self::Name(name) => PortContract::opaque(name),
-            Self::Typed(port) => {
-                let contract = PortContract::new(&port.name, &port.artifact_type)
-                    .with_cardinality(port.cardinality)
-                    .with_snapshot_affinity(port.snapshot_affinity);
-                if port.optional {
-                    contract.optional()
-                } else {
-                    contract
-                }
-            }
+        let contract = PortContract::new(&self.name, &self.artifact_type)
+            .with_cardinality(self.cardinality)
+            .with_snapshot_affinity(self.snapshot_affinity);
+        if self.optional {
+            contract.optional()
+        } else {
+            contract
         }
     }
 }
@@ -1251,8 +1229,8 @@ pub struct Definition {
     /// the authority layer and persisted in CampaignManifest@1.
     #[serde(default)]
     pub check_timeout_seconds: Option<u64>,
-    /// Required by pipeline format v3. Formats v1/v2 permanently retain their legacy local,
-    /// read-only Gate behavior so pinned Campaign replay does not acquire new execution policy.
+    /// Required from pipeline format v3. Format v2 keeps its local, read-only Gate, so a pinned
+    /// v2 Campaign does not acquire new execution policy.
     #[serde(default)]
     pub gate: Option<GateExecutionSpec>,
     pub nodes: Vec<NodeSpec>,
@@ -1268,7 +1246,6 @@ pub struct Definition {
 
 /// A validated definition: the plan, the checks, and the reviewer bindings.
 pub struct Loaded {
-    version: u32,
     subject: SubjectSpec,
     plan: Planned,
     checks: Vec<CheckDefinition>,
@@ -1295,24 +1272,7 @@ pub struct Loaded {
     cold_closeout_nodes: Vec<String>,
 }
 
-/// A dispatcher that declares the Subject semantics it actually executes.
-pub trait SubjectDispatch: Dispatch + Sync {
-    fn subject_kind(&self) -> review_core::SubjectKind;
-
-    fn reviewer_credential_mode(&self, _node: &str) -> Option<review_core::BrokerCredentialModeV1> {
-        None
-    }
-
-    fn broker_provider_available(&self, _node: &str) -> bool {
-        false
-    }
-}
-
 impl Loaded {
-    pub fn version(&self) -> u32 {
-        self.version
-    }
-
     pub fn subject_kind(&self) -> review_core::SubjectKind {
         self.subject.kind
     }
@@ -1399,21 +1359,10 @@ impl Loaded {
         &self.plan.order
     }
 
-    /// Borrow the validated topology for installed compatibility compilation. This does not
+    /// Borrow the validated topology for installed Campaign Review compilation. This does not
     /// dispatch it, expose mutable authority, or bypass captured package/manifest admission.
     pub fn planned(&self) -> &review_graph::Planned {
         &self.plan
-    }
-
-    pub fn node_is_gated(&self, node: &str) -> bool {
-        !self.plan.gates_for(node).is_empty()
-    }
-
-    pub fn node_receives_port(&self, node: &str, port: &str) -> bool {
-        self.plan
-            .dependencies_of(node)
-            .iter()
-            .any(|edge| edge.to.name == port)
     }
 
     pub fn node_kind_has_output_type(&self, kind: NodeKind, artifact_type: &str) -> bool {
@@ -1424,25 +1373,6 @@ impl Loaded {
                     .iter()
                     .any(|output| output.artifact_type == artifact_type)
         })
-    }
-
-    /// Exact upstream node ids for every input port, captured from the validated graph.
-    pub fn input_sources(&self) -> BTreeMap<String, BTreeMap<String, Vec<String>>> {
-        let mut sources: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
-        for edge in &self.plan.edges {
-            sources
-                .entry(edge.to.node.clone())
-                .or_default()
-                .entry(edge.to.name.clone())
-                .or_default()
-                .push(edge.from.node.clone());
-        }
-        for ports in sources.values_mut() {
-            for nodes in ports.values_mut() {
-                nodes.sort();
-            }
-        }
-        sources
     }
 
     /// Exact upstream node, output port, and kind for every input port. Canonical reducers use
@@ -1464,38 +1394,6 @@ impl Loaded {
             }
         }
         bindings
-    }
-
-    /// Schedule only through a dispatcher whose execution semantics match this definition.
-    pub fn run(&self, dispatcher: &impl SubjectDispatch) -> Result<RunReport, ConfigError> {
-        if dispatcher.subject_kind() != self.subject.kind {
-            return Err(ConfigError::Binding(format!(
-                "pipeline declares `{}` but its dispatcher executes `{}`",
-                self.subject.kind,
-                dispatcher.subject_kind()
-            )));
-        }
-        for (node, expected) in &self.reviewer_execution {
-            let actual = dispatcher.reviewer_credential_mode(node).ok_or_else(|| {
-                ConfigError::Binding(format!(
-                    "reviewer `{node}` has no runtime adapter for its v4 Execution Binding"
-                ))
-            })?;
-            if actual != expected.credential_mode {
-                return Err(ConfigError::Binding(format!(
-                    "reviewer `{node}` requires {:?} credentials but its runtime adapter is {:?}",
-                    expected.credential_mode, actual
-                )));
-            }
-            if expected.credential_mode == review_core::BrokerCredentialModeV1::Brokered
-                && !dispatcher.broker_provider_available(node)
-            {
-                return Err(ConfigError::Binding(format!(
-                    "brokered reviewer `{node}` has no machine-local Broker provider"
-                )));
-            }
-        }
-        Ok(Scheduler::new(&self.plan).run(dispatcher))
     }
 }
 
@@ -1527,18 +1425,6 @@ fn cold_closeout_nodes(
         return Err(ConfigError::Binding(
             "convergence.cold_closeout names a confirmation Attempt but no reviewer declares warm layers; a cold reviewer needs no cold confirmation".into(),
         ));
-    }
-    for node in &selected {
-        // A brokered reviewer's Attempt runs under a Broker Handle issued for exactly that
-        // Attempt. A closeout would need its own lease, which this package does not compile.
-        if node.execution.as_ref().is_some_and(|execution| {
-            execution.credential_mode == review_core::BrokerCredentialModeV1::Brokered
-        }) {
-            return Err(ConfigError::Binding(format!(
-                "reviewer `{}` is brokered and cannot take a compiled Cold Closeout: its confirmation Attempt would need a Broker Handle of its own",
-                node.id
-            )));
-        }
     }
     if let Some(budgets) = budgets {
         let reservation = |node: &NodeSpec| {
@@ -1582,8 +1468,8 @@ impl Definition {
     }
 
     /// [`load`](Self::load), with package resolution: every `package = "name"` reviewer is
-    /// located in the registries, digest-verified against the lockfile, and bound to the
-    /// runner its verified manifest declares.
+    /// located in the registry (or the captured packages), digest-verified against the
+    /// lockfile, and bound to the runner its verified manifest declares.
     pub fn load_with(
         self,
         lockfile: &lock::Lockfile,
@@ -1598,21 +1484,9 @@ impl Definition {
     ) -> Result<Loaded, ConfigError> {
         let integration = self.integration.clone();
         let (subject, gate) = match (self.version, self.subject, self.gate) {
-            (1, None, None) => (
-                SubjectSpec {
-                    kind: review_core::SubjectKind::WholeTree,
-                },
-                None,
-            ),
-            (1, Some(_), _) => {
+            (2, _, Some(_)) => {
                 return Err(ConfigError::Binding(
-                    "pipeline format version 1 has no `[subject]`; use version 2 to declare it"
-                        .to_string(),
-                ));
-            }
-            (1 | 2, _, Some(_)) => {
-                return Err(ConfigError::Binding(
-                    "pipeline formats 1 and 2 have no `[gate]` Execution Binding; use version 3"
+                    "pipeline format version 2 has no `[gate]` Execution Binding; use version 3"
                         .to_string(),
                 ));
             }
@@ -1715,7 +1589,8 @@ impl Definition {
                 ));
             }
         }
-        validate_generation_output_contracts(&self.nodes, subject.kind, self.version)?;
+        validate_generation_output_contracts(&self.nodes, subject.kind)?;
+        validate_ledger_output_contracts(&self.nodes)?;
         validate_disposition_wiring(&self.nodes, &self.edges)?;
         validate_dynamic_wiring(self.version, &self.nodes, &self.edges)?;
         if subject.kind == review_core::SubjectKind::Diff {
@@ -1884,19 +1759,6 @@ impl Definition {
                 match (self.version, &spec.execution) {
                     (4 | 5, Some(execution)) => {
                         execution.validate(&spec.id)?;
-                        if let Some(budgets) = &self.budgets {
-                            let authority =
-                                review_core::broker_authority_usage(&execution.operations)
-                                    .expect("validated Broker authority");
-                            let attempt_cap =
-                                spec.budget.map_or(budgets.attempt, |budget| budget.attempt);
-                            if authority > attempt_cap {
-                                return Err(ConfigError::Binding(format!(
-                                    "brokered reviewer `{}` aggregate Broker authority ({authority}) exceeds its attempt cap ({attempt_cap}); the dispatch reservation would not cover its capability",
-                                    spec.id
-                                )));
-                            }
-                        }
                         reviewer_execution.insert(spec.id.clone(), execution.clone());
                     }
                     (4 | 5, None) => {
@@ -1931,8 +1793,8 @@ impl Definition {
                 closeouts.insert(scatter.clone(), spec.id.clone());
             }
             let mut node = Node::new(&spec.id, spec.kind.into())
-                .accepting_contracts(spec.inputs.iter().map(PortContractSpec::build).collect())
-                .emitting_contracts(spec.outputs.iter().map(PortContractSpec::build).collect());
+                .accepting_contracts(spec.inputs.iter().map(TypedPortSpec::build).collect())
+                .emitting_contracts(spec.outputs.iter().map(TypedPortSpec::build).collect());
             if let Some(gate) = &spec.gated_by {
                 node = node.gated_by(gate);
             }
@@ -2043,7 +1905,6 @@ impl Definition {
             .filter_map(|node| node.budget.map(|budget| (node.id.clone(), budget.attempt)))
             .collect();
         Ok(Loaded {
-            version: self.version,
             subject,
             plan,
             checks,

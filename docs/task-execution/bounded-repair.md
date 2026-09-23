@@ -83,7 +83,7 @@ bounded captured Snapshot ancestry back to exact S0; it never recaptures live HE
 ## Credential-free example
 
 Copy `fixtures/task-runtime/bounded-repair` into a new Git repository, commit the fixture,
-then run these commands with a build supporting the Task increment:
+then run these commands:
 
 ```sh
 af task plan --file ticket.json --json

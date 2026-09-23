@@ -1,10 +1,7 @@
 //! Actual context capture must satisfy public payload schemas. No adapter is invoked.
+use review_core::task::ArtifactInputV1;
 use review_core::task::execution::TaskInvocationV1;
-use review_core::task::provider::TaskProviderAdmissionV2;
-use review_core::task::{ArtifactInputV1, plan::WorkerExecutionV1};
 use review_core::{PortCardinality, Producer};
-use review_runner::ContextManifest;
-use review_runner::task::provider::{PROBE_INPUT, TaskProviderContextV2};
 use review_runner::task::{TASK_CONTEXT_V1, TaskContext, WorkerContract};
 use review_store::Cas;
 use serde_json::{Value, json};
@@ -16,11 +13,7 @@ fn validator(name: &str) -> jsonschema::Validator {
         serde_json::from_slice::<Value>(&std::fs::read(root.join(name)).unwrap()).unwrap()
     };
     let mut registry = jsonschema::Registry::new();
-    for name in [
-        "task-contracts-v1.json",
-        "task-invocation-v1.json",
-        "task-provider-admission-v2.json",
-    ] {
+    for name in ["task-contracts-v1.json", "task-invocation-v1.json"] {
         let schema = read(name);
         let id = schema["$id"].as_str().unwrap().to_owned();
         registry = registry
@@ -159,137 +152,4 @@ fn captured_worker_context_matches_schema_and_rejects_structural_drift_before_re
             .read_context(&cas, &persist(&cas, &id, estimate))
             .is_err()
     );
-}
-
-#[test]
-fn actual_fixed_provider_context_v2_matches_schema_and_rechecks_equal_identities() {
-    let directory = tempfile::tempdir().unwrap();
-    let cas = Cas::open(directory.path()).unwrap();
-    let rendered_id = cas.put(PROBE_INPUT).unwrap();
-    let plan_id = cas.put(b"plan").unwrap();
-    let mut manifest = ContextManifest::default();
-    manifest.record(
-        "capability_probe",
-        "installed Provider admission",
-        Some(rendered_id.clone()),
-        None,
-        PROBE_INPUT.len(),
-    );
-    manifest.finish(PROBE_INPUT.len());
-    let mut context = TaskProviderContextV2 {
-        invocation: TaskInvocationV1 {
-            plan_id: plan_id.clone(),
-            node: "root.provider".into(),
-            inputs: BTreeMap::new(),
-        },
-        capability: TaskProviderAdmissionV2 {
-            plan_id,
-            bindings: std::collections::BTreeSet::from(["root.worker".into()]),
-            execution: WorkerExecutionV1::Model {
-                provider: "alias".into(),
-                provider_kind: "fixture".into(),
-                principal_id: "account".into(),
-                model: "model".into(),
-                effort: "high".into(),
-            },
-            probe_policy_id: cas.put(b"probe policy").unwrap(),
-            outcome: review_core::task::pipeline::ReceiptOutcomeV1::Passed,
-        },
-        rendered_id,
-        manifest,
-    };
-    context.validate().unwrap();
-    let schema = validator("task-provider-context-v2.json");
-    schema
-        .validate(&serde_json::to_value(&context).unwrap())
-        .unwrap();
-    context.capability.plan_id = cas.put(b"different plan").unwrap();
-    assert!(schema.is_valid(&serde_json::to_value(&context).unwrap()));
-    assert!(context.validate().is_err());
-}
-
-#[test]
-fn frozen_implementation_context_retains_its_rendered_protocol_observation() {
-    use review_runner::task::legacy::LegacyTaskProtocol;
-    let directory = tempfile::tempdir().unwrap();
-    let cas = Cas::open(directory.path()).unwrap();
-    let contract = WorkerContract::capture(
-        &cas,
-        json!({"type":"object","additionalProperties":false,"required":["source","requirements"],"properties":{"source":{"type":"array"},"requirements":{"type":"array"}}}),
-        BTreeMap::from([("result".into(), json!({"type":"object"}))]),
-    ).unwrap().with_legacy_protocol(&cas,LegacyTaskProtocol::ImplementV1).unwrap();
-    let capture = |ty: &str, payload: Value| {
-        let id = cas
-            .put_artifact(
-                ty,
-                Producer::KernelOperation {
-                    run_id: "legacy-context".into(),
-                    node_id: None,
-                    operation_id: "capture@1".into(),
-                },
-                vec![],
-                None,
-                payload,
-            )
-            .unwrap()
-            .0;
-        ArtifactInputV1 {
-            artifact_type: ty.into(),
-            artifact_ids: vec![id],
-            cardinality: PortCardinality::One,
-            snapshot_id: None,
-        }
-    };
-    let invocation = TaskInvocationV1 {
-        plan_id: cas.put(b"captured legacy plan").unwrap(),
-        node: "root.implement".into(),
-        inputs: BTreeMap::from([
-            ("source".into(), capture("af/Source@1", json!({}))),
-            (
-                "requirements".into(),
-                capture(
-                    "af/Requirements@1",
-                    json!({"text":"Exact goal","task_id":"legacy","budget":{"attempt_tokens":1000,"run_tokens":2000}}),
-                ),
-            ),
-        ]),
-    };
-    let id = contract
-        .prepare(&cas, &invocation, &[], "Captured instructions")
-        .unwrap();
-    let (context, bytes) = contract.read_context(&cas, &id).unwrap();
-    let schema = validator("task-context-v1.json");
-    schema
-        .validate(&serde_json::to_value(&context).unwrap())
-        .unwrap();
-    assert!(
-        String::from_utf8(bytes)
-            .unwrap()
-            .contains("af/implement-input@1")
-    );
-    assert_eq!(
-        context
-            .manifest
-            .entries
-            .last()
-            .unwrap()
-            .artifact_type
-            .as_deref(),
-        Some("af/implement-input@1")
-    );
-    assert_eq!(
-        contract
-            .prepare(&cas, &invocation, &[], "Captured instructions")
-            .unwrap(),
-        id
-    );
-    let mut evaluator_observation = context;
-    evaluator_observation
-        .manifest
-        .entries
-        .last_mut()
-        .unwrap()
-        .artifact_type = Some("af/evaluate-input@1".into());
-    evaluator_observation.validate().unwrap();
-    assert!(schema.is_valid(&serde_json::to_value(evaluator_observation).unwrap()));
 }

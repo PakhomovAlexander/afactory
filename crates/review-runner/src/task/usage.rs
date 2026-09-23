@@ -3,10 +3,7 @@
 use crate::TokenUsage;
 use review_core::{
     ArtifactEnvelope, Producer,
-    task::usage::{
-        DecimalU64, TASK_TOKEN_USAGE_V1, TASK_TOKEN_USAGE_V2, TASK_TOKEN_USAGE_V3,
-        TaskTokenUsageV1, TaskTokenUsageV2, TaskTokenUsageV3,
-    },
+    task::usage::{TASK_TOKEN_USAGE_V3, TaskTokenUsageV3},
 };
 use review_store::{Cas, validate_envelope};
 
@@ -40,91 +37,20 @@ impl NativeCounter {
     }
 }
 
-impl From<&TokenUsage> for TaskTokenUsageV1 {
-    fn from(value: &TokenUsage) -> Self {
-        Self {
-            input_tokens: value.input_tokens.map(Into::into),
-            output_tokens: value.output_tokens.map(Into::into),
-            cache_read_tokens: value.cache_read_tokens.map(Into::into),
-            cache_write_tokens: value.cache_write_tokens.map(Into::into),
-            reasoning_tokens: value.reasoning_tokens.map(Into::into),
-            chargeable_tokens: value.chargeable_tokens.into(),
-        }
-    }
-}
-
-impl From<TaskTokenUsageV1> for TokenUsage {
-    fn from(value: TaskTokenUsageV1) -> Self {
-        Self {
-            input_tokens: value.input_tokens.map(DecimalU64::get),
-            output_tokens: value.output_tokens.map(DecimalU64::get),
-            cache_read_tokens: value.cache_read_tokens.map(DecimalU64::get),
-            cache_write_tokens: value.cache_write_tokens.map(DecimalU64::get),
-            reasoning_tokens: value.reasoning_tokens.map(DecimalU64::get),
-            chargeable_tokens: value.chargeable_tokens.get(),
-        }
-    }
-}
-
-pub fn persist_task_usage(
-    cas: &Cas,
-    producer: Producer,
-    context_id: &str,
-    usage: &TokenUsage,
-) -> Result<String, String> {
-    cas.put_artifact(
-        TASK_TOKEN_USAGE_V1,
-        producer,
-        vec![context_id.into()],
-        None,
-        serde_json::to_value(TaskTokenUsageV1::from(usage)).map_err(|error| error.to_string())?,
-    )
-    .map(|(id, _)| id)
-    .map_err(|error| error.to_string())
-}
-
-pub fn read_task_usage(cas: &Cas, id: &str) -> Result<TokenUsage, String> {
-    let value = cas.get_json(id).map_err(|error| error.to_string())?;
-    if value.get("type").is_some() {
-        let envelope: ArtifactEnvelope =
-            serde_json::from_value(value).map_err(|error| error.to_string())?;
-        validate_envelope(&envelope)?;
-        if envelope.artifact_id != id || envelope.artifact_type != TASK_TOKEN_USAGE_V1 {
-            return Err("Expected an exact TaskTokenUsage@1 artifact".into());
-        }
-        serde_json::from_value::<TaskTokenUsageV1>(envelope.payload)
-            .map(Into::into)
-            .map_err(|error| error.to_string())
-    } else {
-        // Released Task usage blobs used this closed numeric structure without an envelope.
-        serde_json::from_value(value).map_err(|error| error.to_string())
-    }
-}
-
-impl From<&TokenUsage> for TaskTokenUsageV2 {
-    fn from(value: &TokenUsage) -> Self {
-        TaskTokenUsageV1::from(value).into()
-    }
-}
-
+/// Every usage artifact is `af/TaskTokenUsage@3`, whatever the width of its counters.
 pub fn persist_task_usage_exact<U: Clone + Into<TaskTokenUsageV3>>(
     cas: &Cas,
     producer: Producer,
     context_id: &str,
     usage: &U,
 ) -> Result<String, String> {
-    let usage = usage.clone().into();
-    let narrow = TaskTokenUsageV2::try_from(&usage);
-    let (kind, payload) = match narrow {
-        Ok(value) => (TASK_TOKEN_USAGE_V2, serde_json::to_value(value)),
-        Err(_) => (TASK_TOKEN_USAGE_V3, serde_json::to_value(&usage)),
-    };
+    let usage: TaskTokenUsageV3 = usage.clone().into();
     cas.put_artifact(
-        kind,
+        TASK_TOKEN_USAGE_V3,
         producer,
         vec![context_id.into()],
         None,
-        payload.map_err(|error| error.to_string())?,
+        serde_json::to_value(&usage).map_err(|error| error.to_string())?,
     )
     .map(|(id, _)| id)
     .map_err(|error| error.to_string())
@@ -132,44 +58,33 @@ pub fn persist_task_usage_exact<U: Clone + Into<TaskTokenUsageV3>>(
 
 pub fn read_task_usage_exact(cas: &Cas, id: &str) -> Result<TaskTokenUsageV3, String> {
     let value = cas.get_json(id).map_err(|error| error.to_string())?;
-    if value.get("type").is_some() {
-        let envelope: ArtifactEnvelope =
-            serde_json::from_value(value).map_err(|error| error.to_string())?;
-        validate_envelope(&envelope)?;
-        if envelope.artifact_id != id {
-            return Err("Task usage artifact identity differs from its reference".into());
-        }
-        match envelope.artifact_type.as_str() {
-            TASK_TOKEN_USAGE_V1 => serde_json::from_value::<TaskTokenUsageV1>(envelope.payload)
-                .map(Into::into)
-                .map_err(|error| error.to_string()),
-            TASK_TOKEN_USAGE_V2 => serde_json::from_value::<TaskTokenUsageV2>(envelope.payload)
-                .map(Into::into)
-                .map_err(|error| error.to_string()),
-            TASK_TOKEN_USAGE_V3 => {
-                serde_json::from_value(envelope.payload).map_err(|error| error.to_string())
-            }
-            _ => Err("Unsupported Task usage artifact version".into()),
-        }
-    } else {
-        let usage: TokenUsage = serde_json::from_value(value).map_err(|error| error.to_string())?;
-        Ok(TaskTokenUsageV3::from(&usage))
+    let envelope: ArtifactEnvelope =
+        serde_json::from_value(value).map_err(|error| error.to_string())?;
+    validate_envelope(&envelope)?;
+    if envelope.artifact_id != id {
+        return Err("Task usage artifact identity differs from its reference".into());
     }
+    if envelope.artifact_type != TASK_TOKEN_USAGE_V3 {
+        return Err("Unsupported Task usage artifact version".into());
+    }
+    serde_json::from_value(envelope.payload).map_err(|error| error.to_string())
 }
 
 impl From<&TokenUsage> for TaskTokenUsageV3 {
     fn from(value: &TokenUsage) -> Self {
-        TaskTokenUsageV1::from(value).into()
+        let widen = |n: u64| u128::from(n).into();
+        Self {
+            input_tokens: value.input_tokens.map(widen),
+            output_tokens: value.output_tokens.map(widen),
+            cache_read_tokens: value.cache_read_tokens.map(widen),
+            cache_write_tokens: value.cache_write_tokens.map(widen),
+            reasoning_tokens: value.reasoning_tokens.map(widen),
+            chargeable_tokens: widen(value.chargeable_tokens),
+        }
     }
 }
 impl From<TokenUsage> for TaskTokenUsageV3 {
     fn from(value: TokenUsage) -> Self {
         Self::from(&value)
-    }
-}
-impl TryFrom<&TaskTokenUsageV3> for TokenUsage {
-    type Error = String;
-    fn try_from(value: &TaskTokenUsageV3) -> Result<Self, Self::Error> {
-        TaskTokenUsageV1::try_from(value).map(Into::into)
     }
 }

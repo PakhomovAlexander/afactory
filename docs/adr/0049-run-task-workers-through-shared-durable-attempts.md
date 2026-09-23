@@ -2,8 +2,12 @@
 
 **Status:** accepted for the unreleased Task increment, 2026-09-11. Command Workers and code
 operators, the Task-file CLI and fixed command implementation entry point execute through the
-shared runtime. Native Task-file Models use charged Provider admission. Legacy review entry-point
-cutover remains in progress; fixed implementation migration follows ADR-0051.
+shared runtime. Native Task-file Models use charged Provider admission. The legacy review
+entry-point cutover is complete, and the fixed implementation format is gone with ADR-0051.
+Superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): retained legacy
+implementation Stores, the common Store's read-only links to legacy histories, the historical
+delivery fixture, the fixed command implementation entry point with its ADR-0051 migration, and
+the *Compatibility and remaining work* section.
 
 ## Decision
 

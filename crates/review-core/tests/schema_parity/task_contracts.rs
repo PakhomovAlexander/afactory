@@ -34,7 +34,6 @@ fn optimization_economics_contracts_preserve_unknowns_and_pending_live_gates() {
         "cutoff_unix_ms":"100","rows":[],"af_usage":usage,"outer_session_usage":usage,
         "active_ms":"0","elapsed_ms":"0","summed_work_ms":"0","verified":0,
         "failed_or_incomplete":0,"repeated_failures":0,"missing_fields":["timing"],
-        "cache_results":{"cargo":{"hit":1}},
         "cache_economics":{"cargo":{"eligible":1,"ineligible":0,"hits":1,"misses":0,
             "unknown_results":0,"cold":0,"warm":1,"unknown_temperature":0,
             "bytes_reused":"10","invalidation_ids":["Cargo.lock:fixture"],
@@ -73,11 +72,16 @@ fn optimization_economics_contracts_preserve_unknowns_and_pending_live_gates() {
     );
     let report = json!({"schema":"af.optimization-report/1","economics_id":id,
         "project_id":id,"status":"partial","summary":"Timing is unknown.","highlights":[],
-        "missing_measurements":["timing"],"live_demonstrations":"pending"});
+        "missing_measurements":["timing"]});
     assert_valid("optimization-report-v1.json", &report);
     let report: OptimizationReportV1 = serde_json::from_value(report).unwrap();
     report.validate().unwrap();
-    assert!(report.render_markdown().unwrap().contains("**pending**"));
+    assert!(
+        report
+            .render_markdown()
+            .unwrap()
+            .contains("Live paid demonstrations and adoption observations are still pending.")
+    );
     let policy = json!({"schema":"af.optimization-policy/1","project_id":id,
         "strategy":"light","max_sessions":200,"max_raw_bytes":"268435456",
         "max_record_bytes":"1048576","max_normalized_bytes":"16777216"});
@@ -240,14 +244,7 @@ fn many_inputs_and_explicit_empty_history_are_valid() {
 #[test]
 fn empty_tagged_variants_reject_hidden_fields() {
     use review_core::task::pipeline::{PortAffinityV1, TaskOperatorV1};
-    for kind in [
-        "submitted",
-        "resolving",
-        "planning",
-        "ready",
-        "running",
-        "verifying",
-    ] {
+    for kind in ["submitted", "ready", "running"] {
         assert!(
             serde_json::from_value::<TaskPhaseV1>(json!({"kind":kind,"plan":"hidden"})).is_err()
         );
@@ -443,12 +440,6 @@ fn review_exit_preserves_findings_and_missing_output_precedence() {
             TaskAcceptanceV1::Inconclusive,
             4,
         ),
-        (
-            ReviewConclusionV1::Incomplete,
-            TaskExecutionV1::Cancelled,
-            TaskAcceptanceV1::Inconclusive,
-            4,
-        ),
     ];
     for (conclusion, execution, acceptance, exit) in cases {
         conclusion
@@ -529,9 +520,7 @@ fn missing_review_receipts_cannot_be_relabeled_as_convergence_exhaustion() {
     for execution in [
         TaskExecutionV1::Completed,
         TaskExecutionV1::Incomplete,
-        TaskExecutionV1::Blocked,
         TaskExecutionV1::Exhausted,
-        TaskExecutionV1::Cancelled,
     ] {
         for acceptance in [
             TaskAcceptanceV1::Satisfied,

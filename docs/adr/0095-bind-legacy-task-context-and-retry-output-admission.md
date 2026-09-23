@@ -1,11 +1,15 @@
 # ADR-0095 — Bind legacy Task context and retry output admission
 
-**Status:** accepted for the unreleased Task increment, 2026-09-13.
+**Status:** accepted for the unreleased Task increment, 2026-09-13. Superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the whole *Explicit legacy context* section
+and the first two paragraphs of *Alternatives and consequences*, since the `legacy_task_command`
+runner, `af/TaskContext@2`, the compatibility contracts and the separate metadata reader are
+gone; the output-admission retry decision and its rationale stand.
 
 ## Decision
 
 This extends [ADR-0049](0049-run-task-workers-through-shared-durable-attempts.md) and
-[ADR-0051](0051-compile-fixed-implementation-tasks-into-the-common-runtime.md) for new captures.
+ADR-0051 for new captures.
 Their accepted text and previously persisted artifacts remain unchanged.
 
 Schema-valid Worker payloads can still fail domain admission. The Store records that outcome

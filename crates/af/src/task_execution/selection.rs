@@ -63,8 +63,7 @@ pub(super) fn available_tools(
 ) -> Result<(), String> {
     for slot in graph.slots.values() {
         if let Some(worker) = compiler.worker(&slot.worker)
-            && let TaskWorkerRunner::Command { command }
-            | TaskWorkerRunner::LegacyTaskCommand { command, .. } = &worker.runner
+            && let TaskWorkerRunner::Command { command } = &worker.runner
             && crate::providers::resolve_program(&command.program).is_none()
         {
             return Err(format!(

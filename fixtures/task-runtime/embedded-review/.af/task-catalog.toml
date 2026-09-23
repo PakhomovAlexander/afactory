@@ -1,21 +1,21 @@
-"schema" = "af.task-catalog/1"
+"schema" = "af.task-catalog/2"
 "code_policy" = ".af/code-policy.toml"
 
 ["packages"]
 
 ["packages"."fixture/bugs"]
 "version" = "1.0.0"
-"digest" = "sha256:5225a499f238068b2575846a35be88788f94be6203613cb8f35a237e808275f7"
+"digest" = "sha256:627f9bb0b89b28bb47f4c4fe70585c9223068c277967566da83f85ced266ac0f"
 "path" = ".af/task-packages/fixture/bugs"
 
 ["packages"."fixture/correctness"]
 "version" = "1.0.0"
-"digest" = "sha256:8452ce09583da8062989de40d2ca96ac3645f97b1c1e8b5d17aaaa5a72d38a75"
+"digest" = "sha256:89f65c7c77f0040cd4e406184e9e2b20b2c639601ed525cd31e9e6ef23898c89"
 "path" = ".af/task-packages/fixture/correctness"
 
 ["packages"."fixture/implementation"]
 "version" = "1.0.0"
-"digest" = "sha256:aa9ded5034b6749aac2d2833cd213d21db4829da93f6abd098c1903871d9fe87"
+"digest" = "sha256:a2734b9229e82755adb550299c0200bf8c9ce3d62215f78c84560c87fb2520ff"
 "path" = ".af/task-packages/fixture/implementation"
 
 ["packages"."fixture/implementer"]
@@ -25,7 +25,7 @@
 
 ["packages"."fixture/review"]
 "version" = "1.0.0"
-"digest" = "sha256:dbe057cc236174bc9b3a0fc2d019905d4a7e24f91bbc73aae9c03556f4ca64ab"
+"digest" = "sha256:11b9febfb6880006ee3e8de2b9f31269cbe23e46a936e457a3d90307c19a86a3"
 "path" = ".af/task-packages/fixture/review"
 
 ["packages"."fixture/evaluator"]

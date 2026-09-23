@@ -22,6 +22,10 @@
 //! left, because every session identity of this Campaign is derivable from an Attempt ID the log
 //! records. Warm Set selection requires both the source Attempt's admission and its completed
 //! cleanup, so an ambient transcript is never resumed.
+//!
+//! The Task host does not install a session capability yet, so every Warm Set it selects
+//! records `host_unsupported`. The protocol below is kept as the base for that port
+//! (ADR-0110).
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -47,7 +51,7 @@ pub(crate) const SESSION_ANSWER_ALLOWANCE_TOKENS: u64 = 16_384;
 /// the Round's first Warm Set is selected; an absent entry is a host that does not run the
 /// protocol at all and drops the layer as `host_unsupported`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SessionCapability {
+pub struct SessionCapability {
     /// Whether the node's bound adapter can host a kernel-assigned session and resume it forked.
     pub supported: bool,
     /// The reservation one Attempt of this node takes, or `None` for an uncapped pipeline.
@@ -70,6 +74,7 @@ impl ReviewDomainState<'_> {
     }
 
     /// Record what the frontend hosting `node_id` can do with the session layer.
+    #[allow(dead_code)] // kept for the Task-host port of ADR-0110
     pub(crate) fn install_session_capability(&self, node_id: &str, capability: SessionCapability) {
         self.session_hosts
             .lock()
@@ -156,7 +161,7 @@ pub(crate) fn select_session(
 
 /// The session identity this Attempt runs under, when its node hosts sessions at all. Assigned
 /// before the harness starts, so nothing the provider chooses can name the transcript.
-pub(crate) fn assign_session_id(
+pub fn assign_session_id(
     inputs: &mut ReviewerInputs,
     capability: Option<SessionCapability>,
     attempt_id: &str,
@@ -170,7 +175,7 @@ pub(crate) fn assign_session_id(
 /// forked resume. A failure here fails the Attempt rather than silently dropping a layer the
 /// Round's Warm Set already declared: warmth is declared, so an Attempt either starts from what
 /// was recorded or does not start.
-pub(crate) fn apply_session(
+pub fn apply_session(
     cas: &Cas,
     layer: Option<&dyn SessionLayer>,
     working_directory: &Path,
@@ -204,7 +209,7 @@ pub(crate) fn apply_session(
 /// without the two-phase capture claiming it: a timeout, a malformed answer, a refused
 /// result, a panic, or a retry. Dropped at the end of every Attempt, so no path through the
 /// reviewer loop can leave the transcript ambient until a later sweep.
-pub(crate) struct AssignedSession<'a> {
+pub struct AssignedSession<'a> {
     layer: Option<&'a dyn SessionLayer>,
     session_id: Option<String>,
     node_id: String,
@@ -212,7 +217,7 @@ pub(crate) struct AssignedSession<'a> {
 }
 
 impl<'a> AssignedSession<'a> {
-    pub(crate) fn new(
+    pub fn new(
         layer: Option<&'a dyn SessionLayer>,
         session_id: Option<String>,
         node_id: &str,
@@ -226,7 +231,7 @@ impl<'a> AssignedSession<'a> {
     }
 
     /// The capture protocol took ownership: it stored the transcript and deleted the copy.
-    pub(crate) fn keep(&mut self) {
+    pub fn keep(&mut self) {
         self.kept = true;
     }
 }
@@ -252,7 +257,7 @@ impl Drop for AssignedSession<'_> {
 /// Remove the working copy a resume materialized. It is a byte-identical copy of a CAS object
 /// the log already names, so its removal is hygiene rather than a phase of the capture protocol
 /// and records no event; the sweep removes it too if this never runs.
-pub(crate) fn remove_working_copy(layer: Option<&dyn SessionLayer>, inputs: &ReviewerInputs) {
+pub fn remove_working_copy(layer: Option<&dyn SessionLayer>, inputs: &ReviewerInputs) {
     if let (Some(layer), Some(resume)) = (layer, &inputs.session_resume) {
         let _ = layer.delete(&resume.session_id, None);
     }
@@ -263,6 +268,7 @@ pub(crate) fn remove_working_copy(layer: Option<&dyn SessionLayer>, inputs: &Rev
 /// finish rather than an orphaned object or an ambient transcript.
 ///
 /// A node that hosts no session, or an Attempt whose harness wrote nothing, records nothing.
+#[allow(dead_code)] // kept for the Task-host port of ADR-0110
 pub(crate) fn capture_session(
     domain: &ReviewDomainState<'_>,
     layer: Option<&dyn SessionLayer>,
@@ -360,14 +366,17 @@ pub(crate) fn capture_session(
     append_cleanup(domain, node_id, Some(attempt_id), session_id, deletion)
 }
 
-/// Finish every cleanup this Campaign still owes, and remove every harness transcript its
+/// Finish every cleanup this Campaign still owes, and remove every harness transcript the node's
 /// Attempts could have left, before the Round's first dispatch. No provider process is started:
-/// a session identity is derived from an Attempt ID the log already records, and the deletion
-/// is a filesystem operation.
+/// a session identity is derived from an Attempt ID the host already records (`attempt_ids`,
+/// every earlier Attempt of this node; the Campaign log holds none), and the deletion is a
+/// filesystem operation.
+#[allow(dead_code)] // kept for the Task-host port of ADR-0110
 pub(crate) fn sweep_sessions(
     domain: &ReviewDomainState<'_>,
     layer: Option<&dyn SessionLayer>,
     node_id: &str,
+    attempt_ids: &[String],
 ) -> Result<(), String> {
     let Some(layer) = layer else {
         return Ok(());
@@ -381,17 +390,10 @@ pub(crate) fn sweep_sessions(
     // Every session this node could have written, derived from its own Attempt IDs, plus every
     // session a resume of this node materialized as a working copy — which is one of the same
     // Attempt IDs, from the Round before.
-    let mut sessions: BTreeSet<String> = BTreeSet::new();
-    for event in events.iter().filter(|event| {
-        event.event_type == EventType::AttemptDispatchedV1
-            && event.node_id.as_deref() == Some(node_id)
-    }) {
-        if let Some(attempt_id) = &event.attempt_id
-            && let Some(session_id) = session_id_for_attempt(attempt_id)
-        {
-            sessions.insert(session_id);
-        }
-    }
+    let mut sessions: BTreeSet<String> = attempt_ids
+        .iter()
+        .filter_map(|attempt_id| session_id_for_attempt(attempt_id))
+        .collect();
     let unpaired = unpaired_captures(&events, node_id)?;
     sessions.extend(unpaired.iter().map(|(session, _)| session.clone()));
     for session_id in &sessions {

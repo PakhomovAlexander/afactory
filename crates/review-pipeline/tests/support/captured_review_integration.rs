@@ -2,11 +2,13 @@
 use super::captured_fixture;
 use review_core::EventType;
 use review_core::task::TaskRevisionV1;
-use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
-use review_pipeline::task::legacy_review::plan::{
-    LegacyReviewPlanCompiler, ReviewPlanSettings, ReviewPlanSettingsV2,
+use review_pipeline::task::campaign_review::plan::{
+    CampaignReviewPlanCompiler, ReviewPlanSettings,
 };
-use review_pipeline::task::legacy_review::{CapturedLegacyReviewRound, host::LegacyReviewTaskHost};
+use review_pipeline::task::campaign_review::{
+    CapturedCampaignReviewRound, host::CampaignReviewTaskHost,
+};
+use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
 use review_pipeline::task::{TaskOperatorHost, TaskRuntime, TaskWorkOutput};
 use review_source_git::{Entry, EntryKind, Manifest, manifest_diff};
 use review_store::{Cas, EventStore, NewEvent, SharedEventStore};
@@ -26,7 +28,7 @@ fn limits() -> review_core::task::TaskLimitsV1 {
 fn settings() -> ReviewPlanSettings {
     ReviewPlanSettings {
         mode: "heavy".into(),
-        resources: review_config::task::legacy_review::resources::ReviewResourcePolicy {
+        resources: review_config::task::campaign_review::resources::ReviewResourcePolicy {
             uncapped_attempt_tokens: 1,
         },
         outputs: BTreeMap::from([(
@@ -65,7 +67,8 @@ impl TaskOperatorHost for PlanOnly {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
-        _: &[String],
+        _definition: &review_graph::task::CompiledNode,
+        _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
         panic!("admission must not render context")
     }
@@ -73,7 +76,9 @@ impl TaskOperatorHost for PlanOnly {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         _: Option<&review_store::store::task::execution::PreparedTaskAttempt>,
+        _cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         panic!("admission must not execute")
     }
@@ -83,7 +88,7 @@ impl TaskDomain for PlanOnly {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
-        _: &[String],
+        _: &review_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         Err("not executing".into())
@@ -95,6 +100,7 @@ impl TaskDomain for PlanOnly {
         _: &review_core::task::plan::ExecutionPlanV1,
         _: &review_core::task::execution::TaskInvocationV1,
         _: &review_core::task::execution::TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         Err("not executing".into())
     }
@@ -113,7 +119,7 @@ pub(super) fn definition(
     failed: bool,
     calls: &std::path::Path,
 ) -> String {
-    let mut reply = serde_json::json!({"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]});
+    let mut reply = serde_json::json!({"findings":[],"benchmark_demands":[],"dispositions":[]});
     let command = if proposal {
         let manifest = |bytes: &[u8]| {
             Manifest::new(vec![Entry {
@@ -131,7 +137,6 @@ pub(super) fn definition(
                 .into(),
         )
         .unwrap();
-        reply["verdict"] = serde_json::json!("request-changes");
         reply["findings"] = serde_json::json!([{"severity":"minor","file":"value.txt","line":1,"title":"Improve fixture value","body":"The value can be improved","fix":"Use after","confidence":1.0}]);
         reply["proposal"] = serde_json::json!({"patch":patch,"report_indexes":[0],"paths":["value.txt"],"description":"Improve fixture value","auto_apply_nominated":true});
         format!(
@@ -154,16 +159,38 @@ pub(super) fn definition(
         .replace("max_paths_per_slice = 1", "max_paths_per_slice = 99")
         .replacen("runner = { program = \"/bin/true\" }", &format!("runner={{program=\"/bin/sh\",args=[{{value=\"-c\"}},{{value={}}}]}}",serde_json::to_string(&command).unwrap()),1)
         .replacen("execution = { credential_mode = \"credential_free\" }", "execution={credential_mode=\"credential_free\",auto_apply=true}",1)
-        .replace("runner = { program = \"/bin/true\" }", &format!("runner={{program=\"/bin/sh\",args=[{{value=\"-c\"}},{{value={}}}]}}",serde_json::to_string("cat >/dev/null; printf '%s' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[]}'").unwrap()))
+        .replace("runner = { program = \"/bin/true\" }", &format!("runner={{program=\"/bin/sh\",args=[{{value=\"-c\"}},{{value={}}}]}}",serde_json::to_string("cat >/dev/null; printf '%s' '{\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[]}'").unwrap()))
         + &format!("\n[integration]\npost_apply_checks=[\"first\",\"second\"]\n[[checks]]\nname=\"first\"\nprogram=\"/bin/sh\"\nargs=[{{value=\"-c\"}},{{value={}}}]\n[[checks]]\nname=\"second\"\nprogram=\"/bin/sh\"\nargs=[{{value=\"-c\"}},{{value={}}}]\n",serde_json::to_string(&first).unwrap(),serde_json::to_string(&second).unwrap())
 }
 
+/// Admit Round 1 of a heavy Campaign capped at `max_rounds`; Integration needs at least two.
 pub(super) fn admit_integration(
     cas: &Cas,
     store: &mut EventStore,
     definition: &str,
+    max_rounds: u32,
 ) -> (
-    LegacyReviewPlanCompiler,
+    CampaignReviewPlanCompiler,
+    review_store::store::task::TaskLease,
+) {
+    admit_integration_with_source(
+        cas,
+        store,
+        definition,
+        max_rounds,
+        BTreeMap::from([("value.txt".into(), b"before\n".to_vec())]),
+    )
+}
+
+/// The same admission over an explicit ordinary source tree.
+pub(super) fn admit_integration_with_source(
+    cas: &Cas,
+    store: &mut EventStore,
+    definition: &str,
+    max_rounds: u32,
+    source: BTreeMap<String, Vec<u8>>,
+) -> (
+    CampaignReviewPlanCompiler,
     review_store::store::task::TaskLease,
 ) {
     let round = captured_fixture::open_round_authority_with_source(
@@ -173,10 +200,10 @@ pub(super) fn admit_integration(
         None,
         review_core::CampaignConvergenceV1 {
             clean_rounds: 1,
-            max_rounds: 3,
+            max_rounds,
             gate: "major".into(),
         },
-        BTreeMap::from([("value.txt".into(), b"before\n".to_vec())]),
+        source,
     );
     let mut settings = settings();
     settings.mode = "heavy".into();
@@ -190,14 +217,11 @@ pub(super) fn admit_integration(
             review_core::task::plan::WorkerExecutionV1::Command {},
         ),
     ]);
-    let compiler = LegacyReviewPlanCompiler::capture_v4(
+    let compiler = CampaignReviewPlanCompiler::capture(
         cas,
-        CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap(),
+        CapturedCampaignReviewRound::load(cas, store, "review", &round).unwrap(),
         cas.put(b"Integration host fixture").unwrap(),
-        ReviewPlanSettingsV2 {
-            review: settings,
-            provider_probes: BTreeMap::new(),
-        },
+        settings,
     )
     .unwrap();
     let mut limits = limits();
@@ -209,7 +233,7 @@ pub(super) fn admit_integration(
     let (plan, _) = compiler.compile(cas, &revision).unwrap();
     let plan_id = artifact(cas, review_core::task::EXECUTION_PLAN_V1, &plan);
     let authority =
-        CapturedTaskAuthority::for_legacy_review(&compiler, &PlanOnly, &NoTaskDeveloper);
+        CapturedTaskAuthority::for_campaign_review(&compiler, &PlanOnly, &NoTaskDeveloper);
     let lease = store.open_task(cas, &revision, "developer", 60000).unwrap();
     store
         .propose_task_plan(cas, &lease, &plan_id, &authority)
@@ -221,11 +245,14 @@ pub(super) fn admit_integration(
 /// One Task named integration-review, Campaign review, stored in cas/ and events.sqlite.
 /// A real Proposal is checked, promoted, handed off and resolved by the next complete Review.
 pub fn run_integration_handoff() -> tempfile::TempDir {
-    run_integration_handoff_with_preparation_delay(std::time::Duration::ZERO)
+    run_integration_handoff_with(std::time::Duration::ZERO, 3)
 }
 
-pub fn run_integration_handoff_with_preparation_delay(
+/// The same handoff after a slow successor preparation, in a Campaign capped at
+/// `max_rounds`. When the successor is the final permitted Round, it captures no Integration.
+pub fn run_integration_handoff_with(
     delay: std::time::Duration,
+    max_rounds: u32,
 ) -> tempfile::TempDir {
     use review_core::task::review_handoff::*;
     use review_store::store::task::review_handoff::capture_task_review_handoff;
@@ -239,12 +266,16 @@ pub fn run_integration_handoff_with_preparation_delay(
             continue;
         }
         let command = node["runner"]["args"][1]["value"].as_str().unwrap();
-        let reviewed = r#"input=$(cat); if test "$(cat value.txt)" = after; then finding=$(printf '%s' "$input" | sed -n 's/.*"finding_id":"\(sha256:[0-9a-f]*\)".*/\1/p'); test -n "$finding" || exit 47; printf '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[{"finding_id":"%s","position":"not_reproduced","reason":"The complete derived head contains after"}]}' "$finding"; else printf '%s' "$input" | "#;
+        let reviewed = r#"input=$(cat); if test "$(cat value.txt)" = after; then finding=$(printf '%s' "$input" | sed -n 's/.*"finding_id":"\(sha256:[0-9a-f]*\)".*/\1/p'); test -n "$finding" || exit 47; printf '{"findings":[],"benchmark_demands":[],"dispositions":[{"finding_id":"%s","position":"not_reproduced","reason":"The complete derived head contains after"}]}' "$finding"; else printf '%s' "$input" | "#;
         node["runner"]["args"][1]["value"] =
             toml::Value::String(format!("{reviewed}{command}; fi"));
     }
-    let (compiler, lease) =
-        admit_integration(&cas, &mut store, &toml::to_string(&definition).unwrap());
+    let (compiler, lease) = admit_integration(
+        &cas,
+        &mut store,
+        &toml::to_string(&definition).unwrap(),
+        max_rounds,
+    );
     let lease = if delay.is_zero() {
         lease
     } else {
@@ -256,7 +287,7 @@ pub fn run_integration_handoff_with_preparation_delay(
             .unwrap()
     };
     let shared = SharedEventStore::new(&mut store);
-    let host = LegacyReviewTaskHost::new(
+    let host = CampaignReviewTaskHost::new(
         &cas,
         shared.clone(),
         &compiler,
@@ -264,7 +295,7 @@ pub fn run_integration_handoff_with_preparation_delay(
         BTreeMap::new(),
     )
     .unwrap();
-    let authority = CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+    let authority = CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
     let runtime =
         TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host).unwrap();
     let report = runtime.execute().unwrap();
@@ -353,15 +384,22 @@ pub fn run_integration_handoff_with_preparation_delay(
     let preview = locked
         .preview_task_review_round(&cas, &lease, &permit, &proposed, &authority)
         .unwrap();
-    let successor = LegacyReviewPlanCompiler::reopen(
+    let successor = CampaignReviewPlanCompiler::reopen(
         &cas,
-        CapturedLegacyReviewRound::from_prospective(&cas, &preview).unwrap(),
+        CapturedCampaignReviewRound::from_prospective(&cas, &preview).unwrap(),
         &before.revision.provenance.adapter_id,
         compiler.policy_id(),
     )
     .unwrap();
+    let prospective = successor.round().binding();
     assert!(
-        successor.round().check_current(&cas, &locked).is_err(),
+        CapturedCampaignReviewRound::load(
+            &cas,
+            &locked,
+            &prospective.campaign_id,
+            &prospective.round_event_id
+        )
+        .is_err(),
         "preview must never grant live Round authority"
     );
     drop(locked);
@@ -369,7 +407,18 @@ pub fn run_integration_handoff_with_preparation_delay(
         .prepare_continuation_revision(&cas, &before.revision_id, &before.revision)
         .unwrap();
     let revision_id = artifact(&cas, review_core::task::TASK_REVISION_V1, &revision);
-    let (plan, _) = successor.compile(&cas, &revision_id).unwrap();
+    let (plan, compiled) = successor.compile(&cas, &revision_id).unwrap();
+    // A promoted head needs another complete Round, so only a non-final Round captures one.
+    let integrates = next.round < max_rounds;
+    assert_eq!(
+        compiled.compilation.graph.review_integration.is_some(),
+        integrates
+    );
+    assert_eq!(
+        plan.dependencies
+            .contains_key("af/review-integration-checks"),
+        integrates
+    );
     let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V1, &plan);
     let handoff = preview.prepare_handoff(&cas, &plan_id).unwrap();
     assert_eq!(handoff.successor_revision_id, revision_id);
@@ -419,7 +468,7 @@ pub fn run_integration_handoff_with_preparation_delay(
     assert_eq!(refreshed.history(), preview.history());
     assert_eq!(refreshed.prepare_handoff(&cas, &plan_id).unwrap(), handoff);
     let next_authority =
-        CapturedTaskAuthority::for_legacy_review(&successor, &host, &NoTaskDeveloper);
+        CapturedTaskAuthority::for_campaign_review(&successor, &host, &NoTaskDeveloper);
     let before_publish_task = shared
         .lock()
         .unwrap()
@@ -449,9 +498,9 @@ pub fn run_integration_handoff_with_preparation_delay(
             .unwrap(),
         before_publish_task
     );
-    let durable_successor = LegacyReviewPlanCompiler::reopen(
+    let durable_successor = CampaignReviewPlanCompiler::reopen(
         &cas,
-        CapturedLegacyReviewRound::load(&cas, &shared.lock().unwrap(), "review", &round_id)
+        CapturedCampaignReviewRound::load(&cas, &shared.lock().unwrap(), "review", &round_id)
             .unwrap(),
         &before.revision.provenance.adapter_id,
         compiler.policy_id(),
@@ -462,9 +511,9 @@ pub fn run_integration_handoff_with_preparation_delay(
     // Task handoff. Its predecessor compiler/host must hydrate historical roots without
     // inventing another Source capture, currentness permit or budget.
     let mut recovered_store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
-    let recovered_compiler = LegacyReviewPlanCompiler::reopen(
+    let recovered_compiler = CampaignReviewPlanCompiler::reopen(
         &cas,
-        CapturedLegacyReviewRound::load_recorded(
+        CapturedCampaignReviewRound::load_recorded(
             &cas,
             &recovered_store,
             "review",
@@ -476,7 +525,7 @@ pub fn run_integration_handoff_with_preparation_delay(
     )
     .unwrap();
     let recovered_shared = SharedEventStore::new(&mut recovered_store);
-    let recovered_host = LegacyReviewTaskHost::new(
+    let recovered_host = CampaignReviewTaskHost::new(
         &cas,
         recovered_shared.clone(),
         &recovered_compiler,
@@ -484,7 +533,7 @@ pub fn run_integration_handoff_with_preparation_delay(
         BTreeMap::new(),
     )
     .unwrap();
-    let next_authority = CapturedTaskAuthority::for_legacy_review(
+    let next_authority = CapturedTaskAuthority::for_campaign_review(
         &durable_successor,
         &recovered_host,
         &NoTaskDeveloper,
@@ -504,7 +553,7 @@ pub fn run_integration_handoff_with_preparation_delay(
         .unwrap()
         .admit_task_plan(&cas, &lease, &next_authority)
         .unwrap();
-    let next_host = LegacyReviewTaskHost::new(
+    let next_host = CampaignReviewTaskHost::new(
         &cas,
         shared.clone(),
         &successor,
@@ -513,7 +562,7 @@ pub fn run_integration_handoff_with_preparation_delay(
     )
     .unwrap();
     let next_authority =
-        CapturedTaskAuthority::for_legacy_review(&successor, &next_host, &NoTaskDeveloper);
+        CapturedTaskAuthority::for_campaign_review(&successor, &next_host, &NoTaskDeveloper);
     let runtime = TaskRuntime::with_store(
         shared.clone(),
         &cas,
@@ -526,11 +575,16 @@ pub fn run_integration_handoff_with_preparation_delay(
     assert!(report.complete(), "{report:?}");
     let conclusion = next_host.publish_recorded_round_conclusion(&cas).unwrap();
     assert_eq!(conclusion.verdict, review_pipeline::RunVerdict::Pass);
-    let phase = next_host
-        .select_recorded_integration(&cas)
-        .unwrap()
-        .unwrap();
-    assert!(phase.finished() && !phase.requires_checks());
+    let phase = next_host.select_recorded_integration(&cas).unwrap();
+    if integrates {
+        let phase = phase.unwrap();
+        assert!(phase.finished() && !phase.requires_checks());
+    } else {
+        assert!(
+            phase.is_none(),
+            "the final permitted Round selects no Integration"
+        );
+    }
     let after = runtime.projection().unwrap();
     assert_eq!(after.revision.limits, before.revision.limits);
     let after_attempts = after.execution.as_ref().unwrap().attempt_accounting();

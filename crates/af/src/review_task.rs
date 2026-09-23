@@ -8,11 +8,13 @@ use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_core::task::{EXECUTION_PLAN_V1, TASK_REVISION_V1, TaskRevisionV1};
 use review_graph::NodeKind;
 use review_graph::task::{Address, CompiledOperator, OperatorAttemptCost, ReviewOperation};
-use review_pipeline::task::host::TaskModelBinding;
-use review_pipeline::task::legacy_review::plan::{
-    LegacyReviewPlanCompiler, ReviewPlanSettings, ReviewPlanSettingsV2,
+use review_pipeline::task::campaign_review::plan::{
+    CampaignReviewPlanCompiler, ReviewPlanSettings,
 };
-use review_pipeline::task::legacy_review::{CapturedLegacyReviewRound, CapturedReviewCompilation};
+use review_pipeline::task::campaign_review::{
+    CapturedCampaignReviewRound, CapturedReviewCompilation,
+};
+use review_pipeline::task::host::TaskModelBinding;
 use review_runner::task::WorkerModelAdapter;
 use review_store::{Cas, EventStore};
 
@@ -39,13 +41,6 @@ pub(super) fn initial_provider_admission(options: &Options) -> OperatorAttemptCo
             tokens: PROVIDER_TOKENS,
             wall_ms: PROVIDER_WALL_MS,
         })
-}
-
-pub(super) fn refuse_legacy_admission_override(options: &Options) -> Result<(), String> {
-    if options.provider_admission.is_some() {
-        return Err("Provider admission bounds apply only to common Review Tasks; historical Campaign authority cannot change".into());
-    }
-    Ok(())
 }
 
 #[derive(Clone)]
@@ -148,7 +143,7 @@ fn public_outputs(loaded: &review_config::Loaded) -> Result<BTreeMap<String, Add
 }
 
 struct CapturedReviewTask {
-    compiler: LegacyReviewPlanCompiler,
+    compiler: CampaignReviewPlanCompiler,
     revision: TaskRevisionV1,
     revision_id: String,
     plan: ExecutionPlanV1,
@@ -166,7 +161,7 @@ fn capture_new(
     engine_id: String,
     now_unix_ms: u64,
 ) -> Result<CapturedReviewTask, String> {
-    let round = CapturedLegacyReviewRound::load(
+    let round = CapturedCampaignReviewRound::load(
         cas,
         store,
         &prepared.run_id,
@@ -178,7 +173,7 @@ fn capture_new(
     )
     .map_err(|e| e.to_string())?;
     let workers = local_workers(options, &prepared.loaded)?;
-    let resources = review_config::task::legacy_review::resources::ReviewResourcePolicy {
+    let resources = review_config::task::campaign_review::resources::ReviewResourcePolicy {
         uncapped_attempt_tokens: UNCAPPED_ATTEMPT_TOKENS,
     };
     let provider_admission = initial_provider_admission(options);
@@ -194,20 +189,15 @@ fn capture_new(
         &provider_admission,
         now_unix_ms,
     )?;
-    let settings = ReviewPlanSettingsV2 {
-        review: ReviewPlanSettings {
-            mode: options.mode.as_str().into(),
-            resources,
-            outputs: public_outputs(&prepared.loaded)?,
-            executions: workers.executions.clone(),
-            provider_admission,
-            allowed_effects: BTreeSet::new(),
-        },
-        // Brokered capability probes require their own explicit authority. Business
-        // operation permissions are never copied to an admission probe.
-        provider_probes: BTreeMap::new(),
+    let settings = ReviewPlanSettings {
+        mode: options.mode.as_str().into(),
+        resources,
+        outputs: public_outputs(&prepared.loaded)?,
+        executions: workers.executions.clone(),
+        provider_admission,
+        allowed_effects: BTreeSet::new(),
     };
-    let compiler = LegacyReviewPlanCompiler::capture_v4(cas, round, engine_id, settings)?;
+    let compiler = CampaignReviewPlanCompiler::capture(cas, round, engine_id, settings)?;
     let revision = compiler.prepare_revision(cas, task_id, limits)?;
     let mut refs = BTreeSet::from([
         revision.authority.policy_id.clone(),
@@ -317,18 +307,33 @@ fn task_id(campaign: &str) -> String {
     format!("review-{}", review_core::hex::encode(&digest.finalize()))
 }
 
-/// A paid historical Campaign keeps its original executor and accounting. A new capture
-/// that failed before execution may safely retry common Task preparation without adopting
-/// earlier spend. Missing common state must never fall back to the legacy ledger.
-pub(super) fn uses_common(cas: &Cas, store: &EventStore, campaign: &str) -> Result<bool, String> {
+const PREDATES_COMMON_TASK_RUNTIME: &str =
+    "Campaign predates the common Task runtime (af < 0.9); start a new Campaign";
+
+/// Every Campaign runs on the common Task runtime. Its first capture may fail after preparation
+/// and operator events (a superseded Round input, policy time, Evidence, a waiver) and simply
+/// retries. Only records GA never writes refuse: evidence of the pre-Task executor, which a new
+/// capture would silently disown, and common evidence whose Task is missing, which must never
+/// fall back to a fresh allowance.
+pub(super) fn require_common_campaign(
+    cas: &Cas,
+    store: &EventStore,
+    campaign: &str,
+) -> Result<(), String> {
     if store
         .task_projection(cas, &task_id(campaign))
         .map_err(|e| e.to_string())?
         .is_some()
     {
-        return Ok(true);
+        return Ok(());
     }
-    let events = store.replay(campaign).map_err(|e| e.to_string())?;
+    let events = store.replay(campaign).map_err(|error| {
+        if holds_a_retired_run_report(&error) {
+            PREDATES_COMMON_TASK_RUNTIME.to_owned()
+        } else {
+            error.to_string()
+        }
+    })?;
     if events.iter().any(|event| {
         matches!(
             event.event_type,
@@ -338,15 +343,50 @@ pub(super) fn uses_common(cas: &Cas, store: &EventStore, campaign: &str) -> Resu
     }) {
         return Err("Review has common Task evidence but its original Task is unavailable".into());
     }
-    Ok(events.iter().all(|event| {
-        matches!(
-            event.event_type,
-            review_core::EventType::CampaignOpenedV1
-                | review_core::EventType::RoundStartedV1
-                | review_core::EventType::SourceCapturedV1
-                | review_core::EventType::GenerationAdvancedV1
-        )
-    }))
+    if events
+        .iter()
+        .any(|event| written_only_by_the_pre_task_executor(event.event_type))
+    {
+        return Err(PREDATES_COMMON_TASK_RUNTIME.into());
+    }
+    Ok(())
+}
+
+/// Only the pre-Task executor wrote `RunReport@1` to `@5`. They are no longer event types, and
+/// when replay stops at one of them the log is named as the pre-common history it is. A log
+/// whose earlier retired Attempt, Provider Operation or broker row stops replay first keeps the
+/// generic unknown event type message, which already says to start a new Campaign.
+fn holds_a_retired_run_report(error: &review_store::StoreError) -> bool {
+    let review_store::StoreError::Sqlite(rusqlite::Error::FromSqlConversionFailure(_, _, cause)) =
+        error
+    else {
+        return false;
+    };
+    cause
+        .downcast_ref::<review_core::UnknownEventType>()
+        .is_some_and(|unknown| {
+            matches!(
+                unknown.0.as_str(),
+                "RunReport@1" | "RunReport@2" | "RunReport@3" | "RunReport@4" | "RunReport@5"
+            )
+        })
+}
+
+/// A denylist, never an allowlist: the shared Review domain also writes Node invocations,
+/// output receipts, Gate decisions and Check results on the Task path, and ledger commands
+/// append operator events before any Task exists. The pre-Task executor's other records are no
+/// longer event types: a log holding its run reports is refused where replay stops, and one
+/// holding its Attempt, broker or Provider Operation events fails replay on the unknown type.
+fn written_only_by_the_pre_task_executor(event_type: review_core::EventType) -> bool {
+    use review_core::EventType;
+    // Refusable only while the Task-host port of ADR-0110 writes these after Task capture (the
+    // guard returns early once a Task exists); the port must re-check them.
+    matches!(
+        event_type,
+        EventType::ColdCloseoutDispatchedV1
+            | EventType::SessionSnapshotPreparedV1
+            | EventType::SessionSnapshotCleanedV1
+    )
 }
 
 struct AdmissionOnly;
@@ -355,7 +395,8 @@ impl review_pipeline::task::TaskOperatorHost for AdmissionOnly {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
-        _: &[String],
+        _definition: &review_graph::task::CompiledNode,
+        _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
         Err("Installed Review plan admission cannot render Worker context".into())
     }
@@ -363,7 +404,9 @@ impl review_pipeline::task::TaskOperatorHost for AdmissionOnly {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         _: Option<&review_store::store::task::execution::PreparedTaskAttempt>,
+        _cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> review_pipeline::task::TaskWorkOutput {
         review_pipeline::task::TaskWorkOutput {
             usage_observation: None,
@@ -381,7 +424,7 @@ impl review_pipeline::task::host::TaskDomain for AdmissionOnly {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
-        _: &[String],
+        _: &review_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         Err("Installed Review plan admission grants no context authority".into())
@@ -393,6 +436,7 @@ impl review_pipeline::task::host::TaskDomain for AdmissionOnly {
         _: &ExecutionPlanV1,
         _: &review_core::task::execution::TaskInvocationV1,
         _: &review_core::task::execution::TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         Err("Installed Review plan admission grants no output authority".into())
     }
@@ -412,7 +456,7 @@ fn open_captured(
     captured: &CapturedReviewTask,
 ) -> Result<review_store::store::task::TaskLease, String> {
     use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
-    let authority = CapturedTaskAuthority::for_legacy_review(
+    let authority = CapturedTaskAuthority::for_campaign_review(
         &captured.compiler,
         &AdmissionOnly,
         &NoTaskDeveloper,
@@ -444,7 +488,7 @@ fn open_captured(
 struct RoundExecution {
     report: review_graph::RunReport,
     ledger: review_store::Ledger,
-    attempts: Vec<review_pipeline::TaskAttemptEvidence>,
+    attempts: Vec<review_pipeline::AttemptEvidence>,
     verdict: review_pipeline::RunVerdict,
     continuation_required: bool,
     result: Option<review_core::task::TaskResultV1>,
@@ -457,8 +501,8 @@ fn execute_current(
     lease: &review_store::store::task::TaskLease,
 ) -> Result<RoundExecution, String> {
     use review_pipeline::task::TaskRuntime;
+    use review_pipeline::task::campaign_review::host::CampaignReviewTaskHost;
     use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
-    use review_pipeline::task::legacy_review::host::LegacyReviewTaskHost;
     let campaign = &captured.compiler.round().binding().campaign_id;
     let round = captured.compiler.round().authority().round_event_id();
     let closed = store
@@ -479,7 +523,7 @@ fn execute_current(
         lease,
         Some(&cancellation),
         || {
-            let host = LegacyReviewTaskHost::new(
+            let host = CampaignReviewTaskHost::new(
                 cas,
                 shared.clone(),
                 &captured.compiler,
@@ -496,7 +540,7 @@ fn execute_current(
             } else {
                 host
             };
-            let authority = CapturedTaskAuthority::for_legacy_review(
+            let authority = CapturedTaskAuthority::for_campaign_review(
                 &captured.compiler,
                 &host,
                 &NoTaskDeveloper,
@@ -565,4 +609,50 @@ fn execute_current(
             })
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use review_core::EventType;
+
+    /// The denylist is exactly the pre-Task executor's own records. Events the shared Review
+    /// domain writes on the Task path, and operator events appended before a Task exists, never
+    /// refuse a Campaign.
+    #[test]
+    fn only_pre_task_executor_events_refuse_a_campaign() {
+        let refused: Vec<EventType> = EventType::ALL
+            .into_iter()
+            .filter(|event| super::written_only_by_the_pre_task_executor(*event))
+            .collect();
+        assert_eq!(
+            refused,
+            [
+                EventType::SessionSnapshotPreparedV1,
+                EventType::SessionSnapshotCleanedV1,
+                EventType::ColdCloseoutDispatchedV1,
+            ]
+        );
+        for live in [
+            EventType::NodeInvocationV1,
+            EventType::NodeOutputReceiptV1,
+            EventType::GateDecisionV1,
+            EventType::CheckCompletedV1,
+            EventType::RoundInputSupersededV1,
+            EventType::PolicyTimeAdvancedV1,
+            EventType::EvidenceAddedV1,
+            EventType::EvidenceReuseAdmittedV1,
+            EventType::EvidenceSatisfiedV1,
+            EventType::DemandWaivedV1,
+            EventType::CampaignOpenedV1,
+            EventType::RoundStartedV1,
+            EventType::SourceCapturedV1,
+            EventType::GenerationAdvancedV1,
+        ] {
+            assert!(
+                !super::written_only_by_the_pre_task_executor(live),
+                "{} must never refuse a Campaign",
+                live.as_str()
+            );
+        }
+    }
 }

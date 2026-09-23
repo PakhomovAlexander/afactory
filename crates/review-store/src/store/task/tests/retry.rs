@@ -25,7 +25,7 @@ fn refuse_both(f: &mut Fixture, lease: &TaskLease, context: &str, message: &str)
     assert!(error.to_string().contains(message), "{error}");
     let error = f
         .store
-        .prepare_task_attempt(&f.cas, lease, "root.nodes.write", context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, lease, "root.nodes.write", context, &f.authority)
         .unwrap_err();
     assert!(error.to_string().contains(message), "{error}");
     assert_eq!(f.state().next_sequence, sequence);
@@ -57,7 +57,7 @@ fn captured_retry_policy_checks_durable_failures_before_any_new_reservation() {
     f.authority.retry_allowed = false;
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
         .unwrap();
     f.store
         .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
@@ -96,7 +96,7 @@ fn selected_work_recovers_publication_instead_of_reserving_another_paid_attempt(
     let (mut f, lease, invocation, context) = running();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
         .unwrap();
     f.store
         .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)

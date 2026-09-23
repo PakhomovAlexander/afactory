@@ -1,7 +1,12 @@
 # ADR-0079: Retain exact cumulative charge within one Task Attempt
 
 Date: 2026-09-12
-Status: Accepted
+Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): readers
+for frozen execution `@1` and `@2`, usage `@1` and `@2`, and `af/review-report@1`, `@2` and `@3`,
+and the historical `AttemptLedger` entry points with replacement semantics. Review inspection is
+one document, `af/review-report@4`, and every execution record is `af/TaskExecutionRecord@5`.
+GA has no Broker, so its Broker operations and
+`BrokerOperationReceipt@2` are gone; the exact u128 cumulative charge stays.
 
 ## Context
 

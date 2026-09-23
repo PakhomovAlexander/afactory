@@ -1,8 +1,8 @@
 # The release key
 
 `release.pub` is the minisign public key every release build embeds (`build.rs`); `af self`
-verifies a release's `SHA256SUMS.minisig` against it before trusting any checksum, for every
-release from 0.8.0 on. The matching secret key never enters this repository: it lives only in
+verifies a release's `SHA256SUMS.minisig` against it before trusting any checksum, and refuses
+a release without one. The matching secret key never enters this repository: it lives only in
 the `MINISIGN_SECRET_KEY` Actions secret, and the release workflow refuses to publish a build
 that embeds no key or a release it cannot sign.
 

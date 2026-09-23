@@ -29,12 +29,11 @@ and marked non-blocking rather than discarded; a blocker found and thrown away m
 like a blocker never found ([ADR-0011](adr/0011-silence-is-not-a-drop.md),
 [ADR-0013](adr/0013-scope-is-evaluated-per-active-claim.md)).
 
-### Re-keying legacy Finding fingerprints
+### Re-keying Findings on rename
 
-Campaigns recorded under the legacy `file + normalized title` fingerprint keep ASCII-only
-lowercasing, bug-compatible with the original shell harness, on their permanent replay path. New
-Campaigns use path-independent Finding identity, so renames need no re-keying and ambiguous
-duplicates use recorded Grouping ([ADR-0006](adr/0006-finding-identity-is-path-independent.md)).
+Finding identity is path-independent, so a rename changes a Report's location and Scope but never
+its Finding, and ambiguous duplicates use recorded Grouping
+([ADR-0006](adr/0006-finding-identity-is-path-independent.md)).
 
 ### Adding `diff` to the safe Git subcommand allowlist
 
@@ -55,23 +54,16 @@ closure to static graphs would be new work; bypassing closure is not on the tabl
 ### Host cache passthrough for safe pipelines
 
 A safe pipeline never receives direct host-cache access; caches are sandbox-local snapshots
-([ADR-0008](adr/0008-safe-caches-are-sandbox-local-snapshots.md), superseding
-[ADR-0003](adr/0003-gate-caches-pass-through-to-the-host.md)).
+([ADR-0008](adr/0008-safe-caches-are-sandbox-local-snapshots.md)).
 
 ### Reviewing code the operator does not trust
 
 Reviewer-authored Proposals raise what a compromised reviewer can place before an operator for
 application. That risk is accepted while the tool reviews first-party code only; the containment
 probes that remain open are recorded as open in
-[`fixtures/adversarial/malicious-check.md`](../fixtures/adversarial/malicious-check.md) rather
+[`security/containment-probes.md`](security/containment-probes.md) rather
 than claimed covered. Pointing the tool at untrusted code requires revisiting that acceptance
 first ([ADR-0010](adr/0010-proposals-are-exported-by-id-and-base-bound.md)).
-
-### Two review authorities in one repository
-
-`af onboard` refuses to scaffold `.af/` beside a legacy `.review/` directory, so a repository never
-carries two authorities. The legacy layout is migrated, not read alongside
-([ADR-0043](adr/0043-drop-legacy-review-authority-in-v0-8-0.md); see [migration](migration.md)).
 
 ## Tasks
 
@@ -105,17 +97,10 @@ transition cannot reset spent tokens, Attempt counts or the deadline
 ([ADR-0049](adr/0049-run-task-workers-through-shared-durable-attempts.md),
 [ADR-0056](adr/0056-share-planning-accounting-and-authenticate-generated-plan-decisions.md)).
 
-## Distribution and fixtures
+## Distribution
 
 ### Vendoring the kernel into consuming repositories
 
 A consuming repository pins one `af` release in its `af.lock` and dispatches to it; it does not
 vendor this workspace ([ADR-0044](adr/0044-af-manages-itself-and-dispatches-to-the-pinned-release.md),
 [ADR-0045](adr/0045-one-release-train-and-a-pin-that-binds-bytes.md)).
-
-### Shipping a legacy review corpus
-
-The legacy-corpus tests are `#[ignore]`d because a real review bundle contains real findings
-about real code. A project that captured its own bundles runs them locally with
-`make review-kernel-test-corpus`; the same contracts are covered in every checkout by
-`fixtures/synthetic/`. See [`fixtures/legacy/README.md`](../fixtures/legacy/README.md).

@@ -1,6 +1,4 @@
-#![cfg(unix)]
-
-use review_core::{Arg, Command, Producer, task::usage::TaskTokenUsageV2};
+use review_core::{Arg, Command, Producer, task::usage::TASK_TOKEN_USAGE_V3};
 use review_runner::task::{
     WorkerModelAdapter,
     usage::{persist_task_usage_exact, read_task_usage_exact},
@@ -9,6 +7,11 @@ use review_runner_claude::task::ClaudeTaskAdapter;
 use review_store::Cas;
 use serde_json::json;
 use std::{os::unix::fs::PermissionsExt, time::Duration};
+
+/// The explicit model restriction every Task binding carries.
+fn opus() -> Vec<Arg> {
+    vec![Arg::literal("--model"), Arg::literal("claude-opus-5")]
+}
 
 #[test]
 fn title_suppression_reaches_the_child_without_replacing_personal_auth_grants() {
@@ -27,7 +30,7 @@ printf '%s' '{"is_error":false,"result":"OK","usage":{"input_tokens":0,"output_t
         .join("synthetic-personal-config")
         .display()
         .to_string();
-    let adapter = ClaudeTaskAdapter::new(&Command::new(program.to_str().unwrap(), vec![]))
+    let adapter = ClaudeTaskAdapter::new(&Command::new(program.to_str().unwrap(), opus()))
         .unwrap()
         .with_auth(Some(config.clone()), "synthetic-user".into(), home.clone());
     let result = adapter.invoke(
@@ -36,6 +39,8 @@ printf '%s' '{"is_error":false,"result":"OK","usage":{"input_tokens":0,"output_t
         b"public input".to_vec(),
         Duration::from_secs(5),
         false,
+        None,
+        &[],
     );
     assert!(result.message.is_ok());
     assert_eq!(
@@ -62,9 +67,18 @@ fn synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage() 
             "modelUsage":{
                 "claude-opus-5":{"inputTokens":2,"outputTokens":9451,"cacheCreationInputTokens":132688,"cacheReadInputTokens":3830,"canonicalModel":"claude-opus-5"},
                 "claude-haiku-4-5-20251001":{"inputTokens":100687,"outputTokens":17,"cacheCreationInputTokens":0,"cacheReadInputTokens":0,"canonicalModel":"claude-haiku-4-5"}}});
-        if scenario == "malformed" {
-            native["modelUsage"]["claude-haiku-4-5-20251001"]["inputTokens"] =
-                serde_json::Value::Null;
+        match scenario {
+            // Entirely zero foreign usage is metadata, so only the selected model is billed.
+            "allowed" => {
+                native["modelUsage"]["claude-haiku-4-5-20251001"] = json!({"inputTokens":0,
+                    "outputTokens":0,"cacheCreationInputTokens":0,"cacheReadInputTokens":0,
+                    "canonicalModel":"claude-haiku-4-5"});
+            }
+            "malformed" => {
+                native["modelUsage"]["claude-haiku-4-5-20251001"]["inputTokens"] =
+                    serde_json::Value::Null;
+            }
+            _ => {}
         }
         let output = native.to_string();
         let program = temp.path().join("synthetic-claude");
@@ -87,13 +101,8 @@ fn synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage() 
             std::fs::remove_dir_all(&path).unwrap();
             std::fs::write(&path, b"controlled unavailable CAS").unwrap();
         }
-        let flags = if scenario == "unexpected" {
-            vec![Arg::literal("--model"), Arg::literal("claude-opus-5")]
-        } else {
-            vec![]
-        };
         let adapter =
-            ClaudeTaskAdapter::new(&Command::new(program.to_str().unwrap(), flags)).unwrap();
+            ClaudeTaskAdapter::new(&Command::new(program.to_str().unwrap(), opus())).unwrap();
         let result = adapter.invoke(
             &cas,
             temp.path(),
@@ -104,6 +113,8 @@ fn synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage() 
                 Duration::from_secs(5)
             },
             false,
+            None,
+            &[],
         );
         assert_eq!(
             result.message.is_ok(),
@@ -111,21 +122,24 @@ fn synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage() 
             "{scenario}: {:?}",
             result.message
         );
+        // Positive auxiliary usage refuses the reply but is charged in full, whatever else
+        // failed: exit status, deadline or raw capture.
         assert_eq!(
             result.usage.as_ref().unwrap().chargeable_tokens.get(),
-            if scenario == "malformed" {
-                142_158
-            } else {
-                242_845
+            match scenario {
+                "allowed" => 142_141,
+                "malformed" => 142_158,
+                _ => 242_845,
             },
             "{scenario}"
         );
-        if scenario == "malformed" {
-            assert!(!result.usage_observation.unwrap().charge_complete);
-        } else if scenario == "unexpected" {
-            assert!(result.usage_observation.unwrap().charge_complete);
-        } else {
-            assert!(result.usage_observation.is_none());
+        match scenario {
+            "allowed" => assert!(result.usage_observation.is_none()),
+            "malformed" => assert!(!result.usage_observation.unwrap().charge_complete),
+            _ => assert!(
+                result.usage_observation.unwrap().charge_complete,
+                "{scenario}"
+            ),
         }
         if scenario == "cas-outage" {
             assert!(result.raw_artifact_ids.is_empty());
@@ -144,34 +158,16 @@ fn synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage() 
 }
 
 #[test]
-fn old_top_level_artifact_identity_and_reopened_new_charge_remain_exact() {
+fn top_level_and_model_usage_charges_persist_and_reopen_exact() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("cas");
     let cas = Cas::open(&path).unwrap();
     let context = cas.put(b"original captured context").unwrap();
     let producer = Producer::KernelOperation {
-        run_id: "synthetic-usage-compatibility".into(),
+        run_id: "synthetic-usage".into(),
         node_id: None,
         operation_id: "capture@1".into(),
     };
-    let old = TaskTokenUsageV2 {
-        input_tokens: Some(2.into()),
-        output_tokens: Some(9451.into()),
-        cache_write_tokens: Some(132688.into()),
-        chargeable_tokens: 142141.into(),
-        ..Default::default()
-    };
-    let old_id = cas
-        .put_artifact(
-            "af/TaskTokenUsage@2",
-            producer.clone(),
-            vec![context.clone()],
-            None,
-            serde_json::to_value(&old).unwrap(),
-        )
-        .unwrap()
-        .0;
-    let old_bytes = cas.get(&old_id).unwrap();
     let mut ids = vec![];
     for expanded in [false, true] {
         let mut native = json!({"is_error":false,"result":"OK","usage":{"input_tokens":2,"output_tokens":9451,"cache_creation_input_tokens":132688}});
@@ -190,26 +186,41 @@ fn old_top_level_artifact_identity_and_reopened_new_charge_remain_exact() {
         )
         .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let adapter =
-            ClaudeTaskAdapter::new(&Command::new(program.to_str().unwrap(), vec![])).unwrap();
+        let adapter = ClaudeTaskAdapter::new(&Command::new(
+            program.to_str().unwrap(),
+            vec![Arg::literal("--model"), Arg::literal("opus")],
+        ))
+        .unwrap();
         let result = adapter.invoke(
             &cas,
             temp.path(),
             b"input".to_vec(),
             Duration::from_secs(5),
             false,
+            None,
+            &[],
         );
-        assert!(result.message.is_ok());
-        assert!(result.usage_observation.is_none());
+        if expanded {
+            // The auxiliary model's usage refuses the reply and is still charged exactly.
+            assert!(result.message.is_err());
+            assert!(result.usage_observation.as_ref().unwrap().charge_complete);
+        } else {
+            assert!(result.message.is_ok());
+            assert!(result.usage_observation.is_none());
+        }
         ids.push(
             persist_task_usage_exact(&cas, producer.clone(), &context, &result.usage.unwrap())
                 .unwrap(),
         );
     }
-    assert_eq!(ids[0], old_id);
     drop(cas);
     let reopened = Cas::open(&path).unwrap();
-    assert_eq!(reopened.get(&old_id).unwrap(), old_bytes);
+    for id in &ids {
+        assert_eq!(
+            reopened.get_artifact(id).unwrap().artifact_type,
+            TASK_TOKEN_USAGE_V3
+        );
+    }
     assert_eq!(
         read_task_usage_exact(&reopened, &ids[0])
             .unwrap()

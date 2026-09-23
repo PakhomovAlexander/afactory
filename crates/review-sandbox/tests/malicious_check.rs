@@ -1,10 +1,11 @@
-//! `fixtures/adversarial/malicious-check.md`, to the extent this provider can discharge it.
+//! The containment probes, to the extent this provider can discharge them.
 //!
-//! The case assumes a check that does its job *and* attacks. Five probes: host marker, canonical
+//! Which of them are open is recorded in `docs/security/containment-probes.md`. The recorded
+//! scenario assumes a check that does its job *and* attacks. Five probes: host marker, canonical
 //! checkout, credentials, undeclared network, argument injection. `trusted_local` can genuinely
 //! answer three of them. It cannot answer the other two, and this file says which rather than
-//! narrowing the case until it passes — a green test that has quietly redefined the threat is
-//! worse than a missing one.
+//! narrowing the scenario until it passes — a green test that has quietly redefined the threat
+//! is worse than a missing one.
 
 use review_check::{Arg, CheckDefinition, CheckRunner, CheckStatus, Command, GateDecision};
 use review_sandbox::{Isolation, Mode, Policy, PolicyError, Sandbox, admit};
@@ -64,39 +65,35 @@ fn a_check_cannot_reach_the_checkout_it_is_reviewing() {
         // Documented, not swallowed: this is precisely the probe that needs a container.
         eprintln!(
             "note: the working tree changed — trusted_local does not contain an absolute-path \
-             write, which is why malicious-check.md stays open for a container provider"
+             write, which is why this probe stays open for a container provider"
         );
     }
     drop(dir);
 }
 
-/// Probe: credentials. **Discharged.** The environment is rebuilt from an allowlist, so a token
-/// in the kernel's own environment cannot reach a check by being forgotten in a denylist.
+/// Probe: credentials. **Discharged.** The check runner clears the environment and rebuilds it
+/// from an allowlist, so a token in the kernel's own environment cannot reach a check by being
+/// forgotten in a denylist. Asserted on what a real check process receives, not on a list.
 #[test]
 fn a_check_inherits_no_credentials() {
     let (_dir, repo, cas) = fixture_repo();
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
     let sandbox = Sandbox::materialize(&snapshot.manifest, &cas, Mode::EphemeralWrite).unwrap();
+    let runner = CheckRunner::new(&cas, sandbox.root());
 
-    let passed: Vec<&str> = sandbox.environment().iter().map(|(k, _)| *k).collect();
-    assert_eq!(passed, vec!["PATH", "HOME", "LC_ALL", "TZ"]);
-    for secret in [
-        "GITHUB_TOKEN",
-        "AWS_SECRET_ACCESS_KEY",
-        "INTERNAL_API_KEY",
-        "SSH_AUTH_SOCK",
-        "OPENAI_API_KEY",
-    ] {
-        assert!(!passed.contains(&secret), "{secret} would reach a check");
-    }
-    // HOME points inside the sandbox, so a check that writes a config file writes it somewhere
-    // that is captured at seal time rather than into the operator's home.
-    assert!(
-        sandbox.environment()[1]
-            .1
-            .starts_with(sandbox.root().to_str().unwrap()),
-        "HOME must not be the operator's"
-    );
+    let probe = CheckDefinition::new("environment", Command::new("/usr/bin/env", vec![]));
+    let result = runner.run(&probe);
+    assert_eq!(result.status, CheckStatus::Passed, "{result:?}");
+    let printed = cas.get(result.stdout.as_ref().unwrap()).unwrap();
+    let mut received: Vec<String> = String::from_utf8(printed)
+        .unwrap()
+        .lines()
+        .filter_map(|line| line.split_once('=').map(|(key, _)| key.to_string()))
+        .collect();
+    received.sort();
+    // Exactly the allowlist. Whatever this test process carries — cargo's own variables, HOME,
+    // SSH_AUTH_SOCK, any token a developer or CI runner exported — stays behind.
+    assert_eq!(received, vec!["LC_ALL", "PATH", "TZ"]);
 }
 
 /// Probe: argument injection. **Discharged** by the check crate's typed slots — asserted here

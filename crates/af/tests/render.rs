@@ -4,15 +4,6 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-fn hub_fixture() -> PathBuf {
-    fixtures::workspace_root().join("fixtures/consumers/hub")
-}
-
-#[path = "support/fixtures.rs"]
-mod fixtures;
-
-use fixtures::copy_tree;
-
 fn git(repo: &Path, args: &[&str]) {
     let output = Command::new("git")
         .arg("-C")
@@ -63,11 +54,26 @@ fn repin(repo: &Path, name: &str) {
     std::fs::write(lock_path, lock.to_toml()).unwrap();
 }
 
-/// The hub fixture plus one committed change, so the Diff Subject has a real patch.
-fn hub_repo_with_a_change(root: &Path) -> PathBuf {
-    let repo = root.join("consumer");
-    copy_tree(&hub_fixture(), &repo);
+/// A repository onboarded by this binary with Codex reviewers, plus one committed change, so
+/// the Diff Subject has a real patch.
+fn onboarded_repo_with_a_change(root: &Path) -> PathBuf {
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q"]);
+    let created = af(
+        &root.join("onboard"),
+        &[
+            "onboard",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--runner",
+            "codex",
+            "--gate",
+            "check=true",
+            "--apply",
+        ],
+    );
+    assert!(created.status.success(), "{}", stderr(&created));
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-q", "-m", "policy"]);
     std::fs::write(repo.join("notes.md"), "# Notes\n\nrender me exactly\n").unwrap();
@@ -79,7 +85,7 @@ fn hub_repo_with_a_change(root: &Path) -> PathBuf {
 #[test]
 fn a_model_worker_input_is_the_package_contract_and_change_set_with_no_effects() {
     let root = tempfile::tempdir().unwrap();
-    let repo = hub_repo_with_a_change(root.path());
+    let repo = onboarded_repo_with_a_change(root.path());
     let state_home = root.path().join("state");
     let repo_arg = repo.to_str().unwrap();
     let selectors = [
@@ -112,7 +118,7 @@ fn a_model_worker_input_is_the_package_contract_and_change_set_with_no_effects()
     assert_eq!(view["package"]["name"], "correctness");
     let input = view["input"].as_str().unwrap();
     let instructions =
-        std::fs::read_to_string(hub_fixture().join(".af/workers/correctness/reviewer.md")).unwrap();
+        std::fs::read_to_string(repo.join(".af/workers/correctness/reviewer.md")).unwrap();
     assert!(
         input.starts_with(&instructions),
         "the verified package bytes lead"
@@ -127,7 +133,7 @@ fn a_model_worker_input_is_the_package_contract_and_change_set_with_no_effects()
     assert_eq!(view["manifest"]["rendered_bytes"], view["bytes"]);
     assert_eq!(
         view["cap_tokens"], 300_000,
-        "the fixture caps every Attempt at 300k"
+        "onboarding caps every Attempt at 300k"
     );
     assert_eq!(view["fits"], true);
     for effect in [
@@ -179,13 +185,18 @@ kind = "whole-tree"
 [[nodes]]
 id = "gate"
 kind = "gate"
-outputs = ["decision"]
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
 
 [[nodes]]
 id = "lint"
 kind = "reviewer"
-inputs = ["gate"]
-outputs = ["result"]
+inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }, { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 [nodes.runner]
 program = "/bin/sh"
@@ -194,13 +205,13 @@ args = [{ value = "-c" }, { value = "cat >/dev/null; printf '%s' '{}'" }]
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["lint"]
-outputs = ["reports"]
+inputs = [{ name = "lint", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
+inputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 outputs = [
   { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
   { name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
@@ -209,6 +220,10 @@ outputs = [
 [[edges]]
 from = { node = "gate", port = "decision" }
 to = { node = "lint", port = "gate" }
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "lint", port = "prior_findings" }
 
 [[edges]]
 from = { node = "lint", port = "result" }
@@ -283,8 +298,8 @@ to = { node = "ledger", port = "reports" }
 #[test]
 fn an_input_that_exhausts_its_attempt_cap_is_refused_before_admission() {
     let root = tempfile::tempdir().unwrap();
-    let repo = hub_repo_with_a_change(root.path());
-    // A 100-token cap on the correctness Worker: the 20 KB prompt cannot fit.
+    let repo = onboarded_repo_with_a_change(root.path());
+    // A 100-token cap on the correctness Worker: its rendered input cannot fit.
     let pipeline = repo.join(".af/pipelines/review.toml");
     let text = std::fs::read_to_string(&pipeline).unwrap();
     let capped = text.replace(
@@ -318,8 +333,13 @@ fn an_input_that_exhausts_its_attempt_cap_is_refused_before_admission() {
     assert!(planned.status.success(), "{}", stderr(&planned));
     let plan: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap();
     assert_eq!(plan["pipeline"]["inputs_fit"], false);
-    let reservation = &plan["pipeline"]["reservations"][0];
-    assert_eq!(reservation["node"], "correctness");
+    let reservation = plan["pipeline"]["reservations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|reservation| reservation["node"] == "correctness")
+        .expect("the correctness Worker holds a reservation");
+    assert_eq!(reservation["source"], "node");
     assert_eq!(reservation["tokens"], 100);
     assert_eq!(reservation["fits"], false);
     assert!(reservation["input_tokens"].as_u64().unwrap() > 100);

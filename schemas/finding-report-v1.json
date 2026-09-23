@@ -18,7 +18,7 @@
       "enum": ["blocker", "major", "minor"]
     },
     "locations": {
-      "description": "Where the claim applies. Empty means change-wide; the legacy harness spelled that as the literal path '(change-wide)', which this contract does not carry into a path field.",
+      "description": "Where the claim applies. Empty means change-wide; there is no sentinel path for it.",
       "type": "array",
       "items": { "$ref": "#/$defs/location" }
     },
@@ -55,7 +55,7 @@
       "minLength": 1
     },
     "relations": {
-      "description": "Explicit relations to Findings already present in this attempt's input FindingSet, or to Report IDs from the same selected attempt.",
+      "description": "Explicit corroborations of Findings already present in this attempt's input FindingSet.",
       "type": "array",
       "items": { "$ref": "#/$defs/relation" }
     }
@@ -93,13 +93,13 @@
       "additionalProperties": false,
       "required": ["kind", "target"],
       "properties": {
-        "kind": { "enum": ["corroborates", "disputes"] },
+        "kind": { "enum": ["corroborates"] },
         "target": {
           "type": "object",
           "additionalProperties": false,
           "required": ["kind", "id"],
           "properties": {
-            "kind": { "enum": ["finding", "report"] },
+            "kind": { "enum": ["finding"] },
             "id": { "type": "string", "minLength": 1 }
           }
         },

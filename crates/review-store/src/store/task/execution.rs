@@ -1,7 +1,6 @@
 //! Durable invocation/admission/settlement shared by every new Task kind. The scheduler and
 //! domain adapters call this boundary; no Worker output can bypass plan or lease admission.
 
-pub mod broker;
 mod encoding;
 pub mod experiment;
 #[cfg(test)]
@@ -27,7 +26,6 @@ pub struct TaskExecutionProjection {
     pub outputs: BTreeMap<String, (String, TaskOutputV1)>,
     ledger: AttemptLedger,
     attempts: BTreeMap<String, RecordedAttempt>,
-    brokers: BTreeMap<String, broker::RecordedBroker>,
     pub(super) owned: BTreeMap<String, owned::RecordedChildren>,
     pub(super) experiments: BTreeMap<String, experiment::RecordedExperiment>,
     pub(super) review_integrations:
@@ -138,9 +136,6 @@ impl ReservedTaskAttempt {
     pub fn plan_id(&self) -> &str {
         &self.plan_id
     }
-    pub fn writer_epoch(&self) -> u64 {
-        self.writer_epoch
-    }
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -179,9 +174,6 @@ pub enum TaskSettlement {
 impl PreparedTaskAttempt {
     pub fn task_id(&self) -> &str {
         &self.task_id
-    }
-    pub fn writer_epoch(&self) -> u64 {
-        self.writer_epoch
     }
     pub fn id(&self) -> &str {
         &self.id
@@ -246,7 +238,6 @@ pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError>
     let mut invocation_ids = Vec::new();
     match &record {
         TaskExecutionRecordV1::Invocation { invocation_id }
-        | TaskExecutionRecordV1::Prepared { invocation_id, .. }
         | TaskExecutionRecordV1::Reserved { invocation_id, .. } => {
             invocation_ids.push(invocation_id.clone())
         }
@@ -476,7 +467,6 @@ impl TaskExecutionProjection {
                 BTreeMap::new(),
             ),
             attempts: BTreeMap::new(),
-            brokers: BTreeMap::new(),
             owned: BTreeMap::new(),
             experiments: BTreeMap::new(),
             review_integrations: BTreeMap::new(),
@@ -758,7 +748,6 @@ impl TaskProjection {
         let dispatching = matches!(
             record,
             TaskExecutionRecordV1::Invocation { .. }
-                | TaskExecutionRecordV1::Prepared { .. }
                 | TaskExecutionRecordV1::Reserved { .. }
                 | TaskExecutionRecordV1::ContextBound { .. }
                 | TaskExecutionRecordV1::Started { .. }
@@ -908,16 +897,7 @@ impl TaskProjection {
                     .invocations
                     .insert(input.node.clone(), (invocation_id.clone(), input));
             }
-            TaskExecutionRecordV1::Prepared {
-                invocation_id,
-                attempt_id,
-                reservation_id,
-                reserved_tokens,
-                deadline_unix_ms,
-                feedback_ids,
-                ..
-            }
-            | TaskExecutionRecordV1::Reserved {
+            TaskExecutionRecordV1::Reserved {
                 invocation_id,
                 attempt_id,
                 reservation_id,
@@ -984,12 +964,7 @@ impl TaskProjection {
                         plan_id: input.plan_id.clone(),
                         reservation,
                         prepared_epoch: self.epoch,
-                        context_id: match &record {
-                            TaskExecutionRecordV1::Prepared { context_id, .. } => {
-                                Some(context_id.clone())
-                            }
-                            _ => None,
-                        },
+                        context_id: None,
                         feedback_ids: feedback_ids.clone(),
                         started: false,
                         started_unix_ms: None,
@@ -1132,19 +1107,16 @@ impl TaskProjection {
                     || attempt.prepared_epoch != self.epoch
                 {
                     execution.ledger.fence(&attempt.reservation.node);
-                } else if let TaskAttemptResultV1::Succeeded { output_id } = result {
-                    if execution
-                        .ledger
-                        .admit_exact(&ExactReceipt {
-                            attempt: AttemptId(attempt_id.clone()),
-                            output: output_id.clone(),
-                            cost: charge,
-                        })
-                        .map_err(conflict)?
-                        != Selection::Selected
-                    {
-                        return Err(conflict("Task settlement was quarantined"));
-                    }
+                } else if execution
+                    .ledger
+                    .admit_exact(&ExactReceipt {
+                        attempt: AttemptId(attempt_id.clone()),
+                        cost: charge,
+                    })
+                    .map_err(conflict)?
+                    != Selection::Selected
+                {
+                    return Err(conflict("Task settlement was quarantined"));
                 }
                 let recorded = execution
                     .attempts
@@ -1271,11 +1243,7 @@ impl EventStore {
                     .and_then(|wall| wall.usage.as_ref())
                     .map(|usage| {
                         cas.put_artifact(
-                            if review_core::task::usage::TaskTokenUsageV2::try_from(usage).is_ok() {
-                                review_core::task::usage::TASK_TOKEN_USAGE_V2
-                            } else {
-                                review_core::task::usage::TASK_TOKEN_USAGE_V3
-                            },
+                            review_core::task::usage::TASK_TOKEN_USAGE_V3,
                             review_core::Producer::Attempt {
                                 run_id: task_run_id(&lease.task_id)?,
                                 node_id: attempt.reservation.node.clone(),
@@ -1524,7 +1492,7 @@ impl EventStore {
         }
         let input = invocation(cas, &attempt.invocation_id)?;
         authority
-            .validate_context_for_attempt(cas, &state.revision, &plan, &input, attempt, context_id)
+            .validate_context(cas, &state.revision, &plan, &input, attempt, context_id)
             .map_err(conflict)?;
         // Domain callbacks cannot leave stale plan, revocation or artifact authority admitted.
         let fresh = self.checked_task_dispatch(cas, lease, authority)?.0;
@@ -1576,79 +1544,6 @@ impl EventStore {
         Ok(())
     }
 
-    pub fn prepare_task_attempt(
-        &mut self,
-        cas: &Cas,
-        lease: &TaskLease,
-        node: &str,
-        context_id: &str,
-        authority: &dyn TaskAuthority,
-    ) -> Result<PreparedTaskAttempt, StoreError> {
-        let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
-        let mut execution = state
-            .execution
-            .ok_or_else(|| conflict("Task has no recorded invocation"))?;
-        execution.check_owned_open(node)?;
-        execution.validate_retry(cas, &state.revision, &plan, node, authority)?;
-        let (invocation_id, invocation) = execution
-            .invocations
-            .get(node)
-            .ok_or_else(|| conflict("Unknown Task invocation"))?;
-        let time = now()?;
-        let reservation = execution.budget.prepare(node, time).map_err(conflict)?;
-        let attempt = execution.ledger.dispatch(node);
-        let feedback_ids: Vec<String> = execution
-            .attempts
-            .values()
-            .filter(|a| &a.invocation_id == invocation_id)
-            .filter_map(|a| match &a.settlement {
-                Some(TaskExecutionRecordV1::Settled {
-                    result:
-                        TaskAttemptResultV1::Failed {
-                            feedback_id: Some(id),
-                            ..
-                        },
-                    ..
-                }) => Some(id.clone()),
-                _ => None,
-            })
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        authority
-            .validate_context(
-                cas,
-                &state.revision,
-                &plan,
-                invocation,
-                &feedback_ids,
-                context_id,
-            )
-            .map_err(conflict)?;
-        self.task_execution_record(
-            cas,
-            lease,
-            TaskExecutionRecordV1::Prepared {
-                invocation_id: invocation_id.clone(),
-                attempt_id: attempt.0.clone(),
-                reservation_id: reservation.id.clone(),
-                reserved_tokens: reservation.tokens,
-                deadline_unix_ms: reservation.deadline_unix_ms,
-                context_id: context_id.into(),
-                feedback_ids,
-            },
-            time,
-        )?;
-        Ok(PreparedTaskAttempt {
-            task_id: lease.task_id.clone(),
-            writer_epoch: lease.epoch,
-            id: attempt.0,
-            node: node.into(),
-            reservation,
-            context_id: context_id.into(),
-        })
-    }
-
     pub fn start_task_attempt(
         &mut self,
         cas: &Cas,
@@ -1671,8 +1566,8 @@ impl EventStore {
         Ok(())
     }
 
-    /// Recheck a domain-owned effect during the one common started Attempt. Broker adapters
-    /// can use this boundary without maintaining another Attempt ledger or accepting an ID alone.
+    /// Recheck a domain-owned effect during the one common started Attempt. Domain hosts use
+    /// this boundary without maintaining another Attempt ledger or accepting an ID alone.
     pub fn check_task_attempt_current(
         &self,
         cas: &Cas,
@@ -1732,23 +1627,6 @@ impl EventStore {
             now()?,
         )?;
         Ok(())
-    }
-
-    pub fn settle_task_attempt(
-        &mut self,
-        cas: &Cas,
-        lease: &TaskLease,
-        settlement: TaskExecutionRecordV1,
-        authority: &dyn TaskAuthority,
-    ) -> Result<(), StoreError> {
-        match self
-            .settle_task_attempt_with_feedback(cas, lease, settlement, authority, || Ok(None))?
-        {
-            TaskSettlement::Settled => Ok(()),
-            TaskSettlement::OutputRejected { reason } => {
-                Err(StoreError::TaskOutputRejected(reason))
-            }
-        }
     }
 
     /// The callback only captures bounded retry data; it cannot dispatch work. It runs
@@ -1880,7 +1758,7 @@ impl EventStore {
                 .map_err(|e| StoreError::Artifact(e.to_string()))?;
         }
         authority
-            .validate_resolved_output(cas, &state.revision, plan, &input, &out, &definition)
+            .validate_output(cas, &state.revision, plan, &input, &out, &definition)
             .map_err(StoreError::TaskOutputRejected)?;
         Ok((out, input))
     }
@@ -1956,7 +1834,6 @@ impl TaskExecutionProjection {
     ) -> Result<(), StoreError> {
         let node = match record {
             TaskExecutionRecordV1::Invocation { invocation_id }
-            | TaskExecutionRecordV1::Prepared { invocation_id, .. }
             | TaskExecutionRecordV1::Reserved { invocation_id, .. } => {
                 invocation(cas, invocation_id)?.node
             }

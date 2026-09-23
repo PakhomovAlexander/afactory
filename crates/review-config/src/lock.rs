@@ -2,20 +2,18 @@
 //! `af` release that wrote the lock, pinned by its archive digests.
 //!
 //! A reviewer is a package — a directory holding `reviewer.toml` (name, version, the runner
-//! command) and whatever prompt or support files it needs. Packages live in registries searched
-//! in order (project, then user, then system), and the lockfile pins each reviewer the pipeline
-//! may use to an exact version *and* a content digest over every byte in the package.
+//! command) and whatever prompt or support files it needs. Packages live in the project's
+//! registry directory (`.af/workers`), and the lockfile pins each reviewer the pipeline may use
+//! to an exact version *and* a content digest over every byte in the package.
 //!
 //! Three rules, each the refusal of a specific failure:
 //!
 //! 1. **Not locked, not run.** A reviewer absent from the lockfile does not resolve, whatever
-//!    the registries contain. There is no "use whatever is installed" path, because that path
+//!    the registry contains. There is no "use whatever is installed" path, because that path
 //!    is `latest` wearing a different name.
-//! 2. **The digest decides, and there is no fall-through.** Registry search stops at the first
-//!    root that *has* the name; if that copy's digest does not match the pin, resolution fails
-//!    loudly. Falling through to a later root that happens to match would let a tampered copy
-//!    earlier in the chain hide behind a clean one — the operator must learn the project's copy
-//!    changed, not silently review with a different one.
+//! 2. **The digest decides.** If the registry copy's digest does not match the pin, resolution
+//!    fails loudly: the operator must learn the project's copy changed, not silently review
+//!    with a different one.
 //! 3. **Verify before interpreting.** The package is read once into memory, the digest is
 //!    checked over those bytes, and only then is `reviewer.toml` parsed — from the verified
 //!    bytes, not from a second read the filesystem could have changed in between.
@@ -27,7 +25,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use toml_edit::{Array, DocumentMut, Item, Value};
 
 use crate::CommandSpec;
 
@@ -50,9 +47,11 @@ pub enum LockError {
     NotLocked {
         name: String,
     },
+    /// The registry has no package by that name. `path` is the directory a disk registry
+    /// looked for; a captured registry has none.
     NotFound {
         name: String,
-        searched: Vec<PathBuf>,
+        path: Option<PathBuf>,
     },
     DigestMismatch {
         name: String,
@@ -118,14 +117,17 @@ impl std::fmt::Display for LockError {
                 f,
                 "reviewer `{name}` is not in the lockfile; an unlocked reviewer does not run"
             ),
-            LockError::NotFound { name, searched } => write!(
+            LockError::NotFound {
+                name,
+                path: Some(path),
+            } => write!(
                 f,
-                "reviewer `{name}` is locked but present in no registry (searched {})",
-                searched
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                "reviewer `{name}` is locked but missing from the registry ({} does not exist)",
+                path.display()
+            ),
+            LockError::NotFound { name, path: None } => write!(
+                f,
+                "reviewer `{name}` is locked but missing from the captured packages"
             ),
             LockError::DigestMismatch {
                 name,
@@ -189,9 +191,6 @@ impl std::error::Error for LockError {}
 pub struct PackageManifest {
     pub name: String,
     pub version: String,
-    /// Packages predating Subject capabilities reviewed whole trees. Preserving that exact
-    /// capability keeps them readable without letting them silently claim diff support.
-    #[serde(default = "legacy_subjects")]
     pub subjects: Vec<review_core::SubjectKind>,
     pub runner: CommandSpec,
 }
@@ -219,14 +218,7 @@ pub struct ReviewerRunnerSettings {
 }
 
 /// Read the model settings from a typed package manifest. Only the two adapter flag shapes the
-/// kernel owns are configurable; ambiguity is refused rather than guessed around.
-pub fn reviewer_runner_settings(text: &str) -> Result<ReviewerRunnerSettings, LockError> {
-    let manifest: PackageManifest =
-        toml::from_str(text).map_err(|error| LockError::Parse(error.to_string()))?;
-    reviewer_runner_settings_from_manifest(&manifest)
-}
-
-/// Inspect an already captured typed runner without serializing and reparsing TOML.
+/// kernel owns are recognized; ambiguity is refused rather than guessed around.
 pub fn reviewer_runner_settings_from_manifest(
     manifest: &PackageManifest,
 ) -> Result<ReviewerRunnerSettings, LockError> {
@@ -264,55 +256,6 @@ pub fn reviewer_runner_settings_from_manifest(
     })
 }
 
-/// Update only the model and effort value slots. The executable path, unrelated flags,
-/// provenance markers, comments, and formatting remain package-owned.
-pub fn update_reviewer_runner_settings(
-    text: &str,
-    model: &str,
-    effort: &str,
-) -> Result<String, LockError> {
-    validate_runner_value("model", model)?;
-    validate_runner_value("effort", effort)?;
-    let manifest: PackageManifest =
-        toml::from_str(text).map_err(|error| LockError::Parse(error.to_string()))?;
-    let settings = reviewer_runner_settings(text)?;
-    let model_index = unique_option_value(&manifest.runner.args, "--model")?;
-    let effort_index = match settings.backend {
-        ReviewerBackend::Claude => unique_option_value(&manifest.runner.args, "--effort")?,
-        ReviewerBackend::Codex => unique_codex_effort(&manifest.runner.args)?,
-    };
-    let mut document: DocumentMut = text
-        .parse()
-        .map_err(|error| LockError::Parse(format!("reviewer manifest formatting: {error}")))?;
-    let arguments = document
-        .get_mut("runner")
-        .and_then(Item::as_table_mut)
-        .and_then(|runner| runner.get_mut("args"));
-    let effort_value = match settings.backend {
-        ReviewerBackend::Claude => effort.to_string(),
-        ReviewerBackend::Codex => format!("model_reasoning_effort=\"{effort}\""),
-    };
-    match arguments {
-        Some(Item::Value(Value::Array(arguments))) => {
-            set_argument_value(arguments, model_index, model)?;
-            set_argument_value(arguments, effort_index, &effort_value)?;
-        }
-        Some(Item::ArrayOfTables(arguments)) => {
-            set_table_argument_value(arguments, model_index, model)?;
-            set_table_argument_value(arguments, effort_index, &effort_value)?;
-        }
-        _ => {
-            return Err(LockError::Parse(
-                "reviewer runner has no editable args array".into(),
-            ));
-        }
-    }
-    let rendered = document.to_string();
-    let _: PackageManifest = toml::from_str(&rendered)
-        .map_err(|error| LockError::Parse(format!("updated reviewer manifest: {error}")))?;
-    Ok(rendered)
-}
-
 fn unique_option_value(args: &[crate::ArgSpec], option: &str) -> Result<usize, LockError> {
     let matches: Vec<usize> = args
         .iter()
@@ -347,57 +290,6 @@ fn unique_codex_effort(args: &[crate::ArgSpec]) -> Result<usize, LockError> {
         ));
     };
     Ok(*index)
-}
-
-fn validate_runner_value(label: &str, value: &str) -> Result<(), LockError> {
-    if value.is_empty()
-        || value.len() > 128
-        || value.starts_with('-')
-        || value
-            .chars()
-            .any(|character| character.is_whitespace() || matches!(character, '"' | '\'' | '\\'))
-    {
-        return Err(LockError::Parse(format!(
-            "reviewer {label} must be 1-128 non-option characters without whitespace, quotes, or backslashes"
-        )));
-    }
-    Ok(())
-}
-
-fn set_argument_value(array: &mut Array, index: usize, value: &str) -> Result<(), LockError> {
-    let argument = array
-        .get_mut(index)
-        .and_then(Value::as_inline_table_mut)
-        .and_then(|table| table.get_mut("value"))
-        .ok_or_else(|| {
-            LockError::Parse(format!(
-                "reviewer runner argument {index} is not an inline value table"
-            ))
-        })?;
-    *argument = Value::from(value);
-    Ok(())
-}
-
-fn set_table_argument_value(
-    tables: &mut toml_edit::ArrayOfTables,
-    index: usize,
-    value: &str,
-) -> Result<(), LockError> {
-    let argument = tables
-        .get_mut(index)
-        .and_then(|table| table.get_mut("value"))
-        .and_then(Item::as_value_mut)
-        .ok_or_else(|| {
-            LockError::Parse(format!(
-                "reviewer runner argument {index} is not a value table"
-            ))
-        })?;
-    *argument = Value::from(value);
-    Ok(())
-}
-
-fn legacy_subjects() -> Vec<review_core::SubjectKind> {
-    vec![review_core::SubjectKind::WholeTree]
 }
 
 /// One pinned reviewer.
@@ -441,20 +333,14 @@ impl AfPin {
 #[serde(deny_unknown_fields)]
 pub struct Lockfile {
     pub version: u32,
-    /// The pin as release 0.7.1 wrote it: the version only. Read for compatibility, normalised
-    /// into `af` on parse, never written again.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    af_version: Option<String>,
-    /// The `af` release that wrote this lock (`af onboard --apply`, `--migrate --apply`, or
-    /// `--refresh-lock`) and its per-target archive digests. A newer `af` proceeds and notes the
+    /// The `af` release that wrote this lock (`af onboard --apply` or `--refresh-lock`) and its
+    /// per-target archive digests. A newer `af` proceeds and notes the
     /// difference; an older `af` refuses, because it cannot know what the newer release meant by
     /// these pins; inside the project, any `af` on `PATH` dispatches to the pinned release.
-    /// Absent on locks written before the pin existed, and on locks written by a build that has
-    /// no install receipt (a source build pins nothing).
+    /// Absent on locks written by a build that has no install receipt (a source build pins
+    /// nothing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub af: Option<AfPin>,
-    #[serde(default)]
-    pub reviewers: BTreeMap<String, Pin>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub workers: BTreeMap<String, Pin>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -465,16 +351,18 @@ pub struct Lockfile {
 /// (`review-runner`), which consume it; this module is the resolver that mints it.
 pub use review_runner::ResolvedReviewer;
 
-/// Registries searched in order. Typically project, user, system.
+/// Where reviewer packages are read from: one directory on disk, or the package bytes a
+/// Campaign captured.
 pub struct Registry {
-    roots: Vec<PathBuf>,
+    root: Option<PathBuf>,
     captured: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
 }
 
 impl Registry {
-    pub fn new(roots: impl IntoIterator<Item = impl Into<PathBuf>>) -> Registry {
+    /// A registry directory holding one package directory per reviewer name.
+    pub fn new(root: impl Into<PathBuf>) -> Registry {
         Registry {
-            roots: roots.into_iter().map(Into::into).collect(),
+            root: Some(root.into()),
             captured: BTreeMap::new(),
         }
     }
@@ -482,7 +370,7 @@ impl Registry {
     /// A registry reconstructed from a Campaign's immutable package artifacts.
     pub fn captured(packages: BTreeMap<String, BTreeMap<String, Vec<u8>>>) -> Registry {
         Registry {
-            roots: Vec::new(),
+            root: None,
             captured: packages,
         }
     }
@@ -499,9 +387,8 @@ impl Registry {
         Ok((root, files))
     }
 
-    /// The first root that has the package directory. Search stops here: whether that copy
-    /// verifies is the next question, and a failure there must not be papered over by a copy
-    /// further down the chain.
+    /// The package directory for `name` under the registry root. Whether that copy verifies is
+    /// the next question.
     fn locate(&self, name: &str) -> Result<PathBuf, LockError> {
         if name.is_empty()
             || !name.bytes().enumerate().all(|(index, byte)| {
@@ -512,35 +399,34 @@ impl Registry {
                 name: name.to_string(),
             });
         }
-        for root in &self.roots {
-            let candidate = root.join(name);
-            match std::fs::symlink_metadata(&candidate) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
-                    return Err(LockError::Symlink {
-                        name: name.to_string(),
-                        path: candidate,
-                    });
-                }
-                Ok(metadata) if metadata.is_dir() => return Ok(candidate),
-                Ok(_) => {
-                    return Err(LockError::UnsupportedFileType {
-                        name: name.to_string(),
-                        path: candidate,
-                    });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(LockError::Io {
-                        path: candidate,
-                        error: error.to_string(),
-                    });
-                }
+        let Some(root) = &self.root else {
+            return Err(LockError::NotFound {
+                name: name.to_string(),
+                path: None,
+            });
+        };
+        let candidate = root.join(name);
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if metadata.file_type().is_symlink() => Err(LockError::Symlink {
+                name: name.to_string(),
+                path: candidate,
+            }),
+            Ok(metadata) if metadata.is_dir() => Ok(candidate),
+            Ok(_) => Err(LockError::UnsupportedFileType {
+                name: name.to_string(),
+                path: candidate,
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(LockError::NotFound {
+                    name: name.to_string(),
+                    path: Some(candidate),
+                })
             }
+            Err(error) => Err(LockError::Io {
+                path: candidate,
+                error: error.to_string(),
+            }),
         }
-        Err(LockError::NotFound {
-            name: name.to_string(),
-            searched: self.roots.clone(),
-        })
     }
 }
 
@@ -652,29 +538,23 @@ pub fn package_digest(name: &str, root: &Path) -> Result<String, LockError> {
 /// wrote, so it ignores every field it does not know instead of refusing the whole file.
 pub fn pinned_af(text: &str) -> Option<AfPin> {
     let value: toml::Value = toml::from_str(text).ok()?;
-    let table = value.as_table()?;
-    if let Some(af) = table.get("af").and_then(toml::Value::as_table) {
-        let version = af.get("version")?.as_str()?.to_string();
-        let digests = af
-            .get("digests")
-            .and_then(toml::Value::as_table)
-            .map(|digests| {
-                digests
-                    .iter()
-                    .filter_map(|(target, digest)| {
-                        digest
-                            .as_str()
-                            .map(|digest| (target.clone(), digest.to_string()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        return Some(AfPin { version, digests });
-    }
-    table
-        .get("af_version")
-        .and_then(toml::Value::as_str)
-        .map(AfPin::version_only)
+    let af = value.get("af")?.as_table()?;
+    let version = af.get("version")?.as_str()?.to_string();
+    let digests = af
+        .get("digests")
+        .and_then(toml::Value::as_table)
+        .map(|digests| {
+            digests
+                .iter()
+                .filter_map(|(target, digest)| {
+                    digest
+                        .as_str()
+                        .map(|digest| (target.clone(), digest.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(AfPin { version, digests })
 }
 
 fn validate_af_pin(pin: &AfPin) -> Result<(), LockError> {
@@ -708,15 +588,13 @@ impl Lockfile {
     pub fn empty() -> Lockfile {
         Lockfile {
             version: 1,
-            af_version: None,
             af: None,
-            reviewers: BTreeMap::new(),
             workers: BTreeMap::new(),
             pipelines: BTreeMap::new(),
         }
     }
 
-    /// The pinned `af` version, whichever shape wrote it.
+    /// The pinned `af` version, from the lock's `[af]` table.
     pub fn af_version(&self) -> Option<&str> {
         self.af.as_ref().map(|pin| pin.version.as_str())
     }
@@ -724,7 +602,7 @@ impl Lockfile {
     /// Parse and validate. A floating version or malformed digest is refused *here*, so a bad
     /// pin cannot sit latent in a file that parses.
     pub fn from_toml(text: &str) -> Result<Lockfile, LockError> {
-        let mut lockfile: Lockfile =
+        let lockfile: Lockfile =
             toml::from_str(text).map_err(|e| LockError::Parse(e.to_string()))?;
         if lockfile.version != 1 {
             return Err(LockError::Parse(format!(
@@ -732,19 +610,10 @@ impl Lockfile {
                 lockfile.version
             )));
         }
-        match (lockfile.af_version.take(), &lockfile.af) {
-            (Some(_), Some(_)) => {
-                return Err(LockError::Parse(
-                    "lock carries both `af_version` and `[af]`; a pin has one home".into(),
-                ));
-            }
-            (Some(version), None) => lockfile.af = Some(AfPin::version_only(&version)),
-            (None, _) => {}
-        }
         if let Some(pin) = &lockfile.af {
             validate_af_pin(pin)?;
         }
-        for pins in [&lockfile.reviewers, &lockfile.workers, &lockfile.pipelines] {
+        for pins in [&lockfile.workers, &lockfile.pipelines] {
             for (name, pin) in pins {
                 validate_pin(name, pin)?;
             }
@@ -763,13 +632,9 @@ impl Lockfile {
         name: &str,
         registry: &Registry,
     ) -> Result<(ResolvedReviewer, Vec<review_core::SubjectKind>), LockError> {
-        let pin = self
-            .reviewers
-            .get(name)
-            .or_else(|| self.workers.get(name))
-            .ok_or_else(|| LockError::NotLocked {
-                name: name.to_string(),
-            })?;
+        let pin = self.workers.get(name).ok_or_else(|| LockError::NotLocked {
+            name: name.to_string(),
+        })?;
         validate_pin(name, pin)?;
         let (root, files) = registry.read(name)?;
 
@@ -845,40 +710,6 @@ impl Lockfile {
         files: &BTreeMap<String, Vec<u8>>,
     ) -> Result<Pin, LockError> {
         Self::pin_from_files(name, Path::new("<generated-package>"), files)
-    }
-
-    /// Compute a prospective pin by replacing one package file in the same byte map used to
-    /// verify the package's opening digest. This supports proposal generation without writing
-    /// or silently blessing concurrent package changes.
-    pub fn pin_with_replacement(
-        name: &str,
-        registry: &Registry,
-        expected_digest: &str,
-        relative_path: &str,
-        replacement: Vec<u8>,
-    ) -> Result<Pin, LockError> {
-        if relative_path.is_empty()
-            || relative_path
-                .split('/')
-                .any(|component| component.is_empty() || matches!(component, "." | ".."))
-        {
-            return Err(LockError::UnsupportedPath {
-                name: name.to_string(),
-                path: PathBuf::from(relative_path),
-            });
-        }
-        let (root, mut files) = registry.read(name)?;
-        let found = package_digest_from_files(&files);
-        if found != expected_digest {
-            return Err(LockError::DigestMismatch {
-                name: name.to_string(),
-                root,
-                locked: expected_digest.to_string(),
-                found,
-            });
-        }
-        files.insert(relative_path.to_string(), replacement);
-        Self::pin_from_files(name, &root, &files)
     }
 
     fn pin_from_files(

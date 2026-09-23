@@ -1,7 +1,11 @@
-//! Warm layers render as labelled data with their own manifest entries, and a cold input stays
-//! byte-identical to what it rendered before warm layers existed.
+//! Warm layers render as labelled data with their own manifest entries, and a cold input carries
+//! nothing beyond its result contract.
 
 use review_runner::{NotesRequest, ReviewerInputs, compose_command_input, compose_model_prompt};
+
+#[path = "support/render.rs"]
+mod render_support;
+use render_support::render;
 
 const INSTRUCTIONS: &str = "Review the change.";
 
@@ -32,7 +36,7 @@ fn head_delta() -> serde_json::Value {
 }
 
 #[test]
-fn a_cold_input_renders_exactly_as_before() {
+fn a_cold_input_carries_only_its_result_contract() {
     let (prompt, manifest) =
         compose_model_prompt(INSTRUCTIONS, &ReviewerInputs::default()).unwrap();
     assert!(!prompt.contains("previous Round"));
@@ -42,9 +46,12 @@ fn a_cold_input_renders_exactly_as_before() {
         2,
         "worker_instructions and role_scoped_inputs only"
     );
-    assert_eq!(ReviewerInputs::default().render().unwrap(), "");
+    assert_eq!(render(&ReviewerInputs::default()).unwrap(), "");
     let command = serde_json::to_value(ReviewerInputs::default()).unwrap();
-    assert_eq!(command, serde_json::json!({}));
+    assert_eq!(
+        command,
+        serde_json::json!({"result_contract": "review.kernel/ReviewerResult@2"})
+    );
 }
 
 #[test]
@@ -142,7 +149,7 @@ fn a_selected_warm_set_never_fails_at_rendering() {
         notes: Some(large),
         ..ReviewerInputs::default()
     };
-    let rendered = inputs.render().unwrap();
+    let rendered = render(&inputs).unwrap();
     assert!(
         rendered.len() < pretty + 1024,
         "rendered compactly, not pretty-printed"

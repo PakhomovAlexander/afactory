@@ -1,22 +1,18 @@
 # Review accounting inspection
 
-`af review report` keeps `af/review-report@1` and its numeric fields for historical Campaigns.
-When a captured Review Task is present, JSON uses
-[`af/review-report@3`](../../schemas/review-report-v3.json), or
-[`af/review-report@4`](../../schemas/review-report-v4.json) when a native usage component
-requires the wider representation. The existing `spend` array still
-describes legacy Review Attempts and Provider operations. The additional `task_accounting`
-array reads each distinct Task's validated common execution ledger, including failures before
-the first canonical report or selected Reviewer output. Inspection opens the Store and CAS
-read-only and does not create events, receipts or missing artifacts.
+`af review report --format json` always uses
+[`af/review-report@4`](../../schemas/review-report-v4.json). A Campaign whose first Task capture
+failed has no Task: its report is the same document, with an empty `task_accounting` array and no
+Rounds. The `task_accounting` array reads each
+distinct Task's validated common execution ledger, including failures before the first
+canonical report or selected Reviewer output. Inspection opens the Store and CAS read-only and
+does not create events, receipts or missing artifacts.
 
 Each Task entry reports current cumulative `chargeable_tokens`, outstanding `reserved_tokens`,
 and started Attempt counts. Token totals and per-Attempt cumulative charges are canonical
-u128 decimal strings, including totals of several Broker operations. Attempt counts and original
-reservation caps remain canonical u64 decimal strings. Native usage components retain u64 bounds
-in generation 3; generation 4 also permits exact u128 components accumulated across native turns.
-The earlier [`@2` schema](../../schemas/review-report-v2.json) remains available for its u64
-per-Attempt representation. Sequence numbers and wall-clock fields retain their numeric shape.
+u128 decimal strings. Attempt counts and original reservation caps remain canonical u64 decimal
+strings. Native usage components are exact u128 counters accumulated across native turns.
+Sequence numbers and wall-clock fields are JSON numbers.
 
 Counts include failed, abandoned and fenced work, and exclude reservations released before
 starting. The three categories add up to the common budget's started Attempt count. A Provider
@@ -27,13 +23,13 @@ and Review Round attribution use that plan's captured graph and inputs, includin
 plan replaces the active graph. Wall-clock sidecars contribute display details; their Task-local
 Round and epoch fields do not replace captured Review Round authority.
 
-For RunReport@6 history rows, `task_chargeable_tokens_at_report` and `task_accounting` preserve
-the recorded cumulative total and exact Task log prefix. These are snapshots, not Round costs.
-Reports of 100 and 150 tokens for one Task contribute one current Task total of 150, not 250.
-Late usage can raise that current total to 170 while both reports remain unchanged. Inspection
-reads the ledger's effective charge, which can exceed the original terminal receipt, and never
-subtracts snapshots to infer Round costs or changes an original reservation cap.
+Each Round row's `task_chargeable_tokens_at_report` and `task_accounting` preserve the
+cumulative total and exact Task log prefix its RunReport@6 recorded. These are snapshots, not
+Round costs. Reports of 100 and 150 tokens for one Task contribute one current Task total of
+150, not 250. Late usage can raise that current total to 170 while both reports remain
+unchanged. Inspection reads the ledger's effective charge, which can exceed the original
+terminal receipt, and never subtracts snapshots to infer Round costs or changes an original
+reservation cap.
 
 Text and Markdown distinguish “Task cumulative charge at report” from current “Task accounting”.
-The same historical snapshot label is used by Campaign listing. Historical reports, legacy
-numeric spend fields and their existing rendered labels remain unchanged.
+The same historical snapshot label is used by Campaign listing.

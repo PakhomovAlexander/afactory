@@ -1,4 +1,5 @@
 use super::*;
+use review_check::Command;
 use review_core::exec::Arg;
 use std::time::Instant;
 
@@ -162,7 +163,6 @@ fn an_absolute_attempt_deadline_refuses_setup_and_bounds_the_running_check() {
 }
 
 #[test]
-#[cfg(unix)]
 fn unconfirmed_container_cleanup_preserves_the_writable_sandbox_and_stops_checks() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();

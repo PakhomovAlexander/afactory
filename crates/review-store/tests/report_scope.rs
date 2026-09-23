@@ -84,7 +84,7 @@ fn rename_endpoints_are_in_scope_and_replay_preserves_the_existing_key() {
     apply_report(
         &mut ledger,
         &cas,
-        "stable-legacy-key",
+        "renamed-claim",
         1,
         Severity::Major,
         "src/old.rs",
@@ -92,7 +92,7 @@ fn rename_endpoints_are_in_scope_and_replay_preserves_the_existing_key() {
     apply_report(
         &mut ledger,
         &cas,
-        "stable-legacy-key",
+        "renamed-claim",
         1,
         Severity::Major,
         "src/new.rs",
@@ -106,9 +106,9 @@ fn rename_endpoints_are_in_scope_and_replay_preserves_the_existing_key() {
         "src/other.rs",
     );
 
-    assert_eq!(ledger.len(), 2);
-    let renamed = ledger.get("stable-legacy-key").unwrap();
-    assert_eq!(renamed.key, "stable-legacy-key");
+    assert_eq!(ledger.findings().len(), 2);
+    let renamed = ledger.get("renamed-claim").unwrap();
+    assert_eq!(renamed.key, "renamed-claim");
     assert_eq!(renamed.reports.len(), 2);
     assert!(
         renamed
@@ -233,9 +233,7 @@ fn any_matching_location_makes_a_typed_report_in_scope() {
         occurrence_key: None,
         relations: Vec::new(),
     };
-    let report_id = cas
-        .put_json(&serde_json::to_value(report).unwrap())
-        .unwrap();
+    let report_id = put_report(&cas, serde_json::to_value(report).unwrap());
     ledger
         .apply_event(
             &event(
@@ -262,143 +260,81 @@ fn any_matching_location_makes_a_typed_report_in_scope() {
     assert_eq!(finding.convergence_scope, Some(ReportScope::In));
 }
 
+/// Only an enveloped `FindingReport@1` whose every location is a canonical repository path is
+/// claim authority. Anything else keeps replay going as an unreadable-authority placeholder.
 #[test]
-fn one_noncanonical_typed_location_makes_the_whole_scope_unknown() {
-    let dir = tempfile::tempdir().unwrap();
-    let cas = Cas::open(dir.path()).unwrap();
-    let mut ledger = Ledger::default();
-    apply_diff_round(&mut ledger, &cas, 1, &["src/in.rs"]);
-    let report_id = cas
-        .put_json(&serde_json::json!({
-            "title": "mixed locations",
+fn invalid_reports_are_unreadable_authority() {
+    let typed = |locations: serde_json::Value, fix: &str| {
+        serde_json::json!({
+            "title": "title",
             "severity": "major",
-            "locations": [
-                {"path": "src/out.rs", "line": 1},
-                {"path": "./src/in.rs", "line": 2}
-            ],
+            "locations": locations,
             "body": "body",
-            "fix": "fix",
+            "fix": fix,
             "confidence": 0.9
-        }))
-        .unwrap();
-    ledger
-        .apply_event(
-            &event(
-                EventType::FindingReportedV1,
-                serde_json::json!({
-                    "key": "mixed",
-                    "round": 1,
-                    "source": "typed",
-                    "report_id": report_id,
-                }),
-                vec![report_id],
-            ),
-            &cas,
-        )
-        .unwrap();
-
-    let finding = ledger.get("mixed").unwrap();
-    assert_eq!(finding.convergence_scope, None);
-    assert_eq!(finding.reports[0].scope, None);
-    assert_eq!(ledger.scope_authority_failures().len(), 1);
-    assert!(
-        ledger.scope_authority_failures()[0]
-            .reason
-            .contains("./src/in.rs")
-    );
-    assert_eq!(
-        convergence(&ledger, Severity::Major).verdict,
-        Verdict::NotConverged
-    );
-}
-
-#[test]
-fn an_invalid_typed_report_is_diagnostic_unknown_instead_of_bricking_replay() {
-    let dir = tempfile::tempdir().unwrap();
-    let cas = Cas::open(dir.path()).unwrap();
-    let mut ledger = Ledger::default();
-    apply_diff_round(&mut ledger, &cas, 1, &["src/in.rs"]);
-    let report_id = cas
-        .put_json(&serde_json::json!({
-            "title": "bad path spelling",
-            "severity": "major",
-            "locations": [{"path": "./src/in.rs"}],
-            "body": "body",
-            "fix": "fix",
-            "confidence": 0.9
-        }))
-        .unwrap();
-    ledger
-        .apply_event(
-            &event(
-                EventType::FindingReportedV1,
-                serde_json::json!({
-                    "key": "bad-path",
-                    "round": 1,
-                    "source": "typed",
-                    "report_id": report_id,
-                }),
-                vec![report_id],
-            ),
-            &cas,
-        )
-        .unwrap();
-
-    let finding = ledger.get("bad-path").unwrap();
-    assert_eq!(finding.severity, Severity::Major);
-    assert_eq!(finding.title, "bad path spelling");
-    assert_eq!(finding.body, "body");
-    assert_eq!(finding.fix.as_deref(), Some("fix"));
-    assert!(!finding.authority_diagnostic);
-    assert_eq!(finding.convergence_scope, None);
-    assert_eq!(finding.reports[0].scope, None);
-    assert_eq!(ledger.scope_authority_failures().len(), 1);
-    assert_eq!(
-        ledger.scope_authority_failures()[0].authority,
-        ScopeAuthorityKind::Report
-    );
-    assert!(
-        ledger.scope_authority_failures()[0]
-            .reason
-            .contains("noncanonical repository-relative location")
-    );
-    assert_eq!(
-        convergence(&ledger, Severity::Major).verdict,
-        Verdict::NotConverged
-    );
-}
-
-#[test]
-fn typed_report_semantic_failures_are_unreadable_authority() {
-    for (key, report) in [
+        })
+    };
+    for (key, report, enveloped, offending_path) in [
         (
             "empty-fix",
-            serde_json::json!({
-                "title": "title",
-                "severity": "major",
-                "locations": [{"path": "src/a.rs", "line": 1}],
-                "body": "body",
-                "fix": "",
-                "confidence": 0.9
-            }),
+            typed(serde_json::json!([{"path": "src/a.rs", "line": 1}]), ""),
+            true,
+            None,
         ),
         (
             "zero-line",
+            typed(serde_json::json!([{"path": "src/a.rs", "line": 0}]), "fix"),
+            true,
+            Some("src/a.rs"),
+        ),
+        (
+            "noncanonical-path",
+            typed(serde_json::json!([{"path": "./src/a.rs"}]), "fix"),
+            true,
+            Some("./src/a.rs"),
+        ),
+        (
+            "one-noncanonical-location",
+            typed(
+                serde_json::json!([
+                    {"path": "src/out.rs", "line": 1},
+                    {"path": "./src/in.rs", "line": 2}
+                ]),
+                "fix",
+            ),
+            true,
+            Some("./src/in.rs"),
+        ),
+        (
+            "flat-shape",
             serde_json::json!({
                 "title": "title",
                 "severity": "major",
-                "locations": [{"path": "src/a.rs", "line": 0}],
+                "file": "src/a.rs",
+                "line": 1,
                 "body": "body",
                 "fix": "fix",
                 "confidence": 0.9
             }),
+            true,
+            None,
+        ),
+        (
+            "unenveloped",
+            typed(serde_json::json!([{"path": "src/a.rs", "line": 1}]), "fix"),
+            false,
+            None,
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let cas = Cas::open(dir.path()).unwrap();
         let mut ledger = Ledger::default();
         apply_whole_tree_round(&mut ledger, &cas, 1);
-        let report_id = cas.put_json(&report).unwrap();
+        let report_id = if enveloped {
+            put_report(&cas, report)
+        } else {
+            cas.put_json(&report).unwrap()
+        };
         ledger
             .apply_event(
                 &event(
@@ -415,17 +351,25 @@ fn typed_report_semantic_failures_are_unreadable_authority() {
             )
             .unwrap();
 
-        assert!(ledger.get(key).unwrap().authority_diagnostic, "{key}");
+        let finding = ledger.get(key).unwrap();
+        assert!(finding.authority_diagnostic, "{key}");
+        assert_eq!(finding.severity, Severity::Blocker, "{key}");
+        assert_eq!(finding.convergence_scope, None, "{key}");
         assert_eq!(ledger.scope_authority_failures().len(), 1, "{key}");
         assert_eq!(
             ledger.scope_authority_failures()[0].authority,
             ScopeAuthorityKind::Report,
             "{key}"
         );
+        if let Some(path) = offending_path {
+            let reason = &ledger.scope_authority_failures()[0].reason;
+            assert!(reason.contains(path), "{key}: {reason}");
+        }
         let summary = convergence(&ledger, Severity::Major);
         assert_eq!(summary.open_blocking, 0, "{key}");
         assert_eq!(summary.new_recent, 0, "{key}");
         assert_eq!(summary.authority_failures_recent, 1, "{key}");
+        assert_eq!(summary.verdict, Verdict::NotConverged, "{key}");
     }
 }
 
@@ -435,12 +379,13 @@ fn an_active_unreadable_report_blocks_after_its_original_clean_window() {
     let cas = Cas::open(dir.path()).unwrap();
     let mut ledger = Ledger::default();
     apply_whole_tree_round(&mut ledger, &cas, 1);
-    let report_id = cas
-        .put_json(&serde_json::json!({
+    let report_id = put_report(
+        &cas,
+        serde_json::json!({
             "severity": "major", "locations": [], "body": "body",
             "fix": "fix", "confidence": 0.9
-        }))
-        .unwrap();
+        }),
+    );
     ledger
         .apply_event(
             &event(
@@ -477,12 +422,13 @@ fn an_unreadable_rereport_of_a_fixed_claim_never_ages_out() {
     apply_resolution(&mut ledger, &cas, "claim", 1, Status::Fixed);
 
     apply_whole_tree_round(&mut ledger, &cas, 2);
-    let unreadable_id = cas
-        .put_json(&serde_json::json!({
+    let unreadable_id = put_report(
+        &cas,
+        serde_json::json!({
             "severity": "major", "locations": [], "body": "body",
             "fix": "fix", "confidence": 0.9
-        }))
-        .unwrap();
+        }),
+    );
     ledger
         .apply_event(
             &event(
@@ -536,15 +482,16 @@ fn a_readable_report_replaces_an_unreadable_first_report() {
     let mut ledger = Ledger::default();
     apply_whole_tree_round(&mut ledger, &cas, 1);
 
-    let unreadable_id = cas
-        .put_json(&serde_json::json!({
+    let unreadable_id = put_report(
+        &cas,
+        serde_json::json!({
             "severity": "blocker",
             "locations": [{"path": "src/a.rs"}],
             "body": "invalid body",
             "fix": "invalid fix",
             "confidence": 1.0
-        }))
-        .unwrap();
+        }),
+    );
     ledger
         .apply_event(
             &event(
@@ -578,15 +525,16 @@ fn authority_recovery_reopens_a_placeholder_resolution_and_restores_identity() {
     let cas = Cas::open(dir.path()).unwrap();
     let mut ledger = Ledger::default();
     apply_whole_tree_round(&mut ledger, &cas, 1);
-    let unreadable_id = cas
-        .put_json(&serde_json::json!({
+    let unreadable_id = put_report(
+        &cas,
+        serde_json::json!({
             "severity": "blocker",
             "locations": [{"path": "src/a.rs"}],
             "body": "invalid body",
             "fix": "invalid fix",
             "confidence": 1.0
-        }))
-        .unwrap();
+        }),
+    );
     ledger
         .apply_event(
             &event(
@@ -608,7 +556,7 @@ fn authority_recovery_reopens_a_placeholder_resolution_and_restores_identity() {
 
     let finding = ledger.get("claim").unwrap();
     assert_eq!(finding.status, Status::Open);
-    assert_eq!(finding.news_round, 1);
+    assert_eq!(finding.scoped_news_round, Some(1));
     assert_eq!(finding.identity_file, "src/a.rs");
     assert_eq!(finding.identity_line, Some(1));
     assert!(
@@ -620,61 +568,15 @@ fn authority_recovery_reopens_a_placeholder_resolution_and_restores_identity() {
 }
 
 #[test]
-fn frozen_flat_noncanonical_paths_remain_readable_and_fail_closed_unknown() {
-    let dir = tempfile::tempdir().unwrap();
-    let cas = Cas::open(dir.path()).unwrap();
-    let mut ledger = Ledger::default();
-    apply_diff_round(&mut ledger, &cas, 1, &["src/a.rs"]);
-    for (index, path) in ["./src/a.rs", "/sandbox/src/a.rs", "src/../a.rs", "   "]
-        .into_iter()
-        .enumerate()
-    {
-        let key = format!("flat-{index}");
-        apply_report(&mut ledger, &cas, &key, 1, Severity::Major, path);
-        let finding = ledger.get(&key).unwrap();
-        assert_eq!(finding.title, "claim");
-        assert_eq!(finding.body, "body");
-        assert_eq!(finding.fix.as_deref(), Some("fix"));
-        assert_eq!(finding.severity, Severity::Major);
-        assert_eq!(finding.file, path);
-        assert_eq!(finding.convergence_scope, None);
-        assert_eq!(finding.convergence_scope_label(), "unknown");
-    }
-    assert_eq!(convergence(&ledger, Severity::Major).open_blocking, 4);
-}
-
-#[test]
 fn an_old_authority_failure_ages_out_after_the_clean_window() {
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path()).unwrap();
     let mut ledger = Ledger::default();
-    apply_diff_round(&mut ledger, &cas, 1, &["src/a.rs"]);
-    let report_id = cas
-        .put_json(&serde_json::json!({
-            "title": "bad path",
-            "severity": "major",
-            "locations": [{"path": "./src/a.rs"}],
-            "body": "body",
-            "fix": "fix",
-            "confidence": 0.9
-        }))
-        .unwrap();
-    ledger
-        .apply_event(
-            &event(
-                EventType::FindingReportedV1,
-                serde_json::json!({
-                    "key": "bad-path",
-                    "round": 1,
-                    "source": "typed",
-                    "report_id": report_id,
-                }),
-                vec![report_id],
-            ),
-            &cas,
-        )
-        .unwrap();
-    apply_resolution(&mut ledger, &cas, "bad-path", 1, Status::Fixed);
+    apply_round(&mut ledger, &cas, 1, digest('9'));
+    apply_report(&mut ledger, &cas, "claim", 1, Severity::Major, "src/a.rs");
+    assert_eq!(ledger.get("claim").unwrap().convergence_scope, None);
+    assert_eq!(ledger.scope_authority_failures().len(), 1);
+    apply_resolution(&mut ledger, &cas, "claim", 1, Status::Fixed);
     apply_diff_round(&mut ledger, &cas, 2, &["src/a.rs"]);
     apply_diff_round(&mut ledger, &cas, 3, &["src/a.rs"]);
 
@@ -700,15 +602,16 @@ fn an_unreadable_later_report_does_not_overwrite_a_readable_claim() {
     apply_resolution(&mut ledger, &cas, "claim", 1, Status::Fixed);
     apply_whole_tree_round(&mut ledger, &cas, 2);
 
-    let report_id = cas
-        .put_json(&serde_json::json!({
+    let report_id = put_report(
+        &cas,
+        serde_json::json!({
             "severity": "blocker",
             "locations": [{"path": "./src/a.rs"}],
             "body": "replacement body",
             "fix": "replacement fix",
             "confidence": 1.0
-        }))
-        .unwrap();
+        }),
+    );
     ledger
         .apply_event(
             &event(
@@ -730,7 +633,7 @@ fn an_unreadable_later_report_does_not_overwrite_a_readable_claim() {
     assert_eq!(finding.severity, Severity::Major);
     assert_eq!(finding.title, "claim");
     assert_eq!(finding.body, "body");
-    assert_eq!(finding.fix.as_deref(), Some("fix"));
+    assert_eq!(finding.fix, "fix");
     assert_eq!(finding.reports.len(), 2);
     assert_eq!(finding.reports[1].scope, None);
     assert_eq!(
@@ -770,6 +673,8 @@ fn apply_round(ledger: &mut Ledger, cas: &Cas, round: u32, subject_id: String) {
     ledger.round = round;
 }
 
+/// One Report of the claim `title = "claim"` at line 1 of `file`, or change-wide for an empty
+/// `file`, stored as the enveloped `FindingReport@1` a reduction publishes.
 fn apply_report(
     ledger: &mut Ledger,
     cas: &Cas,
@@ -778,22 +683,23 @@ fn apply_report(
     severity: Severity,
     file: &str,
 ) {
-    let severity = match severity {
-        Severity::Minor => "minor",
-        Severity::Major => "major",
-        Severity::Blocker => "blocker",
+    let report = FindingReport {
+        title: "claim".into(),
+        severity,
+        locations: if file.is_empty() {
+            Vec::new()
+        } else {
+            vec![Location::at(file, 1)]
+        },
+        body: "body".into(),
+        fix: "fix".into(),
+        confidence: 0.9,
+        failure_trace: None,
+        rule_id: None,
+        occurrence_key: None,
+        relations: Vec::new(),
     };
-    let report_id = cas
-        .put_json(&serde_json::json!({
-            "title": "claim",
-            "severity": severity,
-            "file": file,
-            "line": 1,
-            "body": "body",
-            "fix": "fix",
-            "confidence": 0.9,
-        }))
-        .unwrap();
+    let report_id = put_report(cas, serde_json::to_value(report).unwrap());
     ledger
         .apply_event(
             &event(
@@ -811,28 +717,21 @@ fn apply_report(
         .unwrap();
 }
 
-fn apply_legacy_report(ledger: &mut Ledger, cas: &Cas) {
-    ledger
-        .apply_event(
-            &event(
-                EventType::FindingReportedV1,
-                serde_json::json!({
-                    "key": "legacy",
-                    "round": 1,
-                    "source": "legacy",
-                    "severity": "major",
-                    "file": "src/legacy.rs",
-                    "line": 1,
-                    "title": "legacy claim",
-                    "body": "body",
-                    "confidence": 0.5,
-                    "imported": true,
-                }),
-                Vec::new(),
-            ),
-            cas,
-        )
-        .unwrap();
+/// Envelope `payload` as a `FindingReport@1` artifact, valid or not, and return its record ID.
+fn put_report(cas: &Cas, payload: serde_json::Value) -> String {
+    cas.put_artifact(
+        review_core::contract::FINDING_REPORT_V1,
+        Producer::KernelOperation {
+            run_id: "run".into(),
+            node_id: Some("reviewer".into()),
+            operation_id: "test-report".into(),
+        },
+        Vec::new(),
+        None,
+        payload,
+    )
+    .unwrap()
+    .0
 }
 
 fn apply_resolution(ledger: &mut Ledger, cas: &Cas, key: &str, round: u32, status: Status) {
@@ -1000,22 +899,6 @@ fn whole_tree_and_change_wide_reports_are_in_scope() {
         change_wide.get("wide").unwrap().reports[0].scope,
         Some(ReportScope::In)
     );
-}
-
-#[test]
-fn legacy_unknown_is_presentation_only_and_fails_closed() {
-    let dir = tempfile::tempdir().unwrap();
-    let cas = Cas::open(dir.path()).unwrap();
-    let mut ledger = Ledger::default();
-    apply_whole_tree_round(&mut ledger, &cas, 1);
-    apply_legacy_report(&mut ledger, &cas);
-    ledger.round = 1;
-
-    let finding = ledger.get("legacy").unwrap();
-    assert_eq!(finding.status, Status::Open);
-    assert_eq!(finding.reports[0].scope, None);
-    assert_eq!(finding.reports[0].scope_label(), "unknown");
-    assert_eq!(convergence(&ledger, Severity::Major).open_blocking, 1);
 }
 
 #[test]

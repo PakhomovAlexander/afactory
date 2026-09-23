@@ -60,7 +60,13 @@ pub fn is_valid_repo_path(path: &str) -> bool {
             .all(|component| !matches!(component, "" | "." | ".."))
 }
 
-/// Match a Report spelling against a sorted set of losslessly encoded repository paths.
+/// Match a Report location against a sorted set of losslessly encoded repository paths, such as
+/// a Change Set's changed paths.
+///
+/// Review adapters normally report an ordinary UTF-8 sandbox path, while a non-UTF-8 path can
+/// only be named in the Change Set's encoded form. Accept both representations. If a
+/// percent-bearing string is ambiguous, membership is deliberately a union: projecting a claim
+/// `in` is the fail-closed result for convergence.
 pub fn contains_report_path(changed_paths: &[String], report_path: &str) -> bool {
     is_valid_repo_path(report_path)
         && (changed_paths

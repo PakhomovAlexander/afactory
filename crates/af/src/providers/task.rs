@@ -2,7 +2,6 @@
 //! later as paid nodes by the common Task runtime. Credentials and raw account data stay local.
 use super::*;
 use review_core::task::plan::WorkerExecutionV1;
-use review_runner::ExactBrokerClient;
 use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
 
 #[derive(Clone)]
@@ -161,7 +160,6 @@ fn probe_identity(
     cancelled: &AtomicBool,
     deadline: Option<Instant>,
 ) -> Result<(String, String), String> {
-    #[cfg(unix)]
     match spec.kind {
         ProviderKind::Claude => {
             let output = run_probe_before(program, spec, probe_path, cancelled, deadline)?;
@@ -185,11 +183,6 @@ fn probe_identity(
             Ok((codex_principal(&response)?, "chatgpt".into()))
         }
     }
-    #[cfg(not(unix))]
-    {
-        let _ = (program, spec, probe_path, cancelled, deadline);
-        Err("Task Provider admission requires bounded Unix process isolation".into())
-    }
 }
 
 /// A token-free recheck before each private send. The status process and native invocation share
@@ -200,7 +193,7 @@ struct CurrentTaskProviderAdapter {
     inner: Box<dyn WorkerModelAdapter>,
 }
 impl WorkerModelAdapter for CurrentTaskProviderAdapter {
-    fn credential_mode(&self) -> review_core::BrokerCredentialModeV1 {
+    fn credential_mode(&self) -> review_core::CredentialModeV1 {
         self.inner.credential_mode()
     }
     fn provider_kind(&self) -> &'static str {
@@ -209,6 +202,8 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
     fn model_settings(&self) -> Option<(String, String)> {
         self.inner.model_settings()
     }
+    /// Sandbox-local environment (a carried Build Cache location) is forwarded to the native
+    /// client exactly as it arrived, and only after the identity recheck passes.
     fn invoke(
         &self,
         cas: &Cas,
@@ -216,41 +211,6 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         input: Vec<u8>,
         timeout: Duration,
         writable: bool,
-    ) -> ModelWorkerReturn {
-        self.invoke_controlled(cas, workdir, input, timeout, writable, None, None)
-    }
-    fn invoke_controlled(
-        &self,
-        cas: &Cas,
-        workdir: &Path,
-        input: Vec<u8>,
-        timeout: Duration,
-        writable: bool,
-        broker: Option<&dyn ExactBrokerClient>,
-        cancellation: Option<&AtomicBool>,
-    ) -> ModelWorkerReturn {
-        self.invoke_controlled_with_environment(
-            cas,
-            workdir,
-            input,
-            timeout,
-            writable,
-            broker,
-            cancellation,
-            &[],
-        )
-    }
-    /// The one invocation path. Sandbox-local environment (a carried Build Cache location) is
-    /// forwarded to the native client exactly as it arrived; the trait's default would refuse
-    /// it, so a wrapper that forgot this method would silently strip a warm layer.
-    fn invoke_controlled_with_environment(
-        &self,
-        cas: &Cas,
-        workdir: &Path,
-        input: Vec<u8>,
-        timeout: Duration,
-        writable: bool,
-        broker: Option<&dyn ExactBrokerClient>,
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
@@ -264,22 +224,6 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             usage_observation: None,
             raw_artifact_ids: vec![],
         };
-        // Native clients do not consume Broker handles. Keep the native refusal, before any check.
-        if broker.is_some() {
-            if !environment.is_empty() {
-                return ModelWorkerReturn {
-                    message: Err(
-                        "Brokered Task Provider invocation cannot carry sandbox environment".into(),
-                    ),
-                    usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
-                    usage_observation: None,
-                    raw_artifact_ids: vec![],
-                };
-            }
-            return self
-                .inner
-                .invoke_with_broker(cas, workdir, input, timeout, writable, broker);
-        }
         let Some(deadline) = Instant::now().checked_add(timeout) else {
             return refused();
         };
@@ -292,13 +236,12 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             return refused();
         };
-        self.inner.invoke_controlled_with_environment(
+        self.inner.invoke(
             cas,
             workdir,
             input,
             remaining,
             writable,
-            None,
             cancellation,
             environment,
         )
@@ -382,6 +325,6 @@ mod tests {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "task/currentness_tests.rs"]
 mod currentness_tests;

@@ -39,6 +39,32 @@ pub fn open_round_authority_with_convergence(
         convergence,
         BTreeMap::new(),
         false,
+        None,
+    )
+}
+
+/// A Round whose Campaign narrows the run with `focus`, as `af review run --focus` records it.
+#[allow(dead_code)]
+pub fn open_round_authority_with_focus(
+    cas: &Cas,
+    store: &mut EventStore,
+    definition: &str,
+    files: Option<BTreeMap<String, Vec<u8>>>,
+    focus: Option<&str>,
+) -> String {
+    open_round_inner(
+        cas,
+        store,
+        definition,
+        files,
+        review_core::CampaignConvergenceV1 {
+            clean_rounds: 1,
+            max_rounds: 1,
+            gate: "major".into(),
+        },
+        BTreeMap::new(),
+        false,
+        focus,
     )
 }
 
@@ -52,9 +78,19 @@ pub fn open_round_authority_with_source(
     convergence: review_core::CampaignConvergenceV1,
     source: BTreeMap<String, Vec<u8>>,
 ) -> String {
-    open_round_inner(cas, store, definition, files, convergence, source, true)
+    open_round_inner(
+        cas,
+        store,
+        definition,
+        files,
+        convergence,
+        source,
+        true,
+        None,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn open_round_inner(
     cas: &Cas,
     store: &mut EventStore,
@@ -63,6 +99,7 @@ fn open_round_inner(
     convergence: review_core::CampaignConvergenceV1,
     source: BTreeMap<String, Vec<u8>>,
     exact_convergence: bool,
+    focus: Option<&str>,
 ) -> String {
     let (attempt_tokens, run_tokens) = if files.is_some() {
         (20_000, 50_000)
@@ -125,7 +162,7 @@ fn open_round_inner(
             digest: digest.clone(),
             package_artifact_id: id.clone(),
         });
-        lock.reviewers.insert(
+        lock.workers.insert(
             "fixture".into(),
             review_config::lock::Pin {
                 version: "1.0.0".into(),
@@ -176,8 +213,8 @@ fn open_round_inner(
         "reviewer_lock": {"path": ".af/af.lock", "artifact_id": lock_id},
         "reviewers": reviewers, "execution_policy_ids": execution_policy_ids, "project_policy_ids": [],
         "convergence": convergence,
-        "reviewer_timeout_seconds": 7, "check_timeout_seconds": 3600,
-        "budgets": {"attempt_tokens": attempt_tokens, "run_tokens": run_tokens},
+        "reviewer_timeout_seconds": 7, "check_timeout_seconds": 3600, "git_timeout_seconds": 300,
+        "budgets": {"attempt_tokens": attempt_tokens, "run_tokens": run_tokens}, "focus": focus,
         "finding_identity_policy": review_core::CANONICAL_FINDING_IDENTITY_POLICY,
         "finding_genesis_id": finding_genesis, "demand_genesis_id": demand_genesis,
     }))

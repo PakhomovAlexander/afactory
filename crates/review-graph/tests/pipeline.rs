@@ -1,9 +1,11 @@
-//! The pipeline the design describes, executed.
+//! The pipeline the design describes, planned and executed.
 //!
 //! gate -> (architecture | performance | tdd) -> gather -> ledger, with the reviewers gated on
-//! the gate. Every property below is about *scheduling*, so the dispatcher is a recording stub:
-//! no models, no checks, no filesystem. That is the point of the split — these guarantees can be
-//! proved without anything expensive or nondeterministic in the loop.
+//! the gate. Gating is a planning property here: the Review compiler turns each gate into a Task
+//! condition, so the scheduler runs the gate like any other node. Every property below is about
+//! *planning and scheduling*, so the dispatcher is a recording stub: no models, no checks, no
+//! filesystem. That is the point of the split — these guarantees can be proved without anything
+//! expensive or nondeterministic in the loop.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -16,15 +18,13 @@ use review_graph::{
 /// Records every dispatch, so "this node never ran" is checkable rather than assumed.
 struct Recorder {
     dispatched: Mutex<Vec<String>>,
-    gate_passes: bool,
     failing: Option<String>,
 }
 
 impl Recorder {
-    fn new(gate_passes: bool) -> Recorder {
+    fn new() -> Recorder {
         Recorder {
             dispatched: Mutex::new(Vec::new()),
-            gate_passes,
             failing: None,
         }
     }
@@ -32,7 +32,6 @@ impl Recorder {
     fn failing(node: &str) -> Recorder {
         Recorder {
             dispatched: Mutex::new(Vec::new()),
-            gate_passes: true,
             failing: Some(node.to_string()),
         }
     }
@@ -63,32 +62,37 @@ impl Dispatch for Recorder {
             vec![format!("artifact:{node_id}")],
         )]))
     }
+}
 
-    fn gate_passed(&self, _node_id: &str, _outputs: &ArtifactMap) -> bool {
-        self.gate_passes
-    }
+/// A port that carries one test artifact: these tests are about topology, not contracts.
+fn port(name: &str) -> PortContract {
+    PortContract::new(name, "test/Artifact@1").with_snapshot_affinity(SnapshotAffinity::Any)
+}
+
+fn ports(names: &[&str]) -> Vec<PortContract> {
+    names.iter().copied().map(port).collect()
 }
 
 fn heavy_pipeline() -> Pipeline {
     let mut pipeline = Pipeline::default()
-        .node(Node::new("gate", NodeKind::Gate).emitting(&["decision"]))
+        .node(Node::new("gate", NodeKind::Gate).emitting_contracts(ports(&["decision"])))
         .node(
             Node::new("gather", NodeKind::Gather)
-                .accepting(&["architecture", "performance", "tdd"])
-                .emitting(&["reports"]),
+                .accepting_contracts(ports(&["architecture", "performance", "tdd"]))
+                .emitting_contracts(ports(&["reports"])),
         )
         .node(
             Node::new("ledger", NodeKind::Ledger)
-                .accepting(&["reports"])
-                .emitting(&["findings"]),
+                .accepting_contracts(ports(&["reports"]))
+                .emitting_contracts(ports(&["findings"])),
         );
 
     for reviewer in ["architecture", "performance", "tdd"] {
         pipeline = pipeline
             .node(
                 Node::new(reviewer, NodeKind::Reviewer)
-                    .accepting(&["gate"])
-                    .emitting(&["result"])
+                    .accepting_contracts(ports(&["gate"]))
+                    .emitting_contracts(ports(&["result"]))
                     .gated_by("gate"),
             )
             .edge(Port::new("gate", "decision"), Port::new(reviewer, "gate"))
@@ -112,13 +116,12 @@ fn the_plan_order_is_a_function_of_the_pipeline() {
 }
 
 #[test]
-fn a_passing_gate_lets_everything_run() {
+fn every_node_runs_on_exactly_the_inputs_its_edges_resolve() {
     let plan = heavy_pipeline().plan().unwrap();
-    let recorder = Recorder::new(true);
-    let report = Scheduler::new(&plan).run(&recorder);
+    let recorder = Recorder::new();
+    let report = Scheduler::new(&plan, 4).run(&recorder);
 
     assert!(report.complete(), "{:?}", report.outcomes);
-    assert_eq!(report.suppressed(), Vec::<&str>::new());
     assert_eq!(
         recorder.log().len(),
         6,
@@ -141,53 +144,13 @@ fn a_passing_gate_lets_everything_run() {
     );
 }
 
-/// The property gating exists for: a failed gate must make downstream dispatch impossible, not
-/// merely discouraged.
-#[test]
-fn a_blocked_gate_suppresses_every_gated_node() {
-    let plan = heavy_pipeline().plan().unwrap();
-    let recorder = Recorder::new(false);
-    let report = Scheduler::new(&plan).run(&recorder);
-
-    assert_eq!(
-        recorder.log(),
-        vec!["gate()"],
-        "nothing beyond the gate may be dispatched"
-    );
-    assert!(!report.complete());
-    assert_eq!(
-        report.suppressed(),
-        // Plan order, not alphabetical: the report reads as the run would have gone.
-        vec!["architecture", "performance", "tdd", "gather", "ledger"]
-    );
-    assert!(report.blocked_gates.contains("gate"));
-
-    // Suppression is labelled with its cause, and a suppressed node is present in the report —
-    // an absent node would read as "nothing to report".
-    assert_eq!(
-        report.outcome("architecture"),
-        Some(&NodeOutcome::Suppressed {
-            reason: SuppressionReason::GateBlocked
-        })
-    );
-    // gather is labelled GateBlocked too, not UpstreamMissing: gating is transitive, so the
-    // root cause wins over the proximate one. Reporting "upstream missing" across a whole
-    // suppressed subgraph would bury the single fact that explains all of it.
-    assert_eq!(
-        report.outcome("gather"),
-        Some(&NodeOutcome::Suppressed {
-            reason: SuppressionReason::GateBlocked
-        })
-    );
-}
-
 /// One reviewer failing is a fact about the review, not a reason to lose the rest of it — but
 /// nothing may consume an output that does not exist.
 #[test]
 fn a_failed_reviewer_does_not_take_the_pipeline_down_but_does_stop_its_dependents() {
     let plan = heavy_pipeline().plan().unwrap();
     let recorder = Recorder::failing("performance");
-    let report = Scheduler::new(&plan).run(&recorder);
+    let report = Scheduler::new(&plan, 4).run(&recorder);
 
     assert!(matches!(
         report.outcome("performance"),
@@ -216,13 +179,13 @@ fn planning_refuses_a_cycle_before_anything_runs() {
     let pipeline = Pipeline::default()
         .node(
             Node::new("a", NodeKind::Reviewer)
-                .accepting(&["in"])
-                .emitting(&["out"]),
+                .accepting_contracts(ports(&["in"]))
+                .emitting_contracts(ports(&["out"])),
         )
         .node(
             Node::new("b", NodeKind::Reviewer)
-                .accepting(&["in"])
-                .emitting(&["out"]),
+                .accepting_contracts(ports(&["in"]))
+                .emitting_contracts(ports(&["out"])),
         )
         .edge(Port::new("a", "out"), Port::new("b", "in"))
         .edge(Port::new("b", "out"), Port::new("a", "in"));
@@ -232,8 +195,8 @@ fn planning_refuses_a_cycle_before_anything_runs() {
 #[test]
 fn planning_refuses_an_edge_to_a_port_that_does_not_exist() {
     let pipeline = Pipeline::default()
-        .node(Node::new("gate", NodeKind::Gate).emitting(&["decision"]))
-        .node(Node::new("deep", NodeKind::Reviewer).accepting(&["gate"]))
+        .node(Node::new("gate", NodeKind::Gate).emitting_contracts(ports(&["decision"])))
+        .node(Node::new("deep", NodeKind::Reviewer).accepting_contracts(ports(&["gate"])))
         // Typo: the reviewer accepts "gate", not "gates".
         .edge(Port::new("gate", "decision"), Port::new("deep", "gates"));
     assert!(matches!(
@@ -247,8 +210,11 @@ fn planning_refuses_an_edge_to_a_port_that_does_not_exist() {
 #[test]
 fn planning_refuses_an_input_nothing_feeds() {
     let pipeline = Pipeline::default()
-        .node(Node::new("gate", NodeKind::Gate).emitting(&["decision"]))
-        .node(Node::new("deep", NodeKind::Reviewer).accepting(&["gate", "prior_findings"]))
+        .node(Node::new("gate", NodeKind::Gate).emitting_contracts(ports(&["decision"])))
+        .node(
+            Node::new("deep", NodeKind::Reviewer)
+                .accepting_contracts(ports(&["gate", "prior_findings"])),
+        )
         .edge(Port::new("gate", "decision"), Port::new("deep", "gate"));
     match pipeline.plan() {
         Err(PlanError::UnwiredInput(port)) => {
@@ -261,8 +227,8 @@ fn planning_refuses_an_input_nothing_feeds() {
 #[test]
 fn planning_refuses_an_unknown_node_or_gate() {
     let missing_node = Pipeline::default()
-        .node(Node::new("a", NodeKind::Reviewer).emitting(&["out"]))
-        .node(Node::new("b", NodeKind::Reviewer).accepting(&["in"]))
+        .node(Node::new("a", NodeKind::Reviewer).emitting_contracts(ports(&["out"])))
+        .node(Node::new("b", NodeKind::Reviewer).accepting_contracts(ports(&["in"])))
         .edge(Port::new("ghost", "out"), Port::new("b", "in"));
     assert!(matches!(
         missing_node.plan(),
@@ -289,7 +255,7 @@ fn gating_reaches_through_the_graph() {
 }
 
 /// The point of the concurrency: independent reviewers cost max(t), not sum(t). Three 300ms
-/// reviewers behind one gate must overlap — a sequential dispatcher would take 900ms.
+/// reviewers after one gate must overlap — a sequential dispatcher would take 900ms.
 #[test]
 fn independent_reviewers_run_concurrently() {
     struct Sleepy;
@@ -307,7 +273,7 @@ fn independent_reviewers_run_concurrently() {
 
     let plan = heavy_pipeline().plan().unwrap();
     let start = std::time::Instant::now();
-    let report = Scheduler::new(&plan).run(&Sleepy);
+    let report = Scheduler::new(&plan, 4).run(&Sleepy);
     let elapsed = start.elapsed();
 
     assert!(report.complete(), "{:?}", report.outcomes);
@@ -344,16 +310,18 @@ fn child_concurrency_limit_and_task_artifact_order_survive_flattening() {
             Ok(BTreeMap::from([("out".into(), vec![node.id.clone()])]))
         }
     }
-    let many = |name| PortContract::opaque(name).with_cardinality(PortCardinality::Many);
+    let many = |name| port(name).with_cardinality(PortCardinality::Many);
     let plan = Pipeline::default()
         .node(Node::new("root.inputs", NodeKind::Task).emitting_contracts(vec![many("out")]))
         .node(
             Node::new("root.nodes.child.nodes.a", NodeKind::Task)
-                .accepting_contracts(vec![many("in")]),
+                .accepting_contracts(vec![many("in")])
+                .emitting_contracts(vec![port("out")]),
         )
         .node(
             Node::new("root.nodes.child.nodes.b", NodeKind::Task)
-                .accepting_contracts(vec![many("in")]),
+                .accepting_contracts(vec![many("in")])
+                .emitting_contracts(vec![port("out")]),
         )
         .edge(
             Port::new("root.inputs", "out"),
@@ -369,8 +337,7 @@ fn child_concurrency_limit_and_task_artifact_order_survive_flattening() {
         active: AtomicUsize::new(0),
         peak: AtomicUsize::new(0),
     };
-    let report = Scheduler::new(&plan)
-        .with_parallelism(4)
+    let report = Scheduler::new(&plan, 4)
         .with_scope_limits(BTreeMap::from([("root.nodes.child".into(), 1)]))
         .unwrap()
         .run(&scoped);

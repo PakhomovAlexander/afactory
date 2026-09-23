@@ -48,19 +48,23 @@ impl TaskOperatorHost for RecoveringHost<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        definition: &review_graph::task::CompiledNode,
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        self.inner.prepare_context(cas, input, feedback)
+        self.inner.prepare_context(cas, input, definition, attempt)
     }
 
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        self.inner.execute(cas, input, attempt)
+        self.inner
+            .execute(cas, input, definition, attempt, cancellation)
     }
 
     fn commit_domain_output(
@@ -119,10 +123,10 @@ impl TaskDomain for RecoveringHost<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         context: &str,
     ) -> Result<(), String> {
-        self.inner.validate_context(cas, input, feedback, context)
+        self.inner.validate_context(cas, input, attempt, context)
     }
     fn validate_output(
         &self,
@@ -131,8 +135,10 @@ impl TaskDomain for RecoveringHost<'_> {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
-        self.inner.validate_output(cas, task, plan, input, output)
+        self.inner
+            .validate_output(cas, task, plan, input, output, definition)
     }
     fn validate_result(
         &self,
@@ -171,6 +177,8 @@ fn publication_recovers(before_attempt: bool) {
             input: Vec<u8>,
             _: std::time::Duration,
             writable: bool,
+            _: Option<&std::sync::atomic::AtomicBool>,
+            _: &[(String, String)],
         ) -> ModelWorkerReturn {
             assert!(!writable);
             let request: serde_json::Value = serde_json::from_slice(&input).unwrap();
@@ -180,7 +188,7 @@ fn publication_recovers(before_attempt: bool) {
                 usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&bytes).unwrap()],
                 message: Ok(bytes),
-                usage: Some(review_runner::TokenUsage::charge_only(7).into()),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(7)),
             }
         }
     }
@@ -327,7 +335,8 @@ fn pre_attempt_context_failure_remains_inspectable_after_reopening() {
             &self,
             _: &Cas,
             _: &TaskInvocationV1,
-            _: &[String],
+            _definition: &review_graph::task::CompiledNode,
+            _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
             Err("declared context cannot be prepared".into())
         }
@@ -335,13 +344,15 @@ fn pre_attempt_context_failure_remains_inspectable_after_reopening() {
             &self,
             _: &Cas,
             _: &TaskInvocationV1,
+            _definition: &review_graph::task::CompiledNode,
             _: Option<&PreparedTaskAttempt>,
+            _cancellation: Option<&std::sync::atomic::AtomicBool>,
         ) -> TaskWorkOutput {
             panic!("preparation failure cannot dispatch a Worker")
         }
     }
     let mut f = Fixture::new(SUCCESS);
-    let host = CommandTaskHost::capture(
+    let host = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -349,6 +360,7 @@ fn pre_attempt_context_failure_remains_inspectable_after_reopening() {
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &DocumentDomain,
+        &BTreeMap::new(),
     )
     .unwrap();
     let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);

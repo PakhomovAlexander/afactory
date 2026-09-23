@@ -1,4 +1,4 @@
-//! Generation two separates bounded initial context from exact, readable patch file bytes.
+//! The Review Subject separates bounded initial context from exact, readable patch file bytes.
 use super::require;
 use serde::{Deserialize, Serialize};
 

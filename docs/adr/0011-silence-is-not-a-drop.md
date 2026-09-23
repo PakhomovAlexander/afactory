@@ -1,6 +1,8 @@
 # Silence is not a Drop
 
-**Status:** accepted (2026-08-20)
+**Status:** accepted (2026-08-20); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the `RunReport@2` it names; GA writes only
+`RunReport@6`.
 
 A required reviewer must explicitly dispose every prior Finding assigned to it on the current
 Subject: corroborate/re-report it, mark it `not_reproduced`, or dispute it with a reason. Omission

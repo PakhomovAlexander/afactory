@@ -11,9 +11,11 @@ against a pinned Snapshot and folds what they return into a findings ledger with
 implementers only ever mutate a sandbox and return typed artifacts; only the kernel integrates;
 publishing to a branch or pull request stays an explicit human action.
 
-**Status:** pre-1.0. The 0.8.x line is usable and released; the `.af/` authority format and the
-persisted artifact types may still change before 1.0, and every change that affects committed
-`.af/` policy is announced in [`CHANGELOG.md`](CHANGELOG.md) under *Authority compatibility*.
+**Status:** general availability. Compatibility obligations start at 1.0: from the first 1.0
+release on, every change that affects committed `.af/` policy or a persisted artifact type is
+announced in [`CHANGELOG.md`](CHANGELOG.md) under *Authority compatibility*, with the hand edit
+or `af onboard --refresh-lock` it needs. State written by a pre-1.0 release is not read
+([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)).
 
 ## Install
 
@@ -32,12 +34,15 @@ key and refuses an unsigned or badly signed release. `install.sh` verifies the a
 when `minisign` is on `PATH`, the signature too.
 
 Supported targets: `aarch64-apple-darwin`, `x86_64-unknown-linux-musl`, and
-`aarch64-unknown-linux-musl` (static: no glibc floor). On x86_64 macOS, or anywhere else, build from
-source:
+`aarch64-unknown-linux-musl` (static: no glibc floor). On x86_64 macOS, or another Linux or macOS
+target, build from source:
 
 ```sh
 cargo install --path crates/af --locked
 ```
+
+`af` runs on Linux and macOS only. Windows and other non-unix hosts are unsupported, and so are the
+BSDs: a source build on any of them stops with a compile error.
 
 ## Quickstart
 
@@ -99,11 +104,13 @@ af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directori
 - **Review campaigns with light-by-default convergence.** One Campaign owns one event log and one
   Ledger across as many Rounds as policy allows; Findings keep their identity across reviewers and
   Rounds, and a Round closes only on a real verdict.
-- **Implementation Tasks delivered to new local worktrees.** `af task start --kind implement`
-  lets one implementer edit a sandbox, read-only acceptance gates inspect the sealed result, an
-  independent evaluator approves a content-addressed Snapshot, and `af task deliver` — only after
-  explicit Task-ID confirmation — creates a new branch and linked worktree. It never commits, pushes,
-  opens a PR, or touches the source checkout.
+- **Implementation Tasks delivered to new local worktrees.** `af task start --file` runs a Task
+  file through a Pipeline pinned in the committed Task catalog: an implementer edits a sandbox,
+  read-only acceptance checks inspect the sealed result, an independent evaluator approves a
+  content-addressed Snapshot, and `af task deliver` — only after explicit Task-ID confirmation —
+  creates a new branch and linked worktree. It never commits, pushes, opens a PR, or touches the
+  source checkout. `af catalog init --destination DIR` creates a new starter directory with a
+  runnable catalog.
 - **Deterministic gates that reuse CI checks.** A Gate is whatever the pipeline declares — usually
   the project's own `make check` — executed through an admitted provider in a disposable clone. A
   check that could not run is not a pass, and neither is a Gate with no required checks.
@@ -133,9 +140,9 @@ af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directori
 
 ```text
 .af/
-  af.toml        project policy: defaults, Worker bindings, routing
+  af.toml        project policy: minimum af release, default pipelines, routing
   af.lock        the release pin (bytes per target) and every Worker package digest
-  pipelines/     pipeline definitions (this repository: review.toml, implement.toml, …)
+  pipelines/     pipeline definitions (this repository: review.toml, p1-review.toml, …)
   workers/       Worker packages: <name>/reviewer.md (prompt) + reviewer.toml (manifest)
 ```
 
@@ -153,18 +160,14 @@ and budgets are described in [`docs/architecture.md`](docs/architecture.md).
 - [`CONTEXT.md`](CONTEXT.md) — the vocabulary: Snapshot, Subject, Campaign, Round, Finding, Attempt.
 - [`docs/adr/README.md`](docs/adr/README.md) — the binding design decisions.
 - [`docs/tasks.md`](docs/tasks.md) — the `af task` guide.
-- [`docs/migration.md`](docs/migration.md) — moving a `.review/` consumer to `.af/`.
-- [`docs/design/overview.md`](docs/design/overview.md) — the ported design notes.
+- [`docs/values.md`](docs/values.md) — the engineering values, in priority order, with their tests.
 - [`CHANGELOG.md`](CHANGELOG.md) — every release and its authority compatibility.
 
 ## Development
 
 ```sh
-make check                              # fmt + clippy + tests + fixture reproduction
-fixtures/synthetic/generate.sh --check  # the synthetic corpus still reproduces byte-for-byte
-make pilot-check                        # deterministic Task start/deliver/recovery smoke
-make review-kernel-container-probes     # live container probes; needs a usable runtime
-cargo run -p af --bin af -- review tui
+make check                           # fmt + clippy + tests + release-selection check
+make review-kernel-container-probes  # live container probes; needs a usable runtime
 ```
 
 The toolchain is pinned, the lockfile is committed, and `unsafe_code = "forbid"` is set
@@ -173,7 +176,7 @@ workspace-wide. See [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull r
 
 ## Releasing
 
-`make release VERSION=0.9.0 COMPAT="…"` bumps the workspace version, writes the `CHANGELOG.md`
+`make release VERSION=1.0.0 COMPAT="…"` bumps the workspace version, writes the `CHANGELOG.md`
 section, and opens the release pull request. Merging it tags the commit, runs `make check` on Linux
 and macOS, builds every target, signs `SHA256SUMS`, and publishes the release.
 

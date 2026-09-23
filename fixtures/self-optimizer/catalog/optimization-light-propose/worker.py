@@ -18,8 +18,7 @@ elif selected == 'sandbox_dependency_cache':
     edits = {'.af/cache/cargo.json': {'text': '{"schema":"af.sandbox-cache-selection/1","kind":"cargo"}\n', 'executable': False}}
     hypothesis = 'Select the administrator-approved bounded Cargo snapshot for the candidate arm.'
 else:
-    edits = {'.af/artifact-reuse/receipt.json': {'text': '{"schema":"af.artifact-reuse-request/1","reuse":"source_snapshot"}\n', 'executable': False}}
-    hypothesis = 'Request trusted preparation of the current CAS artifact identity while fresh verification still runs.'
+    raise SystemExit(f'fixture has no proposal for recipe {selected}')
 proposal = {
     'schema': 'af.optimization-proposal/1',
     'profile_id': profile['artifact_id'],

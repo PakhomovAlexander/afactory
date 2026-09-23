@@ -13,7 +13,7 @@ use task_cli::{copy_tree, fixture_named};
 
 /// Native-model fixtures plan, reject one changed account, restore it, then resume the same Task.
 /// Keep that absolute deadline away from loaded-gate latency without changing any dispatch or
-/// verification bound (ADR-0113).
+/// verification bound (ADR-0114).
 const NATIVE_MODEL_TASK_WALL_MS: u64 = 600_000;
 
 fn native_model_limits() -> Value {
@@ -65,7 +65,6 @@ fn review_file_uses_common_task_state_and_keeps_changes_requested_exit() {
         2
     );
     assert!(state.join("events.sqlite").is_file());
-    assert!(!state.join("tasks.sqlite").exists());
     let replay = Command::new(env!("CARGO_BIN_EXE_af"))
         .current_dir(&repo)
         .args([
@@ -101,35 +100,29 @@ fn review_file_uses_common_task_state_and_keeps_changes_requested_exit() {
     assert_eq!(wrong_kind.status.code(), Some(2));
 }
 
-#[cfg(unix)]
 #[test]
 fn native_model_cli_admission_is_shared_and_account_changes_refuse_dispatch() {
     native_model_case(false, false);
 }
 
-#[cfg(unix)]
 #[test]
 fn native_model_cli_retains_wide_failed_usage_in_json_and_text_inspection() {
     native_model_case(true, false);
 }
 
-#[cfg(unix)]
 #[test]
 fn native_codex_multiturn_usage_survives_common_accounting_and_fresh_inspection() {
     native_model_case(true, true);
 }
 
-#[cfg(unix)]
 fn native_model_case(wide: bool, codex: bool) {
     native_model_drift_case(wide, codex, None);
 }
 
-#[cfg(unix)]
 #[test]
 fn native_task_account_change_after_admission_refuses_private_worker_context() {
     native_model_drift_case(false, false, Some(1));
 }
-#[cfg(unix)]
 #[test]
 fn native_task_account_change_between_workers_retains_original_spend() {
     native_model_drift_case(false, false, Some(2));
@@ -146,7 +139,6 @@ fn native_model_fixture_widens_only_its_total_task_wall() {
     assert_eq!(limits["verification"]["wall_ms"], 60_000);
 }
 
-#[cfg(unix)]
 fn native_model_drift_case(wide: bool, codex: bool, switch_after: Option<usize>) {
     use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     use std::os::unix::fs::PermissionsExt;
@@ -182,8 +174,9 @@ if request=='Reply with exactly: OK\n':
  result='OK'
 else:
  value=json.loads(request)
- assert set(value['inputs'])=={'source','subject','history','checks'}
- result=json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'verdict':'approve','summary':'Checked source','reports':[],'benchmark_demands':[],'disputes':[]}]}})
+ assert set(value['inputs'])=={'source','subject','history','checks','assignment'}
+ assert value['inputs']['assignment'][0]['payload']['findings']==[]
+ result=json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'reports':[],'benchmark_demands':[],'dispositions':[]}]}})
 envelope={'is_error':False,'result':result,'usage':{'input_tokens':10,'output_tokens':2,'cache_creation_input_tokens':0}}
 if request!='Reply with exactly: OK\n':
  assert '--json-schema' in sys.argv
@@ -361,7 +354,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             String::from_utf8_lossy(&output.stderr)
         );
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(result["schema"], "af/task-inspection@3");
+        assert_eq!(result["schema"], "af/task-inspection@11");
         assert_eq!(result["chargeable_tokens"], exact.to_string());
         assert_eq!(result["result"]["domain_conclusion"], "incomplete");
         assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
@@ -411,11 +404,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
         let id = settled["record"]["usage_id"].as_str().unwrap();
         assert_eq!(
             cas.get_artifact(id).unwrap().artifact_type,
-            if codex {
-                review_core::task::usage::TASK_TOKEN_USAGE_V3
-            } else {
-                review_core::task::usage::TASK_TOKEN_USAGE_V2
-            }
+            review_core::task::usage::TASK_TOKEN_USAGE_V3
         );
         assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
         return;
@@ -559,7 +548,7 @@ fn embedded_review_never_accepts_findings_missing_reviewers_or_failed_checks() {
         let packages = repo.join(".af/task-packages/fixture");
         match case {
             "finding" => {
-                let reply = serde_json::json!({"schema":"af.worker-reply/1","outputs":{"result":[{"verdict":"request-changes","summary":"Required case is missing","reports":[{"severity":"major","file":"pagination.py","line":1,"title":"Missing validation","body":"Offset must reject negative values","fix":"Validate offset","confidence":0.9}],"benchmark_demands":[],"disputes":[]}]}});
+                let reply = serde_json::json!({"schema":"af.worker-reply/1","outputs":{"result":[{"reports":[{"severity":"major","file":"pagination.py","line":1,"title":"Missing validation","body":"Offset must reject negative values","fix":"Validate offset","confidence":0.9}],"benchmark_demands":[],"dispositions":[]}]}});
                 std::fs::write(
                     packages.join("correctness/worker.py"),
                     format!(
@@ -867,12 +856,11 @@ fn plan_then_run_uses_captured_inputs_and_does_not_repeat_finished_attempts() {
     let temp = tempfile::tempdir().unwrap();
     let (repo, state) = fixture(temp.path());
     let planned = af(&repo, &state, &["plan", "--file", "ticket.json"]);
-    assert_eq!(planned["schema"], "af/task-inspection@3");
+    assert_eq!(planned["schema"], "af/task-inspection@11");
     assert_eq!(planned["attempts"], 0);
     assert!(planned["plan"].is_object());
     assert!(planned["graph"].is_object());
     assert!(state.join("events.sqlite").is_file());
-    assert!(!state.join("tasks.sqlite").exists());
 
     std::fs::write(repo.join("pagination.py"), "live source changed\n").unwrap();
     std::fs::write(repo.join(".af/code-policy.toml"), "invalid after planning").unwrap();
@@ -902,9 +890,26 @@ fn plan_then_run_uses_captured_inputs_and_does_not_repeat_finished_attempts() {
 }
 
 #[test]
-fn task_start_accepts_a_file_without_legacy_goal_or_kind_flags() {
+fn task_start_runs_a_task_file_and_requires_one() {
     let temp = tempfile::tempdir().unwrap();
     let (repo, state) = fixture(temp.path());
+    // `--file` is the only way to describe a Task; the fixed-format flags are gone.
+    for args in [
+        "start --execute",
+        "start --kind implement --goal pagination",
+        "start --file ticket.json --pipeline .af/pipelines/implement.toml",
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_af"))
+            .current_dir(&repo)
+            .arg("task")
+            .args(args.split(' '))
+            .arg("--state")
+            .arg(&state)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "af task {args}");
+    }
+    assert!(!state.exists());
     let run = af(
         &repo,
         &state,
@@ -912,7 +917,6 @@ fn task_start_accepts_a_file_without_legacy_goal_or_kind_flags() {
     );
     assert_eq!(run["result"]["acceptance"], "satisfied");
     assert_eq!(run["attempts"], 3);
-    assert!(!state.join("tasks.sqlite").exists());
     let destination = temp.path().join("delivered");
     let deliver = [
         "deliver",
@@ -932,138 +936,6 @@ fn task_start_accepts_a_file_without_legacy_goal_or_kind_flags() {
         std::fs::read_to_string(destination.join("pagination.py"))
             .unwrap()
             .contains("offset")
-    );
-    assert!(!state.join("tasks.sqlite").exists());
-}
-
-#[test]
-fn task_file_legacy_workers_receive_bound_metadata_with_zero_command_reservations() {
-    let temp = tempfile::tempdir().unwrap();
-    let (repo, state) = fixture(temp.path());
-    let catalog_path = repo.join(".af/task-catalog.toml");
-    let mut catalog: toml::Value =
-        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
-    for (name, protocol, budget, body) in [
-        (
-            "implementer",
-            "implement_v1",
-            777,
-            "open('pagination.py','w').write('def paginate(items, offset=0, limit=2):\\n    return items[offset:offset+limit]\\n')\nprint('Implemented pagination')\n",
-        ),
-        (
-            "evaluator",
-            "evaluate_v1",
-            0,
-            "import runpy\nassert request['gates'][0]['status']=='passed'\nassert runpy.run_path('pagination.py')['paginate'](list(range(7)),2,3)==[2,3,4]\nprint(json.dumps({'verdict':'approve','summary':'Verified offset and limit'}))\n",
-        ),
-    ] {
-        let package = repo.join(format!(".af/task-packages/fixture/{name}"));
-        let path = package.join("worker.toml");
-        let mut worker: toml::Value =
-            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        worker["runner"]["kind"] = toml::Value::String("legacy_task_command".into());
-        worker["runner"]
-            .as_table_mut()
-            .unwrap()
-            .insert("protocol".into(), toml::Value::String(protocol.into()));
-        worker["runner"]
-            .as_table_mut()
-            .unwrap()
-            .insert("legacy_budget_tokens".into(), toml::Value::Integer(budget));
-        std::fs::write(path, toml::to_string(&worker).unwrap()).unwrap();
-        std::fs::write(package.join("worker.py"), format!("import json,sys\nrequest=json.loads(sys.stdin.read().split('```json\\n',1)[1].split('\\n```',1)[0])\nassert request['task_id']=='pagination-cli'\nassert request['budget']=={{'reserved_tokens':{budget}}}\n{body}")).unwrap();
-        fn package_files(
-            root: &Path,
-            current: &Path,
-            result: &mut std::collections::BTreeMap<String, Vec<u8>>,
-        ) {
-            for entry in std::fs::read_dir(current).unwrap() {
-                let entry = entry.unwrap();
-                if entry.file_type().unwrap().is_dir() {
-                    package_files(root, &entry.path(), result);
-                } else {
-                    result.insert(
-                        entry
-                            .path()
-                            .strip_prefix(root)
-                            .unwrap()
-                            .to_str()
-                            .unwrap()
-                            .replace('\\', "/"),
-                        std::fs::read(entry.path()).unwrap(),
-                    );
-                }
-            }
-        }
-        let mut files = std::collections::BTreeMap::new();
-        package_files(&package, &package, &mut files);
-        catalog["packages"][format!("fixture/{name}")]["digest"] =
-            toml::Value::String(review_config::lock::package_digest_from_files(&files));
-    }
-    std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
-    for args in [["add", "-A"], ["commit", "-qm"]] {
-        let mut cmd = Command::new("git");
-        cmd.current_dir(&repo).args(args);
-        if args[0] == "commit" {
-            cmd.arg("explicit legacy fixture");
-        }
-        assert!(cmd.status().unwrap().success());
-    }
-    let run = af(
-        &repo,
-        &state,
-        &["start", "--execute", "--file", "ticket.json"],
-    );
-    assert_eq!(run["result"]["acceptance"], "satisfied");
-    assert_eq!(run["attempts"], 3);
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
-    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
-    let task = store
-        .task_projection(&cas, "pagination-cli")
-        .unwrap()
-        .unwrap();
-    let requirements = &task.revision.inputs["requirements"].artifact_ids[0];
-    let payload = cas.get_json(requirements).unwrap()["payload"].clone();
-    assert_eq!(
-        payload.as_object().unwrap().keys().collect::<Vec<_>>(),
-        vec!["text"]
-    );
-    let records = run["execution_records"].as_array().unwrap();
-    let mut workers = 0;
-    let mut reservations = 0;
-    for entry in records {
-        let record = &entry["record"];
-        if record["kind"] != "reserved" {
-            continue;
-        }
-        reservations += 1;
-        assert_eq!(record["reserved_tokens"], 0);
-        let bound: Vec<_> = records
-            .iter()
-            .map(|entry| &entry["record"])
-            .filter(|bound| {
-                bound["kind"] == "context_bound" && bound["attempt_id"] == record["attempt_id"]
-            })
-            .collect();
-        assert_eq!(
-            bound.len(),
-            1,
-            "Each original reservation binds one context"
-        );
-        let context = cas
-            .get_json(bound[0]["context_id"].as_str().unwrap())
-            .unwrap();
-        if context["type"] == "af/TaskContext@2" {
-            workers += 1;
-            assert_eq!(context["payload"]["legacy"]["task_id"], "pagination-cli");
-            assert_eq!(context["payload"]["legacy"]["plan_id"], run["plan_id"]);
-        }
-    }
-    assert_eq!(reservations, 3);
-    assert_eq!(workers, 2);
-    assert_eq!(
-        af(&repo, &state, &["run", "--execute", "pagination-cli"]),
-        run
     );
 }
 

@@ -22,7 +22,7 @@ mod task_cli;
 /// and the verification reserve are untouched and still bind exactly as before, and the
 /// deadline's own fail-closed refusal keeps its coverage in
 /// `crates/review-attempt/tests/task_budget.rs`. Do not collapse it back toward the elapsed time
-/// of a fast local run (ADR-0113).
+/// of a fast local run (ADR-0114).
 const PLANNING_WALL_MS: u64 = 600_000;
 /// Every fixture Worker manifest and the fixture code policy bound one Attempt at five seconds.
 const FIXTURE_ATTEMPT_WALL_MS: u64 = 5_000;
@@ -369,7 +369,6 @@ fn export_refuses_preparation_private_task_values_and_unsafe_destinations() {
     for path in ["../escape", ".git/export", "/tmp/af-export"] {
         assert!(rejected(path).contains("safe project-relative"));
     }
-    #[cfg(unix)]
     {
         std::os::unix::fs::symlink(root.path(), repo.join("escape-link")).unwrap();
         assert!(rejected("escape-link/export").contains("symlink"));
@@ -642,26 +641,21 @@ fn planner_repairs_once_from_durable_compiler_feedback_and_never_runs_its_propos
     );
     assert_eq!(done["attempts"], 5);
     assert_eq!(done["result"]["acceptance"], "satisfied");
-    let prepared: Vec<_> = done["execution_records"]
+    let reserved: Vec<_> = done["execution_records"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|entry| {
-            matches!(
-                entry["record"]["kind"].as_str(),
-                Some("prepared" | "reserved")
-            )
-        })
+        .filter(|entry| entry["record"]["kind"] == "reserved")
         .collect();
     assert_eq!(
-        prepared[1]["record"]["feedback_ids"]
+        reserved[1]["record"]["feedback_ids"]
             .as_array()
             .unwrap()
             .len(),
         1
     );
     assert_eq!(
-        prepared[2]["record"]["feedback_ids"],
+        reserved[2]["record"]["feedback_ids"],
         json!([]),
         "The new plan must not inherit a colliding old node's compiler feedback"
     );

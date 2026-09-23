@@ -61,12 +61,6 @@ pub fn resolve_kind(kind: CacheKind) -> Result<CacheSource, CacheError> {
 }
 
 fn policy_path() -> Result<Option<PathBuf>, String> {
-    if std::env::var_os("AFACTORY_CACHE_POLICY_FILE").is_some() {
-        return Err(
-            "AFACTORY_CACHE_POLICY_FILE was renamed — fix: export AF_CACHE_POLICY_FILE instead"
-                .into(),
-        );
-    }
     if let Some(path) = std::env::var_os("AF_CACHE_POLICY_FILE") {
         if path.is_empty() {
             return Err("AF_CACHE_POLICY_FILE is empty".into());
@@ -83,12 +77,12 @@ fn policy_path() -> Result<Option<PathBuf>, String> {
             if !root.is_absolute() {
                 return Err("XDG_CONFIG_HOME must be absolute".into());
             }
-            return Ok(Some(config_file(&root, "caches.toml")));
+            return Ok(Some(root.join("af").join("caches.toml")));
         }
     }
     let path = std::env::var_os("HOME")
         .map(PathBuf::from)
-        .map(|home| config_file(&home.join(".config"), "caches.toml"));
+        .map(|home| home.join(".config").join("af").join("caches.toml"));
     if path.as_ref().is_some_and(|path| !path.is_absolute()) {
         return Err("HOME must be absolute to locate cache policy".into());
     }
@@ -138,7 +132,6 @@ fn read_policy(path: &Path) -> Result<Option<String>, String> {
         .map_err(|_| format!("cache policy {} is not UTF-8", path.display()))
 }
 
-#[cfg(unix)]
 fn open_policy(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -146,11 +139,6 @@ fn open_policy(path: &Path) -> std::io::Result<File> {
         .read(true)
         .custom_flags(nix::libc::O_NONBLOCK | nix::libc::O_NOFOLLOW)
         .open(path)
-}
-
-#[cfg(not(unix))]
-fn open_policy(path: &Path) -> std::io::Result<File> {
-    File::open(path)
 }
 
 fn parse_policy(
@@ -204,21 +192,6 @@ fn parse_policy(
         );
     }
     Ok(result)
-}
-
-/// `<config>/af/caches.toml`, or the pre-rename `<config>/afactory/caches.toml` while only that exists.
-fn config_file(config: &Path, file: &str) -> PathBuf {
-    let current = config.join("af").join(file);
-    let legacy = config.join("afactory").join(file);
-    if !current.exists() && legacy.exists() {
-        eprintln!(
-            "af: reading {}; move it to {} (the `afactory/` config directory is deprecated)",
-            legacy.display(),
-            current.display()
-        );
-        return legacy;
-    }
-    current
 }
 
 #[cfg(test)]

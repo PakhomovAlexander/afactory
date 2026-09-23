@@ -13,22 +13,27 @@ clean_rounds = 2
 max_rounds = 3
 gate = "major"
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+[[nodes]]
 id = "reviewer"
 kind = "reviewer"
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 runner = { program = "/bin/true" }
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "reviewer", port = "prior_findings" }
 "#;
 
-fn fixture(cas: &Cas, root: &str) -> CampaignManifestV1 {
+fn fixture(cas: &Cas, pipeline_path: &str) -> CampaignManifestV1 {
     let pipeline = cas.put(PIPELINE.as_bytes()).unwrap();
     let lock = cas.put(b"version = 1\n").unwrap();
-    let lock_path = if root == ".af" {
-        ".af/af.lock"
-    } else {
-        ".review/review.lock"
-    };
+    let lock_path = ".af/af.lock";
     let tree = Manifest::new(vec![
         Entry {
-            path: format!("{root}/pipelines/review.toml"),
+            path: pipeline_path.into(),
             kind: EntryKind::File,
             content: pipeline.clone(),
             size: PIPELINE.len() as u64,
@@ -56,7 +61,7 @@ fn fixture(cas: &Cas, root: &str) -> CampaignManifestV1 {
     };
     serde_json::from_value(json!({
         "authority_snapshot_id": snapshot, "subject_kind": "whole-tree",
-        "pipeline": {"path": format!("{root}/pipelines/review.toml"), "artifact_id": pipeline},
+        "pipeline": {"path": pipeline_path, "artifact_id": pipeline},
         "reviewer_lock": {"path": lock_path, "artifact_id": lock},
         "reviewers": [], "execution_policy_ids": [pipeline], "project_policy_ids": [],
         "convergence": {"clean_rounds": 1, "max_rounds": 1, "gate": "major"},
@@ -70,35 +75,33 @@ fn fixture(cas: &Cas, root: &str) -> CampaignManifestV1 {
 }
 
 #[test]
-fn captured_review_reopens_both_recorded_layouts_and_preserves_selected_mode() {
+fn captured_review_reopens_the_recorded_layout_and_preserves_selected_mode() {
     let temp = tempfile::tempdir().unwrap();
     let cas = Cas::open(temp.path()).unwrap();
-    for root in [".af", ".review"] {
-        let mut manifest = fixture(&cas, root);
-        let loaded = load_captured_review(&cas, &manifest, ReviewMode::Light).unwrap();
-        assert_eq!(loaded.subject_kind(), SubjectKind::WholeTree);
-        assert_eq!(loaded.convergence().max_rounds, 3);
-        assert!(
-            load_captured_review(&cas, &manifest, ReviewMode::Heavy)
-                .err()
-                .unwrap()
-                .contains("requested heavy mode")
-        );
-        manifest.convergence.clean_rounds = 2;
-        manifest.convergence.max_rounds = 3;
-        assert!(load_captured_review(&cas, &manifest, ReviewMode::Heavy).is_ok());
-        assert!(load_captured_review(&cas, &manifest, ReviewMode::Light).is_err());
-        drop(loaded);
-        let reopened = Cas::open(temp.path()).unwrap();
-        assert!(load_captured_review(&reopened, &manifest, ReviewMode::Heavy).is_ok());
-    }
+    let mut manifest = fixture(&cas, ".af/pipelines/review.toml");
+    let loaded = load_captured_review(&cas, &manifest, ReviewMode::Light).unwrap();
+    assert_eq!(loaded.subject_kind(), SubjectKind::WholeTree);
+    assert_eq!(loaded.convergence().max_rounds, 3);
+    assert!(
+        load_captured_review(&cas, &manifest, ReviewMode::Heavy)
+            .err()
+            .unwrap()
+            .contains("requested heavy mode")
+    );
+    manifest.convergence.clean_rounds = 2;
+    manifest.convergence.max_rounds = 3;
+    assert!(load_captured_review(&cas, &manifest, ReviewMode::Heavy).is_ok());
+    assert!(load_captured_review(&cas, &manifest, ReviewMode::Light).is_err());
+    drop(loaded);
+    let reopened = Cas::open(temp.path()).unwrap();
+    assert!(load_captured_review(&reopened, &manifest, ReviewMode::Heavy).is_ok());
 }
 
 #[test]
 fn captured_review_refuses_valid_but_unreachable_bytes_and_changed_authority() {
     let temp = tempfile::tempdir().unwrap();
     let cas = Cas::open(temp.path()).unwrap();
-    let original = fixture(&cas, ".af");
+    let original = fixture(&cas, ".af/pipelines/review.toml");
     let mut changed = original.clone();
     changed.pipeline.artifact_id = cas
         .put(format!("{PIPELINE}\n# different captured bytes\n").as_bytes())
@@ -111,7 +114,7 @@ fn captured_review_refuses_valid_but_unreachable_bytes_and_changed_authority() {
             .contains("not reachable")
     );
     changed = original.clone();
-    changed.check_timeout_seconds = Some(19);
+    changed.check_timeout_seconds = 19;
     assert!(
         load_captured_review(&cas, &changed, ReviewMode::Light)
             .err()
@@ -130,4 +133,18 @@ fn captured_review_refuses_valid_but_unreachable_bytes_and_changed_authority() {
             .contains("invalid `finding-set-genesis@1`")
     );
     assert!(load_captured_review(&cas, &original, ReviewMode::Light).is_ok());
+}
+
+#[test]
+fn captured_review_refuses_a_pipeline_outside_af_pipelines() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path()).unwrap();
+    let manifest = fixture(&cas, ".review/pipelines/review.toml");
+    let error = load_captured_review(&cas, &manifest, ReviewMode::Light)
+        .err()
+        .unwrap();
+    assert!(
+        error.contains("must live under `.af/pipelines/`"),
+        "{error}"
+    );
 }

@@ -2,10 +2,10 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:review-report-view:4",
   "title": "af/review-report@4 inspection view",
-  "description": "Task-backed Review inspection. Legacy spend fields retain their numeric shape. Task totals are current cumulative ledger charges; Round snapshots are frozen cumulative charges and must not be summed.",
+  "description": "Review inspection of one Campaign. task_accounting lists the Tasks captured from the Campaign; it is empty only for a Campaign whose first Task capture failed, which then has no Rounds. Task totals are current cumulative ledger charges; Round snapshots are frozen cumulative charges and must not be summed.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "campaign", "runs_recorded", "ledger_round", "final_verdict", "rounds", "spend", "task_accounting", "demands", "findings_summary", "findings"],
+  "required": ["schema", "campaign", "runs_recorded", "ledger_round", "final_verdict", "rounds", "task_accounting", "demands", "findings_summary", "findings"],
   "properties": {
     "schema": {"const": "af/review-report@4"},
     "campaign": {"type": "string"},
@@ -13,33 +13,27 @@
     "ledger_round": {"$ref": "#/$defs/count"},
     "final_verdict": {"type": ["string", "null"]},
     "rounds": {"type": "array", "items": {"$ref": "#/$defs/round"}},
-    "spend": {"type": "array", "items": {"type": "object"}},
-    "task_accounting": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/task"}},
+    "task_accounting": {"type": "array", "items": {"$ref": "#/$defs/task"}},
     "demands": {"type": "array", "items": {"type": "object"}},
-    "recorded_not_gathered": {"type": "object"},
     "wall_ms": {"$ref": "#/$defs/count"},
     "findings_summary": {"type": "object"},
     "findings": {"type": "array", "items": {"type": "object"}}
   },
+  "if": {"properties": {"task_accounting": {"maxItems": 0}}},
+  "then": {"properties": {"runs_recorded": {"const": 0}, "final_verdict": {"type": "null"}, "rounds": {"maxItems": 0}}},
   "$defs": {
     "count": {"type": "integer", "minimum": 0},
     "digest": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"},
-    "decimalU64": {"$ref": "urn:af:schema:task-token-usage:1#/$defs/decimalU64"},
+    "decimalU64": {"$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU64"},
     "decimalU128": {"$ref": "urn:af:schema:task-review-accounting:1#/$defs/decimalU128"},
     "round": {
       "type": "object", "additionalProperties": false,
-      "required": ["run", "verdict"],
-      "dependentRequired": {
-        "task_chargeable_tokens_at_report": ["task_accounting"],
-        "task_accounting": ["task_chargeable_tokens_at_report"]
-      },
-      "not": {"required": ["reported_tokens", "task_chargeable_tokens_at_report"]},
+      "required": ["run", "verdict", "task_chargeable_tokens_at_report", "task_accounting"],
       "properties": {
         "run": {"$ref": "#/$defs/count"},
         "round": {"$ref": "#/$defs/count"},
         "epoch": {"$ref": "#/$defs/count"},
         "verdict": {"type": "string"},
-        "reported_tokens": {"$ref": "#/$defs/count"},
         "task_chargeable_tokens_at_report": {"$ref": "#/$defs/decimalU128"},
         "task_accounting": {"$ref": "urn:af:schema:task-review-accounting:1"}
       }

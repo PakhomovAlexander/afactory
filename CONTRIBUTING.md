@@ -12,6 +12,12 @@ installs it on the first `cargo` invocation, so there is nothing to choose. Edit
 workspace version in `Cargo.toml`. The container probes need Docker; nothing else needs a
 daemon.
 
+`af` supports Linux and macOS only. A `compile_error!` at the root of `review-core` and
+`review-process` refuses every other target: every crate with platform-specific code is one of
+them or depends on `review-core`, so the guard fails the build before any unix-only call does.
+Write unix code directly: do not add `#[cfg(unix)]` gates or `#[cfg(not(unix))]` fallbacks.
+Where Linux and macOS differ, split on `target_os`.
+
 ## Before every pull request
 
 ```sh
@@ -19,9 +25,22 @@ make check
 ```
 
 That is `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`,
-`cargo test --locked`, and `fixtures/synthetic/generate.sh --check`. CI runs exactly this, so
-a green local run is a green PR. Clippy warnings are errors; fix them rather than allowing
-them.
+`cargo test --locked`, and the release-selection check (`scripts/test-release-resolve.py`). CI
+runs exactly this, so a green local run is a green PR. Clippy warnings are errors; fix them
+rather than allowing them. `TEST_THREADS` overrides the four-thread bound; native-provider
+fixtures spawn several processes per test, so the host CPU count is not a suitable bound.
+
+`make check TEST_RUNNER=nextest` is an opt-in cross-binary experiment, not the gate. It needs the
+pinned, checksum-verified binary that `scripts/install-nextest.sh` places in a temporary tools
+directory:
+
+```sh
+scripts/install-nextest.sh
+PATH="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/af-ci-tools:$PATH" make check TEST_RUNNER=nextest
+```
+
+Cargo stays the required runner in CI until a complete comparison passes on Linux and macOS;
+native-provider probe timeouts under cross-binary scheduling currently block promoting it.
 
 If you touch `crates/review-sandbox`, also run the live probes:
 
@@ -37,31 +56,32 @@ fail loudly there, never skip.
 - Unit tests live next to the code; integration tests live in `crates/<crate>/tests/`, one
   file per subject (`capture.rs`, `crash_replay.rs`, `container_probes.rs`, …), with shared
   helpers under `tests/support/` or `tests/common/`.
-- Synthetic fixtures under `fixtures/synthetic/` are generated: change the generator, run
-  `fixtures/synthetic/generate.sh`, and commit the output; `--check` in `make check` refuses
-  drift. Consumer fixtures under `fixtures/consumers/` are planned with the built binary by
-  `fixtures/consumers/check.sh` and by the release workflow.
 - A test that reproduces a bug goes in first and fails; the fix follows in the same PR.
 
 ## Design changes and ADRs
 
 A change to a contract, a wire shape, a gate, a budget, a sandbox boundary, or the release
 train is a design change and gets an ADR in `docs/adr/`. `docs/adr/README.md` is the
-authority on the shape; in short: take the next free number (`0100-…` follows `0099-…`),
+authority on the shape; in short: take the next number after the highest in `docs/adr/`,
 name the file `NNNN-kebab-case-title.md` with a short imperative slug, open with a status line
 carrying the status and date (`**Status:** accepted (YYYY-MM-DD)` in most records), state the
 context, list the considered options with the reason each was rejected, record the decision,
 and end with `## Consequences`. Add the record to the index in `docs/adr/README.md`. An
-accepted ADR is immutable: a changed decision is a new ADR marked *supersedes* the old one,
-linked both ways. Look at `docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md`
-for the shape. Reference the ADR from the PR and from the CHANGELOG line.
+accepted ADR is immutable: a changed decision is a new ADR that names what it supersedes. A
+partially superseded ADR gains a status-line note linking the new one, and that status line may
+be restated when the new ADR spends the transition wording it carried; a fully superseded ADR
+is deleted with its index entry, and git history keeps it. Links to a deleted ADR, or to an
+internal record deleted at GA, are rewritten to point at the superseding ADR or to plain text;
+this is the only edit allowed in another accepted ADR's body (ADR-0113 clauses 6 and 8). Look
+at `docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md` for the shape. Reference
+the ADR from the PR and from the CHANGELOG line.
 
 ## Commit messages
 
 Imperative subject, under about 72 characters, describing the change rather than the activity.
 The history mixes conventional prefixes with a scope (`fix(task): preserve validated Review
 result number semantics`, `docs(task): record integrated fixes`, `perf(task): …`, `test: …`)
-and plain imperative subjects (`Record Task retry and legacy context changes in a new ADR`).
+and plain imperative subjects (`Record Task retry output admission in a new ADR`).
 Either is fine; the prefixes are used but not required. Domain terms keep their capitalisation
 (`Task`, `Review`, `Snapshot`, `Gate`) as in `CONTEXT.md`.
 

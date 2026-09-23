@@ -85,10 +85,7 @@ fn heartbeat_failure_cancels_native_group_and_new_writer_recovers_exact_usage_wi
             .env("HOME", &home)
             .env("USER", "loop-test")
             .env("PATH", std::env::join_paths(paths).unwrap())
-            .env(
-                "AF_PROVIDERS_FILE",
-                home.join(".config/afactory/providers.toml"),
-            )
+            .env("AF_PROVIDERS_FILE", home.join(".config/af/providers.toml"))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()

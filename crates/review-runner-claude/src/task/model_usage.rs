@@ -90,7 +90,7 @@ fn valid_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-._:/".contains(&b))
 }
 
-pub(super) fn account(value: Option<&Value>, selected: Option<&str>) -> Accounting {
+pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
     let (top_usage, top_observation) = super::parse_usage(value);
     let Some(map) = value.and_then(|v| v.get("modelUsage")) else {
         // Preserve the top-level-only native contract, including its malformed-usage observation.
@@ -147,21 +147,17 @@ pub(super) fn account(value: Option<&Value>, selected: Option<&str>) -> Accounti
             let canonical_id = canonical.and_then(Value::as_str);
             let identity_valid = valid_id(key)
                 && canonical.is_none_or(|_| canonical_id.is_some_and(valid_id))
-                && !selected.is_some_and(|expected| {
-                    key == expected && canonical_id.is_some_and(|id| id != expected)
-                });
+                && !(key == selected && canonical_id.is_some_and(|id| id != selected));
             if !identity_valid {
                 complete = false;
                 refuse("Claude model usage identity is malformed");
             }
             let matches = identity_valid
-                && selected.is_none_or(|expected| {
-                    if key == expected {
-                        canonical_id.is_none_or(|id| id == expected)
-                    } else {
-                        canonical_id == Some(expected)
-                    }
-                });
+                && if key == selected {
+                    canonical_id.is_none_or(|id| id == selected)
+                } else {
+                    canonical_id == Some(selected)
+                };
             if matches {
                 scopes.push(counters);
             }

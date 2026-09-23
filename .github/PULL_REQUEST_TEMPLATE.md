@@ -8,7 +8,7 @@
 
 ## Checklist
 
-- [ ] `make check` passes locally (fmt, clippy `-D warnings`, `cargo test --locked`, fixture check).
+- [ ] `make check` passes locally (fmt, clippy `-D warnings`, `cargo test --locked`, release check).
 - [ ] `make review-kernel-container-probes` passes, if `crates/review-sandbox` changed (needs Docker).
 - [ ] `CHANGELOG.md` has a line under `[Unreleased]`, if the change is user-visible.
 - [ ] A design change references its ADR: <!-- docs/adr/NNNN-….md, or "not a design change" -->

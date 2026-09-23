@@ -34,7 +34,7 @@ fn reservation_requires_exact_context_before_start_and_refuses_rebinding() {
     let record_id = f
         .cas
         .put_artifact(
-            review_core::task::execution::TASK_EXECUTION_RECORD_V1,
+            review_core::task::execution::TASK_EXECUTION_RECORD_V5,
             producer(),
             vec![],
             None,
@@ -247,7 +247,13 @@ fn inflight_usage_survives_reopen_revocation_lower_settlement_and_writer_loss() 
             .unwrap();
         let attempt = f
             .store
-            .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+            .reserve_and_bind_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.write",
+                &context,
+                &f.authority,
+            )
             .unwrap();
         let usage_id = f
             .cas

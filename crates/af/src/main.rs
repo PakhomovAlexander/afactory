@@ -1,22 +1,21 @@
-//! `af review` - reviews from a definition file to a verdict, and the campaign loop.
+//! The `af` binary: it parses the command tree defined in `cli`, dispatches every namespace, and
+//! implements the `af review` Campaign loop itself.
 //!
-//! The review namespace has six subcommands:
+//! The review namespace's core subcommands:
 //!
-//! - `run` captures the repository HEAD as an immutable snapshot, loads the pipeline through
-//!   its lockfile, binds each packaged reviewer to the adapter its runner names, executes
-//!   under the definition's budgets, and prints what happened — every node, every finding,
-//!   the spend, the verdict. With `--campaign NAME` the run joins a persistent ledger: each
-//!   run is a new round, and every reviewer receives the campaign's prior findings as a
-//!   labelled data artifact.
+//! - `run` captures the candidate as an immutable snapshot, pins the pipeline through its
+//!   lockfile, captures the Campaign's Review Task, and executes it on the common Task runtime
+//!   (`review_task`) under the captured budgets, printing every node, finding, charge and the
+//!   verdict. With `--campaign NAME` later runs resume that Task, and a heavy Campaign's next
+//!   Round gives every reviewer the Campaign's prior findings as a labelled data artifact.
 //! - `ledger` prints a campaign's findings, one per line, machine-readably.
-//! - `resolve` records the operator's disposition of one finding (fixed, wontfix, ...) in the
-//!   campaign's ledger — the step between fixing and the round that verifies the fix.
+//! - `resolve` records the operator's non-fixed disposition of one finding (rejected or
+//!   wontfix-tracked) in the campaign's ledger. A finding becomes fixed only through
+//!   `attest-change` and a `verify-fix` against the current Subject.
 //! - `group` and `ungroup` append reversible adjudication between duplicate Findings without
 //!   erasing either identity, Report history, or verification obligation.
-//! - `tui` drafts an explicit configuration patch for the pipeline's existing reviewer packages
-//!   and launches the same pinned-authority `run` path from an alternate-screen interface.
 //!
-//! Nothing here mutates any repository. A run reads a repo and writes its own state
+//! The review loop never mutates a repository. A run reads a repo and writes its own state
 //! directory; `resolve` writes only that state; publishing results anywhere is a human's
 //! explicit action.
 
@@ -26,15 +25,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use review_attempt::{Budget, BudgetLedger, Scope};
-use review_core::{
-    EventType, RunFailureReasonV2, RunFailureReasonV3, RunReportPayloadV2, RunReportPayloadV3,
-    RunReportPayloadV4, RunReportPayloadV5, RunReportPayloadV6, RunVerdictV2, RunVerdictV3,
-    Severity,
-};
-use review_graph::NodeOutcome;
-use review_pipeline::{Kernel, RoundAuthority, RunVerdict};
-use review_runner::ReviewerAdapter;
+use review_core::{EventType, RunFailureReasonV3, RunReportPayloadV6, RunVerdictV3, Severity};
+use review_pipeline::RunVerdict;
 use review_source_git::Repo;
 use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status, Verdict};
 use sha2::{Digest, Sha256};
@@ -53,7 +45,6 @@ mod selfmgmt;
 mod task;
 mod task_execution;
 mod topics;
-mod tui;
 
 use review_config::captured_review::ReviewMode as CampaignMode;
 
@@ -69,15 +60,12 @@ struct Options {
     policy_rev: Option<String>,
     base: Option<String>,
     candidate: Option<String>,
-    /// Compatibility alias: expands to policy_rev + base for a new diff Campaign.
-    authority: Option<String>,
     uncommitted: bool,
     restart_round: bool,
     mode: CampaignMode,
     timeout: Option<Duration>,
     git_timeout: Option<Duration>,
     provider_bindings: BTreeMap<String, String>,
-    provider_resumes: BTreeMap<String, u64>,
     provider_admission: Option<review_graph::task::OperatorAttemptCost>,
     json: bool,
     /// `af review render`: the Worker whose exact input to compose.
@@ -86,8 +74,7 @@ struct Options {
 
 impl Options {
     /// Resolve state once for both execution and presentation. Relative paths use the process
-    /// working directory, preserving the CLI's historical meaning, and repository-contained
-    /// state is confined to the review tree's `runs` directory.
+    /// working directory, and state inside the repository is refused.
     fn resolved_state_dir(&self) -> Result<PathBuf, String> {
         let requested = match (&self.state, &self.campaign) {
             (Some(state), _) => state.clone(),
@@ -98,7 +85,7 @@ impl Options {
         if let Some(campaign) = &self.campaign
             && self.state.is_some()
         {
-            validate_campaign_for_explicit_state(campaign, &state)?;
+            validate_campaign_name(campaign)?;
         }
         let repository = std::fs::canonicalize(&self.repo)
             .map_err(|error| format!("opening repository {}: {error}", self.repo.display()))?;
@@ -129,8 +116,13 @@ fn xdg_state_root() -> Result<PathBuf, String> {
     Ok(user_home.join(".local/state"))
 }
 
+/// Where Campaign state lives when `--state` and `--state-root` are omitted.
+fn default_campaigns_root() -> Result<PathBuf, String> {
+    Ok(xdg_state_root()?.join("af/review/campaigns"))
+}
+
 fn default_campaign_state(campaign: &str) -> Result<PathBuf, String> {
-    campaign_state_beneath(&xdg_state_root()?.join("af/review/campaigns"), campaign)
+    campaign_state_beneath(&default_campaigns_root()?, campaign)
 }
 
 fn campaign_id(campaign: &str) -> String {
@@ -142,33 +134,9 @@ fn campaign_id(campaign: &str) -> String {
 }
 
 fn campaign_state_beneath(root: &Path, campaign: &str) -> Result<PathBuf, String> {
-    validate_legacy_campaign_name(campaign)?;
+    validate_campaign_name(campaign)?;
     let root = resolve_filesystem_path(root)?;
-    let encoded = root.join(campaign_id(campaign));
-    let legacy = root.join(campaign);
-    let encoded_exists = encoded.exists();
-    let legacy_belongs_to_campaign =
-        legacy_campaign_state_matches(&legacy, campaign).map_err(|error| {
-            format!(
-                "legacy Campaign state {} blocks resolution of {campaign:?}: {error}",
-                legacy.display()
-            )
-        })?;
-    if encoded_exists && legacy_belongs_to_campaign {
-        return Err(format!(
-            "campaign {campaign:?} has both encoded and legacy state beneath {}; remove the ambiguity before continuing",
-            root.display()
-        ));
-    }
-    if !legacy_belongs_to_campaign {
-        validate_campaign_name(campaign)?;
-    }
-    let selected = if legacy_belongs_to_campaign {
-        legacy
-    } else {
-        encoded
-    };
-    let selected = resolve_filesystem_path(&selected)?;
+    let selected = resolve_filesystem_path(&root.join(campaign_id(campaign)))?;
     if !selected.starts_with(&root) {
         return Err(format!(
             "campaign state {} escapes configured review-state root {}",
@@ -189,7 +157,7 @@ fn default_local_state(repository: &Path) -> Result<PathBuf, String> {
 }
 
 fn validate_campaign_name(campaign: &str) -> Result<(), String> {
-    validate_legacy_campaign_name(campaign)?;
+    validate_campaign_component(campaign)?;
     if campaign.trim() != campaign
         || campaign
             .chars()
@@ -203,7 +171,7 @@ fn validate_campaign_name(campaign: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_legacy_campaign_name(campaign: &str) -> Result<(), String> {
+fn validate_campaign_component(campaign: &str) -> Result<(), String> {
     let mut components = Path::new(campaign).components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_)))
         || components.next().is_some()
@@ -219,52 +187,6 @@ fn is_campaign_id(value: &str) -> bool {
     value.len() == 66
         && value.starts_with("c-")
         && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn campaign_run_ids(state: &Path) -> Result<Vec<String>, String> {
-    let database = state.join("events.sqlite");
-    if !database.is_file() {
-        return Ok(Vec::new());
-    }
-    EventStore::open_read_only(&database)
-        .map_err(|error| {
-            format!(
-                "reading Campaign event store {}: {error}",
-                database.display()
-            )
-        })?
-        .run_ids()
-        .map_err(|error| {
-            format!(
-                "reading Campaign event store {}: {error}",
-                database.display()
-            )
-        })
-        .map(|run_ids| {
-            run_ids
-                .into_iter()
-                .filter(|run_id| run_id.starts_with("campaign-"))
-                .collect()
-        })
-}
-
-fn legacy_campaign_state_matches(state: &Path, campaign: &str) -> Result<bool, String> {
-    Ok(campaign_run_ids(state)?.as_slice() == [campaign_run_id(campaign)])
-}
-
-fn validate_campaign_for_explicit_state(campaign: &str, state: &Path) -> Result<(), String> {
-    if let Err(validation_error) = validate_campaign_name(campaign) {
-        if campaign_run_ids(state)?
-            .iter()
-            .any(|run_id| run_id == &campaign_run_id(campaign))
-        {
-            validate_legacy_campaign_name(campaign)
-        } else {
-            Err(validation_error)
-        }
-    } else {
-        Ok(())
-    }
 }
 
 fn resolve_filesystem_path(path: &Path) -> Result<PathBuf, String> {
@@ -477,7 +399,7 @@ fn campaign_state(state: &Option<PathBuf>, campaign: &str) -> Result<PathBuf, St
     match state {
         Some(state) => {
             let state = resolve_filesystem_path(state)?;
-            validate_campaign_for_explicit_state(campaign, &state)?;
+            validate_campaign_name(campaign)?;
             Ok(state)
         }
         None => default_campaign_state(campaign),
@@ -537,38 +459,6 @@ fn run_options(args: cli::RunArgs, command: &str) -> Options {
             );
         }
     }
-    let mut provider_resumes = BTreeMap::new();
-    for token in &args.resume_provider {
-        let Some((operation, epoch)) = token.rsplit_once(':') else {
-            usage_error(
-                command,
-                &format!("--resume-provider {token}: expected OPERATION_ID:EPOCH"),
-            );
-        };
-        let epoch = epoch.parse::<u64>().unwrap_or(0);
-        if operation.len() != 26
-            || !operation
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-            || epoch == 0
-        {
-            usage_error(
-                command,
-                &format!(
-                    "--resume-provider {token}: OPERATION_ID is 26 lowercase alphanumerics and EPOCH is a positive integer"
-                ),
-            );
-        }
-        if provider_resumes
-            .insert(operation.to_string(), epoch)
-            .is_some()
-        {
-            usage_error(
-                command,
-                &format!("--resume-provider {token}: operation resumed twice"),
-            );
-        }
-    }
     let provider_admission = match (
         args.provider_admission_tokens,
         args.provider_admission_wall_ms,
@@ -600,7 +490,6 @@ fn run_options(args: cli::RunArgs, command: &str) -> Options {
         policy_rev: args.policy_rev,
         base: args.base,
         candidate: args.candidate,
-        authority: args.authority,
         uncommitted: args.uncommitted,
         restart_round: args.restart_round,
         node: args.node,
@@ -612,7 +501,6 @@ fn run_options(args: cli::RunArgs, command: &str) -> Options {
         timeout: args.timeout_secs.map(Duration::from_secs),
         git_timeout: args.git_timeout_secs.map(Duration::from_secs),
         provider_bindings,
-        provider_resumes,
         provider_admission,
         json: args.json,
     }
@@ -649,7 +537,7 @@ struct GcCandidateView {
 fn print_gc(options: &GcOptions) -> Result<(), String> {
     let requested_root = match &options.state_root {
         Some(root) => root.clone(),
-        None => xdg_state_root()?.join("af/review/campaigns"),
+        None => default_campaigns_root()?,
     };
     let root = resolve_filesystem_path(&requested_root)?;
     let enumeration = enumerate_campaigns(&root, true)?;
@@ -785,10 +673,13 @@ fn challenge_kind_of(arg: cli::ChallengeKindArg) -> review_core::ResolutionChall
 /// Campaign labels under the default state root, for shell completion. Bounded: one directory
 /// listing, no Store beyond the manifest each campaign already exposes.
 pub(crate) fn campaign_names_for_completion() -> Vec<String> {
-    let Ok(root) = xdg_state_root() else {
-        return Vec::new();
-    };
-    enumerate_campaigns(&root, false)
+    default_campaigns_root()
+        .map(|root| campaign_labels_beneath(&root))
+        .unwrap_or_default()
+}
+
+fn campaign_labels_beneath(root: &Path) -> Vec<String> {
+    enumerate_campaigns(root, false)
         .map(|enumeration| {
             enumeration
                 .campaigns
@@ -807,10 +698,7 @@ fn task_review_options(args: cli::RunArgs, plan_only: bool) -> task_execution::S
         source_bindings: None,
         repo: args.repo,
         state: args.state,
-        authority: args
-            .policy_rev
-            .or(args.authority)
-            .unwrap_or_else(|| "HEAD".into()),
+        authority: args.policy_rev.unwrap_or_else(|| "HEAD".into()),
         uncommitted: args.uncommitted,
         json: args.json,
         plan_only,
@@ -830,7 +718,6 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
             if args.task_file.is_some() {
                 return task_execution::start_review(task_review_options(args, false));
             }
-            init_review_workers();
             let verdict = run(&run_options(args, "review run"))?;
             Ok(match verdict {
                 RunVerdict::Pass => 0,
@@ -851,15 +738,6 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
                 );
             }
             print_render(&run_options(args, "review render")).map(|()| 0)
-        }
-        R::Tui(args) => {
-            if args.task_file.is_some() {
-                return Err(
-                    "Task-file execution is available through review run and review plan".into(),
-                );
-            }
-            init_review_workers();
-            tui::launch(run_options(args, "review tui")).map(|()| 0)
         }
         R::Ledger { selector, long } => print_ledger(&LedgerOptions {
             state: selector.state,
@@ -1240,51 +1118,29 @@ fn main() {
             "af task",
             match command {
                 cli::TaskCommand::Start {
-                    kind: _,
-                    goal,
                     file,
                     execute,
                     bindings,
                     source_bindings,
                     repo,
-                    pipeline,
                     state,
                     authority,
                     uncommitted,
                     timeout_secs,
                     json,
-                } => {
-                    if let Some(file) = file {
-                        task_execution::start(task_execution::StartOptions {
-                            file,
-                            bindings,
-                            source_bindings,
-                            repo,
-                            state,
-                            authority,
-                            uncommitted,
-                            json,
-                            plan_only: !execute,
-                            timeout_secs,
-                            optimization_history: None,
-                        })
-                    } else {
-                        task::options_from_cli(
-                            goal.unwrap_or_default(),
-                            repo,
-                            pipeline,
-                            state,
-                            authority,
-                            uncommitted,
-                            timeout_secs,
-                            json,
-                        )
-                        .and_then(|options| {
-                            init_review_workers();
-                            task_execution::start_legacy(options, !execute)
-                        })
-                    }
-                }
+                } => task_execution::start(task_execution::StartOptions {
+                    file,
+                    bindings,
+                    source_bindings,
+                    repo,
+                    state,
+                    authority,
+                    uncommitted,
+                    json,
+                    plan_only: !execute,
+                    timeout_secs,
+                    optimization_history: None,
+                }),
                 cli::TaskCommand::Plan {
                     file,
                     bindings,
@@ -1672,15 +1528,6 @@ fn print_plan(options: &Options) -> Result<(), String> {
     let selectors = &plan["selectors"];
     let resolved = &plan["resolved"];
     println!("review plan (token-free; no Campaign state)");
-    if let Some(authority) = selectors["compatibility_authority"].as_str() {
-        if plan["subject"]["kind"].as_str() == Some("diff") {
-            println!(
-                "compat   --authority {authority} => --policy-rev {authority} --base {authority}"
-            );
-        } else {
-            println!("compat   --authority {authority} => --policy-rev {authority}");
-        }
-    }
     println!(
         "policy   {} => {}",
         selectors["policy_rev"].as_str().unwrap_or("?"),
@@ -1850,14 +1697,6 @@ fn run_progress(options: &Options, arguments: fmt::Arguments<'_>) {
     }
 }
 
-fn init_review_workers() {
-    let worker_limit = std::thread::available_parallelism()
-        .map(|workers| workers.get())
-        .unwrap_or(1);
-    review_parallel::init_worker_limit(worker_limit)
-        .expect("review worker executor is initialized once before execution");
-}
-
 fn open_campaign_store(state: &Path) -> Result<EventStore, String> {
     if !state.join("events.sqlite").exists() {
         return Err(format!(
@@ -1892,9 +1731,8 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
         && evidence.ledger_was_not_produced()
     {
         eprintln!(
-            "latest round Ledger: not produced because {}; showing the last gathered projection ({} admitted result(s) remain recorded, not gathered)",
-            evidence.absence_reason(),
-            evidence.available_node_results.len()
+            "latest round Ledger: not produced because {}; showing the last gathered projection",
+            evidence.absence_reason()
         );
     }
     print_scope_authority_warnings(&ledger);
@@ -1919,13 +1757,7 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
         }
         if options.long {
             print_indented("body", &finding.body);
-            print_indented(
-                "fix",
-                finding
-                    .fix
-                    .as_deref()
-                    .unwrap_or("(unavailable: artifact-less legacy import)"),
-            );
+            print_indented("fix", &finding.fix);
             print_indented(
                 "report scopes",
                 &finding
@@ -1960,11 +1792,7 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     let summary = findings_summary(&findings);
     let task_accounting =
         report_tasks::read(&store, &cas, &campaign_run_id(&options.campaign), &events)?;
-    let wall = task_accounting.wall_ms(
-        &store
-            .attempt_wall(&campaign_run_id(&options.campaign))
-            .map_err(|e| e.to_string())?,
-    );
+    let wall = task_accounting.wall_ms();
     let task_summary = report_tasks::summary(&task_accounting.tasks);
     if !task_summary.is_empty() {
         eprintln!("{task_summary}");
@@ -2061,9 +1889,6 @@ fn finding_claim_ids(
     findings.extend(finding.aliases.iter().cloned());
     let mut reports = BTreeSet::new();
     for report in &finding.reports {
-        if report.report_id.is_empty() {
-            continue;
-        }
         let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
             cas.get_json(&report.report_id)
                 .map_err(|error| error.to_string())?,
@@ -2189,30 +2014,15 @@ fn show(options: &ShowOptions) -> Result<(), String> {
             attached
                 .line
                 .map_or("-".to_string(), |line| line.to_string()),
-            if attached.report_id.is_empty() {
-                "(unavailable: legacy import)"
-            } else {
-                &attached.report_id
-            }
+            attached.report_id
         );
-        if attached.report_id.is_empty() {
-            print_indented("body", &finding.body);
-            print_indented("fix", "(unavailable: artifact-less legacy import)");
-            println!(
-                "  confidence: {}",
-                finding
-                    .confidence
-                    .map_or("(unavailable)".to_string(), |value| value.to_string())
-            );
-        } else {
-            let report = cas
-                .get_json(&attached.report_id)
-                .map_err(|e| format!("reading report {}: {e}", attached.report_id))?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
-            );
-        }
+        let report = cas
+            .get_json(&attached.report_id)
+            .map_err(|e| format!("reading report {}: {e}", attached.report_id))?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+        );
     }
 
     println!("\nhistory:");
@@ -2359,7 +2169,7 @@ fn human_bytes(bytes: u64) -> String {
 fn print_campaigns(options: &CampaignsOptions) -> Result<(), String> {
     let requested_root = match &options.state_root {
         Some(root) => root.clone(),
-        None => xdg_state_root()?.join("af/review/campaigns"),
+        None => default_campaigns_root()?,
     };
     let root = resolve_filesystem_path(&requested_root)?;
     let enumeration = enumerate_campaigns(&root, options.sizes)?;
@@ -2504,7 +2314,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
             .strip_prefix("campaign-")
             .expect("campaign run prefix was filtered")
             .to_string();
-        if let Err(reason) = validate_legacy_campaign_name(&label) {
+        if let Err(reason) = validate_campaign_component(&label) {
             problems.push(CampaignProblemView {
                 directory: directory_lossy,
                 reason,
@@ -2526,36 +2336,16 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
             problems.push(CampaignProblemView {
                 directory,
                 reason: format!(
-                    "campaign {label:?} state directory must be its opaque ID `{id}` or legacy label"
+                    "campaign {label:?} state directory must be its opaque ID `{id}` or its label"
                 ),
             });
             continue;
         }
-        if directory == label && root.join(&id).exists() {
+        if !seen.insert(id.clone()) {
             return Err(format!(
-                "campaign {label:?} has both encoded and legacy state beneath {}; remove the ambiguity before continuing",
+                "campaign {label:?} has state under both its opaque ID and its label beneath {}; remove the ambiguity before continuing",
                 root.display()
             ));
-        }
-        if directory == id {
-            match legacy_campaign_state_matches(&root.join(&label), &label) {
-                Ok(true) => {
-                    return Err(format!(
-                        "campaign {label:?} has both encoded and legacy state beneath {}; remove the ambiguity before continuing",
-                        root.display()
-                    ));
-                }
-                Ok(false) => {}
-                Err(reason) => {
-                    problems.push(CampaignProblemView {
-                        directory,
-                        reason: format!(
-                            "legacy sibling state for campaign {label:?} blocks direct resolution: {reason}"
-                        ),
-                    });
-                    continue;
-                }
-            }
         }
         let campaign = match read_campaign_view(
             &state,
@@ -2571,12 +2361,6 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 continue;
             }
         };
-        if !seen.insert(id.clone()) {
-            return Err(format!(
-                "campaign {label:?} is present in both encoded and legacy state directories beneath {}",
-                root.display()
-            ));
-        }
         campaigns.push(campaign);
     }
     campaigns.sort_by(|left, right| {
@@ -2642,11 +2426,7 @@ fn read_campaign_view(
     let rounds = report_rounds(&reports, &round_authority)?;
     let last = rounds.last();
     let task_accounting = report_tasks::read(store, &cas, run_id, &events)?;
-    let wall_ms = task_accounting.wall_ms(
-        &store
-            .attempt_wall(run_id)
-            .map_err(|error| error.to_string())?,
-    );
+    let wall_ms = task_accounting.wall_ms();
     // A Ledger that fails to rebuild must not hide the Campaign from the listing: the
     // summary is simply absent.
     let findings = LedgerProjection::rebuild(store, &cas, run_id)
@@ -2759,12 +2539,9 @@ struct ReviewReportView {
     ledger_round: u32,
     final_verdict: Option<String>,
     rounds: Vec<ReportRoundView>,
-    spend: Vec<RoundSpendView>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// Empty only for a Campaign whose first Task capture failed, which has no Rounds either.
     task_accounting: Vec<report_tasks::TaskAccountingView>,
     demands: Vec<review_core::DemandSetEntryV1>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recorded_not_gathered: Option<LatestRoundEvidence>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wall_ms: Option<u64>,
     findings_summary: FindingsSummaryView,
@@ -2779,78 +2556,24 @@ struct ReportRoundView {
     #[serde(skip_serializing_if = "Option::is_none")]
     epoch: Option<u32>,
     verdict: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reported_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    task_chargeable_tokens_at_report: Option<review_core::task::usage::DecimalU128>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    task_accounting: Option<review_core::TaskReviewAccountingV1>,
+    task_chargeable_tokens_at_report: review_core::task::usage::DecimalU128,
+    task_accounting: review_core::TaskReviewAccountingV1,
 }
 
 impl ReportRoundView {
     fn tokens_label(&self) -> String {
-        self.task_chargeable_tokens_at_report.map_or_else(
-            || format!("reported tokens {}", optional_tokens(self.reported_tokens)),
-            |tokens| format!("Task cumulative charge at report {}", tokens.get()),
+        format!(
+            "Task cumulative charge at report {}",
+            self.task_chargeable_tokens_at_report.get()
         )
     }
 
     fn tokens_cell(&self) -> String {
-        self.task_chargeable_tokens_at_report.map_or_else(
-            || optional_tokens(self.reported_tokens),
-            |tokens| format!("{} (Task cumulative at report)", tokens.get()),
+        format!(
+            "{} (Task cumulative at report)",
+            self.task_chargeable_tokens_at_report.get()
         )
     }
-}
-
-#[derive(serde::Serialize)]
-struct RoundSpendView {
-    round: u32,
-    epoch: u32,
-    spent_tokens: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    wall_ms: Option<u64>,
-    reviewers: Vec<ReviewerSpendView>,
-}
-
-#[derive(serde::Serialize)]
-struct ReviewerSpendView {
-    reviewer: String,
-    spent_tokens: u64,
-    attempt_tokens: u64,
-    provider_tokens: u64,
-    attempts: Vec<AttemptSpendView>,
-    provider_operations: Vec<ProviderSpendView>,
-    /// The Warm Set this node's Attempts started from in the Round, when one was recorded.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    warm: Option<WarmSelectionView>,
-}
-
-#[derive(serde::Serialize)]
-struct AttemptSpendView {
-    attempt_id: String,
-    outcome: String,
-    spent_tokens: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    detail: Option<String>,
-    /// The reservation that bounded this Attempt: the node's own cap, or the pipeline's.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reserved: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    wall: Option<AttemptWallView>,
-    /// Which warm layers this Attempt used and what its rendered input cost, when the node
-    /// ran warm. Input and cache-read tokens are in `wall.usage`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    warm: Option<AttemptWarmView>,
-}
-
-/// The recorded `WarmSetSelected@1` of one node in one Round.
-#[derive(serde::Serialize, Clone)]
-struct WarmSelectionView {
-    warm_set_artifact_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_attempt_id: Option<String>,
-    layers: Vec<String>,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -2873,15 +2596,6 @@ struct WorkspacePreparationView {
     fallback: Option<String>,
     entries_touched: u64,
     preparation_ms: u64,
-}
-
-/// Wall-clock and provider usage from the store's sidecar; absent when the Attempt predates it.
-#[derive(serde::Serialize, Clone)]
-struct AttemptWallView {
-    started_unix_ms: u64,
-    elapsed_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    usage: Option<review_store::AttemptUsage>,
 }
 
 /// Findings by disposition, so precision is a number rather than a feeling.
@@ -2925,7 +2639,7 @@ fn findings_summary_line(summary: &FindingsSummaryView) -> String {
 
 /// Wall-clock a set of Rounds took: per (round, epoch), first Attempt start to last Attempt end,
 /// summed across Rounds. `None` when nothing was recorded.
-fn wall_span_ms<U>(rows: &[review_store::AttemptWall<U>]) -> Option<u64> {
+fn wall_span_ms(rows: &[review_store::TaskAttemptWall]) -> Option<u64> {
     wall_spans_ms(rows.iter().map(|row| {
         (
             (row.round, row.epoch),
@@ -2954,34 +2668,6 @@ fn wall_spans_ms(rows: impl IntoIterator<Item = ((u32, u32), (u64, u64))>) -> Op
     }))
 }
 
-/// Attaches sidecar rows to the spend view and returns the campaign's wall-clock total.
-fn attach_attempt_wall(
-    spend: &mut [RoundSpendView],
-    rows: &[review_store::AttemptWall],
-) -> Option<u64> {
-    let by_attempt: BTreeMap<&str, &review_store::AttemptWall> = rows
-        .iter()
-        .map(|row| (row.attempt_id.as_str(), row))
-        .collect();
-    for round in spend.iter_mut() {
-        let mut in_round = Vec::new();
-        for reviewer in &mut round.reviewers {
-            for attempt in &mut reviewer.attempts {
-                if let Some(row) = by_attempt.get(attempt.attempt_id.as_str()) {
-                    attempt.wall = Some(AttemptWallView {
-                        started_unix_ms: row.started_unix_ms,
-                        elapsed_ms: row.elapsed_ms,
-                        usage: row.usage.clone(),
-                    });
-                    in_round.push((*row).clone());
-                }
-            }
-        }
-        round.wall_ms = wall_span_ms(&in_round);
-    }
-    wall_span_ms(rows)
-}
-
 fn human_duration(ms: u64) -> String {
     let seconds = ms / 1000;
     if ms < 1000 {
@@ -2995,41 +2681,6 @@ fn human_duration(ms: u64) -> String {
     }
 }
 
-fn usage_summary(usage: &review_store::AttemptUsage) -> String {
-    let mut parts = Vec::new();
-    for (label, value) in [
-        ("in", usage.input_tokens),
-        ("out", usage.output_tokens),
-        ("cache-read", usage.cache_read_tokens),
-        ("cache-write", usage.cache_write_tokens),
-        ("reasoning", usage.reasoning_tokens),
-    ] {
-        if let Some(value) = value {
-            parts.push(format!("{label} {value}"));
-        }
-    }
-    if parts.is_empty() {
-        format!("chargeable {}", usage.chargeable_tokens)
-    } else {
-        parts.join(", ")
-    }
-}
-
-fn attempt_wall_suffix(wall: Option<&AttemptWallView>) -> String {
-    wall.map(|wall| {
-        format!(
-            ", {}{}",
-            human_duration(wall.elapsed_ms),
-            wall.usage
-                .as_ref()
-                .map(|usage| format!(" ({})", usage_summary(usage)))
-                .unwrap_or_default()
-        )
-    })
-    .unwrap_or_default()
-}
-
-/// Which warm layers an Attempt used and what its rendered input cost; empty for cold nodes.
 /// Whether any pinned reviewer policy keeps a Warm Workspace (`warm = { workspace = "rebase" }`).
 fn keeps_warm_workspace(loaded: &review_config::Loaded) -> bool {
     loaded
@@ -3038,6 +2689,7 @@ fn keeps_warm_workspace(loaded: &review_config::Loaded) -> bool {
         .any(|policy| policy.workspace == review_config::WorkspaceSpec::Rebase)
 }
 
+/// Which warm layers an Attempt used and what its rendered input cost; empty for cold nodes.
 fn attempt_warm_suffix(warm: Option<&AttemptWarmView>) -> String {
     let Some(warm) = warm else {
         return String::new();
@@ -3068,84 +2720,6 @@ fn attempt_warm_suffix(warm: Option<&AttemptWarmView>) -> String {
         })
         .unwrap_or_default();
     format!(", warm[{layers}]{rendered}{workspace}")
-}
-
-/// Rendered input size of one admitted Attempt from its durable provenance. Evidence for a
-/// report, never accounting: an unreadable provenance yields nothing rather than an error.
-fn admitted_context_size(cas: &Cas, provenance_id: &str) -> Option<(u64, u64)> {
-    let manifest = match cas.get_optional_artifact(provenance_id).ok()? {
-        Some(envelope) => {
-            let context_id = envelope.payload.get("context_id")?.as_str()?;
-            let context = cas.get_artifact(context_id).ok()?;
-            let manifest_id = context.payload.get("context_manifest_id")?.as_str()?;
-            cas.get_json(manifest_id).ok()?
-        }
-        None => {
-            let provenance = cas.get_json(provenance_id).ok()?;
-            provenance["context_manifest"].clone()
-        }
-    };
-    let rendered_bytes = manifest.get("rendered_bytes")?.as_u64()?;
-    let estimated_tokens = manifest.get("estimated_tokens")?.as_u64()?;
-    Some((rendered_bytes, estimated_tokens))
-}
-
-fn attempt_warm_view(
-    selection: Option<&WarmSelectionView>,
-    context_size: Option<(u64, u64)>,
-) -> Option<AttemptWarmView> {
-    let selection = selection?;
-    Some(AttemptWarmView {
-        layers: selection.layers.clone(),
-        rendered_bytes: context_size.map(|size| size.0),
-        estimated_tokens: context_size.map(|size| size.1),
-        // The pre-Task renderer serves logs written before Warm Workspaces existed; every
-        // Task-backed review joins its preparation in `report_tasks`.
-        workspace: None,
-    })
-}
-
-#[derive(serde::Serialize)]
-struct ProviderSpendView {
-    operation_id: String,
-    provider_id: String,
-    capability_id: String,
-    state: String,
-    spent_tokens: u64,
-}
-
-struct RoundSpendAccumulator {
-    round: u32,
-    epoch: u32,
-    reviewers: BTreeMap<String, ReviewerSpendAccumulator>,
-}
-
-#[derive(Default)]
-struct ReviewerSpendAccumulator {
-    attempts: BTreeMap<String, AttemptSpendAccumulator>,
-    providers: BTreeMap<String, ProviderSpendAccumulator>,
-    warm: Option<WarmSelectionView>,
-}
-
-struct AttemptSpendAccumulator {
-    outcome: String,
-    spent_tokens: u64,
-    /// The reservation that bounded this Attempt — its node cap, or the pipeline's.
-    reserved: Option<u64>,
-    broker_observed_tokens: u64,
-    detail: Option<String>,
-    terminal: bool,
-    /// Rendered input bytes and estimated tokens of an admitted Attempt, from its provenance.
-    context_size: Option<(u64, u64)>,
-}
-
-struct ProviderSpendAccumulator {
-    provider_id: String,
-    capability_id: String,
-    state: review_core::ProviderOperationStateV1,
-    charged_tokens: u64,
-    reserved_tokens: u64,
-    failure: bool,
 }
 
 fn print_report(options: &ReportOptions) -> Result<(), String> {
@@ -3181,39 +2755,21 @@ fn read_report_view(
         .collect();
     let round_authority = report_round_authority(&events)?;
     let rounds = report_rounds(&reports, &round_authority)?;
-    let recorded_not_gathered = latest_round_evidence(&events, cas)?.filter(|evidence| {
-        evidence.ledger_was_not_produced() && !evidence.available_node_results.is_empty()
-    });
-    let mut spend = report_spend(&events, &round_authority, Some(cas))?;
     let task_accounting = report_tasks::read(store, cas, &run_id, &events)?;
-    // An empty legacy accumulator says nothing about common Task work in that Round.
-    spend.retain(|round| {
-        !round.reviewers.is_empty() || !task_accounting.rounds.contains(&(round.round, round.epoch))
-    });
-    let wall_rows = store.attempt_wall(&run_id).map_err(|e| e.to_string())?;
-    attach_attempt_wall(&mut spend, &wall_rows);
-    let wall_ms = task_accounting.wall_ms(&wall_rows);
+    let wall_ms = task_accounting.wall_ms();
     let findings = ledger.finding_views();
     Ok(ReviewReportView {
-        schema: if task_accounting.tasks.is_empty() {
-            "af/review-report@1"
-        } else if task_accounting.has_wide_usage() {
-            "af/review-report@4"
-        } else {
-            "af/review-report@3"
-        },
+        schema: "af/review-report@4",
         campaign: campaign.into(),
         runs_recorded: reports.len(),
         ledger_round: ledger.round,
         final_verdict: reports
             .last()
-            .map(|event| report_verdict(event))
+            .map(|event| run_report(event).map(|report| render_verdict_v3(report.verdict)))
             .transpose()?,
         rounds,
-        spend,
         task_accounting: task_accounting.tasks,
         demands: ledger.demand_views(),
-        recorded_not_gathered,
         wall_ms,
         findings_summary: findings_summary(&findings),
         findings,
@@ -3232,20 +2788,14 @@ fn report_rounds(
                 .causation_id
                 .as_deref()
                 .and_then(|causation| round_authority.get(causation));
-            let task_report = (event.event_type == EventType::RunReportV6)
-                .then(|| serde_json::from_value::<RunReportPayloadV6>(event.payload.clone()))
-                .transpose()
-                .map_err(|error| error.to_string())?;
+            let report = run_report(event)?;
             Ok(ReportRoundView {
                 run: index + 1,
                 round: authority.map(|(round, _)| *round),
                 epoch: authority.map(|(_, epoch)| *epoch),
-                verdict: report_verdict(event)?,
-                reported_tokens: event.payload.get("spent_tokens").and_then(|v| v.as_u64()),
-                task_chargeable_tokens_at_report: task_report
-                    .as_ref()
-                    .map(|report| report.spent_tokens),
-                task_accounting: task_report.map(|report| report.task_accounting),
+                verdict: render_verdict_v3(report.verdict),
+                task_chargeable_tokens_at_report: report.spent_tokens,
+                task_accounting: report.task_accounting,
             })
         })
         .collect()
@@ -3263,319 +2813,6 @@ fn report_round_authority(
             Ok((event.event_id.clone(), (payload.round, payload.epoch)))
         })
         .collect()
-}
-
-fn report_spend(
-    events: &[review_core::RunEvent],
-    round_authority: &BTreeMap<String, (u32, u32)>,
-    cas: Option<&Cas>,
-) -> Result<Vec<RoundSpendView>, String> {
-    let mut rounds: BTreeMap<String, RoundSpendAccumulator> = round_authority
-        .iter()
-        .map(|(event_id, (round, epoch))| {
-            (
-                event_id.clone(),
-                RoundSpendAccumulator {
-                    round: *round,
-                    epoch: *epoch,
-                    reviewers: BTreeMap::new(),
-                },
-            )
-        })
-        .collect();
-
-    for event in events {
-        let Some(round_id) = event.causation_id.as_deref() else {
-            continue;
-        };
-        let Some(round) = rounds.get_mut(round_id) else {
-            continue;
-        };
-        match event.event_type {
-            EventType::AttemptDispatchedV1 => {
-                let payload: review_core::event::AttemptDispatchedPayloadV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                let (node, attempt) = event_attempt_identity(event)?;
-                round
-                    .reviewers
-                    .entry(node.to_string())
-                    .or_default()
-                    .attempts
-                    .insert(
-                        attempt.to_string(),
-                        AttemptSpendAccumulator {
-                            outcome: "running".to_string(),
-                            spent_tokens: payload.reserved.unwrap_or(0),
-                            reserved: payload.reserved,
-                            broker_observed_tokens: 0,
-                            detail: None,
-                            terminal: false,
-                            context_size: None,
-                        },
-                    );
-            }
-            EventType::WarmSetSelectedV1 => {
-                let payload: review_core::WarmSetSelectedPayloadV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                let node = event
-                    .node_id
-                    .as_deref()
-                    .ok_or("WarmSetSelected@1 has no reviewer node")?;
-                round.reviewers.entry(node.to_string()).or_default().warm =
-                    Some(WarmSelectionView {
-                        warm_set_artifact_id: payload.warm_set_artifact_id,
-                        source_attempt_id: payload.source_attempt_id,
-                        layers: payload
-                            .layers
-                            .iter()
-                            .map(|layer| layer.as_str().to_string())
-                            .collect(),
-                    });
-            }
-            EventType::ReviewerExecutionBoundV1 => {
-                let binding: review_core::ReviewerExecutionBindingV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                let authority = review_core::broker_authority_usage(&binding.operations)?;
-                let (node, attempt_id) = event_attempt_identity(event)?;
-                let attempt = round
-                    .reviewers
-                    .get_mut(node)
-                    .and_then(|reviewer| reviewer.attempts.get_mut(attempt_id))
-                    .ok_or("Reviewer Execution Binding has no dispatched Attempt")?;
-                if !attempt.terminal {
-                    attempt.spent_tokens = attempt.spent_tokens.max(authority);
-                }
-            }
-            EventType::BrokerOperationCompletedV1 => {
-                let receipt: review_core::BrokerOperationReceiptV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                let (node, attempt_id) = event_attempt_identity(event)?;
-                let attempt = round
-                    .reviewers
-                    .get_mut(node)
-                    .and_then(|reviewer| reviewer.attempts.get_mut(attempt_id))
-                    .ok_or("Broker operation receipt has no dispatched Attempt")?;
-                attempt.broker_observed_tokens = attempt
-                    .broker_observed_tokens
-                    .checked_add(receipt.charged_usage)
-                    .ok_or("reported Broker spend overflow")?;
-                attempt.spent_tokens = attempt.spent_tokens.max(attempt.broker_observed_tokens);
-            }
-            EventType::AttemptAdmittedV1 => {
-                let payload: review_core::event::AttemptAdmittedPayloadV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                let provenance = payload.provenance_artifact.clone();
-                settle_attempt(round, event, payload.selection, payload.cost_tokens, None)?;
-                if let (Some(cas), Some(provenance)) = (cas, provenance.as_deref()) {
-                    let (node, attempt_id) = event_attempt_identity(event)?;
-                    let attempt = round
-                        .reviewers
-                        .get_mut(node)
-                        .and_then(|reviewer| reviewer.attempts.get_mut(attempt_id));
-                    if let Some(attempt) = attempt {
-                        attempt.context_size = admitted_context_size(cas, provenance);
-                    }
-                }
-            }
-            EventType::AttemptFailedV1 => {
-                let payload: review_core::event::AttemptFailedPayloadV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                settle_attempt(
-                    round,
-                    event,
-                    "failed".to_string(),
-                    payload.charged.unwrap_or(0),
-                    Some(payload.error),
-                )?;
-            }
-            EventType::AttemptFencedV1 => {
-                let payload: review_core::event::AttemptFencedPayloadV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                settle_attempt(
-                    round,
-                    event,
-                    "fenced".to_string(),
-                    payload.charged.unwrap_or(0),
-                    Some(payload.reason),
-                )?;
-            }
-            EventType::AttemptReleasedV1 => {
-                let payload: review_core::event::AttemptReleasedPayloadV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                settle_attempt(round, event, "released".to_string(), 0, Some(payload.error))?;
-            }
-            EventType::ProviderOperationTransitionV1 => {
-                let payload: review_core::ProviderOperationTransitionPayloadV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                let reviewer = round.reviewers.entry(payload.node_id.clone()).or_default();
-                let operation = reviewer
-                    .providers
-                    .entry(payload.operation_id.clone())
-                    .or_insert_with(|| ProviderSpendAccumulator {
-                        provider_id: payload.provider_id.clone(),
-                        capability_id: payload.capability_id.clone(),
-                        state: payload.state,
-                        charged_tokens: 0,
-                        reserved_tokens: 0,
-                        failure: false,
-                    });
-                operation.charged_tokens = operation
-                    .charged_tokens
-                    .checked_add(payload.charged_tokens)
-                    .ok_or("reported Provider spend overflow")?;
-                operation.state = payload.state;
-                operation.reserved_tokens = payload.reserved_tokens;
-                operation.failure = payload.failure_class.is_some();
-            }
-            _ => {}
-        }
-    }
-
-    let mut views = rounds
-        .into_values()
-        .map(round_spend_view)
-        .collect::<Result<Vec<_>, String>>()?;
-    views.sort_by_key(|view| (view.round, view.epoch));
-    Ok(views)
-}
-
-fn event_attempt_identity(event: &review_core::RunEvent) -> Result<(&str, &str), String> {
-    Ok((
-        event
-            .node_id
-            .as_deref()
-            .ok_or_else(|| format!("{} has no reviewer node", event.event_type))?,
-        event
-            .attempt_id
-            .as_deref()
-            .ok_or_else(|| format!("{} has no Attempt ID", event.event_type))?,
-    ))
-}
-
-fn settle_attempt(
-    round: &mut RoundSpendAccumulator,
-    event: &review_core::RunEvent,
-    outcome: String,
-    spent_tokens: u64,
-    detail: Option<String>,
-) -> Result<(), String> {
-    let (node, attempt_id) = event_attempt_identity(event)?;
-    let attempt = round
-        .reviewers
-        .entry(node.to_string())
-        .or_default()
-        .attempts
-        .entry(attempt_id.to_string())
-        .or_insert_with(|| AttemptSpendAccumulator {
-            outcome: "running".to_string(),
-            spent_tokens: 0,
-            reserved: None,
-            broker_observed_tokens: 0,
-            detail: None,
-            terminal: false,
-            context_size: None,
-        });
-    if attempt.terminal {
-        // A late response to an already-fenced Attempt is durably quarantined but must not be
-        // charged twice. The first terminal lifecycle event owns its operator-visible outcome.
-        return Ok(());
-    }
-    attempt.outcome = outcome;
-    attempt.spent_tokens = spent_tokens.max(attempt.broker_observed_tokens);
-    attempt.detail = detail;
-    attempt.terminal = true;
-    Ok(())
-}
-
-fn round_spend_view(round: RoundSpendAccumulator) -> Result<RoundSpendView, String> {
-    let mut spent_tokens = 0_u64;
-    let mut reviewers = Vec::new();
-    for (reviewer, accumulator) in round.reviewers {
-        if accumulator.attempts.is_empty() && accumulator.providers.is_empty() {
-            // A Task-backed warm node records its selection here but its Attempts in the
-            // Task accounting; an empty legacy row would only duplicate that reviewer.
-            continue;
-        }
-        let warm = accumulator.warm;
-        let attempts = accumulator
-            .attempts
-            .into_iter()
-            .map(|(attempt_id, attempt)| AttemptSpendView {
-                attempt_id,
-                outcome: attempt.outcome,
-                spent_tokens: attempt.spent_tokens,
-                detail: attempt.detail,
-                reserved: attempt.reserved,
-                wall: None,
-                warm: attempt_warm_view(warm.as_ref(), attempt.context_size),
-            })
-            .collect::<Vec<_>>();
-        let attempt_tokens = attempts.iter().try_fold(0_u64, |sum, attempt| {
-            sum.checked_add(attempt.spent_tokens)
-                .ok_or("reported Attempt spend overflow")
-        })?;
-        let provider_operations = accumulator
-            .providers
-            .into_iter()
-            .map(|(operation_id, provider)| {
-                let outstanding = if provider.state
-                    == review_core::ProviderOperationStateV1::Running
-                    && !provider.failure
-                {
-                    provider.reserved_tokens
-                } else {
-                    0
-                };
-                Ok(ProviderSpendView {
-                    operation_id,
-                    provider_id: provider.provider_id,
-                    capability_id: provider.capability_id,
-                    state: provider_state_label(provider.state).to_string(),
-                    spent_tokens: provider
-                        .charged_tokens
-                        .checked_add(outstanding)
-                        .ok_or("reported Provider spend overflow")?,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let provider_tokens = provider_operations
-            .iter()
-            .try_fold(0_u64, |sum, operation| {
-                sum.checked_add(operation.spent_tokens)
-                    .ok_or("reported Provider spend overflow")
-            })?;
-        let reviewer_tokens = attempt_tokens
-            .checked_add(provider_tokens)
-            .ok_or("reported reviewer spend overflow")?;
-        spent_tokens = spent_tokens
-            .checked_add(reviewer_tokens)
-            .ok_or("reported Round spend overflow")?;
-        reviewers.push(ReviewerSpendView {
-            reviewer,
-            spent_tokens: reviewer_tokens,
-            attempt_tokens,
-            provider_tokens,
-            attempts,
-            provider_operations,
-            warm,
-        });
-    }
-    Ok(RoundSpendView {
-        round: round.round,
-        epoch: round.epoch,
-        spent_tokens,
-        wall_ms: None,
-        reviewers,
-    })
 }
 
 fn print_report_text(report: &ReviewReportView) {
@@ -3607,47 +2844,6 @@ fn print_report_text(report: &ReviewReportView) {
             round.tokens_label()
         );
     }
-    println!("Spend:");
-    for round in &report.spend {
-        println!(
-            "  round {} epoch {}: {} tokens{}",
-            round.round,
-            round.epoch,
-            round.spent_tokens,
-            round
-                .wall_ms
-                .map(|ms| format!(", {}", human_duration(ms)))
-                .unwrap_or_default()
-        );
-        for reviewer in &round.reviewers {
-            println!(
-                "    {}: {} tokens (attempts {}, providers {})",
-                reviewer.reviewer,
-                reviewer.spent_tokens,
-                reviewer.attempt_tokens,
-                reviewer.provider_tokens
-            );
-            for attempt in &reviewer.attempts {
-                println!(
-                    "      attempt {}: {}, {} tokens{}{}{}{}",
-                    attempt.attempt_id,
-                    attempt.outcome,
-                    attempt.spent_tokens,
-                    attempt
-                        .reserved
-                        .map(|cap| format!(" (cap {cap})"))
-                        .unwrap_or_default(),
-                    attempt_wall_suffix(attempt.wall.as_ref()),
-                    attempt_warm_suffix(attempt.warm.as_ref()),
-                    attempt
-                        .detail
-                        .as_deref()
-                        .map(|detail| format!(" - {}", one_line(detail)))
-                        .unwrap_or_default()
-                );
-            }
-        }
-    }
     print!("{}", report_tasks::render(&report.task_accounting, false));
     println!("Demands:");
     if report.demands.is_empty() {
@@ -3668,7 +2864,6 @@ fn print_report_text(report: &ReviewReportView) {
         );
         println!("    source: {}", demand.source);
     }
-    print_recorded_not_gathered_text(report.recorded_not_gathered.as_ref());
     println!("Findings:");
     if report.findings.is_empty() {
         println!("  none");
@@ -3691,15 +2886,7 @@ fn print_report_text(report: &ReviewReportView) {
                 .map_or("-".to_string(), |line| line.to_string())
         );
         println!("    body: {}", one_line(&finding.body));
-        println!(
-            "    fix: {}",
-            one_line(
-                finding
-                    .fix
-                    .as_deref()
-                    .unwrap_or("unavailable: artifact-less legacy import")
-            )
-        );
+        println!("    fix: {}", one_line(&finding.fix));
         for transition in &finding.history {
             println!(
                 "    history round {}: {} - {}",
@@ -3743,64 +2930,6 @@ fn print_report_markdown(report: &ReviewReportView) {
         );
     }
     println!();
-    println!("## Spend");
-    println!();
-    println!(
-        "| Round | Epoch | Reviewer | Attempt tokens | Provider tokens | Total tokens | Round wall |"
-    );
-    println!("| ---: | ---: | --- | ---: | ---: | ---: | ---: |");
-    for round in &report.spend {
-        let wall = round
-            .wall_ms
-            .map(human_duration)
-            .unwrap_or_else(|| "-".to_string());
-        if round.reviewers.is_empty() {
-            println!(
-                "| {} | {} | - | 0 | 0 | 0 | {wall} |",
-                round.round, round.epoch
-            );
-        }
-        for reviewer in &round.reviewers {
-            println!(
-                "| {} | {} | {} | {} | {} | {} | {wall} |",
-                round.round,
-                round.epoch,
-                reviewer.reviewer,
-                reviewer.attempt_tokens,
-                reviewer.provider_tokens,
-                reviewer.spent_tokens
-            );
-        }
-    }
-    println!();
-    println!("### Attempts");
-    for round in &report.spend {
-        for reviewer in &round.reviewers {
-            for attempt in &reviewer.attempts {
-                println!();
-                println!(
-                    "- Round {}, **{}**, Attempt `{}`: {}, {} tokens{}{}{}{}",
-                    round.round,
-                    reviewer.reviewer,
-                    attempt.attempt_id,
-                    attempt.outcome,
-                    attempt.spent_tokens,
-                    attempt
-                        .reserved
-                        .map(|cap| format!(" (cap {cap})"))
-                        .unwrap_or_default(),
-                    attempt_wall_suffix(attempt.wall.as_ref()),
-                    attempt_warm_suffix(attempt.warm.as_ref()),
-                    attempt
-                        .detail
-                        .as_deref()
-                        .map(|detail| format!(" — {}", markdown_line(detail)))
-                        .unwrap_or_default()
-                );
-            }
-        }
-    }
-    println!();
     print!("{}", report_tasks::render(&report.task_accounting, true));
     println!("## Demands");
     if report.demands.is_empty() {
@@ -3823,7 +2952,6 @@ fn print_report_markdown(report: &ReviewReportView) {
         );
         println!("  - Source: {}", demand.source);
     }
-    print_recorded_not_gathered_markdown(report.recorded_not_gathered.as_ref());
     println!();
     println!("## Findings");
     for effective_severity in [
@@ -3871,43 +2999,22 @@ fn print_report_markdown(report: &ReviewReportView) {
                     .map_or("-".to_string(), |line| line.to_string())
             );
             println!("  - Body: {}", markdown_line(&finding.body));
-            println!(
-                "  - Fix: {}",
-                markdown_line(
-                    finding
-                        .fix
-                        .as_deref()
-                        .unwrap_or("unavailable: artifact-less legacy import")
-                )
-            );
+            println!("  - Fix: {}", markdown_line(&finding.fix));
             let evidence = finding
                 .reports
                 .iter()
                 .map(|attached| {
-                    if attached.report_id.is_empty() {
-                        format!(
-                            "{} round {} scope={} at {}:{} (legacy import)",
-                            attached.source,
-                            attached.round,
-                            attached.scope_label(),
-                            attached.file,
-                            attached
-                                .line
-                                .map_or("-".to_string(), |line| line.to_string())
-                        )
-                    } else {
-                        format!(
-                            "{} round {} scope={} at {}:{} `{}`",
-                            attached.source,
-                            attached.round,
-                            attached.scope_label(),
-                            attached.file,
-                            attached
-                                .line
-                                .map_or("-".to_string(), |line| line.to_string()),
-                            attached.report_id
-                        )
-                    }
+                    format!(
+                        "{} round {} scope={} at {}:{} `{}`",
+                        attached.source,
+                        attached.round,
+                        attached.scope_label(),
+                        attached.file,
+                        attached
+                            .line
+                            .map_or("-".to_string(), |line| line.to_string()),
+                        attached.report_id
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join("; ");
@@ -3921,70 +3028,6 @@ fn print_report_markdown(report: &ReviewReportView) {
                 );
             }
         }
-    }
-}
-
-fn print_recorded_not_gathered_text(evidence: Option<&LatestRoundEvidence>) {
-    let Some(evidence) = evidence else { return };
-    println!("Recorded, not gathered:");
-    println!("  reason: {}", evidence.absence_reason());
-    for result in &evidence.available_node_results {
-        println!(
-            "  {} attempt {}: result {}, {} tokens, severities {}",
-            result.node,
-            result.attempt_id,
-            result.result_artifact_id,
-            result.spend_tokens,
-            if result.severities.is_empty() {
-                "none recorded".to_string()
-            } else {
-                result.severities.join(", ")
-            }
-        );
-    }
-}
-
-fn print_recorded_not_gathered_markdown(evidence: Option<&LatestRoundEvidence>) {
-    let Some(evidence) = evidence else { return };
-    println!();
-    println!("## Recorded, not gathered");
-    println!();
-    println!(
-        "The latest Round did not produce a Ledger because {}. These admitted results remain evidence only; they are not Findings, a clean Ledger, or convergence input.",
-        evidence.absence_reason()
-    );
-    for result in &evidence.available_node_results {
-        println!();
-        println!(
-            "- **{}**, Attempt `{}`, result `{}`, spend {} tokens, severities: {}",
-            result.node,
-            result.attempt_id,
-            result.result_artifact_id,
-            result.spend_tokens,
-            if result.severities.is_empty() {
-                "none recorded".to_string()
-            } else {
-                result.severities.join(", ")
-            }
-        );
-        for finding in &result.findings {
-            println!(
-                "  - [{}] {} — {}",
-                finding["severity"].as_str().unwrap_or("unknown"),
-                markdown_line(finding["title"].as_str().unwrap_or("untitled finding")),
-                markdown_line(finding["body"].as_str().unwrap_or("(no body)"))
-            );
-        }
-    }
-}
-
-fn provider_state_label(state: review_core::ProviderOperationStateV1) -> &'static str {
-    match state {
-        review_core::ProviderOperationStateV1::Running => "running",
-        review_core::ProviderOperationStateV1::WaitingForHuman => "waiting_for_human",
-        review_core::ProviderOperationStateV1::Resumed => "resumed",
-        review_core::ProviderOperationStateV1::Done => "done",
-        review_core::ProviderOperationStateV1::Failed => "failed",
     }
 }
 
@@ -4032,10 +3075,6 @@ fn transition_label(kind: review_store::ledger::TransitionKind) -> String {
     }
 }
 
-fn optional_tokens(tokens: Option<u64>) -> String {
-    tokens.map_or_else(|| "-".to_string(), |tokens| tokens.to_string())
-}
-
 fn optional_number(number: Option<u32>) -> String {
     number.map_or_else(|| "-".to_string(), |number| number.to_string())
 }
@@ -4058,50 +3097,11 @@ fn one_line(value: &str) -> String {
     value.lines().collect::<Vec<_>>().join(" ")
 }
 
-fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
-    match event.event_type {
-        EventType::RunReportV1 => event.payload["verdict"]
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| "RunReport@1 has no string verdict".to_string()),
-        EventType::RunReportV2 => {
-            let report: RunReportPayloadV2 =
-                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(match report.verdict {
-                RunVerdictV2::Pass => "pass".to_string(),
-                RunVerdictV2::Fail {
-                    reason: RunFailureReasonV2::NotConverged,
-                } => "fail (not_converged)".to_string(),
-                RunVerdictV2::Fail {
-                    reason: RunFailureReasonV2::Exhausted,
-                } => "fail (exhausted)".to_string(),
-                RunVerdictV2::Incomplete { missing_nodes } => {
-                    format!("incomplete ({} missing nodes)", missing_nodes.len())
-                }
-            })
-        }
-        EventType::RunReportV3 => {
-            let report: RunReportPayloadV3 =
-                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(render_verdict_v3(report.verdict))
-        }
-        EventType::RunReportV4 => {
-            let report: RunReportPayloadV4 =
-                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(render_verdict_v3(report.verdict))
-        }
-        EventType::RunReportV5 => {
-            let report: RunReportPayloadV5 =
-                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(render_verdict_v3(report.verdict))
-        }
-        EventType::RunReportV6 => {
-            let report: RunReportPayloadV6 =
-                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(render_verdict_v3(report.verdict))
-        }
-        _ => Err(format!("{} is not a run report", event.event_type)),
+fn run_report(event: &review_core::RunEvent) -> Result<RunReportPayloadV6, String> {
+    if !event.event_type.is_run_report() {
+        return Err(format!("{} is not a run report", event.event_type));
     }
+    serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())
 }
 
 fn render_verdict_v3(verdict: RunVerdictV3) -> String {
@@ -4154,13 +3154,11 @@ fn resolve(options: &ResolveOptions) -> Result<(), String> {
     let outcome = match options.status.as_str() {
         "rejected" => review_core::FindingResolutionOutcome::Rejected,
         "wontfix-tracked" => review_core::FindingResolutionOutcome::WontfixTracked,
-        "fixed" => {
-            return Err(
-                "fixed requires `af review attest-change` followed by `af review verify-fix`"
-                    .into(),
-            );
+        other => {
+            return Err(format!(
+                "unsupported direct Resolution outcome `{other}` (use rejected or wontfix-tracked; a fix is proven with `af review attest-change` then `af review verify-fix`)"
+            ));
         }
-        other => return Err(format!("unsupported direct Resolution outcome `{other}`")),
     };
     let resolution_id = ingest
         .resolve_nonfixed(
@@ -4392,15 +3390,6 @@ struct CandidateIdentity {
     binary_sha256: String,
 }
 
-struct ReviewAuthority {
-    authority_snapshot_id: String,
-    campaign_manifest_id: String,
-    subject_id: String,
-    head_snapshot_id: String,
-    round: u32,
-    epoch: u32,
-}
-
 fn candidate_identity() -> Result<CandidateIdentity, String> {
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let bytes = std::fs::read(&executable).map_err(|error| error.to_string())?;
@@ -4471,43 +3460,8 @@ fn next_action_value(mode: CampaignMode, verdict: &RunVerdict) -> serde_json::Va
     }
 }
 
-fn aggregate_usage(attempts: &[review_pipeline::AttemptEvidence]) -> review_runner::TokenUsage {
-    fn sum(
-        attempts: &[review_pipeline::AttemptEvidence],
-        select: impl Fn(&review_runner::TokenUsage) -> Option<u64>,
-    ) -> Option<u64> {
-        attempts
-            .iter()
-            .filter_map(|attempt| select(&attempt.usage))
-            .reduce(u64::saturating_add)
-    }
-    review_runner::TokenUsage {
-        input_tokens: sum(attempts, |usage| usage.input_tokens),
-        output_tokens: sum(attempts, |usage| usage.output_tokens),
-        cache_read_tokens: sum(attempts, |usage| usage.cache_read_tokens),
-        cache_write_tokens: sum(attempts, |usage| usage.cache_write_tokens),
-        reasoning_tokens: sum(attempts, |usage| usage.reasoning_tokens),
-        chargeable_tokens: attempts
-            .iter()
-            .map(|attempt| attempt.cost_tokens)
-            .fold(0, u64::saturating_add),
-    }
-}
-
-#[derive(Debug, serde::Serialize)]
-struct AvailableNodeResult {
-    node: String,
-    attempt_id: String,
-    result_artifact_id: String,
-    severities: Vec<String>,
-    spend_tokens: u64,
-    findings: Vec<serde_json::Value>,
-}
-
-#[derive(serde::Serialize)]
 struct LatestRoundEvidence {
     ledger_production: &'static str,
-    available_node_results: Vec<AvailableNodeResult>,
 }
 
 impl LatestRoundEvidence {
@@ -4519,7 +3473,6 @@ impl LatestRoundEvidence {
         match self.ledger_production {
             "not_produced_upstream_missing" => "required upstream output was missing",
             "not_produced_failed" => "the Ledger node failed",
-            "not_produced_gate_blocked" => "the Ledger node was gate-blocked",
             _ => "the Ledger node did not produce an authoritative output",
         }
     }
@@ -4553,40 +3506,6 @@ fn ledger_node_id(round_event: &review_core::RunEvent, cas: &Cas) -> Result<Stri
     Ok(node.id.clone())
 }
 
-fn run_report_outcomes(
-    event: &review_core::RunEvent,
-) -> Result<Option<Vec<review_core::RunNodeReportV2>>, String> {
-    match event.event_type {
-        EventType::RunReportV2 => Ok(Some(
-            serde_json::from_value::<RunReportPayloadV2>(event.payload.clone())
-                .map_err(|error| error.to_string())?
-                .outcomes,
-        )),
-        EventType::RunReportV3 => Ok(Some(
-            serde_json::from_value::<RunReportPayloadV3>(event.payload.clone())
-                .map_err(|error| error.to_string())?
-                .outcomes,
-        )),
-        EventType::RunReportV4 => Ok(Some(
-            serde_json::from_value::<RunReportPayloadV4>(event.payload.clone())
-                .map_err(|error| error.to_string())?
-                .outcomes,
-        )),
-        EventType::RunReportV5 => Ok(Some(
-            serde_json::from_value::<RunReportPayloadV5>(event.payload.clone())
-                .map_err(|error| error.to_string())?
-                .outcomes,
-        )),
-        EventType::RunReportV6 => Ok(Some(
-            serde_json::from_value::<RunReportPayloadV6>(event.payload.clone())
-                .map_err(|error| error.to_string())?
-                .outcomes,
-        )),
-        EventType::RunReportV1 => Ok(None),
-        _ => Err(format!("{} is not a Run Report", event.event_type)),
-    }
-}
-
 fn latest_round_evidence(
     events: &[review_core::RunEvent],
     cas: &Cas,
@@ -4608,18 +3527,19 @@ fn latest_round_evidence(
         let receipt: review_core::NodeOutputReceiptPayloadV1 =
             serde_json::from_value(receipt.payload.clone()).map_err(|error| error.to_string())?;
         let mut count = None;
+        // Every Ledger port is typed, so the Finding Set is selected by its port's declared type
+        // and never by sniffing a sibling DemandSet@1 artifact's content.
         for artifact_id in receipt
             .outputs
             .iter()
+            .filter(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
             .flat_map(|port| port.artifact_ids.iter())
         {
             let value = cas
                 .get_json(artifact_id)
                 .map_err(|error| error.to_string())?;
-            let Ok(envelope) = serde_json::from_value::<review_core::ArtifactEnvelope>(value)
-            else {
-                continue;
-            };
+            let envelope: review_core::ArtifactEnvelope =
+                serde_json::from_value(value).map_err(|error| error.to_string())?;
             if envelope.artifact_type != review_core::contract::FINDING_SET_V1 {
                 continue;
             }
@@ -4636,7 +3556,6 @@ fn latest_round_evidence(
             } else {
                 "produced_with_findings"
             },
-            available_node_results: Vec::new(),
         }));
     }
 
@@ -4647,9 +3566,7 @@ fn latest_round_evidence(
     let Some(report) = report else {
         return Ok(None);
     };
-    let Some(outcomes) = run_report_outcomes(report)? else {
-        return Ok(None);
-    };
+    let outcomes = run_report(report)?.outcomes;
     let outcome = outcomes
         .iter()
         .find(|outcome| outcome.node == ledger_node_id)
@@ -4658,77 +3575,12 @@ fn latest_round_evidence(
         review_core::RunNodeOutcomeV2::Suppressed {
             reason: review_core::RunSuppressionReasonV2::UpstreamMissing,
         } => "not_produced_upstream_missing",
-        review_core::RunNodeOutcomeV2::Suppressed {
-            reason: review_core::RunSuppressionReasonV2::GateBlocked,
-        } => "not_produced_gate_blocked",
         review_core::RunNodeOutcomeV2::Failed { .. } => "not_produced_failed",
         review_core::RunNodeOutcomeV2::Completed { .. } => {
             return Err("Ledger completed without a NodeOutputReceipt".into());
         }
     };
-    let mut available = Vec::new();
-    for event in events.iter().filter(|event| {
-        event.event_type == EventType::AttemptAdmittedV1
-            && event.causation_id.as_deref() == Some(round_event.event_id.as_str())
-    }) {
-        let payload: review_core::event::AttemptAdmittedPayloadV1 =
-            serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
-        if payload.selection != "selected" {
-            continue;
-        }
-        let result_artifact_id = payload
-            .result_artifact
-            .ok_or("selected Attempt has no result artifact")?;
-        let value = cas
-            .get_json(&result_artifact_id)
-            .map_err(|error| error.to_string())?;
-        let reports = value
-            .get("reports")
-            .or_else(|| value.get("findings"))
-            .and_then(serde_json::Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let findings = reports
-            .into_iter()
-            .map(|report| {
-                serde_json::json!({
-                    "severity": report.get("severity").cloned().unwrap_or(serde_json::Value::Null),
-                    "title": report.get("title").cloned().unwrap_or(serde_json::Value::Null),
-                    "body": report.get("body").cloned().unwrap_or(serde_json::Value::Null),
-                    "file": report.get("file").cloned().unwrap_or(serde_json::Value::Null),
-                    "line": report.get("line").cloned().unwrap_or(serde_json::Value::Null),
-                    "locations": report.get("locations").cloned().unwrap_or(serde_json::Value::Null),
-                })
-            })
-            .collect::<Vec<_>>();
-        let severities = findings
-            .iter()
-            .filter_map(|finding| finding["severity"].as_str().map(str::to_string))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        available.push(AvailableNodeResult {
-            node: event
-                .node_id
-                .clone()
-                .ok_or("selected Attempt has no node ID")?,
-            attempt_id: event
-                .attempt_id
-                .clone()
-                .ok_or("selected Attempt has no Attempt ID")?,
-            result_artifact_id,
-            severities,
-            spend_tokens: payload.cost_tokens,
-            findings,
-        });
-    }
-    available.sort_by(|left, right| {
-        (&left.node, &left.attempt_id).cmp(&(&right.node, &right.attempt_id))
-    });
-    Ok(Some(LatestRoundEvidence {
-        ledger_production,
-        available_node_results: available,
-    }))
+    Ok(Some(LatestRoundEvidence { ledger_production }))
 }
 
 fn packaged_runner(command: &review_core::Command) -> String {
@@ -4736,144 +3588,6 @@ fn packaged_runner(command: &review_core::Command) -> String {
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_default()
-}
-
-/// `static_reservation_tokens` is every static Worker's first Attempt together — each node's
-/// own cap where declared, the pipeline attempt cap elsewhere.
-fn require_static_attempt_capacity(
-    static_reservation_tokens: u64,
-    run_tokens: u64,
-    static_workers: usize,
-    committed_tokens: u64,
-) -> Result<(), String> {
-    let required = committed_tokens
-        .checked_add(static_reservation_tokens)
-        .ok_or("Provider spend plus static Worker budget arithmetic overflow")?;
-    if required > run_tokens {
-        return Err(format!(
-            "Provider admission committed {committed_tokens} tokens, leaving insufficient run budget for the first Attempt of each of {static_workers} required static Workers ({static_reservation_tokens} tokens reserved together): cap {run_tokens}, required {required}"
-        ));
-    }
-    Ok(())
-}
-
-fn admit_review_providers(
-    options: &Options,
-    state: &Path,
-    cas: &Cas,
-    store: &mut EventStore,
-    run_id: &str,
-    loaded: &review_config::Loaded,
-    authority: &RoundAuthority,
-) -> Result<BTreeMap<String, providers::ProviderAdmission>, String> {
-    for node in options.provider_bindings.keys() {
-        if !loaded.reviewers().contains_key(node) {
-            return Err(format!("--provider names unknown reviewer node `{node}`"));
-        }
-        if !loaded.packages().contains_key(node) {
-            return Err(format!(
-                "node `{node}` is an inline command; --provider is only valid for packaged Workers"
-            ));
-        }
-    }
-    for (node, package) in loaded.packages() {
-        let runner = packaged_runner(&package.runner);
-        if matches!(runner.as_str(), "claude" | "codex")
-            && !options.provider_bindings.contains_key(node)
-        {
-            return Err(format!(
-                "model-backed Worker `{node}` ({runner}) requires explicit `--provider {node}=PROVIDER_ID`; run `af provider doctor` with the same Campaign and selectors first"
-            ));
-        }
-    }
-    for node in store
-        .provider_operation_nodes(run_id, authority.round_event_id())
-        .map_err(|error| error.to_string())?
-    {
-        if !options.provider_bindings.contains_key(&node) {
-            return Err(format!(
-                "node `{node}` has Provider Admission state in this Round; repeat its explicit --provider binding"
-            ));
-        }
-    }
-    let expected_operations = options
-        .provider_bindings
-        .iter()
-        .map(|(node, provider_id)| {
-            let reviewer = loaded
-                .reviewers()
-                .get(node)
-                .expect("provider binding node was validated");
-            providers::operation_id_for(provider_id, node, reviewer, authority)
-        })
-        .collect::<Result<BTreeSet<_>, _>>()?;
-    if let Some(stale) = options
-        .provider_resumes
-        .keys()
-        .find(|operation| !expected_operations.contains(*operation))
-    {
-        return Err(format!(
-            "--resume-provider `{stale}` is stale or does not belong to a configured provider operation"
-        ));
-    }
-    let replayed_spend = store
-        .round_committed_tokens(run_id, authority.round_event_id())
-        .map_err(|error| error.to_string())?;
-    let mut provider_budget = BudgetLedger::default().with_committed(Scope::Run, replayed_spend);
-    if let Some(budgets) = loaded.budgets() {
-        provider_budget = provider_budget.with_limit(Scope::Run, Budget::of(budgets.run));
-    }
-    let mut resumes = options.provider_resumes.clone();
-    let mut structural_probes = BTreeSet::new();
-    let mut admissions = BTreeMap::new();
-    for (node, provider_id) in &options.provider_bindings {
-        let command = loaded
-            .reviewers()
-            .get(node)
-            .expect("provider binding node was validated");
-        let admission = providers::admit(
-            provider_id,
-            providers::AdmissionRequest {
-                node_id: node,
-                reviewer: command,
-                state_dir: state,
-                run_id,
-                authority,
-                cas,
-                store,
-                resumes: &mut resumes,
-                budget: &mut provider_budget,
-                structural_probes: &mut structural_probes,
-            },
-        )?;
-        admissions.insert(node.clone(), admission);
-    }
-    if let Some((operation, _)) = resumes.first_key_value() {
-        return Err(format!(
-            "--resume-provider `{operation}` is stale or does not belong to a configured provider operation"
-        ));
-    }
-    let has_dispatched_worker = store
-        .replay(run_id)
-        .map_err(|error| error.to_string())?
-        .iter()
-        .any(|event| {
-            event.event_type == EventType::AttemptDispatchedV1
-                && event.causation_id.as_deref() == Some(authority.round_event_id())
-        });
-    if !has_dispatched_worker && let Some(budgets) = loaded.budgets() {
-        let committed = store
-            .round_committed_tokens(run_id, authority.round_event_id())
-            .map_err(|error| error.to_string())?;
-        let static_reservation = project::max_simultaneous_reservation(loaded)?.unwrap_or(0);
-        require_static_attempt_capacity(
-            static_reservation,
-            budgets.run,
-            loaded.reviewers().len(),
-            committed,
-        )?;
-    }
-    Ok(admissions)
 }
 
 fn provider_doctor(options: &Options) -> Result<i32, String> {
@@ -4890,45 +3604,8 @@ fn provider_doctor(options: &Options) -> Result<i32, String> {
     let repo = Repo::open(&options.repo, &git_home)
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
     let campaign = campaign_run_id(options.campaign.as_deref().unwrap_or("local"));
-    if review_task::uses_common(&cas, &store, &campaign)? {
-        return review_task::doctor(options, &cas, &mut store, &repo, &campaign);
-    }
-    review_task::refuse_legacy_admission_override(options)?;
-    let authority::PreparedRun {
-        loaded,
-        run_id,
-        authority,
-        ..
-    } = authority::prepare(options, &cas, &mut store, &repo)?;
-    let admissions = admit_review_providers(
-        options, &state, &cas, &mut store, &run_id, &loaded, &authority,
-    )?;
-    let spent = store
-        .round_committed_tokens(&run_id, authority.round_event_id())
-        .map_err(|error| error.to_string())?;
-    if options.json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "schema": "af/provider-doctor@1",
-                "ready": true,
-                "run_id": run_id,
-                "round": authority.round(),
-                "epoch": authority.epoch(),
-                "admitted_nodes": admissions.keys().collect::<Vec<_>>(),
-                "committed_tokens": spent,
-                "gates_run": false,
-                "workers_dispatched": false,
-            })
-        );
-    } else {
-        println!("provider doctor: ready");
-        for node in admissions.keys() {
-            println!("  admitted {node}");
-        }
-        println!("  committed {spent} tokens; no Gates or Workers ran");
-    }
-    Ok(0)
+    review_task::require_common_campaign(&cas, &store, &campaign)?;
+    review_task::doctor(options, &cas, &mut store, &repo, &campaign)
 }
 
 fn run(options: &Options) -> Result<RunVerdict, String> {
@@ -4937,434 +3614,20 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
     let mut store =
         EventStore::open(state.join("events.sqlite")).map_err(|error| error.to_string())?;
-    let home = std::env::var("HOME").map_err(|error| error.to_string())?;
     let git_home = state.join("git-home");
     std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
     let repo = Repo::open(&options.repo, &git_home)
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
-
     let campaign = campaign_run_id(options.campaign.as_deref().unwrap_or("local"));
-    if review_task::uses_common(&cas, &store, &campaign)? {
-        return review_task::run(options, &cas, &mut store, &repo, &campaign);
-    }
-    review_task::refuse_legacy_admission_override(options)?;
-
-    let authority::PreparedRun {
-        loaded,
-        snapshot,
-        run_id,
-        focus,
-        timeout,
-        check_timeout,
-        git_timeout,
-        convergence,
-        authority,
-        ledger_projection,
-    } = authority::prepare(options, &cas, &mut store, &repo)?;
-    let authority_receipt = ReviewAuthority {
-        authority_snapshot_id: authority.authority_snapshot_id().to_string(),
-        campaign_manifest_id: authority.campaign_manifest_id().to_string(),
-        subject_id: authority.subject_id().to_string(),
-        head_snapshot_id: authority.head_snapshot_id().to_string(),
-        round: authority.round(),
-        epoch: authority.epoch(),
-    };
-    run_progress(
-        options,
-        format_args!(
-            "mode     {} ({} clean, {} max Round{})",
-            options.mode.as_str(),
-            convergence.clean_rounds,
-            convergence.max_rounds,
-            if convergence.max_rounds == 1 { "" } else { "s" }
-        ),
-    );
-    run_progress(options, format_args!("run      {run_id}"));
-    run_progress(
-        options,
-        format_args!(
-            "timeouts reviewer {}s, checks {}s, git capture {}s (pinned)",
-            timeout.as_secs(),
-            check_timeout.as_secs(),
-            git_timeout.as_secs()
-        ),
-    );
-
-    // Every model Worker's first-Attempt input, measured against the cap its dispatch reserves,
-    // before any Gate, Provider admission, or Worker: an input that alone exhausts the cap is
-    // refused here, with nothing charged, rather than after paying for the whole prompt.
-    {
-        let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
-            cas.get_json(authority.campaign_manifest_id())
-                .map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        let pipeline_bytes = cas
-            .get(&manifest.pipeline.artifact_id)
-            .map_err(|error| error.to_string())?;
-        let definition = review_config::Definition::from_toml(
-            std::str::from_utf8(&pipeline_bytes)
-                .map_err(|error| format!("pinned pipeline is not UTF-8: {error}"))?,
-        )
-        .map_err(|error| error.to_string())?;
-        let change_set = authority.change_set().map_or(
-            authority::ChangeSetSource::None,
-            authority::ChangeSetSource::Resolved,
-        );
-        let sizes = authority::worker_input_sizes(
-            &cas,
-            &definition,
-            &loaded,
-            change_set,
-            focus.as_deref(),
-        )?;
-        for size in &sizes {
-            run_progress(
-                options,
-                format_args!(
-                    "input    {} {} bytes (about {} tokens){}",
-                    size.node,
-                    size.input_bytes,
-                    size.input_tokens,
-                    size.cap_tokens
-                        .map(|cap| format!(" of a {cap}-token Attempt cap"))
-                        .unwrap_or_default()
-                ),
-            );
-        }
-        authority::refuse_unfit_inputs(&sizes)?;
-    }
-
-    let admissions = admit_review_providers(
-        options, &state, &cas, &mut store, &run_id, &loaded, &authority,
-    )?;
-
-    let auth = (std::env::var("USER").ok(), home.clone());
-    let mut kernel = Kernel::from_loaded(&cas, &mut store, &run_id, snapshot, &loaded, authority)?
-        .with_ledger_projection(ledger_projection)?
-        .with_checks(loaded.checks().to_vec())
-        .with_cache_source_resolver(caches::resolve_kind)
-        .with_check_timeout(check_timeout);
-    // Only a pipeline that keeps a Warm Workspace needs the cache root; a cold pipeline
-    // neither validates nor touches the machine's cache configuration.
-    if keeps_warm_workspace(&loaded) {
-        kernel =
-            kernel.with_workspace_cache_root(config::cache_home()?.join("af").join("workspaces"));
-    }
-    if let Some(budgets) = loaded.budgets() {
-        run_progress(
-            options,
-            format_args!(
-                "budgets  {} attempt reservation, {} run admission cap (chargeable tokens)",
-                budgets.attempt, budgets.run
-            ),
-        );
-        kernel = kernel.with_budgets(budgets.attempt, budgets.run);
-    }
-
-    let mut bound: BTreeMap<String, String> = BTreeMap::new();
-    for (node, command) in loaded.reviewers() {
-        let adapter: Box<dyn ReviewerAdapter> = match loaded.packages().get(node) {
-            Some(package) => {
-                let program = packaged_runner(command);
-                match program.as_str() {
-                    "claude" => {
-                        let user = auth.0.clone().ok_or_else(|| {
-                            format!("node `{node}`: Claude subscription auth requires USER")
-                        })?;
-                        let mut adapter =
-                            review_runner_claude::ClaudeAdapter::from_package(package, timeout)
-                                .map_err(|error| format!("{node}: {error}"))?
-                                .with_auth(
-                                    Some(
-                                        admissions
-                                            .get(node)
-                                            .expect("model-backed package was explicitly admitted")
-                                            .auth_dir_string()?,
-                                    ),
-                                    user,
-                                    auth.1.clone(),
-                                );
-                        if let Some(focus) = &focus {
-                            adapter = adapter.with_focus(focus);
-                        }
-                        Box::new(adapter)
-                    }
-                    "codex" => {
-                        let codex_home = admissions
-                            .get(node)
-                            .expect("model-backed package was explicitly admitted")
-                            .auth_dir_string()?;
-                        let mut adapter =
-                            review_runner_codex::CodexAdapter::from_package(package, timeout)
-                                .map_err(|error| format!("{node}: {error}"))?
-                                .with_codex_home(codex_home);
-                        if let Some(focus) = &focus {
-                            adapter = adapter.with_focus(focus);
-                        }
-                        Box::new(adapter)
-                    }
-                    other => {
-                        return Err(format!(
-                            "node `{node}`: no adapter drives `{other}`; this af release knows \
-                             claude and codex"
-                        ));
-                    }
-                }
-            }
-            None => Box::new(review_runner::CommandAdapter::new(command.clone(), timeout)),
-        };
-        bound.insert(node.clone(), command.program.clone());
-        kernel = kernel.with_adapter(node.clone(), adapter);
-    }
-    for (node, program) in &bound {
-        run_progress(options, format_args!("reviewer {node} -> {program}"));
-    }
-
-    let report = loaded.run(&kernel).map_err(|error| error.to_string())?;
-    run_progress(options, format_args!(""));
-    for (node, outcome) in &report.outcomes {
-        match outcome {
-            NodeOutcome::Completed { .. } => {
-                run_progress(options, format_args!("  done      {node}"))
-            }
-            NodeOutcome::Failed { error, .. } => {
-                run_progress(options, format_args!("  FAILED    {node}: {error}"))
-            }
-            NodeOutcome::Suppressed { reason } => {
-                run_progress(options, format_args!("  never-ran {node}: {reason:?}"))
-            }
-        }
-    }
-
-    let ledger = kernel.ledger();
-    print_scope_authority_warnings(&ledger);
-    run_progress(options, format_args!(""));
-    let finding_views = ledger.finding_views();
-    run_progress(options, format_args!("findings {}", finding_views.len()));
-    for finding in finding_views {
-        run_progress(
-            options,
-            format_args!(
-                "  [{:?}] {}:{} - {} ({:?})",
-                finding.severity,
-                finding.file,
-                finding
-                    .line
-                    .map_or("?".to_string(), |line| line.to_string()),
-                finding.title,
-                finding.status
-            ),
-        );
-    }
-    let open_or_stale_demand_ids = ledger
-        .demand_views()
-        .into_iter()
-        .filter(|demand| {
-            demand.requirement == review_core::DemandRequirement::Required
-                && matches!(
-                    demand.status,
-                    review_core::DemandStatus::Open | review_core::DemandStatus::Stale
-                )
-        })
-        .map(|demand| demand.demand_id)
-        .collect::<Vec<_>>();
-    run_progress(
-        options,
-        format_args!(
-            "demands  {} open/stale (required)",
-            open_or_stale_demand_ids.len()
-        ),
-    );
-    let spent_tokens = kernel
-        .spent()
-        .map(u64::try_from)
-        .transpose()
-        .map_err(|_| "Legacy Review output cannot represent the exact token total")?;
-    if let Some(spent) = spent_tokens {
-        run_progress(options, format_args!("spent    {spent} tokens"));
-    }
-
-    let verdict = kernel.publish_report(&report, convergence)?;
-    let attempts = kernel.selected_attempt_evidence()?;
-    drop(kernel);
-    let events = store.replay(&run_id).map_err(|error| error.to_string())?;
-    let latest_evidence = latest_round_evidence(&events, &cas)?;
-    if !options.json
-        && let Some(evidence) = latest_evidence.as_ref()
-        && evidence.ledger_was_not_produced()
-        && !evidence.available_node_results.is_empty()
-    {
-        run_progress(options, format_args!(""));
-        run_progress(
-            options,
-            format_args!("recorded, not gathered (Ledger was not produced):"),
-        );
-        for result in &evidence.available_node_results {
-            run_progress(
-                options,
-                format_args!(
-                    "  {} attempt {} artifact {} spend {} severities [{}]",
-                    result.node,
-                    result.attempt_id,
-                    result.result_artifact_id,
-                    result.spend_tokens,
-                    result.severities.join(", ")
-                ),
-            );
-            for finding in &result.findings {
-                run_progress(
-                    options,
-                    format_args!(
-                        "    [{}] {}",
-                        finding["severity"].as_str().unwrap_or("unknown"),
-                        finding["title"].as_str().unwrap_or("untitled finding")
-                    ),
-                );
-            }
-        }
-    }
-    if options.json {
-        let candidate = candidate_identity()?;
-        let findings = ledger
-            .finding_views()
-            .into_iter()
-            .map(|finding| {
-                serde_json::json!({
-                    "key": finding.key,
-                    "severity": format!("{:?}", finding.severity).to_lowercase(),
-                    "effective_severity": finding.convergence_severity
-                        .map(|severity| format!("{severity:?}").to_lowercase()),
-                    "status": finding.status.as_str(),
-                    "scope": finding.convergence_scope_label(),
-                    "file": finding.file,
-                    "line": finding.line,
-                    "title": finding.title,
-                    "aliases": finding.aliases,
-                })
-            })
-            .collect::<Vec<_>>();
-        let node_outcomes = report
-            .outcomes
-            .iter()
-            .map(|(node, outcome)| match outcome {
-                NodeOutcome::Completed { outputs } => serde_json::json!({
-                    "node": node,
-                    "kind": "completed",
-                    "output_artifacts": outputs.values().flatten().collect::<Vec<_>>(),
-                }),
-                NodeOutcome::Failed { error, .. } => serde_json::json!({
-                    "node": node,
-                    "kind": "failed",
-                    "error": error,
-                }),
-                NodeOutcome::Suppressed { reason } => serde_json::json!({
-                    "node": node,
-                    "kind": "suppressed",
-                    "reason": format!("{reason:?}").to_lowercase(),
-                }),
-            })
-            .collect::<Vec<_>>();
-        let rendered_bytes = attempts
-            .iter()
-            .map(|attempt| attempt.context_manifest.rendered_bytes)
-            .fold(0, u64::saturating_add);
-        let estimated_tokens = attempts
-            .iter()
-            .map(|attempt| attempt.context_manifest.estimated_tokens)
-            .fold(0, u64::saturating_add);
-        let usage = aggregate_usage(&attempts);
-        let attempt_values = attempts
-            .iter()
-            .map(|attempt| {
-                serde_json::json!({
-                    "node": &attempt.node,
-                    "attempt_id": &attempt.attempt_id,
-                    "cost_tokens": attempt.cost_tokens,
-                    "usage": &attempt.usage,
-                    "context_manifest": &attempt.context_manifest,
-                    "raw_artifact": &attempt.raw_artifact,
-                    "result_artifact": &attempt.result_artifact,
-                })
-            })
-            .collect::<Vec<_>>();
-        let mut outcome_value = serde_json::json!({
-            "schema": "af/review-outcome@1",
-            "campaign_mode": options.mode.as_str(),
-            "candidate": {
-                "version": candidate.version,
-                "executable": candidate.executable,
-                "binary_sha256": candidate.binary_sha256,
-            },
-            "run_id": run_id,
-            "authority": {
-                "authority_snapshot_id": authority_receipt.authority_snapshot_id,
-                "campaign_manifest_id": authority_receipt.campaign_manifest_id,
-                "subject_id": authority_receipt.subject_id,
-                "head_snapshot_id": authority_receipt.head_snapshot_id,
-                "round": authority_receipt.round,
-                "epoch": authority_receipt.epoch,
-            },
-            "node_outcomes": node_outcomes,
-            "blocked_gates": report.blocked_gates,
-            "attempts": attempt_values,
-            "totals": {
-                "context": {
-                    "rendered_bytes": rendered_bytes,
-                    "estimated_tokens": estimated_tokens,
-                },
-                "usage": usage,
-                "spent_tokens": spent_tokens,
-                "open_required_demands": open_or_stale_demand_ids.len(),
-                "open_or_stale_demand_ids": open_or_stale_demand_ids,
-            },
-            "findings": findings,
-            "outcome": verdict_value(&verdict),
-            "next_action": next_action_value(options.mode, &verdict),
-        });
-        if let Some(evidence) = latest_evidence
-            && evidence.ledger_was_not_produced()
-        {
-            let object = outcome_value.as_object_mut().expect("outcome object");
-            object.insert(
-                "ledger_production".into(),
-                serde_json::Value::String(evidence.ledger_production.into()),
-            );
-            object.insert(
-                "available_node_results".into(),
-                serde_json::to_value(evidence.available_node_results)
-                    .map_err(|error| error.to_string())?,
-            );
-        }
-        println!(
-            "{}",
-            serde_json::to_string(&outcome_value).map_err(|error| error.to_string())?
-        );
-    } else {
-        run_progress(options, format_args!("verdict  {verdict:?}"));
-    }
-    match (options.mode, &verdict) {
-        (CampaignMode::Light, RunVerdict::Fail(_)) => run_progress(
-            options,
-            format_args!(
-                "next     fix the findings, run the deterministic project gate, then stop; do not start another Campaign (use --heavy only by explicit human choice)"
-            ),
-        ),
-        (CampaignMode::Light, RunVerdict::Incomplete { .. }) => run_progress(
-            options,
-            format_args!("next     resume this exact incomplete light Round"),
-        ),
-        _ => {}
-    }
-    Ok(verdict)
+    review_task::require_common_campaign(&cas, &store, &campaign)?;
+    review_task::run(options, &cas, &mut store, &repo, &campaign)
 }
 
 #[cfg(test)]
 mod option_tests {
     use super::{
-        CampaignMode, Options, campaign_id, campaign_state_beneath, enumerate_campaigns,
-        last_closed_summary, latest_round_evidence, report_round_authority, report_rounds,
-        report_spend, require_static_attempt_capacity, validate_campaign_name,
+        CampaignMode, Options, campaign_id, campaign_labels_beneath, campaign_state_beneath,
+        default_campaigns_root, enumerate_campaigns, latest_round_evidence, validate_campaign_name,
     };
 
     fn event(
@@ -5392,7 +3655,7 @@ mod option_tests {
 
     fn campaign_manifest(cas: &review_store::Cas, ledger_node: &str) -> (String, String, String) {
         let pipeline = format!(
-            "version = 2\n[subject]\nkind = \"whole-tree\"\n[[nodes]]\nid = \"{ledger_node}\"\nkind = \"ledger\"\n"
+            "version = 2\n[subject]\nkind = \"whole-tree\"\n[[nodes]]\nid = \"{ledger_node}\"\nkind = \"ledger\"\noutputs = [{{ name = \"findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }}]\n"
         );
         let pipeline_id = cas.put(pipeline.as_bytes()).unwrap();
         let opaque = cas.put(b"pinned authority").unwrap();
@@ -5407,7 +3670,7 @@ mod option_tests {
                 artifact_id: pipeline_id,
             },
             reviewer_lock: review_core::AuthorityFileV1 {
-                path: ".af/review.lock".into(),
+                path: ".af/af.lock".into(),
                 artifact_id: opaque,
             },
             reviewers: Vec::new(),
@@ -5419,8 +3682,8 @@ mod option_tests {
                 gate: "major".into(),
             },
             reviewer_timeout_seconds: 60,
-            check_timeout_seconds: None,
-            git_timeout_seconds: None,
+            check_timeout_seconds: 3600,
+            git_timeout_seconds: 300,
             budgets: None,
             focus: None,
             finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
@@ -5479,7 +3742,7 @@ mod option_tests {
     }
 
     #[test]
-    fn campaign_state_uses_an_opaque_contained_id_and_legacy_fallback() {
+    fn campaign_state_uses_an_opaque_contained_id() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("campaigns");
         std::fs::create_dir_all(&root).unwrap();
@@ -5492,23 +3755,20 @@ mod option_tests {
         assert_eq!(encoded.file_name().unwrap(), id.as_str());
         assert!(encoded.starts_with(std::fs::canonicalize(&root).unwrap()));
 
-        let legacy = root.join("heavy");
-        write_campaign_opening(&legacy, "heavy");
-        assert_eq!(
-            campaign_state_beneath(&root, "heavy").unwrap(),
-            std::fs::canonicalize(&legacy).unwrap()
-        );
+        // A directory named by the label is never a fallback for the default state root.
+        write_campaign_opening(&root.join("heavy"), "heavy");
+        assert_eq!(campaign_state_beneath(&root, "heavy").unwrap(), encoded);
 
-        std::fs::create_dir(&encoded).unwrap();
-        assert!(
-            campaign_state_beneath(&root, "heavy")
-                .unwrap_err()
-                .contains("both encoded and legacy")
-        );
+        // An explicit `--state ROOT/<label>` may name the same Campaign, so enumeration refuses
+        // one Campaign held under both names.
+        write_campaign_opening(&encoded, "heavy");
         let Err(error) = enumerate_campaigns(&root, false) else {
             panic!("ambiguous Campaign state was enumerated");
         };
-        assert!(error.contains("both encoded and legacy"));
+        assert!(
+            error.contains("both its opaque ID and its label"),
+            "{error}"
+        );
         assert!(
             campaign_state_beneath(&root, &id)
                 .unwrap_err()
@@ -5517,33 +3777,25 @@ mod option_tests {
     }
 
     #[test]
-    fn preexisting_legacy_labels_remain_readable_and_enumerable() {
+    fn completion_lists_the_labels_under_the_campaigns_root() {
+        if let Ok(root) = default_campaigns_root() {
+            assert!(root.ends_with("af/review/campaigns"), "{}", root.display());
+        }
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("campaigns");
-        std::fs::create_dir(&root).unwrap();
-        let legacy = root.join(" padded");
-        write_campaign_opening(&legacy, " padded");
-
-        assert_eq!(
-            campaign_state_beneath(&root, " padded").unwrap(),
-            std::fs::canonicalize(&legacy).unwrap()
-        );
-        assert_eq!(
-            super::campaign_state(&Some(legacy.clone()), " padded").unwrap(),
-            std::fs::canonicalize(&legacy).unwrap()
-        );
-        let enumeration = enumerate_campaigns(&root, false).unwrap();
-        assert_eq!(enumeration.campaigns.len(), 1);
-        assert_eq!(enumeration.campaigns[0].label, " padded");
-        assert!(enumeration.problems.is_empty());
+        let root = temp.path().join("af/review/campaigns");
+        write_campaign_opening(&root.join(campaign_id("heavy")), "heavy");
+        write_campaign_opening(&root.join("loop"), "loop");
+        assert_eq!(campaign_labels_beneath(&root), ["heavy", "loop"]);
+        // The state root above it holds no Campaign directly.
+        assert!(campaign_labels_beneath(temp.path()).is_empty());
     }
 
     #[test]
     fn campaign_enumeration_does_not_create_a_missing_cas() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("campaigns");
-        let state = root.join("legacy");
-        write_campaign_opening(&state, "legacy");
+        let state = root.join("missing-cas");
+        write_campaign_opening(&state, "missing-cas");
         std::fs::remove_dir_all(state.join("cas")).unwrap();
 
         let enumeration = enumerate_campaigns(&root, false).unwrap();
@@ -5552,7 +3804,6 @@ mod option_tests {
         assert!(!state.join("cas").exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn bad_entries_do_not_hide_campaigns_and_symlinked_state_is_not_followed() {
         let temp = tempfile::tempdir().unwrap();
@@ -5571,32 +3822,6 @@ mod option_tests {
     }
 
     #[test]
-    fn unreadable_legacy_sibling_is_attributed_and_blocks_a_false_healthy_listing() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("campaigns");
-        std::fs::create_dir(&root).unwrap();
-        let encoded = root.join(campaign_id("healthy"));
-        write_campaign_opening(&encoded, "healthy");
-        let legacy = root.join("healthy");
-        std::fs::create_dir(&legacy).unwrap();
-        std::fs::write(legacy.join("events.sqlite"), b"not sqlite").unwrap();
-
-        let error = campaign_state_beneath(&root, "healthy").unwrap_err();
-        assert!(error.contains("legacy Campaign state"), "{error}");
-        assert!(error.contains("events.sqlite"), "{error}");
-
-        let enumeration = enumerate_campaigns(&root, false).unwrap();
-        assert!(enumeration.campaigns.is_empty());
-        assert!(
-            enumeration
-                .problems
-                .iter()
-                .any(|problem| problem.reason.contains("legacy sibling state"))
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn campaign_enumeration_refuses_a_symlinked_event_database() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("campaigns");
@@ -5614,252 +3839,6 @@ mod option_tests {
     }
 
     #[test]
-    fn spend_projection_keeps_fenced_released_and_outstanding_work_visible() {
-        let round = event(
-            0,
-            review_core::EventType::RoundStartedV1,
-            None,
-            None,
-            None,
-            serde_json::json!({
-                "round": 1,
-                "epoch": 1,
-                "campaign_manifest_id": "manifest",
-                "subject_id": "subject",
-                "prior_finding_set_id": "findings",
-                "prior_demand_set_id": "demands"
-            }),
-        );
-        let attempt = |sequence, event_type, node, attempt_id, payload| {
-            event(
-                sequence,
-                event_type,
-                Some("event-0"),
-                Some(node),
-                Some(attempt_id),
-                payload,
-            )
-        };
-        let events = vec![
-            round,
-            attempt(
-                1,
-                review_core::EventType::AttemptDispatchedV1,
-                "architecture",
-                "selected",
-                serde_json::json!({"reserved": 100, "prior_findings": null}),
-            ),
-            attempt(
-                2,
-                review_core::EventType::AttemptAdmittedV1,
-                "architecture",
-                "selected",
-                serde_json::json!({
-                    "selection": "selected",
-                    "cost_tokens": 31,
-                    "result_artifact": null,
-                    "provenance_artifact": null
-                }),
-            ),
-            attempt(
-                3,
-                review_core::EventType::AttemptDispatchedV1,
-                "architecture",
-                "fenced",
-                serde_json::json!({"reserved": 50, "prior_findings": null}),
-            ),
-            attempt(
-                4,
-                review_core::EventType::AttemptFencedV1,
-                "architecture",
-                "fenced",
-                serde_json::json!({"reason": "deadline", "charged": 11}),
-            ),
-            attempt(
-                5,
-                review_core::EventType::AttemptAdmittedV1,
-                "architecture",
-                "fenced",
-                serde_json::json!({
-                    "selection": "quarantined",
-                    "cost_tokens": 11,
-                    "result_artifact": null,
-                    "provenance_artifact": null
-                }),
-            ),
-            attempt(
-                6,
-                review_core::EventType::AttemptDispatchedV1,
-                "correctness",
-                "released",
-                serde_json::json!({"reserved": 20, "prior_findings": null}),
-            ),
-            attempt(
-                7,
-                review_core::EventType::AttemptReleasedV1,
-                "correctness",
-                "released",
-                serde_json::json!({"error": "not run", "released": 20}),
-            ),
-            attempt(
-                8,
-                review_core::EventType::AttemptDispatchedV1,
-                "correctness",
-                "running",
-                serde_json::json!({"reserved": 7, "prior_findings": null}),
-            ),
-            event(
-                9,
-                review_core::EventType::ProviderOperationTransitionV1,
-                Some("event-0"),
-                Some("architecture"),
-                None,
-                serde_json::json!({
-                    "operation_id": "provider-op",
-                    "provider_id": "codex",
-                    "capability_id": "smoke",
-                    "node_id": "architecture",
-                    "round": 1,
-                    "round_epoch": 1,
-                    "operation_epoch": 1,
-                    "state": "failed",
-                    "attempt": null,
-                    "attempt_id": null,
-                    "failure_class": "transient_transport_failure",
-                    "failure_fingerprint": "fingerprint",
-                    "continuation_handle": null,
-                    "reserved_tokens": 5,
-                    "charged_tokens": 2,
-                    "elapsed_ms": 10,
-                    "retry_permitted": true,
-                    "circuit_open": false,
-                    "next_action": "retry_explicitly"
-                }),
-            ),
-            attempt(
-                10,
-                review_core::EventType::AttemptDispatchedV1,
-                "correctness",
-                "brokered",
-                serde_json::json!({"reserved": null, "prior_findings": null}),
-            ),
-            attempt(
-                11,
-                review_core::EventType::ReviewerExecutionBoundV1,
-                "correctness",
-                "brokered",
-                serde_json::json!({
-                    "node": "correctness",
-                    "attempt_id": "brokered",
-                    "lease_epoch": 1,
-                    "credential_mode": "brokered",
-                    "auto_apply": false,
-                    "broker_handle": "bbbbbbbbbbbbbbbbbbbbbbbbbb",
-                    "operations": [{
-                        "name": "model_inference",
-                        "destination": "provider.test",
-                        "method": "responses.create",
-                        "max_request_bytes": 32,
-                        "max_response_bytes": 32,
-                        "max_calls": 1,
-                        "max_usage": 100
-                    }],
-                    "admitted": true
-                }),
-            ),
-            attempt(
-                12,
-                review_core::EventType::AttemptFencedV1,
-                "correctness",
-                "brokered",
-                serde_json::json!({"reason": "recovery", "charged": 100}),
-            ),
-            attempt(
-                13,
-                review_core::EventType::BrokerOperationCompletedV1,
-                "correctness",
-                "brokered",
-                serde_json::json!({
-                    "handle_id": "bbbbbbbbbbbbbbbbbbbbbbbbbb",
-                    "node": "correctness",
-                    "attempt_id": "brokered",
-                    "lease_epoch": 1,
-                    "operation": "model_inference",
-                    "destination": "provider.test",
-                    "method": "responses.create",
-                    "ordinal": 1,
-                    "outcome": "revoked",
-                    "failure_reason": "authority_revoked",
-                    "request_digest": format!("sha256:{}", "c".repeat(64)),
-                    "request_bytes": 7,
-                    "response_bytes": 0,
-                    "reserved_usage": 100,
-                    "charged_usage": 101
-                }),
-            ),
-        ];
-
-        let authority = report_round_authority(&events).unwrap();
-        let spend = report_spend(&events, &authority, None).unwrap();
-        assert_eq!(spend.len(), 1);
-        assert_eq!(spend[0].spent_tokens, 152);
-        let architecture = &spend[0].reviewers[0];
-        assert_eq!(architecture.reviewer, "architecture");
-        assert_eq!(architecture.attempt_tokens, 42);
-        assert_eq!(architecture.provider_tokens, 2);
-        let fenced = architecture
-            .attempts
-            .iter()
-            .find(|attempt| attempt.attempt_id == "fenced")
-            .unwrap();
-        assert_eq!(fenced.outcome, "fenced");
-        assert_eq!(fenced.spent_tokens, 11);
-        let correctness = &spend[0].reviewers[1];
-        assert_eq!(correctness.attempt_tokens, 108);
-        let attempt = |id| {
-            correctness
-                .attempts
-                .iter()
-                .find(|attempt| attempt.attempt_id == id)
-                .unwrap()
-        };
-        assert_eq!(attempt("released").outcome, "released");
-        assert_eq!(attempt("released").spent_tokens, 0);
-        assert_eq!(attempt("running").outcome, "running");
-        assert_eq!(attempt("running").spent_tokens, 7);
-        assert_eq!(attempt("brokered").outcome, "fenced");
-        assert_eq!(attempt("brokered").spent_tokens, 101);
-    }
-
-    #[test]
-    fn legacy_report_without_round_authority_remains_reportable() {
-        let legacy = event(
-            0,
-            review_core::EventType::RunReportV1,
-            None,
-            None,
-            None,
-            serde_json::json!({
-                "outcomes": [{"node": "reviewer", "status": "completed", "detail": {}}],
-                "blocked_gates": [],
-                "verdict": "Pass",
-                "spent_tokens": 9
-            }),
-        );
-        let rounds = report_rounds(&[&legacy], &std::collections::BTreeMap::new()).unwrap();
-        assert_eq!(rounds.len(), 1);
-        assert_eq!(rounds[0].run, 1);
-        assert_eq!(rounds[0].round, None);
-        assert_eq!(rounds[0].epoch, None);
-        assert_eq!(rounds[0].verdict, "Pass");
-        assert_eq!(rounds[0].reported_tokens, Some(9));
-        assert_eq!(
-            last_closed_summary(rounds[0].round, rounds[0].epoch, Some(&rounds[0].verdict)),
-            Some("round - epoch -; Pass".to_string())
-        );
-    }
-
-    #[test]
     fn repository_state_is_always_refused() {
         let repository = tempfile::tempdir().unwrap();
         let options = Options {
@@ -5872,14 +3851,12 @@ mod option_tests {
             policy_rev: None,
             base: None,
             candidate: None,
-            authority: None,
             uncommitted: false,
             restart_round: false,
             mode: CampaignMode::Light,
             timeout: None,
             git_timeout: None,
             provider_bindings: std::collections::BTreeMap::new(),
-            provider_resumes: std::collections::BTreeMap::new(),
             provider_admission: None,
             json: false,
             node: None,
@@ -5888,35 +3865,35 @@ mod option_tests {
         assert!(error.contains("state must live under XDG state"));
     }
 
+    /// `af review run` JSON and the `af review ledger` notice classify the latest Round's Ledger
+    /// from its output receipt, or from the Round's Run Report when the Ledger produced none.
     #[test]
-    fn provider_smoke_spend_cannot_consume_static_attempt_capacity() {
-        let error = require_static_attempt_capacity(600_000, 600_000, 2, 2).unwrap_err();
-        assert!(error.contains("cap 600000, required 600002"), "{error}");
-        require_static_attempt_capacity(600_000, 600_002, 2, 2).unwrap();
-    }
-
-    #[test]
-    fn admitted_result_is_visible_without_becoming_a_ledger() {
+    fn latest_round_ledger_production_is_read_from_its_receipt_or_run_report() {
         let temp = tempfile::tempdir().unwrap();
         let cas = review_store::Cas::open(temp.path()).unwrap();
         let (manifest_id, findings_id, demands_id) = campaign_manifest(&cas, "reduce");
-        let result_id = cas
-            .put_json(&serde_json::json!({
-                "verdict": "request-changes",
-                "summary": null,
-                "reports": [{
-                    "severity": "major",
-                    "file": "src/lib.rs",
-                    "line": 9,
-                    "title": "partial finding",
-                    "body": "the sibling reviewer failed before gather",
-                    "fix": "repair it",
-                    "confidence": 0.9
+        let report = |outcome: review_core::RunNodeOutcomeV2| {
+            serde_json::to_value(review_core::RunReportPayloadV6 {
+                outcomes: vec![review_core::RunNodeReportV2 {
+                    node: "reduce".into(),
+                    outcome,
                 }],
-                "benchmark_demands": [],
-                "dispositions": []
-            }))
-            .unwrap();
+                blocked_gates: Vec::new(),
+                verdict: review_core::RunVerdictV3::Incomplete {
+                    missing_nodes: Vec::new(),
+                },
+                spent_tokens: 37_u128.into(),
+                task_accounting: review_core::TaskReviewAccountingV1 {
+                    task_id: "review".into(),
+                    task_revision_id: findings_id.clone(),
+                    plan_id: findings_id.clone(),
+                    task_report_id: findings_id.clone(),
+                    through_sequence: 1,
+                },
+                execution: review_core::RunReportExecutionV6::Unbound {},
+            })
+            .unwrap()
+        };
         let events = vec![
             event(
                 0,
@@ -5929,61 +3906,31 @@ mod option_tests {
                     epoch: 1,
                     campaign_manifest_id: manifest_id,
                     subject_id: findings_id.clone(),
-                    prior_finding_set_id: findings_id,
+                    prior_finding_set_id: findings_id.clone(),
                     prior_demand_set_id: demands_id,
                 })
                 .unwrap(),
             ),
             event(
                 1,
-                review_core::EventType::AttemptAdmittedV1,
+                review_core::EventType::RunReportV6,
                 Some("event-0"),
-                Some("correctness"),
-                Some("attempt-1"),
-                serde_json::json!({
-                    "selection": "selected",
-                    "cost_tokens": 37,
-                    "result_artifact": result_id,
-                    "provenance_artifact": null
+                None,
+                None,
+                report(review_core::RunNodeOutcomeV2::Suppressed {
+                    reason: review_core::RunSuppressionReasonV2::UpstreamMissing,
                 }),
-            ),
-            event(
-                2,
-                review_core::EventType::RunReportV3,
-                Some("event-0"),
-                None,
-                None,
-                serde_json::to_value(review_core::RunReportPayloadV3 {
-                    outcomes: vec![review_core::RunNodeReportV2 {
-                        node: "reduce".into(),
-                        outcome: review_core::RunNodeOutcomeV2::Suppressed {
-                            reason: review_core::RunSuppressionReasonV2::UpstreamMissing,
-                        },
-                    }],
-                    blocked_gates: Vec::new(),
-                    verdict: review_core::RunVerdictV3::Incomplete {
-                        missing_nodes: Vec::new(),
-                    },
-                    spent_tokens: Some(37),
-                })
-                .unwrap(),
             ),
         ];
         let evidence = latest_round_evidence(&events, &cas).unwrap().unwrap();
         assert_eq!(evidence.ledger_production, "not_produced_upstream_missing");
-        assert_eq!(evidence.available_node_results.len(), 1);
-        let result = &evidence.available_node_results[0];
-        assert_eq!(result.node, "correctness");
-        assert_eq!(result.attempt_id, "attempt-1");
-        assert_eq!(result.spend_tokens, 37);
-        assert_eq!(result.severities, ["major"]);
-        assert_eq!(result.findings[0]["title"], "partial finding");
+        assert!(evidence.ledger_was_not_produced());
 
         let mut gathered = events.clone();
         gathered.insert(
-            2,
+            1,
             event(
-                2,
+                1,
                 review_core::EventType::NodeOutputReceiptV1,
                 Some("event-0"),
                 Some("reduce"),
@@ -5993,24 +3940,11 @@ mod option_tests {
         );
         let evidence = latest_round_evidence(&gathered, &cas).unwrap().unwrap();
         assert_eq!(evidence.ledger_production, "produced_with_findings");
-        assert!(evidence.available_node_results.is_empty());
 
         let mut failed = events;
-        failed.last_mut().unwrap().payload =
-            serde_json::to_value(review_core::RunReportPayloadV3 {
-                outcomes: vec![review_core::RunNodeReportV2 {
-                    node: "reduce".into(),
-                    outcome: review_core::RunNodeOutcomeV2::Failed {
-                        error: "invalid Ledger output".into(),
-                    },
-                }],
-                blocked_gates: Vec::new(),
-                verdict: review_core::RunVerdictV3::Incomplete {
-                    missing_nodes: Vec::new(),
-                },
-                spent_tokens: Some(37),
-            })
-            .unwrap();
+        failed.last_mut().unwrap().payload = report(review_core::RunNodeOutcomeV2::Failed {
+            error: "invalid Ledger output".into(),
+        });
         let evidence = latest_round_evidence(&failed, &cas).unwrap().unwrap();
         assert_eq!(evidence.ledger_production, "not_produced_failed");
     }

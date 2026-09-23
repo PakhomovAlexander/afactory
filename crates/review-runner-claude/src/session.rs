@@ -194,7 +194,6 @@ impl SessionLayer for ClaudeSessionStore {
 
 /// The directories a search validated, kept open so the deletion acts on what was checked
 /// rather than on a pathname that could name something else by then.
-#[cfg(unix)]
 struct ProjectHandles {
     /// The store's `projects` directory.
     projects: nix::dir::Dir,
@@ -203,10 +202,6 @@ struct ProjectHandles {
     /// Its name below `projects`, for removing it once it holds nothing.
     project_name: String,
 }
-
-#[cfg(not(unix))]
-#[allow(dead_code)]
-struct ProjectHandles;
 
 /// What a bounded search for one session identity found.
 enum Located {
@@ -220,7 +215,6 @@ enum Located {
     },
 }
 
-#[cfg(unix)]
 fn located(store: &ClaudeSessionStore, session_id: &str) -> Result<Located, String> {
     use std::io::Read;
 
@@ -301,7 +295,6 @@ fn located(store: &ClaudeSessionStore, session_id: &str) -> Result<Located, Stri
 
 /// The store's `projects` directory, opened `O_NOFOLLOW` below the granted root. `None` when
 /// the harness has written no session at all.
-#[cfg(unix)]
 fn open_projects(root: &Path) -> Result<Option<nix::dir::Dir>, SessionCleanupRefusalV1> {
     use nix::dir::Dir;
     use nix::fcntl::{OFlag, open, openat};
@@ -339,7 +332,6 @@ fn open_projects(root: &Path) -> Result<Option<nix::dir::Dir>, SessionCleanupRef
 /// Unlink the transcript in the exact directory the search validated. Nothing is resolved by
 /// pathname again, so a project directory replaced between lookup and unlink cannot redirect
 /// the deletion.
-#[cfg(unix)]
 fn unlink_located(handles: ProjectHandles, name: &str) -> SessionDeletion {
     use nix::unistd::{UnlinkatFlags, unlinkat};
 
@@ -365,7 +357,6 @@ fn unlink_located(handles: ProjectHandles, name: &str) -> SessionDeletion {
 /// Write one re-materialized transcript below the granted root. Only the root is created by
 /// path; the projects directory, the project directory and the file are opened or created
 /// descriptor-relative with `O_NOFOLLOW`, so nothing under the store can redirect the write.
-#[cfg(unix)]
 fn write_no_follow(
     root: &Path,
     project_name: &str,
@@ -413,26 +404,6 @@ fn write_no_follow(
     file.write_all(transcript)
         .and_then(|()| file.sync_all())
         .map_err(|error| format!("writing the resumed session transcript: {error}"))
-}
-
-#[cfg(not(unix))]
-fn located(_store: &ClaudeSessionStore, _session_id: &str) -> Result<Located, String> {
-    Ok(Located::Refused(SessionCleanupRefusalV1::Unreadable))
-}
-
-#[cfg(not(unix))]
-fn unlink_located(_handles: ProjectHandles, _name: &str) -> SessionDeletion {
-    SessionDeletion::Refused(SessionCleanupRefusalV1::Unreadable)
-}
-
-#[cfg(not(unix))]
-fn write_no_follow(
-    _root: &Path,
-    _project_name: &str,
-    _name: &str,
-    _transcript: &[u8],
-) -> Result<(), String> {
-    Err("session transcripts are captured only on unix hosts".into())
 }
 
 #[cfg(test)]

@@ -10,14 +10,12 @@ use serde::{Deserialize, Serialize};
 use super::{is_name, is_package_name, require, safe_number};
 use crate::is_digest;
 
-pub const EXPERIMENTAL_SLOT_V1: &str = "af/ExperimentalSlot@1";
 pub const EXPERIMENTAL_SLOT_V2: &str = "af/ExperimentalSlot@2";
 pub const OPTIMIZATION_HARNESS_V1: &str = "af/OptimizationHarness@1";
 pub const EXPERIMENT_SPECIFICATION_V1: &str = "af/ExperimentSpecification@1";
 pub const EXPERIMENT_PREPARED_V1: &str = "af/ExperimentPrepared@1";
 pub const EXPERIMENT_PLAN_DECISION_V1: &str = "af/ExperimentPlanDecision@1";
 pub const EXPERIMENT_COMPARISON_V1: &str = "af/ExperimentComparison@1";
-pub const EXPERIMENT_TRIAL_RESULT_V1: &str = "af/ExperimentTrialResult@1";
 pub const OPTIMIZATION_VERIFICATION_V1: &str = "af/OptimizationVerification@1";
 pub const OPTIMIZATION_EVALUATION_V1: &str = "af/OptimizationEvaluation@1";
 pub const OPTIMIZATION_PACKAGE_REPIN_V1: &str = "af/OptimizationPackageRepin@1";
@@ -54,13 +52,15 @@ impl ExperimentAllowanceV1 {
     }
 }
 
-/// Immutable outer-plan authority for preparing, but not dispatching, generated children.
+/// Cycle-free slot generation. `outer_plan_binding_id` is a compiler domain digest over the
+/// Task revision, policy and logical slot before artifact IDs are assigned. The Store separately
+/// proves that this exact slot artifact is embedded in the current outer compiled graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ExperimentalSlotV1 {
+pub struct ExperimentalSlotV2 {
     pub schema: String,
     pub slot: String,
-    pub outer_plan_id: String,
+    pub outer_plan_binding_id: String,
     pub policy_id: String,
     pub protected_oracle_id: String,
     pub allowed_task_kinds: BTreeSet<String>,
@@ -75,14 +75,17 @@ pub struct ExperimentalSlotV1 {
     pub allowance: ExperimentAllowanceV1,
 }
 
-impl ExperimentalSlotV1 {
+impl ExperimentalSlotV2 {
     pub fn validate(&self) -> Result<(), String> {
+        require(
+            self.schema == "af.experimental-slot/2",
+            "Experimental slot uses the wrong cycle-free generation",
+        )?;
         self.allowance.validate()?;
         require(
-            self.schema == "af.experimental-slot/1"
-                && is_name(&self.slot)
+            is_name(&self.slot)
                 && digests([
-                    &self.outer_plan_id,
+                    &self.outer_plan_binding_id,
                     &self.policy_id,
                     &self.protected_oracle_id,
                 ])
@@ -109,100 +112,6 @@ impl ExperimentalSlotV1 {
             "Experimental slot needs exact bounded preparation authority",
         )
     }
-}
-
-/// Cycle-free slot generation. `outer_plan_binding_id` is a compiler domain digest over the
-/// Task revision, policy and logical slot before artifact IDs are assigned. The Store separately
-/// proves that this exact slot artifact is embedded in the current outer compiled graph.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExperimentalSlotV2 {
-    pub schema: String,
-    pub slot: String,
-    pub outer_plan_binding_id: String,
-    pub policy_id: String,
-    pub protected_oracle_id: String,
-    pub allowed_task_kinds: BTreeSet<String>,
-    pub allowed_packages: BTreeSet<String>,
-    pub allowed_worker_package_ids: BTreeSet<String>,
-    pub allowed_efforts: BTreeSet<String>,
-    pub allowed_effects: BTreeSet<String>,
-    pub max_children: u32,
-    pub max_depth: u32,
-    pub max_concurrency: u32,
-    pub max_development_candidates: u32,
-    pub allowance: ExperimentAllowanceV1,
-}
-
-impl ExperimentalSlotV2 {
-    pub fn validate(&self) -> Result<(), String> {
-        let compatibility = ExperimentalSlotV1 {
-            schema: "af.experimental-slot/1".into(),
-            slot: self.slot.clone(),
-            outer_plan_id: self.outer_plan_binding_id.clone(),
-            policy_id: self.policy_id.clone(),
-            protected_oracle_id: self.protected_oracle_id.clone(),
-            allowed_task_kinds: self.allowed_task_kinds.clone(),
-            allowed_packages: self.allowed_packages.clone(),
-            allowed_worker_package_ids: self.allowed_worker_package_ids.clone(),
-            allowed_efforts: self.allowed_efforts.clone(),
-            allowed_effects: self.allowed_effects.clone(),
-            max_children: self.max_children,
-            max_depth: self.max_depth,
-            max_concurrency: self.max_concurrency,
-            max_development_candidates: self.max_development_candidates,
-            allowance: self.allowance.clone(),
-        };
-        require(
-            self.schema == "af.experimental-slot/2",
-            "Experimental slot uses the wrong cycle-free generation",
-        )?;
-        compatibility.validate()
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn validate_experiment_registration_v2(
-    slot_id: &str,
-    slot: &ExperimentalSlotV2,
-    specification_id: &str,
-    specification: &ExperimentSpecificationV1,
-    prepared_id: &str,
-    prepared: &ExperimentPreparedV1,
-    decision: &ExperimentPlanDecisionV1,
-    now_unix_ms: u64,
-    remaining: &ExperimentAllowanceV1,
-) -> Result<(), String> {
-    slot.validate()?;
-    let compatibility = ExperimentalSlotV1 {
-        schema: "af.experimental-slot/1".into(),
-        slot: slot.slot.clone(),
-        // V2 binds the actual outer plan through ExperimentPrepared and Store graph membership.
-        outer_plan_id: prepared.outer_plan_id.clone(),
-        policy_id: slot.policy_id.clone(),
-        protected_oracle_id: slot.protected_oracle_id.clone(),
-        allowed_task_kinds: slot.allowed_task_kinds.clone(),
-        allowed_packages: slot.allowed_packages.clone(),
-        allowed_worker_package_ids: slot.allowed_worker_package_ids.clone(),
-        allowed_efforts: slot.allowed_efforts.clone(),
-        allowed_effects: slot.allowed_effects.clone(),
-        max_children: slot.max_children,
-        max_depth: slot.max_depth,
-        max_concurrency: slot.max_concurrency,
-        max_development_candidates: slot.max_development_candidates,
-        allowance: slot.allowance.clone(),
-    };
-    validate_experiment_registration(
-        slot_id,
-        &compatibility,
-        specification_id,
-        specification,
-        prepared_id,
-        prepared,
-        decision,
-        now_unix_ms,
-        remaining,
-    )
 }
 
 /// Candidate-writable bytes are disjoint from every transitive oracle dependency and cache
@@ -639,10 +548,12 @@ impl ExperimentPlanDecisionV1 {
 
 /// Pure half of the Store admission barrier. The Store additionally authenticates the
 /// signature/revocation, checks its lease/current prefix, and reserves these children atomically.
+/// The slot binds its outer plan only through `ExperimentPrepared` and the Store's proof that the
+/// slot artifact is embedded in that outer compiled graph.
 #[allow(clippy::too_many_arguments)]
 pub fn validate_experiment_registration(
     slot_id: &str,
-    slot: &ExperimentalSlotV1,
+    slot: &ExperimentalSlotV2,
     specification_id: &str,
     specification: &ExperimentSpecificationV1,
     prepared_id: &str,
@@ -661,7 +572,6 @@ pub fn validate_experiment_registration(
             && specification.policy_id == slot.policy_id
             && specification.protected_oracle_id == slot.protected_oracle_id
             && prepared.slot_id == slot_id
-            && prepared.outer_plan_id == slot.outer_plan_id
             && prepared.policy_id == slot.policy_id
             && prepared.specification_id == specification_id
             && decision.approves(prepared_id, prepared, now_unix_ms),
@@ -790,83 +700,6 @@ pub struct ExperimentMeasurementIntervalV1 {
     pub kind: ExperimentIntervalKindV1,
     pub start_ms: u64,
     pub end_ms: u64,
-}
-
-/// Protected verifier output for one registered arm invocation. Accounting and billing are
-/// deliberately absent: the reducer derives them from the common Attempt ledger.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExperimentTrialResultV1 {
-    pub schema: String,
-    pub invocation_id: String,
-    pub case_id: String,
-    pub family_id: String,
-    pub arm: ExperimentArmV1,
-    pub repetition: u32,
-    pub compatibility_id: String,
-    pub verified: bool,
-    pub protected_checks_passed: bool,
-    pub intervals: Vec<ExperimentMeasurementIntervalV1>,
-}
-
-impl ExperimentTrialResultV1 {
-    pub fn validate(&self) -> Result<(), String> {
-        require(
-            self.schema == "af.experiment-trial-result/1"
-                && digests([
-                    &self.invocation_id,
-                    &self.case_id,
-                    &self.family_id,
-                    &self.compatibility_id,
-                ])
-                && self.repetition > 0
-                && !self.intervals.is_empty(),
-            "Experiment trial result needs exact registered identity and measurements",
-        )?;
-        interval_union_ms(&self.intervals)?;
-        Ok(())
-    }
-
-    pub fn into_trial(
-        self,
-        charged_tokens: u64,
-        billing_complete: bool,
-    ) -> Result<ExperimentTrialV1, String> {
-        self.validate()?;
-        let measured = |kind| {
-            interval_union_ms(
-                self.intervals
-                    .iter()
-                    .filter(|interval| interval.kind == kind),
-            )
-        };
-        let elapsed_ms = measured(ExperimentIntervalKindV1::Execution)?;
-        let preparation_ms = measured(ExperimentIntervalKindV1::Preparation)?;
-        let cache_population_ms = measured(ExperimentIntervalKindV1::CachePopulation)?;
-        let cache_lookup_ms = measured(ExperimentIntervalKindV1::CacheLookup)?;
-        let cache_copy_ms = measured(ExperimentIntervalKindV1::CacheCopy)?;
-        let trial = ExperimentTrialV1 {
-            invocation_id: self.invocation_id,
-            case_id: self.case_id,
-            family_id: self.family_id,
-            arm: self.arm,
-            repetition: self.repetition,
-            compatibility_id: self.compatibility_id,
-            verified: self.verified,
-            protected_checks_passed: self.protected_checks_passed,
-            billing_complete,
-            charged_tokens,
-            elapsed_ms,
-            preparation_ms,
-            cache_population_ms,
-            cache_lookup_ms,
-            cache_copy_ms,
-            missing_measurements: BTreeSet::new(),
-            intervals: self.intervals,
-        };
-        trial.validate()?;
-        Ok(trial)
-    }
 }
 
 fn interval_union_ms<'a>(
@@ -1383,10 +1216,10 @@ impl OptimizationEvaluationV1 {
     }
 }
 
+/// Only the candidate Task profile produces verification evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OptimizationProfileV1 {
-    Analysis,
     Candidate,
 }
 
@@ -1422,8 +1255,7 @@ impl OptimizationVerificationV1 {
                 ])
                 && self.source_snapshot_id != self.candidate_snapshot_id
                 && (!self.deliverable
-                    || (self.profile == OptimizationProfileV1::Candidate
-                        && self.conclusion == ComparisonConclusionV1::Accepted
+                    || (self.conclusion == ComparisonConclusionV1::Accepted
                         && self.protected_checks_passed)),
             "Only a positive candidate profile with protected evidence is deliverable",
         )

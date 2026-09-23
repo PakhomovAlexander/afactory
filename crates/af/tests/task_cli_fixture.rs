@@ -1,5 +1,4 @@
 //! Fixture mutation must work when the Gate supplies a read-only source tree.
-#![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
 

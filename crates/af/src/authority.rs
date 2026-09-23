@@ -8,16 +8,15 @@ use review_config::Definition;
 use review_config::lock::{Lockfile, Registry};
 use review_core::{
     AuthorityFileV1, CampaignBudgetV1, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, CampaignReviewerV1, ChangeSetV1, EventType,
-    IntegrationCommittedPayloadV1, ReviewerPackageV1, RoundInputSupersededPayloadV1,
-    RoundStartedPayloadV1, SourceSnapshot, SubjectKind, SubjectV1, run_report_closes_round,
+    CampaignOpenedPayloadV1, CampaignReviewerV1, ChangeSetV1, EventType, ReviewerPackageV1,
+    RoundInputSupersededPayloadV1, RoundStartedPayloadV1, SourceSnapshot, SubjectKind, SubjectV1,
 };
 use review_pipeline::RoundAuthority;
 use review_runner::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 use review_source_git::{Capture, EntryKind, Manifest, Repo, Snapshot};
 use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, NewEvent, Status};
 
-use crate::{CampaignMode, Options, campaign_run_id};
+use crate::{Options, campaign_run_id};
 
 mod task_round;
 pub(crate) use task_round::{prepare_next_round, prepare_recorded_round};
@@ -43,15 +42,12 @@ fn load_pinned_pipeline(
     cas: &Cas,
     lockfile: &Lockfile,
     registry: &Registry,
-    layout: &AuthorityLayout,
     path: &str,
 ) -> Result<PinnedPipeline, String> {
     let bytes = authority_bytes(manifest, cas, path)?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|error| format!("authority pipeline `{path}` is not UTF-8: {error}"))?;
-    if layout.root == ".af" {
-        validate_af_pipeline_pin(lockfile, path, &bytes)?;
-    }
+    validate_af_pipeline_pin(lockfile, path, &bytes)?;
     let definition = Definition::from_toml(text).map_err(|error| error.to_string())?;
     let loaded = definition
         .clone()
@@ -66,20 +62,16 @@ fn load_pinned_pipeline(
     })
 }
 
-/// The project policy under `.af/`, when that is the layout in use.
+/// The project policy under `.af/`.
 fn captured_project(
     manifest: &Manifest,
     cas: &Cas,
-    layout: &AuthorityLayout,
-) -> Result<Option<(Vec<u8>, crate::project::ProjectFile)>, String> {
-    if layout.root != ".af" {
-        return Ok(None);
-    }
+) -> Result<(Vec<u8>, crate::project::ProjectFile), String> {
     let bytes = authority_bytes(manifest, cas, ".af/af.toml")?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|error| format!("authority project `.af/af.toml` is not UTF-8: {error}"))?;
     let project = crate::project::ProjectFile::parse(text)?;
-    Ok(Some((bytes, project)))
+    Ok((bytes, project))
 }
 
 /// Capture the candidate and, given a Base, the exact Change Set between them. Shared by plan
@@ -146,7 +138,7 @@ fn capture_candidate(
 /// reports `fits`, run refuses before admission.
 fn apply_oversized_policy(
     cas: &Cas,
-    project: Option<&crate::project::ProjectFile>,
+    project: &crate::project::ProjectFile,
     route: &mut crate::project::RouteDecision,
     pipeline: PinnedPipeline,
     change_set: Option<&ChangeSetV1>,
@@ -158,7 +150,7 @@ fn apply_oversized_policy(
     if sizes.iter().all(|size| size.fits) || route.policy == "explicit" {
         return Ok((pipeline, sizes));
     }
-    let Some(alternative) = project.and_then(|project| project.oversized_pipeline()) else {
+    let Some(alternative) = project.oversized_pipeline() else {
         return Ok((pipeline, sizes));
     };
     let alternative_path = crate::project::pipeline_path_for(alternative);
@@ -186,16 +178,14 @@ pub(super) fn resolve_plan(
     cas: &Cas,
     repo: &Repo,
 ) -> Result<ResolvedPlan, String> {
-    if options.campaign.is_some() || options.restart_round || !options.provider_resumes.is_empty() {
+    if options.campaign.is_some() || options.restart_round {
         return Err(
-            "review plan has no Campaign state; omit --campaign, --restart-round, and --resume-provider"
-                .into(),
+            "review plan has no Campaign state; omit --campaign and --restart-round".into(),
         );
     }
     let policy_ref = options
         .policy_rev
         .as_deref()
-        .or(options.authority.as_deref())
         .ok_or("review plan requires `--policy-rev REV`")?;
     let capture = Capture::new(repo, cas);
     let policy = capture
@@ -203,20 +193,24 @@ pub(super) fn resolve_plan(
         .map_err(|error| format!("capturing policy `{policy_ref}`: {error}"))?;
     let (policy_snapshot_id, _) = publish_snapshot(&policy, cas)?;
     let requested_path = authority_path(&options.repo, &options.pipeline)?;
-    let layout = authority_layout(&requested_path, false)?;
-    let lock_bytes = authority_bytes(&policy.manifest, cas, &layout.lock)?;
+    require_af_pipeline(&requested_path)?;
+    let lock_bytes = authority_bytes(&policy.manifest, cas, AUTHORITY_LOCK)?;
     let lock_text = std::str::from_utf8(&lock_bytes)
-        .map_err(|error| format!("authority lock `{}` is not UTF-8: {error}", layout.lock))?;
+        .map_err(|error| format!("authority lock `{AUTHORITY_LOCK}` is not UTF-8: {error}"))?;
     let lockfile = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
-    if let Some(note) = crate::project::check_lock_af_version(&lockfile, &layout.lock)? {
+    if let Some(note) = crate::project::check_lock_af_version(&lockfile, AUTHORITY_LOCK)? {
         eprintln!("af review: note: {note}");
     }
-    let project = captured_project(&policy.manifest, cas, &layout)?;
-    let registry = Registry::captured(captured_registry(&policy.manifest, cas, &layout.registry)?);
+    let (project_bytes, project) = captured_project(&policy.manifest, cas)?;
+    let registry = Registry::captured(captured_registry(
+        &policy.manifest,
+        cas,
+        AUTHORITY_REGISTRY,
+    )?);
 
     // Base and candidate before the pipeline: routing decides the pipeline from the changed
     // paths, and sizing needs the exact Change Set.
-    let base_ref = options.base.as_deref().or(options.authority.as_deref());
+    let base_ref = options.base.as_deref();
     let (base, base_snapshot_id) = match base_ref {
         Some(base_ref) => {
             let base = if base_ref == policy_ref {
@@ -245,34 +239,24 @@ pub(super) fn resolve_plan(
         .as_ref()
         .map(|change_set| change_set.changed_paths.clone())
         .unwrap_or_default();
-    let mut route = match (&project, options.pipeline_explicit) {
-        (Some((_, project)), false) => project.select_route(&changed_paths)?,
-        (Some(_), true) => crate::project::RouteDecision::explicit(&requested_path),
-        (None, _) => crate::project::RouteDecision::legacy(&requested_path),
+    let mut route = if options.pipeline_explicit {
+        crate::project::RouteDecision::explicit(&requested_path)
+    } else {
+        project.select_route(&changed_paths)?
     };
-    let load = |path: &str| {
-        load_pinned_pipeline(&policy.manifest, cas, &lockfile, &registry, &layout, path)
-    };
+    let load = |path: &str| load_pinned_pipeline(&policy.manifest, cas, &lockfile, &registry, path);
     let pipeline = load(&route.pipeline_path)?;
-    if let Some((project_bytes, _)) = &project {
-        validate_af_project(project_bytes, &pipeline.path)?;
-    }
+    validate_af_project(&project_bytes, &pipeline.path)?;
     match (pipeline.loaded.subject_kind(), base.is_some()) {
         (SubjectKind::Diff, false) => return Err("diff review plan requires `--base REV`".into()),
-        (SubjectKind::WholeTree, _) if options.base.is_some() => {
+        (SubjectKind::WholeTree, true) => {
             return Err("whole-tree review plan does not accept `--base`".into());
         }
         _ => {}
     }
-    let (base, base_snapshot_id, change_set) =
-        if pipeline.loaded.subject_kind() == SubjectKind::WholeTree {
-            (None, None, None)
-        } else {
-            (base, base_snapshot_id, change_set)
-        };
     let (pipeline, input_sizes) = apply_oversized_policy(
         cas,
-        project.as_ref().map(|(_, project)| project),
+        &project,
         &mut route,
         pipeline,
         change_set.as_ref(),
@@ -289,7 +273,6 @@ pub(super) fn resolve_plan(
         "edges": &pipeline.definition.edges,
     });
     let selectors = serde_json::json!({
-        "compatibility_authority": options.authority,
         "policy_rev": policy_ref,
         "base": base_ref,
         "candidate": candidate_selector,
@@ -469,42 +452,23 @@ pub(super) fn first_attempt_input(
         .get(node)
         .ok_or_else(|| format!("node `{node}` has no runner"))?;
     let result_contract = match spec.outputs.as_slice() {
-        [review_config::PortContractSpec::Typed(port)] => {
-            review_core::ReviewerResultContract::parse_artifact_type(&port.artifact_type)
-                .ok_or_else(|| {
-                    format!(
-                        "node `{node}` output `{}` has unsupported result type `{}`",
-                        port.name, port.artifact_type
-                    )
-                })?
-        }
-        [review_config::PortContractSpec::Name(_)] => review_core::ReviewerResultContract::V1,
-        _ => {
-            return Err(format!(
-                "reviewer `{node}` must declare exactly one result output"
-            ));
-        }
-    };
+        [port] => review_core::ReviewerResultContract::parse_artifact_type(&port.artifact_type),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        format!(
+            "reviewer `{node}` must declare exactly one typed {} output",
+            review_core::contract::REVIEWER_RESULT_V2
+        )
+    })?;
     let mut inputs = review_runner::ReviewerInputs {
         result_contract,
-        finding_identity_policy: Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY.to_string()),
         ..Default::default()
     };
     let mut not_rendered = Vec::new();
     for port in &spec.inputs {
-        let (name, artifact_type) = match port {
-            review_config::PortContractSpec::Typed(typed) => {
-                (typed.name.as_str(), typed.artifact_type.as_str())
-            }
-            review_config::PortContractSpec::Name(name) => {
-                (name.as_str(), review_core::contract::OPAQUE_V1)
-            }
-        };
-        let is_change_set = artifact_type == review_core::contract::CHANGE_SET_V1
-            || (definition.version == 1
-                && artifact_type == review_core::contract::OPAQUE_V1
-                && name == "change_set");
-        if is_change_set {
+        let (name, artifact_type) = (port.name.as_str(), port.artifact_type.as_str());
+        if artifact_type == review_core::contract::CHANGE_SET_V1 {
             let artifact = match &change_set {
                 ChangeSetSource::Resolved(resolved) => {
                     review_runner::ReviewerInputArtifact::from_resolved_change_set(
@@ -531,10 +495,7 @@ pub(super) fn first_attempt_input(
                 }
             };
             inputs.artifacts.insert(name.to_string(), vec![artifact]);
-        } else if name == "prior_findings"
-            || artifact_type == review_core::contract::FINDING_SET_V1
-            || artifact_type.contains("PriorFindings")
-        {
+        } else if artifact_type == review_core::contract::FINDING_SET_V1 {
             not_rendered.push(format!(
                 "{name}: prior Findings exist only inside a Campaign; a first Attempt receives none"
             ));
@@ -546,7 +507,6 @@ pub(super) fn first_attempt_input(
         "attempt authority: Campaign identifiers are bound at dispatch (a model Worker's `## Attempt authority` section, a command Worker's `attempt_context`)"
             .to_string(),
     );
-    let timeout = std::time::Duration::from_secs(1);
     let runner = Path::new(&command.program)
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
@@ -554,16 +514,15 @@ pub(super) fn first_attempt_input(
     let adapter: Box<dyn review_runner::ReviewerAdapter> = match loaded.packages().get(node) {
         Some(package) => match runner.as_str() {
             "claude" => {
-                let mut adapter =
-                    review_runner_claude::ClaudeAdapter::from_package(package, timeout)
-                        .map_err(|error| format!("{node}: {error}"))?;
+                let mut adapter = review_runner_claude::ClaudeAdapter::from_package(package)
+                    .map_err(|error| format!("{node}: {error}"))?;
                 if let Some(focus) = focus {
                     adapter = adapter.with_focus(focus);
                 }
                 Box::new(adapter)
             }
             "codex" => {
-                let mut adapter = review_runner_codex::CodexAdapter::from_package(package, timeout)
+                let mut adapter = review_runner_codex::CodexAdapter::from_package(package)
                     .map_err(|error| format!("{node}: {error}"))?;
                 if let Some(focus) = focus {
                     adapter = adapter.with_focus(focus);
@@ -576,12 +535,11 @@ pub(super) fn first_attempt_input(
                 ));
             }
         },
-        None => Box::new(review_runner::CommandAdapter::new(command.clone(), timeout)),
+        None => Box::new(review_runner::CommandAdapter),
     };
     let rendered = adapter
         .render_input(&inputs)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("node `{node}`: this adapter has no fixed input encoding"))?;
+        .map_err(|error| error.to_string())?;
     Ok(FirstAttemptInput {
         rendered,
         runner,
@@ -757,7 +715,6 @@ pub(super) fn render(options: &Options, cas: &Cas, repo: &Repo) -> Result<Render
 
 pub(super) struct PreparedRun {
     pub loaded: review_config::Loaded,
-    pub snapshot: Manifest,
     pub run_id: String,
     pub focus: Option<String>,
     pub timeout: Duration,
@@ -765,7 +722,6 @@ pub(super) struct PreparedRun {
     pub git_timeout: Duration,
     pub convergence: review_store::ConvergencePolicy,
     pub authority: RoundAuthority,
-    pub ledger_projection: LedgerProjection,
 }
 
 struct OpenCampaign {
@@ -778,9 +734,7 @@ struct OpenCampaign {
 struct RoundInput {
     payload: RoundStartedPayloadV1,
     event_id: String,
-    snapshot: Manifest,
     prior_count: usize,
-    ledger_projection: LedgerProjection,
 }
 
 pub(super) fn prepare(
@@ -805,28 +759,18 @@ pub(super) fn prepare(
         (campaign, events)
     };
 
-    let round = prepare_round(options, cas, store, repo, &run_id, &campaign, &events)?;
-    let authority = RoundAuthority::load(store, cas, &run_id, &round.event_id)?;
-    let check_timeout_seconds = campaign
-        .manifest
-        .check_timeout_seconds
-        .unwrap_or(campaign.loaded.check_timeout_seconds());
-    let git_timeout_seconds = campaign
-        .manifest
-        .git_timeout_seconds
-        .unwrap_or(review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS);
+    let round_event_id = prepare_round(options, cas, store, repo, &run_id, &campaign, &events)?;
+    let authority = RoundAuthority::load(store, cas, &run_id, &round_event_id)?;
     let convergence = options.mode.convergence(campaign.loaded.convergence());
     Ok(PreparedRun {
         loaded: campaign.loaded,
-        snapshot: round.snapshot,
         run_id,
         focus: campaign.manifest.focus,
         timeout: Duration::from_secs(campaign.manifest.reviewer_timeout_seconds),
-        check_timeout: Duration::from_secs(check_timeout_seconds),
-        git_timeout: Duration::from_secs(git_timeout_seconds),
+        check_timeout: Duration::from_secs(campaign.manifest.check_timeout_seconds),
+        git_timeout: Duration::from_secs(campaign.manifest.git_timeout_seconds),
         convergence,
         authority,
-        ledger_projection: round.ledger_projection,
     })
 }
 
@@ -838,39 +782,33 @@ fn open_new(
     run_id: &str,
     pipeline_path: &str,
 ) -> Result<OpenCampaign, String> {
-    let authority_ref = options
-        .policy_rev
-        .as_deref()
-        .or(options.authority.as_deref())
-        .ok_or(
-            "a new Campaign requires trusted invocation policy `--policy-rev REV`; \
-             compatibility `--authority REV` expands to policy and Base; continuation reuses \
-             stored authority and does not resolve the ref again",
-        )?;
+    let authority_ref = options.policy_rev.as_deref().ok_or(
+        "a new Campaign requires trusted invocation policy `--policy-rev REV`; continuation \
+         reuses stored authority and does not resolve the ref again",
+    )?;
     let snapshot = Capture::new(repo, cas)
         .committed(authority_ref)
         .map_err(|error| format!("capturing authority `{authority_ref}`: {error}"))?;
     let (authority_snapshot_id, authority_manifest_id) = publish_snapshot(&snapshot, cas)?;
 
-    let layout = authority_layout(pipeline_path, false)?;
-    let lock_path = layout.lock.clone();
-    let lock_bytes = authority_bytes(&snapshot.manifest, cas, &lock_path)?;
+    require_af_pipeline(pipeline_path)?;
+    let lock_bytes = authority_bytes(&snapshot.manifest, cas, AUTHORITY_LOCK)?;
     let lock_text = std::str::from_utf8(&lock_bytes)
-        .map_err(|error| format!("authority lock `{lock_path}` is not UTF-8: {error}"))?;
+        .map_err(|error| format!("authority lock `{AUTHORITY_LOCK}` is not UTF-8: {error}"))?;
     let lockfile = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
-    if let Some(note) = crate::project::check_lock_af_version(&lockfile, &lock_path)? {
+    if let Some(note) = crate::project::check_lock_af_version(&lockfile, AUTHORITY_LOCK)? {
         eprintln!("af review: note: {note}");
     }
-    let project = captured_project(&snapshot.manifest, cas, &layout)?;
+    let (project_bytes, project) = captured_project(&snapshot.manifest, cas)?;
     let registry = Registry::captured(captured_registry(
         &snapshot.manifest,
         cas,
-        &layout.registry,
+        AUTHORITY_REGISTRY,
     )?);
 
     // Base before the pipeline: routing decides the pipeline from the changed paths, and the
     // oversized policy needs the exact Change Set, before anything is pinned.
-    let base_ref = options.base.as_deref().or(options.authority.as_deref());
+    let base_ref = options.base.as_deref();
     let base = match base_ref {
         Some(base_ref) if base_ref == authority_ref => Some(snapshot.clone()),
         Some(base_ref) => {
@@ -891,10 +829,7 @@ fn open_new(
         }
         None => (None, None),
     };
-    let routing_applies = !options.pipeline_explicit
-        && project
-            .as_ref()
-            .is_some_and(|(_, project)| project.routes_configured());
+    let routing_applies = !options.pipeline_explicit && project.routes_configured();
     let change_set = match (routing_applies, &base, base_snapshot_id.as_deref()) {
         (true, Some(base), Some(base_snapshot_id)) => {
             capture_candidate(
@@ -912,20 +847,19 @@ fn open_new(
         .as_ref()
         .map(|change_set| change_set.changed_paths.clone())
         .unwrap_or_default();
-    let mut route = match (&project, options.pipeline_explicit) {
-        (Some((_, project)), false) => project.select_route(&changed_paths)?,
-        (Some(_), true) => crate::project::RouteDecision::explicit(pipeline_path),
-        (None, _) => crate::project::RouteDecision::legacy(pipeline_path),
+    let mut route = if options.pipeline_explicit {
+        crate::project::RouteDecision::explicit(pipeline_path)
+    } else {
+        project.select_route(&changed_paths)?
     };
-    let load = |path: &str| {
-        load_pinned_pipeline(&snapshot.manifest, cas, &lockfile, &registry, &layout, path)
-    };
+    let load =
+        |path: &str| load_pinned_pipeline(&snapshot.manifest, cas, &lockfile, &registry, path);
     let pipeline = load(&route.pipeline_path)?;
     match (pipeline.loaded.subject_kind(), base.is_some()) {
         (SubjectKind::Diff, false) => {
             return Err("a new diff Campaign requires `--base REV`".into());
         }
-        (SubjectKind::WholeTree, _) if options.base.is_some() => {
+        (SubjectKind::WholeTree, true) => {
             return Err(
                 "whole-tree review does not accept a Base; select a whole-tree pipeline with --policy-rev only"
                     .into(),
@@ -936,7 +870,7 @@ fn open_new(
     let (pipeline, _input_sizes) = if routing_applies {
         apply_oversized_policy(
             cas,
-            project.as_ref().map(|(_, project)| project),
+            &project,
             &mut route,
             pipeline,
             change_set.as_ref(),
@@ -979,11 +913,7 @@ fn open_new(
         format_args!(
             "selectors policy={} base={} candidate={}",
             authority_ref,
-            options
-                .base
-                .as_deref()
-                .or(options.authority.as_deref())
-                .unwrap_or("-"),
+            options.base.as_deref().unwrap_or("-"),
             if options.uncommitted {
                 "worktree"
             } else {
@@ -996,13 +926,8 @@ fn open_new(
         .put(&pipeline_bytes)
         .map_err(|error| error.to_string())?;
     let lock_artifact_id = cas.put(&lock_bytes).map_err(|error| error.to_string())?;
-    let project_policy_ids = match &project {
-        Some((project_bytes, _)) => {
-            validate_af_project(project_bytes, pipeline_path)?;
-            vec![cas.put(project_bytes).map_err(|error| error.to_string())?]
-        }
-        None => Vec::new(),
-    };
+    validate_af_project(&project_bytes, pipeline_path)?;
+    let project_policy_ids = vec![cas.put(&project_bytes).map_err(|error| error.to_string())?];
     let finding_genesis_id = cas
         .put_json(&serde_json::json!({
             "kind": "finding-set-genesis@1",
@@ -1075,7 +1000,7 @@ fn open_new(
             artifact_id: pipeline_artifact_id.clone(),
         },
         reviewer_lock: AuthorityFileV1 {
-            path: lock_path,
+            path: AUTHORITY_LOCK.to_string(),
             artifact_id: lock_artifact_id.clone(),
         },
         reviewers,
@@ -1090,8 +1015,8 @@ fn open_new(
             .timeout
             .unwrap_or(Duration::from_secs(1800))
             .as_secs(),
-        check_timeout_seconds: Some(loaded.check_timeout_seconds()),
-        git_timeout_seconds: Some(requested_git_timeout(options.git_timeout).as_secs()),
+        check_timeout_seconds: loaded.check_timeout_seconds(),
+        git_timeout_seconds: requested_git_timeout(options.git_timeout).as_secs(),
         budgets,
         focus: options.focus.clone(),
         finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.to_string(),
@@ -1194,10 +1119,7 @@ fn resume(
     {
         return Err("reviewer timeout differs from the pinned Campaign manifest".into());
     }
-    let pinned_git_timeout = manifest
-        .git_timeout_seconds
-        .unwrap_or(review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS);
-    if requested_git_timeout(options.git_timeout).as_secs() != pinned_git_timeout {
+    if requested_git_timeout(options.git_timeout).as_secs() != manifest.git_timeout_seconds {
         return Err("Git capture timeout differs from the pinned Campaign manifest".into());
     }
 
@@ -1243,343 +1165,78 @@ fn prepare_round(
     run_id: &str,
     campaign: &OpenCampaign,
     events: &[review_core::RunEvent],
-) -> Result<RoundInput, String> {
+) -> Result<String, String> {
     let authority_snapshot: SourceSnapshot = serde_json::from_value(
         cas.get_json(&campaign.manifest.authority_snapshot_id)
             .map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
     let repository_id = authority_snapshot.repository_id.clone();
-    let ledger_projection =
+    let mut ledger_projection =
         LedgerProjection::from_events(run_id, events, cas).map_err(|error| error.to_string())?;
-    let mut closed_rounds = 0_u32;
-    for event in events {
-        if run_report_closes_round(event)
-            .map_err(|error| format!("decoding {}: {error}", event.event_type))?
-            .unwrap_or(false)
-        {
-            closed_rounds += 1;
-        }
-    }
-    let target_round = closed_rounds + 1;
-    if closed_rounds >= campaign.manifest.convergence.max_rounds {
-        return match options.mode {
-            CampaignMode::Light => Err(
-                "light Campaign already completed its single review Round; fix its concrete findings and run the deterministic project gate, then stop. Do not start another Campaign; --heavy requires a new Campaign and an explicit human choice"
-                    .into(),
-            ),
-            CampaignMode::Heavy => Err(
-                "heavy Campaign already exhausted its pinned Round limit; do not start another Campaign without an explicit human decision"
-                    .into(),
-            ),
-        };
-    }
+    // Before its Task exists a Campaign has only Round 1; later Rounds start in task_round.rs.
     let mut starts: Vec<(&review_core::RunEvent, RoundStartedPayloadV1)> = events
         .iter()
         .filter(|event| event.event_type == EventType::RoundStartedV1)
         .filter_map(|event| {
             serde_json::from_value::<RoundStartedPayloadV1>(event.payload.clone())
                 .ok()
-                .filter(|payload| payload.round == target_round)
+                .filter(|payload| payload.round == 1)
                 .map(|payload| (event, payload))
         })
         .collect();
     starts.sort_by_key(|(_, payload)| payload.epoch);
     let existing = starts.last().cloned();
 
-    let round = match (existing, options.restart_round) {
-        (Some((event, payload)), false) => load_round(
-            options,
-            cas,
-            event.event_id.clone(),
-            payload,
-            &repository_id,
-            ledger_projection,
-        )?,
+    let RoundInput {
+        payload,
+        event_id,
+        prior_count,
+    } = match (existing, options.restart_round) {
+        (Some((event, payload)), false) => {
+            load_round(options, cas, events, event, payload, &repository_id)?
+        }
         (None, true) => {
             return Err("--restart-round requires an incomplete Round to supersede".into());
         }
-        (existing, _restart) => {
-            let integrated = existing
-                .is_none()
-                .then(|| next_integrated_head(events))
-                .flatten();
-            match integrated {
-                Some((event_id, committed)) => start_integrated_round(
-                    options,
-                    cas,
-                    store,
-                    run_id,
-                    campaign,
-                    IntegratedRoundRequest {
-                        round: target_round,
-                        committed_event_id: event_id,
-                        committed,
-                        ledger_projection,
-                    },
-                )?,
-                None => capture_round(
-                    options,
-                    cas,
-                    store,
-                    repo,
-                    run_id,
-                    campaign,
-                    RoundCaptureRequest {
-                        round: target_round,
-                        superseded: existing.as_ref().map(|(event, payload)| (*event, payload)),
-                        ledger_projection,
-                    },
-                )?,
-            }
-        }
+        (existing, _restart) => capture_round(
+            options,
+            cas,
+            store,
+            repo,
+            run_id,
+            campaign,
+            RoundCaptureRequest {
+                superseded: existing.as_ref().map(|(event, payload)| (*event, payload)),
+                history: events,
+                ledger_projection: &mut ledger_projection,
+            },
+        )?,
     };
 
-    let mut round = round;
-    {
-        let mut ingest =
-            Ingest::from_projection(store, cas, run_id.to_string(), round.ledger_projection)
-                .map_err(|error| error.to_string())?
-                .under_round(&round.event_id);
-        while ingest.ledger().round < target_round {
-            ingest.advance().map_err(|error| error.to_string())?;
-        }
-        round.ledger_projection = ingest.into_projection();
+    let mut ingest = Ingest::from_projection(store, cas, run_id.to_string(), ledger_projection)
+        .map_err(|error| error.to_string())?
+        .under_round(&event_id);
+    if ingest.ledger().round == 0 {
+        ingest.advance().map_err(|error| error.to_string())?;
     }
     super::run_progress(
         options,
-        format_args!(
-            "round    {} (epoch {})",
-            round.payload.round, round.payload.epoch
-        ),
+        format_args!("round    {} (epoch {})", payload.round, payload.epoch),
     );
-    if round.prior_count > 0 {
+    if prior_count > 0 {
         super::run_progress(
             options,
-            format_args!("prior    {} findings carried", round.prior_count),
+            format_args!("prior    {prior_count} findings carried"),
         );
     }
-    Ok(round)
+    Ok(event_id)
 }
 
 struct RoundCaptureRequest<'a> {
-    round: u32,
     superseded: Option<(&'a review_core::RunEvent, &'a RoundStartedPayloadV1)>,
-    ledger_projection: LedgerProjection,
-}
-
-struct IntegratedRoundRequest {
-    round: u32,
-    committed_event_id: String,
-    committed: IntegrationCommittedPayloadV1,
-    ledger_projection: LedgerProjection,
-}
-
-fn outstanding_attempts_for_supersession(
-    events: &[review_core::RunEvent],
-    round_event_id: &str,
-) -> Result<Vec<(String, String, Option<u64>)>, String> {
-    let mut live = BTreeMap::new();
-    for event in events
-        .iter()
-        .filter(|event| event.causation_id.as_deref() == Some(round_event_id))
-    {
-        let Some(attempt) = event.attempt_id.clone() else {
-            continue;
-        };
-        match event.event_type {
-            EventType::AttemptDispatchedV1 => {
-                live.insert(
-                    attempt,
-                    (
-                        event
-                            .node_id
-                            .clone()
-                            .ok_or("AttemptDispatched@1 has no node ID")?,
-                        event.payload["reserved"].as_u64(),
-                        0_u64,
-                    ),
-                );
-            }
-            EventType::ReviewerExecutionBoundV1 => {
-                let binding: review_core::ReviewerExecutionBindingV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                let authorized = review_core::broker_authority_usage(&binding.operations)?;
-                if let Some((_, charged, _)) = live.get_mut(&attempt) {
-                    *charged = Some(charged.unwrap_or(0).max(authorized));
-                }
-            }
-            EventType::BrokerOperationCompletedV1 => {
-                let receipt: review_core::BrokerOperationReceiptV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                if let Some((_, _, observed)) = live.get_mut(&attempt) {
-                    *observed = observed
-                        .checked_add(receipt.charged_usage)
-                        .ok_or("broker receipt usage overflow")?;
-                }
-            }
-            EventType::AttemptAdmittedV1
-            | EventType::AttemptFailedV1
-            | EventType::AttemptFencedV1
-            | EventType::AttemptReleasedV1 => {
-                live.remove(&attempt);
-            }
-            _ => {}
-        }
-    }
-    Ok(live
-        .into_iter()
-        .map(|(attempt, (node, charged, observed))| {
-            let charged = charged
-                .map(|charged| charged.max(observed))
-                .or((observed > 0).then_some(observed));
-            (node, attempt, charged)
-        })
-        .collect())
-}
-
-fn next_integrated_head(
-    events: &[review_core::RunEvent],
-) -> Option<(String, IntegrationCommittedPayloadV1)> {
-    let latest_subject_id = events.iter().rev().find_map(|event| {
-        (event.event_type == EventType::RoundStartedV1)
-            .then(|| {
-                serde_json::from_value::<RoundStartedPayloadV1>(event.payload.clone())
-                    .ok()
-                    .map(|payload| payload.subject_id)
-            })
-            .flatten()
-    })?;
-    events.iter().rev().find_map(|event| {
-        (event.event_type == EventType::IntegrationCommittedV1)
-            .then(|| {
-                serde_json::from_value::<IntegrationCommittedPayloadV1>(event.payload.clone())
-                    .ok()
-                    .filter(|payload| payload.prior_subject_id == latest_subject_id)
-                    .map(|payload| (event.event_id.clone(), payload))
-            })
-            .flatten()
-    })
-}
-
-fn start_integrated_round(
-    options: &Options,
-    cas: &Cas,
-    store: &mut EventStore,
-    run_id: &str,
-    campaign: &OpenCampaign,
-    request: IntegratedRoundRequest,
-) -> Result<RoundInput, String> {
-    let IntegratedRoundRequest {
-        round,
-        committed_event_id,
-        committed,
-        mut ledger_projection,
-    } = request;
-    committed.validate()?;
-    let subject: SubjectV1 = serde_json::from_value(
-        cas.get_json(&committed.derived_subject_id)
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    subject.validate()?;
-    if subject.head_snapshot_id != committed.derived_snapshot_id
-        || subject.kind != campaign.loaded.subject_kind()
-    {
-        return Err("committed Integration derived Subject contradicts Campaign authority".into());
-    }
-    let snapshot: SourceSnapshot = serde_json::from_value(
-        cas.get_json(&subject.head_snapshot_id)
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    if !snapshot.is_derived()
-        || snapshot.parent_snapshot_id.as_deref() != Some(committed.prior_snapshot_id.as_str())
-    {
-        return Err("committed Integration does not name a derived child of its prior head".into());
-    }
-    let manifest_id = snapshot
-        .artifact_manifest
-        .as_deref()
-        .ok_or("derived Snapshot has no exact Manifest")?;
-    let manifest: Manifest = serde_json::from_value(
-        cas.get_json(manifest_id)
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    manifest.validate().map_err(|error| error.to_string())?;
-    if manifest.content_digest() != snapshot.content_digest {
-        return Err("derived Snapshot Manifest contradicts its content digest".into());
-    }
-    let prior_findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
-    let prior_count = prior_findings.as_array().map_or(0, Vec::len);
-    let prior_finding_set = serde_json::json!({
-        "subject_id": committed.derived_subject_id,
-        "round": round,
-        "prior_findings": prior_findings,
-    });
-    let prior_bytes = serde_json::to_string_pretty(&prior_finding_set)
-        .map_err(|error| error.to_string())?
-        .len();
-    if prior_bytes > MAX_PRIOR_FINDINGS_BYTES {
-        return Err(format!(
-            "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes and partitioning is required"
-        ));
-    }
-    let prior_finding_set_id = cas
-        .put_json(&prior_finding_set)
-        .map_err(|error| error.to_string())?;
-    let prior_demand_set_id =
-        latest_demand_set_id(store, cas, run_id, &campaign.manifest.demand_genesis_id)?;
-    let payload = RoundStartedPayloadV1 {
-        round,
-        epoch: 1,
-        campaign_manifest_id: campaign.manifest_id.clone(),
-        subject_id: committed.derived_subject_id.clone(),
-        prior_finding_set_id,
-        prior_demand_set_id,
-    };
-    payload.validate()?;
-    let mut refs = vec![
-        campaign.manifest.authority_snapshot_id.clone(),
-        campaign.manifest_id.clone(),
-        subject.head_snapshot_id.clone(),
-        payload.subject_id.clone(),
-        payload.prior_finding_set_id.clone(),
-        payload.prior_demand_set_id.clone(),
-        manifest_id.to_string(),
-    ];
-    refs.extend(subject.base_snapshot_id.clone());
-    refs.extend(subject.change_set_id.clone());
-    let started = store
-        .append(
-            run_id,
-            cas,
-            NewEvent::new(
-                EventType::RoundStartedV1,
-                serde_json::to_value(&payload).map_err(|error| error.to_string())?,
-            )
-            .caused_by(committed_event_id)
-            .correlating(&payload.subject_id)
-            .referencing(refs),
-        )
-        .map_err(|error| error.to_string())?;
-    ledger_projection
-        .apply_event(&started, cas)
-        .map_err(|error| error.to_string())?;
-    super::run_progress(
-        options,
-        format_args!("snapshot {} (integrated)", snapshot.content_digest),
-    );
-    Ok(RoundInput {
-        payload,
-        event_id: started.event_id,
-        snapshot: manifest,
-        prior_count,
-        ledger_projection,
-    })
+    history: &'a [review_core::RunEvent],
+    ledger_projection: &'a mut LedgerProjection,
 }
 
 fn capture_round(
@@ -1592,29 +1249,11 @@ fn capture_round(
     request: RoundCaptureRequest<'_>,
 ) -> Result<RoundInput, String> {
     let RoundCaptureRequest {
-        round,
         superseded,
-        mut ledger_projection,
+        history,
+        ledger_projection,
     } = request;
-    let dispatched_attempts: Vec<(String, String, Option<u64>)> = if let Some((old_event, _)) =
-        superseded
-    {
-        let events = store.replay(run_id).map_err(|error| error.to_string())?;
-        if events.iter().any(|event| {
-            event.sequence > old_event.sequence
-                && (event.event_type == EventType::FindingReportedV1
-                    || (event.event_type == EventType::FindingResolvedV1
-                        && event.causation_id.as_deref() == Some(old_event.event_id.as_str())))
-        }) {
-            return Err(
-                "cannot supersede an incomplete Round after it published finding state; start a new Campaign"
-                    .into(),
-            );
-        }
-        outstanding_attempts_for_supersession(&events, &old_event.event_id)?
-    } else {
-        Vec::new()
-    };
+    let round = 1;
     let task_round::CapturedRoundSource {
         snapshot,
         head_snapshot_id,
@@ -1665,38 +1304,43 @@ fn capture_round(
         .put_json(&serde_json::to_value(&subject).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())?;
 
-    let prior_findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
-    let prior_count = prior_findings.as_array().map_or(0, Vec::len);
-    let prior_finding_set = serde_json::json!({
-        "subject_id": subject_id,
-        "round": round,
-        "prior_findings": prior_findings,
-    });
-    let prior_bytes = serde_json::to_string_pretty(&prior_finding_set)
-        .map_err(|error| error.to_string())?
-        .len();
-    if prior_bytes > MAX_PRIOR_FINDINGS_BYTES {
-        return Err(format!(
-            "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes and partitioning is required"
-        ));
-    }
-    let prior_finding_set_id = cas
-        .put_json(&prior_finding_set)
-        .map_err(|error| error.to_string())?;
-    let prior_demand_set_id = if let Some((_, old)) = superseded {
-        old.prior_demand_set_id.clone()
-    } else if campaign.manifest.finding_identity_policy
-        == review_core::CANONICAL_FINDING_IDENTITY_POLICY
-    {
-        latest_demand_set_id(store, cas, run_id, &campaign.manifest.demand_genesis_id)?
+    // Supersession keeps the Round's original prior sets, whose raw Finding header names the
+    // first epoch's Subject, exactly as a restart on the Task path does.
+    let (prior_finding_set_id, prior_count) = if let Some((old_event, old)) = superseded {
+        let prior_subject_id = task_round::original_prior_subject(history, old_event, old)?;
+        let prior_count = validate_round_set(
+            cas,
+            &old.prior_finding_set_id,
+            &prior_subject_id,
+            round,
+            "prior_findings",
+        )?;
+        (old.prior_finding_set_id.clone(), prior_count)
     } else {
-        cas.put_json(&serde_json::json!({
+        let prior_findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
+        let prior_count = prior_findings.as_array().map_or(0, Vec::len);
+        let prior_finding_set = serde_json::json!({
             "subject_id": subject_id,
             "round": round,
-            "demands": ledger_projection.ledger().demand_views(),
-        }))
-        .map_err(|error| error.to_string())?
+            "prior_findings": prior_findings,
+        });
+        let prior_bytes = serde_json::to_string_pretty(&prior_finding_set)
+            .map_err(|error| error.to_string())?
+            .len();
+        if prior_bytes > MAX_PRIOR_FINDINGS_BYTES {
+            return Err(format!(
+                "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes and partitioning is required"
+            ));
+        }
+        let prior_finding_set_id = cas
+            .put_json(&prior_finding_set)
+            .map_err(|error| error.to_string())?;
+        (prior_finding_set_id, prior_count)
     };
+    let prior_demand_set_id = superseded.map_or_else(
+        || campaign.manifest.demand_genesis_id.clone(),
+        |(_, old)| old.prior_demand_set_id.clone(),
+    );
     let payload = RoundStartedPayloadV1 {
         round,
         epoch: superseded.map_or(1, |(_, old)| old.epoch + 1),
@@ -1735,22 +1379,6 @@ fn capture_round(
             .correlating(payload.subject_id.clone())
             .referencing(replacement_refs),
         ];
-        batch.extend(
-            dispatched_attempts
-                .into_iter()
-                .map(|(node, attempt, charged)| {
-                    NewEvent::new(
-                        EventType::AttemptFencedV1,
-                        serde_json::json!({
-                            "reason": "Round input superseded",
-                            "charged": charged,
-                        }),
-                    )
-                    .node(node)
-                    .attempt(attempt)
-                    .caused_by(old_event.event_id.clone())
-                }),
-        );
         let mut round_refs = vec![
             campaign.manifest.authority_snapshot_id.clone(),
             campaign.manifest_id.clone(),
@@ -1818,9 +1446,7 @@ fn capture_round(
     Ok(RoundInput {
         payload,
         event_id: started.event_id,
-        snapshot: snapshot.manifest,
         prior_count,
-        ledger_projection,
     })
 }
 
@@ -1832,35 +1458,18 @@ fn raw_patch_exceeds_change_set_bound(raw_bytes: usize) -> bool {
     raw_bytes > maximum_raw_patch_bytes()
 }
 
+/// Validate one recorded Round without capturing Source. Its prior sets are checked against
+/// the first epoch's Subject, which every exact supersession retains.
 fn load_round(
     options: &Options,
     cas: &Cas,
-    event_id: String,
+    history: &[review_core::RunEvent],
+    event: &review_core::RunEvent,
     payload: RoundStartedPayloadV1,
     repository_id: &str,
-    ledger_projection: LedgerProjection,
 ) -> Result<RoundInput, String> {
-    let prior_subject_id = payload.subject_id.clone();
-    load_round_with_prior_subject(
-        options,
-        cas,
-        event_id,
-        payload,
-        (repository_id, &prior_subject_id),
-        ledger_projection,
-    )
-}
-
-fn load_round_with_prior_subject(
-    options: &Options,
-    cas: &Cas,
-    event_id: String,
-    payload: RoundStartedPayloadV1,
-    source_authority: (&str, &str),
-    ledger_projection: LedgerProjection,
-) -> Result<RoundInput, String> {
-    let (repository_id, prior_subject_id) = source_authority;
     payload.validate()?;
+    let prior_subject_id = task_round::original_prior_subject(history, event, &payload)?;
     let subject: SubjectV1 = serde_json::from_value(
         cas.get_json(&payload.subject_id)
             .map_err(|error| error.to_string())?,
@@ -1907,14 +1516,14 @@ fn load_round_with_prior_subject(
     let prior_count = validate_round_set(
         cas,
         &payload.prior_finding_set_id,
-        prior_subject_id,
+        &prior_subject_id,
         payload.round,
         "prior_findings",
     )?;
     validate_round_set(
         cas,
         &payload.prior_demand_set_id,
-        prior_subject_id,
+        &prior_subject_id,
         payload.round,
         "demands",
     )?;
@@ -1924,10 +1533,8 @@ fn load_round_with_prior_subject(
     );
     Ok(RoundInput {
         payload,
-        event_id,
-        snapshot: manifest,
+        event_id: event.event_id.clone(),
         prior_count,
-        ledger_projection,
     })
 }
 
@@ -1979,47 +1586,6 @@ fn validate_round_set(
         .ok_or_else(|| format!("Round {items_field} set does not contain an array"))
 }
 
-fn latest_demand_set_id(
-    store: &EventStore,
-    cas: &Cas,
-    run_id: &str,
-    genesis_id: &str,
-) -> Result<String, String> {
-    for event in store
-        .replay(run_id)
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .rev()
-    {
-        if event.event_type != EventType::NodeOutputReceiptV1 {
-            continue;
-        }
-        let receipt: review_core::NodeOutputReceiptPayloadV1 =
-            serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
-        for port in receipt.outputs.into_iter().rev() {
-            for artifact_id in port.artifact_ids.into_iter().rev() {
-                let value = cas
-                    .get_json(&artifact_id)
-                    .map_err(|error| error.to_string())?;
-                let Ok(envelope) = serde_json::from_value::<review_core::ArtifactEnvelope>(value)
-                else {
-                    continue;
-                };
-                if envelope.artifact_type != review_core::contract::DEMAND_SET_V1 {
-                    continue;
-                }
-                envelope.validate().map_err(|error| error.to_string())?;
-                let payload: review_core::DemandSetV1 =
-                    serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
-                payload.validate()?;
-                return Ok(artifact_id);
-            }
-        }
-    }
-    cas.verify(genesis_id).map_err(|error| error.to_string())?;
-    Ok(genesis_id.to_string())
-}
-
 fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
     ledger
         .finding_views()
@@ -2067,7 +1633,7 @@ fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
 }
 
 fn prior_location(file: &str, line: Option<i64>) -> (serde_json::Value, serde_json::Value, bool) {
-    if file == review_core::legacy::CHANGE_WIDE_SENTINEL {
+    if file == review_core::reviewer_result::CHANGE_WIDE_SENTINEL {
         return (serde_json::Value::Null, serde_json::Value::Null, false);
     }
     if review_core::is_valid_repo_path(file) {
@@ -2136,44 +1702,21 @@ fn captured_registry(
     Ok(packages)
 }
 
-pub(crate) struct AuthorityLayout {
-    pub(crate) root: String,
-    pub(crate) lock: String,
-    pub(crate) registry: String,
-}
+// The lock and the Worker registry every `.af/` pipeline is pinned and loaded against.
+const AUTHORITY_LOCK: &str = ".af/af.lock";
+const AUTHORITY_REGISTRY: &str = ".af/workers";
 
-/// The authority files a pipeline path implies. `recorded` says the path comes from a stored
-/// Campaign Manifest: such a Campaign may still name the retired `.review/` layout and stays
-/// replayable, while a new invocation may not (ADR-0043, since v0.8.0).
-fn authority_layout(pipeline: &str, recorded: bool) -> Result<AuthorityLayout, String> {
+/// Review authority lives only under `.af/`: a pipeline path must name a file there.
+fn require_af_pipeline(pipeline: &str) -> Result<(), String> {
     let root = Path::new(pipeline)
         .parent()
         .and_then(Path::parent)
-        .and_then(Path::to_str)
-        .filter(|path| !path.is_empty())
-        .ok_or_else(|| "the pipeline path must live under `.af/pipelines/`".to_string())?;
-    match root {
-        ".af" => Ok(AuthorityLayout {
-            root: root.to_string(),
-            lock: ".af/af.lock".to_string(),
-            registry: ".af/workers".to_string(),
-        }),
-        ".review" if recorded => Ok(AuthorityLayout {
-            root: root.to_string(),
-            lock: ".review/review.lock".to_string(),
-            registry: ".review/reviewers".to_string(),
-        }),
-        ".review" => Err(
-            "`.review/` authority is no longer read for new Campaigns (since v0.8.0, ADR-0043) — fix: `af onboard --migrate --apply` moves it to `.af/`; commit the result and delete `.review/`"
-                .to_string(),
-        ),
-        _ => Err("the pipeline path must live under `.af/pipelines/`".to_string()),
+        .and_then(Path::to_str);
+    if root == Some(".af") {
+        Ok(())
+    } else {
+        Err("the pipeline path must live under `.af/pipelines/`".to_string())
     }
-}
-
-/// The layout for a pipeline path given on the command line.
-pub(crate) fn authority_paths(pipeline: &str) -> Result<AuthorityLayout, String> {
-    authority_layout(pipeline, false)
 }
 
 fn validate_af_project(bytes: &[u8], pipeline_path: &str) -> Result<(), String> {
@@ -2257,25 +1800,22 @@ fn authority_path(repo: &Path, pipeline: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use review_core::{IntegrationCommittedPayloadV1, RoundStartedPayloadV1};
-
-    fn attempt_event(
-        sequence: u64,
-        event_type: review_core::EventType,
-        payload: serde_json::Value,
-    ) -> review_core::RunEvent {
-        review_core::RunEvent {
-            event_id: format!("event-{sequence}"),
-            run_id: "run".into(),
-            sequence,
-            event_type,
-            occurred_at: "2026-08-31T00:00:00Z".into(),
-            node_id: Some("reviewer".into()),
-            attempt_id: Some("a".repeat(26)),
-            causation_id: Some("round".into()),
-            correlation_id: None,
-            artifact_refs: vec![],
-            payload,
+    #[test]
+    fn a_pipeline_outside_af_pipelines_is_refused() {
+        assert_eq!(
+            super::require_af_pipeline(".af/pipelines/review.toml"),
+            Ok(())
+        );
+        for pipeline in [
+            ".review/pipelines/heavy.toml",
+            "pipelines/review.toml",
+            "review.toml",
+        ] {
+            let error = super::require_af_pipeline(pipeline).unwrap_err();
+            assert!(
+                error.contains("must live under `.af/pipelines/`"),
+                "{pipeline}: {error}"
+            );
         }
     }
 
@@ -2314,139 +1854,8 @@ mod tests {
             (serde_json::Value::Null, serde_json::Value::Null, true)
         );
         assert_eq!(
-            super::prior_location(review_core::legacy::CHANGE_WIDE_SENTINEL, Some(7)),
+            super::prior_location(review_core::reviewer_result::CHANGE_WIDE_SENTINEL, Some(7)),
             (serde_json::Value::Null, serde_json::Value::Null, false)
         );
-    }
-
-    #[test]
-    fn supersession_fence_covers_observed_usage_above_broker_authority() {
-        let attempt = "a".repeat(26);
-        let operation = review_core::BrokerOperationPolicyV1 {
-            name: "model_inference".into(),
-            destination: "provider.test".into(),
-            method: "responses.create".into(),
-            max_request_bytes: 1024,
-            max_response_bytes: 1024,
-            max_calls: 1,
-            max_usage: 100,
-        };
-        let events = vec![
-            attempt_event(
-                1,
-                review_core::EventType::AttemptDispatchedV1,
-                serde_json::json!({"reserved": null}),
-            ),
-            attempt_event(
-                2,
-                review_core::EventType::ReviewerExecutionBoundV1,
-                serde_json::to_value(review_core::ReviewerExecutionBindingV1 {
-                    node: "reviewer".into(),
-                    attempt_id: attempt.clone(),
-                    lease_epoch: 1,
-                    credential_mode: review_core::BrokerCredentialModeV1::Brokered,
-                    auto_apply: false,
-                    broker_handle: Some("b".repeat(26)),
-                    operations: vec![operation],
-                    admitted: true,
-                })
-                .unwrap(),
-            ),
-            attempt_event(
-                3,
-                review_core::EventType::BrokerOperationCompletedV1,
-                serde_json::to_value(review_core::BrokerOperationReceiptV1 {
-                    handle_id: "b".repeat(26),
-                    node: "reviewer".into(),
-                    attempt_id: attempt.clone(),
-                    lease_epoch: 1,
-                    operation: "model_inference".into(),
-                    destination: "provider.test".into(),
-                    method: "responses.create".into(),
-                    ordinal: 1,
-                    outcome: review_core::BrokerOperationOutcomeV1::Failed,
-                    failure_reason: Some(review_core::BrokerFailureReasonV1::UsageOverrun),
-                    request_digest: format!("sha256:{}", "c".repeat(64)),
-                    response_digest: Some(format!("sha256:{}", "d".repeat(64))),
-                    request_bytes: 7,
-                    response_bytes: 8,
-                    reserved_usage: 100,
-                    charged_usage: 101,
-                })
-                .unwrap(),
-            ),
-        ];
-
-        assert_eq!(
-            super::outstanding_attempts_for_supersession(&events, "round").unwrap(),
-            vec![("reviewer".into(), attempt, Some(101))]
-        );
-    }
-
-    #[test]
-    fn only_an_integration_from_the_latest_subject_becomes_the_next_head() {
-        let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
-        let round = |sequence: u64, subject_id: String| review_core::RunEvent {
-            event_id: format!("round-{sequence}"),
-            run_id: "run".into(),
-            sequence,
-            event_type: review_core::EventType::RoundStartedV1,
-            occurred_at: "2026-09-01T00:00:00Z".into(),
-            node_id: None,
-            attempt_id: None,
-            causation_id: None,
-            correlation_id: None,
-            artifact_refs: vec![],
-            payload: serde_json::to_value(RoundStartedPayloadV1 {
-                round: sequence as u32,
-                epoch: 1,
-                campaign_manifest_id: digest('1'),
-                subject_id,
-                prior_finding_set_id: digest('2'),
-                prior_demand_set_id: digest('3'),
-            })
-            .unwrap(),
-        };
-        let commit = |sequence: u64, prior: String, derived: String| review_core::RunEvent {
-            event_id: format!("commit-{sequence}"),
-            run_id: "run".into(),
-            sequence,
-            event_type: review_core::EventType::IntegrationCommittedV1,
-            occurred_at: "2026-09-01T00:00:00Z".into(),
-            node_id: None,
-            attempt_id: None,
-            causation_id: None,
-            correlation_id: None,
-            artifact_refs: vec![],
-            payload: serde_json::to_value(IntegrationCommittedPayloadV1 {
-                batch_id: format!("batch-{sequence}"),
-                prior_subject_id: prior,
-                derived_subject_id: derived,
-                prior_snapshot_id: digest('4'),
-                derived_snapshot_id: digest('5'),
-                proposal_ids: vec![digest('6')],
-                attestation_ids: vec![digest('7')],
-                expected_finding_set_id: digest('8'),
-                expected_demand_set_id: digest('9'),
-                policy_id: digest('a'),
-                semantic_closure_id: digest('b'),
-            })
-            .unwrap(),
-        };
-        let subject_one = digest('c');
-        let subject_two = digest('d');
-        let mut events = vec![
-            round(1, subject_one.clone()),
-            commit(2, subject_one, subject_two.clone()),
-        ];
-        assert_eq!(
-            super::next_integrated_head(&events)
-                .unwrap()
-                .1
-                .derived_subject_id,
-            subject_two
-        );
-        events.push(round(3, subject_two));
-        assert!(super::next_integrated_head(&events).is_none());
     }
 }

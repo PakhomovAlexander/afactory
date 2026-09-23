@@ -12,10 +12,7 @@
   ],
   "properties": {
     "result_contract": {
-      "enum": [
-        "review.kernel/ReviewerResult@1",
-        "review.kernel/ReviewerResult@2"
-      ]
+      "const": "review.kernel/ReviewerResult@2"
     },
     "result_artifact_id": {
       "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"

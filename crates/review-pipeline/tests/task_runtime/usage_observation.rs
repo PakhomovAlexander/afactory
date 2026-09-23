@@ -22,6 +22,8 @@ impl WorkerModelAdapter for Model {
         input: Vec<u8>,
         _: std::time::Duration,
         writable: bool,
+        _: Option<&std::sync::atomic::AtomicBool>,
+        _: &[(String, String)],
     ) -> ModelWorkerReturn {
         assert!(!writable);
         let call = self.calls.fetch_add(1, Ordering::SeqCst);

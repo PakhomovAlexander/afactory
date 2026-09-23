@@ -1,6 +1,7 @@
-//! The three `malicious-check.md` probes that need real isolation, run against a live daemon.
+//! The three containment probes that need real isolation, run against a live daemon.
 //!
-//! `trusted_local` could honestly answer three of the case's five probes; these are the other
+//! The record of which probes are discharged is `docs/security/containment-probes.md`.
+//! `trusted_local` could honestly answer three of the five probes; these are the other
 //! two plus the absolute-write half of the checkout probe — the ones where "nothing stops a
 //! process" was the whole finding. Here something does: the container has one bind (the
 //! sandbox), no network, and no inherited environment, so each probe fails at a boundary
@@ -19,6 +20,7 @@
 use review_check::{Arg, CheckDefinition, CheckRunner, CheckStatus, Command};
 use review_sandbox::{Availability, ContainerProvider, Mode, Sandbox};
 use review_source_git::Capture;
+use std::path::Path;
 use std::time::Duration;
 
 mod common;
@@ -37,6 +39,19 @@ fn provider() -> ContainerProvider {
     provider
 }
 
+/// One contained command with no extra environment, under the probe deadline.
+fn run(
+    provider: &ContainerProvider,
+    sandbox_root: &Path,
+    program: &str,
+    args: &[String],
+) -> std::process::Output {
+    provider
+        .exec_evidenced_controlled(sandbox_root, program, args, &[], EXEC_TIMEOUT, None)
+        .map(|execution| execution.output)
+        .unwrap_or_else(|error| panic!("{error}"))
+}
+
 /// Probe: host marker. A file planted outside the sandbox is unreadable and unmodifiable —
 /// the absolute path simply names nothing inside the container.
 #[test]
@@ -48,31 +63,27 @@ fn a_host_marker_is_out_of_reach() {
     std::fs::write(&marker, "untouched").unwrap();
     let sandbox = tempfile::tempdir().unwrap();
 
-    let read = provider
-        .exec(
-            sandbox.path(),
-            "/bin/cat",
-            &[marker.display().to_string()],
-            EXEC_TIMEOUT,
-        )
-        .unwrap();
+    let read = run(
+        &provider,
+        sandbox.path(),
+        "/bin/cat",
+        &[marker.display().to_string()],
+    );
     assert!(!read.status.success(), "the marker must be unreadable");
     assert!(
         !String::from_utf8_lossy(&read.stdout).contains("untouched"),
         "no marker bytes may cross the boundary"
     );
 
-    let write = provider
-        .exec(
-            sandbox.path(),
-            "/bin/sh",
-            &[
-                "-c".to_string(),
-                format!("echo pwned > {}", marker.display()),
-            ],
-            EXEC_TIMEOUT,
-        )
-        .unwrap();
+    let write = run(
+        &provider,
+        sandbox.path(),
+        "/bin/sh",
+        &[
+            "-c".to_string(),
+            format!("echo pwned > {}", marker.display()),
+        ],
+    );
     assert!(!write.status.success(), "the marker must be unwritable");
     assert_eq!(
         std::fs::read_to_string(&marker).unwrap(),
@@ -93,20 +104,18 @@ fn an_absolute_write_cannot_reach_the_checkout() {
     let before = review_source_git::worktree_state(&repo).unwrap();
 
     let sandbox = Sandbox::materialize(&snapshot.manifest, &cas, Mode::EphemeralWrite).unwrap();
-    let output = provider
-        .exec(
-            sandbox.root(),
-            "/bin/sh",
-            &[
-                "-c".to_string(),
-                format!(
-                    "echo building; echo pwned > {}/src/main.rs; exit 0",
-                    repo.workdir().display()
-                ),
-            ],
-            EXEC_TIMEOUT,
-        )
-        .unwrap();
+    let output = run(
+        &provider,
+        sandbox.root(),
+        "/bin/sh",
+        &[
+            "-c".to_string(),
+            format!(
+                "echo building; echo pwned > {}/src/main.rs; exit 0",
+                repo.workdir().display()
+            ),
+        ],
+    );
     assert!(output.status.success(), "the check did its job");
 
     let after = review_source_git::worktree_state(&repo).unwrap();
@@ -126,38 +135,34 @@ fn an_undeclared_connection_is_refused() {
     let provider = provider();
     let sandbox = tempfile::tempdir().unwrap();
 
-    let connect = provider
-        .exec(
-            sandbox.path(),
-            "/usr/bin/timeout",
-            &[
-                "10".to_string(),
-                "/bin/bash".to_string(),
-                "-c".to_string(),
-                "echo probe > /dev/tcp/1.1.1.1/80".to_string(),
-            ],
-            EXEC_TIMEOUT,
-        )
-        .unwrap();
+    let connect = run(
+        &provider,
+        sandbox.path(),
+        "/usr/bin/timeout",
+        &[
+            "10".to_string(),
+            "/bin/bash".to_string(),
+            "-c".to_string(),
+            "echo probe > /dev/tcp/1.1.1.1/80".to_string(),
+        ],
+    );
     assert!(
         !connect.status.success(),
         "a direct connection must fail: {}",
         String::from_utf8_lossy(&connect.stderr)
     );
 
-    let resolve = provider
-        .exec(
-            sandbox.path(),
-            "/usr/bin/timeout",
-            &[
-                "10".to_string(),
-                "/usr/bin/getent".to_string(),
-                "hosts".to_string(),
-                "debian.org".to_string(),
-            ],
-            EXEC_TIMEOUT,
-        )
-        .unwrap();
+    let resolve = run(
+        &provider,
+        sandbox.path(),
+        "/usr/bin/timeout",
+        &[
+            "10".to_string(),
+            "/usr/bin/getent".to_string(),
+            "hosts".to_string(),
+            "debian.org".to_string(),
+        ],
+    );
     assert!(
         !resolve.status.success(),
         "name resolution must fail: {}",
@@ -190,7 +195,7 @@ fn a_check_command_runs_contained_and_its_work_lands_in_the_sandbox() {
     let runner = CheckRunner::new(&cas, sandbox.root()).with_timeout(EXEC_TIMEOUT);
     let result = runner.run_with(&check, |program, args, env, timeout| {
         provider
-            .exec_evidenced(sandbox.root(), program, args, env, timeout)
+            .exec_evidenced_controlled(sandbox.root(), program, args, env, timeout, None)
             .map(|execution| (execution.output, execution.stderr_held))
             .map_err(|error| error.to_string())
     });
@@ -205,7 +210,6 @@ fn a_check_command_runs_contained_and_its_work_lands_in_the_sandbox() {
         "fn main() {}\n",
         "work done in /work lands in the sandbox on the host"
     );
-    #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         assert_eq!(

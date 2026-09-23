@@ -1,5 +1,5 @@
-//! Load Review definitions only from captured Campaign authority. The legacy CLI and
-//! Task compatibility compiler share these package, policy and Snapshot reachability checks.
+//! Load Review definitions only from captured Campaign authority. The Campaign Review
+//! compiler and the Task planner share these package, policy and Snapshot reachability checks.
 
 use crate::{
     Definition, Loaded,
@@ -137,11 +137,7 @@ fn validate_manifest_authority(
     if manifest.budgets != budgets {
         return Err("CampaignManifest budgets differ from captured pipeline authority".into());
     }
-    if manifest
-        .check_timeout_seconds
-        .unwrap_or(loaded.check_timeout_seconds())
-        != loaded.check_timeout_seconds()
-    {
+    if manifest.check_timeout_seconds != loaded.check_timeout_seconds() {
         return Err(
             "CampaignManifest check timeout differs from captured pipeline authority".into(),
         );
@@ -224,14 +220,12 @@ fn validate_manifest_authority(
         .parent()
         .and_then(std::path::Path::parent)
         .and_then(std::path::Path::to_str);
-    let registry = match root {
-        Some(".af") => ".af/workers",
-        Some(".review") => ".review/reviewers",
-        _ => return Err("the pipeline path must live under `.af/pipelines/`".into()),
-    };
+    if root != Some(".af") {
+        return Err("the pipeline path must live under `.af/pipelines/`".into());
+    }
     for (package, _) in captured.values() {
         for (path, artifact_id) in &package.files {
-            let authority_path = format!("{}/{}/{path}", registry, package.name);
+            let authority_path = format!(".af/workers/{}/{path}", package.name);
             if tree.get(&authority_path).map(|entry| &entry.content) != Some(artifact_id) {
                 return Err(format!(
                     "captured reviewer file `{authority_path}` is not authority Snapshot content"

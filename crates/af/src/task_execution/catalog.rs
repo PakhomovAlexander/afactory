@@ -496,8 +496,7 @@ pub(crate) fn test(
                 "kind":"provider_binding", "provider_kind":provider_kind, "model":model, "effort":effort,
                 "status":"requires_local_admission",
             }),
-            TaskWorkerRunner::Command { command }
-            | TaskWorkerRunner::LegacyTaskCommand { command, .. } => {
+            TaskWorkerRunner::Command { command } => {
                 let path = Path::new(&command.program);
                 let found = if path.is_absolute() {
                     path.is_file()

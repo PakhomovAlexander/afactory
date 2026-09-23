@@ -1,15 +1,15 @@
 //! Real captured Review execution and fresh-process inspection of owned Task history.
 use super::*;
-use review_core::task::execution::{TASK_EXECUTION_RECORD_V4, TaskInvocationV1, TaskOutputV1};
+use review_core::task::execution::{TASK_EXECUTION_RECORD_V5, TaskInvocationV1, TaskOutputV1};
 use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_core::task::{TaskLimitsV1, TaskResultV1, TaskRevisionV1, VerificationReserveV1};
 use review_graph::task::{Address, OperatorAttemptCost};
-use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
-use review_pipeline::task::legacy_review::{
-    CapturedLegacyReviewRound,
-    host::LegacyReviewTaskHost,
-    plan::{LegacyReviewPlanCompiler, ReviewPlanSettings, ReviewPlanSettingsV2},
+use review_pipeline::task::campaign_review::{
+    CapturedCampaignReviewRound,
+    host::CampaignReviewTaskHost,
+    plan::{CampaignReviewPlanCompiler, ReviewPlanSettings},
 };
+use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
 use review_pipeline::task::{TaskOperatorHost, TaskRuntime, TaskWorkOutput};
 use review_store::store::task::execution::PreparedTaskAttempt;
 use review_store::{Cas, EventStore, SharedEventStore};
@@ -22,7 +22,8 @@ impl TaskOperatorHost for AdmissionOnly {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
-        _: &[String],
+        _definition: &review_graph::task::CompiledNode,
+        _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
         panic!("admission rendered context")
     }
@@ -30,7 +31,9 @@ impl TaskOperatorHost for AdmissionOnly {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         _: Option<&PreparedTaskAttempt>,
+        _cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         panic!("admission executed work")
     }
@@ -40,7 +43,7 @@ impl TaskDomain for AdmissionOnly {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
-        _: &[String],
+        _: &review_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         Err("admission only".into())
@@ -52,6 +55,7 @@ impl TaskDomain for AdmissionOnly {
         _: &ExecutionPlanV1,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         Err("admission only".into())
     }
@@ -131,9 +135,6 @@ impl review_graph::Dispatch for MissingSecond<'_> {
     ) -> Result<(), String> {
         self.inner.record_outputs(node, outputs)
     }
-    fn gate_passed(&self, node: &str, outputs: &review_graph::ArtifactMap) -> bool {
-        self.inner.gate_passed(node, outputs)
-    }
     fn failure_class(&self, node: &str) -> Option<review_graph::NodeFailureClass> {
         self.inner.failure_class(node)
     }
@@ -148,7 +149,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
-    valid(&validator("task-inspection-v3.json"), &planned);
+    valid(&validator("task-inspection-v11.json"), &planned);
     let normal = json_output(cli(&repo, &state, &["task", "show", "pagination-cli"]), 0);
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let mut store = EventStore::open(state.join("events.sqlite")).unwrap();
@@ -156,34 +157,31 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         .replace("[budgets]\nunit = \"tokens\"\nattempt = 100\nfan_out = 200\nrun = 400\n","")
         .replace("runner = { program = \"/bin/true\" }","runner = { program = \"/bin/sh\", args = [{value=\"-c\"},{value=\"cat >/dev/null; exit 1\"}] }");
     let round = captured_fixture::open_round_authority(&cas, &mut store, &definition, None);
-    let settings = ReviewPlanSettingsV2 {
-        review: ReviewPlanSettings {
-            mode: "light".into(),
-            resources: review_config::task::legacy_review::resources::ReviewResourcePolicy {
-                uncapped_attempt_tokens: 1,
-            },
-            outputs: BTreeMap::from([(
-                "findings".into(),
-                Address {
-                    node: "ledger".into(),
-                    port: "findings".into(),
-                },
-            )]),
-            executions: BTreeMap::from([
-                ("scatter".into(), WorkerExecutionV1::Command {}),
-                ("closeout".into(), WorkerExecutionV1::Command {}),
-            ]),
-            provider_admission: OperatorAttemptCost {
-                tokens: 1,
-                wall_ms: 1000,
-            },
-            allowed_effects: Default::default(),
+    let settings = ReviewPlanSettings {
+        mode: "light".into(),
+        resources: review_config::task::campaign_review::resources::ReviewResourcePolicy {
+            uncapped_attempt_tokens: 1,
         },
-        provider_probes: BTreeMap::new(),
+        outputs: BTreeMap::from([(
+            "findings".into(),
+            Address {
+                node: "ledger".into(),
+                port: "findings".into(),
+            },
+        )]),
+        executions: BTreeMap::from([
+            ("scatter".into(), WorkerExecutionV1::Command {}),
+            ("closeout".into(), WorkerExecutionV1::Command {}),
+        ]),
+        provider_admission: OperatorAttemptCost {
+            tokens: 1,
+            wall_ms: 1000,
+        },
+        allowed_effects: Default::default(),
     };
-    let compiler = LegacyReviewPlanCompiler::capture_v3(
+    let compiler = CampaignReviewPlanCompiler::capture(
         &cas,
-        CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
+        CapturedCampaignReviewRound::load(&cas, &store, "review", &round).unwrap(),
         cas.put(b"owned public inspection fixture").unwrap(),
         settings,
     )
@@ -208,7 +206,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
     let (plan, _) = compiler.compile(&cas, &revision).unwrap();
     let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V1, &plan);
     let authority =
-        CapturedTaskAuthority::for_legacy_review(&compiler, &AdmissionOnly, &NoTaskDeveloper);
+        CapturedTaskAuthority::for_campaign_review(&compiler, &AdmissionOnly, &NoTaskDeveloper);
     let lease = store.open_task(&cas, &revision, "fixture", 60_000).unwrap();
     store
         .propose_task_plan(&cas, &lease, &plan_id, &authority)
@@ -216,7 +214,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
     store.admit_task_plan(&cas, &lease, &authority).unwrap();
     let (set_id, set, parent_output, shards, expected_attempts, before) = {
         let shared = SharedEventStore::new(&mut store);
-        let host = LegacyReviewTaskHost::new(
+        let host = CampaignReviewTaskHost::new(
             &cas,
             shared.clone(),
             &compiler,
@@ -225,7 +223,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         )
         .unwrap();
         let authority =
-            CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+            CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
         let runtime =
             TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host)
                 .unwrap();
@@ -291,11 +289,11 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
     };
     let review_before = store.replay("review").unwrap();
     drop(store);
-    let schema = validator("task-inspection-v5.json");
+    let schema = validator("task-inspection-v11.json");
     let shown = json_output(cli(&repo, &state, &["task", "show", TASK]), 0);
     let explained = json_output(cli(&repo, &state, &["task", "explain", TASK]), 0);
     for value in [&shown, &explained] {
-        assert_eq!(value["schema"], "af/task-inspection@5");
+        assert_eq!(value["schema"], "af/task-inspection@11");
         valid(&schema, value);
         assert_eq!(
             value["owned_child_sets"],
@@ -304,7 +302,12 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         let records = value["execution_records"].as_array().unwrap();
         let owned: Vec<_> = records
             .iter()
-            .filter(|entry| entry["artifact_type"] == TASK_EXECUTION_RECORD_V4)
+            .filter(|entry| {
+                entry["artifact_type"] == TASK_EXECUTION_RECORD_V5
+                    && entry["record"]["kind"]
+                        .as_str()
+                        .is_some_and(|kind| kind.starts_with("owned_child"))
+            })
             .collect();
         assert_eq!(owned.len(), 2);
         assert_eq!(owned[0]["record"]["kind"], "owned_children_registered");

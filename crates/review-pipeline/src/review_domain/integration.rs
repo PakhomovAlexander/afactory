@@ -13,7 +13,6 @@ pub(crate) struct SelectedIntegration {
 }
 
 pub(crate) struct PreparedIntegration {
-    pub(crate) plan: IntegrationPlanV1,
     pub(crate) plan_artifact_id: String,
     pub(crate) batch_id: String,
     pub(crate) derived_manifest: Manifest,
@@ -35,77 +34,10 @@ pub(crate) struct IntegrationViews {
 }
 
 pub(crate) struct IntegrationCommit {
-    pub(crate) derived_subject_id: String,
     pub(crate) events: Vec<NewEvent>,
 }
 
 impl ReviewDomainState<'_> {
-    /// Frozen legacy orchestration. Task execution uses the preparation methods and its own
-    /// checked publication APIs; this wrapper never grants a common Task dispatch permit.
-    pub(crate) fn integrate_selected_proposals(
-        &self,
-        policy: Option<&review_config::IntegrationSpec>,
-        reviewer_execution: &BTreeMap<String, review_config::ReviewerExecutionSpec>,
-    ) -> Result<Option<String>, String> {
-        let Some(policy) = policy else {
-            return Ok(None);
-        };
-        let events = self
-            .store
-            .lock()
-            .expect("event store")
-            .replay(&self.run_id)
-            .map_err(|error| error.to_string())?;
-        let terminal = events.iter().rev().find(|event| {
-            event.event_type.is_run_report()
-                && event.causation_id.as_deref() == Some(self.authority.round_event_id.as_str())
-        });
-        if terminal.and_then(|event| event.payload.pointer("/verdict/kind"))
-            != Some(&serde_json::Value::String("pass".into()))
-        {
-            return Err(
-                "automatic Integration requires the current Round's passing conclusion".into(),
-            );
-        }
-        if events.iter().any(|event| {
-            event.event_type == EventType::IntegrationCommittedV1
-                && event
-                    .payload
-                    .get("prior_subject_id")
-                    .and_then(serde_json::Value::as_str)
-                    == Some(self.authority.subject_id.as_str())
-        }) {
-            return Ok(None);
-        }
-        let ledger = self.ledger();
-        let selected =
-            match self.select_integration(policy, reviewer_execution, &events, &ledger)? {
-                IntegrationSelection::Empty => return Ok(None),
-                IntegrationSelection::Conflict(event) => {
-                    self.append_legacy_integration_transition(event)?;
-                    return Ok(None);
-                }
-                IntegrationSelection::Candidates(selected) => selected,
-            };
-        let prepared = self.prepare_integration(policy, &selected)?;
-        self.append_legacy_integration_transition(self.integration_prepared_event(&prepared)?)?;
-        let checks = self.run_integration_checks_before(
-            policy,
-            &prepared.derived_manifest,
-            &prepared.derived_snapshot_id,
-            None,
-        )?;
-        let (checks_id, event) = self.integration_checks_event(&prepared, &checks)?;
-        self.append_legacy_integration_transition(event)?;
-        if !checks.passed() {
-            return Ok(None);
-        }
-        let views = current_integration_views(&events, &self.authority.round_event_id)?;
-        let commit = self.prepare_integration_commit(&prepared, &checks_id, &views, &ledger)?;
-        self.commit_legacy_integration(&commit.events)?;
-        Ok(Some(commit.derived_subject_id))
-    }
-
     pub(crate) fn select_integration(
         &self,
         policy: &review_config::IntegrationSpec,
@@ -306,11 +238,8 @@ impl ReviewDomainState<'_> {
                 }
             }
         }
-        let derived_manifest = Manifest::new_with_encoding(
-            entries.into_values().collect(),
-            self.snapshot.path_encoding,
-        )
-        .map_err(|error| error.to_string())?;
+        let derived_manifest =
+            Manifest::new(entries.into_values().collect()).map_err(|error| error.to_string())?;
         let derived_manifest_artifact_id = self
             .cas
             .put_json(&serde_json::to_value(&derived_manifest).map_err(|error| error.to_string())?)
@@ -354,7 +283,6 @@ impl ReviewDomainState<'_> {
             .put_json(&serde_json::to_value(&derived_snapshot).map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string())?;
         Ok(PreparedIntegration {
-            plan,
             plan_artifact_id,
             batch_id,
             derived_manifest,
@@ -411,34 +339,12 @@ impl ReviewDomainState<'_> {
             return Err("Prepared Integration changed its derived Snapshot".into());
         }
         Ok(PreparedIntegration {
-            plan,
             plan_artifact_id: plan_id.into(),
             batch_id,
             derived_manifest,
             derived_snapshot_id: snapshot_id.into(),
             selected: selected.candidates.clone(),
         })
-    }
-
-    pub(crate) fn integration_prepared_event(
-        &self,
-        prepared: &PreparedIntegration,
-    ) -> Result<NewEvent, String> {
-        Ok(NewEvent::new(
-            EventType::IntegrationPreparedV1,
-            serde_json::to_value(IntegrationPreparedPayloadV1 {
-                batch_id: prepared.batch_id.clone(),
-                plan_artifact_id: prepared.plan_artifact_id.clone(),
-                derived_snapshot_id: prepared.derived_snapshot_id.clone(),
-            })
-            .map_err(|error| error.to_string())?,
-        )
-        .correlating(self.authority.subject_id.clone())
-        .referencing(vec![
-            prepared.plan_artifact_id.clone(),
-            prepared.derived_snapshot_id.clone(),
-            prepared.plan.derived_manifest_artifact_id.clone(),
-        ]))
     }
 
     pub(crate) fn integration_checks_event(
@@ -628,7 +534,7 @@ impl ReviewDomainState<'_> {
         let mut commit_refs = vec![
             plan_artifact_id,
             checks_artifact_id,
-            derived_subject_id.clone(),
+            derived_subject_id,
             derived_snapshot_id.clone(),
             finding_set_id,
             demand_set_id,
@@ -644,40 +550,8 @@ impl ReviewDomainState<'_> {
             .referencing(commit_refs),
         );
         Ok(IntegrationCommit {
-            derived_subject_id,
             events: commit_events,
         })
-    }
-
-    /// One disposable writable clone for the entire sequence. None retains the frozen
-    /// per-check timeout; a Task supplies one absolute Attempt deadline including setup.
-    pub(crate) fn run_integration_checks_before(
-        &self,
-        policy: &review_config::IntegrationSpec,
-        manifest: &Manifest,
-        derived_snapshot_id: &str,
-        deadline: Option<std::time::Instant>,
-    ) -> Result<IntegrationChecksV1, String> {
-        self.run_integration_checks_recorded(policy, manifest, derived_snapshot_id, deadline)
-            .map_err(|failure| {
-                let _retained_evidence = failure.result_artifact_ids;
-                failure.message
-            })
-    }
-    pub(crate) fn run_integration_checks_recorded(
-        &self,
-        policy: &review_config::IntegrationSpec,
-        manifest: &Manifest,
-        derived_snapshot_id: &str,
-        deadline: Option<std::time::Instant>,
-    ) -> Result<IntegrationChecksV1, IntegrationCheckFailure> {
-        self.run_integration_checks_controlled(
-            policy,
-            manifest,
-            derived_snapshot_id,
-            deadline,
-            None,
-        )
     }
 
     pub(crate) fn run_integration_checks_controlled(
@@ -727,53 +601,6 @@ impl ReviewDomainState<'_> {
             .map_err(|error| error.to_string())?,
         )
         .correlating(self.authority.subject_id.clone()))
-    }
-
-    /// M9 transitions intentionally occur after the Round has closed, so they cannot carry the
-    /// Round causation installed by `append`. Keep that exception closed over the exact event
-    /// vocabulary instead of exposing a general authority-bypass primitive.
-    fn append_legacy_integration_transition(&self, event: NewEvent) -> Result<(), String> {
-        if !matches!(
-            event.event_type,
-            EventType::IntegrationPreparedV1
-                | EventType::IntegrationConflictV1
-                | EventType::IntegrationChecksCompletedV1
-        ) || event.causation_id.is_some()
-        {
-            return Err("invalid non-transactional Integration transition".into());
-        }
-        let appended = self
-            .store
-            .lock()
-            .expect("event store")
-            .append(&self.run_id, self.cas, event)
-            .map_err(|error| error.to_string())?;
-        self.fold_appended_into_ledger_cache(std::slice::from_ref(&appended));
-        Ok(())
-    }
-
-    /// The sole M9 visibility boundary: zero or more Change Attestations immediately followed
-    /// by one Integration commit. `EventStore::append_batch` supplies the SQLite transaction.
-    fn commit_legacy_integration(&self, events: &[NewEvent]) -> Result<(), String> {
-        let Some(last) = events.last() else {
-            return Err("empty Integration commit batch".into());
-        };
-        if last.event_type != EventType::IntegrationCommittedV1
-            || last.causation_id.is_some()
-            || events[..events.len() - 1].iter().any(|event| {
-                event.event_type != EventType::ChangeAttestedV1 || event.causation_id.is_some()
-            })
-        {
-            return Err("Integration commit batch contains an unauthorized transition".into());
-        }
-        let appended = self
-            .store
-            .lock()
-            .expect("event store")
-            .append_batch(&self.run_id, self.cas, events)
-            .map_err(|error| error.to_string())?;
-        self.fold_appended_into_ledger_cache(&appended);
-        Ok(())
     }
 }
 
@@ -953,59 +780,6 @@ fn paths_overlap(left: &str, right: &str) -> bool {
         || right
             .strip_prefix(left)
             .is_some_and(|suffix| suffix.starts_with('/'))
-}
-
-fn current_integration_views(
-    events: &[review_core::RunEvent],
-    round_event_id: &str,
-) -> Result<IntegrationViews, String> {
-    let mut finding_set = None;
-    let mut demand_set = None;
-    let mut semantic_closure = None;
-    for event in events
-        .iter()
-        .filter(|event| event.causation_id.as_deref() == Some(round_event_id))
-    {
-        match event.event_type {
-            EventType::NodeOutputReceiptV1 => {
-                let receipt: NodeOutputReceiptPayloadV1 =
-                    serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-                for port in receipt.outputs {
-                    let target = if port.artifact_type == review_core::contract::FINDING_SET_V1 {
-                        Some(&mut finding_set)
-                    } else if port.artifact_type == review_core::contract::DEMAND_SET_V1 {
-                        Some(&mut demand_set)
-                    } else {
-                        None
-                    };
-                    if let Some(target) = target {
-                        if port.artifact_ids.is_empty() && port.optional {
-                            continue;
-                        }
-                        let [artifact] = port.artifact_ids.as_slice() else {
-                            return Err(format!(
-                                "Integration authority port `{}` is not singular",
-                                port.port
-                            ));
-                        };
-                        *target = Some(artifact.clone());
-                    }
-                }
-            }
-            EventType::SemanticClosureCheckedV1 => {
-                let recorded: RecordedSetPayloadV1 =
-                    serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-                semantic_closure = Some(recorded.record_id);
-            }
-            _ => {}
-        }
-    }
-    Ok(IntegrationViews {
-        finding_set_id: finding_set.ok_or("Integration has no exact current FindingSet@1")?,
-        demand_set_id: demand_set.ok_or("Integration has no exact current DemandSet@1")?,
-        semantic_closure_id: semantic_closure
-            .ok_or("Integration has no SemanticClosure@1 proof")?,
-    })
 }
 
 #[cfg(test)]

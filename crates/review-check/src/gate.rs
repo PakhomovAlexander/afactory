@@ -1,7 +1,6 @@
 //! The gate decision over a set of check results.
 //!
-//! Three rules, each of which the shell harness also enforced and each of which is easy to lose
-//! in a rewrite:
+//! Three rules, each of which is easy to lose in a rewrite:
 //!
 //! 1. A required check that failed blocks.
 //! 2. A required check that *could not run* blocks, identically. "Nothing failed" is not "the
@@ -80,12 +79,6 @@ impl GateDecision {
     pub fn passed(&self) -> bool {
         self.outcome == GateOutcome::Passed
     }
-
-    /// The exit code `checks.sh` would have used, so a caller can be compared against it
-    /// directly: 0 when every executed check passed and at least one ran, 1 otherwise.
-    pub fn exit_code(&self) -> i32 {
-        i32::from(!self.passed())
-    }
 }
 
 #[cfg(test)]
@@ -119,7 +112,6 @@ mod tests {
             result("build", CheckStatus::Passed, true),
         ]);
         assert!(decision.passed());
-        assert_eq!(decision.exit_code(), 0);
     }
 
     #[test]
@@ -141,7 +133,6 @@ mod tests {
     fn a_vacuous_gate_blocks() {
         let empty = GateDecision::evaluate(&[]);
         assert!(!empty.passed());
-        assert_eq!(empty.exit_code(), 1);
         assert!(empty.reasons[0].contains("vacuous"));
 
         // ...and so does a gate whose checks are all optional: nothing required ran.

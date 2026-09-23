@@ -8,8 +8,8 @@
 //! second implementation and the test double).
 //!
 //! What binds bytes: under a project lock, the digest the lock records for this target; outside
-//! one, the release's `SHA256SUMS`, which every release since `FIRST_SIGNED` signs with the key
-//! embedded at build time. A pin without a digest for this target is never installed on demand.
+//! one, the release's `SHA256SUMS`, which every release signs with the key embedded at build
+//! time. A pin without a digest for this target is never installed on demand.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
@@ -34,11 +34,9 @@ pub(crate) const COMMIT: &str = env!("AF_GIT_COMMIT");
 /// The minisign public key the release job signs `SHA256SUMS` with, embedded at build time from
 /// `crates/af/keys/release.pub`. Empty in a build without the file (a source build).
 const RELEASE_KEY: &str = env!("AF_RELEASE_KEY");
-/// The first release whose `SHA256SUMS` is signed. Older releases carry checksums only.
-const FIRST_SIGNED: &str = "0.8.0";
-/// The first release with `af self`. Anything older could not update itself back and cannot read
-/// a pinned lock, so it is never made the default and never dispatched to.
-const OLDEST_SELF_MANAGED: &str = "0.7.1";
+/// The oldest release `af self` activates, installs or dispatches to: the first whose
+/// `SHA256SUMS` is signed. Anything older is never made the default and never dispatched to.
+const OLDEST_SUPPORTED: &str = "0.8.0";
 const OFFLINE_ENV: &str = "AF_SELF_OFFLINE";
 const DISPATCHED_ENV: &str = "AF_DISPATCHED_FROM";
 const VERSION_ENV: &str = "AF_VERSION";
@@ -57,8 +55,9 @@ pub(crate) struct Receipt {
     pub(crate) source: String,
     pub(crate) asset: String,
     pub(crate) sha256: String,
-    /// `lock` (matched the project lock's digest), `minisign` (a signed `SHA256SUMS`),
-    /// `sha256sums` (an unsigned one), or `sha256-sidecar` (releases before `SHA256SUMS`).
+    /// `lock` (matched the project lock's digest), `minisign` (a signed `SHA256SUMS`), or
+    /// `sha256sums` (the checksum alone: a build without a release key, or `install.sh` without
+    /// `minisign`).
     pub(crate) verified_by: String,
     pub(crate) installed_at: String,
 }
@@ -212,7 +211,6 @@ fn install_lock(paths: &Paths) -> Result<std::fs::File, String> {
         .truncate(false)
         .open(&path)
         .map_err(|error| format!("opening {}: {error}", path.display()))?;
-    #[cfg(unix)]
     rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
         .map_err(|error| format!("locking {}: {error}", path.display()))?;
     Ok(file)
@@ -466,10 +464,10 @@ fn parse_version(version: &str) -> Result<Version, String> {
 /// The floor under every version `af self` will activate or dispatch to.
 fn require_self_managed(version: &str) -> Result<(), String> {
     let parsed = parse_version(version)?;
-    let floor = Version::parse(OLDEST_SELF_MANAGED).expect("the floor is a version");
+    let floor = Version::parse(OLDEST_SUPPORTED).expect("the floor is a version");
     if parsed < floor {
         return Err(format!(
-            "af {version} predates self-management (the first release with `af self` is {OLDEST_SELF_MANAGED}); it can be neither the default nor a dispatch target"
+            "af {version} is older than the oldest supported release ({OLDEST_SUPPORTED}); it can be neither the default nor a dispatch target"
         ));
     }
     Ok(())
@@ -505,14 +503,12 @@ fn release_key_source() -> &'static str {
     }
 }
 
-/// The release's `SHA256SUMS`, verified as far as the release and this build allow: the
-/// signature for releases since `FIRST_SIGNED` when a key is available (a missing or bad
-/// signature is a refusal), a signature when an older release happens to carry one, and the
-/// bare file otherwise. Returns the text and how it was verified.
+/// The release's `SHA256SUMS`, verified as far as this build allows: its signature when a key is
+/// available (a missing or bad signature is a refusal), the bare file in a build without one.
+/// Returns the text and how it was verified.
 fn verified_sums(
     src: &dyn ReleaseSource,
     tag: &str,
-    version: &Version,
     dir: &Path,
 ) -> Result<(String, &'static str), String> {
     let sums_path = src
@@ -522,16 +518,12 @@ fn verified_sums(
     let Some((key, _)) = release_key()? else {
         return Ok((sums, "sha256sums"));
     };
-    let signed_era = *version >= Version::parse(FIRST_SIGNED).expect("a version");
-    let signature = match src.fetch(tag, "SHA256SUMS.minisig", dir) {
-        Ok(path) => std::fs::read_to_string(&path).map_err(|error| error.to_string())?,
-        Err(error) if signed_era => {
-            return Err(format!(
-                "release {tag} has no SHA256SUMS.minisig ({error}); releases since {FIRST_SIGNED} must be signed — refusing to install from checksums alone"
-            ));
-        }
-        Err(_) => return Ok((sums, "sha256sums")),
-    };
+    let signature_path = src.fetch(tag, "SHA256SUMS.minisig", dir).map_err(|error| {
+        format!(
+            "release {tag} has no SHA256SUMS.minisig ({error}); every release must be signed — refusing to install from checksums alone"
+        )
+    })?;
+    let signature = std::fs::read_to_string(&signature_path).map_err(|error| error.to_string())?;
     let signature = minisign_verify::Signature::decode(&signature)
         .map_err(|error| format!("SHA256SUMS.minisig of {tag}: {error}"))?;
     key.verify(sums.as_bytes(), &signature, false)
@@ -573,12 +565,11 @@ pub(crate) fn release_digests(
     if offline() {
         return Err(format!("{OFFLINE_ENV} is set"));
     }
-    let parsed = parse_version(version)?;
+    parse_version(version)?;
     let policy = config::load_machine()?.self_policy()?;
     let src = source(&policy);
     let tmp = tempfile::tempdir().map_err(|error| format!("temporary directory: {error}"))?;
-    let (sums, verified_by) =
-        verified_sums(src.as_ref(), &format!("v{version}"), &parsed, tmp.path())?;
+    let (sums, verified_by) = verified_sums(src.as_ref(), &format!("v{version}"), tmp.path())?;
     let digests = parse_sums(&sums, version);
     if digests.is_empty() {
         return Err(format!("SHA256SUMS of v{version} lists no af archives"));
@@ -631,7 +622,6 @@ fn install(
         )));
     }
     require_self_managed(version)?;
-    let parsed = parse_version(version)?;
     let _guard = install_lock(paths)?;
     if let Some(binary) = installed(paths, version) {
         // Another installer finished first; under a lock its bytes must still be the lock's.
@@ -658,7 +648,7 @@ fn install(
     let (expected, verified_by) = match expected {
         Some(digest) => (strip_sha256(digest).to_string(), "lock"),
         None => {
-            let (sums, verified_by) = verified_sums(src.as_ref(), &tag, &parsed, tmp.path())?;
+            let (sums, verified_by) = verified_sums(src.as_ref(), &tag, tmp.path())?;
             (
                 find_sum(&sums, &asset)
                     .ok_or_else(|| format!("SHA256SUMS of {tag} does not list {asset}"))?,
@@ -696,7 +686,6 @@ fn install(
             "{asset} does not contain an `af` binary at its root"
         )));
     }
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&extracted, std::fs::Permissions::from_mode(0o755))
@@ -769,11 +758,8 @@ fn set_default(paths: &Paths, version: &str) -> Result<(), String> {
         .bin
         .with_extension(format!("tmp.{}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
-    #[cfg(unix)]
     std::os::unix::fs::symlink(&binary, &tmp)
         .map_err(|error| format!("linking {}: {error}", tmp.display()))?;
-    #[cfg(not(unix))]
-    return Err("the default symlink is supported on Unix only".to_string());
     std::fs::rename(&tmp, &paths.bin)
         .map_err(|error| format!("activating {}: {error}", paths.bin.display()))?;
     let mut state = read_state(paths);
@@ -1058,7 +1044,6 @@ pub(crate) fn maybe_dispatch(argv: &[String]) {
     if let Some(lock) = &request.lock {
         record_seen_pin(&paths, lock, &request.version);
     }
-    #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
         let error = Command::new(&binary)
@@ -1109,7 +1094,6 @@ pub(crate) fn after_command(argv: &[String]) {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
-            #[cfg(unix)]
             {
                 use std::os::unix::process::CommandExt as _;
                 command.process_group(0);
@@ -1714,10 +1698,11 @@ mod tests {
     }
 
     #[test]
-    fn the_floor_is_the_first_self_managing_release() {
-        assert!(require_self_managed("0.7.0").is_err());
-        assert!(require_self_managed("0.7.1").is_ok());
-        assert!(require_self_managed("0.8.0-rc.1").is_ok());
+    fn the_floor_is_the_oldest_supported_release() {
+        assert!(require_self_managed("0.7.1").is_err());
+        assert!(require_self_managed("0.8.0-rc.1").is_err());
+        assert!(require_self_managed("0.8.0").is_ok());
+        assert!(require_self_managed("0.9.0-rc.3").is_ok());
         assert!(require_self_managed("latest").is_err());
     }
 

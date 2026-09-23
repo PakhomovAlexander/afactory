@@ -14,8 +14,6 @@ use review_store::store::task::execution::PreparedTaskAttempt;
 use review_store::{Cas, EventStore};
 use serde_json::json;
 
-#[path = "task_runtime/broker.rs"]
-mod broker;
 #[path = "task_runtime/control.rs"]
 mod control;
 #[path = "task_runtime/output_admission.rs"]
@@ -75,6 +73,8 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             input: Vec<u8>,
             _: std::time::Duration,
             writable: bool,
+            _: Option<&std::sync::atomic::AtomicBool>,
+            _: &[(String, String)],
         ) -> ModelWorkerReturn {
             assert!(!writable);
             let request: Value = serde_json::from_slice(&input).unwrap();
@@ -88,7 +88,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
                 usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&reply).unwrap()],
                 message: Ok(reply),
-                usage: Some(review_runner::TokenUsage::charge_only(1).into()),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(1)),
             }
         }
     }
@@ -131,7 +131,8 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             &self,
             _: &Cas,
             _: &TaskInvocationV1,
-            _: &[String],
+            _definition: &review_graph::task::CompiledNode,
+            _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
             Err("dynamic command context must use its resolved captured Worker".into())
         }
@@ -139,7 +140,9 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             &self,
             _: &Cas,
             _: &TaskInvocationV1,
+            _definition: &review_graph::task::CompiledNode,
             _: Option<&PreparedTaskAttempt>,
+            _cancellation: Option<&std::sync::atomic::AtomicBool>,
         ) -> TaskWorkOutput {
             panic!("dynamic command children must use the common command Worker")
         }
@@ -147,13 +150,22 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
     impl TaskDomain for ExperimentDomain {
         fn validate_experiment_preparation(
             &self,
-            _: &Cas,
+            cas: &Cas,
             _: &TaskRevisionV1,
             _: &ExecutionPlanV1,
-            prepared_id: &str,
-            _: &ExperimentPreparedV1,
+            prepared: &ExperimentPreparedV1,
         ) -> Result<(), String> {
-            if self.prepared.lock().unwrap().as_deref() == Some(prepared_id) {
+            let prepared_id = self
+                .prepared
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or("fixture is not prepared")?;
+            let expected = cas
+                .get_artifact(&prepared_id)
+                .map_err(|error| error.to_string())?
+                .payload;
+            if serde_json::to_value(prepared).map_err(|error| error.to_string())? == expected {
                 Ok(())
             } else {
                 Err("wrong prepared closure".into())
@@ -163,7 +175,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             &self,
             _: &Cas,
             _: &TaskInvocationV1,
-            _: &[String],
+            _: &review_store::store::task::execution::ReservedTaskAttempt,
             _: &str,
         ) -> Result<(), String> {
             Ok(())
@@ -175,6 +187,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             _: &ExecutionPlanV1,
             _: &TaskInvocationV1,
             _: &TaskOutputV1,
+            _definition: &review_graph::task::CompiledNode,
         ) -> Result<(), String> {
             Ok(())
         }
@@ -759,6 +772,8 @@ fn substituted_resolved_context_is_rejected_before_model_dispatch() {
             _: Vec<u8>,
             _: std::time::Duration,
             _: bool,
+            _: Option<&std::sync::atomic::AtomicBool>,
+            _: &[(String, String)],
         ) -> ModelWorkerReturn {
             self.0.fetch_add(1, Ordering::SeqCst);
             panic!("a substituted context reached model dispatch")
@@ -770,7 +785,7 @@ fn substituted_resolved_context_is_rejected_before_model_dispatch() {
         replacement: String,
     }
     impl TaskOperatorHost for Substitute<'_> {
-        fn prepare_context_for_resolved_attempt(
+        fn prepare_context(
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
@@ -778,24 +793,19 @@ fn substituted_resolved_context_is_rejected_before_model_dispatch() {
             attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
             self.inner
-                .prepare_context_for_resolved_attempt(cas, input, definition, attempt)?;
+                .prepare_context(cas, input, definition, attempt)?;
             Ok(self.replacement.clone())
-        }
-        fn prepare_context(
-            &self,
-            cas: &Cas,
-            input: &TaskInvocationV1,
-            feedback: &[String],
-        ) -> Result<String, String> {
-            self.inner.prepare_context(cas, input, feedback)
         }
         fn execute(
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
+            definition: &review_graph::task::CompiledNode,
             attempt: Option<&PreparedTaskAttempt>,
+            cancellation: Option<&std::sync::atomic::AtomicBool>,
         ) -> TaskWorkOutput {
-            self.inner.execute(cas, input, attempt)
+            self.inner
+                .execute(cas, input, definition, attempt, cancellation)
         }
     }
 
@@ -1083,7 +1093,8 @@ impl TaskOperatorHost for DocumentDomain {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
-        _: &[String],
+        _definition: &review_graph::task::CompiledNode,
+        _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
         Err("No built-in Worker".into())
     }
@@ -1091,7 +1102,9 @@ impl TaskOperatorHost for DocumentDomain {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         _: Option<&PreparedTaskAttempt>,
+        _cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         panic!("Only the command Worker should execute")
     }
@@ -1101,7 +1114,7 @@ impl TaskDomain for DocumentDomain {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
-        _: &[String],
+        _: &review_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         Ok(())
@@ -1113,6 +1126,7 @@ impl TaskDomain for DocumentDomain {
         _: &ExecutionPlanV1,
         _: &TaskInvocationV1,
         output: &TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         for port in output.outputs.values() {
             if port.artifact_type != "af/CheckedDocument@1" {
@@ -1194,7 +1208,8 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
-            feedback: &[String],
+            definition: &review_graph::task::CompiledNode,
+            attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
             {
                 let store = self.lock();
@@ -1204,14 +1219,16 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
                     .unwrap();
                 assert_eq!(state.plan_id.as_deref(), Some(input.plan_id.as_str()));
             }
-            self.inner.prepare_context(cas, input, feedback)
+            self.inner.prepare_context(cas, input, definition, attempt)
         }
 
         fn execute(
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
+            definition: &review_graph::task::CompiledNode,
             attempt: Option<&PreparedTaskAttempt>,
+            cancellation: Option<&std::sync::atomic::AtomicBool>,
         ) -> TaskWorkOutput {
             let attempt = attempt.expect("the fixture invokes one Worker");
             {
@@ -1236,12 +1253,13 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
                 store.renew_task_lease(cas, &self.lease, 60_000).unwrap();
             }
             self.calls.fetch_add(1, Ordering::SeqCst);
-            self.inner.execute(cas, input, Some(attempt))
+            self.inner
+                .execute(cas, input, definition, Some(attempt), cancellation)
         }
     }
 
     let mut f = Fixture::new(SUCCESS);
-    let host = CommandTaskHost::capture(
+    let host = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -1249,6 +1267,7 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &DocumentDomain,
+        &BTreeMap::new(),
     )
     .unwrap();
     let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
@@ -1307,6 +1326,8 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
             input: Vec<u8>,
             _: std::time::Duration,
             writable: bool,
+            _: Option<&std::sync::atomic::AtomicBool>,
+            _: &[(String, String)],
         ) -> ModelWorkerReturn {
             assert!(!writable);
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -1331,7 +1352,9 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
                 usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&bytes).unwrap()],
                 message: Ok(bytes),
-                usage: Some(review_runner::TokenUsage::charge_only(cost).into()),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(
+                    cost,
+                )),
             }
         }
     }
@@ -1456,6 +1479,8 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
             bytes: Vec<u8>,
             _: std::time::Duration,
             writable: bool,
+            _: Option<&std::sync::atomic::AtomicBool>,
+            _: &[(String, String)],
         ) -> ModelWorkerReturn {
             assert!(!writable);
             let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -1493,9 +1518,9 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
                 usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&message).unwrap()],
                 message: Ok(message),
-                usage: Some(
-                    review_runner::TokenUsage::charge_only(if first { 20 } else { 30 }).into(),
-                ),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(
+                    if first { 20 } else { 30 },
+                )),
             }
         }
     }
@@ -1556,13 +1581,13 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
     drop(runtime);
     let wall = f
         .store
-        .attempt_wall(&review_store::store::task::task_run_id(lease.task_id()).unwrap())
+        .task_attempt_wall(&review_store::store::task::task_run_id(lease.task_id()).unwrap())
         .unwrap();
     assert_eq!(wall.len(), 2);
     assert_eq!(
         wall.iter()
-            .map(|a| a.usage.as_ref().unwrap().chargeable_tokens)
-            .sum::<u64>(),
+            .map(|a| a.usage.as_ref().unwrap().chargeable_tokens.get())
+            .sum::<u128>(),
         50
     );
 }
@@ -1570,7 +1595,7 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
 #[test]
 fn captured_command_worker_executes_and_replays_through_the_common_task_runtime() {
     let mut f = Fixture::new(SUCCESS);
-    let host = CommandTaskHost::capture(
+    let host = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -1578,6 +1603,7 @@ fn captured_command_worker_executes_and_replays_through_the_common_task_runtime(
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &DocumentDomain,
+        &BTreeMap::new(),
     )
     .unwrap();
     let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
@@ -1637,7 +1663,7 @@ fn failed_command_and_schema_refusal_exhaust_bounded_attempts_without_publishing
         "print('{\"schema\":\"af.worker-reply/1\",\"outputs\":{\"output\":[{\"outcome\":\"passed\"}]}}')\n",
     ] {
         let mut f = Fixture::new(script);
-        let host = CommandTaskHost::capture(
+        let host = CapturedTaskHost::capture_with_models(
             &f.cas,
             &f.compiler,
             &f.task,
@@ -1645,6 +1671,7 @@ fn failed_command_and_schema_refusal_exhaust_bounded_attempts_without_publishing
             f.graph.clone(),
             &EmptyTaskEnvironment,
             &DocumentDomain,
+            &BTreeMap::new(),
         )
         .unwrap();
         let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);

@@ -42,7 +42,6 @@ impl TaskRuntime<'_, '_> {
             if !matches!(
                 definition.operator,
                 CompiledOperator::ProviderAdmission { .. }
-                    | CompiledOperator::ProviderAdmissionBrokered { .. }
             ) {
                 continue;
             }

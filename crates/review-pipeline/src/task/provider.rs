@@ -15,61 +15,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use review_runner::task::provider::{PROBE_INPUT, TASK_PROVIDER_CONTEXT_V2, TaskProviderContextV2};
-
-enum Admission {
-    Legacy(TaskProviderAdmissionV1),
-    Brokered(TaskProviderAdmissionV2),
-}
-impl Admission {
-    fn bindings(&self) -> &BTreeSet<String> {
-        match self {
-            Self::Legacy(v) => &v.bindings,
-            Self::Brokered(v) => &v.bindings,
-        }
-    }
-    fn policy_id(&self) -> &str {
-        match self {
-            Self::Legacy(v) => &v.invocation_policy_id,
-            Self::Brokered(v) => &v.probe_policy_id,
-        }
-    }
-    fn artifact_type(&self) -> &'static str {
-        match self {
-            Self::Legacy(_) => TASK_PROVIDER_ADMISSION_V1,
-            Self::Brokered(_) => TASK_PROVIDER_ADMISSION_V2,
-        }
-    }
-    fn payload(&self) -> Result<serde_json::Value, String> {
-        match self {
-            Self::Legacy(v) => serde_json::to_value(v),
-            Self::Brokered(v) => serde_json::to_value(v),
-        }
-        .map_err(|e| e.to_string())
-    }
-}
-
-pub(super) fn load_probe_policy(
-    cas: &Cas,
-    plan: &ExecutionPlanV1,
-    id: &str,
-) -> Result<TaskProviderProbePolicyV1, String> {
-    let artifact = envelope(cas, id)?;
-    let policy: TaskProviderProbePolicyV1 =
-        serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
-    policy.validate()?;
-    if artifact.artifact_type != TASK_PROVIDER_PROBE_POLICY_V1
-        || artifact.input_artifacts != policy.artifact_refs()
-        || artifact.subject_snapshot_id.is_some()
-        || policy.authority_policy_id != plan.authority.policy_id
-        || !plan.dependencies.values().any(|dependency| {
-            dependency.artifact_id == id && dependency.content_digest == artifact.content_id
-        })
-    {
-        return Err("Provider probe is not an exact captured plan dependency".into());
-    }
-    Ok(policy)
-}
+use review_runner::task::provider::PROBE_INPUT;
 
 pub struct ProviderTaskDomain<'a> {
     pub graph: &'a CompiledTask,
@@ -79,12 +25,15 @@ pub struct ProviderTaskDomain<'a> {
 impl ProviderTaskDomain<'_> {
     fn slots(&self, input: &TaskInvocationV1) -> Option<&BTreeSet<String>> {
         match &self.graph.nodes.get(&input.node)?.operator {
-            CompiledOperator::ProviderAdmission { bindings }
-            | CompiledOperator::ProviderAdmissionBrokered { bindings, .. } => Some(bindings),
+            CompiledOperator::ProviderAdmission { bindings } => Some(bindings),
             _ => None,
         }
     }
-    fn receipt(&self, cas: &Cas, input: &TaskInvocationV1) -> Result<Admission, String> {
+    fn receipt(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+    ) -> Result<TaskProviderAdmissionV1, String> {
         if !input.inputs.is_empty() {
             return Err("Provider admission cannot consume business inputs".into());
         }
@@ -115,36 +64,6 @@ impl ProviderTaskDomain<'_> {
                 );
             }
         }
-        if let CompiledOperator::ProviderAdmissionBrokered {
-            probe_policy_id, ..
-        } = &self.graph.nodes[&input.node].operator
-        {
-            let policy = load_probe_policy(cas, &plan, probe_policy_id)?;
-            if policy.execution != first.binding.execution
-                || first.adapter.credential_mode() != policy.credential_mode
-                || self
-                    .graph
-                    .allowances
-                    .get(&input.node)
-                    .is_none_or(|allowance| {
-                        review_core::broker_authority_usage(&policy.operations)
-                            .map_or(true, |usage| usage > allowance.tokens_per_attempt)
-                    })
-            {
-                return Err(
-                    "Provider probe changed its exact execution, transport or reservation".into(),
-                );
-            }
-            let receipt = TaskProviderAdmissionV2 {
-                plan_id: input.plan_id.clone(),
-                bindings: slots.clone(),
-                execution: policy.execution,
-                probe_policy_id: probe_policy_id.clone(),
-                outcome: ReceiptOutcomeV1::Passed,
-            };
-            receipt.validate()?;
-            return Ok(Admission::Brokered(receipt));
-        }
         let receipt = TaskProviderAdmissionV1 {
             plan_id: input.plan_id.clone(),
             bindings: slots.clone(),
@@ -153,32 +72,23 @@ impl ProviderTaskDomain<'_> {
             outcome: ReceiptOutcomeV1::Passed,
         };
         receipt.validate()?;
-        Ok(Admission::Legacy(receipt))
+        Ok(receipt)
     }
     fn probe(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         let prepared = (|| {
             let receipt = self.receipt(cas, input)?;
             let attempt = attempt.ok_or("Provider capability probe has no started Task Attempt")?;
-            let context = self.prepare_context(cas, input, &[])?;
+            let context = self.render_probe_context(cas, input, &[])?;
             if context != attempt.context_id() {
                 return Err("Provider probe lost its exact context".into());
             }
-            let model = &self.models[receipt
-                .bindings()
-                .first()
-                .ok_or("Empty Provider bindings")?];
-            if (model.adapter.credential_mode() == review_core::BrokerCredentialModeV1::Brokered)
-                != broker.is_some()
-            {
-                return Err("Provider transport differs from its runtime Broker capability".into());
-            }
+            let model = &self.models[receipt.bindings.first().ok_or("Empty Provider bindings")?];
             let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -210,14 +120,14 @@ impl ProviderTaskDomain<'_> {
                 };
             }
         };
-        let returned = model.adapter.invoke_controlled(
+        let returned = model.adapter.invoke(
             cas,
             directory.path(),
             PROBE_INPUT.to_vec(),
             timeout,
             false,
-            broker,
             cancellation,
+            &[],
         );
         let charged_tokens = returned
             .usage
@@ -239,15 +149,15 @@ impl ProviderTaskDomain<'_> {
             let refs = vec![
                 context,
                 input.plan_id.clone(),
-                receipt.policy_id().to_owned(),
+                receipt.invocation_policy_id.clone(),
             ];
             let id = cas
                 .put_artifact(
-                    receipt.artifact_type(),
+                    TASK_PROVIDER_ADMISSION_V1,
                     invocation_producer(cas, input, attempt)?,
                     refs,
                     None,
-                    receipt.payload()?,
+                    serde_json::to_value(&receipt).map_err(|e| e.to_string())?,
                 )
                 .map_err(|e| e.to_string())?
                 .0;
@@ -255,7 +165,7 @@ impl ProviderTaskDomain<'_> {
                 "result".into(),
                 ArtifactInputV1 {
                     artifact_ids: vec![id],
-                    artifact_type: receipt.artifact_type().into(),
+                    artifact_type: TASK_PROVIDER_ADMISSION_V1.into(),
                     cardinality: review_core::PortCardinality::One,
                     snapshot_id: None,
                 },
@@ -311,28 +221,6 @@ impl TaskOperatorHost for ProviderTaskDomain<'_> {
             .complete_owned_children(cas, parent, children, facts)
     }
 
-    fn broker_operations(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-    ) -> Result<Option<Vec<review_core::BrokerOperationPolicyV1>>, String> {
-        if self.slots(input).is_some() {
-            match self.receipt(cas, input)? {
-                Admission::Legacy(_) => Ok(None),
-                Admission::Brokered(receipt) => {
-                    let plan: ExecutionPlanV1 =
-                        serde_json::from_value(envelope(cas, &input.plan_id)?.payload)
-                            .map_err(|e| e.to_string())?;
-                    Ok(Some(
-                        load_probe_policy(cas, &plan, &receipt.probe_policy_id)?.operations,
-                    ))
-                }
-            }
-        } else {
-            self.inner.broker_operations(cas, input)
-        }
-    }
-
     fn commit_domain_invocation(
         &self,
         cas: &Cas,
@@ -352,18 +240,6 @@ impl TaskOperatorHost for ProviderTaskDomain<'_> {
         self.inner.commit_domain_output(cas, input, id, output)
     }
 
-    fn prepare_context_for_attempt(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: &ReservedTaskAttempt,
-    ) -> Result<String, String> {
-        if self.slots(input).is_none() {
-            self.inner.prepare_context_for_attempt(cas, input, attempt)
-        } else {
-            self.prepare_context(cas, input, attempt.feedback_ids())
-        }
-    }
     fn output_rejection_feedback(
         &self,
         cas: &Cas,
@@ -381,11 +257,50 @@ impl TaskOperatorHost for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        definition: &review_graph::task::CompiledNode,
+        attempt: &ReservedTaskAttempt,
     ) -> Result<String, String> {
         if self.slots(input).is_none() {
-            return self.inner.prepare_context(cas, input, feedback);
+            return self.inner.prepare_context(cas, input, definition, attempt);
         }
+        self.render_probe_context(cas, input, attempt.feedback_ids())
+    }
+    fn execute(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
+        attempt: Option<&PreparedTaskAttempt>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> TaskWorkOutput {
+        if let Err(error) = crate::task::control::check(cancellation) {
+            return crate::task::control::refused(error);
+        }
+
+        if self.slots(input).is_some() {
+            self.probe(cas, input, attempt, cancellation)
+        } else {
+            self.inner
+                .execute(cas, input, definition, attempt, cancellation)
+        }
+    }
+}
+
+impl ProviderTaskDomain<'_> {
+    /// The Provider probe's own context bytes. The trait entry point, the probe and the
+    /// admission recheck must render identically, so all three go through here. The probe
+    /// carries no Attempt authority, so it renders from the feedback list alone.
+    ///
+    /// Public only for `tests/task_campaign_review/host/native.rs`'s
+    /// `provider_admission_renders_only_its_fixed_context_and_refuses_changed_identity`, which
+    /// cannot construct a `ReservedTaskAttempt`; not part of the crate's stable surface.
+    #[doc(hidden)]
+    pub fn render_probe_context(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        feedback: &[String],
+    ) -> Result<String, String> {
         if !feedback.is_empty() {
             return Err("Provider admission has one bounded Attempt".into());
         }
@@ -408,74 +323,15 @@ impl TaskOperatorHost for ProviderTaskDomain<'_> {
         {
             return Err("Provider probe exceeds its captured reservation".into());
         }
-        let (artifact_type, refs, payload) = match receipt {
-            Admission::Legacy(receipt) => (
-                "af/TaskProviderContext@1",
-                vec![input.plan_id.clone(), rendered.clone()],
-                json!({"invocation":input,"capability":receipt,"rendered_id":rendered,"manifest":manifest}),
-            ),
-            Admission::Brokered(capability) => {
-                let context = TaskProviderContextV2 {
-                    invocation: input.clone(),
-                    capability,
-                    rendered_id: rendered,
-                    manifest,
-                };
-                context.validate()?;
-                (
-                    TASK_PROVIDER_CONTEXT_V2,
-                    context.artifact_refs(),
-                    serde_json::to_value(context).map_err(|e| e.to_string())?,
-                )
-            }
-        };
         cas.put_artifact(
-            artifact_type,
+            "af/TaskProviderContext@1",
             invocation_producer(cas, input, None)?,
-            refs,
+            vec![input.plan_id.clone(), rendered.clone()],
             None,
-            payload,
+            json!({"invocation":input,"capability":receipt,"rendered_id":rendered,"manifest":manifest}),
         )
         .map(|(id, _)| id)
         .map_err(|e| e.to_string())
-    }
-    fn execute(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-    ) -> TaskWorkOutput {
-        self.execute_with_broker(cas, input, attempt, None)
-    }
-
-    fn execute_with_broker(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
-    ) -> TaskWorkOutput {
-        self.execute_controlled(cas, input, attempt, broker, None)
-    }
-
-    fn execute_controlled(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
-        cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> TaskWorkOutput {
-        if let Err(error) = crate::task::control::check(cancellation) {
-            return crate::task::control::refused(error);
-        }
-
-        if self.slots(input).is_some() {
-            self.probe(cas, input, attempt, broker, cancellation)
-        } else {
-            self.inner
-                .execute_controlled(cas, input, attempt, broker, cancellation)
-        }
     }
 }
 impl TaskDomain for ProviderTaskDomain<'_> {
@@ -484,11 +340,10 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         cas: &Cas,
         task: &review_core::task::TaskRevisionV1,
         plan: &review_core::task::plan::ExecutionPlanV1,
-        prepared_id: &str,
         prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         self.inner
-            .validate_experiment_preparation(cas, task, plan, prepared_id, prepared)
+            .validate_experiment_preparation(cas, task, plan, prepared)
     }
     fn validate_review_integration_selection(
         &self,
@@ -508,7 +363,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
-        report: &review_core::task::report::TaskRunReportV2,
+        report: &review_core::task::report::TaskRunReportV1,
         events: &[review_store::NewEvent],
         evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {
@@ -561,42 +416,6 @@ impl TaskDomain for ProviderTaskDomain<'_> {
             .validate_owned_completion(cas, task, plan, parent, children, facts, output)
     }
 
-    fn validate_broker_binding(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        binding: &review_core::task::broker::TaskBrokerBindingV1,
-    ) -> Result<(), String> {
-        let input = TaskInvocationV1 {
-            plan_id: binding.plan_id.clone(),
-            node: binding.node.clone(),
-            inputs: BTreeMap::new(),
-        };
-        if self.slots(&input).is_none() {
-            return self.inner.validate_broker_binding(cas, task, plan, binding);
-        }
-        binding.validate()?;
-        let Admission::Brokered(receipt) = self.receipt(cas, &input)? else {
-            return Err("Provider admission has no captured Broker operation policy".into());
-        };
-        let policy = load_probe_policy(cas, plan, &receipt.probe_policy_id)?;
-        if binding.task_id != task.task_id
-            || binding.task_revision_id != plan.task_revision_id
-            || binding.lease.node_id != binding.node
-            || binding.target
-                != (review_core::task::broker::TaskBrokerTargetV1::ProviderAdmission {
-                    probe_policy_id: receipt.probe_policy_id,
-                })
-            || binding.operations != policy.operations
-        {
-            return Err(
-                "Provider Broker binding changed its original node or separate probe policy".into(),
-            );
-        }
-        Ok(())
-    }
-
     fn validate_retry(
         &self,
         cas: &Cas,
@@ -623,30 +442,16 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
-        id: &str,
-    ) -> Result<(), String> {
-        if self.slots(input).is_none() {
-            return self.inner.validate_context(cas, input, feedback, id);
-        }
-        if self.prepare_context(cas, input, feedback)? != id {
-            return Err("Provider context changed its admitted capability or input".into());
-        }
-        Ok(())
-    }
-    fn validate_context_for_attempt(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
         attempt: &ReservedTaskAttempt,
         id: &str,
     ) -> Result<(), String> {
         if self.slots(input).is_none() {
-            self.inner
-                .validate_context_for_attempt(cas, input, attempt, id)
-        } else {
-            self.validate_context(cas, input, attempt.feedback_ids(), id)
+            return self.inner.validate_context(cas, input, attempt, id);
         }
+        if self.render_probe_context(cas, input, attempt.feedback_ids())? != id {
+            return Err("Provider context changed its admitted capability or input".into());
+        }
+        Ok(())
     }
     fn validate_output(
         &self,
@@ -655,9 +460,12 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         if self.slots(input).is_none() {
-            return self.inner.validate_output(cas, task, plan, input, output);
+            return self
+                .inner
+                .validate_output(cas, task, plan, input, output, definition);
         }
         let id = output
             .outputs
@@ -666,8 +474,8 @@ impl TaskDomain for ProviderTaskDomain<'_> {
             .ok_or("Provider admission lacks a result")?;
         let artifact = envelope(cas, id)?;
         let receipt = self.receipt(cas, input)?;
-        if artifact.artifact_type != receipt.artifact_type()
-            || artifact.payload != receipt.payload()?
+        if artifact.artifact_type != TASK_PROVIDER_ADMISSION_V1
+            || artifact.payload != serde_json::to_value(&receipt).map_err(|e| e.to_string())?
         {
             return Err("Provider receipt changed its exact capability".into());
         }

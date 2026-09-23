@@ -43,8 +43,10 @@ impl TaskAuthority for OwnedAuthority<'_> {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
-        self.0.validate_output(cas, task, plan, input, output)
+        self.0
+            .validate_output(cas, task, plan, input, output, definition)
     }
     fn validate_context(
         &self,
@@ -52,11 +54,11 @@ impl TaskAuthority for OwnedAuthority<'_> {
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        attempt: &crate::store::task::execution::ReservedTaskAttempt,
         context: &str,
     ) -> Result<(), String> {
         self.0
-            .validate_context(cas, task, plan, input, feedback, context)
+            .validate_context(cas, task, plan, input, attempt, context)
     }
     fn validate_owned_children(
         &self,
@@ -326,7 +328,7 @@ fn run_child(
     let context = f.cas.put_json(&json!({"context":child.node})).unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, lease, &child.node, &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, lease, &child.node, &context, &f.authority)
         .unwrap();
     f.store
         .start_task_attempt(&f.cas, lease, &attempt, &f.authority)
@@ -561,28 +563,37 @@ fn owned_common_attempt_overrun_can_publish_facts_and_seal_without_new_dispatch(
         )
         .unwrap();
     assert_eq!(f.state().next_sequence, next);
-    let versions = f
+    let records = f
         .store
         .replay(&task_run_id("task-1").unwrap())
         .unwrap()
         .into_iter()
         .filter_map(|event| {
             let transition: TaskTransitionV1 = serde_json::from_value(event.payload).ok()?;
-            if let TaskChangeV1::ExecutionRecorded { record_id } = transition.change {
-                Some(f.cas.get_artifact(&record_id).unwrap().artifact_type)
-            } else {
-                None
-            }
+            let TaskChangeV1::ExecutionRecorded { record_id } = transition.change else {
+                return None;
+            };
+            let frame = f.cas.get_artifact(&record_id).unwrap();
+            Some((
+                frame.artifact_type,
+                frame.payload["kind"].as_str()?.to_string(),
+            ))
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        versions
+    // One closed record type carries every lifecycle kind, owned children included.
+    assert!(
+        records
             .iter()
-            .filter(|kind| kind.as_str() == TASK_EXECUTION_RECORD_V4)
+            .all(|(kind, _)| kind == TASK_EXECUTION_RECORD_V5)
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|(_, kind)| kind.starts_with("owned_child"))
             .count(),
         3
     );
-    assert!(versions.iter().any(|kind| kind == TASK_EXECUTION_RECORD_V3));
+    assert!(records.iter().any(|(_, kind)| kind == "settled"));
 }
 
 #[test]
@@ -937,14 +948,14 @@ fn owned_registration_handoff_preserves_original_attempt_scopes_and_historical_r
 
 #[test]
 fn owned_canonical_receipt_is_fenced_by_parent_seal_but_recorded_selection_replays() {
-    use review_core::task::review_compat::*;
+    use review_core::task::campaign_review::*;
     for receipt_before_seal in [false, true] {
         let mut f = fixture(false, None);
         let mut graph: CompiledTask =
             payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
         let contract = &mut graph.owned_children.get_mut(PARENT).unwrap().contract;
         contract.outputs.get_mut("output").unwrap().artifact_type =
-            review_core::contract::REVIEWER_RESULT_V1.into();
+            review_core::contract::REVIEWER_RESULT_V2.into();
         let mut metadata = contract.outputs["output"].clone();
         metadata.artifact_type = TASK_REVIEW_RESULT_METADATA_V1.into();
         contract.outputs.insert("metadata".into(), metadata);
@@ -1175,7 +1186,7 @@ fn owned_canonical_receipt_is_fenced_by_parent_seal_but_recorded_selection_repla
                 node: "reviewer".into(),
                 outputs: vec![review_core::PortArtifactsV1 {
                     port: "out".into(),
-                    artifact_type: review_core::contract::REVIEWER_RESULT_V1.into(),
+                    artifact_type: review_core::contract::REVIEWER_RESULT_V2.into(),
                     cardinality: review_core::PortCardinality::One,
                     optional: false,
                     snapshot_affinity: review_core::SnapshotAffinity::Any,

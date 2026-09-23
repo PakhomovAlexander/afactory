@@ -15,48 +15,43 @@ use std::path::{Path, PathBuf};
 use review_store::Cas;
 
 use crate::manifest::{
-    Entry, EntryKind, Manifest, PathEncoding, decode_path, digest_bytes, digest_reader_with_buffer,
-    encode_path_for,
+    Entry, EntryKind, Manifest, digest_bytes, digest_reader_with_buffer, encode_path,
 };
 use crate::materialize::{
     MaterializeError, checked_relative_path, materialize, refuse_symlink_ancestors,
 };
 
-/// The entries that differ between two manifests. Paths are compared by their decoded bytes,
-/// so two manifests with different path spellings describe the same tree the same way.
+/// The entries that differ between two manifests, matched by path.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ManifestChanges {
+struct ManifestChanges {
     /// Entries of `from` that `to` no longer has, as indexes into `from.entries`.
-    pub deleted: Vec<usize>,
+    deleted: Vec<usize>,
     /// Entries present in both with a different kind, content or size, as indexes into
     /// `to.entries`.
-    pub modified: Vec<usize>,
+    modified: Vec<usize>,
     /// Entries `from` did not have, as indexes into `to.entries`.
-    pub added: Vec<usize>,
+    added: Vec<usize>,
 }
 
 impl ManifestChanges {
-    pub fn is_empty(&self) -> bool {
-        self.deleted.is_empty() && self.modified.is_empty() && self.added.is_empty()
-    }
-
     /// Distinct paths written or removed when the changes are applied.
-    pub fn touched(&self) -> u64 {
+    fn touched(&self) -> u64 {
         (self.deleted.len() + self.modified.len() + self.added.len()) as u64
     }
 }
 
-/// The difference between two manifests, by decoded path bytes.
-pub fn manifest_changes(from: &Manifest, to: &Manifest) -> ManifestChanges {
-    let mut previous: BTreeMap<Vec<u8>, usize> = from
+/// The difference between two manifests. Both spell every path canonically, so equal paths are
+/// equal raw bytes.
+fn manifest_changes(from: &Manifest, to: &Manifest) -> ManifestChanges {
+    let mut previous: BTreeMap<&str, usize> = from
         .entries
         .iter()
         .enumerate()
-        .map(|(index, entry)| (decode_path(&entry.path), index))
+        .map(|(index, entry)| (entry.path.as_str(), index))
         .collect();
     let mut changes = ManifestChanges::default();
     for (index, entry) in to.entries.iter().enumerate() {
-        match previous.remove(&decode_path(&entry.path)) {
+        match previous.remove(entry.path.as_str()) {
             None => changes.added.push(index),
             Some(before) => {
                 let before = &from.entries[before];
@@ -98,7 +93,7 @@ pub fn apply_tree_diff(
         let decoded: Vec<PathBuf> = manifest
             .entries
             .iter()
-            .map(|entry| checked_relative_path(&entry.path, manifest.path_encoding))
+            .map(|entry| checked_relative_path(&entry.path))
             .collect::<Result<_, _>>()?;
         refuse_symlink_ancestors(manifest, &decoded)?;
     }
@@ -112,16 +107,11 @@ pub fn apply_tree_diff(
     let removals = changes
         .deleted
         .iter()
-        .map(|index| (&from.entries[*index], from.path_encoding))
-        .chain(
-            changes
-                .modified
-                .iter()
-                .map(|index| (&to.entries[*index], to.path_encoding)),
-        );
+        .map(|index| &from.entries[*index])
+        .chain(changes.modified.iter().map(|index| &to.entries[*index]));
     let mut parents: BTreeSet<PathBuf> = BTreeSet::new();
-    for (entry, encoding) in removals {
-        let relative = checked_relative_path(&entry.path, encoding)?;
+    for entry in removals {
+        let relative = checked_relative_path(&entry.path)?;
         remove_entry(root, &relative, &entry.path)?;
         let mut ancestor = relative.parent();
         while let Some(directory) = ancestor {
@@ -145,7 +135,7 @@ pub fn apply_tree_diff(
         .map(|index| to.entries[*index].clone())
         .collect();
     if !written.is_empty() {
-        let subset = Manifest::new_with_encoding(written, to.path_encoding)
+        let subset = Manifest::new(written)
             .map_err(|error| MaterializeError::Manifest(error.to_string()))?;
         materialize(&subset, cas, root)?;
     }
@@ -156,7 +146,6 @@ pub fn apply_tree_diff(
 /// root and every parent component are opened descriptor-relative with `O_NOFOLLOW` and must
 /// be real directories, and the entry itself is unlinked relative to the last of them. A parent
 /// that is a symlink, wherever it points, refuses the rebase instead of reaching through it.
-#[cfg(unix)]
 fn remove_entry(root: &Path, relative: &Path, encoded: &str) -> Result<(), MaterializeError> {
     use nix::fcntl::AtFlags;
     use nix::sys::stat::{SFlag, fstatat};
@@ -181,7 +170,6 @@ fn remove_entry(root: &Path, relative: &Path, encoded: &str) -> Result<(), Mater
 /// Remove an emptied directory of the tree being re-based, relative to its no-follow parent.
 /// Best effort: a directory that still holds entries, or a parent that is no longer a real
 /// directory, leaves it in place for the verification scan to judge.
-#[cfg(unix)]
 fn prune_directory(root: &Path, relative: &Path) {
     use nix::unistd::{UnlinkatFlags, unlinkat};
 
@@ -192,7 +180,6 @@ fn prune_directory(root: &Path, relative: &Path) {
 
 /// Open every parent component of `relative` below `root` with `O_NOFOLLOW | O_DIRECTORY`,
 /// returning the last directory and the entry's own name.
-#[cfg(unix)]
 fn open_parent_no_follow<'a>(
     root: &Path,
     relative: &'a Path,
@@ -221,34 +208,10 @@ fn open_parent_no_follow<'a>(
     Ok((directory, name))
 }
 
-#[cfg(not(unix))]
-fn remove_entry(root: &Path, relative: &Path, encoded: &str) -> Result<(), MaterializeError> {
-    let target = root.join(relative);
-    match fs::symlink_metadata(&target) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-            Err(MaterializeError::Manifest(format!(
-                "entry `{encoded}` is a directory in the tree being re-based"
-            )))
-        }
-        Ok(_) => fs::remove_file(&target).map_err(MaterializeError::Io),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(MaterializeError::Io(error)),
-    }
-}
-
-#[cfg(not(unix))]
-fn prune_directory(root: &Path, relative: &Path) {
-    let _ = fs::remove_dir(root.join(relative));
-}
-
-/// Read the tree at `root` back into a manifest with the given path spelling, hashing every
-/// regular file and symlink target. Directories contribute nothing: an empty directory is
-/// invisible to a manifest exactly as it is to a capture. Anything that is neither a regular
-/// file, a directory nor a symlink is an error.
-pub fn scan_tree(
-    root: impl AsRef<Path>,
-    path_encoding: PathEncoding,
-) -> Result<Manifest, std::io::Error> {
+/// Read the tree at `root` back into a manifest, hashing every regular file and symlink target.
+/// Directories contribute nothing: an empty directory is invisible to a manifest exactly as it is
+/// to a capture. Anything that is neither a regular file, a directory nor a symlink is an error.
+pub fn scan_tree(root: impl AsRef<Path>) -> Result<Manifest, std::io::Error> {
     let root = root.as_ref();
     let mut level = vec![root.to_path_buf()];
     let mut found: Vec<(PathBuf, EntryKind)> = Vec::new();
@@ -276,14 +239,14 @@ pub fn scan_tree(
                 digest_reader_with_buffer(fs::File::open(&path)?, buffer.as_mut_slice())?
             };
             Ok::<_, std::io::Error>(Entry {
-                path: encode_path_for(path_encoding, &path_bytes(relative)),
+                path: encode_path(&path_bytes(relative)),
                 kind,
                 content,
                 size,
             })
         },
     )?;
-    Manifest::new_with_encoding(entries, path_encoding)
+    Manifest::new(entries)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
@@ -321,26 +284,14 @@ fn scan_directory(directory: &Path) -> Result<DirectoryScan, std::io::Error> {
     Ok(scan)
 }
 
-#[cfg(unix)]
 fn is_executable(metadata: &fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     metadata.permissions().mode() & 0o111 != 0
 }
 
-#[cfg(not(unix))]
-fn is_executable(_metadata: &fs::Metadata) -> bool {
-    false
-}
-
-#[cfg(unix)]
 fn path_bytes(path: &Path) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt;
     path.as_os_str().as_bytes().to_vec()
-}
-
-#[cfg(not(unix))]
-fn path_bytes(path: &Path) -> Vec<u8> {
-    path.to_string_lossy().into_owned().into_bytes()
 }
 
 #[cfg(test)]
@@ -427,10 +378,10 @@ mod tests {
         let fresh = dir.path().join("fresh");
         materialize(&to, &cas, &fresh).unwrap();
 
-        let scanned = scan_tree(&rebased, to.path_encoding).unwrap();
+        let scanned = scan_tree(&rebased).unwrap();
         assert_eq!(scanned, to);
         assert_eq!(scanned.content_digest(), to.content_digest());
-        assert_eq!(scan_tree(&fresh, to.path_encoding).unwrap(), to);
+        assert_eq!(scan_tree(&fresh).unwrap(), to);
         assert_eq!(tree_bytes(&rebased), tree_bytes(&fresh));
         assert!(
             !rebased.join("gone").exists(),
@@ -446,7 +397,7 @@ mod tests {
         let root = dir.path().join("tree");
         materialize(&from, &cas, &root).unwrap();
         let before = tree_bytes(&root);
-        assert!(manifest_changes(&from, &from).is_empty());
+        assert_eq!(manifest_changes(&from, &from), ManifestChanges::default());
         assert_eq!(apply_tree_diff(&from, &from, &cas, &root).unwrap(), 0);
         assert_eq!(tree_bytes(&root), before);
     }
@@ -473,17 +424,16 @@ mod tests {
         let root = dir.path().join("tree");
         materialize(&to, &cas, &root).unwrap();
         assert_eq!(
-            scan_tree(&root, to.path_encoding).unwrap().content_digest(),
+            scan_tree(&root).unwrap().content_digest(),
             to.content_digest()
         );
         fs::write(root.join("new/stray.o"), b"left behind").unwrap();
         assert_ne!(
-            scan_tree(&root, to.path_encoding).unwrap().content_digest(),
+            scan_tree(&root).unwrap().content_digest(),
             to.content_digest()
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_drifted_symlinked_parent_cannot_delete_outside_the_tree() {
         let directory = tempfile::tempdir().unwrap();
@@ -523,7 +473,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_symlink_root_is_refused_before_anything_is_touched() {
         let dir = tempfile::tempdir().unwrap();

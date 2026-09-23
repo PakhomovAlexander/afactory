@@ -11,9 +11,8 @@ pub enum Severity {
 }
 
 impl Severity {
-    /// Rank, ordered so a re-report may only raise it. The legacy harness ranked
-    /// blocker/major/other as 3/2/1 and treated anything unknown as the floor; this enum removes
-    /// the "unknown ranks as minor" hole that let an out-of-enum severity slip under a gate.
+    /// Rank, ordered so a re-report may only raise it. The enum is closed, so an out-of-enum
+    /// severity is refused at parse time instead of ranking as minor and slipping under a gate.
     pub fn rank(self) -> u8 {
         match self {
             Severity::Minor => 1,
@@ -56,14 +55,12 @@ impl Location {
 #[serde(rename_all = "snake_case")]
 pub enum RelationKind {
     Corroborates,
-    Disputes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClaimTargetKind {
     Finding,
-    Report,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,9 +70,10 @@ pub struct RelationTarget {
     pub id: String,
 }
 
-/// An explicit relation to a Finding in the attempt's input FindingSet, or to a Report from the
-/// same selected attempt. Only explicit relations — or an exact occurrence-key match — may
-/// attach a report; titles and fuzzy fingerprints never prove claim identity.
+/// An explicit corroboration of a Finding in the attempt's input FindingSet. Only explicit
+/// relations — or an exact occurrence-key match — may attach a report; titles and fuzzy
+/// fingerprints never prove claim identity. A reviewer disputes a prior Finding through its
+/// disposition, never through a relation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Relation {
@@ -111,31 +109,8 @@ pub struct FindingReport {
 }
 
 impl FindingReport {
-    /// True when the claim is about the change as a whole rather than any path.
-    pub fn is_change_wide(&self) -> bool {
-        self.locations.is_empty()
-    }
-
     /// Enforce the language-neutral `FindingReport@1` semantic contract.
     pub fn validate(&self) -> Result<(), String> {
-        self.validate_claim_fields()?;
-        if self.locations.iter().any(|location| {
-            !crate::is_valid_repo_path(&location.path)
-                || location.line == Some(0)
-                || location.end_line == Some(0)
-        }) {
-            return Err(
-                "FindingReport@1 locations must use canonical repository-relative paths and positive lines"
-                    .into(),
-            );
-        }
-        Ok(())
-    }
-
-    /// Validate every claim field except location authority. Frozen projections use this before
-    /// handling noncanonical historical paths as readable claims with unknown Scope; live
-    /// admission must continue to call [`Self::validate`].
-    pub fn validate_claim_fields(&self) -> Result<(), String> {
         if self.title.trim().is_empty() || self.body.trim().is_empty() || self.fix.trim().is_empty()
         {
             return Err("FindingReport@1 title, body, and fix must be non-empty".into());
@@ -157,6 +132,17 @@ impl FindingReport {
                 .any(|relation| relation.target.id.is_empty())
         {
             return Err("FindingReport@1 claim identifiers must be non-empty".into());
+        }
+        if let Some(location) = self.locations.iter().find(|location| {
+            !crate::is_valid_repo_path(&location.path)
+                || location.line == Some(0)
+                || location.end_line == Some(0)
+        }) {
+            return Err(format!(
+                "FindingReport@1 locations must use canonical repository-relative paths and \
+                 positive lines, got `{}`",
+                location.path
+            ));
         }
         Ok(())
     }

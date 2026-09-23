@@ -1,7 +1,10 @@
 # ADR-0110: Capture Claude sessions in two phases and confirm a clean warm Round cold
 
 Date: 2026-09-18
-Status: Accepted
+Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
+Kernel reviewer path that ran the session protocol and dispatched Cold Closeout, with the
+Campaign `Attempt*@1` records a confirmation wrote. Until the Task host runs them, no executor
+captures a session or dispatches a confirmation.
 
 Implements package P4 of [`docs/design/worker-warm-layers.md`](../design/worker-warm-layers.md) on
 top of [ADR-0107](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md) (the Warm Set
@@ -104,9 +107,9 @@ Round that closes clean on warm results alone is worth less than it looks.
   its authentication directory is the directory a kernel-owned session home would replace.
 - **Cold Closeout is compiled, conditional and protected.** `[convergence] cold_closeout` names,
   at load time, the exact warm reviewers that owe a cold confirmation; the load refuses a policy
-  naming no warm reviewer, a brokered reviewer whose confirmation would need a Broker Handle of
-  its own, and a budget that cannot admit the extra Attempt beside the Round's Workers. Each named
-  node reserves its confirmation *before its warm Attempt is reserved*, which is what protects it:
+  that names no warm reviewer, and a budget that cannot admit the extra Attempt beside the
+  Round's Workers. Each named node reserves its confirmation *before its warm Attempt is
+  reserved*, which is what protects it:
   the node's own retries meet a cap that is already holding it. It carries no warm layer of any
   kind, makes no Proposal and leaves no Notes.
 - **The Round decides, not one reviewer.** A confirmation is dispatched at the Ledger, where every

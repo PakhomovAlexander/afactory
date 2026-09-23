@@ -86,7 +86,7 @@ fn git(repo: &Path, home: &Path, args: &[&str]) -> Vec<u8> {
 }
 
 #[test]
-fn recorded_closed_round_loads_pinned_authority_without_capture_or_advancing_light_campaign() {
+fn recorded_round_loads_pinned_authority_without_capture_or_advancing_light_campaign() {
     let directory = tempfile::tempdir().unwrap();
     let repo_path = directory.path().join("repo");
     let home = directory.path().join("home");
@@ -96,23 +96,31 @@ fn recorded_closed_round_loads_pinned_authority_without_capture_or_advancing_lig
 [subject]
 kind = "whole-tree"
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{name="findings",type="review.kernel/FindingSet@1",cardinality="one",optional=true,snapshot_affinity="any"}]
+[[nodes]]
 id = "reviewer"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{name="prior_findings",type="review.kernel/FindingSet@1",cardinality="one",optional=true,snapshot_affinity="any"}]
+outputs = [{name="result",type="review.kernel/ReviewerResult@2",cardinality="one",optional=false,snapshot_affinity="same_subject"}]
 runner = {program="/bin/true"}
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["reviewer"]
-outputs = ["reports"]
+inputs = [{name="reviewer",type="review.kernel/ReviewerResult@2",cardinality="one",optional=false,snapshot_affinity="same_subject"}]
+outputs = [{name="reports",type="review.kernel/ReportSet@1",cardinality="one",optional=false,snapshot_affinity="any"}]
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
+inputs = [{name="reports",type="review.kernel/ReportSet@1",cardinality="one",optional=false,snapshot_affinity="any"}]
 outputs = [
   {name="findings",type="review.kernel/FindingSet@1",cardinality="one",optional=false,snapshot_affinity="same_subject"},
   {name="demands",type="review.kernel/DemandSet@1",cardinality="one",optional=false,snapshot_affinity="same_subject"}
 ]
+[[edges]]
+from={node="generation",port="findings"}
+to={node="reviewer",port="prior_findings"}
 [[edges]]
 from={node="reviewer",port="result"}
 to={node="gather",port="reviewer"}
@@ -155,14 +163,12 @@ to={node="ledger",port="reports"}
         policy_rev: Some("HEAD".into()),
         base: None,
         candidate: None,
-        authority: None,
         uncommitted: false,
         restart_round: false,
-        mode: CampaignMode::Light,
+        mode: crate::CampaignMode::Light,
         timeout: None,
         git_timeout: None,
         provider_bindings: BTreeMap::new(),
-        provider_resumes: BTreeMap::new(),
         provider_admission: None,
         json: true,
         node: None,
@@ -173,35 +179,6 @@ to={node="ledger",port="reports"}
     let repo = Repo::open(&repo_path, &home);
     let first = prepare(&options, &cas, &mut store, &repo).unwrap();
     let started = store.latest_round_started(&first.run_id).unwrap().unwrap();
-    // This historical loader case closes through the existing exhausted-before-work report
-    // contract. No Worker or Provider runs, and no synthetic successful result is published.
-    store
-        .append(
-            &first.run_id,
-            &cas,
-            NewEvent::new(
-                EventType::RunReportV3,
-                serde_json::to_value(review_core::RunReportPayloadV3 {
-                    outcomes: ["reviewer", "gather", "ledger"]
-                        .into_iter()
-                        .map(|node| review_core::RunNodeReportV2 {
-                            node: node.into(),
-                            outcome: review_core::RunNodeOutcomeV2::Failed {
-                                error: "resource limit reached before dispatch".into(),
-                            },
-                        })
-                        .collect(),
-                    blocked_gates: vec![],
-                    verdict: review_core::RunVerdictV3::Fail {
-                        reason: review_core::RunFailureReasonV3::Exhausted,
-                    },
-                    spent_tokens: Some(0),
-                })
-                .unwrap(),
-            )
-            .caused_by(&started.event_id),
-        )
-        .unwrap();
     let before = store.replay(&first.run_id).unwrap();
     std::fs::write(
         repo_path.join(".af/pipelines/review.toml"),
@@ -213,9 +190,11 @@ to={node="ledger",port="reports"}
     let index = std::fs::read(repo_path.join(".git/index")).unwrap();
     let reader = EventStore::open_read_only(&path).unwrap();
     let recorded = prepare_recorded_round(&options, &cas, &reader, &started.event_id).unwrap();
-    assert_eq!(recorded.snapshot, first.snapshot);
+    assert_eq!(
+        recorded.authority.head_snapshot_id(),
+        first.authority.head_snapshot_id()
+    );
     assert_eq!(recorded.authority.round_event_id(), started.event_id);
-    assert_eq!(recorded.ledger_projection.ledger().round, 1);
     assert_eq!(reader.replay(&first.run_id).unwrap(), before);
     assert_eq!(git(&repo_path, &home, &["rev-parse", "HEAD"]), head);
     assert_eq!(std::fs::read(repo_path.join(".git/index")).unwrap(), index);
@@ -223,12 +202,6 @@ to={node="ledger",port="reports"}
         std::fs::read_to_string(repo_path.join("source.txt")).unwrap(),
         "uncommitted replacement"
     );
-    let error = match prepare(&options, &cas, &mut store, &repo) {
-        Ok(_) => panic!("legacy Light preparation must retain its cap"),
-        Err(error) => error,
-    };
-    assert!(error.contains("max") || error.contains("light"), "{error}");
-    assert_eq!(store.replay(&first.run_id).unwrap(), before);
     let mut wrong = options;
     wrong.focus = Some("changed focus".into());
     assert!(prepare_recorded_round(&wrong, &cas, &reader, &started.event_id).is_err());

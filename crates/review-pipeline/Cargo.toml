@@ -9,12 +9,10 @@ license.workspace = true
 
 [dependencies]
 review-attempt = { path = "../review-attempt" }
-review-broker = { path = "../review-broker" }
 review-check = { path = "../review-check" }
 review-config = { path = "../review-config" }
 review-core = { path = "../review-core" }
 review-graph = { path = "../review-graph" }
-review-parallel = { path = "../review-parallel" }
 review-runner = { path = "../review-runner" }
 review-sandbox = { path = "../review-sandbox" }
 review-source-git = { path = "../review-source-git" }
@@ -26,6 +24,10 @@ toml = "1.1.6"
 toml_edit = "0.25.15"
 
 [dev-dependencies]
+# One test pins that `af review render`, which composes through the adapters, shows the
+# instructions the Task host dispatches.
+review-runner-claude = { path = "../review-runner-claude" }
+review-runner-codex = { path = "../review-runner-codex" }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 jsonschema = { version = "0.56.0", default-features = false }
 

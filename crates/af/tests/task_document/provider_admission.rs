@@ -14,7 +14,9 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new(version: u8, actual: u64, tokens: u64) -> Self {
+    /// `explicit` declares a wider catalog admission cost; otherwise the catalog omits it and
+    /// the Task gets the fixed default allowance.
+    fn new(explicit: bool, actual: u64, tokens: u64) -> Self {
         let root = tempfile::tempdir().unwrap();
         let (repo, state) = setup(root.path());
         let home = root.path().join("home");
@@ -40,6 +42,8 @@ else:
  message=json.dumps({'schema':'af.worker-reply/1','outputs':{'draft':[{'schema':'af.document-draft/1','title':'Release notes','sections':[{'heading':'Summary','body':'\n\n'.join(s[k]['text'] for k in sorted(s))}],'citations':sorted(s)}]}})
  usage={'input_tokens':3,'cached_input_tokens':0,'output_tokens':2,'reasoning_output_tokens':0,'cache_write_input_tokens':0}
 with open(home+'/calls','a') as f: f.write(kind+'\n')
+if '-o' in sys.argv:
+ with open(sys.argv[sys.argv.index('-o')+1],'w') as f: f.write(message)
 print(json.dumps({'type':'thread.started','thread_id':'synthetic-'+kind}))
 print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':message}}))
 print(json.dumps({'type':'turn.completed','usage':usage}))
@@ -63,8 +67,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
         let catalog_path = repo.join(".af/task-catalog.toml");
         let mut catalog: Value =
             toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
-        catalog["schema"] = json!(format!("af.task-catalog/{version}"));
-        if version == 2 {
+        if explicit {
             catalog["provider_admission"] = json!({"tokens":32768,"wall_ms":45000});
         }
         catalog["providers"] = json!({"builtin/document-author":"codex-personal"});
@@ -143,20 +146,21 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
 
 #[test]
 fn captured_admission_cost_survives_checkout_changes_and_fresh_store_replay() {
-    for (version, actual, accepted) in [
-        (1, 5712, false),
-        (2, 5712, true),
-        (2, 16336, true),
-        (2, 32769, false),
+    for (explicit, actual, accepted) in [
+        (false, 5712, false),
+        (true, 5712, true),
+        (true, 16336, true),
+        (true, 32769, false),
     ] {
-        // V1 deliberately has the same ample total as V2: its own reservation still fences it.
-        let mut f = Fixture::new(version, actual, 49152);
+        // The default allowance deliberately has the same ample Task total as the explicit
+        // one: its own smaller reservation still fences it.
+        let mut f = Fixture::new(explicit, actual, 49152);
         let planned = success(f.cli(&["task", "plan", "--file", "document.json"]));
         assert!(
             !f.home.join("calls").exists(),
             "planning ran the synthetic capability call"
         );
-        let allowance = if version == 1 { 4096 } else { 32768 };
+        let allowance = if explicit { 32768 } else { 4096 };
         assert_eq!(
             planned["graph"]["allowances"]["root.providers.admit0"],
             json!({"tokens_per_attempt":allowance,"wall_ms_per_attempt":45000,"max_attempts":1,"verification_attempts":0})
@@ -165,23 +169,11 @@ fn captured_admission_cost_survives_checkout_changes_and_fresh_store_replay() {
         let authority = cas
             .get_json(planned["plan"]["authority"]["policy_id"].as_str().unwrap())
             .unwrap();
+        assert_eq!(authority["schema"], "af.task-run-authority/2");
         assert_eq!(
-            authority["schema"],
-            format!("af.task-run-authority/{version}")
+            authority["provider_admission"],
+            json!({"tokens":allowance,"wall_ms":45000})
         );
-        if version == 1 {
-            assert!(
-                !authority
-                    .as_object()
-                    .unwrap()
-                    .contains_key("provider_admission")
-            );
-        } else {
-            assert_eq!(
-                authority["provider_admission"],
-                json!({"tokens":32768,"wall_ms":45000})
-            );
-        }
         let captured_bytes = cas.get(authority["catalog_id"].as_str().unwrap()).unwrap();
         assert_eq!(
             captured_bytes,
@@ -189,7 +181,6 @@ fn captured_admission_cost_survives_checkout_changes_and_fresh_store_replay() {
         );
         // Change only the disposable fixture checkout after capture. Run must ignore new policy,
         // Task-file resources and source text, and use the original CAS authority instead.
-        f.catalog["schema"] = json!("af.task-catalog/2");
         f.catalog["provider_admission"] = json!({"tokens":1,"wall_ms":1});
         std::fs::write(
             f.repo.join(".af/task-catalog.toml"),
@@ -280,15 +271,12 @@ fn captured_admission_cost_survives_checkout_changes_and_fresh_store_replay() {
 }
 
 #[test]
-fn v2_catalog_schema_and_cli_refuse_malformed_and_underfunded_admission() {
-    let mut f = Fixture::new(2, 5712, 49151);
+fn catalog_schema_and_cli_refuse_malformed_and_underfunded_admission() {
+    let mut f = Fixture::new(true, 5712, 49151);
     let schema: Value =
         serde_json::from_str(include_str!("../../../../schemas/task-catalog-v2.json")).unwrap();
     let validator = catalog_schema(&schema);
     assert!(validator.is_valid(&f.catalog));
-    let old: Value =
-        serde_json::from_str(include_str!("../../../../schemas/task-catalog-v1.json")).unwrap();
-    assert!(!catalog_schema(&old).is_valid(&f.catalog));
     let out = f.cli(&["task", "plan", "--file", "document.json"]);
     assert!(
         !out.status.success(),
@@ -325,6 +313,7 @@ fn v2_catalog_schema_and_cli_refuse_malformed_and_underfunded_admission() {
     // Rust unit and schema controls. No account or native capability operation is necessary.
     f.catalog["schema"] = json!("af.task-catalog/1");
     f.catalog["provider_admission"] = json!({"tokens":32768,"wall_ms":45000});
+    assert!(!validator.is_valid(&f.catalog));
     std::fs::write(
         f.repo.join(".af/task-catalog.toml"),
         toml::to_string(&f.catalog).unwrap(),
@@ -333,7 +322,11 @@ fn v2_catalog_schema_and_cli_refuse_malformed_and_underfunded_admission() {
     commit(&f.repo);
     let out = f.cli(&["task", "plan", "--file", "document.json"]);
     assert!(!out.status.success());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("V1 forbids provider_admission"));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("requires schema af.task-catalog/2"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(!f.home.join("calls").exists());
 }
 
@@ -349,7 +342,7 @@ fn admission_tokens_and_wall_exceeding_original_task_limits_refuse_paid_dispatch
             "Remaining Task deadline",
         ),
     ] {
-        let mut f = Fixture::new(2, 5712, 49152);
+        let mut f = Fixture::new(true, 5712, 49152);
         f.catalog["provider_admission"] = cost;
         std::fs::write(
             f.repo.join(".af/task-catalog.toml"),

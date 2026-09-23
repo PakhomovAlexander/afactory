@@ -55,18 +55,6 @@ pub enum TaskWorkerRunner {
     Command {
         command: CommandSpec,
     },
-    LegacyTaskCommand {
-        command: CommandSpec,
-        protocol: review_runner::task::legacy::LegacyTaskProtocol,
-        /// Legacy wire data, not a command token reservation. Absence is read-only
-        /// compatibility for packages captured before explicit legacy context existed.
-        #[serde(
-            default,
-            skip_serializing_if = "Option::is_none",
-            deserialize_with = "review_core::task::present_option"
-        )]
-        legacy_budget_tokens: Option<u64>,
-    },
     Model {
         provider_kind: String,
         model: String,
@@ -473,20 +461,7 @@ impl TaskPlanCompiler {
             files,
         };
         // Validate before publishing even an unreachable captured artifact.
-        if matches!(
-            Self::parse_package(&bytes)?,
-            ParsedPackage::Worker(TaskWorkerManifest {
-                runner: TaskWorkerRunner::LegacyTaskCommand {
-                    legacy_budget_tokens: None,
-                    ..
-                },
-                ..
-            })
-        ) {
-            return Err(
-                "New legacy command packages require explicit runner.legacy_budget_tokens".into(),
-            );
-        }
+        Self::parse_package(&bytes)?;
         let (id, _) = cas
             .put_artifact(
                 TASK_PACKAGE_V1,
@@ -606,9 +581,7 @@ impl TaskPlanCompiler {
                     return Err("Worker Attempt wall limit is zero".into());
                 }
                 match &worker.runner {
-                    TaskWorkerRunner::LegacyTaskCommand { legacy_budget_tokens: Some(tokens), .. }
-                        if *tokens > 9_007_199_254_740_991 => return Err("Legacy wire budget exceeds the safe integer range".into()),
-                    TaskWorkerRunner::Command {command} | TaskWorkerRunner::LegacyTaskCommand {command, ..} if command.program.trim().is_empty() || cost.tokens != 0 => return Err("Command Worker requires a program and zero model-token reservation".into()),
+                    TaskWorkerRunner::Command {command} if command.program.trim().is_empty() || cost.tokens != 0 => return Err("Command Worker requires a program and zero model-token reservation".into()),
                     TaskWorkerRunner::Model {provider_kind, model, effort} if !review_core::task::is_name(provider_kind) || model.trim().is_empty() || !review_core::task::is_name(effort) || cost.tokens == 0 => return Err("Model Worker needs explicit Provider/model/effort and token reservation".into()),
                     _ => (),
                 }
@@ -640,10 +613,7 @@ impl TaskPlanCompiler {
             .get(name)
             .ok_or("Worker package is not captured")?;
         match (&worker.runner, &settings.execution) {
-            (
-                TaskWorkerRunner::Command { .. } | TaskWorkerRunner::LegacyTaskCommand { .. },
-                WorkerExecutionV1::Command {},
-            ) => (),
+            (TaskWorkerRunner::Command { .. }, WorkerExecutionV1::Command {}) => (),
             (
                 TaskWorkerRunner::Model {
                     provider_kind: wanted_kind,
@@ -789,22 +759,7 @@ impl TaskPlanCompiler {
                 ))
             })
             .collect::<Result<_, String>>()?;
-        let contract = review_runner::task::WorkerContract::capture(
-            cas,
-            schema("input.schema.json")?,
-            outputs,
-        )?;
-        match &worker.runner {
-            TaskWorkerRunner::LegacyTaskCommand {
-                protocol,
-                legacy_budget_tokens,
-                ..
-            } => match legacy_budget_tokens {
-                Some(tokens) => contract.with_legacy_protocol_and_budget(cas, *protocol, *tokens),
-                None => contract.with_legacy_protocol(cas, *protocol),
-            },
-            _ => Ok(contract),
-        }
+        review_runner::task::WorkerContract::capture(cas, schema("input.schema.json")?, outputs)
     }
     pub fn package_files(&self, name: &str) -> Option<&BTreeMap<String, Vec<u8>>> {
         self.packages.get(name).map(|package| &package.bytes.files)

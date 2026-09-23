@@ -1,6 +1,6 @@
-//! Canonical Review operations and durable domain facts shared by execution frontends.
-//! This state does not construct an Attempt ledger, reserve a budget, invoke a Worker,
-//! schedule Scatter children or fence historical Attempts. Execution owners supply selections.
+//! Canonical Review operations and durable domain facts behind the Task-hosted Review.
+//! This state does not construct an Attempt ledger, reserve a budget, invoke a Worker or
+//! schedule Scatter children. The Task host supplies selections.
 
 use super::*;
 
@@ -37,20 +37,17 @@ pub(super) struct ReviewDomainState<'a> {
     /// The immutable subject. Every node is materialized from this, so they all inspect the
     /// same content by construction rather than by discipline.
     pub(super) snapshot: Manifest,
-    pub(super) subject: review_core::SubjectKind,
-    pub(super) pipeline_version: u32,
     pub(super) authority: RoundAuthority,
     pub(super) checks: Vec<CheckDefinition>,
     pub(super) check_timeout: Duration,
-    /// Absent only for frozen v1/v2 pipeline semantics. V3 resolves this exact Gate binding from
-    /// captured authority before any candidate check executes.
+    /// Absent only for pipeline format v2. V3 resolves this exact Gate binding from captured
+    /// authority before any candidate check executes.
     pub(super) gate_execution: Option<review_config::GateExecutionSpec>,
     /// Optional machine-resolved provider. The CLI normally lets the kernel probe locally;
     /// embedding callers and deterministic boundary tests may bind an already-probed provider.
     pub(super) container_provider: Option<ContainerProvider>,
     /// Machine-local sources resolved by the CLI. Host paths never enter captured pipeline
     /// authority or durable events.
-    pub(super) cache_sources: BTreeMap<CacheKind, CacheSource>,
     pub(super) cache_source_resolver: Option<Arc<CacheSourceResolver>>,
     pub(super) execution_bindings: Mutex<BTreeMap<String, RunExecutionBindingV4>>,
     pub(super) cache_snapshots: Mutex<BTreeMap<(String, RunCacheKindV5), RunCacheSnapshotV5>>,
@@ -71,10 +68,6 @@ pub(super) struct ReviewDomainState<'a> {
     pub(super) dynamic_reviewer_bases: Mutex<BTreeMap<String, String>>,
     /// Gate decisions by gate node. Keyed, so two gates in one pipeline never share a verdict.
     pub(super) gates: Mutex<BTreeMap<String, GateDecision>>,
-    /// The campaign's prior findings, as a CAS artifact every reviewer attempt receives —
-    /// labelled data resolved by the kernel, which is what makes round N+1 a re-examination
-    /// of round N's claims instead of a fresh look that happens to share a repository.
-    pub(super) prior_findings: Option<String>,
     /// Reviewer result and gate events held until their node receipt can publish them as one
     /// batch. Each `(node, seq)` preserves emission order inside that node. Dispatch and terminal
     /// failure events are deliberately not buffered: dispatch must be durable before external
@@ -144,7 +137,7 @@ impl<'a> ReviewDomainState<'a> {
         outputs: &ArtifactMap,
         recorded: Option<&DurableReceipt>,
     ) -> Result<(), String> {
-        validate_generation_outputs(&self.authority, node, outputs, self.pipeline_version)?;
+        validate_generation_outputs(&self.authority, node, outputs)?;
         if let Some(recorded) = recorded {
             let expected = NodeOutputReceiptPayloadV1 {
                 node: node.id.clone(),
@@ -260,7 +253,6 @@ impl<'a> ReviewDomainState<'a> {
         run_id: String,
         snapshot: Manifest,
         subject: review_core::SubjectKind,
-        pipeline_version: u32,
         authority: RoundAuthority,
     ) -> Result<Self, String> {
         if authority.run_id != run_id {
@@ -274,19 +266,15 @@ impl<'a> ReviewDomainState<'a> {
         }
         Ok(Self {
             report_published: Mutex::new(false),
-            prior_findings: Some(authority.prior_finding_set_id.clone()),
             cas,
             store,
             run_id,
             snapshot,
-            subject,
-            pipeline_version,
             authority,
             checks: Vec::new(),
             check_timeout: Duration::from_secs(3600),
             gate_execution: None,
             container_provider: None,
-            cache_sources: BTreeMap::new(),
             cache_source_resolver: None,
             execution_bindings: Mutex::new(BTreeMap::new()),
             cache_snapshots: Mutex::new(BTreeMap::new()),
@@ -315,31 +303,12 @@ impl<'a> ReviewDomainState<'a> {
             session_hosts: Mutex::new(BTreeMap::new()),
         })
     }
-    /// Emit the run's generation state — the campaign's prior findings — as the artifact a
-    /// reviewer receives on its `prior_findings` input edge. In the first round there is no
-    /// prior state, so an empty finding set is emitted; the edge is satisfied either way, and
-    /// nothing about delivery depends on ambient kernel state.
+    /// Emit the run's generation state — the Campaign's exact prior `FindingSet@1`, and a diff
+    /// Subject's Change Set — as the artifacts reviewers receive on their typed input edges. In
+    /// the first round there is no prior reduction, so the optional Finding Set port carries
+    /// nothing; nothing about delivery depends on ambient kernel state.
     pub(super) fn run_generation(&self, node: &Node) -> Result<ArtifactMap, String> {
-        generation_outputs(
-            &self.authority,
-            self.pipeline_version,
-            self.prior_findings.as_deref(),
-            node,
-        )
-    }
-
-    pub(super) fn run_gate(&self, node_id: &str) -> Result<Vec<String>, String> {
-        self.run_gate_before(node_id, None)
-    }
-
-    /// The common Attempt supplies one absolute deadline. Each check consumes its remaining
-    /// time instead of receiving a fresh full timeout after earlier checks and setup.
-    pub(super) fn run_gate_before(
-        &self,
-        node_id: &str,
-        deadline: Option<std::time::Instant>,
-    ) -> Result<Vec<String>, String> {
-        self.run_gate_controlled(node_id, deadline, None, None)
+        generation_outputs(&self.authority, node)
     }
 
     /// `gate_attempt` is the common Task Attempt the Gate runs under, when the Task runtime
@@ -372,7 +341,7 @@ impl<'a> ReviewDomainState<'a> {
         }
         let (sandbox, container, require_unchanged) = match self.gate_execution.as_ref() {
             None => {
-                // Frozen pipeline v1/v2 semantics. Those Campaigns captured no Gate Execution
+                // Pipeline format v2 semantics. Those Campaigns captured no Gate Execution
                 // Binding, so replay retains the old local/read-only behavior exactly.
                 (self.sandbox(Mode::ReadOnly)?, None, true)
             }
@@ -410,7 +379,7 @@ impl<'a> ReviewDomainState<'a> {
                     .map_or(Isolation::None, ContainerProvider::isolation);
                 let admitted = gate_provider_admitted(binding.provider, provided, required);
                 // Record the resolved provider claim before materialization. A broken CAS or
-                // failed clone must still leave RunReport@4 able to explain which binding was
+                // failed clone must still leave RunReport@6 able to explain which binding was
                 // selected and whether its isolation was sufficient.
                 let report = RunExecutionBindingV4 {
                     node: node_id.to_string(),
@@ -467,9 +436,7 @@ impl<'a> ReviewDomainState<'a> {
                 let kind = match requested {
                     review_config::CacheKindSpec::Cargo => CacheKind::Cargo,
                 };
-                let resolved = if let Some(source) = self.cache_sources.get(&kind).cloned() {
-                    Ok(source)
-                } else if let Some(resolver) = self.cache_source_resolver.as_ref() {
+                let resolved = if let Some(resolver) = self.cache_source_resolver.as_ref() {
                     resolver(kind)
                 } else {
                     Err(CacheError::new(
@@ -574,10 +541,8 @@ impl<'a> ReviewDomainState<'a> {
                     .or_default()
                     .push(review_core::task::runtime::TaskCacheObservationV1 {
                         observation_id: cache_observation_id,
-                        layer: review_core::task::runtime::TaskCacheLayerV1::DependencyPreparation,
                         kind: snapshot.kind.name().into(),
                         eligible: true,
-                        result: review_core::task::runtime::TaskCacheResultV1::Prepared,
                         source_digest: snapshot.source_digest.clone(),
                         toolchain_id: None,
                         bytes_available: snapshot.bytes,
@@ -720,7 +685,7 @@ impl<'a> ReviewDomainState<'a> {
         }
         let sealed = sandbox.seal().map_err(|e| e.to_string())?;
         if require_unchanged && !sealed.unchanged() {
-            // Frozen v1/v2 behavior: those Gates promised read-only execution. V3 deliberately
+            // Format v2 behavior: those Gates promised read-only execution. V3 deliberately
             // permits writes in this one disposable clone; reviewer clones still start from the
             // pristine template, so Gate mutations cannot become Subject content.
             let paths = sealed.mutations.paths();
@@ -851,89 +816,70 @@ impl<'a> ReviewDomainState<'a> {
         inputs: &ArtifactMap,
     ) -> Result<Vec<String>, String> {
         self.flush_reviewer_events()?;
-        if self.authority.finding_identity_policy == review_core::CANONICAL_FINDING_IDENTITY_POLICY
-        {
-            let sources = self.input_bindings.get(&node.id).ok_or_else(|| {
-                format!("canonical gather `{}` has no pinned input graph", node.id)
-            })?;
-            let selections = self
-                .reviewer_selections
-                .lock()
-                .expect("reviewer selections");
-            let node_outputs = self.node_outputs.lock().expect("node outputs");
-            let mut manifest: BTreeMap<String, Vec<String>> = BTreeMap::new();
-            for (port, artifacts) in inputs {
-                let upstream = sources.get(port).map(Vec::as_slice).unwrap_or(&[]);
-                let mut remaining = artifacts.clone();
-                for (source, source_port, kind) in upstream {
-                    let produced = node_outputs
-                        .get(source)
-                        .and_then(|outputs| outputs.get(source_port))
-                        .ok_or_else(|| {
-                            format!(
-                                "canonical gather `{}.{port}` has no durable output for pinned source `{source}.{source_port}`",
-                                node.id
-                            )
-                        })?;
-                    if *kind == NodeKind::Reviewer {
-                        let selected = selections.get(source).ok_or_else(|| {
-                            format!(
-                                "canonical gather `{}.{port}` received from `{source}` without a selected reviewer Attempt",
-                                node.id
-                            )
-                        })?;
-                        if produced.as_slice() != [selected.result_artifact.as_str()] {
-                            return Err(format!(
-                                "canonical gather `{}.{port}` input from `{source}` disagrees with its selected reviewer Attempt",
-                                node.id
-                            ));
-                        }
-                    }
-                    for artifact in produced {
-                        let Some(index) =
-                            remaining.iter().position(|delivered| delivered == artifact)
-                        else {
-                            return Err(format!(
-                                "canonical gather `{}.{port}` input from `{source}.{source_port}` disagrees with its durable output",
-                                node.id
-                            ));
-                        };
-                        manifest
-                            .entry(source.clone())
-                            .or_default()
-                            .push(remaining.remove(index));
+        let sources = self
+            .input_bindings
+            .get(&node.id)
+            .ok_or_else(|| format!("canonical gather `{}` has no pinned input graph", node.id))?;
+        let selections = self
+            .reviewer_selections
+            .lock()
+            .expect("reviewer selections");
+        let node_outputs = self.node_outputs.lock().expect("node outputs");
+        let mut manifest: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (port, artifacts) in inputs {
+            let upstream = sources.get(port).map(Vec::as_slice).unwrap_or(&[]);
+            let mut remaining = artifacts.clone();
+            for (source, source_port, kind) in upstream {
+                let produced = node_outputs
+                    .get(source)
+                    .and_then(|outputs| outputs.get(source_port))
+                    .ok_or_else(|| {
+                        format!(
+                            "canonical gather `{}.{port}` has no durable output for pinned source `{source}.{source_port}`",
+                            node.id
+                        )
+                    })?;
+                if *kind == NodeKind::Reviewer {
+                    let selected = selections.get(source).ok_or_else(|| {
+                        format!(
+                            "canonical gather `{}.{port}` received from `{source}` without a selected reviewer Attempt",
+                            node.id
+                        )
+                    })?;
+                    if produced.as_slice() != [selected.result_artifact.as_str()] {
+                        return Err(format!(
+                            "canonical gather `{}.{port}` input from `{source}` disagrees with its selected reviewer Attempt",
+                            node.id
+                        ));
                     }
                 }
-                if !remaining.is_empty() {
-                    return Err(format!(
-                        "canonical gather `{}.{port}` has {} artifacts without pinned upstream provenance",
-                        node.id,
-                        remaining.len()
-                    ));
+                for artifact in produced {
+                    let Some(index) = remaining.iter().position(|delivered| delivered == artifact)
+                    else {
+                        return Err(format!(
+                            "canonical gather `{}.{port}` input from `{source}.{source_port}` disagrees with its durable output",
+                            node.id
+                        ));
+                    };
+                    manifest
+                        .entry(source.clone())
+                        .or_default()
+                        .push(remaining.remove(index));
                 }
             }
-            let artifact = self
-                .cas
-                .put_json(&serde_json::to_value(manifest).map_err(|error| error.to_string())?)
-                .map_err(|error| error.to_string())?;
-            return Ok(vec![artifact]);
+            if !remaining.is_empty() {
+                return Err(format!(
+                    "canonical gather `{}.{port}` has {} artifacts without pinned upstream provenance",
+                    node.id,
+                    remaining.len()
+                ));
+            }
         }
         let artifact = self
             .cas
-            .put_json(&serde_json::json!(inputs))
-            .map_err(|e| e.to_string())?;
+            .put_json(&serde_json::to_value(manifest).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
         Ok(vec![artifact])
-    }
-
-    pub(super) fn run_ledger(
-        &self,
-        node: &Node,
-        inputs: &ArtifactMap,
-    ) -> Result<ArtifactMap, String> {
-        let outputs = self.reduce_ledger(node, inputs, false)?;
-        // Frozen projection retains only the original declared ports.
-        drop(outputs.canonical);
-        Ok(outputs.original)
     }
 
     /// One Cold Closeout result, ready to fold beside the warm result it confirms.
@@ -944,11 +890,11 @@ impl<'a> ReviewDomainState<'a> {
     /// record still says the Round has no cold confirmation.
     fn cold_closeout_results(
         &self,
-        results: &[(String, String, ReviewerResultContract, LegacyStageOutput)],
+        results: &[(String, String, ReviewerStageOutput)],
     ) -> Result<Vec<FoldedColdCloseout>, String> {
         let delivered: BTreeSet<(&str, &str)> = results
             .iter()
-            .map(|(node, id, _, _)| (node.as_str(), id.as_str()))
+            .map(|(node, id, _)| (node.as_str(), id.as_str()))
             .collect();
         if delivered.is_empty() {
             return Ok(Vec::new());
@@ -1005,20 +951,16 @@ impl<'a> ReviewDomainState<'a> {
         &self,
         node: &Node,
         inputs: &ArtifactMap,
-        retain_companions: bool,
     ) -> Result<ReviewLedgerOutputs, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
-        let canonical = self.authority.finding_identity_policy
-            == review_core::CANONICAL_FINDING_IDENTITY_POLICY;
-        let mut results: Vec<(String, String, ReviewerResultContract, LegacyStageOutput)> =
-            Vec::new();
+        let mut results: Vec<(String, String, ReviewerStageOutput)> = Vec::new();
         let mut dynamic_sets: Vec<(String, String, SliceSetV1, ShardSetV1)> = Vec::new();
         let mut direct_sources_used = BTreeSet::new();
         let mut load = |node: &str, id: &str, value: serde_json::Value| -> Result<(), String> {
-            let (contract, output) =
+            let output =
                 reviewer_stage_output(value).map_err(|error| format!("artifact {id}: {error}"))?;
-            results.push((node.to_string(), id.to_string(), contract, output));
+            results.push((node.to_string(), id.to_string(), output));
             Ok(())
         };
         for (input_port, artifacts) in inputs {
@@ -1093,38 +1035,41 @@ impl<'a> ReviewDomainState<'a> {
                     dynamic_sets.push((scatter_node, input.clone(), slice_set, shard_set));
                     continue;
                 }
-                if value.get("verdict").is_some() && value.get("reports").is_some() {
-                    let source = if canonical {
-                        let upstream = self
-                            .input_bindings
-                            .get(&node.id)
-                            .and_then(|ports| ports.get(input_port))
-                            .ok_or_else(|| {
-                                format!(
-                                    "canonical ledger `{}.{input_port}` has no pinned input graph",
-                                    node.id
-                                )
-                            })?;
-                        let selections = self
-                            .reviewer_selections
-                            .lock()
-                            .expect("reviewer selections");
-                        let source = upstream.iter().find(|(source, _, kind)| {
-                            *kind == NodeKind::Reviewer
-                                && !direct_sources_used.contains(source)
-                                && selections
-                                    .get(source)
-                                    .is_some_and(|selection| selection.result_artifact == *input)
-                        });
-                        source.map(|(source, _, _)| source.clone()).ok_or_else(|| {
+                // A gather manifest is keyed by reviewer node, so any of the three
+                // ReviewerResult@2 keys means a direct result. A partial result then reaches the
+                // ReviewerResult@2 validator and is refused, instead of being read as a manifest
+                // whose empty arrays load nothing.
+                if ["reports", "benchmark_demands", "dispositions"]
+                    .iter()
+                    .any(|key| value.get(key).is_some())
+                {
+                    let upstream = self
+                        .input_bindings
+                        .get(&node.id)
+                        .and_then(|ports| ports.get(input_port))
+                        .ok_or_else(|| {
                             format!(
-                                "canonical ledger `{}.{input_port}` cannot bind delivered result {input} to its pinned upstream reviewers",
+                                "canonical ledger `{}.{input_port}` has no pinned input graph",
                                 node.id
                             )
-                        })?
-                    } else {
-                        input_port.clone()
-                    };
+                        })?;
+                    let selections = self
+                        .reviewer_selections
+                        .lock()
+                        .expect("reviewer selections");
+                    let selected = upstream.iter().find(|(source, _, kind)| {
+                        *kind == NodeKind::Reviewer
+                            && !direct_sources_used.contains(source)
+                            && selections
+                                .get(source)
+                                .is_some_and(|selection| selection.result_artifact == *input)
+                    });
+                    let source = selected.map(|(source, _, _)| source.clone()).ok_or_else(|| {
+                        format!(
+                            "canonical ledger `{}.{input_port}` cannot bind delivered result {input} to its pinned upstream reviewers",
+                            node.id
+                        )
+                    })?;
                     direct_sources_used.insert(source.clone());
                     load(&source, input, value)?;
                     continue;
@@ -1144,34 +1089,6 @@ impl<'a> ReviewDomainState<'a> {
                             }
                         }
                     }
-                    // Compatibility for gather manifests emitted before source-labelled maps.
-                    serde_json::Value::Array(ids) => {
-                        for id in &ids {
-                            let id = id
-                                .as_str()
-                                .ok_or_else(|| format!("gather manifest {input} holds a non-id"))?;
-                            if canonical {
-                                let value = self.cas.get_json(id).map_err(|e| e.to_string())?;
-                                load(input_port, id, value)?;
-                                continue;
-                            }
-                            let selected: Vec<String> = self
-                                .reviewer_selections
-                                .lock()
-                                .expect("reviewer selections")
-                                .iter()
-                                .filter(|(_, selection)| selection.result_artifact == id)
-                                .map(|(node, _)| node.clone())
-                                .collect();
-                            if selected.len() != 1 {
-                                return Err(format!(
-                                    "legacy gather manifest {input} cannot uniquely identify artifact {id}"
-                                ));
-                            }
-                            let value = self.cas.get_json(id).map_err(|e| e.to_string())?;
-                            load(&selected[0], id, value)?;
-                        }
-                    }
                     _ => {
                         return Err(format!(
                             "artifact {input} is neither a supported ReviewerResult nor a gather manifest"
@@ -1180,13 +1097,15 @@ impl<'a> ReviewDomainState<'a> {
                 }
             }
         }
-        if canonical {
+        // Label each delivered copy of a selected result with the node whose Attempt selected
+        // it. The selection lock is released before the Attempt bindings below take it again.
+        {
             let selections = self
                 .reviewer_selections
                 .lock()
                 .expect("reviewer selections");
             let mut result_indices: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-            for (index, (_, result_id, _, _)) in results.iter().enumerate() {
+            for (index, (_, result_id, _)) in results.iter().enumerate() {
                 result_indices
                     .entry(result_id.clone())
                     .or_default()
@@ -1244,24 +1163,19 @@ impl<'a> ReviewDomainState<'a> {
         // would otherwise be mistaken for it.
         let mut closeout_attempts: BTreeMap<String, (String, String)> = BTreeMap::new();
         for closeout in self.cold_closeout_results(&results)? {
-            let (contract, output) = reviewer_stage_output(closeout.result)
+            let output = reviewer_stage_output(closeout.result)
                 .map_err(|error| format!("artifact {}: {error}", closeout.result_artifact_id))?;
             closeout_attempts.insert(
                 closeout.source.clone(),
                 (closeout.cold_attempt_id, closeout.node),
             );
-            results.push((
-                closeout.source,
-                closeout.result_artifact_id,
-                contract,
-                output,
-            ));
+            results.push((closeout.source, closeout.result_artifact_id, output));
         }
         // Canonical gather order: reviewer node id — not completion order, input-port label, or
-        // artifact digest order. Legacy campaigns retain their frozen port-labelled projection.
+        // artifact digest order.
         results.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
 
-        let canonical_metadata = if canonical {
+        let attempt_bindings = {
             let selections = self
                 .reviewer_selections
                 .lock()
@@ -1270,52 +1184,47 @@ impl<'a> ReviewDomainState<'a> {
                 .reviewer_input_artifacts
                 .lock()
                 .expect("reviewer inputs");
-            Some(
-                results
-                    .iter()
-                    .map(|(node, result_id, _, _)| {
-                        // A Cold Closeout result belongs to its own Attempt under its own
-                        // slot, run on the warm node's exact invocation inputs. It is not the
-                        // node's selection, so it is bound from its own durable record instead.
-                        if let Some((attempt_id, warm_node)) = closeout_attempts.get(node) {
-                            return Ok((
-                                attempt_id.clone(),
-                                reviewer_inputs
-                                    .get(node)
-                                    .or_else(|| reviewer_inputs.get(warm_node))
-                                    .cloned()
-                                    .ok_or_else(|| {
-                                        format!(
-                                            "Cold Closeout of `{warm_node}` has no exact invocation inputs"
-                                        )
-                                    })?,
-                            ));
-                        }
-                        let selection = selections.get(node).ok_or_else(|| {
-                            format!("selected reviewer result for `{node}` has no Attempt")
-                        })?;
-                        if &selection.result_artifact != result_id {
-                            return Err(format!(
-                                "selected reviewer result for `{node}` disagrees with its Attempt"
-                            ));
-                        }
-                        Ok((
-                            selection.attempt_id.clone(),
-                            reviewer_inputs.get(node).cloned().ok_or_else(|| {
-                                format!("selected reviewer `{node}` has no exact invocation inputs")
-                            })?,
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, String>>()?,
-            )
-        } else {
-            None
+            results
+                .iter()
+                .map(|(node, result_id, _)| {
+                    // A Cold Closeout result belongs to its own Attempt under its own
+                    // slot, run on the warm node's exact invocation inputs. It is not the
+                    // node's selection, so it is bound from its own durable record instead.
+                    if let Some((attempt_id, warm_node)) = closeout_attempts.get(node) {
+                        return Ok((
+                            attempt_id.clone(),
+                            reviewer_inputs
+                                .get(node)
+                                .or_else(|| reviewer_inputs.get(warm_node))
+                                .cloned()
+                                .ok_or_else(|| {
+                                    format!(
+                                        "Cold Closeout of `{warm_node}` has no exact invocation inputs"
+                                    )
+                                })?,
+                        ));
+                    }
+                    let selection = selections.get(node).ok_or_else(|| {
+                        format!("selected reviewer result for `{node}` has no Attempt")
+                    })?;
+                    if &selection.result_artifact != result_id {
+                        return Err(format!(
+                            "selected reviewer result for `{node}` disagrees with its Attempt"
+                        ));
+                    }
+                    Ok((
+                        selection.attempt_id.clone(),
+                        reviewer_inputs.get(node).cloned().ok_or_else(|| {
+                            format!("selected reviewer `{node}` has no exact invocation inputs")
+                        })?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()?
         };
 
         let projection = self.take_ledger_projection();
         let (
             round,
-            finding_count,
             finding_entries,
             grouping_relation_ids,
             grouping_input_artifact_ids,
@@ -1334,248 +1243,169 @@ impl<'a> ReviewDomainState<'a> {
                     .under_round(&self.authority.round_event_id);
             let reduction_round =
                 canonical_reduction_round(ingest.ledger().round, self.authority.round)?;
-            let reduction = match &canonical_metadata {
-                Some(metadata) => {
-                    let stages: Vec<_> = results
-                        .iter()
-                        .zip(metadata)
-                        .map(
-                            |(
-                                (node, result_id, result_contract, stage),
-                                (attempt_id, input_artifacts),
-                            )| {
-                                // A confirmation answers for the reviewer it confirms, so its
-                                // Demand requirement is that reviewer's, not its slot's.
-                                let subject = closeout_attempts
-                                    .get(node)
-                                    .map_or(node.as_str(), |(_, warm)| warm.as_str());
-                                let binding_node = self.reviewer_binding_node(subject);
-                                review_store::CanonicalStage {
-                                    source: node,
-                                    demand_requirement: self
-                                        .demand_requirements
-                                        .get(&binding_node)
-                                        .copied()
-                                        .unwrap_or(review_core::DemandRequirement::Required),
-                                    stage,
-                                    attempt_id,
-                                    result_artifact_id: result_id,
-                                    input_artifacts,
-                                    subject_snapshot_id: &self.authority.head_snapshot_id,
-                                    subject_id: &self.authority.subject_id,
-                                    result_contract: *result_contract,
-                                }
-                            },
-                        )
-                        .collect();
-                    Some(
-                        ingest
-                            .add_canonical_stage_outputs(&stages)
-                            .map_err(|error| error.to_string())?,
-                    )
-                }
-                None => {
-                    if results
-                        .iter()
-                        .any(|(_, _, contract, _)| *contract == ReviewerResultContract::V2)
-                    {
-                        return Err(
-                            "ReviewerResult@2 requires canonical Finding identity authority".into(),
-                        );
-                    }
-                    let stages: Vec<_> = results
-                        .iter()
-                        .map(|(node, _, _, stage)| (node.as_str(), stage))
-                        .collect();
-                    ingest
-                        .add_live_stage_outputs(&stages)
-                        .map_err(|error| error.to_string())?;
-                    None
-                }
-            };
+            let stages: Vec<_> = results
+                .iter()
+                .zip(&attempt_bindings)
+                .map(
+                    |((node, result_id, stage), (attempt_id, input_artifacts))| {
+                        // A confirmation answers for the reviewer it confirms, so its
+                        // Demand requirement is that reviewer's, not its slot's.
+                        let subject = closeout_attempts
+                            .get(node)
+                            .map_or(node.as_str(), |(_, warm)| warm.as_str());
+                        let binding_node = self.reviewer_binding_node(subject);
+                        review_store::CanonicalStage {
+                            source: node,
+                            demand_requirement: self
+                                .demand_requirements
+                                .get(&binding_node)
+                                .copied()
+                                .unwrap_or(review_core::DemandRequirement::Required),
+                            stage,
+                            attempt_id,
+                            result_artifact_id: result_id,
+                            input_artifacts,
+                            subject_snapshot_id: &self.authority.head_snapshot_id,
+                            subject_id: &self.authority.subject_id,
+                        }
+                    },
+                )
+                .collect();
+            let reduction = ingest
+                .add_canonical_stage_outputs(&stages)
+                .map_err(|error| error.to_string())?;
             (
                 reduction_round,
-                ingest.ledger().finding_views().len(),
-                canonical.then(|| finding_set_entries(ingest.ledger())),
+                finding_set_entries(ingest.ledger()),
                 ingest.ledger().grouping_relation_ids(),
                 ingest.ledger().grouping_input_artifact_ids(),
                 ingest.ledger().resolution_artifact_ids(),
                 ingest.ledger().resolution_input_artifact_ids(),
-                canonical.then(|| ingest.ledger().demand_views()),
+                ingest.ledger().demand_views(),
                 ingest.ledger().demand_reduction_artifact_ids(),
                 ingest.ledger().demand_reduction_input_ids(),
                 reduction,
                 ingest.into_projection(),
             )
         };
-        let proposal_ids = if let Some(reduction) = &reduction {
-            let proposals = self.finalize_proposals(reduction)?;
-            projection
-                .fast_forward(*self.store.lock().expect("event store"), self.cas)
-                .map_err(|error| error.to_string())?;
-            proposals
-        } else {
-            Vec::new()
-        };
-        let semantic_reduction_outputs = reduction.as_ref().map(|reduction| {
-            (
-                reduction.selected_report_ids.clone(),
-                reduction.relation_ids.clone(),
-                reduction.selected_demand_artifact_ids.clone(),
-            )
-        });
+        let proposal_ids = self.finalize_proposals(&reduction)?;
+        projection
+            .fast_forward(*self.store.lock().expect("event store"), self.cas)
+            .map_err(|error| error.to_string())?;
+        let semantic_reduction_outputs = (
+            reduction.selected_report_ids.clone(),
+            reduction.relation_ids.clone(),
+            reduction.selected_demand_artifact_ids.clone(),
+        );
         let semantic_grouping_ids = grouping_relation_ids.clone();
         let semantic_resolution_ids = resolution_ids.clone();
         let semantic_demand_lifecycle_ids = demand_artifact_ids.clone();
         *self.ledger_cache.lock().expect("ledger cache") = Some(projection);
-        let findings_artifact = if let (Some(entries), Some(reduction)) =
-            (finding_entries, reduction)
-        {
-            let reducer_version = reduction.reducer_version;
-            let payload = review_core::FindingSetV1 {
-                subject_id: self.authority.subject_id.clone(),
-                round,
-                prior_finding_set_id: self.authority.prior_reduction_finding_set_id.clone(),
-                reducer_version: reducer_version.to_string(),
-                identity_policy: self.authority.finding_identity_policy.clone(),
-                selected_report_ids: reduction.selected_report_ids,
-                relation_ids: reduction
-                    .relation_ids
-                    .into_iter()
-                    .chain(grouping_relation_ids)
-                    .collect(),
-                resolution_ids,
-                findings: entries,
-            };
-            payload.validate()?;
-            let mut reduction_inputs = vec![self.authority.prior_reduction_finding_set_id.clone()];
-            reduction_inputs.extend(reduction.input_artifact_ids);
-            reduction_inputs.extend(grouping_input_artifact_ids);
-            reduction_inputs.extend(resolution_input_artifact_ids);
-            let operation_digest = review_store::content_id(&serde_json::json!({
-                "reducer_version": reducer_version,
-                "identity_policy": self.authority.finding_identity_policy,
-                "inputs": reduction_inputs,
-            }))
-            .map_err(|error| error.to_string())?;
-            let (record_id, _) = self
-                .cas
-                .put_artifact(
-                    review_core::contract::FINDING_SET_V1,
-                    review_core::Producer::KernelOperation {
-                        run_id: self.run_id.clone(),
-                        node_id: Some("ledger".into()),
-                        operation_id: format!(
-                            "{}:{}:{}",
-                            reducer_version,
-                            self.authority.finding_identity_policy,
-                            operation_digest
-                        ),
-                    },
-                    reduction_inputs,
-                    Some(self.authority.head_snapshot_id.clone()),
-                    serde_json::to_value(payload).map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
-            record_id
-        } else {
-            // The `findings` port must carry a real artifact, not a label: the scheduler delivers
-            // exactly this string to whatever consumes the port, and a downstream event referencing
-            // a non-CAS string would be rejected as a dangling artifact far from its cause.
-            self.cas
-                .put_json(&serde_json::json!({
-                    "round": round,
-                    "sources": results.iter().map(|(node, _, _, _)| node).collect::<Vec<_>>(),
-                    "findings": finding_count,
-                }))
-                .map_err(|e| e.to_string())?
+        let reducer_version = review_core::FINDING_REDUCER_VERSION_V2;
+        let payload = review_core::FindingSetV1 {
+            subject_id: self.authority.subject_id.clone(),
+            round,
+            prior_finding_set_id: self.authority.prior_reduction_finding_set_id.clone(),
+            reducer_version: reducer_version.to_string(),
+            identity_policy: self.authority.finding_identity_policy.clone(),
+            selected_report_ids: reduction.selected_report_ids,
+            relation_ids: reduction
+                .relation_ids
+                .into_iter()
+                .chain(grouping_relation_ids)
+                .collect(),
+            resolution_ids,
+            findings: finding_entries,
         };
+        payload.validate()?;
+        let mut reduction_inputs = vec![self.authority.prior_reduction_finding_set_id.clone()];
+        reduction_inputs.extend(reduction.input_artifact_ids);
+        reduction_inputs.extend(grouping_input_artifact_ids);
+        reduction_inputs.extend(resolution_input_artifact_ids);
+        let operation_digest = review_store::content_id(&serde_json::json!({
+            "reducer_version": reducer_version,
+            "identity_policy": self.authority.finding_identity_policy,
+            "inputs": reduction_inputs,
+        }))
+        .map_err(|error| error.to_string())?;
+        let (findings_artifact, _) = self
+            .cas
+            .put_artifact(
+                review_core::contract::FINDING_SET_V1,
+                review_core::Producer::KernelOperation {
+                    run_id: self.run_id.clone(),
+                    node_id: Some("ledger".into()),
+                    operation_id: format!(
+                        "{}:{}:{}",
+                        reducer_version, self.authority.finding_identity_policy, operation_digest
+                    ),
+                },
+                reduction_inputs,
+                Some(self.authority.head_snapshot_id.clone()),
+                serde_json::to_value(payload).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
 
-        let mut canonical_outputs = BTreeMap::new();
-        if canonical {
-            canonical_outputs.insert("finding_set".into(), findings_artifact.clone());
-        }
+        let mut canonical_outputs =
+            BTreeMap::from([("finding_set".to_string(), findings_artifact.clone())]);
         let finding_port = node
             .outputs
             .iter()
             .find(|port| is_generation_finding_set_output(port))
-            .or_else(|| (node.outputs.len() == 1).then(|| &node.outputs[0]))
             .ok_or_else(|| "ledger node has no Finding Set output".to_string())?;
         let mut outputs = ArtifactMap::from([(finding_port.name.clone(), vec![findings_artifact])]);
 
-        if let Some(demands) = demand_entries {
-            if round == 1 && self.authority.prior_demand_set_id != self.authority.demand_genesis_id
-            {
-                return Err("Round 1 Demand Set does not descend from Campaign genesis".into());
-            }
-            let (selected_demand_artifact_ids, satisfaction_artifact_ids, waiver_artifact_ids) =
-                demand_artifact_ids;
-            let payload = review_core::DemandSetV1 {
-                subject_id: self.authority.subject_id.clone(),
-                round,
-                prior_demand_set_id: self.authority.prior_demand_set_id.clone(),
-                reducer_version: review_core::DEMAND_REDUCER_VERSION.into(),
-                selected_demand_artifact_ids,
-                satisfaction_artifact_ids,
-                waiver_artifact_ids,
-                demands,
-            };
-            payload.validate()?;
-            let mut reduction_inputs = vec![self.authority.prior_demand_set_id.clone()];
-            reduction_inputs.extend(demand_input_artifact_ids);
-            let mut unique = BTreeSet::new();
-            reduction_inputs.retain(|id| unique.insert(id.clone()));
-            let operation_digest = review_store::content_id(&serde_json::json!({
-                "reducer_version": review_core::DEMAND_REDUCER_VERSION,
-                "inputs": reduction_inputs,
-            }))
+        if round == 1 && self.authority.prior_demand_set_id != self.authority.demand_genesis_id {
+            return Err("Round 1 Demand Set does not descend from Campaign genesis".into());
+        }
+        let (selected_demand_artifact_ids, satisfaction_artifact_ids, waiver_artifact_ids) =
+            demand_artifact_ids;
+        let payload = review_core::DemandSetV1 {
+            subject_id: self.authority.subject_id.clone(),
+            round,
+            prior_demand_set_id: self.authority.prior_demand_set_id.clone(),
+            reducer_version: review_core::DEMAND_REDUCER_VERSION.into(),
+            selected_demand_artifact_ids,
+            satisfaction_artifact_ids,
+            waiver_artifact_ids,
+            demands: demand_entries,
+        };
+        payload.validate()?;
+        let mut reduction_inputs = vec![self.authority.prior_demand_set_id.clone()];
+        reduction_inputs.extend(demand_input_artifact_ids);
+        let mut unique = BTreeSet::new();
+        reduction_inputs.retain(|id| unique.insert(id.clone()));
+        let operation_digest = review_store::content_id(&serde_json::json!({
+            "reducer_version": review_core::DEMAND_REDUCER_VERSION,
+            "inputs": reduction_inputs,
+        }))
+        .map_err(|error| error.to_string())?;
+        let (record_id, _) = self
+            .cas
+            .put_artifact(
+                review_core::contract::DEMAND_SET_V1,
+                review_core::Producer::KernelOperation {
+                    run_id: self.run_id.clone(),
+                    node_id: Some("ledger".into()),
+                    operation_id: format!(
+                        "{}:{}",
+                        review_core::DEMAND_REDUCER_VERSION,
+                        operation_digest
+                    ),
+                },
+                reduction_inputs,
+                Some(self.authority.head_snapshot_id.clone()),
+                serde_json::to_value(payload).map_err(|error| error.to_string())?,
+            )
             .map_err(|error| error.to_string())?;
-            let (record_id, _) = self
-                .cas
-                .put_artifact(
-                    review_core::contract::DEMAND_SET_V1,
-                    review_core::Producer::KernelOperation {
-                        run_id: self.run_id.clone(),
-                        node_id: Some("ledger".into()),
-                        operation_id: format!(
-                            "{}:{}",
-                            review_core::DEMAND_REDUCER_VERSION,
-                            operation_digest
-                        ),
-                    },
-                    reduction_inputs,
-                    Some(self.authority.head_snapshot_id.clone()),
-                    serde_json::to_value(payload).map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
-            canonical_outputs.insert("demand_set".into(), record_id.clone());
-            match node.outputs.iter().find(|port| is_demand_set_port(port)) {
-                Some(port) => {
-                    outputs.insert(port.name.clone(), vec![record_id]);
-                }
-                None if !retain_companions
-                    && !outputs.is_empty()
-                    && self
-                        .ledger_cache
-                        .lock()
-                        .expect("ledger cache")
-                        .as_ref()
-                        .is_some_and(|projection| {
-                            !projection.ledger().demand_views().is_empty()
-                        }) =>
-                {
-                    return Err(
-                        "ledger selected Demands but declares no review.kernel/DemandSet@1 output"
-                            .into(),
-                    );
-                }
-                None => {}
-            }
+        canonical_outputs.insert("demand_set".into(), record_id.clone());
+        if let Some(port) = node.outputs.iter().find(|port| is_demand_set_port(port)) {
+            outputs.insert(port.name.clone(), vec![record_id]);
         }
         if !dynamic_sets.is_empty() {
             let delivered_results = results
                 .iter()
-                .map(|(source, artifact, _, _)| (source.clone(), artifact.clone()))
+                .map(|(source, artifact, _)| (source.clone(), artifact.clone()))
                 .collect::<BTreeSet<_>>();
             let round_events = self
                 .store
@@ -1621,8 +1451,8 @@ impl<'a> ReviewDomainState<'a> {
                         })?;
                         let ids = results
                             .iter()
-                            .filter(|(source, _, _, _)| source == closeout)
-                            .map(|(_, artifact, _, _)| artifact.clone())
+                            .filter(|(source, _, _)| source == closeout)
+                            .map(|(_, artifact, _)| artifact.clone())
                             .collect::<Vec<_>>();
                         let [artifact] = ids.as_slice() else {
                             return Err(format!(
@@ -1656,16 +1486,15 @@ impl<'a> ReviewDomainState<'a> {
                 if let Some(closeout) = closeout_result_id {
                     semantic_sinks.insert(closeout, "ledger:whole-subject-closeout".into());
                 }
-                if let Some((reports, relations, demands)) = &semantic_reduction_outputs {
-                    for artifact in reports {
-                        semantic_sinks.insert(artifact.clone(), "ledger:finding-set".into());
-                    }
-                    for artifact in relations {
-                        semantic_sinks.insert(artifact.clone(), "ledger:relation".into());
-                    }
-                    for artifact in demands {
-                        semantic_sinks.insert(artifact.clone(), "ledger:demand-set".into());
-                    }
+                let (reports, relations, demands) = &semantic_reduction_outputs;
+                for artifact in reports {
+                    semantic_sinks.insert(artifact.clone(), "ledger:finding-set".into());
+                }
+                for artifact in relations {
+                    semantic_sinks.insert(artifact.clone(), "ledger:relation".into());
+                }
+                for artifact in demands {
+                    semantic_sinks.insert(artifact.clone(), "ledger:demand-set".into());
                 }
                 for artifact in &semantic_grouping_ids {
                     semantic_sinks.insert(artifact.clone(), "ledger:grouping".into());
@@ -1987,37 +1816,6 @@ impl<'a> ReviewDomainState<'a> {
             .unwrap_or_else(|| node_id.to_string())
     }
 
-    /// Seed the generation-local projection with the Ledger rebuilt while its Round input was
-    /// prepared. Any intervening durable suffix is folded before installation, and subsequent
-    /// appends advance the watermarked cache in sequence.
-    pub(super) fn seed_ledger_projection(
-        &self,
-        mut projection: LedgerProjection,
-    ) -> Result<(), String> {
-        if !projection.belongs_to(&self.run_id) {
-            return Err("Ledger projection belongs to a different Campaign run".into());
-        }
-        {
-            let store = self.store.lock().expect("event store");
-            projection
-                .fast_forward(*store, self.cas)
-                .map_err(|error| error.to_string())?;
-        }
-        *self.ledger_cache.lock().expect("ledger cache") = Some(projection);
-        Ok(())
-    }
-
-    /// The decision a gate node reached, if it ran.
-    pub(super) fn gate_decision(&self, node_id: &str) -> Option<GateDecision> {
-        self.gates.lock().expect("gates").get(node_id).cloned()
-    }
-
-    /// The ledger as it stands, derived from the log and cached only through a run-bound
-    /// projection capability.
-    pub(super) fn ledger(&self) -> Ledger {
-        self.with_ledger(Ledger::clone)
-    }
-
     pub(super) fn rebuild_ledger_projection(&self) -> LedgerProjection {
         LedgerProjection::rebuild(
             *self.store.lock().expect("event store"),
@@ -2153,39 +1951,30 @@ impl<'a> ReviewDomainState<'a> {
     }
 }
 
-/// One raw Generation algorithm for both legacy execution and the typed Task codec adapter.
-pub(crate) fn generation_outputs(
-    authority: &RoundAuthority,
-    pipeline_version: u32,
-    prior_findings: Option<&str>,
-    node: &Node,
-) -> Result<ArtifactMap, String> {
+/// The raw Generation outputs a Task-hosted Review Round emits: the exact prior `FindingSet@1`
+/// and, for a diff Subject, its `ChangeSet@1`.
+fn generation_outputs(authority: &RoundAuthority, node: &Node) -> Result<ArtifactMap, String> {
     let mut outputs = ArtifactMap::new();
     for port in &node.outputs {
-        let artifacts =
-            if is_generation_prior_findings_output(port, pipeline_version) {
-                vec![prior_findings.map(str::to_owned).ok_or(
-                    "campaign execution has no exact prior Finding Set from RoundStarted@1",
-                )?]
-            } else if is_generation_finding_set_output(port) {
-                if authority.prior_reduction_finding_set_id == authority.finding_genesis_id {
-                    Vec::new()
-                } else {
-                    vec![authority.prior_reduction_finding_set_id.clone()]
-                }
-            } else if is_change_set_port(port, pipeline_version) {
-                vec![
-                    authority
-                        .change_set_id
-                        .clone()
-                        .ok_or("generation declares ChangeSet@1 for a whole-tree Subject")?,
-                ]
+        let artifacts = if is_generation_finding_set_output(port) {
+            if authority.prior_reduction_finding_set_id == authority.finding_genesis_id {
+                Vec::new()
             } else {
-                return Err(format!(
-                    "generation output `{}` has unsupported artifact type `{}`",
-                    port.name, port.artifact_type
-                ));
-            };
+                vec![authority.prior_reduction_finding_set_id.clone()]
+            }
+        } else if is_change_set_port(port) {
+            vec![
+                authority
+                    .change_set_id
+                    .clone()
+                    .ok_or("generation declares ChangeSet@1 for a whole-tree Subject")?,
+            ]
+        } else {
+            return Err(format!(
+                "generation output `{}` has unsupported artifact type `{}`",
+                port.name, port.artifact_type
+            ));
+        };
         outputs.insert(port.name.clone(), artifacts);
     }
     Ok(outputs)

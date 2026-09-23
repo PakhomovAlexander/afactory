@@ -1,6 +1,8 @@
 # Report artifacts are authoritative for finding projections
 
-**Status:** accepted (2026-08-20)
+**Status:** accepted (2026-08-20); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the permanent reader of the M1 flat Report
+artifact, and the frozen `FindingReported@1` fallback for artifact-less legacy imports.
 
 `FindingReported@1` references an immutable Report artifact but also duplicates part of the
 Report in its payload. Adding the missing `fix` field to that payload would create another

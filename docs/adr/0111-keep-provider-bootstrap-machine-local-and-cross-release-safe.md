@@ -19,7 +19,7 @@ non-cooperating replacement is reported separately and never destroys the preser
 
 Interactive setup is serialized by Provider kind and canonical auth-directory identity, independent
 of `AF_PROVIDERS_FILE`, so two registries cannot drive one credential context concurrently. Explicit
-registration rejects symlinked, foreign-owned, or group/world-writable auth directories on Unix,
+registration rejects symlinked, foreign-owned, or group/world-writable auth directories,
 and admission revalidates the directory and its rename-controlling ancestor chain before paid
 Provider work. Directory handles remain open across auth locks, reads, and publication so a path
 replacement is detected. Registry publication creates private directories and `0600` files

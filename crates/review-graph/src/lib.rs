@@ -5,12 +5,12 @@
 //!
 //! - **Nothing ambient.** A node sees exactly what an edge hands it. It cannot query the ledger,
 //!   read a sibling's output file, or pick up whatever the orchestrator happened to leave in
-//!   scope. The shell harness passed prior claims by rendering them into a prompt, which meant
-//!   what a reviewer received existed only inside a subagent's context — unreconstructable
-//!   afterwards from any artifact.
+//!   scope. Prior claims rendered ad hoc into a prompt would exist only inside a subagent's
+//!   context, unreconstructable afterwards from any artifact.
 //! - **A failed gate suppresses dispatch.** Not "the orchestrator remembers not to continue":
-//!   gated nodes are structurally unreachable once their gate blocks, and the test asserts they
-//!   left no events and no artifacts behind.
+//!   planning resolves every gate a node depends on, directly or through an ancestor, and the
+//!   Review compiler turns each into a Task condition, so nothing behind a blocked gate is
+//!   dispatched.
 //!
 //! Planning happens before anything runs. A cycle, a dangling dependency, or an edge to a port a
 //! node does not declare is a planning failure — the graph never starts, rather than failing

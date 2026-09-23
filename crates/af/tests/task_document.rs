@@ -3,7 +3,6 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[cfg(unix)]
 #[path = "task_document/provider_admission.rs"]
 mod provider_admission;
 

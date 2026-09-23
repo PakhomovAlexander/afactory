@@ -8,14 +8,25 @@ mod structured;
 pub struct ClaudeTaskAdapter {
     program: String,
     model_flags: Vec<String>,
+    /// The explicit `--model` restriction every reported model's usage is checked against.
+    model: String,
     grants: Vec<(String, String)>,
 }
 
 impl ClaudeTaskAdapter {
+    /// Refuses a command without an explicit `--model`: usage accounting needs the selected
+    /// model to tell its own spend from unexpected model activity.
     pub fn new(command: &Command) -> Result<Self, String> {
+        let model_flags = claude_model_flags(command)?;
+        let model = model_flags
+            .chunks_exact(2)
+            .find(|pair| pair[0] == "--model")
+            .map(|pair| pair[1].clone())
+            .ok_or("Claude Task Worker requires an explicit --model")?;
         Ok(Self {
             program: command.program.clone(),
-            model_flags: claude_model_flags(command)?,
+            model_flags,
+            model,
             grants: vec![],
         })
     }
@@ -29,78 +40,22 @@ impl ClaudeTaskAdapter {
 }
 
 impl WorkerModelAdapter for ClaudeTaskAdapter {
-    fn credential_mode(&self) -> review_core::BrokerCredentialModeV1 {
-        review_core::BrokerCredentialModeV1::TrustedUnsafe
+    fn credential_mode(&self) -> review_core::CredentialModeV1 {
+        review_core::CredentialModeV1::TrustedUnsafe
     }
 
     fn provider_kind(&self) -> &'static str {
         "claude"
     }
     fn model_settings(&self) -> Option<(String, String)> {
-        let value = |flag| {
-            self.model_flags
-                .chunks_exact(2)
-                .find(|args| args[0] == flag)
-                .map(|args| args[1].clone())
-        };
-        value("--model").zip(value("--effort"))
+        let effort = self
+            .model_flags
+            .chunks_exact(2)
+            .find(|args| args[0] == "--effort")
+            .map(|args| args[1].clone())?;
+        Some((self.model.clone(), effort))
     }
     fn invoke(
-        &self,
-        cas: &Cas,
-        workdir: &Path,
-        input: Vec<u8>,
-        timeout: Duration,
-        writable: bool,
-    ) -> ModelWorkerReturn {
-        self.invoke_inner(cas, workdir, input, timeout, writable, None, &[])
-    }
-
-    fn invoke_controlled(
-        &self,
-        cas: &Cas,
-        workdir: &Path,
-        input: Vec<u8>,
-        timeout: Duration,
-        writable: bool,
-        broker: Option<&dyn review_runner::ExactBrokerClient>,
-        cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> ModelWorkerReturn {
-        if broker.is_some() {
-            return self.invoke_with_broker(cas, workdir, input, timeout, writable, broker);
-        }
-        self.invoke_inner(cas, workdir, input, timeout, writable, cancellation, &[])
-    }
-
-    fn invoke_controlled_with_environment(
-        &self,
-        cas: &Cas,
-        workdir: &Path,
-        input: Vec<u8>,
-        timeout: Duration,
-        writable: bool,
-        broker: Option<&dyn review_runner::ExactBrokerClient>,
-        cancellation: Option<&std::sync::atomic::AtomicBool>,
-        environment: &[(String, String)],
-    ) -> ModelWorkerReturn {
-        if broker.is_some() {
-            return self.invoke_with_broker(cas, workdir, input, timeout, writable, broker);
-        }
-        self.invoke_inner(
-            cas,
-            workdir,
-            input,
-            timeout,
-            writable,
-            cancellation,
-            environment,
-        )
-    }
-}
-
-impl ClaudeTaskAdapter {
-    #[allow(clippy::too_many_arguments)]
-    fn invoke_inner(
         &self,
         cas: &Cas,
         workdir: &Path,
@@ -159,15 +114,9 @@ impl ClaudeTaskAdapter {
         for (name, value) in environment {
             runner = runner.with_env(name, value);
         }
-        let capture =
-            runner.capture_settled_with_stdin_controlled(cas, &command, input, cancellation);
+        let capture = runner.capture(cas, &command, input, cancellation);
         let parsed = serde_json::from_slice::<serde_json::Value>(&capture.stdout).ok();
-        let selected_model = self
-            .model_flags
-            .chunks_exact(2)
-            .find(|pair| pair[0] == "--model")
-            .map(|pair| pair[1].as_str());
-        let accounting = model_usage::account(parsed.as_ref(), selected_model);
+        let accounting = model_usage::account(parsed.as_ref(), &self.model);
         let success = accounting.error.is_none()
             && accounting.observation.is_none()
             && capture.status.as_ref().is_ok_and(|status| status.success())

@@ -67,7 +67,7 @@ negative requirements verdict; every verifier retains the requirements it consum
 **Task Review Continuation**:
 Exact independently verified repair evidence projected into the next admitted discovery Round.
 It retains the original Round and claim identities, grants no complete-Review coverage and does
-not create legacy Resolution authority. Later discovery can reopen a previously fixed claim.
+not create Campaign Resolution authority. Later discovery can reopen a previously fixed claim.
 
 **Captured Issue Source**:
 An exact read-only observation of ticket fields, with raw source, per-field value and normalized
@@ -109,8 +109,8 @@ _Avoid_: "parent" — `parent_snapshot_id` already means patch-integration linea
 by integrating a validated patch into S0) and cannot carry this relation.
 
 **Proposal Base**:
-The exact head Snapshot from which a reviewer's sandbox and Proposal patch were derived, encoded
-by the legacy field name `base_snapshot_id` in `PatchProposal@1`.
+The exact head Snapshot from which a reviewer's sandbox and Proposal patch were derived,
+carried by the `base_snapshot_id` field of `PatchProposal@1`.
 _Avoid_: **Base** — for a diff Subject, Base is the comparison Snapshot and Proposal Base is the
 current head.
 
@@ -138,9 +138,9 @@ Whether a Report's location falls inside the Change Set it was made under — `i
 Attached deterministically to each Report claim from its exact Round Subject, never supplied by
 the reviewer and never stamped on the Finding, because a file this branch has not touched yet may
 be touched by a later Round. A Report with no derivable exact Round Subject is presented as
-`unknown`; that is fail-closed compatibility metadata, not a third Report Scope.
+`unknown`; that is fail-closed metadata, not a third Report Scope.
 An unavailable Subject or Report authority is counted in the active clean window and is persisted
-as `authority_unavailable` in new `RunReport@3` conclusions only when no real Finding or failed
+as `authority_unavailable` in `RunReport@6` conclusions only when no real Finding or failed
 Gate is already the cause; terminal output alone is never the only explanation for a failed
 convergence decision.
 _Avoid_: unqualified "scope" or "out of scope" as a dismissal; an out-of-set Finding is real,
@@ -274,12 +274,13 @@ revoked epoch is quarantined — recorded, charged, and unable to reach the Find
 _Avoid_: treating a fenced Attempt as a free retry; it spent tokens and the budget knows.
 
 **Budget Scope**:
-The accounting boundary charged by one Attempt — attempt, node, reviewer fan-out, and Campaign.
+The accounting boundary charged by one Attempt — each named token scope it belongs to (one
+node's cap, or a reviewer fan-out's) and the Task as a whole.
 _Avoid_: **Report Scope**; Budget Scope governs spend, never whether a claim blocks.
 
 **Execution Binding**:
-The trusted, content-pinned sandbox, tool, network, environment, broker, and quota policy under
-which one executable node runs.
+The trusted, content-pinned sandbox, tool, network, environment, credential, and quota policy
+under which one executable node runs.
 _Avoid_: an ambient/default environment; an unresolved or insufficient Binding fails planning.
 
 **Provider**:
@@ -290,23 +291,13 @@ explicitly unstable candidate but does not become a configured Provider until th
 its context. Credentials are capabilities used through a Provider and never part of its ID.
 _Avoid_: using "provider" for a CLI binary, model, reviewer package, or verified account identity.
 
-**Provider Operation**:
-A durable, Round-bound machine-local operation that proves one configured Provider can satisfy one
-adapter capability before dispatch. Its epoch fences stale continuation, failed and abandoned
-work is charged, and persisted state contains only non-secret handles and normalized failure
-metadata.
-_Avoid_: **Attempt**; an Attempt consumes an admitted Provider rather than authenticating it.
-
 **Provider Admission**:
-The current successful result of a Provider Operation's structural authentication probe and
-bounded real-inference smoke test for one adapter capability. Admission is local execution state,
-not pinned pipeline authority, and expires when its Round, Provider label, or capability changes.
+A Task's captured, paid proof that one configured Provider can satisfy one adapter capability:
+after a token-free account identity probe, the Task runs one bounded acknowledgement inference
+under its own Attempt and reservation, charged to the Task budget. Its selected output lets that
+Task's Workers dispatch on the binding. Admission is local execution state, not pinned pipeline
+authority, and `af provider doctor` runs only a Review Task's admissions.
 _Avoid_: treating an ambient login or a Provider ID as proof of usable authentication.
-
-**Broker Handle**:
-A non-secret, Attempt/epoch-bound capability authorizing only named external operations through a
-trusted broker that can revoke it after fencing.
-_Avoid_: passing reusable provider credentials into a reviewer sandbox.
 
 **Cache Snapshot**:
 A bounded, credential-free copy or copy-on-write clone of an administrator-approved dependency
@@ -409,11 +400,12 @@ could honor — the Round is only known to be closing after its results are redu
 - A `rejected` or `wontfix-tracked` **Resolution** remains terminal only inside its recorded
   evidence, Subject scope, severity ceiling, and expiry; a material challenge moves it to
   `contested` through an explicit event.
-- Every executable node resolves one **Execution Binding** before dispatch; safe Bindings expose
-  revocable **Broker Handles**, never reusable credential bytes.
-- A configured **Provider** dispatches only after current **Provider Admission**. Continuations
-  name the exact Provider Operation epoch; stale epochs and repeated failure fingerprints are
-  fenced before another external call.
+- Every executable node resolves one **Execution Binding** before dispatch. A reviewer that can
+  read reusable credentials is `trusted_unsafe` and cannot authorize `auto_apply`.
+- A configured **Provider** dispatches a Worker only after its Task's **Provider Admission**
+  succeeded, and the native account is rechecked before every private send
+  ([ADR-0090](docs/adr/0090-recheck-native-task-provider-identity-before-private-invocation.md),
+  [ADR-0091](docs/adr/0091-capture-explicit-task-provider-admission-costs.md)).
 - **Convergence** reads only the Round's exact final Finding Set and Demand Set plus recorded graph,
   gate, closure, and budget state; it never queries ambient latest projections.
 - A **Subject** is always anchored to one head **Snapshot**; a `diff` Subject additionally
@@ -458,9 +450,5 @@ could honor — the Round is only known to be closing after its results are redu
   `.af/pipelines/review.toml`) while the kernel captured only a whole-tree Snapshot, so it named
   something structurally unavailable. Resolved: the
   umbrella term is **Subject**, and "the change" is legitimate only under a `diff` Subject.
-- **Review Target** — the original design used it for the immutable base/candidate/change-set
-  tuple, while a later draft used it for mutable branch/PR/base-ref labels. Resolved: retire the
-  overloaded term; **Subject** is the immutable reviewed object and **Review Selector** names the
-  mutable resolution inputs.
 - **Report vs Finding** — used interchangeably in prose. Resolved above: a Report is one
   attempt's immutable claim, a Finding is the triage identity many Reports attach to.

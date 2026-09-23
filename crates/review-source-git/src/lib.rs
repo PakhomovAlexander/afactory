@@ -17,14 +17,14 @@ pub mod materialize;
 pub mod rebase;
 pub mod task;
 
-pub use capture::{Capture, CaptureError, CaptureObserver, NoObserver, Snapshot, worktree_state};
+pub use capture::{Capture, CaptureError, CaptureObserver, Snapshot, worktree_state};
 pub use git::{
     DEFAULT_GIT_TIMEOUT_SECONDS, GitError, Repo, TreeChange, TreeChangeKind, TreeDiff, TreeId,
     manifest_diff,
 };
 pub use manifest::{
-    Entry, EntryKind, Manifest, ManifestError, PathEncoding, decode_path, digest_bytes,
+    Entry, EntryKind, Manifest, ManifestError, decode_path, digest_bytes,
     digest_reader_with_buffer, encode_path, fs_path,
 };
 pub use materialize::{MaterializeError, materialize};
-pub use rebase::{ManifestChanges, apply_tree_diff, manifest_changes, scan_tree};
+pub use rebase::{apply_tree_diff, scan_tree};

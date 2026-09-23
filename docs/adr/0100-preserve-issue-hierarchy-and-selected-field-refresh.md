@@ -1,6 +1,7 @@
 # ADR-0100: Preserve issue hierarchy and selected-field refresh semantics
 
-**Status:** proposed
+**Status:** accepted (2026-09-23); acceptance recorded in
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md)
 
 ## Context
 

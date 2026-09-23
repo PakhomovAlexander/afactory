@@ -1,6 +1,5 @@
 //! Separate supervised commands must never keep one another's standard streams alive.
 
-#[cfg(unix)]
 #[test]
 fn concurrent_short_commands_and_killed_groups_keep_independent_pipes() {
     use review_process::{SupervisedError, run_supervised_captured};

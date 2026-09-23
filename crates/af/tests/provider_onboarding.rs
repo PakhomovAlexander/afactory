@@ -6,7 +6,6 @@
 //! starting an OAuth exchange whose URL and code would land in that caller's transcript. These
 //! tests therefore assert absence as much as presence: no login child, no Provider-authored text
 //! in the documents, no account identity anywhere.
-#![cfg(unix)]
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

@@ -1,2 +1,0 @@
-ok-check	pass	<secs>	./checks/ok-check_.log
-bad-check	fail	<secs>	./checks/bad-check_.log

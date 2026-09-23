@@ -7,7 +7,7 @@
 #   scripts/release.sh X.Y.Z --compat "<one line on authority compatibility>" [--dry-run] [--yes]
 #
 # The compatibility line is required: every release says whether committed `.af/` authority
-# keeps working as is, needs `af onboard --refresh-lock`, or needs `af onboard --migrate --apply`.
+# keeps working as is, needs `af onboard --refresh-lock`, or needs a documented hand edit.
 set -euo pipefail
 
 usage() {
@@ -137,4 +137,4 @@ fi
 git push -q -u origin "$branch"
 gh pr create --repo "$repo" --base main --head "$branch" --title "release: $tag" --body "$section
 
-Merging this PR tags \`$tag\`; the release workflow checks the tagged commit on Linux and macOS, builds every target, plans the consumer fixtures with each binary, signs \`SHA256SUMS\`, and publishes the release."
+Merging this PR tags \`$tag\`; the release workflow checks the tagged commit on Linux and macOS, builds every target, onboards and plans a fresh repository with each binary, signs \`SHA256SUMS\`, and publishes the release."

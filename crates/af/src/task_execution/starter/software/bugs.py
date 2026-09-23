@@ -28,8 +28,6 @@ reports = [] if passed else [{
     'fix': 'Raise ValueError for negative or non-integer offset and limit.', 'confidence': 1.0
 }]
 print(json.dumps({'schema': 'af.worker-reply/1', 'outputs': {'result': [{
-    'verdict': 'approve' if passed else 'request-changes',
-    'summary': 'Independent invalid-bound and exception checks.',
     'reports': reports, 'benchmark_demands': [],
     'dispositions': [{'finding_id': f['finding_id'],
                       'position': 'not_reproduced' if passed else 'corroborate',

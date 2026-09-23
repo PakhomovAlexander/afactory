@@ -1,4 +1,3 @@
-#![cfg(unix)]
 #[path = "../../review-runner/tests/support/native_cancellation.rs"]
 mod fixture;
 

@@ -5,14 +5,10 @@ use std::process::{Command, Output};
 use review_core::task::delivery::{
     TASK_DELIVERY_RECORD_V1, TaskDeliveryRecordV1, TaskDeliveryStatusV1,
 };
-use review_core::task::execution::{
-    TaskAttemptResultV1, TaskExecutionRecordV1, TaskExecutionRecordV2, TaskExecutionRecordV3,
-};
+use review_core::task::execution::{TaskAttemptResultV1, TaskExecutionRecordV1};
 use review_graph::task::CompiledTask;
 use serde_json::{Value, json};
 
-#[path = "task_public_schemas/broker.rs"]
-mod broker;
 #[path = "../../review-pipeline/tests/support/captured_review_continuation.rs"]
 mod captured_continuation;
 #[path = "../../review-pipeline/tests/support/captured_review.rs"]
@@ -25,48 +21,17 @@ mod integration;
 mod owned;
 #[path = "task_public_schemas/recording.rs"]
 mod recording;
+#[path = "support/schemas.rs"]
+mod schemas;
 #[path = "support/task_cli.rs"]
 mod task_cli;
+
+use schemas::{valid, validator};
 
 fn workspace() -> PathBuf {
     std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
-}
-
-fn validator(name: &str) -> jsonschema::Validator {
-    let directory = workspace().join("schemas");
-    let mut registry = jsonschema::Registry::new();
-    for entry in std::fs::read_dir(&directory).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        let Some(id) = value["$id"].as_str().map(str::to_owned) else {
-            continue;
-        };
-        registry = registry
-            .add(id, jsonschema::Resource::from_contents(value))
-            .unwrap();
-    }
-    let value: Value =
-        serde_json::from_slice(&std::fs::read(directory.join(name)).unwrap()).unwrap();
-    {
-        let registry = registry.prepare().unwrap();
-        jsonschema::options()
-            .with_registry(&registry)
-            .build(&value)
-            .unwrap()
-    }
-}
-
-fn valid(schema: &jsonschema::Validator, value: &Value) {
-    let errors: Vec<_> = schema
-        .iter_errors(value)
-        .map(|e| format!("{} at {}", e, e.instance_path()))
-        .collect();
-    assert!(errors.is_empty(), "{}", errors.join("\n"));
 }
 
 fn cli(repo: &Path, state: &Path, args: &[&str]) -> Output {
@@ -111,7 +76,7 @@ fn append_delivery(
     lease: &review_store::store::task::TaskLease,
     template: &TaskDeliveryRecordV1,
     receipt: &Value,
-) {
+) -> Result<(), review_store::StoreError> {
     let mut record = template.clone();
     record.receipt_id = cas.put_json(receipt).unwrap();
     record.target_id = cas.put_json(&receipt["target"]).unwrap();
@@ -129,13 +94,13 @@ fn append_delivery(
         )
         .unwrap()
         .0;
-    store.record_task_delivery(cas, lease, &id).unwrap();
+    store.record_task_delivery(cas, lease, &id).map(drop)
 }
 
 #[test]
 fn task_file_and_catalog_schemas_match_real_fixtures_and_cli_refusals() {
     let file_schema = validator("task-file-v1.json");
-    let catalog_schema = validator("task-catalog-v1.json");
+    let catalog_schema = validator("task-catalog-v2.json");
     for name in ["pagination", "review", "embedded-review", "bounded-repair"] {
         let fixture = workspace().join("fixtures/task-runtime").join(name);
         valid(
@@ -174,7 +139,7 @@ fn task_file_and_catalog_schemas_match_real_fixtures_and_cli_refusals() {
         planned["selection"]["assessment"]["decision"]["kind"],
         "selected"
     );
-    valid(&validator("task-inspection-v3.json"), &planned);
+    valid(&validator("task-inspection-v11.json"), &planned);
     let cases = [
         ("/schema", json!("af.task-file/2")),
         ("/task_id", json!("bad/task")),
@@ -282,7 +247,7 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
-    valid(&validator("task-inspection-v3.json"), &inspection);
+    valid(&validator("task-inspection-v11.json"), &inspection);
     let schema = validator("compiled-task-v1.json");
     let graph = &inspection["graph"];
     valid(&schema, graph);
@@ -357,16 +322,17 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
 }
 
 #[test]
-fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_versions() {
+fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, state) = task_cli::fixture_named(directory.path(), "pagination");
-    let inspection_schema = validator("task-inspection-v3.json");
+    let inspection_schema = validator("task-inspection-v11.json");
     let list_schema = validator("task-list-entry-v2.json");
     let planned = json_output(
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
     valid(&inspection_schema, &planned);
+    assert_eq!(planned["schema"], "af/task-inspection@11");
     let exact = json_output(
         cli(
             &repo,
@@ -404,10 +370,15 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
         ),
         0,
     );
-    let runtime_inspection_schema = validator("task-inspection-v9.json");
-    valid(&runtime_inspection_schema, &finished);
-    assert_eq!(finished["schema"], "af/task-inspection@9");
-    assert!(!inspection_schema.is_valid(&finished));
+    valid(&inspection_schema, &finished);
+    assert_eq!(finished["schema"], "af/task-inspection@11");
+    assert!(
+        !finished["runtime_observations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!finished["attempt_walls"].as_array().unwrap().is_empty());
     let listed = json_output(cli(&repo, &state, &["task", "list"]), 0);
     let entry = &listed["tasks"][0];
     valid(&list_schema, entry);
@@ -419,9 +390,9 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
     );
 
     let digest = format!("sha256:{}", "a".repeat(64));
-    let record = TaskExecutionRecordV1::Settled {
+    let wide = TaskExecutionRecordV1::Settled {
         attempt_id: "A".repeat(26),
-        charged_tokens: 7,
+        charged_tokens: u128::MAX,
         result: TaskAttemptResultV1::Failed {
             diagnostic_id: digest.clone(),
             feedback_id: None,
@@ -429,32 +400,46 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
         raw_artifact_ids: vec![],
         usage_id: None,
     };
-    record.validate().unwrap();
-    let mut wide = record.clone();
-    if let TaskExecutionRecordV1::Settled { charged_tokens, .. } = &mut wide {
-        *charged_tokens = u128::MAX;
-    }
-    let v2 = TaskExecutionRecordV2::from_accounting(&record).unwrap();
-    let v3 = TaskExecutionRecordV3::from_accounting(&wide).unwrap();
-    v2.validate().unwrap();
-    v3.validate().unwrap();
-    for (version, record) in [
-        (1, serde_json::to_value(record).unwrap()),
-        (2, serde_json::to_value(v2).unwrap()),
-        (3, serde_json::to_value(v3).unwrap()),
-    ] {
+    wide.validate().unwrap();
+    let mut value = finished.clone();
+    value["execution_records"] = json!([{"artifact_id":digest,"artifact_type":"af/TaskExecutionRecord@5","record":wide,"diagnostic":{"schema":"af.task-diagnostic/1","error":"opaque"}}]);
+    value["chargeable_tokens"] = json!(u128::MAX.to_string());
+    valid(&inspection_schema, &value);
+    let mut opaque = value.clone();
+    opaque["execution_records"][0]["diagnostic"] = json!(["opaque"]);
+    assert!(
+        !inspection_schema.is_valid(&opaque),
+        "a Failed settlement's diagnostic is an object"
+    );
+    value["execution_records"][0]["artifact_type"] = json!("af/TaskExecutionRecord@3");
+    assert!(
+        !inspection_schema.is_valid(&value),
+        "one closed execution record type"
+    );
+    let mut scoped = finished.clone();
+    let other = scoped["execution_records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|entry| {
+            !matches!(
+                entry["record"]["kind"].as_str(),
+                Some("settled" | "usage_observed")
+            )
+        })
+        .expect("a record that is not a settlement");
+    scoped["execution_records"][other]["diagnostic"] =
+        json!({"schema": "af.task-diagnostic/1", "error": "opaque"});
+    assert!(
+        !inspection_schema.is_valid(&scoped),
+        "only a settlement carries a diagnostic"
+    );
+    for section in ["attempt_walls", "runtime_observations"] {
         let mut value = finished.clone();
-        value["execution_records"] = json!([{"artifact_id":digest,"artifact_type":format!("af/TaskExecutionRecord@{version}"),"record":record,"diagnostic":["historical",{"opaque":true}]}]);
-        value["chargeable_tokens"] = json!(u128::MAX.to_string());
-        valid(&runtime_inspection_schema, &value);
-        value["execution_records"][0]["artifact_type"] = json!(if version == 1 {
-            "af/TaskExecutionRecord@2"
-        } else {
-            "af/TaskExecutionRecord@1"
-        });
+        value.as_object_mut().unwrap().remove(section);
         assert!(
-            !runtime_inspection_schema.is_valid(&value),
-            "mismatched version {version}"
+            !inspection_schema.is_valid(&value),
+            "measured walls and their runtime sidecars appear together: {section}"
         );
     }
     for charge in [
@@ -465,7 +450,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
     ] {
         let mut value = finished.clone();
         value["chargeable_tokens"] = charge.clone();
-        assert!(!runtime_inspection_schema.is_valid(&value));
+        assert!(!inspection_schema.is_valid(&value));
         let mut value = entry.clone();
         value["chargeable_tokens"] = charge;
         assert!(!list_schema.is_valid(&value));
@@ -478,14 +463,14 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
     ] {
         let mut value = finished.clone();
         value[key] = bad;
-        assert!(!runtime_inspection_schema.is_valid(&value), "{key}");
+        assert!(!inspection_schema.is_valid(&value), "{key}");
     }
     let mut value = planned.clone();
     value.as_object_mut().unwrap().remove("plan");
     assert!(!inspection_schema.is_valid(&value));
     let mut value = finished.clone();
     value.as_object_mut().unwrap().remove("result");
-    assert!(!runtime_inspection_schema.is_valid(&value));
+    assert!(!inspection_schema.is_valid(&value));
     let mut value = planned.clone();
     value["result"] = finished["result"].clone();
     assert!(!inspection_schema.is_valid(&value));
@@ -519,7 +504,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
     );
     let delivered = json_output(cli(&repo, &state, &["task", "show", "pagination-cli"]), 0);
     assert_eq!(delivered["delivery"], receipt);
-    valid(&runtime_inspection_schema, &delivered);
+    valid(&inspection_schema, &delivered);
     let listed = json_output(cli(&repo, &state, &["task", "list"]), 0);
     valid(&list_schema, &listed["tasks"][0]);
 
@@ -538,15 +523,15 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
         .unwrap();
     let mut value = delivered.clone();
     value["delivery"] = cas.get_json(&prepared.1.receipt_id).unwrap();
-    valid(&runtime_inspection_schema, &value);
+    valid(&inspection_schema, &value);
     value["delivery"]["target"]
         .as_object_mut()
         .unwrap()
         .remove("branch");
-    assert!(!runtime_inspection_schema.is_valid(&value));
+    assert!(!inspection_schema.is_valid(&value));
     let mut value = delivered.clone();
     value["delivery"]["unexpected"] = json!(true);
-    assert!(!runtime_inspection_schema.is_valid(&value));
+    assert!(!inspection_schema.is_valid(&value));
 
     let preparation = cas.get_json(&prepared.1.receipt_id).unwrap();
     let terminal = projection
@@ -562,13 +547,12 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
         "extra_receipt",
         "extra_outcome",
         "invalid_ignored_paths",
-        "historical_ignored_paths",
+        "missing_ignored_paths",
     ]
     .into_iter()
     .enumerate()
     {
         let is_prepared = index < 4;
-        let historical = case == "historical_ignored_paths";
         let mut raw = if is_prepared {
             preparation.clone()
         } else {
@@ -583,18 +567,14 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
             "extra_preparation" | "extra_receipt" => raw["unexpected"] = json!(true),
             "extra_outcome" => raw["outcome"]["unexpected"] = json!(true),
             "invalid_ignored_paths" => raw["ignored_paths"] = json!([7]),
-            "historical_ignored_paths" => {
+            "missing_ignored_paths" => {
                 raw.as_object_mut().unwrap().remove("ignored_paths");
             }
             _ => unreachable!(),
         }
         let mut view = delivered.clone();
         view["delivery"] = raw.clone();
-        assert_eq!(
-            runtime_inspection_schema.is_valid(&view),
-            historical,
-            "{case}"
-        );
+        assert!(!inspection_schema.is_valid(&view), "{case}");
         let isolated = directory.path().join(format!("delivery-{index}"));
         task_cli::copy_tree(&before_delivery, &isolated);
         let cas = review_store::Cas::open_existing(isolated.join("cas")).unwrap();
@@ -603,7 +583,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
             .take_task_lease(&cas, "pagination-cli", "schema-test", 15000)
             .unwrap();
         if !is_prepared {
-            append_delivery(&cas, &mut store, &lease, &prepared.1, &preparation);
+            append_delivery(&cas, &mut store, &lease, &prepared.1, &preparation).unwrap();
         }
         append_delivery(
             &cas,
@@ -615,23 +595,32 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
                 &terminal.1
             },
             &raw,
-        );
+        )
+        .unwrap();
         store.release_task_lease(&cas, &lease).unwrap();
         drop(store);
         for args in [vec!["task", "show", "pagination-cli"], vec!["task", "list"]] {
-            let output = cli(&repo, &isolated, &args);
-            if historical {
-                let shown = json_output(output, 0);
-                let retained = if args[1] == "show" {
-                    &shown["delivery"]
-                } else {
-                    &shown["tasks"][0]["delivery"]
-                };
-                assert_eq!(retained, &raw, "Historical receipt was rewritten");
-                assert!(retained.get("ignored_paths").is_none());
-            } else {
-                refused(output, case);
-            }
+            refused(cli(&repo, &isolated, &args), case);
         }
     }
+
+    // Every delivery binds the exact Task result: the public schema and the Store both refuse a
+    // preparation or receipt without it.
+    let isolated = directory.path().join("delivery-missing-result");
+    task_cli::copy_tree(&before_delivery, &isolated);
+    let cas = review_store::Cas::open_existing(isolated.join("cas")).unwrap();
+    let mut store = review_store::EventStore::open(isolated.join("events.sqlite")).unwrap();
+    let lease = store
+        .take_task_lease(&cas, "pagination-cli", "schema-test", 15000)
+        .unwrap();
+    for (template, bound) in [(&prepared.1, &preparation), (&terminal.1, &receipt)] {
+        let mut raw = bound.clone();
+        raw.as_object_mut().unwrap().remove("result_id");
+        let mut view = delivered.clone();
+        view["delivery"] = raw.clone();
+        assert!(!inspection_schema.is_valid(&view), "{raw}");
+        append_delivery(&cas, &mut store, &lease, template, &raw).unwrap_err();
+        append_delivery(&cas, &mut store, &lease, template, bound).unwrap();
+    }
+    store.release_task_lease(&cas, &lease).unwrap();
 }

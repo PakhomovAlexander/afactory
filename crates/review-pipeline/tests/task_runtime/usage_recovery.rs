@@ -44,6 +44,8 @@ impl WorkerModelAdapter for OutageModel {
         input: Vec<u8>,
         _: std::time::Duration,
         writable: bool,
+        _: Option<&std::sync::atomic::AtomicBool>,
+        _: &[(String, String)],
     ) -> ModelWorkerReturn {
         assert!(!writable);
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -83,7 +85,7 @@ impl WorkerModelAdapter for OutageModel {
                 usage_observation: None,
                 message: Ok(b"OK".to_vec()),
                 raw_artifact_ids: vec![cas.put(b"OK").unwrap()],
-                usage: Some(review_runner::TokenUsage::charge_only(7).into()),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(7)),
             }
         }
     }
@@ -283,7 +285,7 @@ fn recovery_case(fail_at: usize, incomplete: bool) {
     }
     assert_eq!(
         settlement[0].0,
-        review_core::task::execution::TASK_EXECUTION_RECORD_V3
+        review_core::task::execution::TASK_EXECUTION_RECORD_V5
     );
     let recovered_usage =
         review_runner::task::usage::read_task_usage_exact(&f.cas, &settlement[0].1).unwrap();

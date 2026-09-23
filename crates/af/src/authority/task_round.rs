@@ -1,5 +1,6 @@
 //! Common Review resumes its exact recorded Round before deciding whether any successor is
-//! authorized. The legacy `prepare` entry point retains its historical progression policy.
+//! authorized. Before its Task exists, `prepare` only captures, reuses or supersedes Round 1;
+//! every later Round starts here.
 use super::*;
 use review_store::store::task::review_round_publication::TaskReviewRoundPublication;
 #[cfg(test)]
@@ -272,34 +273,20 @@ pub(crate) fn prepare_recorded_round(
             .map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    let projection =
-        LedgerProjection::from_events(&run_id, &events, cas).map_err(|error| error.to_string())?;
-    let prior_subject_id = original_prior_subject(&events, event, &payload)?;
-    let round = load_round_with_prior_subject(
+    let round = load_round(
         options,
         cas,
-        event.event_id.clone(),
+        &events,
+        event,
         payload,
-        (&snapshot.repository_id, &prior_subject_id),
-        projection,
+        &snapshot.repository_id,
     )?;
     let authority = RoundAuthority::load_recorded(store, cas, &run_id, &round.event_id)?;
-    let check_timeout = Duration::from_secs(
-        campaign
-            .manifest
-            .check_timeout_seconds
-            .unwrap_or(campaign.loaded.check_timeout_seconds()),
-    );
-    let git_timeout = Duration::from_secs(
-        campaign
-            .manifest
-            .git_timeout_seconds
-            .unwrap_or(review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS),
-    );
+    let check_timeout = Duration::from_secs(campaign.manifest.check_timeout_seconds);
+    let git_timeout = Duration::from_secs(campaign.manifest.git_timeout_seconds);
     let convergence = options.mode.convergence(campaign.loaded.convergence());
     Ok(PreparedRun {
         loaded: campaign.loaded,
-        snapshot: round.snapshot,
         run_id,
         focus: campaign.manifest.focus,
         timeout: Duration::from_secs(campaign.manifest.reviewer_timeout_seconds),
@@ -307,13 +294,12 @@ pub(crate) fn prepare_recorded_round(
         git_timeout,
         convergence,
         authority,
-        ledger_projection: round.ledger_projection,
     })
 }
 
 /// The same numerical Round retains its original prior sets through each exact supersession.
 /// Their legacy raw headers therefore continue to name the first epoch's Subject.
-fn original_prior_subject(
+pub(super) fn original_prior_subject(
     events: &[review_core::RunEvent],
     event: &review_core::RunEvent,
     payload: &RoundStartedPayloadV1,

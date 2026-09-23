@@ -2,13 +2,14 @@
 #
 #   scripts/release.sh X.Y.Z   →  a "release: vX.Y.Z" PR (version bump + CHANGELOG section)
 #   merge it                   →  this run tags vX.Y.Z, checks the tagged commit on Linux and
-#                                 macOS, builds every target, plans the consumer fixtures with
-#                                 each built binary, signs SHA256SUMS, and publishes the release.
+#                                 macOS, builds every target, onboards and plans a fresh
+#                                 repository with each built binary, signs SHA256SUMS, and
+#                                 publishes the release.
 #
 # A manually pushed vX.Y.Z tag takes the same path from the tag onward.
 # Builds run alongside validation; publish joins both required branches.
 # Nothing is published unless `make check` passed on the tagged commit on both operating systems and every archive
-# planned the consumer fixtures; nothing is published unsigned.
+# onboarded and planned a fresh repository; nothing is published unsigned.
 name: Release
 
 on:
@@ -126,7 +127,25 @@ jobs:
           [[ "$reported" == "af ${tag#v}" ]] || { echo "built binary reports '$reported', expected 'af ${tag#v}'"; exit 1; }
           "$run" --version --json | tee version.json
           grep -q '"release_key": "embedded"' version.json || { echo "this build embeds no release key (crates/af/keys/release.pub); a release must"; exit 1; }
-          fixtures/consumers/check.sh "$run"
+          # A functional smoke of this very binary (the aarch64 one under qemu): onboard a fresh
+          # repository and plan it, token-free, with no Campaign state and no Provider.
+          (
+            export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+            smoke="$RUNNER_TEMP/smoke"
+            rm -rf "$smoke" && mkdir -p "$smoke"
+            git -C "$smoke" init -q
+            "$run" onboard --repo "$smoke" --runner codex --gate check=true --apply
+            git -C "$smoke" add -A
+            git -C "$smoke" -c user.name=release -c user.email=release@example.invalid \
+              commit -q -m "onboarded by the built binary"
+            "$run" review plan --repo "$smoke" \
+              --policy-rev HEAD --base HEAD --candidate HEAD --json > "$RUNNER_TEMP/plan.json"
+            grep -q '"schema": *"af/review-plan@1"' "$RUNNER_TEMP/plan.json" || {
+              echo "the built binary planned no af/review-plan@1 document"
+              cat "$RUNNER_TEMP/plan.json"
+              exit 1
+            }
+          )
           # The archive: the binary at its root (what `af self` and install.sh expect), plus
           # completions and man pages rendered by that very binary so they cannot drift.
           rm -rf dist && mkdir -p dist/completions dist/man

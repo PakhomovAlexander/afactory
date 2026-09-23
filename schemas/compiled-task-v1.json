@@ -335,30 +335,6 @@
           "additionalProperties": false,
           "required": [
             "kind",
-            "bindings",
-            "probe_policy_id"
-          ],
-          "properties": {
-            "kind": {
-              "const": "provider_admission_brokered"
-            },
-            "bindings": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "uniqueItems": true
-            },
-            "probe_policy_id": {
-              "type": "string"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
             "review_node",
             "operation"
           ],

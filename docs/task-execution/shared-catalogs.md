@@ -35,7 +35,7 @@ process bound.
 After reviewing the import, add its lock to the committed project `.af/task-catalog.toml`:
 
 ```toml
-schema = "af.task-catalog/1"
+schema = "af.task-catalog/2"
 code_policy = ".af/code-policy.toml"
 imports = [".af/catalog/team/catalog.lock.json"]
 

@@ -1,5 +1,8 @@
 //! One bounded subprocess boundary shared by reviewers, checks, and sandbox providers.
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("af supports Linux and macOS only");
+
 use std::io::{Read, Write};
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -187,7 +190,6 @@ where
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-    #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
@@ -285,7 +287,6 @@ fn wait_exact(
     wait_exact_cancellable(child, deadline, None)
 }
 
-#[cfg(unix)]
 fn wait_exact_cancellable(
     mut child: std::process::Child,
     deadline: Instant,
@@ -336,48 +337,12 @@ fn wait_exact_cancellable(
     }
 }
 
-#[cfg(not(unix))]
-fn wait_exact_cancellable(
-    mut child: std::process::Child,
-    deadline: Instant,
-    cancellation: Option<&std::sync::atomic::AtomicBool>,
-) -> Result<ExitStatus, SupervisedError> {
-    let mut delay = Duration::from_millis(1);
-    loop {
-        let cancelled =
-            cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire));
-        match child.try_wait().map_err(SupervisedError::Wait)? {
-            Some(status) => return Ok(status),
-            None if Instant::now() < deadline && !cancelled => {
-                std::thread::sleep(delay);
-                delay = (delay * 2).min(Duration::from_millis(20));
-            }
-            None => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(if cancelled {
-                    SupervisedError::Cancelled
-                } else {
-                    SupervisedError::TimedOut {
-                        stdout: Vec::new(),
-                        stderr: Vec::new(),
-                    }
-                });
-            }
-        }
-    }
-}
-
-#[cfg(unix)]
 fn kill_process_group(pid: u32) {
     let _ = nix::sys::signal::killpg(
         nix::unistd::Pid::from_raw(pid as i32),
         nix::sys::signal::Signal::SIGKILL,
     );
 }
-
-#[cfg(not(unix))]
-fn kill_process_group(_pid: u32) {}
 
 #[cfg(test)]
 mod tests {

@@ -7,10 +7,10 @@ use std::path::Path;
 
 use review_core::{WorkspaceBasisV1, WorkspaceFallbackReasonV1, is_workspace_id};
 use review_sandbox::{
-    Mode, RecordedPreparation, Sandbox, WorkspaceErrorKind, WorkspacePreparation, WorkspaceRoot,
-    prepare_workspace, workspace_id,
+    Mode, RecordedPreparation, Sandbox, WorkspacePreparation, WorkspaceRoot, prepare_workspace,
+    workspace_id,
 };
-use review_source_git::{Entry, EntryKind, Manifest, PathEncoding, materialize, scan_tree};
+use review_source_git::{Entry, EntryKind, Manifest, materialize, scan_tree};
 use review_store::Cas;
 
 fn snapshot(byte: char) -> String {
@@ -117,12 +117,27 @@ fn a_stable_root_is_materialized_once_rebased_per_head_and_reused_unchanged() {
     );
     assert_eq!(first.verified_digest, head_one.content_digest());
     assert_eq!(first.entries_touched, 3);
-    assert_eq!(first.template.root(), root.tree());
-    assert_eq!(first.template.manifest(), &head_one);
+    // The template is the stable tree itself, not an equal copy elsewhere: a file dropped into
+    // `root.tree()` shows up in the next clone.
+    let sentinel = root.tree().join("sentinel.txt");
+    std::fs::write(&sentinel, b"stable root\n").unwrap();
+    let probe = Sandbox::from_template(&first.template, Mode::EphemeralWrite).unwrap();
     assert_eq!(
-        scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
-        head_one
+        std::fs::read(probe.root().join("sentinel.txt")).unwrap(),
+        b"stable root\n",
+        "the template is rooted at the stable workspace tree"
     );
+    drop(probe);
+    std::fs::remove_file(&sentinel).unwrap();
+    let clone = Sandbox::from_template(&first.template, Mode::EphemeralWrite).unwrap();
+    assert_eq!(
+        clone.baseline(),
+        &head_one,
+        "clones start from the verified head"
+    );
+    assert_eq!(scan_tree(clone.root()).unwrap(), head_one);
+    drop(clone);
+    assert_eq!(scan_tree(root.tree()).unwrap(), head_one);
 
     let record = recorded(&first, &snapshot('1'));
     let second = prepare_workspace(&root, &head_two, &snapshot('2'), &cas, Some(&record)).unwrap();
@@ -145,10 +160,7 @@ fn a_stable_root_is_materialized_once_rebased_per_head_and_reused_unchanged() {
         tree_bytes(&fresh),
         "the re-based template is byte-identical to a full materialization"
     );
-    assert_eq!(
-        scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
-        head_two
-    );
+    assert_eq!(scan_tree(root.tree()).unwrap(), head_two);
     assert!(!root.tree().join("b.rs").exists());
 
     // The same tree under a new Snapshot ID: nothing is materialized and nothing is touched,
@@ -273,10 +285,7 @@ fn an_untrusted_root_fails_closed_into_a_full_materialization_that_records_why()
         Some(&snapshot('5')),
         "a file replaced by a directory",
     );
-    assert_eq!(
-        scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
-        head_three
-    );
+    assert_eq!(scan_tree(root.tree()).unwrap(), head_three);
     assert!(!root.path().join("tree.next").exists());
     assert!(!root.path().join("tree.old").exists());
 }
@@ -328,11 +337,7 @@ fn an_unchanged_head_is_verified_before_it_is_reused() {
         );
         assert_eq!(rebuilt.entries_touched, 3, "{what}");
         assert_eq!(tree_bytes(&root.tree()), tree_bytes(&fresh), "{what}");
-        assert_eq!(
-            scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
-            head,
-            "{what}"
-        );
+        assert_eq!(scan_tree(root.tree()).unwrap(), head, "{what}");
         // Verified again, the same head is reused without a write.
         let record = recorded(&rebuilt, &snapshot(current));
         let next = char::from_digit(round + 1, 10).unwrap();
@@ -379,10 +384,7 @@ fn a_marker_the_log_never_recorded_is_rebuilt_and_supplies_no_lineage() {
         Some(snapshot('2').as_str()),
         "the record's head, never the marker's"
     );
-    assert_eq!(
-        scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
-        head_two
-    );
+    assert_eq!(scan_tree(root.tree()).unwrap(), head_two);
 
     // A marker claiming a digest the log never verified is a marker the log never recorded.
     let record = recorded(&rebased, &snapshot('3'));
@@ -418,7 +420,6 @@ fn a_marker_the_log_never_recorded_is_rebuilt_and_supplies_no_lineage() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn a_drifted_symlink_can_reach_nothing_outside_the_root() {
     let dir = tempfile::tempdir().unwrap();
@@ -456,13 +457,9 @@ fn a_drifted_symlink_can_reach_nothing_outside_the_root() {
         !root.path().join("tree.next").exists(),
         "the leftover symlink was unlinked, not traversed"
     );
-    assert_eq!(
-        scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
-        head_two
-    );
+    assert_eq!(scan_tree(root.tree()).unwrap(), head_two);
 }
 
-#[cfg(unix)]
 #[test]
 fn a_preparation_failure_names_no_host_path() {
     let dir = tempfile::tempdir().unwrap();
@@ -477,8 +474,8 @@ fn a_preparation_failure_names_no_host_path() {
         Err(error) => error,
         Ok(_) => panic!("a symlinked root must be refused"),
     };
-    assert_eq!(error.kind(), WorkspaceErrorKind::RootUnavailable);
     let durable = error.to_string();
+    assert_eq!(durable, "the warm workspace root is unavailable");
     assert!(
         !durable.contains("distinctive-cache-root") && !durable.contains(&id),
         "the durable message carries no path: {durable}"
@@ -496,7 +493,6 @@ fn workspace_identities_are_opaque_stable_and_node_private() {
     assert_ne!(one, workspace_id("other", &snapshot('c'), "correctness"));
     assert_ne!(one, workspace_id("run", &snapshot('d'), "correctness"));
     let root = WorkspaceRoot::new(dir.path(), &one).unwrap();
-    assert_eq!(root.id(), one);
     assert_eq!(root.path(), dir.path().join(&one));
     assert_eq!(root.tree(), dir.path().join(&one).join("tree"));
     assert!(

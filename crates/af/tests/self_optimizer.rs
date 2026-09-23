@@ -2,6 +2,8 @@ use serde_json::{Value, json};
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
+#[path = "support/schemas.rs"]
+mod schemas;
 #[path = "support/task_cli.rs"]
 mod task_cli;
 
@@ -25,6 +27,15 @@ fn af(repo: &Path, state: &Path, extra: &[&str]) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).unwrap()
+}
+
+/// Checks actual `af task` JSON against the one published inspection schema.
+fn valid_inspection(value: &Value) {
+    static SCHEMA: std::sync::OnceLock<jsonschema::Validator> = std::sync::OnceLock::new();
+    schemas::valid(
+        SCHEMA.get_or_init(|| schemas::validator("task-inspection-v11.json")),
+        value,
+    );
 }
 
 fn install_optimizer_catalog(repo: &Path) {
@@ -183,7 +194,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         repo.join(".af/optimization-sources.toml"),
         toml::to_string(&json!({
             "schema":"af.optimization-sources/1", "project_id":project,
-            "sources":[{"adapter":"af","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]
+            "sources":[{"adapter":"external","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]
         }))
         .unwrap(),
     )
@@ -329,10 +340,6 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         first_configuration.payload["candidate_execution_configuration_id"]
             .as_str()
             .unwrap();
-    assert!(
-        first_configuration.payload["baseline_execution_configuration_id"].is_null(),
-        "instructions are no longer transported as baseline arm data"
-    );
     let candidate_execution = cas.get_artifact(candidate_execution_id).unwrap();
     assert_ne!(
         candidate_execution.payload["original_package_digest"],
@@ -978,7 +985,10 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         });
     let runtime = cas.get_artifact(runtime_id).unwrap();
     assert_eq!(runtime.payload["caches"][0]["kind"], "cargo");
-    assert_eq!(runtime.payload["caches"][0]["result"], "prepared");
+    assert!(
+        runtime.payload["caches"][0].get("result").is_none(),
+        "preparation evidence makes no cache-result claim"
+    );
     assert!(
         runtime.payload["caches"][0]["bytes_available"]
             .as_u64()
@@ -1247,6 +1257,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         &["task", "show", task, "--repo", delivered.to_str().unwrap()],
     );
     assert_eq!(adoption_projection["schema"], "af/task-inspection@11");
+    valid_inspection(&adoption_projection);
     let projected = adoption_projection["adoption_observations"]
         .as_array()
         .unwrap()
@@ -1324,7 +1335,7 @@ fn controlled_candidate_with_inputs(
     let project = format!("sha256:{}", "3".repeat(64));
     std::fs::write(repo.join(".af/optimization-sources.toml"), toml::to_string(&json!({
         "schema":"af.optimization-sources/1", "project_id":project,
-        "sources":[{"adapter":"af","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]
+        "sources":[{"adapter":"external","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]
     })).unwrap()).unwrap();
     std::fs::write(repo.join(".af/history.jsonl"), json!({"observed_unix_ms":"1","attribution":{"project_id":project,"case_family":"prior","execution_id":"prior"},"outcome":{"outcome":"verified","retries":0,"repairs":0,"later_defects":0}}).to_string()+"\n").unwrap();
     std::fs::write(
@@ -1583,7 +1594,7 @@ fn approved_experiment_that_exceeds_parent_resources_becomes_explicit_non_succes
         repo.join(".af/optimization-sources.toml"),
         toml::to_string(&json!({
             "schema":"af.optimization-sources/1", "project_id":project,
-            "sources":[{"adapter":"af","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]
+            "sources":[{"adapter":"external","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]
         }))
         .unwrap(),
     )
@@ -1719,7 +1730,7 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
     let key = install_candidate_optimizer_catalog(&repo);
     let project = format!("sha256:{}", "3".repeat(64));
     let config = json!({"schema":"af.optimization-sources/1","project_id":project,
-        "sources":[{"adapter":"af","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]});
+        "sources":[{"adapter":"external","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]});
     std::fs::write(
         repo.join(".af/optimization-sources.toml"),
         toml::to_string(&config).unwrap(),
@@ -1745,7 +1756,8 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
     }
 
     let waiting = af(&repo, &state, &["--experiment", "--execute"]);
-    assert_eq!(waiting["schema"], "af/task-inspection@10");
+    assert_eq!(waiting["schema"], "af/task-inspection@11");
+    valid_inspection(&waiting);
     assert_eq!(waiting["attempts"], 0);
     assert_eq!(waiting["phase"]["reason"], "needs_plan_review");
     let task_id = waiting["task_id"].as_str().unwrap();
@@ -1900,6 +1912,7 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
         ],
     );
     let completed = command_json(&repo, &state, &["task", "run", task_id, "--execute"]);
+    valid_inspection(&completed);
     assert_eq!(completed["attempts"], 2);
     assert_eq!(completed["result"]["acceptance"], "inconclusive");
     assert_eq!(
@@ -2004,6 +2017,7 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
             reject_signature.to_str().unwrap(),
         ],
     );
+    valid_inspection(&rejected);
     assert_eq!(rejected["attempts"], 0);
     assert_eq!(rejected["phase"]["reason"], "needs_human");
     assert!(
@@ -2062,7 +2076,7 @@ fn self_optimize_compiles_executes_and_replays_without_model_calls() {
     install_optimizer_catalog(&repo);
     let project = format!("sha256:{}", "1".repeat(64));
     let config = json!({"schema":"af.optimization-sources/1","project_id":project,
-        "sources":[{"adapter":"af","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]});
+        "sources":[{"adapter":"external","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]});
     std::fs::write(
         repo.join(".af/optimization-sources.toml"),
         toml::to_string(&config).unwrap(),
@@ -2107,7 +2121,6 @@ fn self_optimize_compiles_executes_and_replays_without_model_calls() {
     let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
     let report = cas.get_json(report_id).unwrap();
     assert_eq!(report["type"], "af/OptimizationReport@1");
-    assert_eq!(report["payload"]["live_demonstrations"], "pending");
     let output = Command::new(env!("CARGO_BIN_EXE_af"))
         .current_dir(&repo)
         .args([
@@ -2156,7 +2169,8 @@ fn actual_code_task_runtime_evidence_round_trips_through_native_af_capture() {
         String::from_utf8_lossy(&task.stderr)
     );
     let receipt: Value = serde_json::from_slice(&task.stdout).unwrap();
-    assert_eq!(receipt["schema"], "af/task-inspection@9");
+    assert_eq!(receipt["schema"], "af/task-inspection@11");
+    valid_inspection(&receipt);
     let runtime = receipt["runtime_observations"].as_array().unwrap();
     assert!(runtime.iter().any(|entry| {
         entry["record"]["spans"]
@@ -2220,5 +2234,4 @@ fn actual_code_task_runtime_evidence_round_trips_through_native_af_capture() {
             .is_some_and(|fields| fields.iter().any(|field| field == "elapsed_time")),
         "measured Attempt/check time was downgraded to missing"
     );
-    assert_eq!(report["payload"]["live_demonstrations"], "pending");
 }

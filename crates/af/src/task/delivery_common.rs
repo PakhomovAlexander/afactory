@@ -1,4 +1,4 @@
-//! Journal adapter for the same local delivery transaction and recovery implementation.
+//! The common Task Store journal behind the local delivery transaction and its recovery.
 use super::*;
 use review_core::task::delivery::*;
 use review_core::task::optimization_light::{
@@ -8,27 +8,6 @@ use review_core::task::{TASK_RESULT_V1, TaskAcceptanceV1, TaskPhaseV1, TaskResul
 use review_store::EventStore;
 use review_store::store::task::{TaskLease, TaskProjection};
 use std::sync::{Arc, Mutex, mpsc};
-
-pub(super) trait DeliveryJournal {
-    fn append(
-        &mut self,
-        cas: &Cas,
-        task_id: &str,
-        event: &str,
-        artifact: &str,
-    ) -> Result<(), String>;
-}
-impl DeliveryJournal for TaskStore {
-    fn append(
-        &mut self,
-        cas: &Cas,
-        task_id: &str,
-        event: &str,
-        artifact: &str,
-    ) -> Result<(), String> {
-        TaskStore::append(self, cas, task_id, event, artifact)
-    }
-}
 
 pub(super) struct CommonDelivery {
     store: Arc<Mutex<EventStore>>,
@@ -182,8 +161,10 @@ impl Drop for CommonDelivery {
             .release_task_lease(&self.cas, &self.lease);
     }
 }
-impl DeliveryJournal for CommonDelivery {
-    fn append(
+
+impl CommonDelivery {
+    /// Record one delivery transition, whose receipt is already in the CAS, in the Task log.
+    pub(super) fn append(
         &mut self,
         cas: &Cas,
         task_id: &str,
@@ -312,9 +293,7 @@ pub(super) fn events(task: &TaskProjection) -> Vec<TaskEvent> {
     task.deliveries
         .iter()
         .filter(|(_, value)| &value.result_id == result_id)
-        .enumerate()
-        .map(|(index, (_, value))| TaskEvent {
-            sequence: index as u64 + 1,
+        .map(|(_, value)| TaskEvent {
             event_type: match value.status {
                 TaskDeliveryStatusV1::Prepared => "TaskDeliveryPrepared@1",
                 TaskDeliveryStatusV1::Delivered => "TaskDelivered@1",
@@ -379,20 +358,17 @@ pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets,
         .as_str()
         .ok_or("delivery requires a committed source Snapshot")?
         .to_owned();
-    let convert = |snapshot: review_source_git::task::TaskSnapshot, kind: &str| SnapshotReceipt {
-        schema: "af.task-snapshot/1".into(),
-        kind: kind.into(),
+    let convert = |snapshot: review_source_git::task::TaskSnapshot| SnapshotReceipt {
         content_digest: snapshot.content_digest,
         manifest_artifact_id: snapshot.manifest_id,
-        parent_snapshot_id: snapshot.parent_snapshot_id,
         repository_id: repository_id.clone(),
-        source_revision: Some(source_revision.clone()),
+        source_revision: source_revision.clone(),
     };
     Ok(DeliveryAssets {
         source_snapshot_id,
         derived_snapshot_id,
-        source: convert(source, "source"),
-        derived: convert(derived, "derived"),
+        source: convert(source),
+        derived: convert(derived),
         source_manifest,
         derived_manifest,
     })

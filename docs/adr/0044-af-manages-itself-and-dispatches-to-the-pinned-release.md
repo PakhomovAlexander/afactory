@@ -7,7 +7,9 @@ Part 2's "verifying it against the release checksums" is revised by
 per-target digest is what the bytes must match.
 ADR-0111 narrowly supersedes the exhaustive command list below for machine-local
 `af provider setup` and `af provider recover`; repository-authority and execution commands remain
-pinned.
+pinned. Superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the `afactory/`
+configuration read-through and the `AFACTORY_*` rename refusals. The trust gate that the
+Consequences declare was never implemented, and its `af help trust` topic was removed before GA.
 
 Consumers ran `af` through per-repository launcher scripts that carried a version and digests,
 while `af.lock` (ADR for #47) already recorded the release that wrote it and could only warn or

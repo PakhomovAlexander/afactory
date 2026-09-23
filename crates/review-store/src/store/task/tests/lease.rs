@@ -37,8 +37,8 @@ fn heartbeat_reads_exact_fresh_writer_and_expiry_without_granting_authority() {
         reader.task_lease_state(&current).unwrap(),
         f.state().lease_until
     );
-    // Heartbeat liveness intentionally does not make a corrupt plan usable. The original
-    // complete currentness/renewal/dispatch paths still refuse its missing CAS authority.
+    // Heartbeat liveness intentionally does not make a corrupt plan usable. The complete
+    // renewal and dispatch paths still refuse its missing CAS authority.
     let id = f.plan_id.strip_prefix("sha256:").unwrap();
     let artifact = f
         ._dir
@@ -48,7 +48,6 @@ fn heartbeat_reads_exact_fresh_writer_and_expiry_without_granting_authority() {
         .join(&id[2..]);
     std::fs::remove_file(artifact).unwrap();
     assert!(reader.task_lease_state(&current).is_ok());
-    assert!(f.store.check_task_lease_current(&f.cas, &current).is_err());
     assert!(f.store.renew_task_lease(&f.cas, &current, 60_000).is_err());
     assert!(
         f.store
@@ -68,7 +67,6 @@ fn heartbeat_refuses_expiry_future_clocks_and_changed_latest_writer() {
         "future",
         "writer",
         "epoch",
-        "broker_clock",
         "foreign",
         "malformed",
     ] {
@@ -92,10 +90,6 @@ fn heartbeat_refuses_expiry_future_clocks_and_changed_latest_writer() {
                     ("$.epoch", json!(2))
                 };
                 connection.execute("UPDATE events SET payload=json_set(payload,?2,json(?3)) WHERE run_id=?1 AND sequence=1", rusqlite::params![run, field, value.to_string()]).unwrap();
-            }
-            "broker_clock" => {
-                let value = json!({"now_unix_ms":now().unwrap()+10_000,"record_id":f.plan_id});
-                connection.execute("UPDATE events SET type='TaskBrokerTransition@1',payload=?2 WHERE run_id=?1 AND sequence=1", rusqlite::params![run, value.to_string()]).unwrap();
             }
             "foreign" => {
                 connection
@@ -140,25 +134,16 @@ fn heartbeat_projection_synthetic_history_benchmark() {
             .unwrap();
     }
     let prefix = f.store.len(&task_run_id("task-1").unwrap()).unwrap();
-    let mut elapsed = [0_u128; 2];
-    for (full, duration) in elapsed.iter_mut().enumerate() {
-        let started = std::time::Instant::now();
-        for _ in 0..64 {
-            let until = if full == 0 {
-                f.store.task_lease_state(&lease).unwrap()
-            } else {
-                f.store.check_task_lease_current(&f.cas, &lease).unwrap()
-            };
-            assert!(until > now().unwrap());
-        }
-        *duration = started.elapsed().as_micros();
+    let started = std::time::Instant::now();
+    for _ in 0..64 {
+        assert!(f.store.task_lease_state(&lease).unwrap() > now().unwrap());
     }
+    let elapsed = started.elapsed().as_micros();
     assert_eq!(
         f.store.len(&task_run_id("task-1").unwrap()).unwrap(),
         prefix
     );
     eprintln!(
-        "heartbeat benchmark: events={prefix}, iterations=64, lease_only_us={}, full_projection_us={}; synthetic single Task, no multi-Round performance claim",
-        elapsed[0], elapsed[1]
+        "heartbeat benchmark: events={prefix}, iterations=64, lease_only_us={elapsed}; synthetic single Task, no multi-Round performance claim"
     );
 }

@@ -1,7 +1,7 @@
 //! Prepare Review Round data outside a transaction, then publish it under both original
 //! Task and Review prefixes. This permit never starts an Attempt or changes the Task budget.
 use super::*;
-use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
+use review_core::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignReviewRoundV1};
 use review_core::task::review_handoff::{TaskReviewHandoffEvidenceV1, TaskReviewHandoffV1};
 use review_core::{RoundStartedPayloadV1, RunFailureReasonV3, RunReportPayloadV6, RunVerdictV3};
 
@@ -14,7 +14,7 @@ pub struct TaskReviewRoundPublication {
     epoch: u64,
     task_sequence: u64,
     review_sequence: u64,
-    predecessor: LegacyReviewRoundV1,
+    predecessor: CampaignReviewRoundV1,
     next_round: u32,
     next_epoch: u32,
     prior_finding_set_id: String,
@@ -53,7 +53,7 @@ impl TaskReviewRoundPreview {
             let input = task
                 .inputs
                 .values()
-                .find(|input| input.artifact_type == LEGACY_REVIEW_ROUND_V1)
+                .find(|input| input.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
                 .ok_or_else(|| conflict("Review successor has no captured Round input"))?;
             let [id] = input.artifact_ids.as_slice() else {
                 return Err(conflict("Review successor has ambiguous Round input"));
@@ -89,7 +89,7 @@ impl TaskReviewRoundPublication {
     pub fn next_review_sequence(&self) -> u64 {
         self.review_sequence
     }
-    pub fn predecessor(&self) -> &LegacyReviewRoundV1 {
+    pub fn predecessor(&self) -> &CampaignReviewRoundV1 {
         &self.predecessor
     }
     pub fn next_round(&self) -> u32 {
@@ -162,10 +162,10 @@ impl EventStore {
             .revision
             .inputs
             .values()
-            .find(|v| v.artifact_type == LEGACY_REVIEW_ROUND_V1)
+            .find(|v| v.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
             .expect("checked");
-        let predecessor: LegacyReviewRoundV1 =
-            payload(cas, &input.artifact_ids[0], LEGACY_REVIEW_ROUND_V1)?;
+        let predecessor: CampaignReviewRoundV1 =
+            payload(cas, &input.artifact_ids[0], CAMPAIGN_REVIEW_ROUND_V1)?;
         let events = self.replay(&predecessor.campaign_id)?;
         let event = events
             .iter()
@@ -194,11 +194,6 @@ impl EventStore {
         let mut integrated = None;
         let evidence;
         let (next_round, next_epoch, prior_demand_set_id) = if let Some(terminal) = terminal {
-            if terminal.event_type != EventType::RunReportV6 {
-                return Err(conflict(
-                    "Common Review continuation requires its canonical Task conclusion",
-                ));
-            }
             let report: RunReportPayloadV6 = serde_json::from_value(terminal.payload.clone())?;
             report.validate().map_err(conflict)?;
             if report.task_accounting.task_id != state.task_id
@@ -585,11 +580,11 @@ fn validate_events(
         }
     }
     // Supersession retains the exact original prior artifact, including its original Subject
-    // header. Only a new numeric Round builds a fresh bounded raw legacy view.
+    // header. Only a new numeric Round builds a fresh bounded raw view.
     if permit.is_restart() {
         return Ok(());
     }
-    // A prior FindingSet slot is the bounded raw legacy view, not the canonical set envelope.
+    // A prior FindingSet slot is the bounded raw flat view, not the canonical set envelope.
     let prior = cas
         .get_json(&started.prior_finding_set_id)
         .map_err(|e| StoreError::Artifact(e.to_string()))?;

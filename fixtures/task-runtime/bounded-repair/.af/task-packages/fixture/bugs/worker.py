@@ -1,3 +1,3 @@
 import json,sys
-json.load(sys.stdin)
-print('{"schema": "af.worker-reply/1", "outputs": {"result": [{"verdict": "request-changes", "summary": "Negative offset is not rejected", "reports": [{"severity": "major", "file": "pagination.py", "line": 1, "title": "Reject negative offset", "body": "A negative offset silently slices from the end.", "fix": "Raise ValueError for negative offset.", "confidence": 0.99}], "benchmark_demands": [], "disputes": []}]}}')
+r=json.load(sys.stdin)
+print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'reports':[{'severity':'major','file':'pagination.py','line':1,'title':'Reject negative offset','body':'A negative offset silently slices from the end.','fix':'Raise ValueError for negative offset.','confidence':0.99}],'benchmark_demands':[],'dispositions':[{'finding_id':f['finding_id'],'position':'corroborate','reason':'A negative offset still slices from the end.'} for f in r['inputs']['assignment'][0]['payload']['findings']]}]}}))

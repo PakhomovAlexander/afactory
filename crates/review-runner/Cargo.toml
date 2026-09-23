@@ -1,6 +1,6 @@
 [package]
 name = "review-runner"
-description = "Reviewer adapters and the canonical gather barrier: concurrency without nondeterminism"
+description = "Worker runners: the supervised process transport, input composition and the Task Worker adapter contract"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,10 +8,8 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-review-broker = { path = "../review-broker" }
 review-core = { path = "../review-core" }
 review-process = { path = "../review-process" }
-review-source-git = { path = "../review-source-git" }
 review-store = { path = "../review-store" }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }

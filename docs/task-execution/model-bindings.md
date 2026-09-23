@@ -24,11 +24,12 @@ part of the exact binding. Bare model-family aliases and `-latest` selectors are
 
 Planning performs no model inference. The compiler adds a visible internal capability node
 for each distinct effective Model binding and invocation policy. Slots with the same capability
-share that node. Catalog V1 reserves **4,096 tokens, one Attempt and 45 seconds** inside the Task's
-limits. Admission serving a required verifier is protected alongside that verifier. Pipeline
-and Task limits must have room for these Attempts; children do not create another allowance.
+share that node. A catalog that declares no explicit cost reserves **4,096 tokens, one Attempt
+and 45 seconds** inside the Task's limits. Admission serving a required verifier is protected
+alongside that verifier. Pipeline and Task limits must have room for these Attempts; children
+do not create another allowance.
 
-Catalog V2 requires an explicit finite admission cost:
+A catalog may declare an explicit finite admission cost instead:
 
 ```toml
 schema = "af.task-catalog/2"
@@ -41,8 +42,8 @@ wall_ms = 45000
 Both values must be integers from 1 through 9,007,199,254,740,991 and fit the Task's original
 resources. Each distinct capability still has one Attempt. This example is a project choice,
 not a default: size the whole Task for this cost, business work and protected verification.
-V1 forbids this field and retains its original allowance. The captured V2 authority records the
-cost and original catalog bytes; changing local files after planning cannot change either.
+The captured run authority records the cost and the original catalog bytes; changing local
+files after planning cannot change either.
 See [ADR-0091](../adr/0091-capture-explicit-task-provider-admission-costs.md).
 
 ```text
@@ -98,14 +99,14 @@ through recovery. Valid native calls retain their previous artifact identities. 
 
 Generic Claude Task returns also account for an optional per-model usage breakdown, without
 adding its overlapping top-level summary twice. Malformed or conflicting summaries preserve
-known charge and refuse output. An explicitly selected model refuses other reported model
-activity while retaining its usage; an entirely zero foreign entry is unused metadata. This
-is detection after execution, not prevention of internal client inference or its input delivery.
+known charge and refuse output. The adapter requires an explicit `--model`, and that model
+refuses other reported model activity while retaining its usage; an entirely zero foreign entry
+is unused metadata. This is detection after execution, not prevention of internal client
+inference or its input delivery.
 The adapter disables native nonessential traffic and terminal-title generation through owned
 environment settings. Static client evidence supports the automatic title path; it does not
 prove suppression of every internal call. Personal authentication grants remain unchanged.
-An absent breakdown retains the previous native format; old settled receipts are unchanged.
-Legacy Review and old smoke parsing remain separate follow-ups. See
+An absent breakdown retains the plain native usage format. See
 [ADR-0102](../adr/0102-account-for-every-reported-claude-task-model.md).
 
 The native adapter's controlled invocation boundary can stop an owned process group and retain

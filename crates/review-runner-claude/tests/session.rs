@@ -3,7 +3,6 @@
 //! reconstructing the Attempt's working directory.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use review_config::lock::{Lockfile, Registry};
 use review_core::{SessionCleanupRefusalV1, session_id_for_attempt};
@@ -12,62 +11,21 @@ use review_runner::{
     SessionLayer, SessionResume,
 };
 use review_runner_claude::ClaudeSessionStore;
-use review_store::Cas;
 
-const ANSWER: &str = r#"{"verdict":"approve","summary":null,"findings":[],
-    "benchmark_demands":[],"disputes":[]}"#;
-
-fn envelope() -> String {
-    serde_json::json!({
-        "type": "result", "subtype": "success", "is_error": false,
-        "result": ANSWER, "total_cost_usd": 0.1, "num_turns": 2,
-        "usage": {
-            "input_tokens": 1_200, "output_tokens": 800,
-            "cache_read_input_tokens": 480_000, "cache_creation_input_tokens": 0
-        }
-    })
-    .to_string()
-}
-
-/// A stub that records the exact argv it was invoked with, so the pinned session flags are
-/// asserted against what the adapter really passes rather than against a comment.
-fn recording_stub(dir: &Path) -> (PathBuf, PathBuf) {
-    let argv = dir.join("argv");
-    let path = dir.join("claude");
-    std::fs::write(
-        &path,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\ncat <<'ENVELOPE'\n{}\nENVELOPE\n",
-            argv.display(),
-            envelope()
-        ),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    (path, argv)
-}
-
-fn package(dir: &Path, stub_path: &Path) -> review_config::lock::ResolvedReviewer {
+fn package(dir: &Path) -> review_config::lock::ResolvedReviewer {
     let registry_root = dir.join("registry");
     let package = registry_root.join("tester");
     std::fs::create_dir_all(&package).unwrap();
     std::fs::write(
         package.join("reviewer.toml"),
-        format!(
-            "name = \"tester\"\nversion = \"1.0.0\"\n\n[runner]\nprogram = \"{}\"\n\
-             args = [{{ value = \"--model\" }}, {{ value = \"opus\" }}]\n",
-            stub_path.display()
-        ),
+        "name = \"tester\"\nversion = \"1.0.0\"\nsubjects = [\"whole-tree\"]\n\n[runner]\nprogram = \"claude\"\n\
+         args = [{ value = \"--model\" }, { value = \"opus\" }]\n",
     )
     .unwrap();
     std::fs::write(package.join("reviewer.md"), "You are a test reviewer.\n").unwrap();
-    let registry = Registry::new([registry_root]);
+    let registry = Registry::new(registry_root);
     let mut lockfile = Lockfile::empty();
-    lockfile.reviewers.insert(
+    lockfile.workers.insert(
         "tester".to_string(),
         Lockfile::pin("tester", &registry).unwrap(),
     );
@@ -95,14 +53,7 @@ fn write_transcript(
 #[test]
 fn the_session_identity_is_the_kernels_and_a_resume_always_forks() {
     let dir = tempfile::tempdir().unwrap();
-    let (stub_path, argv) = recording_stub(dir.path());
-    let package = package(dir.path(), &stub_path);
-    let adapter =
-        review_runner_claude::ClaudeAdapter::from_package(&package, Duration::from_secs(10))
-            .unwrap();
-    let cas = Cas::open(dir.path().join("cas")).unwrap();
-    let sandbox = dir.path().join("sandbox");
-    std::fs::create_dir_all(&sandbox).unwrap();
+    let adapter = review_runner_claude::ClaudeAdapter::from_package(&package(dir.path())).unwrap();
 
     let own = session_id_for_attempt(&"b".repeat(26)).unwrap();
     let source = session_id_for_attempt(&"a".repeat(26)).unwrap();
@@ -116,12 +67,7 @@ fn the_session_identity_is_the_kernels_and_a_resume_always_forks() {
         }),
         ..ReviewerInputs::default()
     };
-    adapter.invoke(&cas, &sandbox, &inputs).unwrap();
-    let recorded: Vec<String> = std::fs::read_to_string(&argv)
-        .unwrap()
-        .lines()
-        .map(str::to_string)
-        .collect();
+    let recorded = adapter.attempt_command(&inputs).resolve().unwrap();
     let index = |flag: &str| recorded.iter().position(|value| value == flag);
     assert_eq!(recorded[0], "-p");
     assert_eq!(
@@ -143,42 +89,34 @@ fn the_session_identity_is_the_kernels_and_a_resume_always_forks() {
     assert!(index("--safe-mode").unwrap() > index("--model").unwrap());
 
     // A cold Attempt of the same adapter passes neither flag, so its argv is what it always was.
-    adapter
-        .invoke(&cas, &sandbox, &ReviewerInputs::default())
+    let cold = adapter
+        .attempt_command(&ReviewerInputs::default())
+        .resolve()
         .unwrap();
-    let cold = std::fs::read_to_string(&argv).unwrap();
-    assert!(!cold.contains("--session-id"));
-    assert!(!cold.contains("--resume"));
-    assert!(!cold.contains("--fork-session"));
+    for flag in ["--session-id", "--resume", "--fork-session"] {
+        assert!(!cold.iter().any(|value| value == flag), "{cold:?}");
+    }
 }
 
 #[test]
-fn an_adapter_without_granted_auth_hosts_no_session() {
+fn an_adapter_without_a_granted_session_store_hosts_no_session() {
     let dir = tempfile::tempdir().unwrap();
-    let (stub_path, _) = recording_stub(dir.path());
-    let package = package(dir.path(), &stub_path);
-    let adapter =
-        review_runner_claude::ClaudeAdapter::from_package(&package, Duration::from_secs(10))
-            .unwrap();
+    let package = package(dir.path());
+    let adapter = review_runner_claude::ClaudeAdapter::from_package(&package).unwrap();
     assert!(
         adapter.session_layer().is_none(),
         "without granted auth there is no harness directory to address"
     );
-    let granted =
-        review_runner_claude::ClaudeAdapter::from_package(&package, Duration::from_secs(10))
-            .unwrap()
-            .with_auth(None, "operator", dir.path().to_str().unwrap());
+    let granted = review_runner_claude::ClaudeAdapter::from_package(&package)
+        .unwrap()
+        .with_session_store(store(dir.path()));
     assert_eq!(
         granted.session_layer().map(|layer| layer.provider_kind()),
         Some("claude")
     );
     // Every adapter that does not implement the protocol inherits the refusing default. That is
     // how Codex stays out of the session layer without naming itself anywhere in it.
-    let command = review_runner::CommandAdapter::new(
-        review_core::Command::new("true", Vec::new()),
-        Duration::from_secs(1),
-    );
-    assert!(command.session_layer().is_none());
+    assert!(review_runner::CommandAdapter.session_layer().is_none());
 }
 
 #[test]
@@ -243,7 +181,6 @@ fn a_transcript_over_its_bound_is_never_filed_and_a_non_file_is_refused() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn a_symlinked_project_directory_is_never_followed() {
     let dir = tempfile::tempdir().unwrap();
@@ -299,7 +236,6 @@ fn a_re_materialized_transcript_is_found_under_the_source_identity() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn a_symlinked_projects_directory_is_never_followed() {
     let dir = tempfile::tempdir().unwrap();
@@ -330,7 +266,6 @@ fn a_symlinked_projects_directory_is_never_followed() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn a_deletion_unlinks_in_the_directory_the_search_validated() {
     let dir = tempfile::tempdir().unwrap();
@@ -352,7 +287,6 @@ fn a_deletion_unlinks_in_the_directory_the_search_validated() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn a_materialized_transcript_never_writes_through_a_link() {
     let dir = tempfile::tempdir().unwrap();

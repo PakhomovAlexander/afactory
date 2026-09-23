@@ -564,15 +564,15 @@ impl EventStore {
         cas: &Cas,
         state: &TaskProjection,
     ) -> Result<Option<(String, u64)>, StoreError> {
-        use review_core::task::review_compat::*;
+        use review_core::task::campaign_review::*;
         state
             .revision
             .inputs
             .values()
-            .find(|port| port.artifact_type == LEGACY_REVIEW_ROUND_V1)
+            .find(|port| port.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
             .map(|port| {
-                let round: LegacyReviewRoundV1 =
-                    payload(cas, &port.artifact_ids[0], LEGACY_REVIEW_ROUND_V1)?;
+                let round: CampaignReviewRoundV1 =
+                    payload(cas, &port.artifact_ids[0], CAMPAIGN_REVIEW_ROUND_V1)?;
                 Ok((round.campaign_id.clone(), self.len(&round.campaign_id)?))
             })
             .transpose()
@@ -709,7 +709,7 @@ impl EventStore {
                 "Owned Review selection differs from common selected output",
             ));
         }
-        let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
+        let selected: review_core::task::campaign_review::TaskReviewResultSelectedV1 =
             serde_json::from_value(expected.payload)?;
         let row: Option<String> = self.conn.query_row("SELECT payload FROM events WHERE run_id=?1 AND causation_id=?2 AND node_id=?3 AND attempt_id=?4 AND type='NodeOutputReceipt@1'", params![context.campaign_id,context.round_event_id,context.review_node,context.attempt_id], |row| row.get(0)).optional()?;
         let Some(row) = row else { return Ok(None) };
@@ -891,7 +891,8 @@ fn resolve_child(
 
 /// The canonical receipt may follow its Task selection in a later transaction. Recheck the
 /// ownership seal under that same canonical writer lock, without calling a host or opening a
-/// second Store. Static Review selections and historical legacy Attempts retain their path.
+/// second Store. A reviewer receipt always follows its Task selection; static Review selections
+/// retain their path.
 pub(in crate::store) fn check_canonical_child_receipt(
     connection: &rusqlite::Connection,
     cas: &Cas,
@@ -900,14 +901,14 @@ pub(in crate::store) fn check_canonical_child_receipt(
     node: &str,
     attempt: &str,
 ) -> Result<(), StoreError> {
-    use review_core::task::review_compat::*;
+    use review_core::task::campaign_review::*;
     use rusqlite::{OptionalExtension, params};
     let selection:Option<String> = connection.query_row(
         "SELECT payload FROM events WHERE run_id=?1 AND causation_id=?2 AND node_id=?3 AND attempt_id=?4 AND type='TaskReviewResultSelected@1'",
         params![campaign,round,node,attempt], |row|row.get(0),
     ).optional()?;
     let Some(selection) = selection else {
-        return Ok(());
+        return Err(conflict("Reviewer receipt has no Task Review selection"));
     };
     let selected: TaskReviewResultSelectedV1 = serde_json::from_str(&selection)?;
     selected.validate().map_err(conflict)?;
@@ -1009,7 +1010,7 @@ pub(in crate::store::task) fn receipt_records_referencing(
 ) -> Result<Vec<String>, StoreError> {
     let mut query = connection.prepare(
         "SELECT payload,artifact_refs FROM events
-         WHERE run_id=?1 AND type='TaskTransition@1' AND instr(artifact_refs,?2)>0
+         WHERE run_id=?1 AND type='TaskTransition@5' AND instr(artifact_refs,?2)>0
          AND EXISTS (SELECT 1 FROM json_each(events.artifact_refs)
                      WHERE json_each.type='text' AND json_each.value=?2)
          ORDER BY sequence",

@@ -1,7 +1,7 @@
 //! A canonical Review selection projects the common Task ledger; it never owns an Attempt.
 
 use super::*;
-use review_core::task::review_compat::*;
+use review_core::task::campaign_review::*;
 use rusqlite::{OptionalExtension, params};
 
 /// The Task prefix and Review prefix are compared under the same SQLite writer lock.
@@ -86,7 +86,6 @@ impl WritePermit {
             || event.attempt_id != self.event.attempt_id
             || event.causation_id != self.event.causation_id
             || event.correlation_id != self.event.correlation_id
-            || event.legacy_import
         {
             return Err(conflict(
                 "Task Review publication lost its exact execution/lease comparison",
@@ -147,16 +146,13 @@ impl EventStore {
         event: NewEvent,
         authority: &dyn TaskAuthority,
     ) -> Result<Vec<review_core::RunEvent>, StoreError> {
-        use review_core::task::report::{
-            TASK_RUN_REPORT_V1, TaskFailureClassV1, TaskNodeOutcomeV1, TaskRunReportV1,
-        };
+        use review_core::task::report::{TaskFailureClassV1, TaskNodeOutcomeV1};
         let (state, plan) = self.checked_task_review_conclusion(cas, lease, authority)?;
         let execution = state
             .execution
             .as_ref()
             .ok_or_else(|| conflict("Review Task has no execution"))?;
-        let report: TaskRunReportV1 = payload(cas, report_id, TASK_RUN_REPORT_V1)?;
-        report.validate().map_err(conflict)?;
+        let report = super::super::report::round_report(cas, report_id)?;
         if !execution.pending_attempts().is_empty()
             || state.run_reports.last().map(String::as_str) != Some(report_id)
             || report.task_revision_id != state.revision_id
@@ -179,25 +175,19 @@ impl EventStore {
             .revision
             .inputs
             .values()
-            .find(|input| input.artifact_type == LEGACY_REVIEW_ROUND_V1)
+            .find(|input| input.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
             .ok_or_else(|| conflict("Review conclusion has no captured Round"))?;
-        let round: LegacyReviewRoundV1 =
-            payload(cas, &input.artifact_ids[0], LEGACY_REVIEW_ROUND_V1)?;
+        let round: CampaignReviewRoundV1 =
+            payload(cas, &input.artifact_ids[0], CAMPAIGN_REVIEW_ROUND_V1)?;
         if !event.event_type.is_run_report()
             || event.node_id.is_some()
             || event.attempt_id.is_some()
-            || event.legacy_import
             || event.causation_id.as_deref() != Some(&round.round_event_id)
             || event.correlation_id.as_deref() != Some(&round.subject_id)
             || !event.artifact_refs.iter().any(|id| id == report_id)
         {
             return Err(conflict(
                 "Task Review conclusion changed its captured Round or report",
-            ));
-        }
-        if event.event_type != review_core::EventType::RunReportV6 {
-            return Err(conflict(
-                "New Task Review conclusions require RunReport@6 accounting",
             ));
         }
         let conclusion: review_core::RunReportPayloadV6 =
@@ -252,7 +242,7 @@ impl EventStore {
 
     /// Publish the canonical Review identity of an already selected and published Task output.
     /// Routing comes from that Attempt's admitted context, never from caller-supplied Round IDs.
-    /// An exact replay is idempotent. There are no synthetic legacy Attempt lifecycle events.
+    /// An exact replay is idempotent. No Attempt lifecycle event is synthesized here.
     pub fn publish_task_review_result(
         &mut self,
         cas: &Cas,
@@ -263,8 +253,8 @@ impl EventStore {
         self.publish_task_review_result_inner(cas, lease, output_id, None, false, authority)
     }
 
-    /// Recover only the selected output pinned by TaskTransition@4. Frozen ordinary
-    /// selection still requires its dispatch deadline; this adds no execution authority.
+    /// Recover only the selected output pinned by the recorded `RecordingResumed` transition.
+    /// Ordinary selection still requires its dispatch deadline; this adds no execution authority.
     pub fn publish_task_recorded_review_result(
         &mut self,
         cas: &Cas,
@@ -428,7 +418,7 @@ pub(in crate::store) fn validate_selection(
     )?;
     let prior: u64 = tx.query_row(
         "SELECT COUNT(*) FROM events WHERE run_id = ?1 AND causation_id = ?2 AND node_id = ?3
-         AND type IN ('TaskReviewResultSelected@1', 'AttemptDispatched@1', 'AttemptAdmitted@1', 'NodeOutputReceipt@1')",
+         AND type IN ('TaskReviewResultSelected@1', 'NodeOutputReceipt@1')",
         params![run_id, round_id, context.review_node],
         |row| u64_column(row, 0),
     )?;
@@ -449,26 +439,13 @@ fn validate_attempt_provenance(
     reserved_tokens: u64,
     committed_tokens: u128,
 ) -> Result<(), StoreError> {
-    let value = cas
-        .get_json(&metadata.provenance_artifact_id)
-        .map_err(|e| conflict(e.to_string()))?;
-    if value.get("type").is_none() {
-        return validate_legacy_provenance(cas, &value, metadata, context, committed_tokens);
-    }
     let frame = cas
         .get_artifact(&metadata.provenance_artifact_id)
         .map_err(|e| conflict(e.to_string()))?;
-    let legacy = frame.artifact_type == TASK_REVIEW_ATTEMPT_PROVENANCE_V1;
-    let provenance: TaskReviewAttemptProvenanceV2 = match frame.artifact_type.as_str() {
-        TASK_REVIEW_ATTEMPT_PROVENANCE_V1 => {
-            let value: TaskReviewAttemptProvenanceV1 =
-                serde_json::from_value(frame.payload.clone())?;
-            value.validate().map_err(conflict)?;
-            value.into()
-        }
-        TASK_REVIEW_ATTEMPT_PROVENANCE_V2 => serde_json::from_value(frame.payload.clone())?,
-        _ => return Err(conflict("Unsupported Task Review provenance version")),
-    };
+    if frame.artifact_type != TASK_REVIEW_ATTEMPT_PROVENANCE_V2 {
+        return Err(conflict("Unsupported Task Review provenance version"));
+    }
+    let provenance: TaskReviewAttemptProvenanceV2 = serde_json::from_value(frame.payload.clone())?;
     provenance.validate().map_err(conflict)?;
     if provenance.charged_tokens.get() > committed_tokens {
         return Err(conflict(
@@ -498,20 +475,12 @@ fn validate_attempt_provenance(
     if let Some(id) = provenance.usage_id {
         use review_core::task::usage::*;
         let usage = cas.get_artifact(&id).map_err(|e| conflict(e.to_string()))?;
-        let value: TaskTokenUsageV3 = match usage.artifact_type.as_str() {
-            TASK_TOKEN_USAGE_V1 if legacy => {
-                serde_json::from_value::<TaskTokenUsageV1>(usage.payload.clone())?.into()
-            }
-            TASK_TOKEN_USAGE_V2 if !legacy => {
-                serde_json::from_value::<TaskTokenUsageV2>(usage.payload.clone())?.into()
-            }
-            TASK_TOKEN_USAGE_V3 if !legacy => serde_json::from_value(usage.payload.clone())?,
-            _ => {
-                return Err(conflict(
-                    "Task Review provenance has another usage generation",
-                ));
-            }
-        };
+        if usage.artifact_type != TASK_TOKEN_USAGE_V3 {
+            return Err(conflict(
+                "Task Review provenance has another usage generation",
+            ));
+        }
+        let value: TaskTokenUsageV3 = serde_json::from_value(usage.payload.clone())?;
         if &usage.producer != producer
             || usage.input_artifacts != [context_id]
             || usage.subject_snapshot_id.is_some()
@@ -530,7 +499,6 @@ fn validate_attempt_provenance(
 }
 
 /// A Task result's side metadata fixes its Proposal disposition before common selection.
-/// Legacy admissions retain their original guard; they have no Task metadata to reinterpret.
 pub(in crate::store) fn validate_proposal(
     tx: &rusqlite::Transaction<'_>,
     cas: &Cas,
@@ -547,7 +515,7 @@ pub(in crate::store) fn validate_proposal(
         )
         .optional()?;
     let Some(selected) = selected else {
-        return Ok(());
+        return Err(conflict("Proposal has no Task Review selection"));
     };
     let selected: TaskReviewResultSelectedV1 = serde_json::from_str(&selected)?;
     let metadata: TaskReviewResultMetadataV1 = payload(
@@ -578,91 +546,17 @@ pub(in crate::store) fn validate_proposal(
     Ok(())
 }
 
-fn validate_legacy_provenance(
-    cas: &Cas,
-    value: &serde_json::Value,
-    metadata: &TaskReviewResultMetadataV1,
-    context: &TaskReviewContextV1,
-    committed_tokens: u128,
-) -> Result<(), StoreError> {
-    let fields = [
-        "node",
-        "attempt",
-        "result_artifact",
-        "cost_tokens",
-        "usage",
-        "context_manifest",
-        "raw",
-        "sandbox_mutations",
-    ];
-    let object = value
-        .as_object()
-        .ok_or_else(|| conflict("Expected historical Review provenance object"))?;
-    if object.len() != fields.len()
-        || fields.iter().any(|key| !object.contains_key(*key))
-        || value["node"] != context.review_node
-        || value["attempt"] != context.attempt_id
-        || value["result_artifact"] != metadata.result_artifact_id
-        || value["context_manifest"]
-            != cas
-                .get_json(&context.context_manifest_id)
-                .map_err(|e| conflict(e.to_string()))?
-    {
-        return Err(conflict(
-            "Historical Review provenance changed its Attempt, result or context",
-        ));
-    }
-    let usage = value["usage"]
-        .as_object()
-        .ok_or_else(|| conflict("Historical Review provenance has no usage"))?;
-    let safe_counter = |value: &serde_json::Value| {
-        value
-            .as_u64()
-            .filter(|value| *value <= review_core::json::SAFE_INTEGER_MAX as u64)
-    };
-    let charge = safe_counter(&value["cost_tokens"])
-        .ok_or_else(|| conflict("Historical Review charge is not exact"))?;
-    if u128::from(charge) > committed_tokens
-        || safe_counter(&value["usage"]["chargeable_tokens"]) != Some(charge)
-        || usage.iter().any(|(name, value)| {
-            !matches!(
-                name.as_str(),
-                "chargeable_tokens"
-                    | "input_tokens"
-                    | "output_tokens"
-                    | "cache_read_tokens"
-                    | "cache_write_tokens"
-                    | "reasoning_tokens"
-            ) || safe_counter(value).is_none()
-        })
-    {
-        return Err(conflict(
-            "Historical Review provenance changed its exact usage",
-        ));
-    }
-    for value in [&value["raw"], &value["sandbox_mutations"]["artifact"]] {
-        let id = value
-            .as_str()
-            .filter(|id| review_core::is_digest(id))
-            .ok_or_else(|| {
-                conflict("Historical Review provenance has an invalid observation reference")
-            })?;
-        cas.verify(id).map_err(|e| conflict(e.to_string()))?;
-    }
-    Ok(())
-}
-
 fn validate_report_gate_failures(
     cas: &Cas,
     state: &TaskProjection,
-    round: &LegacyReviewRoundV1,
+    round: &CampaignReviewRoundV1,
     report: &review_core::RunReportPayloadV6,
 ) -> Result<(), StoreError> {
     let execution = state
         .execution
         .as_ref()
         .ok_or_else(|| conflict("Review Task has no execution"))?;
-    let mut plans = BTreeMap::<String, (LegacyReviewRoundV1, CompiledTask)>::new();
+    let mut plans = BTreeMap::<String, (CampaignReviewRoundV1, CompiledTask)>::new();
     let mut failures = BTreeMap::new();
     for attempt in execution.attempt_accounting() {
         let attempt_id = &attempt.attempt_id;
@@ -677,13 +571,13 @@ fn validate_report_gate_failures(
             let Some(input) = plan
                 .inputs
                 .values()
-                .find(|input| input.artifact_type == LEGACY_REVIEW_ROUND_V1)
+                .find(|input| input.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
             else {
                 // Earlier preparation work has no Review Gate authority.
                 continue;
             };
-            let captured: LegacyReviewRoundV1 =
-                payload(cas, &input.artifact_ids[0], LEGACY_REVIEW_ROUND_V1)?;
+            let captured: CampaignReviewRoundV1 =
+                payload(cas, &input.artifact_ids[0], CAMPAIGN_REVIEW_ROUND_V1)?;
             captured.validate().map_err(conflict)?;
             let graph: CompiledTask = payload(cas, &plan.compiled_graph_id, "af/CompiledTask@1")?;
             plans.insert(attempt.plan_id.clone(), (captured, graph));
@@ -878,7 +772,7 @@ pub(super) fn selected_review_event(
                 return Err(conflict("Duplicate Review result port"));
             }
         } else {
-            return Err(conflict("Undeclared compatibility Review output type"));
+            return Err(conflict("Undeclared Review output type"));
         }
     }
     let (result_envelope_id, result_type) =
@@ -913,15 +807,7 @@ pub(super) fn selected_review_event(
             "Review side metadata contradicts the exact flat result",
         ));
     }
-    match metadata.result_contract {
-        review_core::ReviewerResultContract::V1 => {
-            review_core::validate_reviewer_result(&result.payload)
-        }
-        review_core::ReviewerResultContract::V2 => {
-            review_core::validate_reviewer_result_v2(&result.payload)
-        }
-    }
-    .map_err(conflict)?;
+    review_core::validate_reviewer_result_v2(&result.payload).map_err(conflict)?;
     let selection = TaskReviewResultSelectedV1 {
         task_id: state.task_id.as_str().into(),
         task_revision_id: state.revision_id.clone(),

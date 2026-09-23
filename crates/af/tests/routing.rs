@@ -1,5 +1,6 @@
 //! Changed paths select the pipeline — deterministically, token-free, visible in `plan`, pinned
-//! at Campaign open — and an oversized input switches to the declared bounded pipeline.
+//! at Campaign open — and an oversized input switches to the declared bounded pipeline. The
+//! selected pipeline's `plan` reserves every static Worker's first Attempt against its cap.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -171,6 +172,64 @@ fn changed_paths_select_the_pipeline_and_plan_shows_the_decision() {
     assert_eq!(mixed["route"]["policy"], "default");
     assert_eq!(mixed["pipeline"]["path"], ".af/pipelines/review.toml");
     assert!(mixed["route"]["matched"].as_array().unwrap().is_empty());
+}
+
+/// Planning is reservation-aware and token-free: every static Worker's first Attempt reserves
+/// its node cap or the pipeline's, the run must admit all of them at once, and each Worker's
+/// first-Attempt input is measured against its cap.
+#[test]
+fn plan_reserves_every_static_worker_first_attempt_and_measures_its_input() {
+    let routed = Routed::new(DOCS_ROUTE);
+    // correctness reserves its own cap; architecture falls back to the pipeline's 300k.
+    let review = routed.repo.join(".af/pipelines/review.toml");
+    let text = std::fs::read_to_string(&review).unwrap();
+    let capped = text.replace(
+        "id = \"correctness\"\nkind = \"reviewer\"\n",
+        "id = \"correctness\"\nkind = \"reviewer\"\nbudget = { attempt = 200000 }\n",
+    );
+    assert_ne!(capped, text);
+    std::fs::write(&review, capped).unwrap();
+    routed.set_routing(DOCS_ROUTE);
+    commit(&routed.repo, "policy: a node cap");
+    std::fs::write(routed.repo.join("src/lib.rs"), "pub fn one() -> u8 { 2 }\n").unwrap();
+    commit(&routed.repo, "code");
+
+    let plan = routed.planned(&[]);
+    assert_eq!(plan["schema"], "af/review-plan@1");
+    assert_eq!(plan["token_free"], true);
+    assert!(
+        plan["external_effects"].is_object(),
+        "a plan must report its external effects"
+    );
+    assert_eq!(plan["pipeline"]["path"], ".af/pipelines/review.toml");
+    let reservations = plan["pipeline"]["reservations"].as_array().unwrap();
+    let reserved = |node: &str| {
+        reservations
+            .iter()
+            .find(|reservation| reservation["node"] == node)
+            .unwrap_or_else(|| panic!("{node} holds no reservation: {reservations:?}"))
+    };
+    assert_eq!(reservations.len(), 2, "{reservations:?}");
+    assert_eq!(reserved("correctness")["source"], "node");
+    assert_eq!(reserved("correctness")["tokens"], 200_000);
+    assert_eq!(reserved("architecture")["source"], "pipeline");
+    assert_eq!(reserved("architecture")["tokens"], 300_000);
+    let sum: u64 = reservations
+        .iter()
+        .map(|reservation| reservation["tokens"].as_u64().unwrap())
+        .sum();
+    assert_eq!(
+        plan["pipeline"]["max_simultaneous_reservation"].as_u64(),
+        Some(sum)
+    );
+    for reservation in reservations {
+        assert!(
+            reservation["input_bytes"].as_u64().unwrap() > 0,
+            "{reservation}"
+        );
+        assert_eq!(reservation["fits"], true, "{reservation}");
+    }
+    assert_eq!(plan["pipeline"]["inputs_fit"], true);
 }
 
 #[test]

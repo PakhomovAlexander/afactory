@@ -12,7 +12,7 @@
     "cache_failures": {
       "type": "array",
       "maxItems": 1,
-      "items": {"$ref": "urn:review-kernel:schema:run-report:5#/properties/cache_failures/items"}
+      "items": {"$ref": "urn:review-kernel:schema:run-report:6#/$defs/cache_failure"}
     }
   }
 }

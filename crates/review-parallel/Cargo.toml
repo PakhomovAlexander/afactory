@@ -1,6 +1,6 @@
 [package]
 name = "review-parallel"
-description = "Shared, configurable worker executor for Review Kernel infrastructure"
+description = "Shared, bounded worker executor for Review Kernel infrastructure"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

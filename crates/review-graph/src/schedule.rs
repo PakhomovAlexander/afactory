@@ -1,10 +1,12 @@
 //! Executing a planned pipeline.
 //!
-//! Ready nodes run concurrently; results are admitted in canonical order. Gating is structural:
-//! once a gate blocks, every node downstream of it is *suppressed* — recorded as such, never
-//! dispatched, and never able to leave an artifact behind. The distinction matters because a
-//! suppressed node and a node that ran and found nothing are the same shape in a report unless
-//! the kernel keeps them apart.
+//! Ready nodes run concurrently; results are admitted in canonical order. A node whose Task
+//! condition selects another branch, or whose upstream failed or was itself suppressed, is
+//! *suppressed* — recorded as such, never dispatched, and never able to leave an artifact behind.
+//! A Review Gate reaches the scheduler as a Task condition: what it blocks is an unselected branch,
+//! and what depends on that is missing its upstream. The distinction matters because a suppressed
+//! node and a node that ran and found nothing are the same shape in a report unless the kernel
+//! keeps them apart.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -87,11 +89,6 @@ pub trait Dispatch {
         Ok(())
     }
 
-    /// Whether this node's outputs constitute a passing gate. Only consulted for `Gate` nodes.
-    fn gate_passed(&self, _node_id: &str, _outputs: &ArtifactMap) -> bool {
-        true
-    }
-
     /// Typed classification for a failed node. Human-readable errors remain diagnostics;
     /// policy must not recover a class by parsing them.
     fn failure_class(&self, _node_id: &str) -> Option<NodeFailureClass> {
@@ -108,8 +105,6 @@ pub enum NodeFailureClass {
 pub enum SuppressionReason {
     /// A typed Task receipt selected another branch. No invocation or Attempt occurred.
     BranchNotSelected,
-    /// A gate this node depends on did not pass.
-    GateBlocked,
     /// An upstream node it depends on was itself suppressed or failed.
     UpstreamMissing,
 }
@@ -128,17 +123,13 @@ pub enum NodeOutcome {
     },
 }
 
-impl NodeOutcome {
-    pub fn dispatched(&self) -> bool {
-        !matches!(self, NodeOutcome::Suppressed { .. })
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunReport {
     /// Every node, in plan order, with what became of it. A suppressed node is present and
     /// labelled — absence would read as "nothing to report".
     pub outcomes: Vec<(String, NodeOutcome)>,
+    /// Gates whose decision did not pass. The scheduler leaves it empty; the Review host fills it
+    /// from the recorded Gate decisions when it restores this report from Task receipts.
     pub blocked_gates: BTreeSet<String>,
 }
 
@@ -148,22 +139,6 @@ impl RunReport {
             .iter()
             .find(|(id, _)| id == node)
             .map(|(_, outcome)| outcome)
-    }
-
-    pub fn dispatched(&self) -> Vec<&str> {
-        self.outcomes
-            .iter()
-            .filter(|(_, o)| o.dispatched())
-            .map(|(id, _)| id.as_str())
-            .collect()
-    }
-
-    pub fn suppressed(&self) -> Vec<&str> {
-        self.outcomes
-            .iter()
-            .filter(|(_, o)| !o.dispatched())
-            .map(|(id, _)| id.as_str())
-            .collect()
     }
 
     /// A run is shippable only if nothing was suppressed and nothing failed. Suppression is not
@@ -181,24 +156,14 @@ pub struct Scheduler<'a> {
     scope_limits: BTreeMap<String, usize>,
 }
 
-pub const DEFAULT_MAX_PARALLEL: usize = 4;
-
 impl<'a> Scheduler<'a> {
-    pub fn new(plan: &'a Planned) -> Scheduler<'a> {
+    /// `max_parallel` bounds concurrently running nodes. `1` makes the run fully sequential.
+    pub fn new(plan: &'a Planned, max_parallel: usize) -> Scheduler<'a> {
         Scheduler {
             plan,
-            // The design's default. Reviewers are model calls: minutes of latency each, no
-            // local CPU — running them one after another priced a review at the *sum* of
-            // model latencies.
-            max_parallel: DEFAULT_MAX_PARALLEL,
+            max_parallel: max_parallel.max(1),
             scope_limits: BTreeMap::new(),
         }
-    }
-
-    /// Bound on concurrently running nodes. `1` makes the run fully sequential.
-    pub fn with_parallelism(mut self, max_parallel: usize) -> Scheduler<'a> {
-        self.max_parallel = max_parallel.max(1);
-        self
     }
 
     /// Additional bounds for flattened child Pipeline namespaces. All share this scheduler.
@@ -217,13 +182,16 @@ impl<'a> Scheduler<'a> {
     ///
     /// Ready nodes run concurrently, up to `max_parallel`. Determinism survives the
     /// concurrency because nothing about the *result* depends on completion order: a node is
-    /// dispatched only once every gate and upstream node it depends on has resolved, its
-    /// inputs are exactly what the edges deliver (sorted), suppression is a function of
-    /// resolved upstream state alone, and the report lists nodes in plan order.
+    /// dispatched only once every upstream node it depends on has resolved, its inputs are
+    /// exactly what the edges deliver (sorted), suppression is a function of resolved upstream
+    /// state alone, and the report lists nodes in plan order.
+    ///
+    /// A node's `gated_by` does not gate it here: a Review Gate is compiled into a Task
+    /// condition before its plan reaches the scheduler. The only use of the field is to refuse
+    /// an owned child that carries one.
     pub fn run(&self, dispatch: &(dyn Dispatch + Sync)) -> RunReport {
         let mut outputs: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
         let mut outcomes: BTreeMap<String, NodeOutcome> = BTreeMap::new();
-        let mut blocked_gates: BTreeSet<String> = BTreeSet::new();
         let mut unusable: BTreeSet<String> = BTreeSet::new();
         let mut in_flight: BTreeSet<String> = BTreeSet::new();
 
@@ -238,8 +206,8 @@ impl<'a> Scheduler<'a> {
             let (tx, rx) = std::sync::mpsc::channel::<Completion>();
 
             loop {
-                // Decide everything currently decidable, in plan order: suppress what a
-                // blocked gate or a missing upstream has doomed, dispatch what is ready.
+                // Decide everything currently decidable, in plan order: suppress what an
+                // unselected branch or a missing upstream has doomed, dispatch what is ready.
                 let mut progressed = false;
                 let mut coordinated = BTreeMap::new();
                 // Newly registered children join the next scan, preserving deterministic order.
@@ -270,25 +238,6 @@ impl<'a> Scheduler<'a> {
                     let is_child = child_inputs.contains_key(node_id);
                     let coordinates = !is_child && dispatch.coordinates_owned_children(node);
 
-                    // Gating first: a blocked gate suppresses this node before any input is
-                    // resolved, so a suppressed node cannot even observe its would-be inputs.
-                    let gates = if is_child {
-                        BTreeSet::new()
-                    } else {
-                        self.plan.gates_for(node_id)
-                    };
-                    if gates.iter().any(|gate| blocked_gates.contains(gate)) {
-                        outcomes.insert(
-                            node_id.clone(),
-                            NodeOutcome::Suppressed {
-                                reason: SuppressionReason::GateBlocked,
-                            },
-                        );
-                        unusable.insert(node_id.clone());
-                        progressed = true;
-                        continue;
-                    }
-
                     let dependencies = if is_child {
                         Vec::new()
                     } else {
@@ -310,11 +259,11 @@ impl<'a> Scheduler<'a> {
                         continue;
                     }
 
-                    // Not ready: some gate or upstream is still running. The plan order is
-                    // topological over edges *and* gating, so this always clears.
-                    let resolved = |id: &str| outcomes.contains_key(id);
-                    if !gates.iter().all(|gate| resolved(gate))
-                        || !dependencies.iter().all(|edge| resolved(&edge.from.node))
+                    // Not ready: some upstream is still running. The plan order is topological
+                    // over the edges, so this always clears.
+                    if !dependencies
+                        .iter()
+                        .all(|edge| outcomes.contains_key(&edge.from.node))
                     {
                         continue;
                     }
@@ -421,9 +370,6 @@ impl<'a> Scheduler<'a> {
 
                     if let Err(error) = dispatch.record_invocation(node, &inputs) {
                         unusable.insert(node_id.clone());
-                        if node.kind == NodeKind::Gate {
-                            blocked_gates.insert(node_id.clone());
-                        }
                         outcomes.insert(
                             node_id.clone(),
                             NodeOutcome::Failed {
@@ -519,9 +465,6 @@ impl<'a> Scheduler<'a> {
                         Ok(produced) => {
                             if let Err(error) = validate_outputs(node, &produced) {
                                 unusable.insert(node_id.clone());
-                                if node.kind == NodeKind::Gate {
-                                    blocked_gates.insert(node_id.clone());
-                                }
                                 outcomes.insert(
                                     node_id.clone(),
                                     NodeOutcome::Failed { error, class: None },
@@ -530,9 +473,6 @@ impl<'a> Scheduler<'a> {
                             }
                             if let Err(error) = dispatch.record_outputs(node, &produced) {
                                 unusable.insert(node_id.clone());
-                                if node.kind == NodeKind::Gate {
-                                    blocked_gates.insert(node_id.clone());
-                                }
                                 outcomes.insert(
                                     node_id.clone(),
                                     NodeOutcome::Failed { error, class: None },
@@ -541,11 +481,6 @@ impl<'a> Scheduler<'a> {
                             }
                             for (port, artifacts) in &produced {
                                 outputs.insert((node_id.clone(), port.clone()), artifacts.clone());
-                            }
-                            if node.kind == NodeKind::Gate
-                                && !dispatch.gate_passed(node_id, &produced)
-                            {
-                                blocked_gates.insert(node_id.clone());
                             }
                             outcomes.insert(
                                 node_id.clone(),
@@ -556,9 +491,6 @@ impl<'a> Scheduler<'a> {
                             // A failed node's dependents cannot run — they would be reviewing an
                             // input that does not exist — but the rest of the graph continues.
                             unusable.insert(node_id.clone());
-                            if node.kind == NodeKind::Gate {
-                                blocked_gates.insert(node_id.clone());
-                            }
                             outcomes.insert(
                                 node_id.clone(),
                                 NodeOutcome::Failed {
@@ -585,7 +517,7 @@ impl<'a> Scheduler<'a> {
                     )
                 })
                 .collect(),
-            blocked_gates,
+            blocked_gates: BTreeSet::new(),
         }
     }
 }

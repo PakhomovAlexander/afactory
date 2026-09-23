@@ -1,7 +1,6 @@
 //! One bounded executor shared by filesystem-heavy Review Kernel infrastructure.
 //!
-//! The CLI initializes the executor once from the host's available parallelism. Library-only
-//! embedders may do the same before first use; otherwise the first operation adopts that default.
+//! The executor is created on first use and sized from the host's available parallelism.
 //! Concurrent and nested phases submit work to the same worker threads, so scheduler concurrency
 //! does not multiply OS threads and no transferable RAII permit can corrupt capacity accounting.
 
@@ -11,41 +10,18 @@ use rayon::prelude::*;
 
 static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 
-fn default_limit() -> usize {
-    std::thread::available_parallelism()
-        .map(|workers| workers.get())
-        .unwrap_or(1)
-}
-
-fn configured_pool(limit: usize) -> rayon::ThreadPool {
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(limit.max(1))
-        .stack_size(2 * 1024 * 1024)
-        .thread_name(|index| format!("review-worker-{index}"))
-        .build()
-        .expect("a positive Review Kernel worker limit builds")
-}
-
 fn pool() -> &'static rayon::ThreadPool {
-    POOL.get_or_init(|| configured_pool(default_limit()))
-}
-
-/// Returned when an embedder tries to configure the executor after its first use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AlreadyInitialized;
-
-impl std::fmt::Display for AlreadyInitialized {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("worker executor is already initialized")
-    }
-}
-
-impl std::error::Error for AlreadyInitialized {}
-
-/// Set the process-wide worker capacity before first use.
-pub fn init_worker_limit(limit: usize) -> Result<(), AlreadyInitialized> {
-    POOL.set(configured_pool(limit))
-        .map_err(|_| AlreadyInitialized)
+    POOL.get_or_init(|| {
+        let limit = std::thread::available_parallelism()
+            .map(|workers| workers.get())
+            .unwrap_or(1);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(limit)
+            .stack_size(2 * 1024 * 1024)
+            .thread_name(|index| format!("review-worker-{index}"))
+            .build()
+            .expect("a positive Review Kernel worker limit builds")
+    })
 }
 
 /// Maximum active worker tasks across all participating infrastructure phases.

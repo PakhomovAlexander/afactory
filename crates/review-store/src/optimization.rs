@@ -242,14 +242,6 @@ fn span_kind_totals<'a>(
         .collect()
 }
 
-fn cache_label(value: CacheResultV1) -> &'static str {
-    match value {
-        CacheResultV1::Hit => "hit",
-        CacheResultV1::Miss => "miss",
-        CacheResultV1::Unknown => "unknown",
-    }
-}
-
 /// Reduce a complete retained capture chain. Inputs are `(artifact_id, payload)` pairs in chain
 /// order. Replaying the same bytes produces the same projection and performs no inference.
 pub fn project_economics(
@@ -263,14 +255,12 @@ pub fn project_economics(
     let mut capture_ids = Vec::with_capacity(captures.len());
     let mut seen_captures = BTreeSet::new();
     let mut seen_observations = BTreeSet::new();
-    let mut seen_native_content = BTreeSet::new();
     let mut seen_receipts = BTreeMap::<String, OptimizationSourceReceiptV1>::new();
     let mut partial_sources = BTreeMap::<(String, String, String), u64>::new();
     let mut unscoped_partial_gaps = BTreeSet::new();
     let mut rows = BTreeMap::<String, Row>::new();
     let mut missing = BTreeSet::new();
     let mut exposed = BTreeSet::new();
-    let mut cache_results = BTreeMap::<String, BTreeMap<String, u64>>::new();
     let mut cache_economics = BTreeMap::<String, CacheAggregate>::new();
     let mut cutoff = 0u64;
 
@@ -334,27 +324,6 @@ pub fn project_economics(
         for observation in &capture.observations {
             if !seen_observations.insert(observation.observation_id.clone()) {
                 continue;
-            }
-            // Native snapshots may be exported under new source labels or carry legacy
-            // source-dependent IDs. Deduplicate their execution evidence without rewriting
-            // retained artifact IDs. Normalized fixtures keep occurrence/range semantics.
-            if let Some(receipt) = seen_receipts.get(&observation.source_receipt_id)
-                && receipt.adapter_version == "native-v1"
-            {
-                let mut body =
-                    serde_json::to_value(observation).map_err(|error| error.to_string())?;
-                let fields = body
-                    .as_object_mut()
-                    .ok_or("Native observation must be an object")?;
-                fields.remove("observation_id");
-                fields.remove("source_receipt_id");
-                let identity = crate::content_id(
-                    &serde_json::json!({"adapter":receipt.adapter,"record":body}),
-                )
-                .map_err(|error| error.to_string())?;
-                if !seen_native_content.insert(identity) {
-                    continue;
-                }
             }
             let row = rows
                 .entry(observation.attribution.execution_id.clone())
@@ -422,11 +391,6 @@ pub fn project_economics(
             }
 
             for cache in &observation.caches {
-                *cache_results
-                    .entry(cache.kind.clone())
-                    .or_default()
-                    .entry(cache_label(cache.result).into())
-                    .or_default() += 1;
                 let aggregate = cache_economics.entry(cache.kind.clone()).or_default();
                 if cache.eligible {
                     aggregate.value.eligible = aggregate.value.eligible.saturating_add(1);
@@ -650,7 +614,6 @@ pub fn project_economics(
         verified,
         failed_or_incomplete: failed,
         repeated_failures: repeated,
-        cache_results,
         cache_economics,
         missing_fields: missing,
         exposed_case_families: exposed,
@@ -831,19 +794,35 @@ mod tests {
     }
 
     #[test]
-    fn native_replay_deduplicates_legacy_source_dependent_observation_ids() {
-        let first_id = digest('8');
-        let first_observation = observation('4', "exec", 10, 0, 10);
-        let mut first = capture(None, vec![first_observation.clone()]);
-        first.receipts[0].adapter_version = "native-v1".into();
-        let mut duplicate = first_observation;
-        duplicate.observation_id = digest('5');
-        let mut second = capture(Some(first_id.clone()), vec![duplicate]);
-        second.receipts[0].adapter_version = "native-v1".into();
-        let result = project_economics(&[(first_id, first), (digest('9'), second)]).unwrap();
-        assert_eq!(result.af_usage.chargeable_tokens.get(), 10);
-        assert_eq!(result.repeated_failures, 0);
-        assert_eq!(result.rows[0].occurrences, 1);
+    fn one_execution_without_context_leaves_the_project_context_unknown() {
+        let measured = |id: char, execution: &str, context: Option<u128>| {
+            let mut observation = observation(id, execution, 10, 0, 10);
+            observation.tokens.as_mut().unwrap().context_tokens = context.map(Into::into);
+            observation
+        };
+        let economics = |observations| {
+            project_economics(&[(digest('8'), capture(None, observations))]).unwrap()
+        };
+        let both = economics(vec![
+            measured('4', "first", Some(80)),
+            measured('5', "second", Some(20)),
+        ]);
+        assert_eq!(both.context_tokens.unwrap().get(), 100);
+        let one = economics(vec![
+            measured('4', "first", Some(80)),
+            measured('5', "second", None),
+        ]);
+        assert!(one.context_tokens.is_none());
+        assert_eq!(
+            one.rows
+                .iter()
+                .find(|row| row.execution_id == "first")
+                .unwrap()
+                .context_tokens
+                .unwrap()
+                .get(),
+            80
+        );
     }
 
     #[test]

@@ -180,13 +180,7 @@ pub fn blob_content_id(bytes: &[u8]) -> String {
 }
 
 /// Stream an opaque blob into the same domain-separated identity without materializing it.
-pub fn blob_content_id_reader(mut reader: impl Read) -> std::io::Result<(String, u64)> {
-    let mut buffer = [0u8; 64 * 1024];
-    blob_content_id_reader_with_buffer(&mut reader, &mut buffer)
-}
-
-/// Streaming blob identity with caller-owned scratch, so a worker can reuse one allocation
-/// across every file it hashes.
+/// The caller owns the scratch, so a worker can reuse one allocation across every file it hashes.
 pub fn blob_content_id_reader_with_buffer(
     mut reader: impl Read,
     buffer: &mut [u8],
@@ -265,7 +259,9 @@ mod tests {
     #[test]
     fn streaming_blob_identity_matches_the_in_memory_form() {
         let bytes = vec![0x5a; 200_000];
-        let (streamed, size) = blob_content_id_reader(std::io::Cursor::new(&bytes)).unwrap();
+        let mut buffer = [0u8; 64 * 1024];
+        let (streamed, size) =
+            blob_content_id_reader_with_buffer(std::io::Cursor::new(&bytes), &mut buffer).unwrap();
         assert_eq!(streamed, blob_content_id(&bytes));
         assert_eq!(size, bytes.len() as u64);
     }

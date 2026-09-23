@@ -1,7 +1,9 @@
 # ADR-0103: Constrain native Claude Task replies
 
 Date: 2026-09-15
-Status: Proposed
+Status: Accepted (2026-09-23); acceptance recorded in
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md), which also supersedes in part its historical
+legacy prompts and the legacy Review transport it left unchanged: GA has one Review host.
 
 ## Context
 

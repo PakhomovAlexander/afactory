@@ -1,6 +1,6 @@
 use super::*;
 use review_core::PortCardinality;
-use review_core::task::review_compat::LegacyReviewRoundV1;
+use review_core::task::campaign_review::CampaignReviewRoundV1;
 
 pub(super) fn missing_shards(
     slices: &review_core::SliceSetV1,
@@ -24,7 +24,7 @@ pub(super) fn missing_shards(
     }
 }
 
-fn captured_fixture() -> (Fixture, LegacyReviewRoundV1, review_core::SliceSetV1) {
+fn captured_fixture() -> (Fixture, CampaignReviewRoundV1, review_core::SliceSetV1) {
     let (f, round) = review::round::round_fixture();
     let mut f = with_owned_graph(f);
     let slices = review_core::SliceSetV1 {
@@ -143,7 +143,7 @@ fn captured_fixture() -> (Fixture, LegacyReviewRoundV1, review_core::SliceSetV1)
 
 fn prepare(
     f: &mut Fixture,
-    round: &LegacyReviewRoundV1,
+    round: &CampaignReviewRoundV1,
     slices: &review_core::SliceSetV1,
 ) -> (TaskLease, RegisteredTaskChildren, String) {
     let (lease, parent) = started(f);

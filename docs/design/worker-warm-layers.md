@@ -2,8 +2,10 @@
 
 **Status:** design proposal, 2026-09-16, revised 2026-09-17 after its first `af review` Round
 (Campaign `worker-warm-layers`, eight Findings, all accepted). Against `main` 166eca5
-(v0.9.0-rc.2). No ADR yet. Companion vocabulary lives in [`entities.md`](entities.md) and
-[`state-machines.md`](state-machines.md); the binding record is [`../adr/`](../adr/); the
+(v0.9.0-rc.2). Packages P1–P4 are accepted as
+[ADR-0107 *Carry Worker Notes*](../adr/0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md)
+through [ADR-0110](../adr/0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md),
+which are the binding record; the vocabulary is [`CONTEXT.md`](../../CONTEXT.md) and the
 delivery sequence is [`worker-warm-layers-plan.md`](worker-warm-layers-plan.md).
 
 A Round 3 reviewer today pays the same cold start as Round 1: a fresh harness, a fresh tree, no

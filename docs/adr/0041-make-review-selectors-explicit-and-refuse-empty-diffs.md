@@ -1,6 +1,7 @@
 # Make review selectors explicit and refuse empty Diffs
 
-**Status:** accepted (2026-09-01)
+**Status:** accepted (2026-09-01); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the compatibility spelling `--authority REV`.
 
 A diff review has three independent selectors: the policy revision that supplies trusted `.af/`
 authority, the Base Snapshot against which the change is measured, and the candidate revision or

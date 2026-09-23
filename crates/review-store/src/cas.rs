@@ -837,15 +837,8 @@ fn valid_digest(digest: &str) -> bool {
 
 /// `fsync(2)` on a file or directory — the log's durability grade, not `F_FULLFSYNC`. On a
 /// directory it makes a rename durable; on a file, its bytes.
-#[cfg(unix)]
 fn fsync(file: &fs::File) -> std::io::Result<()> {
     nix::unistd::fsync(file).map_err(std::io::Error::from)
-}
-
-#[cfg(not(unix))]
-fn fsync(file: &fs::File) -> std::io::Result<()> {
-    // No fsync/F_FULLFSYNC split to worry about off-unix; sync_data is the plain-fsync analog.
-    file.sync_data()
 }
 
 /// Open and sync every path, fanned out over a bounded pool. The first error wins; success
@@ -1093,7 +1086,6 @@ mod tests {
         assert_eq!(size, bytes.len() as u64);
         assert_eq!(cas.get(&digest).unwrap(), bytes);
 
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(
@@ -1107,7 +1099,6 @@ mod tests {
             .put_reader_with_buffer(&mut source, &mut scratch)
             .unwrap();
         assert_eq!(repeated, (digest.clone(), size));
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(

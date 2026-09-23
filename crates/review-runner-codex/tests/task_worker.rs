@@ -5,12 +5,21 @@ use review_store::Cas;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
+/// Shell lines that write `reply` to the `-o` file, the only place the pinned codex CLI's final
+/// message is read from.
+fn write_reply(reply: &str) -> String {
+    format!(
+        "out=; prev=; for arg in \"$@\"; do [ \"$prev\" = -o ] && out=$arg; prev=$arg; done\nprintf '%s' '{}' >\"$out\"\n",
+        reply.replace('\'', "'\\''")
+    )
+}
+
 #[test]
 fn native_task_adapter_declares_trusted_unsafe_credentials() {
     let adapter = CodexTaskAdapter::new(&Command::new("codex", vec![])).unwrap();
     assert_eq!(
         adapter.credential_mode(),
-        review_core::BrokerCredentialModeV1::TrustedUnsafe
+        review_core::CredentialModeV1::TrustedUnsafe
     );
 }
 
@@ -19,7 +28,7 @@ fn review_role_keeps_the_legacy_workspace_write_sandbox() {
     let temp = tempfile::tempdir().unwrap();
     let cas = Cas::open(temp.path().join("cas")).unwrap();
     let program = temp.path().join("fake-codex");
-    std::fs::write(&program, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$@\" >&2\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"OK\"}}' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}'\n").unwrap();
+    std::fs::write(&program, format!("#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$@\" >&2\n{}printf '%s\\n' '{{\"type\":\"item.completed\",\"item\":{{\"type\":\"agent_message\",\"text\":\"OK\"}}}}' '{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}'\n", write_reply("OK"))).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
     let adapter = CodexTaskAdapter::new(&Command::new(program.to_str().unwrap(), vec![])).unwrap();
     let returned = adapter.invoke(
@@ -28,6 +37,8 @@ fn review_role_keeps_the_legacy_workspace_write_sandbox() {
         b"review".to_vec(),
         Duration::from_secs(5),
         true,
+        None,
+        &[],
     );
     assert_eq!(returned.message.unwrap(), b"OK");
     let flags = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
@@ -52,7 +63,8 @@ fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_messa
         let script = temp.path().join("provider");
         let quoted = output.replace('\'', "'\\''");
         std::fs::write(&script, format!(
-            "#!/bin/sh\nif [ \"$1\" = --fixture-ready ]; then exit 0; fi\ncat >/dev/null\nprintf '%s' '{quoted}'\nprintf '%s' 'diagnostic' >&2\n{}\n",
+            "#!/bin/sh\nif [ \"$1\" = --fixture-ready ]; then exit 0; fi\ncat >/dev/null\n{}printf '%s' '{quoted}'\nprintf '%s' 'diagnostic' >&2\n{}\n",
+            write_reply("OK"),
             if timed_out { "sleep 10" } else { "exit 0" }
         )).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -84,6 +96,8 @@ fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_messa
                 Duration::from_secs(5)
             },
             false,
+            None,
+            &[],
         );
         assert!(
             returned.message.is_err(),
@@ -153,7 +167,8 @@ fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{quoted}'\nexit {}\n",
+                "#!/bin/sh\ncat >/dev/null\n{}printf '%s' '{quoted}'\nexit {}\n",
+                write_reply(message),
                 if failed { 7 } else { 0 }
             ),
         )
@@ -167,6 +182,8 @@ fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage
             b"{\"declared\":\"input\"}".to_vec(),
             Duration::from_secs(5),
             false,
+            None,
+            &[],
         );
         assert_eq!(returned.usage.as_ref().unwrap().chargeable_tokens.get(), 35);
         assert_eq!(
@@ -205,7 +222,8 @@ fn multiple_native_turns_retain_exact_components_and_uncached_charge() {
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{}'\n",
+            "#!/bin/sh\ncat >/dev/null\n{}printf '%s' '{}'\n",
+            write_reply("OK"),
             output.replace('\'', "'\\''")
         ),
     )
@@ -218,6 +236,8 @@ fn multiple_native_turns_retain_exact_components_and_uncached_charge() {
         b"input".to_vec(),
         Duration::from_secs(5),
         false,
+        None,
+        &[],
     );
     assert_eq!(returned.message.unwrap(), b"OK");
     let usage = returned.usage.unwrap();
@@ -251,7 +271,8 @@ fn malformed_native_usage_refuses_message_and_survives_raw_capture_outage() {
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{}'\nprintf '%s' 'usage fixture' >&2\n",
+                "#!/bin/sh\ncat >/dev/null\n{}printf '%s' '{}'\nprintf '%s' 'usage fixture' >&2\n",
+                write_reply("OK"),
                 output.replace('\'', "'\\''")
             ),
         )
@@ -269,6 +290,8 @@ fn malformed_native_usage_refuses_message_and_survives_raw_capture_outage() {
             b"input".to_vec(),
             Duration::from_secs(5),
             false,
+            None,
+            &[],
         );
         assert!(returned.message.is_err());
         let observation = returned.usage_observation.unwrap();

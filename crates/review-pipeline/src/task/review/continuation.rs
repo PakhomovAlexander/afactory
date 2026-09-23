@@ -1,5 +1,5 @@
 //! Recompute independent repair receipts before projecting them into a later discovery Round.
-//! No legacy resolution artifact or Campaign event is manufactured by this bridge.
+//! No Campaign Resolution artifact or Campaign event is manufactured by this bridge.
 use super::*;
 use review_core::task::repair::*;
 

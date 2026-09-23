@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-#[cfg(unix)]
 #[path = "common_review_summaries/recovery.rs"]
 mod recovery;
 
@@ -62,23 +61,27 @@ args = [{ value = "-c" }, { value = "true" }]
 [[nodes]]
 id = "gate"
 kind = "gate"
-outputs = ["decision"]
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
-inputs = ["gate"]
-outputs = ["result"]
+inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }, { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
-runner = { program = "/bin/sh", args = [{ value = "-c" }, { value = '''cat >/dev/null; printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}' ''' }] }
+runner = { program = "/bin/sh", args = [{ value = "-c" }, { value = '''cat >/dev/null; printf '%s' '{"findings":[],"benchmark_demands":[],"dispositions":[]}' ''' }] }
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["reviewer"]
-outputs = ["reports"]
+inputs = [{ name = "reviewer", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
+inputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 outputs = [
   { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
   { name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }
@@ -86,6 +89,9 @@ outputs = [
 [[edges]]
 from = { node = "gate", port = "decision" }
 to = { node = "reviewer", port = "gate" }
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "reviewer", port = "prior_findings" }
 [[edges]]
 from = { node = "reviewer", port = "result" }
 to = { node = "gather", port = "reviewer" }
@@ -151,7 +157,7 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
                     state_flag,
                     "--pipeline",
                     ".af/pipelines/review.toml",
-                    "--authority",
+                    "--policy-rev",
                     "HEAD",
                     "--heavy",
                 ],
@@ -210,7 +216,12 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
     assert_eq!(attempts.iter().filter(|a| a.started).count(), 4);
     let before_task = store.replay(&task_run).unwrap();
     let before_review = store.replay("campaign-timing").unwrap();
-    assert!(store.attempt_wall("campaign-timing").unwrap().is_empty());
+    assert!(
+        store
+            .task_attempt_wall("campaign-timing")
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         !before_review
             .iter()
@@ -227,7 +238,7 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
         let plan: review_core::task::plan::ExecutionPlanV1 =
             serde_json::from_value(cas.get_artifact(&attempt.plan_id).unwrap().payload).unwrap();
         let round_id = &plan.inputs["round"].artifact_ids[0];
-        let round: review_core::task::review_compat::LegacyReviewRoundV1 =
+        let round: review_core::task::campaign_review::CampaignReviewRoundV1 =
             serde_json::from_value(cas.get_artifact(round_id).unwrap().payload).unwrap();
         let end = row.started_unix_ms.checked_add(row.elapsed_ms).unwrap();
         spans
@@ -261,7 +272,7 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
         .stdout,
     )
     .unwrap();
-    assert_eq!(report["schema"], "af/review-report@3");
+    assert_eq!(report["schema"], "af/review-report@4");
     assert_eq!(report["wall_ms"], expected_wall);
     assert_eq!(report["task_accounting"][0]["attempts_started"], "4");
     assert_eq!(
@@ -274,7 +285,7 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
     );
     assert_eq!(report["task_accounting"][0]["other_attempts_started"], "2");
     assert_eq!(report["rounds"].as_array().unwrap().len(), 2);
-    assert!(report["spend"].as_array().unwrap().is_empty());
+    assert!(report.get("spend").is_none());
     let campaigns: Value = serde_json::from_slice(
         &checked(
             invoke(
@@ -368,9 +379,8 @@ fn missing_common_task_refuses_without_reopening_legacy_execution() {
         state.to_str().unwrap(),
         "--pipeline",
         ".af/pipelines/review.toml",
-        "--authority",
+        "--policy-rev",
         "HEAD",
-        "--light",
         "--json",
     ];
     checked(invoke(&repo, &home, &args), 0);

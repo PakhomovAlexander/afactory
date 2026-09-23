@@ -6,7 +6,7 @@ use review_core::task::optimization_experiment::{
     ExperimentPreparedV1, ExperimentSpecificationV1, ExperimentTrialV1, OPTIMIZATION_EVALUATION_V1,
     OPTIMIZATION_HARNESS_V1, OPTIMIZATION_PACKAGE_REPIN_V1, OPTIMIZATION_VERIFICATION_V1,
     OptimizationEvaluationV1, OptimizationHarnessV1, OptimizationPackageRepinV1,
-    OptimizationProfileV1, OptimizationVerificationV1, compare_experiment,
+    OptimizationVerificationV1, compare_experiment,
 };
 use review_core::task::optimization_light::{
     OPTIMIZATION_PROPOSAL_V1, OPTIMIZATION_RESULT_V1, OptimizationResultConclusionV1,
@@ -112,8 +112,7 @@ fn validate_optimization_delivery_payload(
             verification.evaluation_id.clone(),
             verification.package_repin_id.clone(),
         ]);
-        if verification.profile != OptimizationProfileV1::Candidate
-            || verification.conclusion != ComparisonConclusionV1::Accepted
+        if verification.conclusion != ComparisonConclusionV1::Accepted
             || !verification.deliverable
             || !verification.protected_checks_passed
             || verification.source_snapshot_id != source
@@ -516,9 +515,7 @@ impl TaskProjection {
         };
         if receipt["schema"] != expected_schema
             || receipt["task_id"] != value.task_id
-            || receipt
-                .get("result_id")
-                .is_some_and(|id| id.as_str() != Some(value.result_id.as_str()))
+            || receipt["result_id"] != value.result_id
             || receipt["source_snapshot_id"] != value.source_snapshot_id
             || receipt["derived_snapshot_id"] != value.derived_snapshot_id
             || receipt.get("target") != Some(&target)
@@ -550,9 +547,7 @@ impl TaskProjection {
                 let prepared = cas
                     .get_json(&previous.receipt_id)
                     .map_err(|e| conflict(e.to_string()))?;
-                if receipt["delivery_id"] != prepared["delivery_id"]
-                    || receipt.get("result_id") != prepared.get("result_id")
-                {
+                if receipt["delivery_id"] != prepared["delivery_id"] {
                     return Err(conflict(
                         "Delivery terminal receipt changed prepared operation",
                     ));

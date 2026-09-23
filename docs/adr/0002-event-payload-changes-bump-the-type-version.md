@@ -1,6 +1,8 @@
 # A payload shape change bumps the event type version
 
-**Status:** accepted (2026-08-20)
+**Status:** accepted (2026-08-20); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the permanent `@1` reader arm, and the version
+bump for pre-GA contracts.
 
 `RunReport@1` persists `format!("{verdict:?}")` and `format!("{reason:?}")` — Rust `Debug`
 output — into the append-only event log, and `af review run` reads the verdict back with

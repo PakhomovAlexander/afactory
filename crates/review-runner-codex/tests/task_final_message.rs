@@ -83,7 +83,7 @@ elif case == 'empty':
     with open(output, 'wb'): pass
 elif case != 'missing':
     raise AssertionError(case)
-print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text':'stdout fallback'}}}}))
+print(json.dumps({{'type':'item.completed','item':{{'type':'agent_message','text':'stdout is not the reply'}}}}))
 print(json.dumps({{'type':'turn.completed','usage':{{'input_tokens':18446744073709551615,'output_tokens':20}}}}))
 "#
     );
@@ -97,6 +97,8 @@ print(json.dumps({{'type':'turn.completed','usage':{{'input_tokens':184467440737
         b"native request".to_vec(),
         Duration::from_secs(5),
         false,
+        None,
+        &[],
     );
     assert!(started.elapsed() < Duration::from_secs(10));
     let usage = returned.usage.unwrap();
@@ -120,7 +122,11 @@ print(json.dumps({{'type':'turn.completed','usage':{{'input_tokens':184467440737
     match case {
         "regular" => assert_eq!(returned.message.unwrap(), b"held regular file"),
         "exact_bound" => assert_eq!(returned.message.unwrap(), vec![b'x'; MAX_WORKER_BYTES]),
-        "empty" | "missing" => assert_eq!(returned.message.unwrap(), b"stdout fallback"),
+        // The stdout agent message never stands in for an absent or empty `-o` file.
+        "empty" | "missing" => assert_eq!(
+            returned.message.unwrap_err(),
+            "Codex Worker returned no final message"
+        ),
         "fifo" | "directory" => {
             assert!(
                 returned

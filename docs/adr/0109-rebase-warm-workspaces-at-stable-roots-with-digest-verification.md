@@ -33,13 +33,13 @@ discarded.
   the trusted template copy-on-write, applies the manifest-level diff between the previous head
   and the new one (removals and modifications unlinked, emptied directories pruned, changed and
   added entries written from the CAS exactly as a materialization writes them), scans the clone
-  back into a manifest with the head's path spelling, and compares that manifest's content
-  digest with the head's Tree Digest. Only an equal digest swaps the clone in. Before any entry
-  is unlinked the clone is scanned against the previous manifest, so a template that drifted
-  under its marker, a directory replaced by a symlink included, is caught while nothing outside
-  the clone has been touched; removals then open every parent component `O_NOFOLLOW` and a
-  leftover clone that is a symlink is unlinked, never traversed. The scan after the apply
-  hashes every entry, so a rebase that produced anything but the head is discarded.
+  back into a manifest, and compares that manifest's content digest with the head's Tree
+  Digest. Only an equal digest swaps the clone in. Before any entry is unlinked the clone is
+  scanned against the previous manifest, so a template that drifted under its marker, a
+  directory replaced by a symlink included, is caught while nothing outside the clone has been
+  touched; removals then open every parent component `O_NOFOLLOW` and a leftover clone that is
+  a symlink is unlinked, never traversed. The scan after the apply hashes every entry, so a
+  rebase that produced anything but the head is discarded.
 - **Fail closed into a full materialization and record why.** A rebase that cannot be applied,
   cannot be verified, or verifies to another digest is discarded, and the head is materialized
   from the CAS into the root instead. `WorkspaceRebased@1` records, per node and kernel run,

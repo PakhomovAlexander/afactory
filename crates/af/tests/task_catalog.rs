@@ -6,7 +6,7 @@ mod task_cli;
 
 /// Catalog integration exercises real Git and `af` subprocesses before a planned Task resumes.
 /// Keep its absolute Task deadline away from scheduler and filesystem latency; the per-Attempt
-/// walls and verification reserve remain the bounds on dispatched work (ADR-0113).
+/// walls and verification reserve remain the bounds on dispatched work (ADR-0114).
 const CATALOG_TASK_WALL_MS: u64 = 600_000;
 
 fn widen_catalog_task_wall(repo: &Path) {
@@ -254,7 +254,6 @@ fn shared_catalog_cycles_collisions_missing_dependencies_and_symlinks_are_refuse
                     .remove("fixture/implementer");
             }
             "symlink" => {
-                #[cfg(unix)]
                 std::os::unix::fs::symlink(
                     "/etc/passwd",
                     source.join(".af/task-packages/fixture/bugs/escape"),

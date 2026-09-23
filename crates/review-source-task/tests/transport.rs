@@ -1,4 +1,3 @@
-#![cfg(unix)]
 use review_source_task::{jira::*, *};
 use std::{
     os::unix::fs::PermissionsExt,

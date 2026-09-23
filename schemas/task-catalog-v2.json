@@ -2,14 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-catalog:2",
   "title": "Project TaskCatalog af.task-catalog/2",
-  "$comment": "Project catalog syntax; distinct from af.shared-task-catalog/1. Capture validates imported closure bounds, exact package bytes and versions, policy files, parsed signing keys, installed kind/selection/planner bindings and Provider capabilities. Imports may supply every package. Review settings are validated against the selected domain when used. Defaults may be omitted; options cannot be null. V2 requires an explicit captured Provider admission cost; V1 keeps its original fixed allowance. Cost must also fit the original Task resources.",
+  "$comment": "Project catalog syntax; distinct from af.shared-task-catalog/1. Capture validates imported closure bounds, exact package bytes and versions, policy files, parsed signing keys, installed kind/selection/planner bindings and Provider capabilities. Imports may supply every package. Review settings are validated against the selected domain when used. Defaults may be omitted; options cannot be null. An omitted Provider admission cost means the fixed default allowance. An explicit cost must also fit the original Task resources.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema",
     "packages",
-    "independence",
-    "provider_admission"
+    "independence"
   ],
   "properties": {
     "schema": {
@@ -92,7 +91,7 @@
       "properties": {
         "generation": {
           "const": 2,
-          "description": "Explicit Review policy generation. Omission retains generation one independently of Provider admission costs."
+          "description": "Review policy generation. Two is the only generation, and omission also selects it."
         },
         "reviewers": {
           "type": "object",

@@ -87,11 +87,7 @@ pub enum CompiledOperator {
     ProviderAdmission {
         bindings: BTreeSet<String>,
     },
-    ProviderAdmissionBrokered {
-        bindings: BTreeSet<String>,
-        probe_policy_id: String,
-    },
-    /// Installed compatibility frontend only. A reusable Pipeline cannot invent canonical
+    /// Installed Campaign Review frontend only. A reusable Pipeline cannot invent canonical
     /// Review operations or make these declarations through TaskOperatorV1.
     ReviewDomain {
         review_node: String,
@@ -221,13 +217,6 @@ pub struct CompiledTask {
     pub token_scopes: BTreeMap<String, review_attempt::task_budget::TaskTokenScope>,
 }
 
-/// Authenticated probe bytes supplied by the trusted compiler, not a Pipeline declaration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapturedProviderProbe {
-    pub policy_id: String,
-    pub policy: review_core::task::provider::TaskProviderProbePolicyV1,
-}
-
 impl CompiledTask {
     /// Review requires a complete predecessor barrier, including optional input producers.
     /// Ordinary Task operators retain conditional/optional-input recovery semantics.
@@ -249,78 +238,34 @@ impl CompiledTask {
     }
 
     /// Structural admission expansion, without conflating capacity refusal with an invalid DAG.
+    /// Model bindings that share one exact execution and invocation policy share one
+    /// `root.providers.admit{index}` node, in the order of that grouping key.
     pub fn install_provider_admission(
         &mut self,
         bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV1>,
         cost: &OperatorAttemptCost,
     ) -> Result<(), String> {
-        self.install_provider_admission_with_probes(bindings, cost, &BTreeMap::new())
-    }
-
-    pub fn install_provider_admission_with_probes(
-        &mut self,
-        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV1>,
-        cost: &OperatorAttemptCost,
-        probes: &BTreeMap<String, CapturedProviderProbe>,
-    ) -> Result<(), String> {
         use review_core::task::plan::WorkerExecutionV1;
         if cost.tokens == 0 || cost.wall_ms == 0 {
             return Err("Provider admission requires a bounded paid reservation".into());
         }
-        if self.nodes.values().any(|node| {
-            matches!(
-                node.operator,
-                CompiledOperator::ProviderAdmission { .. }
-                    | CompiledOperator::ProviderAdmissionBrokered { .. }
-            )
-        }) {
+        if self
+            .nodes
+            .values()
+            .any(|node| matches!(node.operator, CompiledOperator::ProviderAdmission { .. }))
+        {
             return Err("Provider admission can be compiled only once".into());
         }
-        let mut policies = BTreeMap::new();
-        for (slot, probe) in probes {
-            probe.policy.validate()?;
-            if policies
-                .insert(&probe.policy_id, &probe.policy)
-                .is_some_and(|old| old != &probe.policy)
-            {
-                return Err(
-                    "One captured Provider probe identity cannot describe different policies"
-                        .into(),
-                );
-            }
-            if !review_core::is_digest(&probe.policy_id)
-                || bindings
-                    .get(slot)
-                    .is_none_or(|binding| binding.execution != probe.policy.execution)
-                || review_core::broker_authority_usage(&probe.policy.operations)? > cost.tokens
-            {
-                return Err("Provider probe must match its exact Model binding and original admission reservation".into());
-            }
-        }
-        let mut capabilities: BTreeMap<String, (BTreeSet<String>, Option<String>)> =
-            BTreeMap::new();
+        let mut capabilities: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         for (slot, binding) in bindings {
             if matches!(binding.execution, WorkerExecutionV1::Model { .. }) {
-                // Preserve the frozen no-probe grouping key and resulting node order.
-                let probe_id = probes.get(slot).map(|probe| probe.policy_id.clone());
-                let key = if let Some(probe_id) = &probe_id {
-                    serde_json::to_string(&(
-                        &binding.execution,
-                        &binding.invocation_policy_id,
-                        probe_id,
-                    ))
-                } else {
+                let key =
                     serde_json::to_string(&(&binding.execution, &binding.invocation_policy_id))
-                }
-                .map_err(|e| e.to_string())?;
-                capabilities
-                    .entry(key)
-                    .or_insert_with(|| (BTreeSet::new(), probe_id))
-                    .0
-                    .insert(slot.clone());
+                        .map_err(|e| e.to_string())?;
+                capabilities.entry(key).or_default().insert(slot.clone());
             }
         }
-        for (index, (slots, probe_policy_id)) in capabilities.into_values().enumerate() {
+        for (index, slots) in capabilities.into_values().enumerate() {
             let name = format!("root.providers.admit{index}");
             if self.nodes.contains_key(&name) || self.nodes.len() >= 64 {
                 return Err("Provider admission exceeds the installed graph bound".into());
@@ -356,29 +301,17 @@ impl CompiledTask {
                         .is_some_and(|a| a.verification_attempts > 0);
                 }
             }
-            let (operator, artifact_type) = match probe_policy_id {
-                Some(probe_policy_id) => (
-                    CompiledOperator::ProviderAdmissionBrokered {
-                        bindings: slots,
-                        probe_policy_id,
-                    },
-                    "af/TaskProviderAdmission@2",
-                ),
-                None => (
-                    CompiledOperator::ProviderAdmission { bindings: slots },
-                    "af/TaskProviderAdmission@1",
-                ),
-            };
             self.nodes.insert(
                 name.clone(),
                 CompiledNode {
-                    operator,
+                    operator: CompiledOperator::ProviderAdmission { bindings: slots },
                     contract: PipelineContractV1 {
                         inputs: BTreeMap::new(),
                         outputs: BTreeMap::from([(
                             "result".into(),
                             PipelinePortV1 {
-                                artifact_type: artifact_type.into(),
+                                artifact_type:
+                                    review_core::task::provider::TASK_PROVIDER_ADMISSION_V1.into(),
                                 cardinality: review_core::PortCardinality::One,
                                 optional: false,
                                 affinity: PortAffinityV1::Unbound {},
@@ -480,11 +413,7 @@ impl CompiledTask {
                     self.nodes
                         .get(&condition.source.node)
                         .is_some_and(|source| {
-                            matches!(
-                                source.operator,
-                                CompiledOperator::ProviderAdmission { .. }
-                                    | CompiledOperator::ProviderAdmissionBrokered { .. }
-                            )
+                            matches!(source.operator, CompiledOperator::ProviderAdmission { .. })
                         })
                 })
             {
@@ -574,8 +503,7 @@ impl CompiledTask {
             .iter()
             .map(|(scope, call)| (scope.clone(), call.max_parallel as usize))
             .collect();
-        Ok(crate::Scheduler::new(&plan)
-            .with_parallelism(self.max_parallel as usize)
+        Ok(crate::Scheduler::new(&plan, self.max_parallel as usize)
             .with_scope_limits(limits)?
             .run(dispatch))
     }
@@ -641,7 +569,8 @@ impl CompiledTask {
     }
 
     /// The existing graph planner remains the authority for DAG topology. Task lineage and
-    /// named evidence were proven separately; legacy SameSubject cannot represent S0 -> S1.
+    /// named evidence were proven separately; a same-Subject affinity cannot represent
+    /// S0 -> S1.
     pub fn scheduler_plan(&self) -> Result<Planned, String> {
         let mut pipeline = Pipeline::default();
         for (id, node) in &self.nodes {

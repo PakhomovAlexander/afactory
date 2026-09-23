@@ -11,11 +11,14 @@
 //! - JSON payloads live in the I-JSON numeric domain ([`json::admit`]) before they are hashed,
 //!   so a value cannot change meaning between producer and consumer.
 
-pub mod broker;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("af supports Linux and macOS only");
+
 pub mod build_cache;
 pub mod cache;
 pub mod campaign;
 pub mod change_set;
+pub mod credential;
 pub mod demand;
 pub mod disposition;
 pub mod envelope;
@@ -27,10 +30,10 @@ pub mod grouping;
 pub mod hex;
 pub mod integration;
 pub mod json;
-pub mod legacy;
 pub mod patch;
 pub mod path;
 pub mod resolution;
+pub mod reviewer_result;
 pub mod session;
 pub mod slice;
 pub mod snapshot;
@@ -66,27 +69,17 @@ pub use build_cache::{
     MAX_BUILD_CACHE_BYTES_V1, MAX_BUILD_CACHE_ENTRIES_V1, validate_build_cache_path_v1,
 };
 
-pub use task::broker::{
-    TASK_BROKER_BINDING_V1, TASK_BROKER_OPERATION_V1, TaskBrokerBindingV1, TaskBrokerOperationV1,
-    TaskBrokerTargetV1, TaskBrokerTransitionV1,
-};
-
-pub use broker::{
-    BrokerCredentialModeV1, BrokerFailureReasonV1, BrokerLeaseV1, BrokerOperationOutcomeV1,
-    BrokerOperationPolicyV1, BrokerOperationReceiptV1, BrokerOperationReceiptV2,
-    ReviewerExecutionBindingV1, broker_authority_usage,
-};
 pub use cache::{
     CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1, MAX_CACHE_BYTES_V1,
     MAX_CACHE_COPY_BYTES_V1, MAX_CACHE_ENTRIES_V1, validate_cache_path_v1,
 };
 pub use campaign::{
     AuthorityFileV1, CANONICAL_FINDING_IDENTITY_POLICY, CampaignBudgetV1, CampaignConvergenceV1,
-    CampaignManifestV1, CampaignOpenedPayloadV1, CampaignReviewerV1,
-    LEGACY_FINDING_IDENTITY_POLICY, ReviewerPackageV1, RoundInputSupersededPayloadV1,
-    RoundStartedPayloadV1,
+    CampaignManifestV1, CampaignOpenedPayloadV1, CampaignReviewerV1, ReviewerPackageV1,
+    RoundInputSupersededPayloadV1, RoundStartedPayloadV1,
 };
 pub use change_set::{ChangeSetV1, PathRenameV1};
+pub use credential::CredentialModeV1;
 pub use demand::{
     DEMAND_REDUCER_VERSION, DemandRequirement, DemandSetEntryV1, DemandSetV1, DemandStatus,
     DemandV1, DemandWaiverV1, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1, EvidenceV1,
@@ -96,20 +89,16 @@ pub use disposition::{FindingDispositionPosition, FindingDispositionV1};
 pub use envelope::{ArtifactEnvelope, Producer};
 pub use event::{
     EventType, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1,
-    PortCardinality, ProviderFailureClassV1, ProviderNextActionV1, ProviderOperationStateV1,
-    ProviderOperationTransitionPayloadV1, RunCacheFailureReasonV5, RunCacheFailureV5,
-    RunCacheKindV5, RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
-    RunExecutionProviderV4, RunFailureReasonV2, RunFailureReasonV3, RunIsolationV4,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportExecutionV6, RunReportPayloadV2,
-    RunReportPayloadV3, RunReportPayloadV4, RunReportPayloadV5, RunReportPayloadV6,
-    RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity,
-    TaskReviewAccountingV1, UnknownEventType, is_artifact_type, run_report_closes_round,
+    PortCardinality, RunCacheFailureReasonV5, RunCacheFailureV5, RunCacheKindV5,
+    RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
+    RunExecutionProviderV4, RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2,
+    RunReportExecutionV6, RunReportPayloadV6, RunSandboxModeV4, RunSuppressionReasonV2,
+    RunVerdictV3, SnapshotAffinity, TaskReviewAccountingV1, UnknownEventType, is_artifact_type,
+    run_report_closes_round,
 };
 pub use exec::{Arg, ArgError, Command, Provenance};
 pub use finding::{FindingReport, Location, Relation, RelationKind, Severity};
-pub use finding_set::{
-    FINDING_REDUCER_VERSION, FINDING_REDUCER_VERSION_V2, FindingSetEntryV1, FindingSetV1,
-};
+pub use finding_set::{FINDING_REDUCER_VERSION_V2, FindingSetEntryV1, FindingSetV1};
 pub use grouping::{FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1};
 pub use integration::{
     IntegrationCandidateV1, IntegrationCheckV1, IntegrationChecksCompletedPayloadV1,
@@ -117,11 +106,6 @@ pub use integration::{
     IntegrationPlanV1, IntegrationPreparedPayloadV1,
 };
 pub use json::{NumericDomainError, admit};
-pub use legacy::{
-    LegacyImportError, LegacyStageOutput, ReviewerResultContract, ReviewerResultRejection,
-    validate_reviewer_result, validate_reviewer_result_classified, validate_reviewer_result_v2,
-    validate_reviewer_result_v2_classified,
-};
 pub use patch::{
     ClaimRef, ClaimRefKind, PatchProposal, ProposalAcceptedPayloadV1, ProposalCandidateV1,
     ProposalPreparedPayloadV1, ProposalRefusalReasonV1, ProposalRefusedPayloadV1,
@@ -130,6 +114,10 @@ pub use path::{contains_report_path, decode_path, encode_path, is_valid_repo_pat
 pub use resolution::{
     ChangeAttestationV1, ChangedRegionV1, FindingResolutionOutcome, FindingResolutionV1,
     FixVerificationV1, PolicyTimeV1, ResolutionChallengeKind, ResolutionChallengeV1,
+};
+pub use reviewer_result::{
+    ReportAdmissionError, ReviewerResultContract, ReviewerResultRejection, ReviewerStageOutput,
+    validate_reviewer_result_v2, validate_reviewer_result_v2_classified,
 };
 pub use slice::{
     CloseoutPolicyV1, RecordedSetPayloadV1, ReviewSliceV1, SemanticClosureV1,
@@ -158,7 +146,6 @@ pub fn is_digest(value: &str) -> bool {
 /// Contract type URIs, as they appear in an [`ArtifactEnvelope::artifact_type`].
 pub mod contract {
     pub const CACHE_MANIFEST_V1: &str = "review.kernel/CacheManifest@1";
-    pub const CAMPAIGN_MANIFEST_V1: &str = "review.kernel/CampaignManifest@1";
     pub const CHANGE_SET_V1: &str = "review.kernel/ChangeSet@1";
     pub const FINDING_REPORT_V1: &str = "review.kernel/FindingReport@1";
     pub const FINDING_DISPOSITION_V1: &str = "review.kernel/FindingDisposition@1";
@@ -178,20 +165,14 @@ pub mod contract {
     pub const RESOLUTION_CHALLENGE_V1: &str = "review.kernel/ResolutionChallenge@1";
     pub const POLICY_TIME_V1: &str = "review.kernel/PolicyTime@1";
     pub const GATE_DECISION_V1: &str = "review.kernel/GateDecision@1";
-    pub const OPAQUE_V1: &str = "review.kernel/Opaque@1";
     pub const PATCH_PROPOSAL_V1: &str = "review.kernel/PatchProposal@1";
-    pub const PRIOR_FINDINGS_V1: &str = "review.kernel/PriorFindings@1";
-    pub const REFUSAL_HISTORY_V1: &str = "review.kernel/RefusalHistory@1";
     pub const REPORT_SET_V1: &str = "review.kernel/ReportSet@1";
     pub const REVIEW_SLICE_V1: &str = "review.kernel/ReviewSlice@1";
-    pub const REVIEWER_RESULT_V1: &str = "review.kernel/ReviewerResult@1";
     pub const REVIEWER_RESULT_V2: &str = "review.kernel/ReviewerResult@2";
     pub const SOURCE_SNAPSHOT_V1: &str = "review.kernel/SourceSnapshot@1";
-    pub const SUBJECT_V1: &str = "review.kernel/Subject@1";
     pub const SLICE_SET_V1: &str = "review.kernel/SliceSet@1";
     pub const SHARD_SET_V1: &str = "review.kernel/ShardSet@1";
     pub const SEMANTIC_CLOSURE_V1: &str = "review.kernel/SemanticClosure@1";
-    pub const REVIEWER_PACKAGE_V1: &str = "review.kernel/ReviewerPackage@1";
     pub const WORKER_NOTES_V1: &str = "review.kernel/WorkerNotes@1";
     pub const HEAD_DELTA_V1: &str = "review.kernel/HeadDelta@1";
     pub const WARM_SET_V1: &str = "review.kernel/WarmSet@1";

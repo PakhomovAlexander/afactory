@@ -10,7 +10,7 @@
     "subject_id": { "$ref": "#/$defs/digest" },
     "round": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
     "prior_finding_set_id": { "$ref": "#/$defs/digest" },
-    "reducer_version": { "enum": ["review.kernel/finding-reducer@1", "review.kernel/finding-reducer@2"] },
+    "reducer_version": { "const": "review.kernel/finding-reducer@2" },
     "identity_policy": { "type": "string", "minLength": 1 },
     "selected_report_ids": { "$ref": "#/$defs/digests" },
     "relation_ids": { "$ref": "#/$defs/digests" },

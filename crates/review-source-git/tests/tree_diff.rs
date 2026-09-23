@@ -103,7 +103,6 @@ fn resolved_trees_produce_typed_changes_and_a_fixed_patch() {
     assert_eq!(change_set.renames[0].new_path, "new-name.txt");
 }
 
-#[cfg(unix)]
 #[test]
 fn a_file_to_symlink_type_change_has_two_patch_stanzas() {
     let fixture = Fixture::new();
@@ -172,8 +171,14 @@ fn an_over_limit_rename_search_records_truncation_without_losing_scope_paths() {
         .unwrap();
     assert!(change_set.rename_detection_truncated);
     assert_eq!(change_set.changed_paths.len(), 2_002);
-    assert!(change_set.contains_report_path("old/0000.txt"));
-    assert!(change_set.contains_report_path("new/1000.txt"));
+    assert!(review_core::contains_report_path(
+        &change_set.changed_paths,
+        "old/0000.txt"
+    ));
+    assert!(review_core::contains_report_path(
+        &change_set.changed_paths,
+        "new/1000.txt"
+    ));
 }
 
 #[test]

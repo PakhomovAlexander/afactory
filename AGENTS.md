@@ -1,7 +1,7 @@
 # AGENTS.md
 
 This repository is **Afactory**: the `af` CLI, a multi-agent coding factory whose first capability
-is the deterministic Review Kernel behind `af review`, and whose current increment adds
+is the deterministic Review Kernel behind `af review`, and whose Task runtime runs
 implementation Tasks behind `af task`. Reviewers and implementers only ever mutate a sandbox; the
 kernel integrates; humans publish.
 
@@ -14,21 +14,23 @@ review corpora belong in consuming repositories, not here.
 
 - Product rebranding must not rename `review.kernel/*` artifact types, persisted events, or
   established Review Kernel domain terms until a separate accepted migration ADR supersedes this
-  rule. The `.review/` authority *layout* is no longer read for new Campaigns since `v0.8.0`
-  ([ADR-0043](docs/adr/0043-drop-legacy-review-authority-in-v0-8-0.md), executed by
-  [ADR-0045](docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md): `af onboard --migrate
-  --apply` moves a consumer to `.af/`), which renames nothing persisted. Releases are cut only
-  through `make release` and the release workflow; a lock pins the release's bytes, not just its
-  version (ADR-0045).
+  rule. Releases are cut only through `make release` and the release workflow; a lock pins the
+  release's bytes, not just its version
+  ([ADR-0045](docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md)).
+- Compatibility obligations start at GA: never add a reader, migration, fallback or replay path
+  for state, configuration or flags that only a pre-GA (0.x) release wrote; such state is
+  unsupported and is discarded on upgrade
+  ([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)). Self-management still installs and
+  dispatches to pinned releases from 0.8.0 on.
 
 ## Invariants
 
-- The next increment makes Task the common execution abstraction. Every Pipeline has a public
-  input/output contract, including embedded and generated Pipelines; newly generated plans
-  require developer review and exact-plan approval before execution. The implementation status
-  and compatibility checkpoints are recorded in [docs/task-execution.md](docs/task-execution.md).
-  Captured Review operations use common Task Attempts, preserve canonical domain receipts and
-  require the Review verdict for acceptance
+- Task is the common execution abstraction. Every Pipeline has a public input/output contract,
+  including embedded and generated Pipelines; newly generated plans require developer review and
+  exact-plan approval before execution. The runtime's decisions, contracts and walkthroughs are
+  indexed in [docs/task-execution.md](docs/task-execution.md). Captured Review operations use
+  common Task Attempts, preserve canonical domain receipts and require the Review verdict for
+  acceptance
   ([ADR-0077](docs/adr/0077-run-captured-review-operations-under-common-task-attempts.md)).
 - Task-backed Review conclusions carry exact cumulative accounting and a checked Task log
   prefix; report snapshots are never summed as independent spend
@@ -36,17 +38,20 @@ review corpora belong in consuming repositories, not here.
 - A rename-limit warning does not erase a complete diff Subject: preserve the full Add/Delete
   path set, record truncated rename linkage, and keep the fixed limit in the diff-policy identity
   ([ADR-0017](docs/adr/0017-record-rename-truncation-and-continue.md)).
-- Retry-only reviewer input is durable invocation authority: publish it as an Attempt input before
-  dispatch, and publish produced feedback separately from terminal diagnostics; never derive a
-  retry prompt from process memory or diagnostic prose, or mutate a frozen dispatch event
-  ([ADR-0022](docs/adr/0022-persist-retry-feedback-as-attempt-input.md),
-  [ADR-0023](docs/adr/0023-separate-retry-feedback-from-terminal-diagnostics.md)).
-- Manifest path spellings declare their encoding generation; legacy artifacts remain readable,
-  and representation upgrades do not change raw-tree content identity
-  ([ADR-0024](docs/adr/0024-version-manifest-path-encoding.md)).
-- Built-in Generation outputs are explicitly typed even in pipeline version 2; never restore an
-  opaque output shape that the executor cannot dispatch
-  ([ADR-0025](docs/adr/0025-require-typed-generation-outputs-in-version-2.md)).
+- Retry-only Worker input is durable invocation authority: a Task Attempt's reservation names
+  the admitted retry feedback (`feedback_ids`) before its context is bound, and a failed Attempt
+  records typed feedback separately from its diagnostic; never derive a retry prompt from process
+  memory or diagnostic prose
+  ([ADR-0066](docs/adr/0066-reserve-task-attempts-before-binding-exact-context.md),
+  [ADR-0095](docs/adr/0095-bind-legacy-task-context-and-retry-output-admission.md)).
+- A source Manifest spells every path one way, with `review_core::encode_path`, and Snapshot
+  content identity hashes that stored spelling; never add a second path alphabet or a spelling
+  that differs by baseline ([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)).
+- Every pipeline port is an explicitly typed table in every pipeline format, and every node
+  declares its outputs; never restore the untyped string shorthand or an opaque port that the
+  executor cannot dispatch
+  ([ADR-0025](docs/adr/0025-require-typed-generation-outputs-in-version-2.md),
+  [ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)).
 - Process supervision shared across architectural layers lives in the dependency-neutral
   `review-process` leaf; source capture, gates, and sandbox providers do not depend on reviewer
   adapters or fork deadline, process-group, stdin, and pipe-drain semantics per consumer
@@ -61,10 +66,6 @@ review corpora belong in consuming repositories, not here.
   explicitly requests convergence review; the selected effective convergence authority is pinned
   and cannot change on resume
   ([ADR-0037](docs/adr/0037-default-campaigns-to-one-round-light-review.md)).
-- Complete minimal v1 and v2 before candidate dogfood. v1 is final local review; v2 is sequential
-  implementation ending at a verified internal Snapshot with no working-tree, branch, or PR
-  delivery. Scale and optional integrations are v3; `make check` remains independent
-  ([ADR-0030](docs/adr/0030-complete-minimal-v1-and-v2-before-dogfood.md)).
 - V3.1 delivery accepts only a verified Task whose target is clean and exactly matches its source
   Snapshot. It creates only a new local branch/worktree after explicit Task-ID confirmation,
   persists recovery state, and never commits, pushes, opens a PR, invokes a remote, or overwrites
@@ -83,16 +84,12 @@ review corpora belong in consuming repositories, not here.
 - Admitted reviewer results may be shown as recorded, not gathered evidence when required sibling
   output is missing, but they never become a partial Ledger, satisfy Semantic Closure, or support
   convergence ([ADR-0034](docs/adr/0034-surface-partial-results-without-ledger-authority.md)).
-- New default Campaign state is addressed by a domain-separated opaque ID derived from its
-  validated label. State resolution must remain beneath the configured root; legacy label-named
-  directories stay readable, ambiguous dual layouts and symlinked enumeration fail closed
-  ([ADR-0035](docs/adr/0035-address-campaign-state-by-opaque-id.md)).
-- Every milestone receives external `af review`, but the standard dogfood policy uses one
-  high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
-  or performance audits are explicit exceptions
-  ([ADR-0027](docs/adr/0027-use-one-correctness-reviewer-per-milestone.md)). Review records state
-  the Campaign's wall-clock, per-Attempt provider usage, and Finding dispositions exactly as
-  `af review report` prints them.
+- Default Campaign state is addressed by a domain-separated opaque ID derived from its validated
+  label, and resolution must remain beneath the configured root. Enumeration also lists an
+  explicit `--state` directory named by its label; one Campaign under both names and symlinked
+  enumeration fail closed ([ADR-0035](docs/adr/0035-address-campaign-state-by-opaque-id.md)).
+- Review records state the Campaign's wall-clock, per-Attempt provider usage, and Finding
+  dispositions exactly as `af review report` prints them.
 - Proposal declarations travel beside, never inside, the persisted flat Reviewer Result. The
   kernel verifies one declaration against the complete sealed sandbox diff, durably prepares it
   with the selected Attempt, and publishes `PatchProposal@1` only after canonical Report IDs exist
@@ -106,7 +103,7 @@ review corpora belong in consuming repositories, not here.
   pending-verification claims in one transaction; branch and PR publication stay outside the
   kernel ([ADR-0040](docs/adr/0040-promote-only-checked-derived-snapshots.md)).
 - Diff review resolves policy, Base, and candidate selectors independently. An empty typed Change
-  Set is refused before Gates, Provider operations, or Workers; it is never reported as a clean
+  Set is refused before Gates, Provider admission, or Workers; it is never reported as a clean
   review ([ADR-0041](docs/adr/0041-make-review-selectors-explicit-and-refuse-empty-diffs.md)).
 - Every packaged model Worker has an explicit admitted Provider binding. Runner adapters own
   their security flags; candidate project settings and Hooks cannot widen reviewer authority

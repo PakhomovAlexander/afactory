@@ -161,7 +161,6 @@ pub trait TaskDomain: TaskOperatorHost {
         _cas: &Cas,
         _task: &TaskRevisionV1,
         _plan: &ExecutionPlanV1,
-        _prepared_id: &str,
         _prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         Err("Task domain has no installed experimental compiler".into())
@@ -183,7 +182,7 @@ pub trait TaskDomain: TaskOperatorHost {
         _task: &TaskRevisionV1,
         _plan: &ExecutionPlanV1,
         _phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
-        _report: &review_core::task::report::TaskRunReportV2,
+        _report: &review_core::task::report::TaskRunReportV1,
         _events: &[review_store::NewEvent],
         _evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {
@@ -226,18 +225,6 @@ pub trait TaskDomain: TaskOperatorHost {
         Err("Task domain has no installed child completion".into())
     }
 
-    /// Re-derive Broker authority from installed domain policy and exact captured inputs.
-    /// A serialized Worker binding alone does not install an external capability.
-    fn validate_broker_binding(
-        &self,
-        _cas: &Cas,
-        _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV1,
-        _binding: &review_core::task::broker::TaskBrokerBindingV1,
-    ) -> Result<(), String> {
-        Err("Task domain has no installed Broker authority".into())
-    }
-
     fn validate_retry(
         &self,
         _cas: &Cas,
@@ -257,22 +244,16 @@ pub trait TaskDomain: TaskOperatorHost {
     ) -> Result<TaskResultV1, String> {
         Err("This Task domain has no installed final-result assembler".into())
     }
+    /// Recheck the admitted context against the exact persisted reservation it was bound to.
     fn validate_context(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        feedback: &[String],
-        context_id: &str,
-    ) -> Result<(), String>;
-    fn validate_context_for_attempt(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: &ReservedTaskAttempt,
         context_id: &str,
-    ) -> Result<(), String> {
-        self.validate_context(cas, input, attempt.feedback_ids(), context_id)
-    }
+    ) -> Result<(), String>;
+    /// Recheck an output against the exact static or registered dynamic node the Store
+    /// resolved, so a registered child reapplies its captured Worker contract.
     fn validate_output(
         &self,
         cas: &Cas,
@@ -280,18 +261,8 @@ pub trait TaskDomain: TaskOperatorHost {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String>;
-    fn validate_resolved_output(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        input: &TaskInvocationV1,
-        output: &TaskOutputV1,
-        _definition: &review_graph::task::CompiledNode,
-    ) -> Result<(), String> {
-        self.validate_output(cas, task, plan, input, output)
-    }
     fn validate_result(
         &self,
         cas: &Cas,
@@ -345,7 +316,7 @@ pub struct CapturedTaskAuthority<'a> {
 
 enum CapturedCompiler<'a> {
     Task(Box<review_config::task::catalog::CapturedTaskPlanValidator<'a>>),
-    Review(&'a super::legacy_review::plan::LegacyReviewPlanCompiler),
+    Review(&'a super::campaign_review::plan::CampaignReviewPlanCompiler),
 }
 
 impl<'a> CapturedTaskAuthority<'a> {
@@ -363,8 +334,8 @@ impl<'a> CapturedTaskAuthority<'a> {
         }
     }
 
-    pub fn for_legacy_review(
-        compiler: &'a super::legacy_review::plan::LegacyReviewPlanCompiler,
+    pub fn for_campaign_review(
+        compiler: &'a super::campaign_review::plan::CampaignReviewPlanCompiler,
         domain: &'a dyn TaskDomain,
         developer: &'a dyn TaskDeveloper,
     ) -> Self {
@@ -382,12 +353,11 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         cas: &Cas,
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
-        prepared_id: &str,
         prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         self.validate_plan(cas, task, plan)?;
         self.domain
-            .validate_experiment_preparation(cas, task, plan, prepared_id, prepared)
+            .validate_experiment_preparation(cas, task, plan, prepared)
     }
 
     fn experiment_authorization_current(
@@ -395,20 +365,6 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         decision: &review_core::task::optimization_experiment::ExperimentPlanDecisionV1,
     ) -> Result<(), String> {
         self.developer.experiment_current(decision)
-    }
-
-    fn validate_resolved_output(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        input: &TaskInvocationV1,
-        output: &TaskOutputV1,
-        definition: &review_graph::task::CompiledNode,
-    ) -> Result<(), String> {
-        self.validate_plan(cas, task, plan)?;
-        self.domain
-            .validate_resolved_output(cas, task, plan, input, output, definition)
     }
 
     fn validate_review_integration_selection(
@@ -433,7 +389,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
-        report: &review_core::task::report::TaskRunReportV2,
+        report: &review_core::task::report::TaskRunReportV1,
         events: &[review_store::NewEvent],
         evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {
@@ -496,18 +452,6 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
             .validate_owned_completion(cas, task, plan, parent, children, facts, output)
     }
 
-    fn validate_broker_binding(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        binding: &review_core::task::broker::TaskBrokerBindingV1,
-    ) -> Result<(), String> {
-        self.validate_plan(cas, task, plan)?;
-        self.domain
-            .validate_broker_binding(cas, task, plan, binding)
-    }
-
     fn validate_retry(
         &self,
         cas: &Cas,
@@ -565,22 +509,10 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         _: &TaskRevisionV1,
         _: &ExecutionPlanV1,
         input: &TaskInvocationV1,
-        feedback: &[String],
-        id: &str,
-    ) -> Result<(), String> {
-        self.domain.validate_context(cas, input, feedback, id)
-    }
-    fn validate_context_for_attempt(
-        &self,
-        cas: &Cas,
-        _: &TaskRevisionV1,
-        _: &ExecutionPlanV1,
-        input: &TaskInvocationV1,
         attempt: &ReservedTaskAttempt,
         id: &str,
     ) -> Result<(), String> {
-        self.domain
-            .validate_context_for_attempt(cas, input, attempt, id)
+        self.domain.validate_context(cas, input, attempt, id)
     }
     fn validate_output(
         &self,
@@ -589,9 +521,11 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
-        validate_worker_notes_outputs(cas, input, output)?;
-        self.domain.validate_output(cas, task, plan, input, output)
+        self.validate_plan(cas, task, plan)?;
+        self.domain
+            .validate_output(cas, task, plan, input, output, definition)
     }
     fn validate_result(
         &self,
@@ -623,13 +557,10 @@ struct CapturedWorker<'a> {
     instructions: String,
     signature: OperatorSignature,
     contract: std::sync::Arc<WorkerContract>,
-    legacy_budget_tokens: Option<u64>,
 }
 
 pub struct CapturedTaskHost<'a> {
     run_id: String,
-    task_id: String,
-    task_revision_id: String,
     graph: CompiledTask,
     workers: BTreeMap<String, std::sync::Arc<CapturedWorker<'a>>>,
     slot_workers: BTreeMap<String, std::sync::Arc<CapturedWorker<'a>>>,
@@ -642,73 +573,7 @@ pub struct CapturedTaskHost<'a> {
     domain: &'a dyn TaskDomain,
 }
 
-pub type CommandTaskHost<'a> = CapturedTaskHost<'a>;
-
-/// Durable admission and replay recheck of every `af/WorkerNotes@1` output: the stored payload
-/// must be a closed `WorkerNotesV1` bound to the producing Attempt, this node and the head the
-/// output port names. Worker JSON never establishes that identity on its own.
-fn validate_worker_notes_outputs(
-    cas: &Cas,
-    input: &TaskInvocationV1,
-    output: &TaskOutputV1,
-) -> Result<(), String> {
-    for value in output.outputs.values() {
-        if value.artifact_type != review_core::task::WORKER_NOTES_V1 {
-            continue;
-        }
-        for id in &value.artifact_ids {
-            let stored = envelope(cas, id)?;
-            if stored.artifact_type != review_core::task::WORKER_NOTES_V1 {
-                return Err("Worker Notes output names an artifact of another type".into());
-            }
-            let Producer::Attempt {
-                node_id,
-                attempt_id,
-                ..
-            } = &stored.producer
-            else {
-                return Err("Worker Notes must be produced by an Attempt".into());
-            };
-            if node_id != &input.node {
-                return Err("Worker Notes were produced by another node".into());
-            }
-            let head = stored
-                .subject_snapshot_id
-                .as_deref()
-                .ok_or("Worker Notes artifact names no head Snapshot")?;
-            let notes: review_core::WorkerNotesV1 = serde_json::from_value(stored.payload)
-                .map_err(|error| format!("stored Worker Notes are not WorkerNotes@1: {error}"))?;
-            notes.check_bound(&input.node, attempt_id, head)?;
-        }
-    }
-    Ok(())
-}
-
 impl<'a> CapturedTaskHost<'a> {
-    fn experimental_worker(&self, node: &str) -> Option<&CapturedWorker<'a>> {
-        self.graph.nodes.iter().find_map(|(parent, definition)| {
-            let CompiledOperator::Primitive {
-                operator:
-                    TaskOperatorV1::OptimizationExperiment {
-                        baseline_slot,
-                        candidate_slot,
-                    },
-                ..
-            } = &definition.operator
-            else {
-                return None;
-            };
-            let slot = if node == format!("{parent}.baseline") {
-                baseline_slot
-            } else if node == format!("{parent}.candidate") {
-                candidate_slot
-            } else {
-                return None;
-            };
-            self.slot_workers.get(slot).map(std::sync::Arc::as_ref)
-        })
-    }
-
     fn resolved_worker(
         &self,
         cas: &Cas,
@@ -775,7 +640,6 @@ impl<'a> CapturedTaskHost<'a> {
             instructions,
             signature: original.signature.clone(),
             contract: original.contract.clone(),
-            legacy_budget_tokens: original.legacy_budget_tokens,
         });
         self.derived_workers
             .lock()
@@ -825,7 +689,7 @@ impl<'a> CapturedTaskHost<'a> {
             }
             values.insert(port.clone(), payloads);
         }
-        worker.contract.validate_typed_reply(
+        worker.contract.validate_reply(
             &serde_json::to_vec(&review_runner::task::WorkerReply {
                 schema: "af.worker-reply/1".into(),
                 outputs: values,
@@ -833,27 +697,6 @@ impl<'a> CapturedTaskHost<'a> {
             .map_err(|e| e.to_string())?,
         )?;
         Ok(())
-    }
-
-    pub fn capture(
-        cas: &Cas,
-        compiler: &TaskPlanCompiler,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        graph: CompiledTask,
-        environment: &'a dyn TaskEnvironment,
-        domain: &'a dyn TaskDomain,
-    ) -> Result<Self, String> {
-        Self::capture_with_models(
-            cas,
-            compiler,
-            task,
-            plan,
-            graph,
-            environment,
-            domain,
-            &BTreeMap::new(),
-        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -879,10 +722,7 @@ impl<'a> CapturedTaskHost<'a> {
             let name = &graph.slots[slot].worker;
             let manifest = compiler.worker(name).ok_or("Missing captured Worker")?;
             let transport = match &manifest.runner {
-                TaskWorkerRunner::Command { command }
-                | TaskWorkerRunner::LegacyTaskCommand { command, .. } => {
-                    WorkerTransport::Command(command.build())
-                }
+                TaskWorkerRunner::Command { command } => WorkerTransport::Command(command.build()),
                 TaskWorkerRunner::Model { provider_kind, .. } => {
                     let model = models
                         .get(slot)
@@ -915,13 +755,6 @@ impl<'a> CapturedTaskHost<'a> {
                 instructions,
                 signature: manifest.signature.clone(),
                 contract: std::sync::Arc::new(contract),
-                legacy_budget_tokens: match &manifest.runner {
-                    TaskWorkerRunner::LegacyTaskCommand {
-                        legacy_budget_tokens,
-                        ..
-                    } => *legacy_budget_tokens,
-                    _ => None,
-                },
             }))
         };
         for (id, node) in &graph.nodes {
@@ -959,8 +792,6 @@ impl<'a> CapturedTaskHost<'a> {
         }
         Ok(Self {
             run_id: task_run_id(&task.task_id).map_err(|e| e.to_string())?,
-            task_id: task.task_id.clone(),
-            task_revision_id: plan.task_revision_id.clone(),
             graph,
             workers,
             slot_workers,
@@ -969,32 +800,6 @@ impl<'a> CapturedTaskHost<'a> {
             environment,
             domain,
         })
-    }
-
-    fn prepare_worker_context(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        feedback: &[String],
-        worker: &CapturedWorker<'_>,
-    ) -> Result<String, String> {
-        match worker.legacy_budget_tokens {
-            Some(budget_tokens) => worker.contract.prepare_legacy(
-                cas,
-                input,
-                feedback,
-                &worker.instructions,
-                review_runner::task::legacy::LegacyTaskContext {
-                    task_id: self.task_id.clone(),
-                    task_revision_id: self.task_revision_id.clone(),
-                    plan_id: input.plan_id.clone(),
-                    budget_tokens,
-                },
-            ),
-            None => worker
-                .contract
-                .prepare(cas, input, feedback, &worker.instructions),
-        }
     }
 
     fn worker_feedback(
@@ -1038,7 +843,6 @@ impl<'a> CapturedTaskHost<'a> {
         input: &TaskInvocationV1,
         attempt: &PreparedTaskAttempt,
         worker: &CapturedWorker<'_>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         use review_core::task::feedback::*;
@@ -1048,15 +852,6 @@ impl<'a> CapturedTaskHost<'a> {
         let mut usage_observation = None;
         let mut feedback_code = None;
         let outputs = (|| {
-            let brokered = match &worker.transport {
-                WorkerTransport::Command(_) => false,
-                WorkerTransport::Model(adapter) => {
-                    adapter.credential_mode() == review_core::BrokerCredentialModeV1::Brokered
-                }
-            };
-            if brokered != broker.is_some() {
-                return Err("Worker transport differs from its runtime Broker capability".into());
-            }
             let (context, _) = worker.contract.read_context(cas, attempt.context_id())?;
             if context.invocation != *input {
                 return Err("Worker context belongs to another invocation".into());
@@ -1110,7 +905,7 @@ impl<'a> CapturedTaskHost<'a> {
                                 .into();
                         }
                     }
-                    review_runner::task::invoke_command_controlled_with_environment(
+                    review_runner::task::invoke_command(
                         cas,
                         sandbox.root(),
                         tempfile::tempdir().map_err(|e| e.to_string())?.path(),
@@ -1122,7 +917,7 @@ impl<'a> CapturedTaskHost<'a> {
                         &command_environment,
                     )
                 }
-                WorkerTransport::Model(adapter) => review_runner::task::invoke_model_controlled(
+                WorkerTransport::Model(adapter) => review_runner::task::invoke_model(
                     cas,
                     sandbox.root(),
                     *adapter,
@@ -1130,7 +925,6 @@ impl<'a> CapturedTaskHost<'a> {
                     attempt.context_id(),
                     Duration::from_millis(remaining),
                     worker.signature.effects.contains("write-source"),
-                    broker,
                     cancellation,
                 ),
             };
@@ -1277,7 +1071,7 @@ impl<'a> CapturedTaskHost<'a> {
 }
 
 impl TaskOperatorHost for CapturedTaskHost<'_> {
-    fn prepare_context_for_resolved_attempt(
+    fn prepare_context(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
@@ -1286,9 +1080,11 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
     ) -> Result<String, String> {
         let context_id = match self.resolved_worker(cas, definition)? {
             Some(worker) => {
-                self.prepare_worker_context(cas, input, attempt.feedback_ids(), &worker)
+                worker
+                    .contract
+                    .prepare(cas, input, attempt.feedback_ids(), &worker.instructions)
             }
-            None => self.domain.prepare_context_for_attempt(cas, input, attempt),
+            None => self.domain.prepare_context(cas, input, definition, attempt),
         }?;
         let previous = self
             .resolved_contexts
@@ -1304,22 +1100,24 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         Ok(context_id)
     }
 
-    fn execute_resolved_controlled(
+    fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
         definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
+        if let Err(error) = crate::task::control::check(cancellation) {
+            return crate::task::control::refused(error);
+        }
         let worker = match self.resolved_worker(cas, definition) {
             Ok(worker) => worker,
             Err(error) => return crate::task::control::refused(error),
         };
         match (worker, attempt) {
             (Some(worker), Some(attempt)) => {
-                self.worker_execute(cas, input, attempt, &worker, broker, cancellation)
+                self.worker_execute(cas, input, attempt, &worker, cancellation)
             }
             (Some(_), None) => TaskWorkOutput {
                 usage_observation: None,
@@ -1332,7 +1130,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
             },
             (None, _) => self
                 .domain
-                .execute_controlled(cas, input, attempt, broker, cancellation),
+                .execute(cas, input, definition, attempt, cancellation),
         }
     }
     fn prepare_experiment(
@@ -1369,21 +1167,6 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
     ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
         self.domain
             .complete_owned_children(cas, parent, children, facts)
-    }
-
-    fn broker_operations(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-    ) -> Result<Option<Vec<review_core::BrokerOperationPolicyV1>>, String> {
-        if self
-            .workers
-            .get(&input.node)
-            .is_some_and(|worker| matches!(worker.transport, WorkerTransport::Command(_)))
-        {
-            return Ok(None);
-        }
-        self.domain.broker_operations(cas, input)
     }
 
     fn commit_domain_invocation(
@@ -1424,79 +1207,6 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
             None => self.domain.output_rejection_feedback(cas, input, attempt),
         }
     }
-
-    fn prepare_context(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        feedback: &[String],
-    ) -> Result<String, String> {
-        match self.workers.get(&input.node) {
-            Some(worker) => self.prepare_worker_context(cas, input, feedback, worker),
-            None => self.domain.prepare_context(cas, input, feedback),
-        }
-    }
-    fn prepare_context_for_attempt(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: &ReservedTaskAttempt,
-    ) -> Result<String, String> {
-        if self.workers.contains_key(&input.node) {
-            self.prepare_context(cas, input, attempt.feedback_ids())
-        } else {
-            self.domain.prepare_context_for_attempt(cas, input, attempt)
-        }
-    }
-    fn execute(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-    ) -> TaskWorkOutput {
-        self.execute_with_broker(cas, input, attempt, None)
-    }
-
-    fn execute_with_broker(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
-    ) -> TaskWorkOutput {
-        self.execute_controlled(cas, input, attempt, broker, None)
-    }
-
-    fn execute_controlled(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
-        cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> TaskWorkOutput {
-        if let Err(error) = crate::task::control::check(cancellation) {
-            return crate::task::control::refused(error);
-        }
-
-        match (self.workers.get(&input.node), attempt) {
-            (Some(worker), Some(attempt)) => {
-                self.worker_execute(cas, input, attempt, worker, broker, cancellation)
-            }
-            (Some(_), None) => TaskWorkOutput {
-                usage_observation: None,
-                usage: None,
-                outputs: Err("Worker has no durably started Attempt".into()),
-                charged_tokens: Some(0),
-                raw_artifact_ids: vec![],
-                usage_id: None,
-                feedback_id: None,
-            },
-            (None, _) => self
-                .domain
-                .execute_controlled(cas, input, attempt, broker, cancellation),
-        }
-    }
 }
 
 impl TaskDomain for CapturedTaskHost<'_> {
@@ -1505,11 +1215,10 @@ impl TaskDomain for CapturedTaskHost<'_> {
         cas: &Cas,
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
-        prepared_id: &str,
         prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         self.domain
-            .validate_experiment_preparation(cas, task, plan, prepared_id, prepared)
+            .validate_experiment_preparation(cas, task, plan, prepared)
     }
     fn validate_review_integration_selection(
         &self,
@@ -1529,7 +1238,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
-        report: &review_core::task::report::TaskRunReportV2,
+        report: &review_core::task::report::TaskRunReportV1,
         events: &[review_store::NewEvent],
         evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {
@@ -1582,24 +1291,6 @@ impl TaskDomain for CapturedTaskHost<'_> {
             .validate_owned_completion(cas, task, plan, parent, children, facts, output)
     }
 
-    fn validate_broker_binding(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        binding: &review_core::task::broker::TaskBrokerBindingV1,
-    ) -> Result<(), String> {
-        if self
-            .workers
-            .get(&binding.node)
-            .is_some_and(|worker| matches!(worker.transport, WorkerTransport::Command(_)))
-        {
-            return Err("Command Workers have no installed Broker transport".into());
-        }
-        self.domain
-            .validate_broker_binding(cas, task, plan, binding)
-    }
-
     fn validate_retry(
         &self,
         cas: &Cas,
@@ -1611,46 +1302,6 @@ impl TaskDomain for CapturedTaskHost<'_> {
         self.domain.validate_retry(cas, task, plan, input, previous)
     }
     fn validate_context(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        feedback: &[String],
-        context_id: &str,
-    ) -> Result<(), String> {
-        if let Some(worker) = self
-            .workers
-            .get(&input.node)
-            .map(std::sync::Arc::as_ref)
-            .or_else(|| self.experimental_worker(&input.node))
-        {
-            let (context, _) = worker.contract.read_context(cas, context_id)?;
-            if matches!(worker.transport, WorkerTransport::Model(_))
-                && self
-                    .graph
-                    .allowances
-                    .get(&input.node)
-                    .is_none_or(|allowance| {
-                        context.manifest.estimated_tokens > allowance.tokens_per_attempt
-                    })
-            {
-                return Err(
-                    "Rendered model context exceeds its admitted Attempt token reservation".into(),
-                );
-            }
-            if self.prepare_worker_context(cas, input, feedback, worker)? != context_id {
-                return Err(
-                    "Task context changed captured inputs, instructions, contracts or feedback"
-                        .into(),
-                );
-            }
-            self.domain
-                .validate_context(cas, input, feedback, context_id)
-        } else {
-            self.domain
-                .validate_context(cas, input, feedback, context_id)
-        }
-    }
-    fn validate_context_for_attempt(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
@@ -1669,13 +1320,35 @@ impl TaskDomain for CapturedTaskHost<'_> {
                     "Task context differs from the exact registered Worker definition".into(),
                 );
             }
-        } else if self.workers.contains_key(&input.node)
-            || self.experimental_worker(&input.node).is_some()
-        {
-            self.validate_context(cas, input, attempt.feedback_ids(), context_id)?;
+        } else if let Some(worker) = self.workers.get(&input.node).map(std::sync::Arc::as_ref) {
+            let feedback = attempt.feedback_ids();
+            let (context, _) = worker.contract.read_context(cas, context_id)?;
+            if matches!(worker.transport, WorkerTransport::Model(_))
+                && self
+                    .graph
+                    .allowances
+                    .get(&input.node)
+                    .is_none_or(|allowance| {
+                        context.manifest.estimated_tokens > allowance.tokens_per_attempt
+                    })
+            {
+                return Err(
+                    "Rendered model context exceeds its admitted Attempt token reservation".into(),
+                );
+            }
+            if worker
+                .contract
+                .prepare(cas, input, feedback, &worker.instructions)?
+                != context_id
+            {
+                return Err(
+                    "Task context changed captured inputs, instructions, contracts or feedback"
+                        .into(),
+                );
+            }
         }
         self.domain
-            .validate_context_for_attempt(cas, input, attempt, context_id)
+            .validate_context(cas, input, attempt, context_id)
     }
     fn validate_output(
         &self,
@@ -1684,40 +1357,26 @@ impl TaskDomain for CapturedTaskHost<'_> {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
-    ) -> Result<(), String> {
-        let node = self
-            .graph
-            .nodes
-            .get(&input.node)
-            .ok_or("Unknown Task output node")?;
-        if matches!(
-            node.operator,
-            CompiledOperator::RootInputs | CompiledOperator::Select
-        ) {
-            return Ok(());
-        }
-        if let Some(worker) = self.workers.get(&input.node) {
-            self.validate_worker_output(cas, input, output, worker)?;
-        }
-        self.domain.validate_output(cas, task, plan, input, output)
-    }
-    fn validate_resolved_output(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        input: &TaskInvocationV1,
-        output: &TaskOutputV1,
         definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
-        if self.graph.nodes.contains_key(&input.node) {
-            return self.validate_output(cas, task, plan, input, output);
+        if let Some(node) = self.graph.nodes.get(&input.node) {
+            if matches!(
+                node.operator,
+                CompiledOperator::RootInputs | CompiledOperator::Select
+            ) {
+                return Ok(());
+            }
+            if let Some(worker) = self.workers.get(&input.node) {
+                self.validate_worker_output(cas, input, output, worker)?;
+            }
+        } else {
+            let worker = self
+                .resolved_worker(cas, definition)?
+                .ok_or("Registered Task output has no captured Worker")?;
+            self.validate_worker_output(cas, input, output, &worker)?;
         }
-        let worker = self
-            .resolved_worker(cas, definition)?
-            .ok_or("Registered Task output has no captured Worker")?;
-        self.validate_worker_output(cas, input, output, &worker)?;
-        self.domain.validate_output(cas, task, plan, input, output)
+        self.domain
+            .validate_output(cas, task, plan, input, output, definition)
     }
     fn validate_result(
         &self,

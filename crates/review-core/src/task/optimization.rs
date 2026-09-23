@@ -15,7 +15,6 @@ use crate::is_digest;
 pub const OPTIMIZATION_HISTORY_V1: &str = "af/OptimizationHistory@1";
 pub const OPTIMIZATION_ECONOMICS_V1: &str = "af/OptimizationEconomics@1";
 pub const OPTIMIZATION_REPORT_V1: &str = "af/OptimizationReport@1";
-pub const OPTIMIZATION_POLICY_V1: &str = "af/OptimizationPolicy@1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -591,8 +590,6 @@ pub struct OptimizationEconomicsV1 {
     pub failed_or_incomplete: u32,
     pub repeated_failures: u32,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub cache_results: BTreeMap<String, BTreeMap<String, u64>>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cache_economics: BTreeMap<String, OptimizationCacheEconomicsV1>,
     #[serde(
         default,
@@ -641,17 +638,10 @@ impl OptimizationEconomicsV1 {
                         .cold
                         .checked_add(cache.warm)
                         .and_then(|value| value.checked_add(cache.unknown_temperature));
-                    let legacy = self.cache_results.get(kind);
                     !kind.is_empty()
                         && kind.len() <= 256
                         && observations.is_some_and(|count| {
                             count > 0 && results == Some(count) && temperatures == Some(count)
-                        })
-                        && legacy.is_none_or(|counts| {
-                            counts.get("hit").copied().unwrap_or(0) == cache.hits
-                                && counts.get("miss").copied().unwrap_or(0) == cache.misses
-                                && counts.get("unknown").copied().unwrap_or(0)
-                                    == cache.unknown_results
                         })
                         && cache.invalidation_ids.iter().all(|id| {
                             !id.is_empty() && id.len() <= 512 && !id.chars().any(char::is_control)
@@ -688,7 +678,6 @@ pub struct OptimizationReportV1 {
     pub summary: String,
     pub highlights: Vec<String>,
     pub missing_measurements: Vec<String>,
-    pub live_demonstrations: String,
 }
 
 impl OptimizationReportV1 {
@@ -704,9 +693,8 @@ impl OptimizationReportV1 {
                 && self.highlights.len() <= 128
                 && self.highlights.iter().all(|value| bounded(value))
                 && self.missing_measurements.len() <= 1024
-                && self.missing_measurements.iter().all(|value| bounded(value))
-                && self.live_demonstrations == "pending",
-            "Optimization report is malformed or overstates live milestone evidence",
+                && self.missing_measurements.iter().all(|value| bounded(value)),
+            "Optimization report is malformed",
         )
     }
 
@@ -714,7 +702,8 @@ impl OptimizationReportV1 {
         self.validate()?;
         let escape = |value: &str| value.replace('\r', " ").replace('#', "\\#");
         let mut output = format!(
-            "# Project economics\n\n{}\n\nStatus: `{:?}`\n",
+            "# Project economics\n\n{}\n\nStatus: `{:?}`\n\n\
+             Live paid demonstrations and adoption observations are still pending.\n",
             escape(&self.summary),
             self.status
         );
@@ -730,7 +719,6 @@ impl OptimizationReportV1 {
                 output.push_str(&format!("\n- {}\n", escape(value)));
             }
         }
-        output.push_str("\n## Milestone gates\n\nLive paid demonstrations and adoption observations: **pending**.\n");
         Ok(output)
     }
 }

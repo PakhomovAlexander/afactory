@@ -4,7 +4,7 @@
 //! The layering is deliberate and one-directional:
 //!
 //! ```text
-//!   canonical  ->  cas  ->  store  ->  ledger        legacy drives all four
+//!   canonical  ->  cas  ->  store  ->  ledger        ingest drives all four
 //!   (identity)    (bytes)   (log)     (projection)
 //! ```
 //!
@@ -14,8 +14,8 @@
 
 pub mod canonical;
 pub mod cas;
+pub mod ingest;
 pub mod ledger;
-pub mod legacy;
 pub mod optimization;
 pub mod shared;
 pub mod store;
@@ -23,20 +23,16 @@ pub mod subject;
 
 pub use canonical::{CanonicalError, artifact_id, canonicalize, content_id, validate_envelope};
 pub use cas::{Cas, CasError, OpenedCasObject};
+pub use ingest::{
+    CanonicalReduction, CanonicalStage, Ingest, PreparedReviewReduction,
+    prepare_canonical_task_review,
+};
 pub use ledger::{
     AttachedReport, Convergence, ConvergencePolicy, Finding, Ledger, LedgerProjection, ReportScope,
     ScopeAuthorityFailure, ScopeAuthorityKind, Status, Verdict,
 };
-pub use legacy::{
-    AddSummary, CanonicalReduction, CanonicalStage, Ingest, LegacyRow, PreparedReviewReduction,
-    canonical_finding_id, import_ledger_jsonl, legacy_fingerprint, prepare_canonical_review,
-    prepare_canonical_task_review,
-};
 pub use shared::SharedEventStore;
-pub use store::{
-    AttemptUsage, AttemptWall, EventStore, NewEvent, StoreError, TaskAttemptWall,
-    validate_reviewer_result,
-};
+pub use store::{EventStore, NewEvent, StoreError, TaskAttemptWall};
 pub use subject::{
     ResolvedChangeSet, ResolvedSubject, ResolvedSubjectScope, resolve_subject,
     resolve_subject_scope,

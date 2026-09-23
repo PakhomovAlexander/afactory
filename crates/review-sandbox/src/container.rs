@@ -19,9 +19,9 @@
 //! the *plumbing*: the right flags, the right mount, nothing extra.
 //!
 //! It does **not** prove containment. Only a real runtime can do that, and
-//! `tests/container_probes.rs` does exactly that — the `malicious-check.md` probes that need
-//! isolation, run against a live daemon locally and in CI, each paired with a control proving
-//! the container genuinely runs work.
+//! `tests/container_probes.rs` does exactly that — the containment probes that need isolation
+//! (`docs/security/containment-probes.md`), run against a live daemon locally and in CI, each
+//! paired with a control proving the container genuinely runs work.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -263,14 +263,13 @@ impl ContainerProvider {
             // provider stop that workload if supervision kills the client on its deadline.
             "--name".to_string(),
             execution_name.to_string(),
-            // No undeclared network. This is the probe malicious-check.md cannot otherwise close.
+            // No undeclared network. This is the containment probe no weaker provider can close.
             "--network=none".to_string(),
             // No ambient host environment crosses in. Only the kernel-owned allowlist below is
             // reintroduced explicitly.
             "--env-file".to_string(),
             "/dev/null".to_string(),
         ];
-        #[cfg(unix)]
         argv.extend([
             "--user".to_string(),
             format!(
@@ -295,35 +294,13 @@ impl ContainerProvider {
         argv
     }
 
-    /// Run a command in the sandbox under the caller's policy deadline. Refuses when the runtime
-    /// is not usable — never falls back to running it on the host, which would be containment
-    /// silently becoming none.
-    pub fn exec(
-        &self,
-        sandbox_root: &Path,
-        program: &str,
-        args: &[String],
-        timeout: Duration,
-    ) -> Result<std::process::Output, String> {
-        self.exec_evidenced(sandbox_root, program, args, &[], timeout)
-            .map(|execution| execution.output)
-            .map_err(|error| error.to_string())
-    }
-
-    /// Execute while preserving process-supervision evidence needed by CheckResult. In
-    /// particular, a descendant that keeps stderr open must remain `not_run`, not turn into a
-    /// passing check merely because the container runtime's leader exited.
-    pub fn exec_evidenced(
-        &self,
-        sandbox_root: &Path,
-        program: &str,
-        args: &[String],
-        environment: &[(String, String)],
-        timeout: Duration,
-    ) -> Result<ContainerExecution, ContainerExecutionError> {
-        self.exec_evidenced_controlled(sandbox_root, program, args, environment, timeout, None)
-    }
-
+    /// Run a command in the sandbox under the caller's policy deadline, stopping early when
+    /// `cancellation` is raised. Refuses when the runtime is not usable — never falls back to
+    /// running it on the host, which would be containment silently becoming none.
+    ///
+    /// Preserves the process-supervision evidence CheckResult needs. In particular, a
+    /// descendant that keeps stderr open must remain `not_run`, not turn into a passing check
+    /// merely because the container runtime's leader exited.
     #[allow(clippy::too_many_arguments)]
     pub fn exec_evidenced_controlled(
         &self,
@@ -539,7 +516,6 @@ mod tests {
             "writing runtime fixture: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -585,13 +561,16 @@ mod tests {
 
         // And it refuses to run rather than falling back to the host.
         let err = provider
-            .exec(
+            .exec_evidenced_controlled(
                 dir.path(),
                 "/bin/sh",
                 &["-c".into(), "echo pwned".into()],
+                &[],
                 Duration::from_secs(1),
+                None,
             )
-            .unwrap_err();
+            .unwrap_err()
+            .to_string();
         assert!(
             err.starts_with("refusing to run outside a container"),
             "{err}"
@@ -599,7 +578,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn runtime_detection_stops_at_the_callers_deadline() {
         let directory = tempfile::tempdir().unwrap();
         let paths: Vec<_> = (0..3)
@@ -629,7 +607,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn a_wedged_runtime_is_bounded_and_unusable() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("wedged-runtime");
@@ -645,7 +622,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn a_wedged_container_execution_is_bounded() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("runtime");
@@ -657,8 +633,16 @@ mod tests {
 
         let started = Instant::now();
         let error = provider
-            .exec(dir.path(), "/bin/true", &[], Duration::from_millis(100))
-            .unwrap_err();
+            .exec_evidenced_controlled(
+                dir.path(),
+                "/bin/true",
+                &[],
+                &[],
+                Duration::from_millis(100),
+                None,
+            )
+            .unwrap_err()
+            .to_string();
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(
             error.contains("container command did not finish"),
@@ -670,7 +654,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn a_failed_reap_is_distinct_from_a_safely_stopped_timeout() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("runtime");
@@ -681,12 +664,13 @@ mod tests {
         let provider = ContainerProvider::with_runtime(&fake);
 
         let error = provider
-            .exec_evidenced(
+            .exec_evidenced_controlled(
                 dir.path(),
                 "/bin/true",
                 &[],
                 &[],
                 Duration::from_millis(100),
+                None,
             )
             .unwrap_err();
         assert!(!error.cleanup_confirmed(), "{error}");
@@ -694,7 +678,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn cancellation_still_confirms_container_removal_without_cancelling_cleanup() {
         use std::sync::atomic::{AtomicBool, Ordering};
         for cleanup_ok in [true, false] {
@@ -750,7 +733,6 @@ mod tests {
     /// The invocation is the part a stub can prove: one bind, no network, only declared
     /// environment, and a name that can be reaped after client failure.
     #[test]
-    #[cfg(unix)]
     fn the_invocation_binds_only_the_sandbox_and_disables_the_network() {
         let provider =
             ContainerProvider::with_runtime("/nonexistent/runtime").with_image("example/image:tag");

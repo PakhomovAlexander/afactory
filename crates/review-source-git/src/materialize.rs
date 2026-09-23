@@ -15,7 +15,7 @@ use std::path::{Component, Path, PathBuf};
 
 use review_store::Cas;
 
-use crate::manifest::{EntryKind, Manifest, PathEncoding};
+use crate::manifest::{EntryKind, Manifest};
 
 const MAX_SYMLINK_TARGET_BYTES: u64 = 16 * 1024;
 
@@ -73,7 +73,7 @@ pub fn materialize(
     let decoded_paths: Vec<PathBuf> = manifest
         .entries
         .iter()
-        .map(|entry| checked_relative_path(&entry.path, manifest.path_encoding))
+        .map(|entry| checked_relative_path(&entry.path))
         .collect::<Result<_, _>>()?;
 
     refuse_symlink_ancestors(manifest, &decoded_paths)?;
@@ -208,17 +208,12 @@ fn materialize_group_source(
     Ok(())
 }
 
-pub(crate) fn checked_relative_path(
-    encoded: &str,
-    path_encoding: PathEncoding,
-) -> Result<PathBuf, MaterializeError> {
+pub(crate) fn checked_relative_path(encoded: &str) -> Result<PathBuf, MaterializeError> {
     let decoded = crate::manifest::decode_path(encoded);
     let raw = crate::manifest::fs_path_bytes(&decoded);
-    if !crate::manifest::is_canonical_path_encoding(path_encoding, encoded, &decoded)
-        || encoded.is_empty()
-    {
+    if !crate::manifest::is_canonical_path_encoding(encoded, &decoded) || encoded.is_empty() {
         return Err(MaterializeError::Manifest(format!(
-            "path `{encoded}` is not canonical for {path_encoding:?}"
+            "path `{encoded}` is not canonical"
         )));
     }
     let escapes = raw.components().any(|component| {
@@ -294,27 +289,15 @@ fn ensure_directory(path: &Path, encoded: &str) -> Result<(), MaterializeError> 
     }
 }
 
-#[cfg(unix)]
 fn symlink(target: &[u8], at: &Path) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(target), at)
 }
 
-#[cfg(not(unix))]
-fn symlink(target: &[u8], at: &Path) -> std::io::Result<()> {
-    fs::write(at, target)
-}
-
-#[cfg(unix)]
 fn set_executable(path: &Path, executable: bool) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mode = if executable { 0o755 } else { 0o644 };
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &Path, _executable: bool) -> std::io::Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]
@@ -323,6 +306,7 @@ mod tests {
 
     #[test]
     fn paths_that_leave_the_root_are_refused() {
+        // A literal spelling that is not a valid repository path is already noncanonical.
         for path in [
             "../escape",
             "a/../../escape",
@@ -335,15 +319,37 @@ mod tests {
             "",
         ] {
             assert!(
-                checked_relative_path(path, PathEncoding::LegacyV1).is_err(),
-                "{path} was not refused"
+                matches!(
+                    checked_relative_path(path),
+                    Err(MaterializeError::Manifest(_))
+                ),
+                "{path} was not refused as noncanonical"
             );
         }
-        assert!(checked_relative_path("a/b/c.rs", PathEncoding::LegacyV1).is_ok());
-        assert!(checked_relative_path("a%FFb", PathEncoding::LegacyV1).is_ok());
-        assert!(checked_relative_path("%20notes.md", PathEncoding::PercentV2).is_ok());
+        // A percent-mode spelling is canonical whatever its components are, so only the
+        // component check keeps these inside the root.
+        for path in [
+            "a%FF/../escape",
+            "%FF/../../escape",
+            "/a%FF",
+            "a%FF/./b",
+            "a%FF//b",
+            "a%FF/",
+            "50%25/../x",
+        ] {
+            assert!(
+                matches!(
+                    checked_relative_path(path),
+                    Err(MaterializeError::Escape { path: refused }) if refused == path
+                ),
+                "{path} was not refused as an escape"
+            );
+        }
+        assert!(checked_relative_path("a/b/c.rs").is_ok());
+        assert!(checked_relative_path("a%FFb").is_ok());
+        assert!(checked_relative_path("%20notes.md").is_ok());
         // A path that merely *contains* dots is fine; only a real parent component escapes.
-        assert!(checked_relative_path("a/..b/c", PathEncoding::LegacyV1).is_ok());
+        assert!(checked_relative_path("a/..b/c").is_ok());
     }
 
     #[test]
@@ -381,7 +387,6 @@ mod tests {
         let one = cas.put(b"one").unwrap();
         let two = cas.put(b"two").unwrap();
         let manifest = Manifest {
-            path_encoding: PathEncoding::LegacyV1,
             entries: vec![
                 crate::Entry {
                     path: "same".into(),
@@ -401,39 +406,6 @@ mod tests {
         let error = materialize(&manifest, &cas, dir.path().join("tree")).unwrap_err();
         assert!(error.to_string().contains("repeats path `same`"));
         assert!(!dir.path().join("tree/same").exists());
-    }
-
-    #[test]
-    fn legacy_path_alphabet_remains_materializable() {
-        let dir = tempfile::tempdir().unwrap();
-        let cas = review_store::Cas::open(dir.path().join("cas")).unwrap();
-        let leading = cas.put(b"leading").unwrap();
-        let percent_space = cas.put(b"percent and space").unwrap();
-        let manifest = Manifest {
-            path_encoding: PathEncoding::LegacyV1,
-            entries: vec![
-                crate::Entry {
-                    path: " notes.md".into(),
-                    kind: EntryKind::File,
-                    content: leading,
-                    size: 7,
-                },
-                crate::Entry {
-                    path: "docs/50%25 off.md".into(),
-                    kind: EntryKind::File,
-                    content: percent_space,
-                    size: 17,
-                },
-            ],
-        };
-        let root = dir.path().join("tree");
-
-        materialize(&manifest, &cas, &root).unwrap();
-        assert_eq!(std::fs::read(root.join(" notes.md")).unwrap(), b"leading");
-        assert_eq!(
-            std::fs::read(root.join("docs/50% off.md")).unwrap(),
-            b"percent and space"
-        );
     }
 
     #[test]

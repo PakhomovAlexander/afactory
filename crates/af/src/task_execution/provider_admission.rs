@@ -1,7 +1,16 @@
-//! Versioned captured admission costs. Existing authority keeps its original fixed allowance.
+//! One captured Provider admission cost. An omitted catalog cost means the fixed default.
 use super::{Cas, RunAuthority, TaskCatalog};
 use review_core::json::SAFE_INTEGER_MAX;
 use review_graph::task::OperatorAttemptCost;
+
+pub(super) const TASK_CATALOG_SCHEMA: &str = "af.task-catalog/2";
+pub(super) const RUN_AUTHORITY_SCHEMA: &str = "af.task-run-authority/2";
+
+/// The allowance a catalog that declares no explicit Provider admission cost receives.
+const DEFAULT_ADMISSION: OperatorAttemptCost = OperatorAttemptCost {
+    tokens: 4096,
+    wall_ms: 45000,
+};
 
 fn validate(cost: &OperatorAttemptCost) -> Result<(), String> {
     if cost.tokens == 0
@@ -14,42 +23,35 @@ fn validate(cost: &OperatorAttemptCost) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn catalog_cost(catalog: &TaskCatalog) -> Result<Option<OperatorAttemptCost>, String> {
-    match (catalog.schema.as_str(), &catalog.provider_admission) {
-        ("af.task-catalog/1", None) => Ok(None),
-        ("af.task-catalog/2", Some(cost)) => {
-            validate(cost)?;
-            Ok(Some(cost.clone()))
-        }
-        _ => {
-            Err("Task catalog V1 forbids provider_admission; V2 requires its explicit cost".into())
-        }
+pub(super) fn catalog_cost(catalog: &TaskCatalog) -> Result<OperatorAttemptCost, String> {
+    if catalog.schema != TASK_CATALOG_SCHEMA {
+        return Err(format!(
+            "Task catalog requires schema {TASK_CATALOG_SCHEMA}"
+        ));
     }
+    let Some(cost) = &catalog.provider_admission else {
+        return Ok(DEFAULT_ADMISSION);
+    };
+    validate(cost)?;
+    Ok(cost.clone())
 }
 
 pub(super) fn restore_cost(
     cas: &Cas,
     authority: &RunAuthority,
 ) -> Result<OperatorAttemptCost, String> {
-    match (authority.schema.as_str(), &authority.provider_admission) {
-        // Do not reparse or reinterpret frozen V1 catalog bytes during restoration.
-        ("af.task-run-authority/1", None) => Ok(OperatorAttemptCost {
-            tokens: 4096,
-            wall_ms: 45000,
-        }),
-        ("af.task-run-authority/2", Some(cost)) => {
-            validate(cost)?;
-            let bytes = cas.get(&authority.catalog_id).map_err(|e| e.to_string())?;
-            let catalog: TaskCatalog = super::parse(std::path::Path::new("catalog.toml"), &bytes)?;
-            if catalog_cost(&catalog)?.as_ref() != Some(cost) {
-                return Err("Provider admission cost differs from its captured V2 catalog".into());
-            }
-            Ok(cost.clone())
-        }
-        _ => Err(
-            "Task authority V1 forbids provider_admission; V2 requires its captured cost".into(),
-        ),
+    if authority.schema != RUN_AUTHORITY_SCHEMA {
+        return Err(format!(
+            "Task run authority requires schema {RUN_AUTHORITY_SCHEMA}"
+        ));
     }
+    validate(&authority.provider_admission)?;
+    let bytes = cas.get(&authority.catalog_id).map_err(|e| e.to_string())?;
+    let catalog: TaskCatalog = super::parse(std::path::Path::new("catalog.toml"), &bytes)?;
+    if catalog_cost(&catalog)? != authority.provider_admission {
+        return Err("Provider admission cost differs from its captured catalog".into());
+    }
+    Ok(authority.provider_admission.clone())
 }
 
 #[cfg(test)]
@@ -57,48 +59,59 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
 
-    const V1_CATALOG: &str = r#"{"schema":"af.task-catalog/1","no_match":"refuse","packages":{},"independence":{"command_workers_by_package":true,"distinct_principals":true,"distinct_providers":false,"distinct_models":false},"providers":{}}"#;
-    const V1_AUTHORITY: &str = r#"{"schema":"af.task-run-authority/1","engine_id":"engine","catalog_id":"catalog","no_match":"refuse","packages":{},"independence":{"command_workers_by_package":true,"distinct_principals":true,"distinct_providers":false,"distinct_models":false},"providers":{}}"#;
+    const CATALOG: &str = r#"{"schema":"af.task-catalog/2","no_match":"refuse","packages":{},"independence":{"command_workers_by_package":true,"distinct_principals":true,"distinct_providers":false,"distinct_models":false},"providers":{}}"#;
+    const AUTHORITY: &str = r#"{"schema":"af.task-run-authority/2","provider_admission":{"tokens":4096,"wall_ms":45000},"engine_id":"engine","catalog_id":"catalog","no_match":"refuse","packages":{},"independence":{"command_workers_by_package":true,"distinct_principals":true,"distinct_providers":false,"distinct_models":false},"providers":{}}"#;
 
-    fn catalog(value: Value) -> Result<Option<OperatorAttemptCost>, String> {
+    fn catalog(value: Value) -> Result<OperatorAttemptCost, String> {
         let catalog = serde_json::from_value(value).map_err(|e| e.to_string())?;
         catalog_cost(&catalog)
     }
 
     #[test]
-    fn v1_bytes_and_cost_stay_frozen_and_v2_fields_cannot_override_them() {
-        let parsed: TaskCatalog = serde_json::from_str(V1_CATALOG).unwrap();
-        assert_eq!(serde_json::to_string(&parsed).unwrap(), V1_CATALOG);
-        assert_eq!(catalog_cost(&parsed).unwrap(), None);
-        let mut authority: RunAuthority = serde_json::from_str(V1_AUTHORITY).unwrap();
-        assert_eq!(serde_json::to_string(&authority).unwrap(), V1_AUTHORITY);
-        let root = tempfile::tempdir().unwrap();
-        let cas = Cas::open(root.path()).unwrap();
-        // Frozen restoration verified the blob identity, without parsing its syntax again.
-        authority.catalog_id = cas.put(b"old captured catalog bytes").unwrap();
-        cas.verify(&authority.catalog_id).unwrap();
+    fn an_omitted_catalog_cost_is_the_fixed_default_allowance() {
+        let parsed: TaskCatalog = serde_json::from_str(CATALOG).unwrap();
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), CATALOG);
+        assert_eq!(catalog_cost(&parsed).unwrap(), DEFAULT_ADMISSION);
         assert_eq!(
-            restore_cost(&cas, &authority).unwrap(),
+            DEFAULT_ADMISSION,
             OperatorAttemptCost {
                 tokens: 4096,
                 wall_ms: 45000
             }
         );
-        authority.provider_admission = Some(OperatorAttemptCost {
+        let root = tempfile::tempdir().unwrap();
+        let cas = Cas::open(root.path()).unwrap();
+        let mut authority: RunAuthority = serde_json::from_str(AUTHORITY).unwrap();
+        assert_eq!(serde_json::to_string(&authority).unwrap(), AUTHORITY);
+        authority.catalog_id = cas
+            .put(
+                toml::to_string(&serde_json::from_str::<Value>(CATALOG).unwrap())
+                    .unwrap()
+                    .as_bytes(),
+            )
+            .unwrap();
+        assert_eq!(restore_cost(&cas, &authority).unwrap(), DEFAULT_ADMISSION);
+        // Restoration re-parses the captured catalog and refuses a widened allowance.
+        authority.provider_admission = OperatorAttemptCost {
             tokens: 32768,
             wall_ms: 45000,
-        });
+        };
+        assert!(
+            restore_cost(&cas, &authority)
+                .unwrap_err()
+                .contains("captured catalog")
+        );
+        // An unreadable or retired catalog schema is refused, never silently defaulted.
+        authority.catalog_id = cas.put(b"schema = 'af.task-catalog/1'\n").unwrap();
         assert!(restore_cost(&cas, &authority).is_err());
-        let mut altered: Value = serde_json::from_str(V1_CATALOG).unwrap();
-        altered["provider_admission"] = json!({"tokens":32768,"wall_ms":45000});
-        assert!(catalog(altered).is_err());
+        let mut retired: Value = serde_json::from_str(CATALOG).unwrap();
+        retired["schema"] = json!("af.task-catalog/1");
+        assert!(catalog(retired).is_err());
     }
 
     #[test]
-    fn v2_requires_bounded_explicit_cost_and_exact_captured_catalog() {
-        let mut value: Value = serde_json::from_str(V1_CATALOG).unwrap();
-        value["schema"] = json!("af.task-catalog/2");
-        assert!(catalog(value.clone()).is_err());
+    fn an_explicit_cost_is_bounded_and_matches_its_exact_captured_catalog() {
+        let mut value: Value = serde_json::from_str(CATALOG).unwrap();
         for cost in [
             Value::Null,
             json!({"tokens":0,"wall_ms":45000}),
@@ -113,42 +126,23 @@ mod tests {
             assert!(catalog(value.clone()).is_err(), "{value}");
         }
         value["provider_admission"] = json!({"tokens":32768,"wall_ms":45000});
-        let cost = catalog(value.clone()).unwrap().unwrap();
+        let cost = catalog(value.clone()).unwrap();
         let root = tempfile::tempdir().unwrap();
         let cas = Cas::open(root.path()).unwrap();
-        let mut authority: RunAuthority = serde_json::from_str(V1_AUTHORITY).unwrap();
-        authority.schema = "af.task-run-authority/2".into();
+        let mut authority: RunAuthority = serde_json::from_str(AUTHORITY).unwrap();
         authority.catalog_id = cas
             .put(toml::to_string(&value).unwrap().as_bytes())
             .unwrap();
         assert!(restore_cost(&cas, &authority).is_err());
-        authority.provider_admission = Some(cost.clone());
+        authority.provider_admission = cost.clone();
         assert_eq!(restore_cost(&cas, &authority).unwrap(), cost);
-        authority.provider_admission.as_mut().unwrap().tokens += 1;
+        authority.provider_admission.tokens += 1;
         assert!(
             restore_cost(&cas, &authority)
                 .unwrap_err()
-                .contains("captured V2 catalog")
+                .contains("captured catalog")
         );
-        authority.provider_admission = Some(cost);
-        authority.catalog_id = cas.put(b"schema = 'af.task-catalog/1'\n").unwrap();
+        authority.schema = "af.task-run-authority/1".into();
         assert!(restore_cost(&cas, &authority).is_err());
-    }
-    #[test]
-    fn catalog_two_does_not_select_review_generation() {
-        let mut value: Value = serde_json::from_str(V1_CATALOG).unwrap();
-        value["schema"] = json!("af.task-catalog/2");
-        value["provider_admission"] = json!({"tokens":32768,"wall_ms":45000});
-        value["review"] = json!({"reviewers":{"correctness":"required"},"gate":"major","clean_rounds":1,"max_rounds":2});
-        let old: TaskCatalog = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(old.review.as_ref().unwrap().policy_generation().unwrap(), 1);
-        let original_cost = catalog_cost(&old).unwrap();
-        value["review"]["generation"] = json!(2);
-        let next: TaskCatalog = serde_json::from_value(value).unwrap();
-        assert_eq!(
-            next.review.as_ref().unwrap().policy_generation().unwrap(),
-            2
-        );
-        assert_eq!(catalog_cost(&next).unwrap(), original_cost);
     }
 }

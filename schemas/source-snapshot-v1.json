@@ -77,7 +77,7 @@
             "tree_id": { "type": "string", "minLength": 1 },
             "boundary": {
               "description": "Which atomic read boundary admitted the dirty tree. `revalidated` means monitoring started before the first read and two complete manifests plus the index digest matched with no intervening or overflowed change event.",
-              "enum": ["filesystem_snapshot", "revalidated"]
+              "enum": ["revalidated"]
             },
             "attempts": {
               "description": "Capture attempts consumed before admission. Bounded; exhausting the bound fails closed rather than admitting a torn tree.",

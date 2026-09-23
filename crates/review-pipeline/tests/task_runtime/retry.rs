@@ -10,17 +10,20 @@ impl TaskOperatorHost for NoRetry {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        definition: &review_graph::task::CompiledNode,
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        DocumentDomain.prepare_context(cas, input, feedback)
+        DocumentDomain.prepare_context(cas, input, definition, attempt)
     }
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
-        DocumentDomain.execute(cas, input, attempt)
+        DocumentDomain.execute(cas, input, definition, attempt, cancellation)
     }
 }
 impl TaskDomain for NoRetry {
@@ -46,10 +49,10 @@ impl TaskDomain for NoRetry {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         id: &str,
     ) -> Result<(), String> {
-        DocumentDomain.validate_context(cas, input, feedback, id)
+        DocumentDomain.validate_context(cas, input, attempt, id)
     }
     fn validate_output(
         &self,
@@ -58,8 +61,9 @@ impl TaskDomain for NoRetry {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
-        DocumentDomain.validate_output(cas, task, plan, input, output)
+        DocumentDomain.validate_output(cas, task, plan, input, output, definition)
     }
     fn validate_result(
         &self,
@@ -81,7 +85,7 @@ fn every_host_layer_preserves_retry_refusal_on_reopened_execution() {
         models: &models,
         inner: &domain,
     };
-    let captured = CommandTaskHost::capture(
+    let captured = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -89,6 +93,7 @@ fn every_host_layer_preserves_retry_refusal_on_reopened_execution() {
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &provider,
+        &BTreeMap::new(),
     )
     .unwrap();
     let planning = PlanningTaskHost {

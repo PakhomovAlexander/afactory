@@ -2,10 +2,8 @@ use super::*;
 use review_core::task::execution::*;
 use review_core::task::pipeline::*;
 use review_core::task::plan::*;
-use review_core::task::usage::TaskTokenUsageV1;
 use review_core::task::{self, TaskResultV1, TaskRevisionV1};
 use review_graph::task::{CompileContext, OperatorAttemptCost, OperatorSignature, compile_task};
-use review_store::AttemptWall;
 use review_store::store::task::{DeveloperGrant, TaskAuthority, TaskLease};
 use serde_json::json;
 
@@ -14,7 +12,7 @@ fn event() -> review_core::RunEvent {
         event_id: "b".repeat(26),
         run_id: crate::campaign_run_id("accounting"),
         sequence: 0,
-        event_type: review_core::EventType::RunReportV1,
+        event_type: review_core::EventType::RunReportV6,
         occurred_at: "2026-09-12T00:00:00Z".into(),
         node_id: None,
         attempt_id: None,
@@ -53,7 +51,7 @@ impl TaskAuthority for Authority {
         _: &TaskRevisionV1,
         _: &ExecutionPlanV1,
         _: &TaskInvocationV1,
-        _: &[String],
+        _: &review_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         Ok(())
@@ -65,12 +63,36 @@ impl TaskAuthority for Authority {
         _: &ExecutionPlanV1,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         Ok(())
     }
     fn validate_result(&self, _: &Cas, _: &TaskRevisionV1, _: &TaskResultV1) -> Result<(), String> {
         Err("no acceptance in accounting fixture".into())
     }
+}
+
+/// The published `af/review-report@4` schema with the schemas it refers to.
+fn report_validator() -> jsonschema::Validator {
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../../schemas/review-report-v4.json")).unwrap();
+    let mut registry = jsonschema::Registry::new();
+    for raw in [
+        include_str!("../../../../schemas/task-contracts-v1.json"),
+        include_str!("../../../../schemas/task-token-usage-v3.json"),
+        include_str!("../../../../schemas/task-review-accounting-v1.json"),
+    ] {
+        let resource: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let id = resource["$id"].as_str().unwrap().to_owned();
+        registry = registry
+            .add(id, jsonschema::Resource::from_contents(resource))
+            .unwrap();
+    }
+    let registry = registry.prepare().unwrap();
+    jsonschema::options()
+        .with_registry(&registry)
+        .build(&schema)
+        .unwrap()
 }
 
 fn put(cas: &Cas, kind: &str, value: impl serde::Serialize) -> String {
@@ -163,7 +185,7 @@ fn open_round(cas: &Cas, store: &mut EventStore) -> (String, String) {
         "repository_id":"fixture/accounting", "vcs":"git", "capture":{"kind":"committed", "tree_id":"fixture"},
         "source_revision":"fixture", "content_digest":tree.content_digest(), "artifact_manifest":tree_id,
     })).unwrap();
-    let pipeline = cas.put(b"version = 2\n[subject]\nkind = \"whole-tree\"\n[[nodes]]\nid = \"ledger\"\nkind = \"ledger\"\n").unwrap();
+    let pipeline = cas.put(b"version = 2\n[subject]\nkind = \"whole-tree\"\n[[nodes]]\nid = \"ledger\"\nkind = \"ledger\"\noutputs = [{ name = \"findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }]\n").unwrap();
     let lock = cas.put(b"version = 1\n").unwrap();
     let finding_genesis = cas
         .put_json(&json!({"kind":"finding-set-genesis@1", "authority_snapshot_id":head}))
@@ -176,6 +198,7 @@ fn open_round(cas: &Cas, store: &mut EventStore) -> (String, String) {
         "pipeline":{"path":"pipeline.toml", "artifact_id":pipeline}, "reviewer_lock":{"path":"af.lock", "artifact_id":lock},
         "reviewers":[], "execution_policy_ids":[], "project_policy_ids":[],
         "convergence":{"clean_rounds":1, "max_rounds":2, "gate":"major"}, "reviewer_timeout_seconds":60,
+        "check_timeout_seconds":3600, "git_timeout_seconds":300,
         "finding_identity_policy":review_core::CANONICAL_FINDING_IDENTITY_POLICY,
         "finding_genesis_id":finding_genesis, "demand_genesis_id":demand_genesis,
     })).unwrap();
@@ -204,7 +227,7 @@ fn open_round(cas: &Cas, store: &mut EventStore) -> (String, String) {
         json!({"round":1, "epoch":1, "campaign_manifest_id":manifest_id, "subject_id":subject_id,
             "prior_finding_set_id":prior, "prior_demand_set_id":demand_genesis}))
         .caused_by(opened.event_id).referencing(vec![head.clone(), manifest_id.clone(), subject_id.clone(), prior, demand_genesis])).unwrap();
-    let round = LegacyReviewRoundV1 {
+    let round = CampaignReviewRoundV1 {
         campaign_id: run,
         round_event_id: started.event_id,
         campaign_manifest_id: manifest_id,
@@ -215,7 +238,7 @@ fn open_round(cas: &Cas, store: &mut EventStore) -> (String, String) {
     };
     let wrapper = cas
         .put_artifact(
-            LEGACY_REVIEW_ROUND_V1,
+            CAMPAIGN_REVIEW_ROUND_V1,
             review_core::Producer::KernelOperation {
                 run_id: "accounting-fixture".into(),
                 node_id: None,
@@ -266,7 +289,7 @@ impl Fixture {
             "round".into(),
             ArtifactInputV1 {
                 artifact_ids: vec![round],
-                artifact_type: LEGACY_REVIEW_ROUND_V1.into(),
+                artifact_type: CAMPAIGN_REVIEW_ROUND_V1.into(),
                 cardinality: review_core::PortCardinality::One,
                 snapshot_id: Some(head),
             },
@@ -288,7 +311,7 @@ impl Fixture {
         ))
         .unwrap();
         let mut round_port = pipeline.contract.inputs["requirements"].clone();
-        round_port.artifact_type = LEGACY_REVIEW_ROUND_V1.into();
+        round_port.artifact_type = CAMPAIGN_REVIEW_ROUND_V1.into();
         pipeline.contract.inputs.insert("round".into(), round_port);
         let mut probe = pipeline.nodes[0].clone();
         probe.id = "probe".into();
@@ -296,7 +319,7 @@ impl Fixture {
         second.id = "second".into();
         pipeline.nodes.extend([probe, second]);
         pipeline.max_attempts = 9;
-        let pipeline_id = put(&cas, task::PIPELINE_V1, &pipeline);
+        let pipeline_id = put(&cas, "af/Pipeline@1", &pipeline);
         let mut output = pipeline.contract.outputs["document"].clone();
         output.covers.clear();
         let signature = OperatorSignature {
@@ -428,15 +451,18 @@ impl Fixture {
 
     fn fail(&mut self, node: &str, charge: u64) -> String {
         let context = self.cas.put_json(&json!({"context":node})).unwrap();
-        let attempt = self
+        let reserved = self
             .store
-            .prepare_task_attempt(
+            .reserve_task_attempt(
                 &self.cas,
                 &self.lease,
                 &format!("root.nodes.{node}"),
-                &context,
                 &Authority,
             )
+            .unwrap();
+        let attempt = self
+            .store
+            .bind_task_attempt_context(&self.cas, &self.lease, &reserved, &context, &Authority)
             .unwrap();
         self.store
             .start_task_attempt(&self.cas, &self.lease, &attempt, &Authority)
@@ -445,8 +471,9 @@ impl Fixture {
             .cas
             .put_json(&json!({"failure":"deterministic fixture"}))
             .unwrap();
-        self.store
-            .settle_task_attempt(
+        let settlement = self
+            .store
+            .settle_task_attempt_with_feedback(
                 &self.cas,
                 &self.lease,
                 TaskExecutionRecordV1::Settled {
@@ -460,18 +487,23 @@ impl Fixture {
                     usage_id: None,
                 },
                 &Authority,
+                || Ok(None),
             )
             .unwrap();
+        assert_eq!(
+            settlement,
+            review_store::store::task::execution::TaskSettlement::Settled
+        );
         attempt.id().into()
     }
 
     fn observe(&mut self, attempt: &str, charge: u64) {
         let usage_id = put(
             &self.cas,
-            task::usage::TASK_TOKEN_USAGE_V1,
-            TaskTokenUsageV1 {
-                input_tokens: Some(charge.into()),
-                chargeable_tokens: charge.into(),
+            task::usage::TASK_TOKEN_USAGE_V3,
+            TaskTokenUsageV3 {
+                input_tokens: Some(u128::from(charge).into()),
+                chargeable_tokens: u128::from(charge).into(),
                 ..Default::default()
             },
         );
@@ -491,7 +523,6 @@ impl Fixture {
 
     fn report_event(&self, charge: u128, sequence: u64) -> review_core::RunEvent {
         let mut event = event();
-        event.event_type = review_core::EventType::RunReportV6;
         event.payload = serde_json::to_value(review_core::RunReportPayloadV6 {
             outcomes: vec![],
             blocked_gates: vec![],
@@ -541,12 +572,7 @@ fn failures_before_first_conclusion_use_common_provider_and_business_attempts() 
             .replay(&crate::campaign_run_id("accounting"))
             .unwrap()
             .iter()
-            .all(|event| !event.event_type.is_run_report()
-                && !matches!(
-                    event.event_type,
-                    review_core::EventType::AttemptDispatchedV1
-                        | review_core::EventType::AttemptAdmittedV1
-                ))
+            .all(|event| !event.event_type.is_run_report())
     );
     let report = f.read(&[]);
     assert_eq!(report.tasks.len(), 1);
@@ -568,9 +594,9 @@ fn failures_before_first_conclusion_use_common_provider_and_business_attempts() 
     assert_eq!(provider["reserved_tokens"], "10");
     let view = crate::read_report_view(&f.store, &f.cas, "accounting").unwrap();
     let view = serde_json::to_value(view).unwrap();
-    assert_eq!(view["schema"], "af/review-report@3");
+    assert_eq!(view["schema"], "af/review-report@4");
     assert_eq!(view["runs_recorded"], 0);
-    assert_eq!(view["spend"], json!([]));
+    assert!(view.get("spend").is_none());
     assert_eq!(view["task_accounting"][0]["chargeable_tokens"], "12");
 }
 
@@ -598,9 +624,8 @@ fn frozen_cumulative_reports_are_not_summed_and_late_usage_remains_exact() {
     assert_eq!(attempt.chargeable_tokens.get(), u128::from(u64::MAX));
     assert_eq!(attempt.reserved_tokens.get(), 10);
     let rows = crate::report_rounds(&history.iter().collect::<Vec<_>>(), &BTreeMap::new()).unwrap();
-    assert_eq!(rows[0].task_chargeable_tokens_at_report.unwrap().get(), 7);
-    assert_eq!(rows[1].task_chargeable_tokens_at_report.unwrap().get(), 9);
-    assert_eq!(rows[1].reported_tokens, None);
+    assert_eq!(rows[0].task_chargeable_tokens_at_report.get(), 7);
+    assert_eq!(rows[1].task_chargeable_tokens_at_report.get(), 9);
     assert_eq!(serde_json::to_value(&history).unwrap(), before);
     for markdown in [false, true] {
         let text = render(&report.tasks, markdown);
@@ -652,15 +677,7 @@ fn inspection_keeps_one_attempts_wide_aggregate_and_native_components_exact() {
             chargeable_tokens: exact.into(),
             ..Default::default()
         };
-        let usage_id = put(
-            &f.cas,
-            if wide {
-                task::usage::TASK_TOKEN_USAGE_V3
-            } else {
-                task::usage::TASK_TOKEN_USAGE_V2
-            },
-            &usage,
-        );
+        let usage_id = put(&f.cas, task::usage::TASK_TOKEN_USAGE_V3, &usage);
         f.store
             .observe_task_usage(
                 &f.cas,
@@ -687,14 +704,7 @@ fn inspection_keeps_one_attempts_wide_aggregate_and_native_components_exact() {
             .unwrap();
         let view = crate::read_report_view(&f.store, &f.cas, "accounting").unwrap();
         let value = serde_json::to_value(&view).unwrap();
-        assert_eq!(
-            value["schema"],
-            if wide {
-                "af/review-report@4"
-            } else {
-                "af/review-report@3"
-            }
-        );
+        assert_eq!(value["schema"], "af/review-report@4");
         assert_eq!(
             value["task_accounting"][0]["chargeable_tokens"],
             (exact + 7).to_string()
@@ -720,36 +730,12 @@ fn inspection_keeps_one_attempts_wide_aggregate_and_native_components_exact() {
             "{text}"
         );
 
-        if wide {
-            let schema: serde_json::Value =
-                serde_json::from_str(include_str!("../../../../schemas/review-report-v4.json"))
-                    .unwrap();
-            let mut registry = jsonschema::Registry::new();
-            for raw in [
-                include_str!("../../../../schemas/task-contracts-v1.json"),
-                include_str!("../../../../schemas/task-token-usage-v1.json"),
-                include_str!("../../../../schemas/task-token-usage-v3.json"),
-                include_str!("../../../../schemas/task-review-accounting-v1.json"),
-            ] {
-                let resource: serde_json::Value = serde_json::from_str(raw).unwrap();
-                let id = resource["$id"].as_str().unwrap().to_owned();
-                registry = registry
-                    .add(id, jsonschema::Resource::from_contents(resource))
-                    .unwrap();
-            }
-            let validator = {
-                let registry = registry.prepare().unwrap();
-                jsonschema::options()
-                    .with_registry(&registry)
-                    .build(&schema)
-                    .unwrap()
-            };
-            assert!(
-                validator.is_valid(&value),
-                "{:?}",
-                validator.iter_errors(&value).collect::<Vec<_>>()
-            );
-        }
+        let validator = report_validator();
+        assert!(
+            validator.is_valid(&value),
+            "{:?}",
+            validator.iter_errors(&value).collect::<Vec<_>>()
+        );
     }
 }
 
@@ -758,7 +744,7 @@ fn task_sidecar_uses_decimal_usage_and_captured_round_authority() {
     let mut f = Fixture::new();
     let attempt = f.fail("probe", 1);
     f.store
-        .record_attempt_wall(&AttemptWall {
+        .record_task_attempt_wall(&TaskAttemptWall {
             run_id: task_run_id(&f.task.task_id).unwrap(),
             attempt_id: attempt,
             node_id: "root.nodes.probe".into(),
@@ -766,9 +752,9 @@ fn task_sidecar_uses_decimal_usage_and_captured_round_authority() {
             epoch: 19,
             started_unix_ms: 1000,
             elapsed_ms: 2500,
-            usage: Some(review_store::AttemptUsage {
-                input_tokens: Some(u64::MAX),
-                chargeable_tokens: u64::MAX,
+            usage: Some(TaskTokenUsageV3 {
+                input_tokens: Some(u128::from(u64::MAX).into()),
+                chargeable_tokens: u128::from(u64::MAX).into(),
                 ..Default::default()
             }),
         })
@@ -793,60 +779,58 @@ fn task_sidecar_uses_decimal_usage_and_captured_round_authority() {
 }
 
 #[test]
-fn common_and_legacy_wall_intervals_merge_without_counting_overlaps_twice() {
-    let legacy = AttemptWall {
-        run_id: "campaign".into(),
-        attempt_id: "legacy".into(),
-        node_id: "reviewer".into(),
+fn overlapping_attempt_walls_merge_within_their_round_epoch() {
+    let first = TaskAttemptWall {
+        run_id: "task".into(),
+        attempt_id: "first".into(),
+        node_id: "root.reviewer".into(),
         round: 1,
         epoch: 1,
         started_unix_ms: 100,
         elapsed_ms: 40,
         usage: None,
     };
-    let common = TaskAttemptWall {
-        run_id: "task".into(),
-        attempt_id: "common".into(),
-        node_id: "root.reviewer".into(),
-        round: 1,
-        epoch: 1,
-        started_unix_ms: 120,
-        elapsed_ms: 50,
-        usage: None,
-    };
+    let mut overlapping = first.clone();
+    overlapping.attempt_id = "overlapping".into();
+    overlapping.started_unix_ms = 120;
+    overlapping.elapsed_ms = 50;
     let mut report = TaskAccountingReport {
         tasks: vec![],
-        wall_rows: vec![common.clone()],
-        rounds: BTreeSet::new(),
+        wall_rows: vec![],
     };
-    assert_eq!(report.wall_ms(std::slice::from_ref(&legacy)), Some(70));
-    let mut restarted = common;
+    assert_eq!(report.wall_ms(), None);
+    report.wall_rows = vec![first, overlapping.clone()];
+    assert_eq!(report.wall_ms(), Some(70));
+    let mut restarted = overlapping;
     restarted.epoch = 2;
     restarted.started_unix_ms = 1000;
     report.wall_rows.push(restarted);
-    assert_eq!(report.wall_ms(&[legacy]), Some(120));
+    assert_eq!(report.wall_ms(), Some(120));
 }
 
+/// A Campaign whose first Task capture failed has no Task: its report is the same
+/// `af/review-report@4` document, with empty Task accounting and no Rounds.
 #[test]
-fn legacy_only_report_view_keeps_its_numeric_shape() {
+fn a_campaign_without_a_task_reports_empty_task_accounting() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
-    let store = EventStore::open_in_memory().unwrap();
+    let store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
     let view = crate::read_report_view(&store, &cas, "empty").unwrap();
     let value = serde_json::to_value(view).unwrap();
-    assert_eq!(value["schema"], "af/review-report@1");
-    assert!(value.get("task_accounting").is_none());
-    let event = review_core::RunEvent {
-        payload: json!({"outcomes":[], "blocked_gates":[], "verdict":"Pass", "spent_tokens":9}),
-        event_type: review_core::EventType::RunReportV1,
-        ..event()
-    };
-    let rows = crate::report_rounds(&[&event], &BTreeMap::new()).unwrap();
-    assert_eq!(rows[0].tokens_label(), "reported tokens 9");
-    assert_eq!(
-        serde_json::to_value(&rows[0]).unwrap(),
-        json!({"run":1, "verdict":"Pass", "reported_tokens":9})
+    assert_eq!(value["schema"], "af/review-report@4");
+    assert_eq!(value["task_accounting"], json!([]));
+    assert_eq!(value["rounds"], json!([]));
+    assert!(value.get("spend").is_none());
+    let validator = report_validator();
+    assert!(
+        validator.is_valid(&value),
+        "{:?}",
+        validator.iter_errors(&value).collect::<Vec<_>>()
     );
+    // Only a Task-less Campaign may leave Task accounting empty.
+    let mut with_run = value;
+    with_run["runs_recorded"] = json!(1);
+    assert!(!validator.is_valid(&with_run));
 }
 
 #[test]
@@ -933,28 +917,7 @@ fn task_report_view_schema_requires_exact_decimals_and_snapshot_identity() {
     view.rounds =
         crate::report_rounds(&[&f.report_event(u128::MAX, 20)], &BTreeMap::new()).unwrap();
     let value = serde_json::to_value(view).unwrap();
-    let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../schemas/review-report-v3.json")).unwrap();
-    let mut registry = jsonschema::Registry::new();
-    for resource in [
-        include_str!("../../../../schemas/task-contracts-v1.json"),
-        include_str!("../../../../schemas/task-token-usage-v1.json"),
-        include_str!("../../../../schemas/task-token-usage-v2.json"),
-        include_str!("../../../../schemas/task-review-accounting-v1.json"),
-    ] {
-        let resource: serde_json::Value = serde_json::from_str(resource).unwrap();
-        let id = resource["$id"].as_str().unwrap().to_owned();
-        registry = registry
-            .add(id, jsonschema::Resource::from_contents(resource))
-            .unwrap();
-    }
-    let validator = {
-        let registry = registry.prepare().unwrap();
-        jsonschema::options()
-            .with_registry(&registry)
-            .build(&schema)
-            .unwrap()
-    };
+    let validator = report_validator();
     assert!(
         validator.is_valid(&value),
         "{:?}",
@@ -989,7 +952,7 @@ fn bound_context_size_reads_referenced_and_inline_manifests() {
     let manifest_id = cas.put_json(&manifest).unwrap();
     let review_context = put(
         &cas,
-        review_core::task::review_compat::TASK_REVIEW_CONTEXT_V1,
+        review_core::task::campaign_review::TASK_REVIEW_CONTEXT_V1,
         json!({"context_manifest_id": manifest_id, "review_node": "correctness"}),
     );
     assert_eq!(

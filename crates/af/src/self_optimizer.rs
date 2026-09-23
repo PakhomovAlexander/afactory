@@ -462,7 +462,6 @@ fn capture_source(
     let prefix_digest = format!("sha256:{}", review_core::hex::encode(&hasher.finalize()));
     let adapter_version = match adapter_state.version() {
         AdapterVersion::Normalized => "normalized-v1",
-        AdapterVersion::LegacyNormalized => "legacy-normalized-v1",
         AdapterVersion::Native => "native-v1",
     };
     let receipt_body = serde_json::json!({"adapter":source.adapter,"adapter_version":adapter_version,"project_id":config.project_id,"source_id":source.source_id,"execution_id":source.execution_id,"byte_start":start.to_string(),"byte_end":(start+consumed).to_string(),"prefix_digest":prefix_digest,"cutoff_unix_ms":cutoff.to_string(),"redaction_version":"allowlist-v1","completeness":if complete{"complete"}else{"partial"}});
@@ -647,14 +646,13 @@ fn optimization_request_digest(
     light: bool,
     candidate: &Option<review_pipeline::task::optimization_configuration::CandidateProposal>,
 ) -> Result<String, String> {
-    let request = if light {
-        serde_json::json!([capture_digest, experiment, true, candidate])
-    } else {
-        // Preserve the identity of report-only and explicit M2 requests captured by older
-        // releases. The light discriminator is additive only for the new light Pipeline.
-        serde_json::json!([capture_digest, experiment, candidate])
-    };
-    content_id(&request).map_err(|error| error.to_string())
+    content_id(&serde_json::json!([
+        capture_digest,
+        experiment,
+        light,
+        candidate
+    ]))
+    .map_err(|error| error.to_string())
 }
 
 pub(crate) fn run(mut options: Options) -> Result<i32, String> {
@@ -734,7 +732,7 @@ pub(crate) fn run(mut options: Options) -> Result<i32, String> {
     let mut file = serde_json::json!({
         "schema":"af.task-file/1", "task_id":task_id, "kind":"optimize",
         "goal":goal,
-        "requirements":{"mode":mode,"live_demonstrations":"pending","capture_payload_digest":capture_digest},
+        "requirements":{"mode":mode,"capture_payload_digest":capture_digest},
         "strategy":options.strategy, "facts":facts,
         "limits":{"tokens":10000000,"max_attempts":max_attempts,"wall_ms":28800000,
             "verification":{"tokens":9000000,"attempts":81,"wall_ms":25200000}}
@@ -778,25 +776,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn light_request_discriminator_preserves_existing_task_id_domains() {
+    fn light_and_report_requests_for_one_capture_have_distinct_task_ids() {
         let capture = format!("sha256:{}", "a".repeat(64));
-        let candidate: Option<
-            review_pipeline::task::optimization_configuration::CandidateProposal,
-        > = None;
-        let legacy_report = content_id(&serde_json::json!([&capture, false, &candidate])).unwrap();
-        let legacy_experiment =
-            content_id(&serde_json::json!([&capture, true, &candidate])).unwrap();
-        assert_eq!(
-            optimization_request_digest(&capture, false, false, &None).unwrap(),
-            legacy_report
-        );
-        assert_eq!(
-            optimization_request_digest(&capture, true, false, &None).unwrap(),
-            legacy_experiment
-        );
         assert_ne!(
-            optimization_request_digest(&capture, false, true, &None).unwrap(),
-            legacy_report
+            optimization_request_digest(&capture, false, false, &None).unwrap(),
+            optimization_request_digest(&capture, false, true, &None).unwrap()
         );
     }
 
@@ -820,7 +804,7 @@ mod tests {
     #[test]
     fn duplicate_af_exports_keep_both_receipts_but_count_one_incomplete_execution() {
         let dir = tempfile::tempdir().unwrap();
-        let receipt = serde_json::json!({"schema":"af/task-inspection@3","task_id":"task","chargeable_tokens":"12","history":[{"transition":{"now_unix_ms":1,"change":{"kind":"opened"}}}],"execution_records":[{"record":{"kind":"settled","attempt_id":"a","charged_tokens":"12"}}]});
+        let receipt = serde_json::json!({"schema":"af/task-inspection@11","task_id":"task","chargeable_tokens":"12","history":[{"transition":{"now_unix_ms":1,"change":{"kind":"opened"}}}],"execution_records":[{"record":{"kind":"settled","attempt_id":"a","charged_tokens":"12"}}]});
         std::fs::write(dir.path().join("receipt.json"), receipt.to_string() + "\n").unwrap();
         let project = format!("sha256:{}", "1".repeat(64));
         let config = serde_json::json!({"schema":"af.optimization-sources/1","project_id":project,"sources":[{"adapter":"af","path":"receipt.json","source_id":"first-export","execution_id":"task","attest_project":true},{"adapter":"af","path":"receipt.json","source_id":"duplicate-export","execution_id":"task","attest_project":true}]});
@@ -930,7 +914,7 @@ mod tests {
         std::fs::write(dir.path().join("history.jsonl"), &log).unwrap();
         let config: SourceConfig = serde_json::from_value(serde_json::json!({
             "schema":"af.optimization-sources/1","project_id":project,
-            "sources":[{"adapter":"af","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]
+            "sources":[{"adapter":"external","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]
         })).unwrap();
         let mut raw = raw_limit.unwrap_or(log.len() as u64);
         let mut normalized = 100_000;
@@ -980,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn native_fixtures_join_af_and_deduplicate_provider_counters() {
+    fn native_fixtures_redact_and_deduplicate_provider_counters() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join("fixtures/self-optimizer/native");
@@ -988,7 +972,6 @@ mod tests {
         let config: SourceConfig = serde_json::from_value(serde_json::json!({
             "schema":"af.optimization-sources/1","project_id":project,
             "sources":[
-                {"adapter":"af","path":"af-events.jsonl","source_id":"af-events","execution_id":"af-source"},
                 {"adapter":"codex","path":"codex-session.jsonl","source_id":"codex-session","execution_id":"codex-source"},
                 {"adapter":"claude","path":"claude-session.jsonl","source_id":"claude-session","execution_id":"claude-source"}
             ]
@@ -1035,7 +1018,6 @@ mod tests {
             observations,
             gaps,
             exposed_case_families: BTreeSet::from([
-                "website-rollout".into(),
                 "codex-session".into(),
                 "claude-session".into(),
             ]),
@@ -1043,30 +1025,11 @@ mod tests {
         history.validate().unwrap();
         let economics =
             review_store::optimization::project_economics(&[(capture_id, history)]).unwrap();
-        assert_eq!(economics.af_usage.chargeable_tokens.get(), 12);
         // Codex's two cumulative snapshots become 100, not 85 + 100; the duplicate Claude
         // message remains 15, not 30. Outer sessions stay separate from AF charges.
+        assert_eq!(economics.af_usage.chargeable_tokens.get(), 0);
         assert_eq!(economics.outer_session_usage.chargeable_tokens.get(), 115);
-        assert_eq!(economics.elapsed_ms.get(), 20);
-        assert_eq!(economics.summed_work_ms.get(), 20);
-        assert_eq!(economics.cache_results["cargo"]["hit"], 1);
-        assert_eq!(economics.cache_results["provider_prompt"]["hit"], 1);
-        assert_eq!(
-            economics.cache_economics["cargo"]
-                .bytes_reused
-                .unwrap()
-                .get(),
-            4096
-        );
-        assert_eq!(
-            economics.cache_economics["cargo"].lookup_ms.unwrap().get(),
-            2
-        );
-        assert!(
-            economics.cache_economics["cargo"]
-                .missing_fields
-                .contains("warmup_time")
-        );
+        assert_eq!(economics.cache_economics["provider_prompt"].hits, 1);
         assert_eq!(
             economics
                 .rows
@@ -1078,7 +1041,8 @@ mod tests {
                 .get(),
             120
         );
-        assert!(economics.context_tokens.is_none());
+        // Codex 120 plus the deduplicated Claude message's 10.
+        assert_eq!(economics.context_tokens.unwrap().get(), 130);
         assert!(economics.missing_fields.contains("reasoning_tokens"));
     }
 

@@ -1,7 +1,6 @@
 //! Store boundaries use the existing admitted Task compiler fixture. Successful Review
 //! selection/commit uses real captured Review fixtures in review-pipeline integration tests.
 use super::*;
-use review_core::task::event::TaskTransitionV3;
 use review_core::task::execution::*;
 use review_core::task::report::*;
 use review_core::task::review_integration::*;
@@ -133,7 +132,7 @@ fn dormant_sequence_has_original_allowance_but_no_store_dispatch_authority() {
     let context = f.cas.put_json(&json!({"fixture":"context"})).unwrap();
     assert!(
         f.store
-            .prepare_task_attempt(
+            .reserve_and_bind_task_attempt(
                 &f.cas,
                 &lease,
                 "root.integration_checks",
@@ -179,6 +178,7 @@ fn ordinary_report_keeps_round_membership_and_phase_report_requires_activation()
         task_revision_id: f.revision_id.clone(),
         plan_id: f.plan_id.clone(),
         through_sequence: state.next_sequence,
+        phase_id: None,
         nodes: execution
             .graph
             .order
@@ -194,11 +194,11 @@ fn ordinary_report_keeps_round_membership_and_phase_report_requires_activation()
             })
             .collect(),
     };
-    let phase_report = TaskRunReportV2 {
+    let phase_report = TaskRunReportV1 {
         task_revision_id: f.revision_id.clone(),
         plan_id: f.plan_id.clone(),
         through_sequence: state.next_sequence,
-        phase_id: f.plan.compiled_graph_id.clone(),
+        phase_id: Some(f.plan.compiled_graph_id.clone()),
         nodes: vec![TaskNodeReportV1 {
             node: "root.integration_checks".into(),
             outcome: outcome.clone(),
@@ -224,7 +224,7 @@ fn ordinary_report_keeps_round_membership_and_phase_report_requires_activation()
     let id = f
         .cas
         .put_artifact(
-            TASK_RUN_REPORT_V1,
+            TASK_RUN_REPORT_V2,
             producer(),
             vec![],
             None,
@@ -237,7 +237,7 @@ fn ordinary_report_keeps_round_membership_and_phase_report_requires_activation()
     let id = f
         .cas
         .put_artifact(
-            TASK_RUN_REPORT_V1,
+            TASK_RUN_REPORT_V2,
             producer(),
             vec![],
             None,
@@ -274,14 +274,13 @@ fn ordinary_append_cannot_forge_phase_activation_or_completion() {
             now_unix_ms: now().unwrap(),
             change,
         };
-        let payload =
-            serde_json::to_value(TaskTransitionV3::from_integration(&transition).unwrap()).unwrap();
+        let payload = serde_json::to_value(&transition).unwrap();
         let error = f
             .store
             .append(
                 &task_run_id(&lease.task_id).unwrap(),
                 &f.cas,
-                NewEvent::new(EventType::TaskTransitionV3, payload),
+                NewEvent::new(EventType::TaskTransitionV5, payload),
             )
             .unwrap_err();
         assert!(

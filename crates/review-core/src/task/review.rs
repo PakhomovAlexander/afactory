@@ -7,31 +7,20 @@ use std::collections::BTreeMap;
 
 pub use super::review_context::*;
 
-pub const TASK_REVIEW_SUBJECT_V1: &str = "af/TaskReviewSubject@1";
 pub const TASK_REVIEW_ROUND_V1: &str = "af/TaskReviewRound@1";
 
-/// A Review invocation binds the immutable Subject separately from the execution plan.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// A Review invocation binds the immutable Subject separately from the execution plan. This is
+/// the in-memory expanded form of `af/TaskReviewSubject@2`: the host decodes the exact Change
+/// Set that the wire form carries only as a declared patch file. It is never written itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskReviewSubjectV1 {
     pub subject_id: String,
-    /// Declared Worker context contains the actual scope, not inaccessible CAS pointers alone.
     pub subject: crate::SubjectV1,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "super::present_option"
-    )]
     pub change_set: Option<crate::ChangeSetV1>,
     pub snapshot_id: String,
     pub prior_history_id: String,
     /// Exact independent repair evidence applied before this discovery Round. Omission retains
     /// the original history semantics; it never infers that a prior Finding was repaired.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "super::present_option"
-    )]
     pub continuation_id: Option<String>,
     pub round: u32,
 }

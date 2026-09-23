@@ -90,7 +90,6 @@ fn cargo_cache_refuses_credential_shaped_and_over_limit_content() {
 }
 
 #[test]
-#[cfg(unix)]
 fn cargo_cache_never_follows_symlinks() {
     use std::os::unix::fs::symlink;
 

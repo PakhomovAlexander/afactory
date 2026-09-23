@@ -173,7 +173,6 @@ fn matching_manifests_do_not_hide_an_intervening_change_event() {
     assert!(matches!(error, CaptureError::Unstable { attempts: 3 }));
 }
 
-#[cfg(unix)]
 #[test]
 fn dirty_capture_refuses_a_symlink_in_a_tracked_paths_parent() {
     let fixture = Fixture::new();
@@ -312,7 +311,6 @@ fn materialization_reproduces_the_tree_from_the_manifest_alone() {
             .file_type()
             .is_symlink()
     );
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(sandbox.path().join("scripts/run.sh"))
@@ -393,7 +391,6 @@ fn a_persisted_committed_tree_is_rehydrated_only_when_all_authority_agrees() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn non_utf8_symlink_targets_roundtrip_through_both_capture_modes() {
     use std::os::unix::ffi::OsStrExt;
@@ -523,7 +520,7 @@ fn dirty_capture_large_tree_measurement() {
     let synthetic_tree = repo.synthetic_tree(&snapshot.manifest, &cas).unwrap();
     let synthetic_tree_elapsed = start.elapsed();
 
-    assert_eq!(snapshot.manifest.len(), count as usize + 1);
+    assert_eq!(snapshot.manifest.entries.len(), count as usize + 1);
     assert_eq!(warm_snapshot.manifest, snapshot.manifest);
     assert!(!synthetic_tree.as_str().is_empty());
     eprintln!(

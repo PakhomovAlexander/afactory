@@ -1,4 +1,3 @@
-#![cfg(unix)]
 use review_process::{SupervisedError, run_supervised_captured_cancellable};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};

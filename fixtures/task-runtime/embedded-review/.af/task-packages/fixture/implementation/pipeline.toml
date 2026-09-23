@@ -89,7 +89,7 @@
 "worker" = "fixture/bugs"
 "role" = "review"
 "input_type" = "af/ReviewInput@1"
-"output_type" = "review.kernel/ReviewerResult@1"
+"output_type" = "review.kernel/ReviewerResult@2"
 "min_attempts" = 1
 "max_attempts" = 1
 "allow_local_replacement" = false
@@ -99,7 +99,7 @@
 "worker" = "fixture/correctness"
 "role" = "review"
 "input_type" = "af/ReviewInput@1"
-"output_type" = "review.kernel/ReviewerResult@1"
+"output_type" = "review.kernel/ReviewerResult@2"
 "min_attempts" = 1
 "max_attempts" = 1
 "allow_local_replacement" = false

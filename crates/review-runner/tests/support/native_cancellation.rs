@@ -44,18 +44,18 @@ pub fn check(
         let cas = Cas::open(&cas_path).unwrap();
         let program = directory.path().join("native-fixture");
         let quoted = std::str::from_utf8(output).unwrap().replace('\'', "'\\''");
-        std::fs::write(&program, format!("#!/bin/sh\ncat >input\nprintf '%s\\n' \"$@\" >args\nsleep 30 & child=$!\nprintf '%s' '{quoted}'\nprintf diagnostic >&2\nprintf '%s %s' $$ $child >ready\nwait\n")).unwrap();
+        std::fs::write(&program, format!("#!/bin/sh\ncat >input\nprintf '%s\\n' \"$@\" >args\nout=; prev=; for arg in \"$@\"; do [ \"$prev\" = -o ] && out=$arg; prev=$arg; done\n[ -z \"$out\" ] || printf OK >\"$out\"\nsleep 30 & child=$!\nprintf '%s' '{quoted}'\nprintf diagnostic >&2\nprintf '%s %s' $$ $child >ready\nwait\n")).unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         let adapter = make(program.to_str().unwrap());
         let flag = AtomicBool::new(true);
-        let pre = adapter.invoke_controlled(
+        let pre = adapter.invoke(
             &cas,
             directory.path(),
             b"exact context".to_vec(),
             Duration::from_secs(10),
             false,
-            None,
             Some(&flag),
+            &[],
         );
         assert!(pre.message.is_err());
         assert_eq!(pre.usage.unwrap().chargeable_tokens.get(), 0);
@@ -98,14 +98,14 @@ pub fn check(
                 );
                 (pids, stopped)
             });
-            let returned = adapter.invoke_controlled(
+            let returned = adapter.invoke(
                 &cas,
                 directory.path(),
                 b"exact context".to_vec(),
                 Duration::from_secs(10),
                 false,
-                None,
                 Some(&flag),
+                &[],
             );
             let (pids, stopped) = cancel.join().unwrap();
             (returned, pids, stopped)

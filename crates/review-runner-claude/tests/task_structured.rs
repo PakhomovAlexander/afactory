@@ -1,4 +1,4 @@
-use review_core::Command;
+use review_core::{Arg, Command};
 use review_runner::task::{
     MAX_WORKER_BYTES, WORKER_REPLY_FORMAT, WorkerContract, WorkerModelAdapter,
 };
@@ -28,13 +28,19 @@ fn invoke(
     )
     .unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let adapter = ClaudeTaskAdapter::new(&Command::new(program.to_str().unwrap(), vec![])).unwrap();
+    let adapter = ClaudeTaskAdapter::new(&Command::new(
+        program.to_str().unwrap(),
+        vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+    ))
+    .unwrap();
     let returned = adapter.invoke(
         &cas,
         temp.path(),
         input.to_string().into_bytes(),
         Duration::from_secs(5),
         writable,
+        None,
+        &[],
     );
     let flags = returned
         .raw_artifact_ids

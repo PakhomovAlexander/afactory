@@ -1,6 +1,7 @@
 # Stream CAS materialization and clone duplicate files
 
-**Status:** proposed
+**Status:** accepted (2026-09-23); acceptance recorded in
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md)
 
 Snapshot objects may be larger than memory and one digest may occur at thousands of manifest
 paths. Materialization runs on the shared infrastructure executor from ADR-0018, so a worker must

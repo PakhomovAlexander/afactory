@@ -2,10 +2,10 @@
 use review_core::task::{TaskPhaseV1, TaskWaitingReasonV1};
 use review_core::{EventType, task::TaskLimitsV1};
 use review_pipeline::task::TaskRuntime;
-use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
-use review_pipeline::task::legacy_review::{
-    host::LegacyReviewTaskHost, plan::LegacyReviewPlanCompiler,
+use review_pipeline::task::campaign_review::{
+    host::CampaignReviewTaskHost, plan::CampaignReviewPlanCompiler,
 };
+use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
 use review_store::{Cas, EventStore, SharedEventStore, store::task::TaskLease};
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -21,7 +21,7 @@ fn now() -> u64 {
 }
 
 pub fn run_expired_waiting(
-    admit: impl FnOnce(&Cas, &mut EventStore, TaskLimitsV1) -> (LegacyReviewPlanCompiler, TaskLease),
+    admit: impl FnOnce(&Cas, &mut EventStore, TaskLimitsV1) -> (CampaignReviewPlanCompiler, TaskLease),
 ) -> (tempfile::TempDir, String) {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
@@ -43,7 +43,7 @@ pub fn run_expired_waiting(
     let (compiler, lease) = admit(&cas, &mut store, limits.clone());
     let (output_id, original_execution) = {
         let shared = SharedEventStore::new(&mut store);
-        let host = LegacyReviewTaskHost::new(
+        let host = CampaignReviewTaskHost::new(
             &cas,
             shared.clone(),
             &compiler,
@@ -52,7 +52,7 @@ pub fn run_expired_waiting(
         )
         .unwrap();
         let authority =
-            CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+            CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
         let lost = LostPublication {
             inner: &host,
             after_commit: false,
@@ -96,7 +96,7 @@ pub fn run_expired_waiting(
         .take_task_lease(&cas, lease.task_id(), "recovery", 15_000)
         .unwrap();
     let shared = SharedEventStore::new(&mut store);
-    let host = LegacyReviewTaskHost::new(
+    let host = CampaignReviewTaskHost::new(
         &cas,
         shared.clone(),
         &compiler,
@@ -104,7 +104,7 @@ pub fn run_expired_waiting(
         BTreeMap::new(),
     )
     .unwrap();
-    let authority = CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+    let authority = CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
     let error = shared
         .lock()
         .unwrap()
@@ -119,14 +119,8 @@ pub fn run_expired_waiting(
         .unwrap()
         .resume_task_for_recording(&cas, &lease, &authority)
         .unwrap();
-    assert_eq!(transition.event_type, EventType::TaskTransitionV4);
+    assert_eq!(transition.event_type, EventType::TaskTransitionV5);
     assert_eq!(transition.payload["change"]["kind"], "recording_resumed");
-    assert!(
-        serde_json::from_value::<review_core::task::event::TaskTransitionV1>(
-            transition.payload.clone()
-        )
-        .is_err()
-    );
     assert!(
         shared
             .lock()
@@ -257,7 +251,8 @@ impl review_pipeline::task::TaskOperatorHost for RecordingOnly<'_> {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
-        _: &[String],
+        _definition: &review_graph::task::CompiledNode,
+        _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
         panic!("recording recovery prepared a new context")
     }
@@ -265,7 +260,9 @@ impl review_pipeline::task::TaskOperatorHost for RecordingOnly<'_> {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         _: Option<&review_store::store::task::execution::PreparedTaskAttempt>,
+        _cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> review_pipeline::task::TaskWorkOutput {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         panic!("recording recovery executed new work")
@@ -307,25 +304,21 @@ impl review_pipeline::task::TaskOperatorHost for LostPublication<'_> {
         &self,
         cas: &Cas,
         input: &review_core::task::execution::TaskInvocationV1,
-        feedback: &[String],
-    ) -> Result<String, String> {
-        self.inner.prepare_context(cas, input, feedback)
-    }
-    fn prepare_context_for_attempt(
-        &self,
-        cas: &Cas,
-        input: &review_core::task::execution::TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
         attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        self.inner.prepare_context_for_attempt(cas, input, attempt)
+        self.inner.prepare_context(cas, input, definition, attempt)
     }
     fn execute(
         &self,
         cas: &Cas,
         input: &review_core::task::execution::TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
         attempt: Option<&review_store::store::task::execution::PreparedTaskAttempt>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> review_pipeline::task::TaskWorkOutput {
-        self.inner.execute(cas, input, attempt)
+        self.inner
+            .execute(cas, input, definition, attempt, cancellation)
     }
 }
 

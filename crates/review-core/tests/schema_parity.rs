@@ -7,32 +7,30 @@
 use std::path::PathBuf;
 
 use review_core::{
-    ArtifactEnvelope, AuthorityFileV1, BrokerCredentialModeV1, BrokerOperationOutcomeV1,
-    BrokerOperationPolicyV1, BrokerOperationReceiptV1, CacheManifestEntryV1, CacheManifestV1,
-    CachePathEncodingV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1,
-    ChangeAttestationV1, ChangeSetV1, ChangedRegionV1, ClaimRef, ClaimRefKind, CloseoutPolicyV1,
-    DEMAND_REDUCER_VERSION, DemandRequirement, DemandSetEntryV1, DemandSetV1, DemandStatus,
-    DemandV1, DemandWaiverV1, EventType, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1,
-    EvidenceV1, FindingDispositionPosition, FindingDispositionV1, FindingGroupingAction,
-    FindingGroupingV1, FindingReport, FindingResolutionOutcome, FindingResolutionV1,
-    FindingSetEntryV1, FindingSetV1, FixVerificationV1, IntegrationCandidateV1, IntegrationCheckV1,
-    IntegrationChecksV1, IntegrationPlanV1, Location, MissingNodeV2, NodeInvocationPayloadV1,
+    ArtifactEnvelope, AuthorityFileV1, CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1,
+    CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1, ChangeAttestationV1,
+    ChangeSetV1, ChangedRegionV1, ClaimRef, ClaimRefKind, CloseoutPolicyV1, DEMAND_REDUCER_VERSION,
+    DemandRequirement, DemandSetEntryV1, DemandSetV1, DemandStatus, DemandV1, DemandWaiverV1,
+    EventType, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1, EvidenceV1,
+    FindingDispositionPosition, FindingDispositionV1, FindingGroupingAction, FindingGroupingV1,
+    FindingReport, FindingResolutionOutcome, FindingResolutionV1, FindingSetEntryV1, FindingSetV1,
+    FixVerificationV1, IntegrationCandidateV1, IntegrationCheckV1, IntegrationChecksV1,
+    IntegrationPlanV1, Location, MissingNodeV2, NodeInvocationPayloadV1,
     NodeOutputReceiptPayloadV1, PatchProposal, PathRenameV1, PolicyTimeV1, PortArtifactsV1,
-    PortCardinality, Producer, ProviderOperationStateV1, ProviderOperationTransitionPayloadV1,
-    ResolutionChallengeKind, ResolutionChallengeV1, ReviewSliceV1, ReviewerExecutionBindingV1,
+    PortCardinality, Producer, ResolutionChallengeKind, ResolutionChallengeV1, ReviewSliceV1,
     ReviewerPackageV1, RunCacheFailureReasonV5, RunCacheFailureV5, RunCacheKindV5,
     RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
-    RunExecutionProviderV4, RunFailureReasonV2, RunFailureReasonV3, RunIsolationV4,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3, RunReportPayloadV4,
-    RunReportPayloadV5, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3,
-    SemanticClosureV1, SemanticDispositionV1, ShardOutcomeV1, ShardReceiptV1, ShardSetV1,
-    SliceCoverageV1, SliceSetV1, SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
+    RunExecutionProviderV4, RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2,
+    RunReportExecutionV6, RunReportPayloadV6, RunSandboxModeV4, RunSuppressionReasonV2,
+    RunVerdictV3, SemanticClosureV1, SemanticDispositionV1, ShardOutcomeV1, ShardReceiptV1,
+    ShardSetV1, SliceCoverageV1, SliceSetV1, SnapshotAffinity, SourceSnapshot, SubjectKind,
+    SubjectV1, TaskReviewAccountingV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 197] = [
+const SCHEMAS: [&str; 155] = [
     "provider-status-v1.json",
     "provider-setup-v1.json",
     "session-snapshot-v1.json",
@@ -50,21 +48,16 @@ const SCHEMAS: [&str; 197] = [
     "optimization-adoption-receipt-v1.json",
     "optimization-adoption-observation-v1.json",
     "optimization-adoption-task-evidence-v1.json",
-    "experiment-trial-result-v1.json",
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
-    "task-inspection-v10.json",
     "task-inspection-v11.json",
-    "task-execution-record-v5.json",
     "experiment-execution-plan-v1.json",
     "task-runtime-evidence-v1.json",
-    "task-inspection-v9.json",
     "optimization-sources-v1.json",
     "optimization-history-v1.json",
     "optimization-economics-v1.json",
     "optimization-report-v1.json",
     "optimization-policy-v1.json",
-    "experimental-slot-v1.json",
     "optimization-harness-v1.json",
     "experiment-specification-v1.json",
     "experiment-prepared-v1.json",
@@ -73,38 +66,21 @@ const SCHEMAS: [&str; 197] = [
     "optimization-verification-v1.json",
     "optimization-package-repin-v1.json",
     "harness-materialization-v1.json",
-    "task-inspection-v8.json",
     "provider-doctor-v2.json",
-    "review-outcome-v2.json",
     "review-outcome-v3.json",
     "review-report-v4.json",
     "task-context-v1.json",
     "task-builtin-context-v1.json",
     "task-provider-context-v1.json",
     "document-context-v1.json",
-    "task-inspection-v7.json",
     "task-plan-inspection-v1.json",
-    "task-inspection-v6.json",
-    "task-inspection-v5.json",
-    "task-provider-context-v2.json",
-    "task-broker-binding-v1.json",
-    "task-broker-operation-v1.json",
-    "task-broker-transition-v1.json",
     "task-file-v1.json",
-    "task-catalog-v1.json",
     "task-catalog-v2.json",
     "compiled-task-v1.json",
-    "task-inspection-v3.json",
-    "task-inspection-v4.json",
     "task-list-entry-v2.json",
-    "task-execution-record-v3.json",
-    "task-execution-record-v4.json",
     "task-owned-child-set-v1.json",
-    "task-token-usage-v2.json",
     "task-token-usage-v3.json",
     "task-usage-observation-v1.json",
-    "broker-operation-receipt-v2.json",
-    "task-review-attempt-provenance-v1.json",
     "task-review-attempt-provenance-v2.json",
     "task-review-accounting-v1.json",
     "run-report-v6.json",
@@ -126,11 +102,6 @@ const SCHEMAS: [&str; 197] = [
     "task-operator-signature-v1.json",
     "pipeline-proposal-v1.json",
     "task-provider-admission-v1.json",
-    "task-provider-admission-v2.json",
-    "task-provider-probe-policy-v1.json",
-    "legacy-review-task-policy-v2.json",
-    "legacy-review-task-policy-v3.json",
-    "task-review-subject-v1.json",
     "task-review-subject-v2.json",
     "task-review-assignment-v1.json",
     "task-review-round-v1.json",
@@ -138,7 +109,6 @@ const SCHEMAS: [&str; 197] = [
     "task-review-context-v1.json",
     "task-review-gate-facts-v1.json",
     "legacy-review-round-v1.json",
-    "legacy-review-task-policy-v1.json",
     "legacy-review-dependency-v1.json",
     "legacy-review-invocation-policy-v1.json",
     "legacy-review-gate-outcome-v1.json",
@@ -161,25 +131,17 @@ const SCHEMAS: [&str; 197] = [
     "task-retry-feedback-v1.json",
     "artifact-envelope-v1.json",
     "task-contracts-v1.json",
-    "task-transition-v1.json",
-    "task-transition-v2.json",
-    "task-transition-v3.json",
-    "task-transition-v4.json",
     "task-transition-v5.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
-    "task-run-report-v2.json",
-    "task-review-handoff-v2.json",
     "legacy-review-task-policy-v4.json",
-    "task-review-handoff-v1.json",
+    "task-review-handoff-v2.json",
     "task-delivery-record-v1.json",
     "task-invocation-v1.json",
     "task-output-v1.json",
-    "task-run-report-v1.json",
+    "task-run-report-v2.json",
     "task-diagnostic-v1.json",
-    "task-execution-record-v1.json",
-    "task-execution-record-v2.json",
-    "task-token-usage-v1.json",
+    "task-execution-record-v5.json",
     "task-revision-v1.json",
     "task-result-v1.json",
     "task-phase-v1.json",
@@ -212,19 +174,13 @@ const SCHEMAS: [&str; 197] = [
     "node-output-receipt-v1.json",
     "patch-proposal-v1.json",
     "policy-time-v1.json",
-    "provider-operation-transition-v1.json",
     "review-slice-v1.json",
     "reviewer-package-v1.json",
-    "reviewer-result-v1.json",
     "reviewer-result-v2.json",
     "resolution-challenge-v1.json",
     "round-input-superseded-v1.json",
     "round-started-v1.json",
     "run-event-v1.json",
-    "run-report-v2.json",
-    "run-report-v3.json",
-    "run-report-v4.json",
-    "run-report-v5.json",
     "semantic-closure-v1.json",
     "shard-set-v1.json",
     "slice-set-v1.json",
@@ -272,15 +228,6 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
         TaskExecutionRecordV1::Invocation {
             invocation_id: id.clone(),
         },
-        TaskExecutionRecordV1::Prepared {
-            invocation_id: id.clone(),
-            attempt_id: attempt_id.clone(),
-            reservation_id: "reservation:0".into(),
-            reserved_tokens: 10,
-            deadline_unix_ms: 1000,
-            context_id: id.clone(),
-            feedback_ids: vec![],
-        },
         TaskExecutionRecordV1::Reserved {
             invocation_id: id.clone(),
             attempt_id: attempt_id.clone(),
@@ -300,6 +247,21 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
             attempt_id: attempt_id.clone(),
             reason: "not dispatched".into(),
         },
+        TaskExecutionRecordV1::Published {
+            output_id: id.clone(),
+            attempt_id: Some(attempt_id.clone()),
+        },
+    ];
+    for record in records {
+        record.validate().unwrap();
+        let mut value = serde_json::to_value(record).unwrap();
+        assert_valid("task-execution-record-v5.json", &value);
+        value["undeclared"] = json!(true);
+        assert!(!validator("task-execution-record-v5.json").is_valid(&value));
+        assert!(serde_json::from_value::<TaskExecutionRecordV1>(value).is_err());
+    }
+    // Accounting records carry the same closed wire, with exact decimal charges.
+    let accounting = [
         TaskExecutionRecordV1::Settled {
             attempt_id: attempt_id.clone(),
             charged_tokens: 11,
@@ -328,10 +290,6 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
             raw_artifact_ids: vec![],
             usage_id: None,
         },
-        TaskExecutionRecordV1::Published {
-            output_id: id.clone(),
-            attempt_id: Some(attempt_id.clone()),
-        },
         TaskExecutionRecordV1::UsageObserved {
             charged_tokens: 12,
             raw_artifact_ids: vec![],
@@ -339,12 +297,20 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
             attempt_id,
         },
     ];
-    for record in records {
+    for record in accounting {
         record.validate().unwrap();
-        let mut value = serde_json::to_value(record).unwrap();
-        assert_valid("task-execution-record-v1.json", &value);
+        let mut value = serde_json::to_value(&record).unwrap();
+        assert_valid("task-execution-record-v5.json", &value);
+        assert!(
+            value["charged_tokens"].is_string(),
+            "exact charges are canonical decimal text"
+        );
+        assert_eq!(
+            serde_json::from_value::<TaskExecutionRecordV1>(value.clone()).unwrap(),
+            record
+        );
         value["undeclared"] = json!(true);
-        assert!(!validator("task-execution-record-v1.json").is_valid(&value));
+        assert!(!validator("task-execution-record-v5.json").is_valid(&value));
         assert!(serde_json::from_value::<TaskExecutionRecordV1>(value).is_err());
     }
 }
@@ -489,8 +455,8 @@ fn review_task_round_contracts_preserve_completeness() {
     use review_core::task::review::*;
     let id = format!("sha256:{}", "a".repeat(64));
     let subject = json!({"subject_id":id,"snapshot_id":id,"prior_history_id":id,"round":1,"subject":{"kind":"whole-tree","head_snapshot_id":id}});
-    assert_valid("task-review-subject-v1.json", &subject);
-    serde_json::from_value::<TaskReviewSubjectV1>(subject)
+    assert_valid("task-review-subject-v2.json", &subject);
+    serde_json::from_value::<TaskReviewSubjectV2>(subject)
         .unwrap()
         .validate()
         .unwrap();
@@ -550,7 +516,7 @@ fn review_task_round_contracts_preserve_completeness() {
 
 #[test]
 fn review_continuation_keeps_repair_evidence_distinct_from_closed_rounds() {
-    use review_core::task::{repair::TaskReviewContinuationV1, review::TaskReviewSubjectV1};
+    use review_core::task::{repair::TaskReviewContinuationV1, review::TaskReviewSubjectV2};
     let id = format!("sha256:{}", "a".repeat(64));
     let value = json!({"invocation":{"plan_id":id,"node":"root.continue","inputs":{}},
         "original_round_report_id":id,"prior_history_id":id,
@@ -568,15 +534,15 @@ fn review_continuation_keeps_repair_evidence_distinct_from_closed_rounds() {
     assert!(serde_json::from_value::<TaskReviewContinuationV1>(forged).is_err());
     let mut subject = json!({"subject_id":id,"snapshot_id":id,"prior_history_id":id,
         "continuation_id":id,"round":2,"subject":{"kind":"whole-tree","head_snapshot_id":id}});
-    assert_valid("task-review-subject-v1.json", &subject);
-    serde_json::from_value::<TaskReviewSubjectV1>(subject.clone())
+    assert_valid("task-review-subject-v2.json", &subject);
+    serde_json::from_value::<TaskReviewSubjectV2>(subject.clone())
         .unwrap()
         .validate()
         .unwrap();
     subject["round"] = json!(1);
-    assert!(!validator("task-review-subject-v1.json").is_valid(&subject));
+    assert!(!validator("task-review-subject-v2.json").is_valid(&subject));
     assert!(
-        serde_json::from_value::<TaskReviewSubjectV1>(subject)
+        serde_json::from_value::<TaskReviewSubjectV2>(subject)
             .unwrap()
             .validate()
             .is_err()
@@ -635,11 +601,7 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     .into_iter()
                     .chain([
                         "finding-report-v1.json",
-                        "reviewer-result-v1.json",
-                        "run-report-v5.json",
                         "task-contracts-v1.json",
-                        "task-token-usage-v1.json",
-                        "task-token-usage-v2.json",
                         "task-review-accounting-v1.json",
                         "task-operator-signature-v1.json",
                         "task-kind-v1.json",
@@ -656,8 +618,8 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
             let root = schema(name);
             let mut builder = jsonschema::Registry::new()
                 .add(
-                    "urn:af:schema:task-transition:1",
-                    jsonschema::Resource::from_contents(schema("task-transition-v1.json")),
+                    "urn:af:schema:task-transition:5",
+                    jsonschema::Resource::from_contents(schema("task-transition-v5.json")),
                 )
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             for resource in resources {
@@ -776,15 +738,13 @@ fn every_schema_is_a_valid_json_schema() {
 fn reviewer_result_schema_names_the_live_flat_report_shape() {
     let result = |report| {
         json!({
-            "verdict": "request-changes",
-            "summary": null,
             "reports": [report],
             "benchmark_demands": [],
-            "disputes": [],
+            "dispositions": [],
         })
     };
     assert_valid(
-        "reviewer-result-v1.json",
+        "reviewer-result-v2.json",
         &result(json!({
             "severity": "major",
             "file": "src/a.rs",
@@ -796,7 +756,7 @@ fn reviewer_result_schema_names_the_live_flat_report_shape() {
         })),
     );
     assert_invalid(
-        "reviewer-result-v1.json",
+        "reviewer-result-v2.json",
         &result(json!({
             "title": "typed",
             "severity": "major",
@@ -808,27 +768,27 @@ fn reviewer_result_schema_names_the_live_flat_report_shape() {
         "typed FindingReport artifacts are produced only after ingestion",
     );
     assert_invalid(
-        "reviewer-result-v1.json",
+        "reviewer-result-v2.json",
         &result(json!({"title": "no shape discriminator"})),
         "a report must use the live flat shape",
     );
     assert_invalid(
-        "reviewer-result-v1.json",
+        "reviewer-result-v2.json",
         &result(json!({"file": "src/a.rs", "locations": []})),
         "a report cannot mix wire and durable shapes",
     );
 }
 
 #[test]
-fn reviewer_result_legacy_conformance_corpus_matches_schema() {
-    let path = workspace_root().join("schemas/reviewer-result-v1-conformance.json");
+fn reviewer_result_conformance_corpus_matches_schema() {
+    let path = workspace_root().join("schemas/reviewer-result-v2-conformance.json");
     let corpus: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     for case in corpus["valid"].as_array().unwrap() {
-        assert_valid("reviewer-result-v1.json", &case["payload"]);
+        assert_valid("reviewer-result-v2.json", &case["payload"]);
     }
     for case in corpus["invalid"].as_array().unwrap() {
         assert_invalid(
-            "reviewer-result-v1.json",
+            "reviewer-result-v2.json",
             &case["payload"],
             case["name"].as_str().unwrap(),
         );
@@ -838,8 +798,6 @@ fn reviewer_result_legacy_conformance_corpus_matches_schema() {
 #[test]
 fn reviewer_result_v2_names_explicit_dispositions() {
     let value = json!({
-        "verdict": "approve",
-        "summary": null,
         "reports": [],
         "benchmark_demands": [],
         "dispositions": [{
@@ -1143,6 +1101,25 @@ fn finding_report_rejects_what_the_design_forbids() {
         &bad_confidence,
         "confidence is 0..=1",
     );
+
+    let mut disputes = base.clone();
+    disputes["relations"] = json!([{"kind": "disputes", "target": {"kind": "finding", "id": "x"}}]);
+    assert_invalid(
+        "finding-report-v1.json",
+        &disputes,
+        "corroborates is the only relation a report may claim",
+    );
+    assert!(serde_json::from_value::<FindingReport>(disputes).is_err());
+
+    let mut report_target = base.clone();
+    report_target["relations"] =
+        json!([{"kind": "corroborates", "target": {"kind": "report", "id": "x"}}]);
+    assert_invalid(
+        "finding-report-v1.json",
+        &report_target,
+        "a relation targets a finding, never another report",
+    );
+    assert!(serde_json::from_value::<FindingReport>(report_target).is_err());
 }
 
 #[test]
@@ -1283,11 +1260,11 @@ fn subject_and_campaign_authority_roundtrip() {
             gate: "major".into(),
         },
         reviewer_timeout_seconds: 1800,
-        check_timeout_seconds: Some(3600),
-        git_timeout_seconds: Some(300),
+        check_timeout_seconds: 3600,
+        git_timeout_seconds: 300,
         budgets: None,
         focus: Some("authority bootstrap".into()),
-        finding_identity_policy: "legacy-path-title@1".into(),
+        finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
         finding_genesis_id: digest.clone(),
         demand_genesis_id: digest.clone(),
     };
@@ -1332,8 +1309,14 @@ fn change_set_roundtrips_with_exact_patch_bytes() {
     )
     .unwrap();
     change_set.validate().unwrap();
-    assert!(change_set.contains_report_path("src/old.rs"));
-    assert!(!change_set.contains_report_path("src/untouched.rs"));
+    assert!(review_core::contains_report_path(
+        &change_set.changed_paths,
+        "src/old.rs"
+    ));
+    assert!(!review_core::contains_report_path(
+        &change_set.changed_paths,
+        "src/untouched.rs"
+    ));
     assert_eq!(
         change_set.canonical_patch().unwrap(),
         b"diff --git a/src/old.rs b/src/new.rs\n\0\xff"
@@ -1540,107 +1523,20 @@ fn run_event_schema_and_rust_vocabulary_are_identical() {
             event_type.as_str().parse::<EventType>().unwrap(),
             event_type
         );
+        let (name, version) = event_type.typed();
+        assert_eq!(format!("{name}@{version}"), event_type.as_str());
     }
     assert!(serde_json::from_str::<EventType>("\"Unknown@1\"").is_err());
-}
-
-#[test]
-fn broker_binding_and_receipt_payloads_match_the_event_schema() {
-    let policy = BrokerOperationPolicyV1 {
-        name: "model_inference".into(),
-        destination: "provider.test".into(),
-        method: "responses.create".into(),
-        max_request_bytes: 1024,
-        max_response_bytes: 2048,
-        max_calls: 1,
-        max_usage: 10_000,
-    };
-    let attempt_id = "a".repeat(26);
-    let handle_id = "b".repeat(26);
-    let binding = ReviewerExecutionBindingV1 {
-        node: "correctness".into(),
-        attempt_id: attempt_id.clone(),
-        lease_epoch: 1,
-        credential_mode: BrokerCredentialModeV1::Brokered,
-        auto_apply: false,
-        broker_handle: Some(handle_id.clone()),
-        operations: vec![policy.clone()],
-        admitted: true,
-    };
-    binding.validate().unwrap();
-    let binding_payload = serde_json::to_value(binding).unwrap();
-    review_core::event::validate_event_payload(
-        EventType::ReviewerExecutionBoundV1,
-        &binding_payload,
-    )
-    .unwrap();
-
-    let receipt = BrokerOperationReceiptV1 {
-        handle_id,
-        node: "correctness".into(),
-        attempt_id: attempt_id.clone(),
-        lease_epoch: 1,
-        operation: policy.name,
-        destination: policy.destination,
-        method: policy.method,
-        ordinal: 1,
-        outcome: BrokerOperationOutcomeV1::Succeeded,
-        failure_reason: None,
-        request_digest: format!("sha256:{}", "c".repeat(64)),
-        response_digest: Some(format!("sha256:{}", "d".repeat(64))),
-        request_bytes: 128,
-        response_bytes: 256,
-        reserved_usage: 1000,
-        charged_usage: 900,
-    };
-    receipt.validate().unwrap();
-    let contradictory = BrokerOperationReceiptV1 {
-        outcome: review_core::BrokerOperationOutcomeV1::Failed,
-        failure_reason: Some(review_core::BrokerFailureReasonV1::UsageOverrun),
-        ..receipt.clone()
-    };
-    assert!(contradictory.validate().is_err());
-    let redacted_overrun = BrokerOperationReceiptV1 {
-        outcome: review_core::BrokerOperationOutcomeV1::Failed,
-        failure_reason: Some(review_core::BrokerFailureReasonV1::UsageOverrun),
-        response_digest: None,
-        response_bytes: 0,
-        charged_usage: 1_001,
-        ..receipt.clone()
-    };
-    redacted_overrun.validate().unwrap();
-    let overcharged_exposure = BrokerOperationReceiptV1 {
-        failure_reason: Some(review_core::BrokerFailureReasonV1::CredentialExposure),
-        charged_usage: 1_001,
-        ..redacted_overrun
-    };
-    assert!(overcharged_exposure.validate().is_err());
-    let receipt_payload = serde_json::to_value(receipt).unwrap();
-    review_core::event::validate_event_payload(
-        EventType::BrokerOperationCompletedV1,
-        &receipt_payload,
-    )
-    .unwrap();
-
-    for (event_type, payload) in [
-        (EventType::ReviewerExecutionBoundV1, binding_payload),
-        (EventType::BrokerOperationCompletedV1, receipt_payload),
-    ] {
-        let event = RunEvent {
-            event_id: "e".repeat(26),
-            run_id: "f".repeat(26),
-            sequence: 1,
-            event_type,
-            occurred_at: "2026-08-31T12:00:00Z".into(),
-            node_id: Some("correctness".into()),
-            attempt_id: Some(attempt_id.clone()),
-            causation_id: Some("g".repeat(26)),
-            correlation_id: None,
-            artifact_refs: vec![],
-            payload,
-        };
-        assert_valid("run-event-v1.json", &serde_json::to_value(event).unwrap());
-    }
+    // A type only another release wrote, such as the pre-Task executor's Attempt events, names
+    // the way forward instead of only the unknown type.
+    assert_eq!(
+        "AttemptDispatched@1"
+            .parse::<EventType>()
+            .unwrap_err()
+            .to_string(),
+        "unknown review-kernel event type: AttemptDispatched@1; this log was written by another \
+         af release; start a new Campaign or Task"
+    );
 }
 
 #[test]
@@ -1693,136 +1589,63 @@ fn bootstrap_event_payloads_are_semantically_validated() {
     assert_valid("run-event-v1.json", &serde_json::to_value(event).unwrap());
 }
 
-#[test]
-fn provider_operation_payload_is_closed_and_schema_valid() {
-    let payload = ProviderOperationTransitionPayloadV1 {
-        operation_id: "a".repeat(26),
-        provider_id: "claude-work".into(),
-        capability_id: format!("sha256:{}", "b".repeat(64)),
-        node_id: "architecture".into(),
-        round: 1,
-        round_epoch: 1,
-        operation_epoch: 1,
-        state: ProviderOperationStateV1::Running,
-        attempt: Some(1),
-        attempt_id: Some("c".repeat(26)),
-        failure_class: None,
-        failure_fingerprint: None,
-        continuation_handle: None,
-        reserved_tokens: 4096,
-        charged_tokens: 0,
-        elapsed_ms: 0,
-        retry_permitted: false,
-        circuit_open: false,
-        next_action: None,
-    };
-    let value = serde_json::to_value(payload).unwrap();
-    assert_valid("provider-operation-transition-v1.json", &value);
-    let mut secret = value;
-    secret["oauth_code"] = json!("must-never-be-stored");
-    assert_invalid(
-        "provider-operation-transition-v1.json",
-        &secret,
-        "secret-bearing fields must be rejected",
-    );
+/// A structurally valid RunReport@6 around `outcomes`, `verdict` and `execution`.
+fn run_report(
+    outcomes: Vec<RunNodeReportV2>,
+    blocked_gates: Vec<String>,
+    verdict: RunVerdictV3,
+    execution: RunReportExecutionV6,
+) -> RunReportPayloadV6 {
+    let id = format!("sha256:{}", "a".repeat(64));
+    RunReportPayloadV6 {
+        outcomes,
+        blocked_gates,
+        verdict,
+        spent_tokens: 42u128.into(),
+        task_accounting: TaskReviewAccountingV1 {
+            task_id: "review-task".into(),
+            task_revision_id: id.clone(),
+            plan_id: id.clone(),
+            task_report_id: id,
+            through_sequence: 43,
+        },
+        execution,
+    }
 }
 
 #[test]
-fn provider_operation_continuation_is_exact_and_secret_free() {
-    let running = ProviderOperationTransitionPayloadV1 {
-        operation_id: "a".repeat(26),
-        provider_id: "claude-work".into(),
-        capability_id: format!("sha256:{}", "b".repeat(64)),
-        node_id: "architecture".into(),
-        round: 1,
-        round_epoch: 1,
-        operation_epoch: 1,
-        state: ProviderOperationStateV1::Running,
-        attempt: Some(1),
-        attempt_id: Some("c".repeat(26)),
-        failure_class: None,
-        failure_fingerprint: None,
-        continuation_handle: None,
-        reserved_tokens: 4096,
-        charged_tokens: 0,
-        elapsed_ms: 0,
-        retry_permitted: false,
-        circuit_open: false,
-        next_action: None,
+fn run_reports_are_structural_and_close_a_round_only_with_a_terminal_verdict() {
+    let closes = |report: &RunReportPayloadV6| {
+        report.validate().unwrap();
+        let value = serde_json::to_value(report).unwrap();
+        assert_valid("run-report-v6.json", &value);
+        assert_eq!(
+            &serde_json::from_value::<RunReportPayloadV6>(value.clone()).unwrap(),
+            report
+        );
+        review_core::run_report_closes_round(&RunEvent {
+            event_id: "01jd8m4qz9k7v3n2p6r8t0w1xy".into(),
+            run_id: "01jd8m4qz9k7v3n2p6r8t0w1xz".into(),
+            sequence: 1,
+            event_type: EventType::RunReportV6,
+            occurred_at: "2026-08-16T12:00:00Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: vec![],
+            payload: value,
+        })
+        .unwrap()
+        .unwrap()
     };
-    let mut waiting = running.clone();
-    waiting.state = ProviderOperationStateV1::WaitingForHuman;
-    waiting.failure_class =
-        Some(review_core::ProviderFailureClassV1::InvalidOrExpiredAuthentication);
-    waiting.failure_fingerprint = Some(format!("sha256:{}", "d".repeat(64)));
-    waiting.continuation_handle = Some("e".repeat(26));
-    waiting.charged_tokens = 4096;
-    waiting.elapsed_ms = 12;
-    waiting.retry_permitted = true;
-    waiting.next_action = Some(review_core::ProviderNextActionV1::CompleteInteractiveLogin);
-    waiting.validate_after(Some(&running)).unwrap();
-
-    let mut resumed = waiting.clone();
-    resumed.state = ProviderOperationStateV1::Resumed;
-    resumed.operation_epoch = 1;
-    resumed.attempt = Some(2);
-    resumed.attempt_id = Some("f".repeat(26));
-    resumed.failure_class = None;
-    resumed.failure_fingerprint = None;
-    resumed.reserved_tokens = 0;
-    resumed.charged_tokens = 0;
-    resumed.elapsed_ms = 0;
-    resumed.retry_permitted = false;
-    resumed.next_action = None;
-    assert!(resumed.validate_after(Some(&waiting)).is_err());
-    resumed.operation_epoch = 2;
-    resumed.validate_after(Some(&waiting)).unwrap();
-
-    let mut resumed_running = resumed.clone();
-    resumed_running.state = ProviderOperationStateV1::Running;
-    resumed_running.continuation_handle = None;
-    resumed_running.reserved_tokens = 4096;
-    resumed_running.validate_after(Some(&resumed)).unwrap();
-
-    let mut done = resumed_running.clone();
-    done.state = ProviderOperationStateV1::Done;
-    done.charged_tokens = 7;
-    done.elapsed_ms = 4;
-    done.validate_after(Some(&resumed_running)).unwrap();
-
-    let mut transient = running.clone();
-    transient.failure_class = Some(review_core::ProviderFailureClassV1::TransientTransportFailure);
-    transient.failure_fingerprint = Some(format!("sha256:{}", "1".repeat(64)));
-    transient.charged_tokens = 5;
-    transient.retry_permitted = true;
-    transient.validate_after(Some(&running)).unwrap();
-    let mut automatic_retry = running.clone();
-    automatic_retry.attempt = Some(2);
-    automatic_retry.attempt_id = Some("2".repeat(26));
-    automatic_retry.validate_after(Some(&transient)).unwrap();
-
-    let persisted = serde_json::to_string(&[
-        running,
-        waiting,
-        resumed,
-        resumed_running,
-        done,
-        transient,
-        automatic_retry,
-    ])
-    .unwrap();
-    assert!(!persisted.contains("oauth-code-value"));
-    assert!(!persisted.contains("access-token-value"));
-}
-
-#[test]
-fn run_reports_are_structural_and_every_report_version_remains_readable() {
-    let report = RunReportPayloadV2 {
-        outcomes: vec![
+    // A blocked Gate suppresses what it guards, and the Round stays open.
+    let blocked = run_report(
+        vec![
             RunNodeReportV2 {
                 node: "architecture".into(),
                 outcome: RunNodeOutcomeV2::Suppressed {
-                    reason: RunSuppressionReasonV2::GateBlocked,
+                    reason: RunSuppressionReasonV2::UpstreamMissing,
                 },
             },
             RunNodeReportV2 {
@@ -1832,194 +1655,119 @@ fn run_reports_are_structural_and_every_report_version_remains_readable() {
                 },
             },
         ],
-        blocked_gates: vec!["gate".into()],
-        verdict: RunVerdictV2::Incomplete {
+        vec!["gate".into()],
+        RunVerdictV3::Incomplete {
             missing_nodes: vec![MissingNodeV2 {
                 node: "architecture".into(),
-                reason: "gate blocked".into(),
+                reason: "BranchNotSelected".into(),
             }],
         },
-        spent_tokens: Some(42),
-    };
-    let value = serde_json::to_value(&report).unwrap();
-    assert_valid("run-report-v2.json", &value);
-    assert_eq!(
-        serde_json::from_value::<RunReportPayloadV2>(value).unwrap(),
-        report
+        RunReportExecutionV6::Unbound {},
     );
-
-    let mut event = RunEvent {
-        event_id: "01jd8m4qz9k7v3n2p6r8t0w1xy".into(),
-        run_id: "01jd8m4qz9k7v3n2p6r8t0w1xz".into(),
-        sequence: 1,
-        event_type: EventType::RunReportV1,
-        occurred_at: "2026-08-16T12:00:00Z".into(),
-        node_id: None,
-        attempt_id: None,
-        causation_id: None,
-        correlation_id: None,
-        artifact_refs: vec![],
-        payload: json!({
-            "outcomes": [{"node":"review", "status":"completed", "detail":{}}],
-            "blocked_gates": [],
-            "verdict": "Fail(NotConverged)",
-            "spent_tokens": null
-        }),
-    };
-    assert_eq!(
-        review_core::run_report_closes_round(&event).unwrap(),
-        Some(true)
-    );
-    event.payload = json!({
-        "outcomes": [{"node":"review", "status":"failed", "detail":"crashed"}],
-        "blocked_gates": [],
-        "verdict": "Incomplete { missing: [(\"review\", \"crashed\")] }",
-        "spent_tokens": 7
-    });
-    assert_eq!(
-        review_core::run_report_closes_round(&event).unwrap(),
-        Some(false)
-    );
-    event.event_type = EventType::RunReportV2;
-    event.payload = serde_json::to_value(report).unwrap();
-    assert_eq!(
-        review_core::run_report_closes_round(&event).unwrap(),
-        Some(false)
-    );
-
-    event.payload = serde_json::to_value(RunReportPayloadV2 {
-        outcomes: vec![RunNodeReportV2 {
+    assert!(!closes(&blocked));
+    let exhausted = run_report(
+        vec![RunNodeReportV2 {
             node: "review".into(),
             outcome: RunNodeOutcomeV2::Failed {
                 error: "run budget exhausted".into(),
             },
         }],
-        blocked_gates: vec![],
-        verdict: RunVerdictV2::Fail {
-            reason: RunFailureReasonV2::Exhausted,
+        vec![],
+        RunVerdictV3::Fail {
+            reason: RunFailureReasonV3::Exhausted,
         },
-        spent_tokens: None,
-    })
-    .unwrap();
-    assert_eq!(
-        review_core::run_report_closes_round(&event).unwrap(),
-        Some(true)
+        RunReportExecutionV6::Unbound {},
     );
-
-    let report_v3 = RunReportPayloadV3 {
-        outcomes: vec![RunNodeReportV2 {
-            node: "review".into(),
-            outcome: RunNodeOutcomeV2::Completed {
-                output_artifacts: vec![],
-            },
-        }],
-        blocked_gates: vec![],
-        verdict: RunVerdictV3::Fail {
-            reason: RunFailureReasonV3::AuthorityUnavailable,
-        },
-        spent_tokens: Some(43),
+    assert!(closes(&exhausted));
+    let binding = RunExecutionBindingV4 {
+        node: "review".into(),
+        provider: RunExecutionProviderV4::TrustedLocal,
+        image: None,
+        required_isolation: RunIsolationV4::None,
+        provided_isolation: RunIsolationV4::None,
+        mode: RunSandboxModeV4::EphemeralWrite,
+        admitted: true,
     };
-    let value = serde_json::to_value(&report_v3).unwrap();
-    assert_valid("run-report-v3.json", &value);
-    assert_eq!(
-        serde_json::from_value::<RunReportPayloadV3>(value.clone()).unwrap(),
-        report_v3
-    );
-    event.event_type = EventType::RunReportV3;
-    event.payload = value;
-    assert_eq!(
-        review_core::run_report_closes_round(&event).unwrap(),
-        Some(true)
-    );
-
-    let report_v4 = RunReportPayloadV4 {
-        outcomes: report_v3.outcomes.clone(),
-        blocked_gates: report_v3.blocked_gates.clone(),
-        verdict: report_v3.verdict.clone(),
-        spent_tokens: report_v3.spent_tokens,
-        execution_bindings: vec![RunExecutionBindingV4 {
-            node: "review".into(),
-            provider: RunExecutionProviderV4::TrustedLocal,
-            image: None,
-            required_isolation: RunIsolationV4::None,
-            provided_isolation: RunIsolationV4::None,
-            mode: RunSandboxModeV4::EphemeralWrite,
-            admitted: true,
-        }],
-    };
-    report_v4.validate().unwrap();
-    let value = serde_json::to_value(&report_v4).unwrap();
-    assert_valid("run-report-v4.json", &value);
-    assert_eq!(
-        serde_json::from_value::<RunReportPayloadV4>(value.clone()).unwrap(),
-        report_v4
-    );
-    event.event_type = EventType::RunReportV4;
-    event.payload = value;
-    assert_eq!(
-        review_core::run_report_closes_round(&event).unwrap(),
-        Some(true)
-    );
-
-    let report_v5 = RunReportPayloadV5 {
-        outcomes: report_v4.outcomes.clone(),
-        blocked_gates: report_v4.blocked_gates.clone(),
-        verdict: report_v4.verdict.clone(),
-        spent_tokens: report_v4.spent_tokens,
-        execution_bindings: report_v4.execution_bindings.clone(),
-        cache_snapshots: vec![RunCacheSnapshotV5 {
-            node: "review".into(),
-            kind: RunCacheKindV5::Cargo,
-            source_digest: format!("sha256:{}", "d".repeat(64)),
-            bytes: 42,
-            files: 2,
-            materialization: RunCacheMaterializationV5::Reflink,
-        }],
-        cache_failures: vec![],
-    };
-    report_v5.validate().unwrap();
-    let value = serde_json::to_value(&report_v5).unwrap();
-    assert_valid("run-report-v5.json", &value);
-    assert_eq!(
-        serde_json::from_value::<RunReportPayloadV5>(value.clone()).unwrap(),
-        report_v5
-    );
-    event.event_type = EventType::RunReportV5;
-    event.payload = value;
-    assert_eq!(
-        review_core::run_report_closes_round(&event).unwrap(),
-        Some(true)
-    );
-
-    let mut dishonest_cache = report_v5;
-    dishonest_cache.cache_snapshots[0].node = "missing".into();
-    assert!(dishonest_cache.validate().is_err());
-
-    let mut failed_cache = dishonest_cache;
-    failed_cache.cache_snapshots.clear();
-    failed_cache.cache_failures = vec![RunCacheFailureV5 {
+    let snapshot = RunCacheSnapshotV5 {
         node: "review".into(),
         kind: RunCacheKindV5::Cargo,
-        reason: RunCacheFailureReasonV5::GateSetupFailed,
+        source_digest: format!("sha256:{}", "d".repeat(64)),
+        bytes: 42,
+        files: 2,
+        materialization: RunCacheMaterializationV5::Reflink,
+    };
+    let completed = vec![RunNodeReportV2 {
+        node: "review".into(),
+        outcome: RunNodeOutcomeV2::Completed {
+            output_artifacts: vec![],
+        },
     }];
-    assert!(failed_cache.validate().is_err());
-    failed_cache.outcomes[0].outcome = RunNodeOutcomeV2::Failed {
+    let unavailable = RunVerdictV3::Fail {
+        reason: RunFailureReasonV3::AuthorityUnavailable,
+    };
+    for execution in [
+        RunReportExecutionV6::Unbound {},
+        RunReportExecutionV6::Bound {
+            execution_bindings: vec![binding.clone()],
+        },
+        RunReportExecutionV6::Cached {
+            execution_bindings: vec![binding.clone()],
+            cache_snapshots: vec![snapshot.clone()],
+            cache_failures: vec![],
+        },
+    ] {
+        let report = run_report(completed.clone(), vec![], unavailable.clone(), execution);
+        assert!(closes(&report));
+    }
+
+    let mut dishonest_isolation = binding.clone();
+    dishonest_isolation.provided_isolation = RunIsolationV4::Container;
+    let dishonest = run_report(
+        completed.clone(),
+        vec![],
+        unavailable.clone(),
+        RunReportExecutionV6::Bound {
+            execution_bindings: vec![dishonest_isolation],
+        },
+    );
+    assert!(dishonest.validate().is_err());
+    let dishonest_cache = run_report(
+        completed.clone(),
+        vec![],
+        unavailable.clone(),
+        RunReportExecutionV6::Cached {
+            execution_bindings: vec![binding.clone()],
+            cache_snapshots: vec![RunCacheSnapshotV5 {
+                node: "missing".into(),
+                ..snapshot
+            }],
+            cache_failures: vec![],
+        },
+    );
+    assert!(dishonest_cache.validate().is_err());
+    // A Cache failure fails its Gate: a completed outcome cannot carry one, and the failed
+    // Gate leaves the Round incomplete.
+    let failed_cache = RunReportExecutionV6::Cached {
+        execution_bindings: vec![binding],
+        cache_snapshots: vec![],
+        cache_failures: vec![RunCacheFailureV5 {
+            node: "review".into(),
+            kind: RunCacheKindV5::Cargo,
+            reason: RunCacheFailureReasonV5::GateSetupFailed,
+        }],
+    };
+    let mut failed = run_report(completed, vec![], unavailable, failed_cache);
+    assert!(failed.validate().is_err());
+    failed.outcomes[0].outcome = RunNodeOutcomeV2::Failed {
         error: "provider unavailable".into(),
     };
-    failed_cache.verdict = RunVerdictV3::Incomplete {
+    failed.verdict = RunVerdictV3::Incomplete {
         missing_nodes: vec![MissingNodeV2 {
             node: "review".into(),
             reason: "provider unavailable".into(),
         }],
     };
-    failed_cache.validate().unwrap();
-
-    let mut dishonest = report_v4;
-    dishonest.execution_bindings[0].provided_isolation = RunIsolationV4::Container;
-    assert!(dishonest.validate().is_err());
-    dishonest.execution_bindings[0].provided_isolation = RunIsolationV4::None;
-    dishonest.execution_bindings[0].required_isolation = RunIsolationV4::Process;
-    assert!(dishonest.validate().is_err());
+    assert!(!closes(&failed));
 }
 
 #[test]
@@ -2118,24 +1866,50 @@ fn node_invocation_and_output_receipt_roundtrip() {
 
 #[test]
 fn event_validation_rejects_semantically_malformed_run_reports() {
-    let contradictory_legacy = json!({
-        "outcomes": [{"node":"reviewer", "status":"failed", "detail":"crashed"}],
-        "blocked_gates": [],
-        "verdict": "Pass",
-        "spent_tokens": null
-    });
-    assert!(
-        review_core::event::validate_event_payload(EventType::RunReportV1, &contradictory_legacy)
-            .is_err()
-    );
+    let report = |outcomes: Value, verdict: Value| {
+        let mut report = serde_json::to_value(run_report(
+            vec![],
+            vec![],
+            RunVerdictV3::Pass,
+            RunReportExecutionV6::Unbound {},
+        ))
+        .unwrap();
+        report["outcomes"] = outcomes;
+        report["verdict"] = verdict;
+        report
+    };
+    // Only an exhausted budget may conclude a Round with unresolved nodes; every other terminal
+    // verdict, including an authority failure, contradicts a failed or suppressed outcome.
+    let unresolved = json!([{"node":"reviewer", "outcome":{"kind":"failed", "error":"crashed"}}]);
+    for contradictory in [
+        json!({"kind":"pass"}),
+        json!({"kind":"fail", "reason":"not_converged"}),
+        json!({"kind":"fail", "reason":"authority_unavailable"}),
+    ] {
+        assert!(
+            review_core::event::validate_event_payload(
+                EventType::RunReportV6,
+                &report(unresolved.clone(), contradictory.clone())
+            )
+            .is_err(),
+            "{contradictory}"
+        );
+    }
+    review_core::event::validate_event_payload(
+        EventType::RunReportV6,
+        &report(
+            unresolved.clone(),
+            json!({"kind":"fail", "reason":"exhausted"}),
+        ),
+    )
+    .unwrap();
 
-    let empty_reason = json!({
-        "outcomes": [{"node":"reviewer", "outcome":{"kind":"failed", "error":"x"}}],
-        "blocked_gates": [],
-        "verdict": {"kind":"incomplete", "missing_nodes":[{"node":"reviewer", "reason":""}]}
-    });
+    let empty_reason = report(
+        unresolved,
+        json!({"kind":"incomplete", "missing_nodes":[{"node":"reviewer", "reason":""}]}),
+    );
     assert!(
-        review_core::event::validate_event_payload(EventType::RunReportV2, &empty_reason).is_err()
+        review_core::event::validate_event_payload(EventType::RunReportV6, &empty_reason).is_err()
     );
 }
 
@@ -2155,7 +1929,6 @@ fn artifact_envelope_roundtrips_both_producers() {
         },
     ];
     for producer in producers {
-        let deterministic = producer.is_deterministic();
         let envelope = ArtifactEnvelope {
             artifact_type: review_core::contract::FINDING_REPORT_V1.into(),
             artifact_id: digest.clone(),
@@ -2171,7 +1944,6 @@ fn artifact_envelope_roundtrips_both_producers() {
             serde_json::from_value::<ArtifactEnvelope>(value).unwrap(),
             envelope
         );
-        assert_eq!(envelope.producer.is_deterministic(), deterministic);
     }
 }
 
@@ -2182,7 +1954,7 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
         subject_id: digest.clone(),
         round: 1,
         prior_finding_set_id: digest.clone(),
-        reducer_version: review_core::FINDING_REDUCER_VERSION.into(),
+        reducer_version: review_core::FINDING_REDUCER_VERSION_V2.into(),
         identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
         selected_report_ids: vec![digest.clone()],
         relation_ids: Vec::new(),
@@ -2312,9 +2084,6 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
         TaskChangeV1::LeaseRenewed {
             lease_until_unix_ms: 200,
         },
-        TaskChangeV1::RevisionRecorded {
-            revision_id: id.clone(),
-        },
         TaskChangeV1::PlanProposed {
             plan_id: id.clone(),
         },
@@ -2341,7 +2110,7 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
         TaskChangeV1::ApprovalRevoked {
             decision_id: id.clone(),
             reason: "Revoked by developer".into(),
-            revocation_id: Some(id.clone()),
+            revocation_id: id.clone(),
         },
         TaskChangeV1::PlanAdmitted {
             plan_id: id.clone(),
@@ -2357,7 +2126,9 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
         TaskChangeV1::DeliveryRecorded {
             record_id: id.clone(),
         },
-        TaskChangeV1::Finished { result_id: id },
+        TaskChangeV1::Finished {
+            result_id: id.clone(),
+        },
     ];
     for change in changes {
         let transition = TaskTransitionV1 {
@@ -2368,15 +2139,20 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
         };
         transition.validate().unwrap();
         let mut value = serde_json::to_value(&transition).unwrap();
-        assert_valid("task-transition-v1.json", &value);
-        review_core::event::validate_event_payload(EventType::TaskTransitionV1, &value).unwrap();
+        assert_valid("task-transition-v5.json", &value);
+        review_core::event::validate_event_payload(EventType::TaskTransitionV5, &value).unwrap();
         value["change"]["unrecognized"] = json!(true);
-        assert!(!validator("task-transition-v1.json").is_valid(&value));
+        assert!(!validator("task-transition-v5.json").is_valid(&value));
         assert!(
-            review_core::event::validate_event_payload(EventType::TaskTransitionV1, &value)
+            review_core::event::validate_event_payload(EventType::TaskTransitionV5, &value)
                 .is_err()
         );
     }
+    // A revocation always carries its retained proof.
+    let unproven = json!({"writer":"writer-1","epoch":1,"now_unix_ms":100,
+        "change":{"kind":"approval_revoked","decision_id":id,"reason":"Revoked by developer"}});
+    assert_invalid("task-transition-v5.json", &unproven, "revocation proof");
+    assert!(serde_json::from_value::<TaskTransitionV1>(unproven).is_err());
 }
 
 #[test]
@@ -2448,7 +2224,7 @@ fn source_refresh_event_requires_exactly_one_plan_or_unresolved_reason() {
             .unwrap()
             .extend(fields.as_object().unwrap().clone());
         assert_invalid(
-            "task-transition-v1.json",
+            "task-transition-v5.json",
             &value,
             "ambiguous source barrier",
         );
@@ -2462,97 +2238,58 @@ fn source_refresh_event_requires_exactly_one_plan_or_unresolved_reason() {
 
 #[test]
 fn task_review_metadata_retains_typed_canonical_results_and_closed_proposal_dispositions() {
-    use review_core::task::review_compat::*;
+    use review_core::task::campaign_review::*;
     let id = format!("sha256:{}", "a".repeat(64));
-    for contract in [
-        review_core::ReviewerResultContract::V1,
-        review_core::ReviewerResultContract::V2,
+    let contract = review_core::ReviewerResultContract::V2;
+    for proposal in [
+        TaskReviewProposalV1::None {},
+        TaskReviewProposalV1::Prepared {
+            candidate_artifact_id: id.clone(),
+        },
+        TaskReviewProposalV1::Refused {
+            reason: review_core::ProposalRefusalReasonV1::PatchMismatch,
+        },
     ] {
-        for proposal in [
-            TaskReviewProposalV1::None {},
-            TaskReviewProposalV1::Prepared {
-                candidate_artifact_id: id.clone(),
-            },
-            TaskReviewProposalV1::Refused {
-                reason: review_core::ProposalRefusalReasonV1::PatchMismatch,
-            },
-        ] {
-            let metadata = TaskReviewResultMetadataV1 {
-                result_contract: contract,
-                result_artifact_id: id.clone(),
-                provenance_artifact_id: id.clone(),
-                proposal,
-            };
-            metadata.validate().unwrap();
-            let value = serde_json::to_value(&metadata).unwrap();
-            assert_valid("task-review-result-metadata-v1.json", &value);
-            for (field, bad) in [
-                ("result_contract", json!("opaque")),
-                ("result_artifact_id", json!("stale")),
-                ("provenance_artifact_id", json!(null)),
-                ("proposal", json!({"kind":"selected"})),
-            ] {
-                let mut wrong = value.clone();
-                wrong[field] = bad;
-                assert!(!validator("task-review-result-metadata-v1.json").is_valid(&wrong));
-                assert!(
-                    serde_json::from_value::<TaskReviewResultMetadataV1>(wrong)
-                        .map_or(true, |v| v.validate().is_err())
-                );
-            }
-            for extra in ["root", "proposal"] {
-                let mut wrong = value.clone();
-                if extra == "root" {
-                    wrong["undeclared"] = json!(true);
-                } else {
-                    wrong["proposal"]["undeclared"] = json!(true);
-                }
-                assert!(!validator("task-review-result-metadata-v1.json").is_valid(&wrong));
-                assert!(serde_json::from_value::<TaskReviewResultMetadataV1>(wrong).is_err());
-            }
-        }
-    }
-}
-
-#[test]
-fn task_review_attempt_provenance_preserves_wide_charge_and_unknown_usage() {
-    use review_core::task::review_compat::TaskReviewAttemptProvenanceV1;
-    let id = format!("sha256:{}", "a".repeat(64));
-    let schema = "task-review-attempt-provenance-v1.json";
-    for known in [false, true] {
-        let mut value = json!({"context_id":id, "task_invocation_id":id,
-            "attempt_id":"b".repeat(26), "review_node":"reviewer", "result_artifact_id":id,
-            "mutations_artifact_id":id, "raw_artifact_id":id, "charged_tokens":u64::MAX.to_string()});
-        if known {
-            value["usage_id"] = json!(id);
-        }
-        assert_valid(schema, &value);
-        let typed: TaskReviewAttemptProvenanceV1 = serde_json::from_value(value.clone()).unwrap();
-        typed.validate().unwrap();
-        assert_eq!(typed.charged_tokens.get(), u64::MAX);
-        assert_eq!(typed.usage_id.is_some(), known);
+        let metadata = TaskReviewResultMetadataV1 {
+            result_contract: contract,
+            result_artifact_id: id.clone(),
+            provenance_artifact_id: id.clone(),
+            proposal,
+        };
+        metadata.validate().unwrap();
+        let value = serde_json::to_value(&metadata).unwrap();
+        assert_valid("task-review-result-metadata-v1.json", &value);
         for (field, bad) in [
-            ("charged_tokens", json!(1)),
-            ("charged_tokens", json!("18446744073709551616")),
-            ("charged_tokens", json!("01")),
-            ("usage_id", json!(null)),
-            ("result_artifact_id", json!("missing")),
-            ("extra", json!(true)),
+            ("result_contract", json!("opaque")),
+            ("result_contract", json!("review.kernel/ReviewerResult@1")),
+            ("result_artifact_id", json!("stale")),
+            ("provenance_artifact_id", json!(null)),
+            ("proposal", json!({"kind":"selected"})),
         ] {
-            let mut bad_value = value.clone();
-            bad_value[field] = bad;
-            assert_invalid(schema, &bad_value, "closed exact provenance");
+            let mut wrong = value.clone();
+            wrong[field] = bad;
+            assert!(!validator("task-review-result-metadata-v1.json").is_valid(&wrong));
             assert!(
-                serde_json::from_value::<TaskReviewAttemptProvenanceV1>(bad_value)
+                serde_json::from_value::<TaskReviewResultMetadataV1>(wrong)
                     .map_or(true, |v| v.validate().is_err())
             );
+        }
+        for extra in ["root", "proposal"] {
+            let mut wrong = value.clone();
+            if extra == "root" {
+                wrong["undeclared"] = json!(true);
+            } else {
+                wrong["proposal"]["undeclared"] = json!(true);
+            }
+            assert!(!validator("task-review-result-metadata-v1.json").is_valid(&wrong));
+            assert!(serde_json::from_value::<TaskReviewResultMetadataV1>(wrong).is_err());
         }
     }
 }
 
 #[test]
 fn task_review_gate_facts_preserve_closed_failed_attempt_observations() {
-    use review_core::task::review_compat::TaskReviewGateFactsV1;
+    use review_core::task::campaign_review::TaskReviewGateFactsV1;
     let valid = json!({
         "round_event_id":"a".repeat(26), "review_node":"gate",
         "attempt_id":"b".repeat(26), "cache_failures":[{
@@ -2594,7 +2331,7 @@ fn task_review_gate_facts_preserve_closed_failed_attempt_observations() {
 
 #[test]
 fn task_review_context_and_selection_require_exact_closed_execution_identities() {
-    use review_core::task::review_compat::*;
+    use review_core::task::campaign_review::*;
     let id = format!("sha256:{}", "a".repeat(64));
     let context = json!({
         "campaign_id":"review-task", "round_event_id":"a".repeat(26),
@@ -2661,8 +2398,8 @@ fn task_review_context_and_selection_require_exact_closed_execution_identities()
 }
 
 #[test]
-fn legacy_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
-    use review_core::task::review_compat::{LegacyReviewGateOutcomeV1, LegacyReviewRoundV1};
+fn campaign_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
+    use review_core::task::campaign_review::{CampaignReviewGateOutcomeV1, CampaignReviewRoundV1};
     let id = format!("sha256:{}", "a".repeat(64));
     let round = json!({
         "campaign_id": "review-ticket", "round_event_id": "a".repeat(26),
@@ -2672,14 +2409,14 @@ fn legacy_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
     let gate = json!({"round_event_id": "a".repeat(26), "review_node": "gate",
         "gate_decision_id": id, "outcome": "passed"});
     assert_valid("legacy-review-round-v1.json", &round);
-    let parsed = serde_json::from_value::<LegacyReviewRoundV1>(round.clone()).unwrap();
+    let parsed = serde_json::from_value::<CampaignReviewRoundV1>(round.clone()).unwrap();
     parsed.validate().unwrap();
     assert_eq!(serde_json::to_value(parsed).unwrap(), round);
     for outcome in ["passed", "failed"] {
         let mut value = gate.clone();
         value["outcome"] = json!(outcome);
         assert_valid("legacy-review-gate-outcome-v1.json", &value);
-        let parsed = serde_json::from_value::<LegacyReviewGateOutcomeV1>(value.clone()).unwrap();
+        let parsed = serde_json::from_value::<CampaignReviewGateOutcomeV1>(value.clone()).unwrap();
         parsed.validate().unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), value);
     }
@@ -2695,7 +2432,7 @@ fn legacy_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
         value[field] = replacement;
         assert!(!validator("legacy-review-round-v1.json").is_valid(&value));
         assert!(
-            serde_json::from_value::<LegacyReviewRoundV1>(value)
+            serde_json::from_value::<CampaignReviewRoundV1>(value)
                 .map_err(|e| e.to_string())
                 .and_then(|v| v.validate())
                 .is_err()
@@ -2712,7 +2449,7 @@ fn legacy_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
         value[field] = replacement;
         assert!(!validator("legacy-review-gate-outcome-v1.json").is_valid(&value));
         assert!(
-            serde_json::from_value::<LegacyReviewGateOutcomeV1>(value)
+            serde_json::from_value::<CampaignReviewGateOutcomeV1>(value)
                 .map_err(|e| e.to_string())
                 .and_then(|v| v.validate())
                 .is_err()
@@ -3526,7 +3263,6 @@ mod task_usage_observation;
 
 #[test]
 fn task_review_conclusions_preserve_exact_cumulative_charge_and_execution_contracts() {
-    use review_core::{RunReportExecutionV6, RunReportPayloadV6, TaskReviewAccountingV1};
     let id = format!("sha256:{}", "a".repeat(64));
     let accounting = TaskReviewAccountingV1 {
         task_id: "review-task".into(),
@@ -3745,7 +3481,7 @@ fn task_review_conclusions_preserve_exact_cumulative_charge_and_execution_contra
         unknown["execution"][field][0]["unknown"] = json!(true);
         assert_invalid("run-report-v6.json", &unknown, "closed execution entries");
         assert!(!read(unknown));
-        // Cross-entry identities and node relations are semantic Core checks, as in V4/V5.
+        // Cross-entry identities and node relations are semantic Core checks, not schema rules.
         let mut duplicate = value.clone();
         let entry = duplicate["execution"][field][0].clone();
         duplicate["execution"][field]
@@ -3787,12 +3523,6 @@ fn task_review_conclusions_preserve_exact_cumulative_charge_and_execution_contra
     assert!(!read(value));
 }
 
-#[path = "schema_parity/task_broker.rs"]
-mod task_broker;
-
-#[path = "schema_parity/task_provider_probe.rs"]
-mod task_provider_probe;
-
 #[path = "schema_parity/task_owned.rs"]
 mod task_owned;
 #[path = "schema_parity/task_review_handoff.rs"]
@@ -3819,7 +3549,7 @@ mod provider_onboarding;
 mod task_recording;
 
 #[test]
-fn task_review_readable_context_generations_are_strict() {
+fn task_review_readable_subject_is_strict() {
     use review_core::task::review::*;
     let id = format!("sha256:{}", "a".repeat(64));
     let value = TaskReviewSubjectV2 {
@@ -3845,7 +3575,6 @@ fn task_review_readable_context_generations_are_strict() {
     value.validate().unwrap();
     let encoded = serde_json::to_value(value).unwrap();
     assert_valid("task-review-subject-v2.json", &encoded);
-    assert!(serde_json::from_value::<TaskReviewSubjectV1>(encoded.clone()).is_err());
     for (field, replacement) in [
         ("bytes", json!(4194305)),
         ("bytes", json!(-1)),
@@ -3892,21 +3621,25 @@ fn task_review_readable_context_generations_are_strict() {
 }
 
 #[test]
-fn task_catalog_review_generation_does_not_change_provider_authority() {
-    let mut value = json!({"schema":"af.task-catalog/1","code_policy":".af/code-policy.toml","packages":{"fixture/review":{"version":"1.0.0","digest":format!("sha256:{}","a".repeat(64)),"path":".af/packages/review"}},"independence":{"command_workers_by_package":true,"distinct_principals":true,"distinct_providers":false,"distinct_models":false},"review":{"reviewers":{"correctness":"required"},"gate":"major","clean_rounds":1,"max_rounds":2}});
-    for generation in [1, 2] {
-        let name = format!("task-catalog-v{generation}.json");
-        value["schema"] = json!(format!("af.task-catalog/{generation}"));
-        if generation == 2 {
-            value["provider_admission"] = json!({"tokens":32768,"wall_ms":45000});
+fn task_catalog_review_generation_is_omitted_or_two() {
+    // Task Review has one generation: an omitted selector and `generation = 2` both mean it.
+    let name = "task-catalog-v2.json";
+    let mut value = json!({"schema":"af.task-catalog/2","code_policy":".af/code-policy.toml","packages":{"fixture/review":{"version":"1.0.0","digest":format!("sha256:{}","a".repeat(64)),"path":".af/packages/review"}},"independence":{"command_workers_by_package":true,"distinct_principals":true,"distinct_providers":false,"distinct_models":false},"review":{"reviewers":{"correctness":"required"},"gate":"major","clean_rounds":1,"max_rounds":2}});
+    for admission in [None, Some(json!({"tokens":32768,"wall_ms":45000}))] {
+        match &admission {
+            // An omitted Provider admission cost keeps the fixed default allowance.
+            None => {
+                value.as_object_mut().unwrap().remove("provider_admission");
+            }
+            Some(cost) => value["provider_admission"] = cost.clone(),
         }
         value["review"]
             .as_object_mut()
             .unwrap()
             .remove("generation");
-        assert_valid(&name, &value);
+        assert_valid(name, &value);
         value["review"]["generation"] = json!(2);
-        assert_valid(&name, &value);
+        assert_valid(name, &value);
         for invalid in [
             json!(0),
             json!(1),
@@ -3917,16 +3650,10 @@ fn task_catalog_review_generation_does_not_change_provider_authority() {
         ] {
             let mut bad = value.clone();
             bad["review"]["generation"] = invalid;
-            assert_invalid(&name, &bad, "unsupported explicit Review generation");
-        }
-        if generation == 2 {
-            let mut bad = value.clone();
-            bad.as_object_mut().unwrap().remove("provider_admission");
-            assert_invalid(
-                &name,
-                &bad,
-                "Review generation does not waive Provider authority",
-            );
+            assert_invalid(name, &bad, "unsupported explicit Review generation");
         }
     }
+    let mut retired = value;
+    retired["schema"] = json!("af.task-catalog/1");
+    assert_invalid(name, &retired, "one catalog schema");
 }

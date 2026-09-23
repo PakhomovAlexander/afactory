@@ -1,13 +1,13 @@
 # Self-optimizer: project improvement through an AF Pipeline
 
-Status: proposal, 2026-09-16. This describes new behavior, not a shipped command.
-The design targets the common Task runtime at source revision `166eca5`.
-Revised after one AF review with Fable 5.1 / medium; see the
-[review record and dispositions](self-optimizer-review.md). Revisions have local
-document checks, not a second independent review verdict.
-The owner subsequently expanded token/time economics and requested light/heavy
-strategies; those additions and the [implementation plan](self-optimizer-plan.md)
-postdate that review.
+Status: design, 2026-09-16, revised. It targets the common Task runtime at source
+revision `166eca5`. Milestones M1–M3 of §10 ship: `af self optimize` captures
+history, runs protected experiments and drives the light diagnose/propose/adopt
+path with typed recipe, economics and adoption contracts. M4, the heavy
+whole-Pipeline redesign, has not started, and live paid demonstrations remain
+pending. The shipped behaviour is documented in
+[Self-optimizer economics](../task-execution/self-optimizer.md); the binding record
+is [`../adr/`](../adr/), and where this note and an ADR disagree, the ADR wins.
 
 `af self optimize` should turn experience working in a project into a reviewable,
 tested improvement to the project's Pipelines, Workers and harness. It is a normal
@@ -100,11 +100,10 @@ Changes: scripts/gate.sh and its captured check definition
 Adoption: verified candidate available for local delivery; current project unchanged
 ```
 
-The report separates `validated`, `rejected`, `inconclusive`, `recommendation_only`
-and `no_change` conclusions. Those are domain conclusions, not replacements for
-Task execution/acceptance states. An interrupted evaluator produces incomplete
-acceptance even if a candidate was built. A complete `no_change` report is useful;
-an unavailable required history source is incomplete, not “nothing to improve.”
+The report separates `validated`, `rejected` and `recommendation_only` conclusions.
+Those are domain conclusions, not replacements for Task execution/acceptance states.
+An interrupted evaluator produces incomplete acceptance even if a candidate was built.
+An unavailable required history source is incomplete, not “nothing to improve.”
 
 Delivery is supported only for a verified configuration Snapshot, through the
 existing explicit Task-ID delivery boundary into a new local worktree. No commits,
@@ -238,7 +237,7 @@ There are two acceptance profiles selected at capture, not after seeing results:
 
 | Profile | Required obligations and public evidence | Terminal behavior |
 |---|---|---|
-| Analysis | `analysis` on `result`, covered by an installed `OptimizationAnalysisReceipt@1` binding complete source checks and the selected independent `OptimizationEvaluation@1` | Evidence-grounded recommendations or no-change may be Satisfied; no Snapshot and no delivery. |
+| Analysis | `analysis` on `result`, covered by an installed `OptimizationAnalysisReceipt@1` binding complete source checks and the selected independent `OptimizationEvaluation@1` | Evidence-grounded recommendations may be Satisfied; no Snapshot and no delivery. |
 | Candidate (`correct` or `measure`) | `analysis` on `result` plus `verified` and `goal` on `snapshot`, covered by an installed `OptimizationVerification@1` binding the source/candidate, protected checks, comparison and independent evaluation | Positive verification emits the exact Snapshot and the `verified` domain conclusion; rejection or no eligible change is Unsatisfied and retains its report without a deliverable Snapshot. Missing required execution/evidence is Incomplete. |
 
 The proposed `--mode analyze|correct|measure` selector makes this visible. The
@@ -248,10 +247,7 @@ A negative candidate result can still explain why no change should be adopted;
 it cannot rewrite its fixed obligations into successful analysis. The terminal
 result may omit a required Snapshot on failure, never on candidate acceptance.
 
-The only zero-inference analysis shortcut is a deterministic receipt proving no
-eligible observations under the captured rules and complete coverage. Its domain
-conclusion is `no_change` with reason `no_eligible_evidence`, not a claim of global
-optimality. All substantive analysis requires the independent evaluator.
+All substantive analysis requires the independent evaluator.
 
 Delivery needs an explicit optimize-profile adapter to the existing verified Task
 delivery path; it checks `OptimizationVerification@1`, both code obligations and
@@ -349,8 +345,8 @@ Experiment Specification fixes the baseline/candidate closures, selected cases,
 environment and cache state, oracle, required outcomes, sample/repetition limits,
 resource caps and success rule before candidate trial results are available.
 Actual runs are new executions of captured inputs, not deterministic replay of
-old model behavior. Tool/network effects are fixture-backed or explicitly
-brokered; production writes, publication and credential acquisition are absent.
+old model behavior. Tool/network effects are fixture-backed; production writes,
+publication and credential acquisition are absent.
 
 For measured configuration trials, the case's captured product source Snapshot
 and Requirements stay byte-identical in both arms. Resolve execution packages and
@@ -496,7 +492,7 @@ environment versions, not proof of causality across changed workloads.
 The report includes optimization cost and estimated break-even only when savings
 and anticipated comparable task volume are available. A zero or negative saving,
 unknown usage, changed acceptance regime or unsupported estimate is stated as
-such. Early deterministic profiling can return no-change without model calls.
+such.
 
 ### Token and time economics
 
@@ -619,9 +615,9 @@ Task kinds. CLI help must distinguish project optimization from `self update`.
 
 ## 10. Implementation milestones and exit criteria
 
-The [implementation plan](self-optimizer-plan.md) groups the architecture into four
-large, dependency-ordered milestones. It supersedes the earlier smaller increment
-sequence and includes the owner's expanded economics and strategy requirements.
+The architecture is delivered as four large, dependency-ordered milestones. Each
+one states the product capability it adds and the evidence that closes it; no
+milestone is complete until that evidence exists.
 
 | Milestone | Product capability | Defining exit evidence |
 |---|---|---|
@@ -698,7 +694,7 @@ AF binary edits. Initial shipped limits, captured in every plan, are:
 
 Hitting a capture limit produces a coverage gap and continuation cursor; it never
 silently truncates “all history.” A run with incomplete required coverage may
-produce an explicitly partial report, but cannot return accepted no-change.
+produce only an explicitly partial report.
 Parsing is streaming and record-bounded; a giant or malformed record cannot force
 an unbounded allocation. Raw and normalized byte limits are separate from model
 context limits. Provider admissions and failed Attempts spend the outer allowance.

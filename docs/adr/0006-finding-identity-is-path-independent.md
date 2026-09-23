@@ -1,6 +1,8 @@
 # Finding identity is independent of path and title
 
-**Status:** accepted (2026-08-20)
+**Status:** accepted (2026-08-20); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the legacy `file + normalized title` fingerprint
+kept for replaying existing Campaigns.
 
 The legacy `file + normalized title` fingerprint is retained only for replaying existing
 campaigns. New campaigns derive a stable Finding ID from the first selected Report ID; later

@@ -1,62 +1,22 @@
 //! Captured Review Round succession retains one Task and its original accounting authority.
 use super::*;
-use review_core::task::event::TaskTransitionV2;
-use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
+use review_core::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignReviewRoundV1};
 use review_core::task::review_handoff::*;
 use review_graph::task::CompiledTask;
 
 pub fn read_task_transition(event: &RunEvent) -> Result<TaskTransitionV1, StoreError> {
-    match event.event_type {
-        EventType::TaskTransitionV5 => {
-            let value: task::event::TaskTransitionV5 =
-                serde_json::from_value(event.payload.clone())?;
-            value.validate().map_err(conflict)?;
-            Ok(value.into_transition())
-        }
-        EventType::TaskTransitionV4 => {
-            let value: task::event::TaskTransitionV4 =
-                serde_json::from_value(event.payload.clone())?;
-            value.validate().map_err(conflict)?;
-            Ok(value.into_transition())
-        }
-        EventType::TaskTransitionV1 => {
-            let value: TaskTransitionV1 = serde_json::from_value(event.payload.clone())?;
-            value.validate().map_err(conflict)?;
-            Ok(value)
-        }
-        EventType::TaskTransitionV3 => {
-            let value: task::event::TaskTransitionV3 =
-                serde_json::from_value(event.payload.clone())?;
-            value.validate().map_err(conflict)?;
-            Ok(value.into_transition())
-        }
-        EventType::TaskTransitionV2 => {
-            let value: TaskTransitionV2 = serde_json::from_value(event.payload.clone())?;
-            value.validate().map_err(conflict)?;
-            Ok(value.into_transition())
-        }
-        _ => Err(conflict("Expected a typed Task transition")),
+    if event.event_type != EventType::TaskTransitionV5 {
+        return Err(conflict("Expected a typed Task transition"));
     }
+    let value: TaskTransitionV1 = serde_json::from_value(event.payload.clone())?;
+    value.validate().map_err(conflict)?;
+    Ok(value)
 }
 pub(super) fn encode_transition(
     value: &TaskTransitionV1,
 ) -> Result<(EventType, serde_json::Value), StoreError> {
-    if let Some(value) = task::event::TaskTransitionV5::from_adoption(value) {
-        value.validate().map_err(conflict)?;
-        Ok((EventType::TaskTransitionV5, serde_json::to_value(value)?))
-    } else if let Some(value) = task::event::TaskTransitionV4::from_recording(value) {
-        value.validate().map_err(conflict)?;
-        Ok((EventType::TaskTransitionV4, serde_json::to_value(value)?))
-    } else if let Some(value) = task::event::TaskTransitionV3::from_integration(value) {
-        value.validate().map_err(conflict)?;
-        Ok((EventType::TaskTransitionV3, serde_json::to_value(value)?))
-    } else if let Some(value) = TaskTransitionV2::from_continuation(value) {
-        value.validate().map_err(conflict)?;
-        Ok((EventType::TaskTransitionV2, serde_json::to_value(value)?))
-    } else {
-        value.validate().map_err(conflict)?;
-        Ok((EventType::TaskTransitionV1, serde_json::to_value(value)?))
-    }
+    value.validate().map_err(conflict)?;
+    Ok((EventType::TaskTransitionV5, serde_json::to_value(value)?))
 }
 fn producer(task_id: &str) -> Result<review_core::Producer, StoreError> {
     Ok(review_core::Producer::KernelOperation {
@@ -69,16 +29,11 @@ pub fn capture_task_review_handoff(
     cas: &Cas,
     value: &TaskReviewHandoffV1,
 ) -> Result<String, StoreError> {
-    let (kind, raw) = if let Some(v2) = TaskReviewHandoffV2::from_integrated(value) {
-        v2.validate().map_err(conflict)?;
-        (TASK_REVIEW_HANDOFF_V2, serde_json::to_value(v2)?)
-    } else {
-        value.validate().map_err(conflict)?;
-        (TASK_REVIEW_HANDOFF_V1, serde_json::to_value(value)?)
-    };
+    value.validate().map_err(conflict)?;
+    let raw = serde_json::to_value(value)?;
     Ok(cas
         .put_artifact(
-            kind,
+            TASK_REVIEW_HANDOFF_V2,
             producer(&value.task_id)?,
             value
                 .artifact_refs()
@@ -95,19 +50,11 @@ pub fn read_task_review_handoff(cas: &Cas, id: &str) -> Result<TaskReviewHandoff
     let frame = cas
         .get_artifact(id)
         .map_err(|e| StoreError::Artifact(e.to_string()))?;
-    let value = match frame.artifact_type.as_str() {
-        TASK_REVIEW_HANDOFF_V1 => {
-            let v: TaskReviewHandoffV1 = serde_json::from_value(frame.payload)?;
-            v.validate().map_err(conflict)?;
-            v
-        }
-        TASK_REVIEW_HANDOFF_V2 => {
-            let v: TaskReviewHandoffV2 = serde_json::from_value(frame.payload)?;
-            v.validate().map_err(conflict)?;
-            v.into_handoff()
-        }
-        _ => return Err(conflict("Expected versioned Review handoff")),
-    };
+    if frame.artifact_type != TASK_REVIEW_HANDOFF_V2 {
+        return Err(conflict("Expected a typed Review handoff"));
+    }
+    let value: TaskReviewHandoffV1 = serde_json::from_value(frame.payload)?;
+    value.validate().map_err(conflict)?;
     if frame.input_artifacts != value.artifact_refs()
         || frame.subject_snapshot_id.is_some()
         || frame.producer != producer(&value.task_id)?
@@ -127,18 +74,18 @@ fn round(
     cas: &Cas,
     revision: &TaskRevisionV1,
     id: &str,
-) -> Result<LegacyReviewRoundV1, StoreError> {
+) -> Result<CampaignReviewRoundV1, StoreError> {
     super::review_round::ReviewRoundFence::capture(cas, revision)?
         .ok_or_else(|| conflict("Review handoff lacks captured Round authority"))?;
     let input = revision
         .inputs
         .values()
-        .find(|input| input.artifact_type == LEGACY_REVIEW_ROUND_V1)
+        .find(|input| input.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
         .expect("checked Round");
     if input.artifact_ids != [id] {
         return Err(conflict("Review handoff changed its exact Round root"));
     }
-    payload(cas, id, LEGACY_REVIEW_ROUND_V1)
+    payload(cas, id, CAMPAIGN_REVIEW_ROUND_V1)
 }
 
 pub(super) fn validate_revisions(
@@ -148,8 +95,8 @@ pub(super) fn validate_revisions(
     (
         TaskRevisionV1,
         TaskRevisionV1,
-        LegacyReviewRoundV1,
-        LegacyReviewRoundV1,
+        CampaignReviewRoundV1,
+        CampaignReviewRoundV1,
     ),
     StoreError,
 > {
@@ -309,12 +256,8 @@ pub(super) fn validate_evidence_with_replays(
                     "Review continuation requires the exact predecessor NotConverged conclusion",
                 ));
             }
-            let task_report: task::report::TaskRunReportV1 = payload(
-                cas,
-                &report.task_accounting.task_report_id,
-                task::report::TASK_RUN_REPORT_V1,
-            )?;
-            task_report.validate().map_err(conflict)?;
+            let task_report =
+                super::report::round_report(cas, &report.task_accounting.task_report_id)?;
             if task_report.task_revision_id != value.predecessor_revision_id
                 || task_report.plan_id != value.predecessor_plan_id
             {
@@ -324,7 +267,7 @@ pub(super) fn validate_evidence_with_replays(
             }
             let (_, demands) =
                 selected_prior_sets(cas, &value.predecessor_plan_id, &old, &task_report)?;
-            // prior_finding_set_id is the legacy raw PriorFindings view, which may include
+            // prior_finding_set_id is the flat raw PriorFindings view, which may include
             // intervening dispositions. The captured compiler resolves the canonical FindingSet
             // separately. DemandSet is an envelope ID, including a common-only companion port.
             if new_started.prior_demand_set_id != demands {
@@ -370,7 +313,7 @@ pub(super) fn validate_evidence_with_replays(
 pub(super) fn selected_prior_sets(
     cas: &Cas,
     predecessor_plan_id: &str,
-    round: &LegacyReviewRoundV1,
+    round: &CampaignReviewRoundV1,
     report: &task::report::TaskRunReportV1,
 ) -> Result<(String, String), StoreError> {
     let plan: ExecutionPlanV1 = payload(cas, predecessor_plan_id, task::EXECUTION_PLAN_V1)?;

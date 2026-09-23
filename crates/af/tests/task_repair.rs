@@ -357,10 +357,7 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
                 transition.change
             {
                 let record = cas.get_json(&record_id).unwrap();
-                if matches!(
-                    record["payload"]["kind"].as_str(),
-                    Some("prepared" | "reserved")
-                ) {
+                if record["payload"]["kind"] == "reserved" {
                     let invocation = cas
                         .get_json(record["payload"]["invocation_id"].as_str().unwrap())
                         .unwrap();

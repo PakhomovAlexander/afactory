@@ -1,7 +1,5 @@
 use super::{assert_invalid, assert_valid};
-use review_core::task::event::{
-    TaskChangeV1, TaskTransitionV1, TaskTransitionV2, TaskTransitionV3,
-};
+use review_core::task::event::{TaskChangeV1, TaskTransitionV1};
 use review_core::task::report::*;
 use review_core::task::review_handoff::*;
 use review_core::task::review_integration::*;
@@ -119,7 +117,7 @@ fn integration_selection_has_no_embedded_allowance_or_admission() {
     }
 }
 #[test]
-fn integration_requires_new_transition_generation() {
+fn integration_transitions_are_ordinary_exact_transition_changes() {
     for change in [
         TaskChangeV1::ReviewIntegrationSelected { phase_id: id('a') },
         TaskChangeV1::ReviewIntegrationFinished {
@@ -133,57 +131,60 @@ fn integration_requires_new_transition_generation() {
             integration_committed_event_id: Some("c".repeat(26)),
         },
     ] {
-        let normalized = TaskTransitionV1 {
+        let transition = TaskTransitionV1 {
             writer: "writer".into(),
             epoch: 1,
             now_unix_ms: 123,
             change,
         };
-        assert!(normalized.validate().is_err());
-        assert!(serde_json::to_value(&normalized).is_err());
-        assert!(TaskTransitionV2::from_continuation(&normalized).is_none());
-        let wire = TaskTransitionV3::from_integration(&normalized).unwrap();
-        wire.validate().unwrap();
-        let value = serde_json::to_value(&wire).unwrap();
-        assert_valid("task-transition-v3.json", &value);
-        assert_invalid("task-transition-v1.json", &value, "old lifecycle unchanged");
-        assert_invalid(
-            "task-transition-v2.json",
-            &value,
-            "handoff generation unchanged",
+        transition.validate().unwrap();
+        let value = serde_json::to_value(&transition).unwrap();
+        assert_valid("task-transition-v5.json", &value);
+        assert_eq!(
+            serde_json::from_value::<TaskTransitionV1>(value.clone()).unwrap(),
+            transition
         );
-        assert!(serde_json::from_value::<TaskTransitionV1>(value.clone()).is_err());
-        assert_eq!(wire.into_transition(), normalized);
         review_core::event::validate_event_payload(
-            review_core::EventType::TaskTransitionV3,
+            review_core::EventType::TaskTransitionV5,
             &value,
         )
         .unwrap();
         let mut bad = value.clone();
         bad["change"]["phase_id"] = json!("foreign");
-        assert_invalid("task-transition-v3.json", &bad, "invalid identity");
+        assert_invalid("task-transition-v5.json", &bad, "invalid identity");
         assert!(
             review_core::event::validate_event_payload(
-                review_core::EventType::TaskTransitionV3,
+                review_core::EventType::TaskTransitionV5,
                 &bad
             )
             .is_err()
         );
         if value["change"]["kind"] == "review_integration_finished" {
-            let mut bad = value;
+            let mut bad = value.clone();
             bad["change"]["integration_committed_event_id"] = json!(null);
-            assert_invalid("task-transition-v3.json", &bad, "omitted is not null");
-            assert!(serde_json::from_value::<TaskTransitionV3>(bad).is_err());
+            assert_invalid("task-transition-v5.json", &bad, "omitted is not null");
+            assert!(serde_json::from_value::<TaskTransitionV1>(bad).is_err());
+            // The commit proof is an exact event identity, not a content digest.
+            let mut bad = value;
+            bad["change"]["integration_committed_event_id"] = json!(id('c'));
+            assert_invalid("task-transition-v5.json", &bad, "commit is an exact event");
+            assert!(
+                review_core::event::validate_event_payload(
+                    review_core::EventType::TaskTransitionV5,
+                    &bad
+                )
+                .is_err()
+            );
         }
     }
 }
 #[test]
 fn integration_report_is_exactly_one_executed_or_failed_phase_node() {
-    let report = TaskRunReportV2 {
+    let report = TaskRunReportV1 {
         task_revision_id: id('1'),
         plan_id: id('2'),
         through_sequence: 4,
-        phase_id: id('3'),
+        phase_id: Some(id('3')),
         nodes: vec![TaskNodeReportV1 {
             node: "root.integration_checks".into(),
             outcome: TaskNodeOutcomeV1::Failed {
@@ -195,10 +196,9 @@ fn integration_report_is_exactly_one_executed_or_failed_phase_node() {
     report.validate().unwrap();
     let value = serde_json::to_value(&report).unwrap();
     assert_valid("task-run-report-v2.json", &value);
-    assert_invalid(
-        "task-run-report-v1.json",
-        &value,
-        "ordinary report stays phase-free",
+    assert_eq!(
+        serde_json::from_value::<TaskRunReportV1>(value.clone()).unwrap(),
+        report
     );
     let mut two = report.clone();
     two.nodes.push(TaskNodeReportV1 {
@@ -211,7 +211,7 @@ fn integration_report_is_exactly_one_executed_or_failed_phase_node() {
         &serde_json::to_value(two).unwrap(),
         "no second operation",
     );
-    let mut suppressed = report;
+    let mut suppressed = report.clone();
     suppressed.nodes[0].outcome = TaskNodeOutcomeV1::Suppressed {
         reason: TaskSuppressionV1::BranchNotSelected,
     };
@@ -221,9 +221,23 @@ fn integration_report_is_exactly_one_executed_or_failed_phase_node() {
         &serde_json::to_value(suppressed).unwrap(),
         "activated sequence is factual",
     );
+    // Without a phase the same shape is an ordinary Round report again.
+    let mut round = report;
+    round.phase_id = None;
+    round.nodes.push(TaskNodeReportV1 {
+        node: "root.other".into(),
+        outcome: TaskNodeOutcomeV1::Suppressed {
+            reason: TaskSuppressionV1::BranchNotSelected,
+        },
+    });
+    round.validate().unwrap();
+    assert_valid(
+        "task-run-report-v2.json",
+        &serde_json::to_value(round).unwrap(),
+    );
 }
 #[test]
-fn integrated_handoff_cannot_be_serialized_as_frozen_handoff() {
+fn integrated_handoff_carries_its_exact_phase_and_commit() {
     let receipt = TaskReviewHandoffV1 {
         task_id: "review".into(),
         predecessor_revision_id: id('1'),
@@ -238,18 +252,14 @@ fn integrated_handoff_cannot_be_serialized_as_frozen_handoff() {
             integration_committed_event_id: "b".repeat(26),
         },
     };
-    assert!(receipt.validate().is_err());
-    assert!(serde_json::to_value(&receipt).is_err());
-    let wire = TaskReviewHandoffV2::from_integrated(&receipt).unwrap();
-    wire.validate().unwrap();
-    let value = serde_json::to_value(&wire).unwrap();
+    receipt.validate().unwrap();
+    let value = serde_json::to_value(&receipt).unwrap();
     assert_valid("task-review-handoff-v2.json", &value);
-    assert_invalid(
-        "task-review-handoff-v1.json",
-        &value,
-        "closed-round generation unchanged",
+    assert_eq!(
+        serde_json::from_value::<TaskReviewHandoffV1>(value.clone()).unwrap(),
+        receipt
     );
-    assert_eq!(wire.into_handoff(), receipt);
+    assert_eq!(receipt.artifact_refs().last(), Some(&id('7').as_str()));
     let mut bad = value;
     bad["evidence"]["integration_committed_event_id"] = json!(id('b'));
     assert_invalid(
@@ -258,7 +268,7 @@ fn integrated_handoff_cannot_be_serialized_as_frozen_handoff() {
         "commit is an exact event",
     );
     assert!(
-        serde_json::from_value::<TaskReviewHandoffV2>(bad)
+        serde_json::from_value::<TaskReviewHandoffV1>(bad)
             .unwrap()
             .validate()
             .is_err()

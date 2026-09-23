@@ -32,8 +32,6 @@ reports = [] if passed else [{
     'fix': 'Return the requested window without mutating the input.', 'confidence': 1.0
 }]
 print(json.dumps({'schema': 'af.worker-reply/1', 'outputs': {'result': [{
-    'verdict': 'approve' if passed else 'request-changes',
-    'summary': 'Independent pagination window and input-preservation checks.',
     'reports': reports, 'benchmark_demands': [],
     'dispositions': [{'finding_id': f['finding_id'],
                       'position': 'not_reproduced' if passed else 'corroborate',

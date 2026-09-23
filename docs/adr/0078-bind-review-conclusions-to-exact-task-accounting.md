@@ -1,7 +1,10 @@
 # ADR-0078: Bind Review conclusions to exact Task accounting
 
 Date: 2026-09-12
-Status: Accepted
+Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): readers
+for historical `RunReport` versions and raw provenance. Task Review provenance is
+`TaskReviewAttemptProvenance@2` with a `TaskTokenUsage@3` usage artifact, whatever the width of
+its counters.
 
 ## Context
 

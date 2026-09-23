@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:review-kernel:schema:check-result:1",
   "title": "CheckResult@1 payload",
-  "description": "One execution of one check, recorded per attempt. The shell harness wrote a single checks.tsv and truncated it at the start of every run, so 'the checks were green' only ever described the last execution and every earlier one was erased in place. Here each execution is its own immutable artifact.",
+  "description": "One execution of one check, recorded per attempt. Each execution is its own immutable artifact, so a later run never erases an earlier one and 'the checks were green' always names the execution it describes.",
   "type": "object",
   "additionalProperties": false,
   "required": ["name", "status", "args"],

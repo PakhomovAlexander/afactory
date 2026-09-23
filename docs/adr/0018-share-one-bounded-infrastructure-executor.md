@@ -1,6 +1,7 @@
 # Share one bounded infrastructure executor
 
-**Status:** proposed
+**Status:** accepted (2026-09-23); acceptance recorded in
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md)
 
 Capture, materialization, sandbox cloning, permission changes, sealing, and cleanup can overlap
 when the scheduler runs several nodes. Giving every phase its own threads multiplies host
@@ -9,9 +10,8 @@ the permit was transferable while its re-entrant accounting was thread-local, an
 acquisition added a mutex and condition-variable operation to every filesystem syscall.
 
 We decided that filesystem-heavy infrastructure submits borrowed or owned work to one bounded,
-re-entrant executor in `review-parallel`. The `af` CLI initializes its worker count once from the
-host's available parallelism before a review command starts; library embedders may initialize the
-same boundary before first use. Nested and concurrent phases share the executor's fixed worker
+re-entrant executor in `review-parallel`. The executor is sized lazily from the host's available
+parallelism on first use. Nested and concurrent phases share the executor's fixed worker
 threads, so scheduler concurrency cannot multiply the CPU worker budget. A joined-phase primitive
 lets one bounded phase progress while another uses otherwise-idle workers; sealing uses it to hash
 one directory level while discovering the next.

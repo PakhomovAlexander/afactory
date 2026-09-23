@@ -1,19 +1,19 @@
-schema = "af.task-catalog/1"
+schema = "af.task-catalog/2"
 code_policy = ".af/code-policy.toml"
 
 [packages."fixture/bugs"]
 version = "1.0.0"
-digest = "sha256:8051474aa193e2fc933dd14179a7d2533964c34a0a5bf00c8536f3deeaa9cd41"
+digest = "sha256:7f3e68cefbd1acc0332ce9992bca65e406a2d65ac8f7d631eb6ae6b44dc095d3"
 path = ".af/task-packages/fixture/bugs"
 
 [packages."fixture/correctness"]
 version = "1.0.0"
-digest = "sha256:aa73e02f689f1d7e65ce1e3db0337cae32a4d5419d59c04090ceade6ea79b5e8"
+digest = "sha256:017fd7132339dc98e6da935d65d84ea53226eb6e3f8b609b5f1bf4f307b3c1e4"
 path = ".af/task-packages/fixture/correctness"
 
 [packages."fixture/review"]
 version = "1.0.0"
-digest = "sha256:ef624968b116b5906ba14c84357691f4b7d07affaa8f2e625a2dd8cf6e6394d6"
+digest = "sha256:68e98c15f56fbee61c6efdc3d0e36abbb8be8bb4df791c806285143520e31523"
 path = ".af/task-packages/fixture/review"
 
 [independence]

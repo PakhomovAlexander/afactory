@@ -9,7 +9,7 @@ walkthroughs; the decisions themselves are
 [ADR-0046](adr/0046-add-versioned-task-contracts-with-exact-plan-approval.md) onward.
 
 See [preview and confirmation](task-execution/preview.md) for the compact ASCII view,
-expanded tree, Claude/Codex workflow and rc2 automation change.
+expanded tree, Claude/Codex workflow and the automation boundary.
 
 ## Fixed design decisions
 
@@ -25,7 +25,7 @@ expanded tree, Claude/Codex workflow and rc2 automation change.
   ([ADR-0056](adr/0056-share-planning-accounting-and-authenticate-generated-plan-decisions.md)).
 - Generated optimization children cross a second exact approval barrier. Preparation records the
   complete baseline/candidate closure and pauses at `needs_plan_review` without reserving child
-  work. Inspection generation 10 shows the pending closure and its separate decision. Initial
+  work. Task inspection shows the pending closure and its separate decision. Initial
   `--execute` and outer `--confirm-plan` do not approve it
   ([ADR-0106](adr/0106-authorize-experimental-children-separately.md)).
 - Every Attempt is reserved before its context is bound; failed, abandoned and late usage stays
@@ -38,11 +38,13 @@ expanded tree, Claude/Codex workflow and rc2 automation change.
   evidence ([ADR-0093](adr/0093-derive-code-task-acceptance-from-execution-and-evidence.md)).
 - Targeted repair is a distinct acceptance type from complete Review, and a project must opt
   into it ([ADR-0054](adr/0054-keep-targeted-repair-distinct-from-complete-review.md)).
-- Historical Campaigns keep their captured execution path; new Review commands run through the
-  common runtime, and missing common Task state refuses instead of falling back
-  ([ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md)).
-- Provider admission is a paid, captured node inside the Task's own limits; catalog V2 requires
-  an explicit admission cost, and native identity is rechecked before every private send
+- Review commands run every Campaign through the common runtime. Missing common Task state
+  refuses instead of falling back, and a Campaign that holds pre-Task executor history (af < 0.9)
+  is refused ([ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md),
+  [ADR-0113](adr/0113-ga-reads-only-what-ga-writes.md)).
+- Provider admission is a paid, captured node inside the Task's own limits; a catalog may
+  declare an explicit admission cost, and an omitted one means the fixed 4,096-token, 45-second
+  allowance, and native identity is rechecked before every private send
   ([ADR-0090](adr/0090-recheck-native-task-provider-identity-before-private-invocation.md),
   [ADR-0091](adr/0091-capture-explicit-task-provider-admission-costs.md)).
 
@@ -51,12 +53,11 @@ expanded tree, Claude/Codex workflow and rc2 automation change.
 | Contract | Location |
 |---|---|
 | Task, Pipeline, plan, result and decision wire contracts | `crates/review-core/src/task/`, [`task-contracts-v1`](../schemas/task-contracts-v1.json), `fixtures/task-contracts/` |
-| Task file, catalogs, bindings and developers | [`task-file-v1`](../schemas/task-file-v1.json), [`task-catalog-v1`](../schemas/task-catalog-v1.json), [`task-catalog-v2`](../schemas/task-catalog-v2.json), [`shared-task-catalog-v1`](../schemas/shared-task-catalog-v1.json), [`task-developers-v1`](../schemas/task-developers-v1.json) |
-| Inspection and listing | [`task-inspection-v10`](../schemas/task-inspection-v10.json), [`task-list-entry-v2`](../schemas/task-list-entry-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json) |
+| Task file, catalogs, bindings and developers | [`task-file-v1`](../schemas/task-file-v1.json), [`task-catalog-v2`](../schemas/task-catalog-v2.json), [`shared-task-catalog-v1`](../schemas/shared-task-catalog-v1.json), [`task-developers-v1`](../schemas/task-developers-v1.json) |
+| Inspection and listing | [`task-inspection-v11`](../schemas/task-inspection-v11.json), [`task-list-entry-v2`](../schemas/task-list-entry-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json) |
 | Run diagnostics and delivery | [`task-run-report-v2`](../schemas/task-run-report-v2.json), [`task-diagnostic-v1`](../schemas/task-diagnostic-v1.json), [`task-delivery-record-v1`](../schemas/task-delivery-record-v1.json) |
-| Review accounting | [`review-report-v3`](../schemas/review-report-v3.json), [`review-report-v4`](../schemas/review-report-v4.json) |
-| Executable credential-free fixtures | `fixtures/task-runtime/` (`pagination`, `review`, `embedded-review`, `bounded-repair`) |
-| Compatibility anchors | `fixtures/synthetic/`, `fixtures/compatibility/`, `fixtures/consumers/` |
+| Review accounting | [`review-report-v4`](../schemas/review-report-v4.json) |
+| Executable credential-free fixtures | `fixtures/task-runtime/` (`pagination`, `review`, `review-v2`, `embedded-review`, `bounded-repair`) |
 
 ## Walkthroughs
 
@@ -77,11 +78,10 @@ Start with the Task-file walkthrough, then follow the composition pages in order
 - [Issues](task-execution/issues.md) — read-only local/Jira requirement capture and explicit revision refresh.
 - [Documents](task-execution/document.md) — document Tasks with captured sources, content checks and independent acceptance.
 - [Run reports](task-execution/run-reports.md) — scheduler diagnostics and domain publication recovery.
-- [Self-optimizer economics](task-execution/self-optimizer.md) — declared history capture, exact project economics and the report-only M1 Pipeline.
+- [Self-optimizer economics](task-execution/self-optimizer.md) — declared history capture, exact project economics, the bounded candidate experiment and the light optimizer path.
 - [Review report inspection](task-execution/review-report-inspection.md) — exact current Task accounting beside immutable report snapshots.
-- [Review compatibility](task-execution/review-compatibility.md) — the operations extracted from the legacy Review executor and the versioned CLI boundaries.
-- [Increment structure](task-execution/pr-sequence.md) — how the packages map to walkthroughs and decisions, and the compatibility obligations every package keeps.
+- [Campaign Review](task-execution/campaign-review.md) — how `af review run` maps onto the common Task runtime, and the CLI boundaries.
 
-The operator-facing guide for the goal-driven `implement` Task and local delivery is
+The operator-facing guide for the `implement` Task and local delivery is
 [Implementation Tasks with `af task`](tasks.md). Capabilities deliberately left out are listed in
 [Non-goals](non-goals.md).

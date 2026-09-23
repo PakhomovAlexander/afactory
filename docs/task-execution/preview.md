@@ -1,8 +1,8 @@
 # Preview and confirm a Task plan
 
-`af task start` now captures the Task and stops before dispatching any Worker. This applies
-both to a Task file and the goal-based entry point, including `--json`. Planning may check local
-Provider identity, but performs no paid capability admission or Worker inference.
+`af task start --file` captures the Task and stops before dispatching any Worker, including with
+`--json`. Planning may check local Provider identity, but performs no paid capability admission
+or Worker inference.
 
 ```sh
 af task start --file ticket.json
@@ -62,7 +62,7 @@ execution walkthroughs using `--execute` are automation examples. The `af review
 retains its existing explicit-execution behavior.
 
 Admitted Tasks can resume with `af task run TASK_ID`; finished Tasks return their recorded
-result without spending again. In rc2 there is no cross-Task trust cache: each new Task/plan
+result without spending again. There is no cross-Task trust cache: each new Task/plan
 needs confirmation or explicit automation. Editing a live shared definition does not replace
 an already captured plan; refresh/replanning produces the identity that must be confirmed.
 

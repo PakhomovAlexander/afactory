@@ -2,7 +2,7 @@
 //! separate from node membership so a later Review Round may reuse node addresses while
 //! retaining old scope charges, including observations received after graph replacement.
 
-use super::{Budget, Scope, TaskBudget, add, within};
+use super::{Budget, BudgetScope, TaskBudget, add, within};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,7 +67,7 @@ impl TaskBudget {
                     "Task token scope {name} differs from its captured authority"
                 ));
             }
-            let account = Scope::FanOut(name.clone());
+            let account = BudgetScope::FanOut(name.clone());
             let required = self.scope_verification_after(scope, None)?;
             if tokens
                 .committed(&account)
@@ -110,14 +110,14 @@ impl TaskBudget {
         Ok(required)
     }
 
-    pub(super) fn reservation_scopes(&self, node: &str) -> Result<Vec<Scope>, String> {
+    pub(super) fn reservation_scopes(&self, node: &str) -> Result<Vec<BudgetScope>, String> {
         let mut scopes = Vec::new();
         for (name, scope) in self
             .token_scopes
             .iter()
             .filter(|(_, scope)| scope.contains(node))
         {
-            let account = Scope::FanOut(name.clone());
+            let account = BudgetScope::FanOut(name.clone());
             let protected = self.scope_verification_after(scope, Some(node))?;
             if add(self.nodes[node].allowance.tokens_per_attempt, protected)?
                 > self.tokens.remaining(&account).unwrap_or(0)
@@ -128,19 +128,19 @@ impl TaskBudget {
             }
             scopes.push(account);
         }
-        scopes.push(Scope::Run);
+        scopes.push(BudgetScope::Run);
         Ok(scopes)
     }
 
     pub fn scope_committed_tokens(&self, name: &str) -> Option<u128> {
         self.captured_token_scopes
             .contains_key(name)
-            .then(|| self.tokens.committed(&Scope::FanOut(name.into())))
+            .then(|| self.tokens.committed(&BudgetScope::FanOut(name.into())))
     }
 
     pub fn scope_reserved_tokens(&self, name: &str) -> Option<u128> {
         self.captured_token_scopes
             .contains_key(name)
-            .then(|| self.tokens.reserved(&Scope::FanOut(name.into())))
+            .then(|| self.tokens.reserved(&BudgetScope::FanOut(name.into())))
     }
 }

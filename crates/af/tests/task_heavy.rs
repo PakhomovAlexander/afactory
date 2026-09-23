@@ -162,9 +162,9 @@ fn configure(repo: &Path, case: &str) {
     let second = if case == "rediscovered" {
         first.into()
     } else {
-        "print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'verdict':'approve','summary':'Current S2 checked','reports':[],'benchmark_demands':[],'disputes':[]}]}}))".to_string()
+        "print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'reports':[],'benchmark_demands':[],'dispositions':[{'finding_id':f['finding_id'],'position':'not_reproduced','reason':'Repeated the original current-Snapshot check.'} for f in r['inputs']['assignment'][0]['payload']['findings']]}]}}))".to_string()
     };
-    std::fs::write(&bug,format!("import json,sys,runpy\nr=json.load(sys.stdin)\nif r['inputs']['subject'][0]['payload']['round']==1:\n    {first}\nelse:\n    f=runpy.run_path('pagination.py')['paginate']\n    try:\n        f([1,2],-1,1)\n        raise AssertionError('negative offset accepted')\n    except ValueError: pass\n    {second}\n")).unwrap();
+    std::fs::write(&bug,format!("import json,sys,runpy\nr=json.load(sys.stdin)\na=r['inputs']['assignment'][0]['payload']\nassert a['reviewer']=='bugs' and all(f['source']=='bugs' for f in a['findings'])\nif r['inputs']['subject'][0]['payload']['round']==1:\n    {first}\nelse:\n    f=runpy.run_path('pagination.py')['paginate']\n    try:\n        f([1,2],-1,1)\n        raise AssertionError('negative offset accepted')\n    except ValueError: pass\n    {second}\n")).unwrap();
     if matches!(case, "negative" | "missing" | "stale") {
         let path = packages.join("fix-verifier/worker.py");
         let script = std::fs::read_to_string(&path).unwrap();
@@ -178,7 +178,6 @@ fn configure(repo: &Path, case: &str) {
         )
         .unwrap();
     }
-    upgrade_review_generation(&packages, &mut catalog);
     for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
         pin["digest"] = toml::Value::String(
             review_config::lock::package_digest(name, &repo.join(pin["path"].as_str().unwrap()))
@@ -280,101 +279,5 @@ fn heavy_review_cannot_erase_negative_missing_stale_or_rediscovered_claims() {
         let (code, replay) = run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
         assert_eq!(code, 3);
         assert_eq!(replay, result);
-    }
-}
-
-/// Upgrade only this newly configured disposable fixture. Frozen bounded-repair bytes stay V1.
-fn upgrade_review_generation(packages: &Path, catalog: &mut toml::Value) {
-    catalog["review"]
-        .as_table_mut()
-        .unwrap()
-        .insert("generation".into(), toml::Value::Integer(2));
-    let mut output_schema: Value =
-        serde_json::from_slice(include_bytes!("../../../schemas/reviewer-result-v2.json")).unwrap();
-    let original_schema: Value =
-        serde_json::from_slice(include_bytes!("../../../schemas/reviewer-result-v1.json")).unwrap();
-    output_schema["properties"]["reports"]["items"] =
-        original_schema["$defs"]["legacyReport"].clone();
-    output_schema.as_object_mut().unwrap().remove("$id");
-    output_schema.as_object_mut().unwrap().remove("$schema");
-    for name in ["bugs", "correctness"] {
-        let path = packages.join(name).join("worker.toml");
-        let mut worker: review_config::task::catalog::TaskWorkerManifest = read(&path);
-        worker.signature.worker_output_type = Some("review.kernel/ReviewerResult@2".into());
-        worker
-            .signature
-            .contract
-            .outputs
-            .get_mut("result")
-            .unwrap()
-            .artifact_type = "review.kernel/ReviewerResult@2".into();
-        worker
-            .signature
-            .contract
-            .inputs
-            .get_mut("subject")
-            .unwrap()
-            .artifact_type = "af/TaskReviewSubject@2".into();
-        let mut assignment = worker.signature.contract.inputs["subject"].clone();
-        assignment.artifact_type = "af/TaskReviewAssignment@1".into();
-        worker
-            .signature
-            .contract
-            .inputs
-            .insert("assignment".into(), assignment);
-        worker
-            .signature
-            .retains
-            .get_mut("result")
-            .unwrap()
-            .insert("assignment".into());
-        write(&path, &worker);
-        let path = packages.join(name).join("input.schema.json");
-        let mut schema: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        schema["required"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!("assignment"));
-        std::fs::write(&path, serde_json::to_vec(&schema).unwrap()).unwrap();
-        std::fs::write(
-            packages.join(name).join("outputs/result.schema.json"),
-            serde_json::to_vec(&output_schema).unwrap(),
-        )
-        .unwrap();
-        // Preserve the original checks and emitted discovery result; add the exact disposition
-        // for the now-declared prior assignment using that same current-Snapshot observation.
-        let path = packages.join(name).join("worker.py");
-        let original = std::fs::read_to_string(&path).unwrap();
-        let encoded = serde_json::to_string(&original).unwrap();
-        std::fs::write(&path, format!("import json,sys,io,contextlib\nrequest=json.load(sys.stdin)\nassignment=request['inputs']['assignment'][0]['payload']\nassert assignment['reviewer']=={name:?}\nassert all(f['source']=={name:?} for f in assignment['findings'])\nsys.stdin=io.StringIO(json.dumps(request))\ncaptured=io.StringIO()\nwith contextlib.redirect_stdout(captured):\n    exec({encoded},{{}})\nreply=json.loads(captured.getvalue())\nfor result in reply['outputs']['result']:\n    assert result.pop('disputes')==[]\n    result['dispositions']=[{{'finding_id':f['finding_id'],'position':'corroborate' if result['reports'] else 'not_reproduced','reason':'Repeated the original current-Snapshot check.'}} for f in assignment['findings']]\nprint(json.dumps(reply))\n")).unwrap();
-    }
-    for pin in catalog["packages"].as_table().unwrap().values() {
-        let path = packages
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join(pin["path"].as_str().unwrap())
-            .join("pipeline.toml");
-        if !path.is_file() {
-            continue;
-        }
-        let mut pipeline: PipelineDefinitionV1 = read(&path);
-        for slot in pipeline.slots.values_mut() {
-            if matches!(slot.worker.as_str(), "fixture/bugs" | "fixture/correctness") {
-                slot.output_type = "review.kernel/ReviewerResult@2".into();
-            }
-        }
-        if pipeline.name == "fixture/review" {
-            for node in &mut pipeline.nodes {
-                if let TaskOperatorV1::Verify { slot } = &node.operator {
-                    node.inputs
-                        .insert("assignment".into(), reference("bind", slot));
-                }
-            }
-        }
-        write(&path, &pipeline);
     }
 }

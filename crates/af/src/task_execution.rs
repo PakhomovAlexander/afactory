@@ -20,13 +20,15 @@ use review_pipeline::task::document::{
     DocumentTaskDomain, DocumentTaskPolicy, document_signatures,
 };
 use review_pipeline::task::host::{
-    CapturedTaskAuthority, CommandTaskHost, NoTaskDeveloper, TaskDomain, TaskModelBinding,
+    CapturedTaskAuthority, CapturedTaskHost, NoTaskDeveloper, TaskDomain, TaskModelBinding,
 };
 use review_pipeline::task::optimization::{
     OptimizationCandidateTaskDomain, OptimizationTaskDomain, optimization_signatures,
 };
 use review_pipeline::task::provider::ProviderTaskDomain;
-use review_pipeline::task::review::{ReviewTaskDomain, ReviewTaskPolicy, review_signatures};
+use review_pipeline::task::review::{
+    REVIEW_TASK_POLICY_SCHEMA, ReviewTaskDomain, ReviewTaskPolicy, review_signatures,
+};
 use review_pipeline::task::source::SnapshotTaskEnvironment;
 use review_source_git::task::{SOURCE_TREE_V1, capture_snapshot, source_tree};
 use review_source_git::{Capture, EntryKind, Manifest, Repo};
@@ -42,14 +44,12 @@ pub(super) mod export;
 mod input_file;
 mod inspection;
 mod issue;
-mod legacy;
 mod planning;
 mod preview;
 mod provider_admission;
 pub(super) mod refresh;
 mod selection;
 pub(crate) mod starter;
-pub(super) use legacy::start_legacy;
 
 pub(super) struct StartOptions {
     pub file: PathBuf,
@@ -194,6 +194,7 @@ struct TaskCatalog {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReviewSettings {
+    /// Task Review has one generation. Omitted or `2`, it selects that generation.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -209,13 +210,10 @@ struct ReviewSettings {
 }
 
 impl ReviewSettings {
-    fn policy_generation(&self) -> Result<u32, String> {
+    fn check_generation(&self) -> Result<(), String> {
         match self.generation {
-            None => Ok(1),
-            Some(2) => Ok(2),
-            Some(_) => {
-                Err("Review generation must be omitted for compatibility or explicitly 2".into())
-            }
+            None | Some(2) => Ok(()),
+            Some(_) => Err("Review generation must be omitted or 2".into()),
         }
     }
 }
@@ -231,12 +229,7 @@ struct CapturedPackage {
 #[serde(deny_unknown_fields)]
 struct RunAuthority {
     schema: String,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "present_option"
-    )]
-    provider_admission: Option<review_graph::task::OperatorAttemptCost>,
+    provider_admission: review_graph::task::OperatorAttemptCost,
     engine_id: String,
     #[serde(
         default,
@@ -562,12 +555,7 @@ fn capture_authority(
         )
     };
     let authority = RunAuthority {
-        schema: if provider_admission.is_some() {
-            "af.task-run-authority/2"
-        } else {
-            "af.task-run-authority/1"
-        }
-        .into(),
+        schema: provider_admission::RUN_AUTHORITY_SCHEMA.into(),
         provider_admission,
         engine_id,
         code_policy_id: code_policy_id.clone(),
@@ -578,8 +566,9 @@ fn capture_authority(
             catalog
                 .review
                 .map(|review| {
+                    review.check_generation()?;
                     let review = ReviewTaskPolicy {
-                        schema: format!("af.review-task-policy/{}", review.policy_generation()?),
+                        schema: REVIEW_TASK_POLICY_SCHEMA.into(),
                         check_policy_id: code_policy_id
                             .clone()
                             .ok_or("Review requires code checks")?,
@@ -693,10 +682,7 @@ fn restore_compiler(
     }
     for name in authority.packages.keys() {
         if let Some(worker) = compiler.worker(name) {
-            if !matches!(
-                worker.runner,
-                TaskWorkerRunner::Command { .. } | TaskWorkerRunner::LegacyTaskCommand { .. }
-            ) {
+            if !matches!(worker.runner, TaskWorkerRunner::Command { .. }) {
                 continue;
             }
             compiler.bind_worker(
@@ -872,9 +858,7 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
     } else {
         policy_source
     };
-    start_captured(
-        options, file, bytes, started, cas, store, source, authority, None,
-    )
+    start_captured(options, file, bytes, started, cas, store, source, authority)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -887,7 +871,6 @@ fn start_captured(
     mut store: EventStore,
     source: review_source_git::Snapshot,
     (authority_id, authority, mut compiler): (String, RunAuthority, TaskPlanCompiler),
-    legacy_budget: Option<u64>,
 ) -> Result<i32, String> {
     let profile = selected_profile(&compiler, &authority, &file.kind, file.verification)?;
     let origin=cas.put_json(&json!({"schema":"af.task-source-origin/1","repository_id":source.repository_id,"source_revision":source.source_revision,"content_digest":source.content_digest})).map_err(|e|e.to_string())?;
@@ -915,9 +898,6 @@ fn start_captured(
         .issue
         .as_ref()
         .map(|selected| {
-            if legacy_budget.is_some() {
-                return Err("Issue requirements need an explicit Task file".into());
-            }
             issue::capture(
                 &cas,
                 &source.manifest,
@@ -928,8 +908,6 @@ fn start_captured(
             )
         })
         .transpose()?;
-    // Runner/context authority owns legacy identity and wire budgets; business data
-    // retains the explicit Task-file specification and Issue capture below.
     let mut requirements_payload = json!({"text":file.goal});
     if let Some(specification) = &file.requirements {
         requirements_payload["specification"] = json!(specification);
@@ -1253,7 +1231,7 @@ fn start_captured(
         inner: inner.as_ref(),
     };
     let environment = domain::environment(&cas, &authority, profile)?;
-    let host = CommandTaskHost::capture_with_models(
+    let host = CapturedTaskHost::capture_with_models(
         &cas,
         &compiler,
         &revision,
@@ -1564,7 +1542,7 @@ fn execute(
     store: &mut EventStore,
     lease: &TaskLease,
     authority: &CapturedTaskAuthority<'_>,
-    host: &CommandTaskHost<'_>,
+    host: &CapturedTaskHost<'_>,
     domain: &dyn TaskDomain,
 ) -> Result<(), String> {
     let cancellation = std::sync::atomic::AtomicBool::new(false);
@@ -1714,7 +1692,7 @@ pub(super) fn run(
         inner: inner.as_ref(),
     };
     let environment = domain::environment(&cas, &authority, profile)?;
-    let host = CommandTaskHost::capture_with_models(
+    let host = CapturedTaskHost::capture_with_models(
         &cas,
         &compiler,
         &projection.revision,
@@ -1836,7 +1814,7 @@ fn present_with_format(
         TaskPhaseV1::Finished { result_id } => Some(artifact(cas, result_id, TASK_RESULT_V1)?),
         _ => None,
     };
-    let mut value = json!({"schema":"af/task-inspection@3","task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"plan_id":state.plan_id,
+    let mut value = json!({"schema":"af/task-inspection@11","task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
     if let Some(selection) = selection::recorded(cas, &state.revision)? {
         value["selection"] = selection;
@@ -1847,30 +1825,14 @@ fn present_with_format(
     let events = store
         .replay(&review_store::store::task::task_run_id(id).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
-    let recording_recovery = events
-        .iter()
-        .any(|event| event.event_type == review_core::EventType::TaskTransitionV4);
     let mut history = Vec::new();
     let mut execution = Vec::new();
-    let mut broker_records = Vec::new();
     let mut owned_child_sets = Vec::new();
     let mut experiments = Vec::new();
     let mut runtime_observations = Vec::new();
     let mut runtime_attempt_ids = BTreeSet::new();
     let mut decisions = Vec::new();
     for event in events {
-        if event.event_type == review_core::EventType::TaskBrokerTransitionV1 {
-            let transition: review_core::task::broker::TaskBrokerTransitionV1 =
-                serde_json::from_value(event.payload).map_err(|e| e.to_string())?;
-            let record = review_store::store::task::execution::broker::read_task_broker_record(
-                cas,
-                &transition.record_id,
-            )
-            .map_err(|e| e.to_string())?;
-            broker_records.push(json!({"artifact_id":record.artifact_id,"artifact_type":record.artifact_type,"record":record.payload}));
-            history.push(json!({"sequence":event.sequence,"broker_transition":transition}));
-            continue;
-        }
         let transition =
             review_store::store::task::read_task_transition(&event).map_err(|e| e.to_string())?;
         if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
@@ -1986,20 +1948,13 @@ fn present_with_format(
         value["attempt_walls"] = serde_json::to_value(walls).map_err(|e| e.to_string())?;
         value["runtime_observations"] = json!(runtime_observations);
     }
-    if !broker_records.is_empty() {
-        value["schema"] = json!("af/task-inspection@4");
-        value["broker_records"] = json!(broker_records);
-    }
     if !owned_child_sets.is_empty() {
-        value["schema"] = json!("af/task-inspection@5");
         value["owned_child_sets"] = json!(owned_child_sets);
     }
     if !experiments.is_empty() {
-        value["schema"] = json!("af/task-inspection@10");
         value["experiments"] = json!(experiments);
     }
     if !state.review_handoffs.is_empty() {
-        value["schema"] = json!("af/task-inspection@6");
         let mut handoffs = Vec::new();
         for (id, _) in &state.review_handoffs {
             // The checked projection normalizes both generations. Keep the original
@@ -2012,7 +1967,6 @@ fn present_with_format(
     if let Some(execution) = &state.execution {
         let phases = execution.review_integrations();
         if !phases.is_empty() {
-            value["schema"] = json!("af/task-inspection@7");
             value["review_integrations"] = json!(phases.iter().map(|phase| json!({
                 "artifact_id":phase.phase_id(),
                 "artifact_type":review_core::task::review_integration::TASK_REVIEW_INTEGRATION_PHASE_V1,
@@ -2025,17 +1979,10 @@ fn present_with_format(
             })).collect::<Vec<_>>());
         }
     }
-    if !experiments.is_empty() {
-        value["schema"] = json!("af/task-inspection@10");
-    } else if !runtime_observations.is_empty() {
-        value["schema"] = json!("af/task-inspection@9");
-    } else if recording_recovery {
-        value["schema"] = json!("af/task-inspection@8");
-    }
     let mut reports = Vec::new();
     for id in &state.run_reports {
         use review_core::task::report::*;
-        let (report, phase_id) =
+        let report =
             review_store::store::task::read_task_run_report(cas, id).map_err(|e| e.to_string())?;
         let mut diagnostics = BTreeMap::new();
         for node in &report.nodes {
@@ -2046,11 +1993,7 @@ fn present_with_format(
                 diagnostics.insert(node.node.clone(), diagnostic);
             }
         }
-        let report = if phase_id.is_some() {
-            cas.get_artifact(id).map_err(|e| e.to_string())?.payload
-        } else {
-            serde_json::to_value(report).map_err(|e| e.to_string())?
-        };
+        let report = serde_json::to_value(report).map_err(|e| e.to_string())?;
         reports.push(json!({"artifact_id":id,"report":report,"diagnostics":diagnostics}));
     }
     value["run_reports"] = json!(reports);
@@ -2090,7 +2033,6 @@ fn present_with_format(
                 "task_evidence": task_evidence,
             }));
         }
-        value["schema"] = json!("af/task-inspection@11");
         value["adoption_observations"] = json!(observations);
     }
     if let Some(delivery) = delivery_view(cas, &state)? {
@@ -2242,20 +2184,16 @@ mod review_generation_tests {
     use super::*;
 
     #[test]
-    fn review_generation_is_explicit_and_preserves_absent_compatibility() {
+    fn review_generation_is_omitted_or_two() {
         let value = serde_json::json!({"reviewers":{"correctness":"required"},"gate":"major","clean_rounds":1,"max_rounds":2,"allow_targeted_repairs":false});
         let settings: ReviewSettings = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(settings.policy_generation().unwrap(), 1);
+        settings.check_generation().unwrap();
         assert_eq!(serde_json::to_value(settings).unwrap(), value);
         let mut explicit = value;
         explicit["generation"] = serde_json::json!(2);
-        assert_eq!(
-            serde_json::from_value::<ReviewSettings>(explicit.clone())
-                .unwrap()
-                .policy_generation()
-                .unwrap(),
-            2
-        );
+        let settings: ReviewSettings = serde_json::from_value(explicit.clone()).unwrap();
+        settings.check_generation().unwrap();
+        assert_eq!(serde_json::to_value(settings).unwrap(), explicit);
         for invalid in [
             serde_json::json!(0),
             serde_json::json!(1),
@@ -2268,7 +2206,7 @@ mod review_generation_tests {
             assert!(
                 serde_json::from_value::<ReviewSettings>(explicit.clone())
                     .map_err(|e| e.to_string())
-                    .and_then(|v| v.policy_generation())
+                    .and_then(|v| v.check_generation())
                     .is_err()
             );
         }

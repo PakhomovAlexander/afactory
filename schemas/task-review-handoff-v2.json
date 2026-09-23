@@ -45,31 +45,69 @@
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "evidence": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "report_event_id",
-        "phase_id",
-        "integration_committed_event_id"
-      ],
-      "properties": {
-        "kind": {
-          "const": "integrated_round"
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "report_event_id",
+            "phase_id",
+            "integration_committed_event_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "integrated_round"
+            },
+            "report_event_id": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26}$"
+            },
+            "phase_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "integration_committed_event_id": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26}$"
+            }
+          }
         },
-        "report_event_id": {
-          "type": "string",
-          "pattern": "^[a-z0-9]{26}$"
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "report_event_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "closed_round"
+            },
+            "report_event_id": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26}$"
+            }
+          }
         },
-        "phase_id": {
-          "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
-        },
-        "integration_committed_event_id": {
-          "type": "string",
-          "pattern": "^[a-z0-9]{26}$"
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "superseded_event_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "superseded_input"
+            },
+            "superseded_event_id": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26}$"
+            }
+          }
         }
-      }
+      ]
     }
   }
 }

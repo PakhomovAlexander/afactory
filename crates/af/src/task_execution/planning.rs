@@ -284,7 +284,7 @@ fn run_planner(
         models: &models,
         inner: &inner,
     };
-    let host = CommandTaskHost::capture_with_models(
+    let host = CapturedTaskHost::capture_with_models(
         cas,
         compiler,
         task,

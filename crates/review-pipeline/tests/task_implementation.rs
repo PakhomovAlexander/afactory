@@ -548,9 +548,17 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
         let environment = SnapshotTaskEnvironment {
             policy: policy.isolation(),
         };
-        let host =
-            CommandTaskHost::capture(&cas, &compiler, &task, &plan, graph, &environment, &domain)
-                .unwrap();
+        let host = CapturedTaskHost::capture_with_models(
+            &cas,
+            &compiler,
+            &task,
+            &plan,
+            graph,
+            &environment,
+            &domain,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let authority = CapturedTaskAuthority::new(&compiler, &host, &NoTaskDeveloper);
         let lease = store
             .open_task(&cas, &revision, "test-writer", 60_000)
@@ -821,7 +829,7 @@ fn export_fixture(
         toml::to_string(policy).unwrap(),
     )
     .unwrap();
-    let catalog = json!({"schema":"af.task-catalog/1","code_policy":".af/code-policy.toml","packages":pins,"independence":IndependencePolicyV1::default()});
+    let catalog = json!({"schema":"af.task-catalog/2","code_policy":".af/code-policy.toml","packages":pins,"independence":IndependencePolicyV1::default()});
     std::fs::write(
         destination.join(".af/task-catalog.toml"),
         toml::to_string(&catalog).unwrap(),

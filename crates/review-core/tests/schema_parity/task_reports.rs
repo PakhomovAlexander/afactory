@@ -10,7 +10,7 @@ fn task_run_reports_and_pre_attempt_diagnostics_keep_closed_bounded_contracts() 
         {"node":"root.nodes.worker","outcome":{"kind":"failed","diagnostic_id":id,"class":"execution"}},
         {"node":"root.nodes.verifier","outcome":{"kind":"suppressed","reason":"upstream_missing"}}
     ]});
-    assert_valid("task-run-report-v1.json", &value);
+    assert_valid("task-run-report-v2.json", &value);
     let typed: TaskRunReportV1 = serde_json::from_value(value.clone()).unwrap();
     typed.validate().unwrap();
     assert_eq!(serde_json::to_value(typed).unwrap(), value);
@@ -26,7 +26,7 @@ fn task_run_reports_and_pre_attempt_diagnostics_keep_closed_bounded_contracts() 
     ] {
         let mut changed = value.clone();
         *changed.pointer_mut(pointer).unwrap() = invalid;
-        assert_invalid("task-run-report-v1.json", &changed, pointer);
+        assert_invalid("task-run-report-v2.json", &changed, pointer);
         assert!(
             serde_json::from_value::<TaskRunReportV1>(changed)
                 .map(|v| v.validate().is_err())
@@ -58,7 +58,7 @@ fn task_run_reports_and_pre_attempt_diagnostics_keep_closed_bounded_contracts() 
             .is_err()
     );
     let transition = json!({"writer":"host","epoch":1,"now_unix_ms":1,"change":{"kind":"run_reported","report_id":id}});
-    assert_valid("task-transition-v1.json", &transition);
+    assert_valid("task-transition-v5.json", &transition);
     serde_json::from_value::<review_core::task::event::TaskTransitionV1>(transition)
         .unwrap()
         .validate()

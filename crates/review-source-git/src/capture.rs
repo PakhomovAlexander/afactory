@@ -40,11 +40,7 @@ struct WorktreeFingerprint {
 }
 type ScannedWorktreeEntry = (String, WorktreeFingerprint);
 
-#[cfg(unix)]
 type ChangeStamp = (u64, u64, i64, i64, i64, i64);
-
-#[cfg(not(unix))]
-type ChangeStamp = Option<std::time::SystemTime>;
 
 #[derive(Debug)]
 pub enum CaptureError {
@@ -210,15 +206,18 @@ impl Snapshot {
 
 /// A seam for proving the read boundary works.
 ///
-/// Real captures use [`NoObserver`]. A test implements this to mutate the worktree *between*
-/// the two passes, which is the only way to demonstrate that the revalidation catches what it
-/// claims to catch.
+/// Real captures ([`Capture::dirty`]) observe nothing. A test implements this to mutate the
+/// worktree *between* the two passes, which is the only way to demonstrate that the
+/// revalidation catches what it claims to catch.
 pub trait CaptureObserver {
     fn between_passes(&self, _attempt: u32) {}
 }
 
-pub struct NoObserver;
+struct NoObserver;
 impl CaptureObserver for NoObserver {}
+
+/// How many times a changing worktree may be retried before the capture fails closed.
+const MAX_ATTEMPTS: u32 = 3;
 
 /// Where a streamed object lands. Capture hands each blob here exactly once, as it arrives.
 type ObjectSink<'a> = dyn FnMut(&str, &[u8]) -> Result<(), CaptureError> + Send + 'a;
@@ -226,17 +225,11 @@ type ObjectSink<'a> = dyn FnMut(&str, &[u8]) -> Result<(), CaptureError> + Send 
 pub struct Capture<'a> {
     repo: &'a Repo,
     cas: &'a Cas,
-    /// How many times a changing worktree may be retried before the capture fails closed.
-    pub max_attempts: u32,
 }
 
 impl<'a> Capture<'a> {
     pub fn new(repo: &'a Repo, cas: &'a Cas) -> Self {
-        Self {
-            repo,
-            cas,
-            max_attempts: 3,
-        }
+        Self { repo, cas }
     }
 
     /// Capture a committed tree. Objects are immutable, so this needs no read boundary.
@@ -372,7 +365,7 @@ impl<'a> Capture<'a> {
         if !gitlinks.is_empty() {
             return Err(CaptureError::UnsupportedSubmodules { paths: gitlinks });
         }
-        for attempt in 1..=self.max_attempts {
+        for attempt in 1..=MAX_ATTEMPTS {
             let monitor = WorktreeMonitor::start(self.repo.workdir())?;
             let index_before = self.index_fingerprint()?;
             let first = self.scan_worktree(false, None)?;
@@ -407,7 +400,7 @@ impl<'a> Capture<'a> {
             }
         }
         Err(CaptureError::Unstable {
-            attempts: self.max_attempts,
+            attempts: MAX_ATTEMPTS,
         })
     }
 
@@ -657,18 +650,11 @@ fn parse_batch_stream(
     }
 }
 
-#[cfg(unix)]
 fn is_executable(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     meta.permissions().mode() & 0o111 != 0
 }
 
-#[cfg(not(unix))]
-fn is_executable(_meta: &std::fs::Metadata) -> bool {
-    false
-}
-
-#[cfg(unix)]
 fn metadata_change_stamp(metadata: &std::fs::Metadata) -> ChangeStamp {
     use std::os::unix::fs::MetadataExt;
     (
@@ -679,11 +665,6 @@ fn metadata_change_stamp(metadata: &std::fs::Metadata) -> ChangeStamp {
         metadata.ctime(),
         metadata.ctime_nsec(),
     )
-}
-
-#[cfg(not(unix))]
-fn metadata_change_stamp(metadata: &std::fs::Metadata) -> ChangeStamp {
-    metadata.modified().ok()
 }
 
 struct WorktreeMonitor {
@@ -772,24 +753,9 @@ fn checked_worktree_path(
     Ok(Some(current.join(file_name)))
 }
 
-#[cfg(unix)]
 fn read_link_bytes(path: &std::path::Path) -> Result<Vec<u8>, std::io::Error> {
     use std::os::unix::ffi::OsStrExt;
     Ok(std::fs::read_link(path)?.as_os_str().as_bytes().to_vec())
-}
-
-#[cfg(not(unix))]
-fn read_link_bytes(path: &std::path::Path) -> Result<Vec<u8>, std::io::Error> {
-    std::fs::read_link(path)?
-        .into_os_string()
-        .into_string()
-        .map(String::into_bytes)
-        .map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "symlink target is not UTF-8",
-            )
-        })
 }
 
 /// Whether a capture left the checkout as it found it. Used by tests, and worth having in the

@@ -1,6 +1,7 @@
 # ADR-0057: Export portable Task definitions without execution authority
 
-**Status:** accepted
+**Status:** accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md):
+readability of previously captured locks.
 
 ## Context
 

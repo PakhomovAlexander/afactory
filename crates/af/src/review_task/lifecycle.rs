@@ -2,7 +2,7 @@
 //! stays in the common Store, compiler and domain host.
 use super::*;
 use review_core::task::TaskPhaseV1;
-use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
+use review_core::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignReviewRoundV1};
 use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
 use review_store::store::task::{TaskLease, TaskProjection};
 
@@ -103,9 +103,6 @@ pub(super) fn prepare_session(
     repo: &review_source_git::Repo,
     campaign: &str,
 ) -> Result<PreparedReviewSession, String> {
-    if !options.provider_resumes.is_empty() {
-        return Err("--resume-provider identifies a legacy Provider operation; common Review resumes its original Task Attempts with the same Campaign and explicit Provider bindings".into());
-    }
     let id = task_id(campaign);
     let engine = crate::task_execution::engine(cas)?;
     let existing = store.task_projection(cas, &id).map_err(|e| e.to_string())?;
@@ -164,7 +161,7 @@ fn now_ms() -> Result<u64, String> {
     .map_err(|_| "Task clock overflow".into())
 }
 
-fn recorded_round(cas: &Cas, revision: &TaskRevisionV1) -> Result<LegacyReviewRoundV1, String> {
+fn recorded_round(cas: &Cas, revision: &TaskRevisionV1) -> Result<CampaignReviewRoundV1, String> {
     let input = revision
         .inputs
         .get("round")
@@ -173,12 +170,12 @@ fn recorded_round(cas: &Cas, revision: &TaskRevisionV1) -> Result<LegacyReviewRo
         return Err("Review Task has ambiguous Round authority".into());
     };
     let frame = cas.get_artifact(id).map_err(|e| e.to_string())?;
-    if input.artifact_type != LEGACY_REVIEW_ROUND_V1
-        || frame.artifact_type != LEGACY_REVIEW_ROUND_V1
+    if input.artifact_type != CAMPAIGN_REVIEW_ROUND_V1
+        || frame.artifact_type != CAMPAIGN_REVIEW_ROUND_V1
     {
         return Err("Review Task Round has the wrong contract".into());
     }
-    let binding: LegacyReviewRoundV1 =
+    let binding: CampaignReviewRoundV1 =
         serde_json::from_value(frame.payload).map_err(|e| e.to_string())?;
     binding.validate()?;
     Ok(binding)
@@ -192,9 +189,9 @@ fn restore(
     prepared: &crate::authority::PreparedRun,
     engine: &str,
 ) -> Result<CapturedReviewTask, String> {
-    let compiler = LegacyReviewPlanCompiler::reopen(
+    let compiler = CampaignReviewPlanCompiler::reopen(
         cas,
-        CapturedLegacyReviewRound::load_recorded(
+        CapturedCampaignReviewRound::load_recorded(
             cas,
             store,
             &prepared.run_id,
@@ -267,7 +264,7 @@ fn admit_existing(
     {
         return Err("Review Task changed while its captured plan was reopened".into());
     }
-    let authority = CapturedTaskAuthority::for_legacy_review(
+    let authority = CapturedTaskAuthority::for_campaign_review(
         &captured.compiler,
         &AdmissionOnly,
         &NoTaskDeveloper,
@@ -413,9 +410,9 @@ fn successor(
     options: &Options,
     cas: &Cas,
     previous: &CapturedReviewTask,
-    round: CapturedLegacyReviewRound,
+    round: CapturedCampaignReviewRound,
 ) -> Result<CapturedReviewTask, String> {
-    let compiler = LegacyReviewPlanCompiler::reopen(
+    let compiler = CampaignReviewPlanCompiler::reopen(
         cas,
         round,
         &crate::task_execution::engine(cas)?,
@@ -484,20 +481,20 @@ fn advance(
     previous: &CapturedReviewTask,
     lease: &TaskLease,
 ) -> Result<CapturedReviewTask, String> {
-    use review_pipeline::task::legacy_review::host::LegacyReviewTaskHost;
+    use review_pipeline::task::campaign_review::host::CampaignReviewTaskHost;
     use review_store::store::task::review_round_publication::TaskReviewRoundSuccessor;
     let next = {
         let shared = review_store::SharedEventStore::new(store);
         let (host, prepared, preview, next) =
             review_pipeline::task::lease::with_heartbeat(&shared, cas, lease, || {
-                let host = LegacyReviewTaskHost::new(
+                let host = CampaignReviewTaskHost::new(
                     cas,
                     shared.clone(),
                     &previous.compiler,
                     lease.clone(),
                     model_bindings(&previous.plan, &previous.captured, &previous.workers)?,
                 )?;
-                let current = CapturedTaskAuthority::for_legacy_review(
+                let current = CapturedTaskAuthority::for_campaign_review(
                     &previous.compiler,
                     &host,
                     &NoTaskDeveloper,
@@ -542,14 +539,14 @@ fn advance(
                     options,
                     cas,
                     previous,
-                    CapturedLegacyReviewRound::from_prospective(cas, &preview)?,
+                    CapturedCampaignReviewRound::from_prospective(cas, &preview)?,
                 )?;
                 Ok((host, prepared, preview, next))
             })?;
         // Renewals changed only the Task prefix. Stop the heartbeat, then prove the exact
         // same Review history and successor against a fresh original-budget projection.
         let current =
-            CapturedTaskAuthority::for_legacy_review(&previous.compiler, &host, &NoTaskDeveloper);
+            CapturedTaskAuthority::for_campaign_review(&previous.compiler, &host, &NoTaskDeveloper);
         let (permit, fresh_preview) = {
             let store = shared.lock().expect("Task Store");
             let permit = store
@@ -570,7 +567,7 @@ fn advance(
             review_store::store::task::review_handoff::capture_task_review_handoff(cas, &handoff)
                 .map_err(|e| e.to_string())?;
         let next_authority =
-            CapturedTaskAuthority::for_legacy_review(&next.compiler, &host, &NoTaskDeveloper);
+            CapturedTaskAuthority::for_campaign_review(&next.compiler, &host, &NoTaskDeveloper);
         shared
             .lock()
             .expect("Task Store")
@@ -610,7 +607,7 @@ fn recover_handoff(
     use review_core::task::review_handoff::{
         TaskReviewHandoffEvidenceV1 as Evidence, TaskReviewHandoffV1,
     };
-    use review_pipeline::task::legacy_review::host::LegacyReviewTaskHost;
+    use review_pipeline::task::campaign_review::host::CampaignReviewTaskHost;
     let next = {
         let shared = review_store::SharedEventStore::new(&mut *store);
         review_pipeline::task::lease::with_heartbeat(&shared, cas, lease, || {
@@ -632,7 +629,7 @@ fn recover_handoff(
                 options,
                 cas,
                 previous,
-                CapturedLegacyReviewRound::load_recorded(
+                CapturedCampaignReviewRound::load_recorded(
                     cas,
                     &reader,
                     &old.campaign_id,
@@ -701,7 +698,7 @@ fn recover_handoff(
                     cas, &handoff,
                 )
                 .map_err(|e| e.to_string())?;
-            let host = LegacyReviewTaskHost::new(
+            let host = CampaignReviewTaskHost::new(
                 cas,
                 shared.clone(),
                 &previous.compiler,
@@ -709,7 +706,7 @@ fn recover_handoff(
                 model_bindings(&previous.plan, &previous.captured, &previous.workers)?,
             )?;
             let authority =
-                CapturedTaskAuthority::for_legacy_review(&next.compiler, &host, &NoTaskDeveloper);
+                CapturedTaskAuthority::for_campaign_review(&next.compiler, &host, &NoTaskDeveloper);
             shared
                 .lock()
                 .expect("Task Store")

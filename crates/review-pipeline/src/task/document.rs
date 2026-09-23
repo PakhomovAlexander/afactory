@@ -725,22 +725,10 @@ impl DocumentTaskDomain {
     }
 }
 
-impl TaskOperatorHost for DocumentTaskDomain {
-    fn execute_controlled(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
-        cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> TaskWorkOutput {
-        if let Err(error) = super::control::check(cancellation) {
-            return super::control::refused(error);
-        }
-        self.execute_with_broker(cas, input, attempt, broker)
-    }
-
-    fn prepare_context(
+impl DocumentTaskDomain {
+    /// The Document context bytes for this invocation. The trait entry point and the
+    /// admission recheck must render identically, so both go through here.
+    fn render_context(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
@@ -762,12 +750,29 @@ impl TaskOperatorHost for DocumentTaskDomain {
         .map(|(id, _)| id)
         .map_err(|e| e.to_string())
     }
+}
+
+impl TaskOperatorHost for DocumentTaskDomain {
+    fn prepare_context(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
+    ) -> Result<String, String> {
+        self.render_context(cas, input, attempt.feedback_ids())
+    }
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
+        if let Err(error) = super::control::check(cancellation) {
+            return super::control::refused(error);
+        }
         let outputs = (|| match self.operator(input)? {
             TaskOperatorV1::DocumentSeal {} => Ok(BTreeMap::from([(
                 "document".into(),
@@ -864,9 +869,10 @@ impl TaskDomain for DocumentTaskDomain {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         context_id: &str,
     ) -> Result<(), String> {
+        let feedback = attempt.feedback_ids();
         match self.operator(input)? {
             TaskOperatorV1::Worker { .. } => {
                 let sources: DocumentSourcesV1 = read(
@@ -887,7 +893,7 @@ impl TaskDomain for DocumentTaskDomain {
                 input_id(input, "requirements", "af/Requirements@1")?;
             }
             _ => {
-                if self.prepare_context(cas, input, feedback)? != context_id {
+                if self.render_context(cas, input, feedback)? != context_id {
                     return Err("Document context changed its invocation".into());
                 }
             }
@@ -901,6 +907,7 @@ impl TaskDomain for DocumentTaskDomain {
         _: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         let output_id = |port: &str, ty: &str| -> Result<String, String> {
             let value = output

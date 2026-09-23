@@ -30,9 +30,9 @@ result on another `run`, with unchanged Attempt count and spend.
 selection uses captured applicability facts, strategy priorities and resource feasibility.
 Generation requires a captured Planner and developer signing policy; its exact proposed plan
 waits for signed approval before execution. See the public [Task file](../../schemas/task-file-v1.json)
-and Task catalog [V1](../../schemas/task-catalog-v1.json) or
-[V2](../../schemas/task-catalog-v2.json) schemas for the input shapes. V2 requires the explicit
-[Provider admission cost](model-bindings.md); V1 retains its fixed allowance. Package existence, signing keys and joint
+and [Task catalog](../../schemas/task-catalog-v2.json) schemas for the input shapes. An
+explicit [Provider admission cost](model-bindings.md) is optional; an omitted one means the
+fixed default allowance. Package existence, signing keys and joint
 resource feasibility still require admission validation.
 
 ```text
@@ -65,17 +65,11 @@ af task deliver pagination-cli --state /tmp/pagination-state \
 
 The branch and worktree must be absent. Delivery records its preparation before creating them,
 verifies the materialized result, and supports retry/recovery with the same command. It makes
-no commit, push, PR or remote call. The common Store keeps delivery receipts alongside the Task;
-it does not create the historical `tasks.sqlite` execution store.
+no commit, push, PR or remote call. The common Store keeps delivery receipts alongside the Task.
 
-New Tasks using version-1 implementation definitions are adapted to the common runtime for
-dispatch, accounting, acceptance and delivery. Historical Task resumes retain their compatibility
-path, and historical Task and Review artifacts are not rewritten.
-
-JSON inspection uses [`af/task-inspection@3`](../../schemas/task-inspection-v3.json) and list entries
-use [`af/task-list-entry@2`](../../schemas/task-list-entry-v2.json); their
-`chargeable_tokens` values are exact unsigned decimal strings. Inspection retains original
-execution-record versions, and `explain` includes the captured
+JSON inspection uses [`af/task-inspection@11`](../../schemas/task-inspection-v11.json) and list
+entries use [`af/task-list-entry@2`](../../schemas/task-list-entry-v2.json); their
+`chargeable_tokens` values are exact unsigned decimal strings. `explain` includes the captured
 [`af.compiled-task/1`](../../schemas/compiled-task-v1.json) graph and
 ExecutionPlan. Public schemas describe these shapes without replacing Store replay validation.
 

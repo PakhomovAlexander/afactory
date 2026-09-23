@@ -431,8 +431,7 @@ pub fn materialize_harness_fixture(
     let candidate_id = derive(candidate_harness)?;
     let constructor = cas.put_json(&serde_json::json!({"schema":"af.harness-fixture-constructor/1","engine":request.engine_id,"fixture":request.fixture_snapshot_id,"configuration_source":request.configuration_source_id,"path":request.harness_path,"environment":request.environment_id})).map_err(|error| error.to_string())?;
     let harness_identity = |entry: &Entry| -> Result<String, String> {
-        let manifest = Manifest::new_with_encoding(vec![entry.clone()], source.path_encoding)
-            .map_err(|error| error.to_string())?;
+        let manifest = Manifest::new(vec![entry.clone()]).map_err(|error| error.to_string())?;
         cas.put_json(&serde_json::to_value(manifest).map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string())
     };

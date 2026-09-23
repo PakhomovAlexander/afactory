@@ -3,7 +3,7 @@
 //! Round 1 reviews a tree with a defect and fails to converge. The operator fixes the code,
 //! commits, records the resolution, and runs again. Round 2's reviewer — a script that answers
 //! from the sandbox's actual content — finds nothing, and the campaign converges. This is the
-//! whole loop `/self-review-heavy` drives, with none of the model spend.
+//! whole fix-and-re-review loop of a heavy Campaign, with none of the model spend.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -47,7 +47,7 @@ fn invoke_af(
         .current_dir(repo)
         .env("HOME", home)
         .env("USER", "loop-test");
-    let provider_registry = home.join(".config/afactory/providers.toml");
+    let provider_registry = home.join(".config/af/providers.toml");
     if provider_registry.is_file() {
         command.env("AF_PROVIDERS_FILE", provider_registry);
     }
@@ -61,11 +61,8 @@ fn invoke_af(
     let mut actual = args.to_vec();
     if actual.first() == Some(&"run") {
         let mut authority = vec!["--pipeline", PIPELINE];
-        if !actual
-            .iter()
-            .any(|argument| matches!(*argument, "--authority" | "--policy-rev"))
-        {
-            authority.extend(["--authority", "HEAD"]);
+        if !actual.contains(&"--policy-rev") {
+            authority.extend(["--policy-rev", "HEAD"]);
         }
         if let Some(mode) = default_mode {
             authority.push(mode);
@@ -122,14 +119,21 @@ fn repin(repo: &Path) {
 }
 
 fn write_review_config(repo: &Path) {
-    let finding = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"major\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins\",\"fix\":\"bound it\",\"confidence\":0.9,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"disputes\":[]}"#;
-    let blocker = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"blocker\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins and prevents shutdown\",\"fix\":\"bound it\",\"confidence\":0.99,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"disputes\":[]}"#;
-    let demand = r#"{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[{\"claim\":\"the loop terminates\",\"why\":\"termination is not demonstrated\",\"suggested_method\":\"run a bounded integration test\"}],\"disputes\":[]}"#;
-    let clean = r#"{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}"#;
+    let finding = r#"{\"findings\":[{\"severity\":\"major\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins\",\"fix\":\"bound it\",\"confidence\":0.9,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"dispositions\":[$d]}"#;
+    let blocker = r#"{\"findings\":[{\"severity\":\"blocker\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins and prevents shutdown\",\"fix\":\"bound it\",\"confidence\":0.99,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"dispositions\":[$d]}"#;
+    let demand = r#"{\"findings\":[],\"benchmark_demands\":[{\"claim\":\"the loop terminates\",\"why\":\"termination is not demonstrated\",\"suggested_method\":\"run a bounded integration test\"}],\"dispositions\":[$d]}"#;
+    let clean = r#"{\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[$d]}"#;
     // A committed `FAIL` marker makes the reviewer exit non-zero, so a test can produce an
     // incomplete run on demand. Absent in every other test, so it changes nothing there.
+    // Every prior Finding the input assigns is answered `not_reproduced`, the disposition that
+    // changes no Ledger state, so each answer covers its assignment exactly.
     let script = format!(
-        "if [ -f FAIL ]; then exit 7; fi; \
+        "input=$(cat); \
+         ids=$(printf '%s' \"$input\" | grep -o '\"finding_id\":\"sha256:[0-9a-f]*\"' | cut -d'\"' -f4 | sort -u); \
+         d=; for id in $ids; do \
+         d=\"$d${{d:+,}}{{\\\"finding_id\\\":\\\"$id\\\",\\\"position\\\":\\\"not_reproduced\\\",\\\"reason\\\":\\\"not re-examined by the fixture\\\"}}\"; \
+         done; \
+         if [ -f FAIL ]; then exit 7; fi; \
          if [ -f DEMAND ]; then printf '%s' \"{demand}\"; \
          elif [ -f BLOCKER ]; then printf '%s' \"{blocker}\"; \
          elif grep -q 'loop {{}}' src/main.rs; then printf '%s' \"{finding}\"; \
@@ -149,13 +153,18 @@ args = [{{ value = "-c" }}, {{ value = "true" }}]
 [[nodes]]
 id = "gate"
 kind = "gate"
-outputs = ["decision"]
+outputs = [{{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
+
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
 
 [[nodes]]
 id = "architecture"
 kind = "reviewer"
-inputs = ["gate"]
-outputs = ["result"]
+inputs = [{{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}, {{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+outputs = [{{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
 gated_by = "gate"
 [nodes.runner]
 program = "/bin/sh"
@@ -164,13 +173,13 @@ args = [{{ value = "-c" }}, {{ value = '''{script}''' }}]
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["architecture"]
-outputs = ["reports"]
+inputs = [{{ name = "architecture", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+outputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
 
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
+inputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
 outputs = [
   {{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
   {{ name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
@@ -179,6 +188,10 @@ outputs = [
 [[edges]]
 from = {{ node = "gate", port = "decision" }}
 to = {{ node = "architecture", port = "gate" }}
+
+[[edges]]
+from = {{ node = "generation", port = "findings" }}
+to = {{ node = "architecture", port = "prior_findings" }}
 
 [[edges]]
 from = {{ node = "architecture", port = "result" }}
@@ -210,17 +223,16 @@ fn write_disposition_config(repo: &Path) {
         r#"#!/bin/sh
 input=$(cat)
 if [ -f OMIT ]; then
-  printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}'
+  printf '%s' '{"findings":[],"benchmark_demands":[],"dispositions":[]}'
 elif grep -q 'loop {}' src/main.rs; then
-  printf '%s' '{"verdict":"request-changes","summary":null,"findings":[{"severity":"major","file":"src/main.rs","line":1,"title":"Unbounded loop","body":"spins","fix":"bound it","confidence":0.9}],"benchmark_demands":[],"dispositions":[]}'
+  printf '%s' '{"findings":[{"severity":"major","file":"src/main.rs","line":1,"title":"Unbounded loop","body":"spins","fix":"bound it","confidence":0.9}],"benchmark_demands":[],"dispositions":[]}'
 else
   finding_id=$(printf '%s' "$input" | sed -n 's/.*"finding_id":"\([^"]*\)".*/\1/p')
-  printf '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[{"finding_id":"%s","position":"not_reproduced","reason":"the unbounded loop is absent from the current Subject"}]}' "$finding_id"
+  printf '{"findings":[],"benchmark_demands":[],"dispositions":[{"finding_id":"%s","position":"not_reproduced","reason":"the unbounded loop is absent from the current Subject"}]}' "$finding_id"
 fi
 "#,
     )
     .unwrap();
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&reviewer, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -341,10 +353,10 @@ fn light_is_default_single_round_and_refuses_repeat_before_dispatch() {
 }
 
 #[test]
-fn explicit_light_reports_machine_readable_stop_guidance_and_modes_are_exclusive() {
+fn default_light_reports_machine_readable_stop_guidance() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, _) = fixture(dir.path());
-    let state = dir.path().join("explicit-light");
+    let state = dir.path().join("default-light");
     let state = state.to_string_lossy().into_owned();
 
     let (code, stdout, stderr) = af_light(
@@ -353,10 +365,9 @@ fn explicit_light_reports_machine_readable_stop_guidance_and_modes_are_exclusive
         &[
             "run",
             "--campaign",
-            "explicit-light",
+            "default-light",
             "--state",
             &state,
-            "--light",
             "--json",
         ],
     );
@@ -366,28 +377,10 @@ fn explicit_light_reports_machine_readable_stop_guidance_and_modes_are_exclusive
     assert_eq!(outcome["next_action"]["kind"], "fix_then_gate");
     assert_eq!(outcome["next_action"]["start_another_campaign"], false);
     assert!(stderr.contains("do not start another Campaign"));
-
-    let invalid_state = dir.path().join("invalid-mode");
-    let invalid_state = invalid_state.to_string_lossy().into_owned();
-    let (code, stdout, stderr) = af_light(
-        &repo,
-        &home,
-        &[
-            "run",
-            "--campaign",
-            "invalid-mode",
-            "--state",
-            &invalid_state,
-            "--light",
-            "--heavy",
-        ],
-    );
-    assert_eq!(code, 2, "{stdout}\n{stderr}");
-    assert!(stderr.contains("[--light|--heavy]"));
 }
 
 #[test]
-fn campaign_enumeration_reads_legacy_state_and_round_history() {
+fn campaign_enumeration_reads_label_named_explicit_state_and_round_history() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, _) = fixture(dir.path());
     let root = dir.path().join("campaigns");
@@ -492,13 +485,13 @@ fn final_local_review_uses_af_authority_and_one_json_result() {
     let (code, stdout, stderr) = af(
         &repo,
         &home,
-        &["--authority", "HEAD", "--state", &state, "--json"],
+        &["--policy-rev", "HEAD", "--state", &state, "--json"],
     );
 
     assert_eq!(code, 3, "{stderr}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    contracts::valid("review-outcome-v2.json", &outcome);
-    assert_eq!(outcome["schema"], "af/review-outcome@2");
+    contracts::valid("review-outcome-v3.json", &outcome);
+    assert_eq!(outcome["schema"], "af/review-outcome@3");
     assert_eq!(outcome["campaign_mode"], "light");
     assert_eq!(outcome["next_action"]["kind"], "fix_then_gate");
     assert_eq!(outcome["next_action"]["start_another_campaign"], false);
@@ -899,9 +892,9 @@ fn exact_prior_set_requires_and_persists_explicit_disposition() {
                 && event.node_id.as_deref() == Some("correctness")
         })
         .expect("Round 2 common Reviewer selection");
-    let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
+    let selected: review_core::task::campaign_review::TaskReviewResultSelectedV1 =
         serde_json::from_value(selected.payload.clone()).unwrap();
-    let context: review_core::task::review_compat::TaskReviewContextV1 =
+    let context: review_core::task::campaign_review::TaskReviewContextV1 =
         serde_json::from_value(cas.get_artifact(&selected.context_id).unwrap().payload).unwrap();
     assert_eq!(
         context.invocation_event_id, invocation_event_id,
@@ -1067,7 +1060,8 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
         "{report_out}"
     );
     assert!(report_out.contains("Fix: bound it"), "{report_out}");
-    assert!(report_out.contains("## Spend"), "{report_out}");
+    assert!(report_out.contains("## Task accounting:"), "{report_out}");
+    assert!(!report_out.contains("## Spend"), "{report_out}");
     assert!(report_out.contains("architecture"), "{report_out}");
 
     let (code, report_json, report_err) = af(
@@ -1085,12 +1079,10 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     );
     assert_eq!(code, 0, "{report_json}\n{report_err}");
     let report: serde_json::Value = serde_json::from_str(&report_json).unwrap();
-    assert_eq!(report["schema"], "af/review-report@3");
+    contracts::valid("review-report-v4.json", &report);
+    assert_eq!(report["schema"], "af/review-report@4");
     assert_eq!(report["rounds"][0]["round"], 1);
-    assert!(
-        report["spend"].as_array().unwrap().is_empty(),
-        "common Task spend is never copied into the historical Round accumulator"
-    );
+    assert!(report.get("spend").is_none(), "{report_json}");
     let task = &report["task_accounting"][0];
     assert_eq!(task["attempts_started"], "2");
     assert_eq!(task["chargeable_tokens"], "0");
@@ -1641,21 +1633,20 @@ input=$(cat)
 if [ -n "$out" ] && [ "$input" = 'Reply with exactly: OK' ]; then
   printf '%s' 'OK' >"$out"
 elif [ -n "$out" ]; then
-  printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}' >"$out"
+  printf '%s' '{"findings":[],"benchmark_demands":[],"dispositions":[]}' >"$out"
 fi
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
 "#,
     )
     .unwrap();
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let auth_dir = home.join("codex-auth");
     std::fs::create_dir_all(&auth_dir).unwrap();
-    let provider_registry = home.join(".config/afactory/providers.toml");
+    let provider_registry = home.join(".config/af/providers.toml");
     std::fs::create_dir_all(provider_registry.parent().unwrap()).unwrap();
     std::fs::write(
         &provider_registry,
@@ -1688,7 +1679,7 @@ args = [{{ value = "--model" }}, {{ value = "gpt-fixture-1" }}, {{ value = "-c" 
         "Review the exact Change Set.\n",
     )
     .unwrap();
-    let registry = review_config::lock::Registry::new([&reviewers]);
+    let registry = review_config::lock::Registry::new(&reviewers);
     let mut lockfile = review_config::lock::Lockfile::empty();
     lockfile.workers.insert(
         "tester".into(),
@@ -1703,19 +1694,22 @@ kind = "diff"
 id = "generation"
 kind = "generation"
 outputs = [
-  { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
   { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
 ]
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
 package = "tester"
-inputs = [{ name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
-outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+inputs = [
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = [{ name = "reviewer", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+inputs = [{ name = "reviewer", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 [[nodes]]
 id = "ledger"
@@ -1725,6 +1719,9 @@ outputs = [
   { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
   { name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
 ]
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "reviewer", port = "prior_findings" }
 [[edges]]
 from = { node = "generation", port = "change_set" }
 to = { node = "reviewer", port = "change_set" }
@@ -1752,7 +1749,7 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = native_diff_fixture(dir.path());
     let codex = home.join("codex");
-    let provider_registry = home.join(".config/afactory/providers.toml");
+    let provider_registry = home.join(".config/af/providers.toml");
 
     let (code, plan_stdout, plan_stderr) = invoke_af(
         &repo,
@@ -1931,7 +1928,6 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
                     event.event_type,
                     review_core::EventType::TaskReviewResultSelectedV1
                         | review_core::EventType::RunReportV6
-                        | review_core::EventType::AttemptDispatchedV1
                 ))
         );
     }

@@ -36,8 +36,8 @@ pub struct CodeTaskPolicy {
     pub schema: String,
     pub checks: BTreeMap<String, CheckDefinition>,
     pub check_wall_ms: u64,
-    /// Optional per-process cap within the aggregate check Attempt. Fixed-format migration
-    /// preserves each old Check deadline even when one Attempt owns several named checks.
+    /// Optional per-process cap within the aggregate check Attempt, so one slow check cannot
+    /// borrow another's allowance when one Attempt owns several named checks.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -838,8 +838,10 @@ impl CodeTaskDomain {
     }
 }
 
-impl TaskOperatorHost for CodeTaskDomain {
-    fn prepare_context(
+impl CodeTaskDomain {
+    /// The built-in context bytes for this invocation. The trait entry point and the
+    /// admission recheck must render identically, so both go through here.
+    fn render_context(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
@@ -862,29 +864,28 @@ impl TaskOperatorHost for CodeTaskDomain {
         .map(|(id, _)| id)
         .map_err(|e| e.to_string())
     }
+}
+
+impl TaskOperatorHost for CodeTaskDomain {
+    fn prepare_context(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
+    ) -> Result<String, String> {
+        self.render_context(cas, input, attempt.feedback_ids())
+    }
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
-    ) -> TaskWorkOutput {
-        self.execute_controlled(cas, input, attempt, None, None)
-    }
-    fn execute_controlled(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         if let Err(error) = super::control::check(cancellation) {
             return super::control::refused(error);
-        }
-        if broker.is_some() {
-            return super::control::refused(
-                "Pure domain operation does not consume Broker Handles",
-            );
         }
 
         let mut raw_artifact_ids = Vec::new();
@@ -932,9 +933,10 @@ impl TaskDomain for CodeTaskDomain {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         id: &str,
     ) -> Result<(), String> {
+        let feedback = attempt.feedback_ids();
         match self.operator(input)? {
             TaskOperatorV1::Verify { .. } => {
                 let result = self.verification(cas, input)?;
@@ -949,7 +951,7 @@ impl TaskDomain for CodeTaskDomain {
             TaskOperatorV1::Worker { .. } => Ok(()),
             _ => {
                 envelope(cas, id)?;
-                if self.prepare_context(cas, input, feedback)? != id {
+                if self.render_context(cas, input, feedback)? != id {
                     return Err("Built-in context changed its exact invocation".into());
                 }
                 Ok(())
@@ -963,6 +965,7 @@ impl TaskDomain for CodeTaskDomain {
         _: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         match self.operator(input)? {
             TaskOperatorV1::Seal {} => validate_seal(cas, input, output),

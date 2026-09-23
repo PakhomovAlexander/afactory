@@ -60,6 +60,8 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
             input: Vec<u8>,
             _: std::time::Duration,
             writable: bool,
+            _: Option<&std::sync::atomic::AtomicBool>,
+            _: &[(String, String)],
         ) -> ModelWorkerReturn {
             assert!(!writable);
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -168,11 +170,17 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
             u128::from(u64::MAX) + if overrun_at == 1 { 7 } else { 0 }
         );
         let run = review_store::store::task::task_run_id(task_id).unwrap();
-        let walls = f.store.attempt_wall(&run).unwrap();
+        let walls = f.store.task_attempt_wall(&run).unwrap();
         assert_eq!(walls.len(), overrun_at + 1);
-        assert!(walls.iter().any(|wall| wall.usage.as_ref().is_some_and(
-            |usage| usage.input_tokens == Some(u64::MAX) && usage.chargeable_tokens == u64::MAX
-        )));
+        let max = u128::from(u64::MAX);
+        assert!(
+            walls
+                .iter()
+                .any(|wall| wall.usage.as_ref().is_some_and(|usage| {
+                    usage.input_tokens.map(|n| n.get()) == Some(max)
+                        && usage.chargeable_tokens.get() == max
+                }))
+        );
         let mut wide_receipts = 0;
         for event in f.store.replay(&run).unwrap() {
             let transition: review_core::task::event::TaskTransitionV1 =
@@ -193,7 +201,7 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
                 {
                     assert_eq!(
                         decoded.envelope.artifact_type,
-                        review_core::task::execution::TASK_EXECUTION_RECORD_V3
+                        review_core::task::execution::TASK_EXECUTION_RECORD_V5
                     );
                     assert_eq!(raw_artifact_ids.len(), 1);
                     let usage =
@@ -224,18 +232,23 @@ fn one_attempt_retains_aggregate_charge_above_u64_through_failure_and_reopen() {
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
-            feedback: &[String],
+            definition: &review_graph::task::CompiledNode,
+            attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
-            self.inner.prepare_context(cas, input, feedback)
+            self.inner.prepare_context(cas, input, definition, attempt)
         }
         fn execute(
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
+            definition: &review_graph::task::CompiledNode,
             attempt: Option<&PreparedTaskAttempt>,
+            cancellation: Option<&std::sync::atomic::AtomicBool>,
         ) -> TaskWorkOutput {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            let mut result = self.inner.execute(cas, input, attempt);
+            let mut result = self
+                .inner
+                .execute(cas, input, definition, attempt, cancellation);
             result.usage = Some(review_core::task::usage::TaskTokenUsageV3 {
                 input_tokens: Some((u128::from(u64::MAX) + 17).into()),
                 chargeable_tokens: (u128::from(u64::MAX) + 17).into(),
@@ -248,7 +261,7 @@ fn one_attempt_retains_aggregate_charge_above_u64_through_failure_and_reopen() {
         }
     }
     let mut f = Fixture::new(SUCCESS);
-    let host = CommandTaskHost::capture(
+    let host = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -256,6 +269,7 @@ fn one_attempt_retains_aggregate_charge_above_u64_through_failure_and_reopen() {
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &DocumentDomain,
+        &BTreeMap::new(),
     )
     .unwrap();
     let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
@@ -290,7 +304,6 @@ fn one_attempt_retains_aggregate_charge_above_u64_through_failure_and_reopen() {
     let usage = walls[0].usage.as_ref().unwrap();
     assert_eq!(usage.chargeable_tokens.get(), exact);
     assert_eq!(usage.input_tokens.map(|n| n.get()), Some(exact));
-    assert!(f.store.attempt_wall(&run).is_err());
     let state = f
         .store
         .task_projection(&f.cas, &f.task.task_id)
@@ -316,7 +329,7 @@ fn one_attempt_retains_aggregate_charge_above_u64_through_failure_and_reopen() {
                 assert_eq!(charged_tokens, exact);
                 assert_eq!(
                     decoded.envelope.artifact_type,
-                    review_core::task::execution::TASK_EXECUTION_RECORD_V3
+                    review_core::task::execution::TASK_EXECUTION_RECORD_V5
                 );
                 let envelope = f.cas.get_artifact(&id).unwrap();
                 assert_eq!(

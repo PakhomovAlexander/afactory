@@ -68,7 +68,6 @@ impl TaskRuntime<'_, '_> {
                         SuppressionReason::BranchNotSelected => {
                             TaskSuppressionV1::BranchNotSelected
                         }
-                        SuppressionReason::GateBlocked => TaskSuppressionV1::GateBlocked,
                         SuppressionReason::UpstreamMissing => TaskSuppressionV1::UpstreamMissing,
                     },
                 },
@@ -82,41 +81,24 @@ impl TaskRuntime<'_, '_> {
             task_revision_id: state.revision_id,
             plan_id: self.plan_id.clone(),
             through_sequence: state.next_sequence,
+            phase_id: phase_id.map(str::to_owned),
             nodes,
         };
         value.validate()?;
-        let (kind, payload, refs) = if let Some(phase_id) = phase_id {
-            let phase = TaskRunReportV2 {
-                task_revision_id: value.task_revision_id.clone(),
-                plan_id: value.plan_id.clone(),
-                through_sequence: value.through_sequence,
-                phase_id: phase_id.into(),
-                nodes: value.nodes.clone(),
-            };
-            phase.validate()?;
-            (
-                TASK_RUN_REPORT_V2,
-                serde_json::to_value(&phase).map_err(|e| e.to_string())?,
-                phase
-                    .references()
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect::<BTreeSet<_>>(),
-            )
-        } else {
-            (
-                TASK_RUN_REPORT_V1,
-                serde_json::to_value(&value).map_err(|e| e.to_string())?,
-                value
-                    .references()
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect::<BTreeSet<_>>(),
-            )
-        };
+        let refs = value
+            .references()
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
         let id = self
             .cas
-            .put_artifact(kind, producer, refs.into_iter().collect(), None, payload)
+            .put_artifact(
+                TASK_RUN_REPORT_V2,
+                producer,
+                refs.into_iter().collect(),
+                None,
+                serde_json::to_value(&value).map_err(|e| e.to_string())?,
+            )
             .map_err(|e| e.to_string())?
             .0;
         self.store

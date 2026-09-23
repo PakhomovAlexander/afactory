@@ -9,17 +9,20 @@ impl TaskOperatorHost for CheckedText {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        definition: &review_graph::task::CompiledNode,
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        DocumentDomain.prepare_context(cas, input, feedback)
+        DocumentDomain.prepare_context(cas, input, definition, attempt)
     }
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
-        DocumentDomain.execute(cas, input, attempt)
+        DocumentDomain.execute(cas, input, definition, attempt, cancellation)
     }
 }
 impl TaskDomain for CheckedText {
@@ -27,10 +30,10 @@ impl TaskDomain for CheckedText {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         id: &str,
     ) -> Result<(), String> {
-        DocumentDomain.validate_context(cas, input, feedback, id)
+        DocumentDomain.validate_context(cas, input, attempt, id)
     }
     fn validate_output(
         &self,
@@ -39,8 +42,9 @@ impl TaskDomain for CheckedText {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
-        DocumentDomain.validate_output(cas, task, plan, input, output)?;
+        DocumentDomain.validate_output(cas, task, plan, input, output, definition)?;
         for value in output.outputs.values() {
             for id in &value.artifact_ids {
                 if cas.get_json(id).map_err(|e| e.to_string())?["payload"]["text"]
@@ -80,6 +84,8 @@ impl WorkerModelAdapter for DomainModel {
         bytes: Vec<u8>,
         _: std::time::Duration,
         writable: bool,
+        _: Option<&std::sync::atomic::AtomicBool>,
+        _: &[(String, String)],
     ) -> ModelWorkerReturn {
         assert!(!writable);
         let count = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -103,9 +109,9 @@ impl WorkerModelAdapter for DomainModel {
             usage_observation: None,
             raw_artifact_ids: vec![cas.put(&message).unwrap()],
             message: Ok(message),
-            usage: Some(
-                review_runner::TokenUsage::charge_only(if count == 0 { 17 } else { 23 }).into(),
-            ),
+            usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(
+                if count == 0 { 17 } else { 23 },
+            )),
         }
     }
 }
@@ -203,17 +209,21 @@ impl TaskOperatorHost for FeedbackFailure<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        definition: &review_graph::task::CompiledNode,
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        self.0.prepare_context(cas, input, feedback)
+        self.0.prepare_context(cas, input, definition, attempt)
     }
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
-        self.0.execute(cas, input, attempt)
+        self.0
+            .execute(cas, input, definition, attempt, cancellation)
     }
     fn output_rejection_feedback(
         &self,
@@ -280,8 +290,8 @@ fn feedback_persistence_failure_does_not_authorize_a_retry_or_hide_known_usage()
     drop(runtime);
     let wall = f
         .store
-        .attempt_wall(&review_store::store::task::task_run_id(lease.task_id()).unwrap())
+        .task_attempt_wall(&review_store::store::task::task_run_id(lease.task_id()).unwrap())
         .unwrap();
     assert_eq!(wall.len(), 1);
-    assert_eq!(wall[0].usage.as_ref().unwrap().chargeable_tokens, 17);
+    assert_eq!(wall[0].usage.as_ref().unwrap().chargeable_tokens.get(), 17);
 }

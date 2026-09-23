@@ -12,8 +12,6 @@ pub enum Vcs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DirtyBoundary {
-    /// An atomic filesystem snapshot.
-    FilesystemSnapshot,
     /// Monitoring started before the first read; two complete manifests and the index digest
     /// matched with no intervening or overflowed change event.
     Revalidated,

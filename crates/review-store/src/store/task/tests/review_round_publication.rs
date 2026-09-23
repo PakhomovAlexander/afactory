@@ -134,7 +134,7 @@ fn prepare_handoff(
     let id = f
         .cas
         .put_artifact(
-            review_core::task::review_compat::LEGACY_REVIEW_ROUND_V1,
+            review_core::task::campaign_review::CAMPAIGN_REVIEW_ROUND_V1,
             producer(),
             round
                 .artifact_refs()
@@ -199,7 +199,7 @@ fn review_round_publication_refuses_pending_and_stale_task_prefix_then_reopens_e
         .unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
         .unwrap();
     f.store
         .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
@@ -279,15 +279,12 @@ fn review_round_publication_refuses_pending_and_stale_task_prefix_then_reopens_e
     let usage_id = f
         .cas
         .put_artifact(
-            review_core::task::usage::TASK_TOKEN_USAGE_V2,
+            review_core::task::usage::TASK_TOKEN_USAGE_V3,
             producer(),
             vec![],
             None,
-            serde_json::to_value(review_core::task::usage::TaskTokenUsageV2 {
-                chargeable_tokens: 9_u128.into(),
-                ..Default::default()
-            })
-            .unwrap(),
+            serde_json::to_value(review_core::task::usage::TaskTokenUsageV3::charge_only(9))
+                .unwrap(),
         )
         .unwrap()
         .0;
@@ -403,7 +400,7 @@ fn prospective_successor_cannot_publish_when_original_remaining_tokens_cannot_fu
         .unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
         .unwrap();
     f.store
         .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)

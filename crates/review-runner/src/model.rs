@@ -17,71 +17,83 @@
 //!   attempted, so "the model returned garbage" is always an inspectable claim.
 //!
 //! What this module deliberately does not do: parse. A provider's output framing (Codex JSONL,
-//! some other envelope) is the provider adapter's job, behind [`ReviewerAdapter`].
+//! some other envelope) is the provider adapter's job, behind
+//! [`WorkerModelAdapter`](crate::task::WorkerModelAdapter).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use review_broker::BrokerClient;
 use review_core::{
-    BrokerCredentialModeV1, Command, LegacyStageOutput, MAX_CHANGE_SET_BYTES,
-    MAX_PRIOR_FINDINGS_BYTES, ReviewerResultContract,
+    Command, MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES, ReviewerResultContract,
+    ReviewerStageOutput,
 };
 use review_store::Cas;
 
-use crate::command_runner::RunnerError;
 use review_process::{
     SupervisedError, run_supervised_captured, run_supervised_captured_cancellable,
 };
 
-/// Appended to every package prompt by a model adapter: the exact result contract, kept in
-/// one place, versioned with the parser it feeds.
-pub const RESULT_CONTRACT: &str = "\n\n## Output contract\n\n\
-Your FINAL message must be exactly one JSON object and nothing else - no prose before or \
-after, no markdown fence. Shape:\n\
-{\"verdict\":\"approve\"|\"request-changes\"|\"block\",\"summary\":string|null,\
-\"findings\":[{\"severity\":\"blocker\"|\"major\"|\"minor\",\"file\":string,\"line\":positive-integer|null,\
-\"title\":string,\"body\":string,\"fix\":string,\"confidence\":number}],\
-\"benchmark_demands\":[{\"claim\":string,\"why\":string,\"suggested_method\":string}],\
-\"disputes\":[{\"claim_id\":string,\"position\":\"confirm\"|\"refute\",\"reason\":string}],\
-\"proposal\":{\"patch\":string,\"report_indexes\":[non-negative-integer],\"finding_ids\":[string],\
-\"evidence_ids\":[string],\"paths\":[string],\"description\":string,\"auto_apply_nominated\":boolean}|absent}\n\
-An empty findings list is a valid answer. Every finding needs a concrete fix. Use exactly \
-these fields and no others - an extra field is discarded, a missing required result field fails \
-the answer. A proposal is optional, but when present it is one atomic patch and must equal the \
-complete final sandbox diff; name at least one same-result report index or assigned Finding ID. \
-Every non-empty `file` must be a canonical repository-relative path: use its exact spelling \
-from the Change Set, without an absolute prefix, leading `./`, `.` or `..` component, or empty \
-path component. An empty `file` means the claim is change-wide.";
+/// Why a supervised process yielded no capture, or an input could not be composed. Each is a
+/// typed outcome, never an empty result: a Worker that crashed and a Worker that found nothing
+/// must never be indistinguishable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunnerError {
+    /// The command was refused before execution — an untrusted value in an option position.
+    Refused(String),
+    /// The program could not be started at all.
+    Unavailable(String),
+    /// The reviewer ran and failed.
+    Failed {
+        exit_code: i32,
+        stderr_excerpt: String,
+    },
+    /// The reviewer did not answer by its deadline and was killed. Whatever it spent is gone;
+    /// whether to retry is the kernel's decision, not this layer's.
+    TimedOut { after_ms: u64 },
+}
 
-/// Additive result contract for reviewers assigned an exact `FindingSet@1`.
+impl std::fmt::Display for RunnerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunnerError::Refused(why) => write!(f, "reviewer command refused: {why}"),
+            RunnerError::Unavailable(why) => write!(f, "reviewer unavailable: {why}"),
+            RunnerError::Failed {
+                exit_code,
+                stderr_excerpt,
+            } => write!(f, "reviewer failed (exit {exit_code}): {stderr_excerpt}"),
+            RunnerError::TimedOut { after_ms } => {
+                write!(
+                    f,
+                    "reviewer did not answer within {after_ms}ms and was killed"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RunnerError {}
+
+/// Appended to every package prompt by a model adapter: the exact `ReviewerResult@2` contract,
+/// kept in one place, versioned with the parser it feeds.
 pub const RESULT_CONTRACT_V2: &str = "\n\n## Output contract\n\n\
 Your FINAL message must be exactly one JSON object and nothing else - no prose before or \
 after, no markdown fence. Shape:\n\
-{\"verdict\":\"approve\"|\"request-changes\"|\"block\",\"summary\":string|null,\
-\"findings\":[{\"severity\":\"blocker\"|\"major\"|\"minor\",\"file\":string,\"line\":positive-integer|null,\
+{\"reports\":[{\"severity\":\"blocker\"|\"major\"|\"minor\",\"file\":string,\"line\":positive-integer|null,\
 \"title\":string,\"body\":string,\"fix\":string,\"confidence\":number}],\
 \"benchmark_demands\":[{\"claim\":string,\"why\":string,\"suggested_method\":string}],\
 \"dispositions\":[{\"finding_id\":string,\"position\":\"corroborate\"|\"not_reproduced\"|\"dispute\",\"reason\":string}],\
 \"proposal\":{\"patch\":string,\"report_indexes\":[non-negative-integer],\"finding_ids\":[string],\
 \"evidence_ids\":[string],\"paths\":[string],\"description\":string,\"auto_apply_nominated\":boolean}|absent}\n\
 Return exactly one disposition for every assigned prior Finding and no others. Omission is \
-incomplete work, not evidence that a Finding disappeared. An empty findings list is valid. Every \
-finding needs a concrete fix. Use exactly these fields and no others - an extra field is discarded, \
+incomplete work, not evidence that a Finding disappeared. An empty reports list is valid. Every \
+report needs a concrete fix. Use exactly these fields and no others - an extra field is discarded, \
 a missing required result field fails the answer. A proposal is optional, but when present it is \
 one atomic patch and must equal the complete final sandbox diff; name at least one same-result \
 report index or assigned Finding ID. Every non-empty `file` must be a canonical repository-relative \
 path: use its exact spelling from the Change Set, without an absolute prefix, leading `./`, `.` or \
 `..` component, or empty path component. An empty `file` means the claim is change-wide.";
-
-pub const fn result_contract(contract: ReviewerResultContract) -> &'static str {
-    match contract {
-        ReviewerResultContract::V1 => RESULT_CONTRACT,
-        ReviewerResultContract::V2 => RESULT_CONTRACT_V2,
-    }
-}
 
 /// Models fence JSON despite instructions often enough that refusing to look inside the fence
 /// would manufacture failures. Anything beyond a fence is still malformed.
@@ -137,7 +149,8 @@ pub fn extract_result(text: &str) -> &str {
     direct
 }
 
-/// Parse a model's answer into the contract, tolerating what can be tolerated losslessly.
+/// Parse a model's answer into the node's result contract, tolerating what can be tolerated
+/// losslessly.
 ///
 /// Two normalizations, both earned on live runs and both forensically free because the raw
 /// envelope is already immutable in the CAS: the JSON may arrive wrapped in prose or fences
@@ -146,40 +159,15 @@ pub fn extract_result(text: &str) -> &str {
 /// schema-strict parse refused a six-dollar answer over it. Unknown fields are dropped;
 /// missing or malformed *required* fields still fail, because inventing content is where
 /// tolerance would become fabrication.
-pub fn parse_stage_output(text: &str) -> Result<LegacyStageOutput, String> {
-    parse_stage_output_for(ReviewerResultContract::V1, text)
-}
-
-pub fn parse_stage_output_for(
-    contract: ReviewerResultContract,
-    text: &str,
-) -> Result<LegacyStageOutput, String> {
+pub fn parse_reviewer_result(text: &str) -> Result<ReviewerStageOutput, String> {
     let mut value: serde_json::Value =
         serde_json::from_str(extract_result(text)).map_err(|e| e.to_string())?;
-    normalize(&mut value, contract);
-    if contract == ReviewerResultContract::V2 {
-        let object = value
-            .as_object_mut()
-            .ok_or_else(|| "ReviewerResult@2 is not an object".to_string())?;
-        let mut dispositions = object
-            .remove("dispositions")
-            .ok_or_else(|| "ReviewerResult@2 has no dispositions array".to_string())?;
-        if let Some(dispositions) = dispositions.as_array_mut() {
-            for disposition in dispositions {
-                if let Some(disposition) = disposition.as_object_mut()
-                    && let Some(finding_id) = disposition.remove("finding_id")
-                {
-                    disposition.insert("fp".into(), finding_id);
-                }
-            }
-        }
-        object.insert("disputes".into(), dispositions);
-    }
+    normalize(&mut value);
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
 /// One optional code change declaration transported beside an otherwise unchanged Reviewer
-/// Result. It is intentionally not part of `LegacyStageOutput`: the kernel validates it against
+/// Result. It is intentionally not part of `ReviewerStageOutput`: the kernel validates it against
 /// the sealed sandbox and publishes a separate `PatchProposal@1` only after canonical reduction.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -223,7 +211,7 @@ pub struct ReviewerNoteHint {
 }
 
 /// One optional Worker Notes declaration transported beside the flat Reviewer Result, in the
-/// ADR-0038 pattern: extracted before normalization and never part of `LegacyStageOutput`.
+/// ADR-0038 pattern: extracted before normalization and never part of `ReviewerStageOutput`.
 /// The kernel binds it to the Attempt, bounds it by policy and records the outcome; the
 /// declaration itself carries no authority and is never a disposition.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -254,7 +242,7 @@ pub fn parse_notes_declaration(text: &str) -> Result<Option<ReviewerNotesDeclara
         .map_err(|error| format!("notes declaration is malformed: {error}"))
 }
 
-fn normalize(value: &mut serde_json::Value, contract: ReviewerResultContract) {
+fn normalize(value: &mut serde_json::Value) {
     fn keep(value: &mut serde_json::Value, fields: &[&str]) {
         if let Some(object) = value.as_object_mut() {
             object.retain(|key, _| fields.contains(&key.as_str()));
@@ -267,23 +255,17 @@ fn normalize(value: &mut serde_json::Value, contract: ReviewerResultContract) {
             }
         }
     }
-    let final_field = match contract {
-        ReviewerResultContract::V1 => "disputes",
-        ReviewerResultContract::V2 => "dispositions",
-    };
-    keep(
-        value,
-        &[
-            "verdict",
-            "summary",
-            "findings",
-            "benchmark_demands",
-            final_field,
-        ],
-    );
+    // A model or a hand-written command reviewer that names the array `findings` means
+    // `reports`: the shapes are identical, and refusing would discard a paid answer.
+    if let Some(object) = value.as_object_mut()
+        && let Some(reports) = object.remove("findings")
+    {
+        object.entry("reports").or_insert(reports);
+    }
+    keep(value, &["reports", "benchmark_demands", "dispositions"]);
     keep_each(
         value,
-        "findings",
+        "reports",
         &[
             "severity",
             "file",
@@ -301,33 +283,54 @@ fn normalize(value: &mut serde_json::Value, contract: ReviewerResultContract) {
         "benchmark_demands",
         &["claim", "why", "suggested_method"],
     );
-    match contract {
-        ReviewerResultContract::V1 => {
-            keep_each(value, "disputes", &["claim_id", "position", "reason"])
-        }
-        ReviewerResultContract::V2 => {
-            keep_each(value, "dispositions", &["finding_id", "position", "reason"])
-        }
-    }
+    keep_each(value, "dispositions", &["finding_id", "position", "reason"]);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_proposal_declaration, parse_stage_output};
+    use super::{parse_proposal_declaration, parse_reviewer_result};
 
     #[test]
-    fn extra_fields_are_dropped_and_the_findings_survive() {
+    fn a_findings_keyed_answer_is_read_as_reports() {
+        // Hand-written command reviewers and older model answers name the array `findings`.
+        // The shape is identical, so the key is normalized instead of refusing a paid answer.
+        let answer = r#"{"findings":[
+  {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
+],"benchmark_demands":[],"dispositions":[]}"#;
+        let output = parse_reviewer_result(answer).unwrap();
+        assert_eq!(output.reports.len(), 1);
+        assert_eq!(output.reports[0].title, "T");
+    }
+
+    #[test]
+    fn a_disposition_position_outside_the_contract_is_refused() {
+        let answer = r#"{"reports":[],"benchmark_demands":[],
+"dispositions":[{"finding_id":"f1","position":"agree","reason":"why"}]}"#;
+        assert!(parse_reviewer_result(answer).is_err());
+        let accepted = r#"{"reports":[],"benchmark_demands":[],
+"dispositions":[{"finding_id":"f1","position":"corroborate","reason":"why"}]}"#;
+        let output = parse_reviewer_result(accepted).unwrap();
+        assert_eq!(output.dispositions[0].finding_id, "f1");
+        assert_eq!(
+            output.dispositions[0].position,
+            review_core::FindingDispositionPosition::Corroborate
+        );
+    }
+
+    #[test]
+    fn extra_fields_are_dropped_and_the_reports_survive() {
+        // A model that still answers with a verdict or summary is tolerated: both are dropped.
         let answer = r#"Verified against the scheduler first.
 
 ```json
-{"verdict":"block","summary":null,"findings":[
+{"verdict":"block","summary":"prose","reports":[
   {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F",
    "confidence":0.8,"failure_scenario":"a story the contract never asked for"}
-],"benchmark_demands":[],"disputes":[],"reviewer_notes":"extra"}
+],"benchmark_demands":[],"dispositions":[],"reviewer_notes":"extra"}
 ```"#;
-        let output = parse_stage_output(answer).unwrap();
-        assert_eq!(output.findings.len(), 1);
-        assert_eq!(output.findings[0].title, "T");
+        let output = parse_reviewer_result(answer).unwrap();
+        assert_eq!(output.reports.len(), 1);
+        assert_eq!(output.reports[0].title, "T");
     }
 
     #[test]
@@ -343,58 +346,56 @@ mod tests {
 ",
         ] {
             let answer = format!(
-                r#"{prefix}{{"verdict":"block","summary":null,"findings":[
+                r#"{prefix}{{"reports":[
   {{"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F",
    "confidence":0.8}}
-],"benchmark_demands":[],"disputes":[]}}"#
+],"benchmark_demands":[],"dispositions":[]}}"#
             );
-            let output = parse_stage_output(&answer).unwrap();
-            assert_eq!(output.findings.len(), 1);
+            let output = parse_reviewer_result(&answer).unwrap();
+            assert_eq!(output.reports.len(), 1);
         }
     }
 
     #[test]
     fn prose_with_no_json_anywhere_is_still_malformed() {
-        assert!(parse_stage_output("I looked at the code and it seems fine to me.").is_err());
+        assert!(parse_reviewer_result("I looked at the code and it seems fine to me.").is_err());
     }
 
     #[test]
     fn a_fenced_block_still_wins_over_a_bare_object() {
         // The fence is the model's explicit marker; a stray bare object earlier in the
         // prose must not preempt it.
-        let answer = r#"Draft: {"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}
+        let answer = r#"Draft: {"reports":[],"benchmark_demands":[],"dispositions":[]}
 
 ```json
-{"verdict":"block","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}
+{"reports":[
+  {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
+],"benchmark_demands":[],"dispositions":[]}
 ```"#;
-        let output = parse_stage_output(answer).unwrap();
-        assert_eq!(
-            format!("{:?}", output.verdict),
-            "Block",
-            "the fenced result governs"
-        );
+        let output = parse_reviewer_result(answer).unwrap();
+        assert_eq!(output.reports.len(), 1, "the fenced result governs");
     }
 
     #[test]
     fn a_missing_required_field_still_fails() {
-        // (`fix` is deliberately not the probe: the legacy schema allows a null fix at parse
-        // time and the ledger's importer is what enforces it, as `ImportReason::MissingFix`.)
-        let answer = r#"{"verdict":"block","summary":null,"findings":[
+        // (`fix` is deliberately not the probe: the flat result allows a null fix at parse
+        // time and ledger ingest is what enforces it, as `ReportAdmissionReason::MissingFix`.)
+        let answer = r#"{"reports":[
   {"file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
-],"benchmark_demands":[],"disputes":[]}"#;
+],"benchmark_demands":[],"dispositions":[]}"#;
         assert!(
-            parse_stage_output(answer).is_err(),
-            "a finding without a severity must not be normalized into one"
+            parse_reviewer_result(answer).is_err(),
+            "a report without a severity must not be normalized into one"
         );
     }
 
     #[test]
     fn proposal_transport_is_extracted_but_not_part_of_the_result() {
-        let answer = r#"{"verdict":"block","summary":null,"findings":[
+        let answer = r#"{"reports":[
   {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
-],"benchmark_demands":[],"disputes":[],"proposal":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\n","report_indexes":[0],"finding_ids":[],"evidence_ids":[],"paths":["src/lib.rs"],"description":"fix T","auto_apply_nominated":false}}"#;
-        let output = parse_stage_output(answer).unwrap();
-        assert_eq!(output.findings.len(), 1);
+],"benchmark_demands":[],"dispositions":[],"proposal":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\n","report_indexes":[0],"finding_ids":[],"evidence_ids":[],"paths":["src/lib.rs"],"description":"fix T","auto_apply_nominated":false}}"#;
+        let output = parse_reviewer_result(answer).unwrap();
+        assert_eq!(output.reports.len(), 1);
         let proposal = parse_proposal_declaration(answer).unwrap().unwrap();
         assert_eq!(proposal.report_indexes, vec![0]);
         assert_eq!(proposal.paths, vec!["src/lib.rs"]);
@@ -402,22 +403,22 @@ mod tests {
 
     #[test]
     fn more_than_one_proposal_cannot_fit_the_transport_shape() {
-        let answer = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[],"proposal":[]}"#;
+        let answer = r#"{"reports":[],"benchmark_demands":[],"dispositions":[],"proposal":[]}"#;
         assert!(parse_proposal_declaration(answer).is_err());
     }
 
     #[test]
     fn notes_transport_is_extracted_beside_the_flat_result() {
         use super::parse_notes_declaration;
-        let answer = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[],"notes":{"inspected":["src/lib.rs"],"model_of_change":"one cap","open_questions":[],"hints":[{"path":"src/lib.rs","note":"cap read once"}]}}"#;
-        let output = parse_stage_output(answer).unwrap();
-        assert!(output.findings.is_empty());
+        let answer = r#"{"reports":[],"benchmark_demands":[],"dispositions":[],"notes":{"inspected":["src/lib.rs"],"model_of_change":"one cap","open_questions":[],"hints":[{"path":"src/lib.rs","note":"cap read once"}]}}"#;
+        let output = parse_reviewer_result(answer).unwrap();
+        assert!(output.reports.is_empty());
         let notes = parse_notes_declaration(answer).unwrap().unwrap();
         assert_eq!(notes.inspected, vec!["src/lib.rs"]);
         assert_eq!(notes.hints[0].note, "cap read once");
-        let silent = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}"#;
+        let silent = r#"{"reports":[],"benchmark_demands":[],"dispositions":[]}"#;
         assert_eq!(parse_notes_declaration(silent).unwrap(), None);
-        let malformed = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[],"notes":{"verdict":"block"}}"#;
+        let malformed = r#"{"reports":[],"benchmark_demands":[],"dispositions":[],"notes":{"verdict":"block"}}"#;
         assert!(parse_notes_declaration(malformed).is_err());
     }
 }
@@ -428,24 +429,6 @@ mod tests {
 pub struct Grant {
     pub name: String,
     pub value: String,
-}
-
-/// What a reviewer invocation returns when it works: the parsed result, the cost receipt, and
-/// where the raw (redacted) answer lives.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ReviewerReturn {
-    pub output: LegacyStageOutput,
-    /// Optional transport declaration extracted from the same final answer. It is not part of
-    /// the persisted Reviewer Result and has no authority until the kernel verifies it.
-    pub proposal: Result<Option<ReviewerProposalDeclaration>, String>,
-    /// Optional Worker Notes extracted from the same final answer, the ADR-0038 pattern again.
-    /// The kernel bounds and records them; they never enter the persisted Reviewer Result.
-    pub notes: Result<Option<ReviewerNotesDeclaration>, String>,
-    /// Chargeable tokens: uncached input plus output when the provider distinguishes cache
-    /// reads. Zero for a deterministic `command` reviewer.
-    pub cost_tokens: u64,
-    /// CAS id of the redacted raw stdout. Kept whether or not it parsed.
-    pub raw_artifact: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -462,15 +445,6 @@ pub struct TokenUsage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_tokens: Option<u64>,
     pub chargeable_tokens: u64,
-}
-
-impl TokenUsage {
-    pub fn charge_only(chargeable_tokens: u64) -> Self {
-        Self {
-            chargeable_tokens,
-            ..Self::default()
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -632,7 +606,7 @@ pub enum InputTransport {
     /// A Markdown prompt on stdin: the package instructions, the output contract, then the
     /// labelled inputs.
     Prompt,
-    /// The typed `ReviewerInputs` JSON document on stdin; nothing when it encodes to `{}`.
+    /// The typed `ReviewerInputs` JSON document on stdin.
     Json,
 }
 
@@ -645,9 +619,17 @@ pub struct RenderedInput {
     pub manifest: ContextManifest,
 }
 
+/// Narrow a run's attention: the Campaign focus, under its own heading after the package
+/// instructions. A narrowing only — the package prompt still governs. The one formatting that
+/// `af review render` (through the adapters' `with_focus`) and the Task host share.
+pub fn append_focus(instructions: &mut String, focus: &str) {
+    instructions.push_str("\n\n## Focus for this run\n\n");
+    instructions.push_str(focus);
+}
+
 /// Compose a model Worker's prompt: the package instructions, the output contract, then the
 /// labelled inputs. A pure function of its arguments — no sandbox, Provider, or CAS — so what
-/// an adapter sends and what `af review render` shows are the same bytes by construction.
+/// the Task host sends and what `af review render` shows are the same bytes by construction.
 pub fn compose_model_prompt(
     instructions: &str,
     inputs: &ReviewerInputs,
@@ -662,7 +644,7 @@ pub fn compose_model_prompt(
     } else {
         instructions.to_string()
     };
-    prompt.push_str(result_contract(inputs.result_contract));
+    prompt.push_str(RESULT_CONTRACT_V2);
     let instruction_bytes = prompt.len();
     if resuming {
         inputs.render_delta_into(&mut prompt)?;
@@ -722,8 +704,7 @@ pub fn compose_model_prompt(
     Ok((prompt, manifest))
 }
 
-/// Compose a command Worker's input: the typed document exactly as the command adapter
-/// writes it to stdin (an empty document is `{}`, which the adapter then omits).
+/// Compose a command Worker's input: the typed document exactly as it is written to stdin.
 pub fn compose_command_input(
     inputs: &ReviewerInputs,
 ) -> Result<(Vec<u8>, ContextManifest), String> {
@@ -751,15 +732,6 @@ pub struct ReviewerAttemptContext {
     pub reserved_tokens: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ReceiptedReviewerReturn {
-    pub returned: ReviewerReturn,
-    pub usage: TokenUsage,
-    pub context_manifest: ContextManifest,
-}
-
-/// One reviewer dispatch behind one contract, whatever runs it — a deterministic command, a
-/// model CLI, or a stub in a test. The kernel holds these and nothing more specific.
 /// What one reviewer attempt is given beyond its sandbox: labelled data artifacts the kernel
 /// resolved for it. Data, never authority — an adapter renders these under an explicit label
 /// so the model weighs them as claims to re-examine, not as instructions to obey.
@@ -767,18 +739,14 @@ pub struct ReceiptedReviewerReturn {
 pub struct ReviewerInputs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempt_context: Option<ReviewerAttemptContext>,
-    /// The node's declared durable result contract. V1 is omitted to preserve legacy command
-    /// input bytes; V2 is explicit so every adapter renders and parses the same contract.
-    #[serde(skip_serializing_if = "reviewer_result_v1")]
+    /// The node's declared durable result contract, explicit so every adapter renders and
+    /// parses the same contract.
     pub result_contract: ReviewerResultContract,
     /// The campaign's findings from earlier rounds, as one JSON document.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prior_findings: Option<serde_json::Value>,
     #[serde(skip)]
     pub prior_findings_artifact_id: Option<String>,
-    /// Pinned Campaign policy used only to choose the matching prior-claim instructions.
-    #[serde(skip)]
-    pub finding_identity_policy: Option<String>,
     /// Kernel-generated reasons earlier attempts in this node were refused or fenced. These are
     /// labelled as data and JSON-encoded so a retry can correct a systematic contract failure
     /// without treating model-controlled text as prompt instructions.
@@ -812,11 +780,6 @@ pub struct ReviewerInputs {
     /// root and one environment variable, and the manifest lists it so the report can say so.
     #[serde(skip)]
     pub build_cache_artifact_id: Option<String>,
-    /// Sandbox-local environment the kernel resolved for this exact Attempt, such as
-    /// `CARGO_TARGET_DIR` pointing at a cloned Build Cache. Absolute host paths of one
-    /// temporary sandbox: never serialized, never rendered, never durable.
-    #[serde(skip)]
-    pub sandbox_environment: Vec<(String, String)>,
     /// Package P4: the session identity the kernel assigned this Attempt, derived from its
     /// Attempt ID. Present only for an adapter that hosts sessions and a node whose policy asks
     /// for the layer; the adapter passes it as `--session-id` so the transcript is the kernel's
@@ -836,10 +799,6 @@ pub struct ReviewerInputs {
 #[serde(deny_unknown_fields)]
 pub struct NotesRequest {
     pub max_bytes: u64,
-}
-
-fn reviewer_result_v1(contract: &ReviewerResultContract) -> bool {
-    *contract == ReviewerResultContract::V1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -965,7 +924,7 @@ impl ReviewerInputs {
 
     /// Validate the bound that applies even when the adapter transports the inputs as JSON
     /// instead of rendering them into a model prompt.
-    pub fn validate_refusal_history_bound(&self) -> Result<(), String> {
+    fn validate_refusal_history_bound(&self) -> Result<(), String> {
         self.rendered_refusal_history().map(drop)
     }
 
@@ -1039,14 +998,6 @@ impl ReviewerInputs {
         ))
     }
 
-    /// The prompt section a model adapter appends for these inputs. Empty when there is
-    /// nothing to deliver, so a first round's prompt is byte-identical to before.
-    pub fn render(&self) -> Result<String, String> {
-        let mut prompt = String::new();
-        self.render_into(&mut prompt)?;
-        Ok(prompt)
-    }
-
     /// The attempt-authority section, or nothing when no Attempt is bound yet.
     fn rendered_attempt_context_section(&self) -> Result<Option<String>, String> {
         let Some(context) = &self.attempt_context else {
@@ -1075,7 +1026,8 @@ impl ReviewerInputs {
         )))
     }
 
-    /// Append the prompt section without allocating a second complete prompt string.
+    /// Append the prompt section a model adapter adds for these inputs. Nothing is appended
+    /// when there is nothing to deliver, so a first round's prompt carries no empty section.
     pub fn render_into(&self, prompt: &mut String) -> Result<(), String> {
         if let Some(section) = self.rendered_attempt_context_section()? {
             prompt.push_str(&section);
@@ -1145,70 +1097,18 @@ impl ReviewerInputs {
     /// The prior-findings section, or nothing when this Attempt is assigned no prior claim.
     fn rendered_prior_findings_section(&self) -> Result<Option<String>, String> {
         if let Some(prior) = &self.prior_findings {
-            let persistence_guidance = match (
-                self.result_contract,
-                self.finding_identity_policy.as_deref(),
-            ) {
-                (
-                    ReviewerResultContract::V2,
-                    Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY),
-                ) => {
-                    "Every Finding in this exact Set is assigned to you. Return exactly one \
-                     `dispositions` entry for each `finding_id`: `corroborate` when the defect \
-                     persists, `not_reproduced` when the current Subject no longer exhibits it, \
-                     or `dispute` when the claim is wrong. Every disposition needs a concrete \
-                     reason. Do not use omission as a disposition, and do not emit a second flat \
-                     report for a Finding you have dispositioned."
-                }
-                (
-                    ReviewerResultContract::V1,
-                    Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY),
-                ) => {
-                    "A prior claim that still exists: confirm it in `disputes` with `claim_id` \
-                     set to the finding's key; do not emit a second flat report for the same claim."
-                }
-                (
-                    ReviewerResultContract::V1,
-                    None | Some(review_core::LEGACY_FINDING_IDENTITY_POLICY),
-                ) => {
-                    "A prior claim that still exists: re-report it with the same title and the \
-                     same canonical current location so the legacy identity policy can attach it."
-                }
-                (_, Some(policy)) => {
-                    return Err(format!(
-                        "cannot render prior-finding guidance for unknown identity policy `{policy}`"
-                    ));
-                }
-                (ReviewerResultContract::V2, None) => {
-                    return Err(
-                        "ReviewerResult@2 requires canonical Finding identity authority".into(),
-                    );
-                }
-            };
+            let persistence_guidance = "Every Finding in this exact Set is assigned to you. \
+                 Return exactly one `dispositions` entry for each `finding_id`: `corroborate` \
+                 when the defect persists, `not_reproduced` when the current Subject no longer \
+                 exhibits it, or `dispute` when the claim is wrong. Every disposition needs a \
+                 concrete reason. Do not use omission as a disposition, and do not emit a second \
+                 flat report for a Finding you have dispositioned.";
             let rendered =
                 serde_json::to_string_pretty(prior).map_err(|error| error.to_string())?;
-            let absence_guidance = match self.result_contract {
-                ReviewerResultContract::V1 => {
-                    "A claim you believe is wrong: dispute it with `claim_id` set to the \
-                     finding's key, position set to `refute`, and a concrete reason. A finding \
-                     the current code no longer exhibits: do not re-report it."
-                }
-                ReviewerResultContract::V2 => {
-                    "A finding the current code no longer exhibits still requires a \
-                     `not_reproduced` disposition."
-                }
-            };
-            let location_guidance = match self.result_contract {
-                ReviewerResultContract::V1 => {
-                    "re-locate a surviving claim with a canonical current repository-relative \
-                     `file`, or use an empty `file` only when it is truly change-wide, instead \
-                     of confirming it only in `disputes`"
-                }
-                ReviewerResultContract::V2 => {
-                    "use its `corroborate` disposition and explain any current location in the \
-                     reason; do not emit a duplicate flat report for that Finding"
-                }
-            };
+            let absence_guidance = "A finding the current code no longer exhibits still \
+                 requires a `not_reproduced` disposition.";
+            let location_guidance = "use its `corroborate` disposition and explain any current \
+                 location in the reason; do not emit a duplicate flat report for that Finding";
             if rendered.len() > MAX_PRIOR_FINDINGS_BYTES {
                 return Err(format!(
                     "exact prior Finding Set is {} bytes; maximum is {} bytes and partitioning is required",
@@ -1343,29 +1243,12 @@ fn patch_fence(patch: &str) -> String {
     "~".repeat(longest.max(2) + 1)
 }
 
-/// `Send + Sync` is part of the contract: the scheduler dispatches reviewers from worker
-/// threads, and an adapter is plain configuration plus an `invoke` — it holds no mutable
-/// state between calls.
-pub trait ReviewerAdapter: Send + Sync {
-    /// Credential boundary this adapter actually provides. Pipeline v4 compares this fact with
-    /// captured project authority before any reviewer dispatch.
-    fn credential_mode(&self) -> BrokerCredentialModeV1 {
-        BrokerCredentialModeV1::CredentialFree
-    }
-
-    fn invoke(
-        &self,
-        cas: &Cas,
-        sandbox_root: &Path,
-        inputs: &ReviewerInputs,
-    ) -> Result<ReviewerReturn, RunnerError>;
-
-    /// The exact bytes this adapter would send for `inputs`, without sending them. `None` for
-    /// adapters with no fixed input encoding, such as in-process test stubs.
-    fn render_input(&self, inputs: &ReviewerInputs) -> Result<Option<RenderedInput>, RunnerError> {
-        let _ = inputs;
-        Ok(None)
-    }
+/// How a reviewer package's first-Attempt input is shown: `af review render` builds one of these
+/// from the digest-pinned package and asks for the exact bytes, which are the bytes the Task
+/// host composes at dispatch.
+pub trait ReviewerAdapter {
+    /// The exact bytes this adapter's Worker receives for `inputs`, without sending them.
+    fn render_input(&self, inputs: &ReviewerInputs) -> Result<RenderedInput, RunnerError>;
 
     /// The session half of this adapter, or `None` when it cannot host a kernel-assigned
     /// session and resume it forked. The default refuses the layer, which is how every adapter
@@ -1373,160 +1256,22 @@ pub trait ReviewerAdapter: Send + Sync {
     fn session_layer(&self) -> Option<&dyn crate::session::SessionLayer> {
         None
     }
-
-    fn invoke_receipted(
-        &self,
-        cas: &Cas,
-        sandbox_root: &Path,
-        inputs: &ReviewerInputs,
-    ) -> Result<ReceiptedReviewerReturn, RunnerError> {
-        let context_manifest =
-            ContextManifest::command_input(inputs).map_err(RunnerError::Refused)?;
-        let returned = self.invoke(cas, sandbox_root, inputs)?;
-        Ok(ReceiptedReviewerReturn {
-            usage: TokenUsage::charge_only(returned.cost_tokens),
-            returned,
-            context_manifest,
-        })
-    }
-
-    /// Invoke under an optional broker capability. Credential-free and legacy trusted adapters
-    /// retain their existing path; a broker-capable adapter must override this method and consume
-    /// the opaque client without receiving the broker's credential.
-    fn invoke_with_broker(
-        &self,
-        cas: &Cas,
-        sandbox_root: &Path,
-        inputs: &ReviewerInputs,
-        broker: Option<&dyn BrokerClient>,
-    ) -> Result<ReceiptedReviewerReturn, RunnerError> {
-        if broker.is_some() {
-            return Err(RunnerError::Refused(
-                "reviewer adapter does not consume Broker Handles".into(),
-            ));
-        }
-        self.invoke_receipted(cas, sandbox_root, inputs)
-    }
 }
 
-/// The `command` adapter behind the same contract: deterministic, credential-free, cost zero.
-#[derive(Debug, Clone)]
-pub struct CommandAdapter {
-    command: Command,
-    timeout: Duration,
-}
-
-impl CommandAdapter {
-    pub fn new(command: Command, timeout: Duration) -> Self {
-        Self { command, timeout }
-    }
-}
-
-fn invoke_command(
-    command: &Command,
-    runner: crate::CommandRunner<'_>,
-    cas: &Cas,
-    inputs: &ReviewerInputs,
-) -> Result<ReviewerReturn, RunnerError> {
-    inputs
-        .validate_refusal_history_bound()
-        .map_err(RunnerError::Refused)?;
-    let mut runner = runner;
-    for (name, value) in &inputs.sandbox_environment {
-        runner = runner.with_env(name, value);
-    }
-    // The serialized document itself decides whether stdin exists. Adding a future input field
-    // cannot silently create durable AttemptInput authority that this adapter drops.
-    let encoded =
-        serde_json::to_vec(inputs).map_err(|error| RunnerError::Refused(error.to_string()))?;
-    let (output, raw_artifact) = if encoded == b"{}" {
-        runner.invoke_raw(command)?
-    } else {
-        runner.invoke_raw_with_input_for(command, encoded, inputs.result_contract)?
-    };
-    let raw = cas
-        .get(&raw_artifact)
-        .map_err(|error| RunnerError::Unavailable(error.to_string()))?;
-    let proposal = std::str::from_utf8(&raw)
-        .map_err(|error| error.to_string())
-        .and_then(parse_proposal_declaration);
-    let notes = std::str::from_utf8(&raw)
-        .map_err(|error| error.to_string())
-        .and_then(parse_notes_declaration);
-    Ok(ReviewerReturn {
-        output,
-        proposal,
-        notes,
-        cost_tokens: 0,
-        raw_artifact,
-    })
-}
+/// The `command` adapter: a deterministic, credential-free Worker whose input is the typed
+/// `ReviewerInputs` document.
+#[derive(Debug, Clone, Copy)]
+pub struct CommandAdapter;
 
 impl ReviewerAdapter for CommandAdapter {
-    fn render_input(&self, inputs: &ReviewerInputs) -> Result<Option<RenderedInput>, RunnerError> {
+    fn render_input(&self, inputs: &ReviewerInputs) -> Result<RenderedInput, RunnerError> {
         let (bytes, manifest) = compose_command_input(inputs).map_err(RunnerError::Refused)?;
-        Ok(Some(RenderedInput {
+        Ok(RenderedInput {
             transport: InputTransport::Json,
             bytes,
             manifest,
-        }))
+        })
     }
-
-    fn invoke(
-        &self,
-        cas: &Cas,
-        sandbox_root: &Path,
-        inputs: &ReviewerInputs,
-    ) -> Result<ReviewerReturn, RunnerError> {
-        invoke_command(
-            &self.command,
-            crate::CommandRunner::new(cas, sandbox_root).with_timeout(self.timeout),
-            cas,
-            inputs,
-        )
-    }
-}
-
-/// Programmatic callers retain the bounded default; the `af` CLI binds [`CommandAdapter`] with the
-/// exact timeout captured in the Campaign Manifest.
-impl ReviewerAdapter for Command {
-    fn render_input(&self, inputs: &ReviewerInputs) -> Result<Option<RenderedInput>, RunnerError> {
-        let (bytes, manifest) = compose_command_input(inputs).map_err(RunnerError::Refused)?;
-        Ok(Some(RenderedInput {
-            transport: InputTransport::Json,
-            bytes,
-            manifest,
-        }))
-    }
-
-    fn invoke(
-        &self,
-        cas: &Cas,
-        sandbox_root: &Path,
-        inputs: &ReviewerInputs,
-    ) -> Result<ReviewerReturn, RunnerError> {
-        invoke_command(
-            self,
-            crate::CommandRunner::new(cas, sandbox_root),
-            cas,
-            inputs,
-        )
-    }
-}
-
-/// The raw capture of one supervised process, after redaction.
-///
-/// A nonzero exit is *in* the capture, not an error: what a provider's failure means — spent
-/// or not spent, retryable or fatal — is the adapter's call, usually made by reading the very
-/// output captured here. [`require_success`](Self::require_success) is the shortcut for
-/// adapters with nothing to read.
-#[derive(Debug, Clone)]
-pub struct RawCapture {
-    pub status: std::process::ExitStatus,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
-    /// CAS id of the redacted stdout.
-    pub raw_artifact: String,
 }
 
 /// Process evidence remains available for usage accounting even when the deadline or CAS
@@ -1537,24 +1282,6 @@ pub struct SettledCapture {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub raw_artifact_ids: Vec<String>,
-}
-
-impl RawCapture {
-    /// Map a nonzero exit to [`RunnerError::Failed`] with the last (redacted) stderr line.
-    pub fn require_success(self) -> Result<RawCapture, RunnerError> {
-        if self.status.success() {
-            return Ok(self);
-        }
-        let excerpt = String::from_utf8_lossy(&self.stderr)
-            .lines()
-            .last()
-            .unwrap_or_default()
-            .to_string();
-        Err(RunnerError::Failed {
-            exit_code: self.status.code().unwrap_or(-1),
-            stderr_excerpt: excerpt,
-        })
-    }
 }
 
 pub struct ModelRunner {
@@ -1594,68 +1321,19 @@ impl ModelRunner {
         self
     }
 
-    /// Run the command to completion or deadline. Stdout is redacted and stored to the CAS
-    /// before this returns, so even a failure leaves the bytes inspectable.
-    pub fn capture(&self, cas: &Cas, command: &Command) -> Result<RawCapture, RunnerError> {
-        self.capture_inner(cas, command, None)
-    }
-
-    /// Run a model command with its prompt on stdin, outside argv's platform-sized ceiling.
-    pub fn capture_with_stdin(
-        &self,
-        cas: &Cas,
-        command: &Command,
-        input: Vec<u8>,
-    ) -> Result<RawCapture, RunnerError> {
-        self.capture_inner(cas, command, Some(input))
-    }
-
-    fn capture_inner(
-        &self,
-        cas: &Cas,
-        command: &Command,
-        input: Option<Vec<u8>>,
-    ) -> Result<RawCapture, RunnerError> {
-        let capture = self.capture_process(command, input, None);
-        let status = capture.status.map_err(|error| match error {
-            RunnerError::TimedOut { after_ms, .. } => RunnerError::TimedOut {
-                after_ms,
-                raw_artifact: cas.put(&capture.stdout).ok(),
-            },
-            error => error,
-        })?;
-        let raw_artifact = cas
-            .put(&capture.stdout)
-            .map_err(|e| RunnerError::Unavailable(format!("storing raw output: {e}")))?;
-        Ok(RawCapture {
-            status,
-            stdout: capture.stdout,
-            stderr: capture.stderr,
-            raw_artifact,
-        })
-    }
-
-    /// Task adapters decode usage from both successful and failed process captures. Storage
-    /// failure refuses the output without erasing usage that was already reported on stdout.
-    pub fn capture_settled_with_stdin(
-        &self,
-        cas: &Cas,
-        command: &Command,
-        input: Vec<u8>,
-    ) -> SettledCapture {
-        self.capture_settled_with_stdin_controlled(cas, command, input, None)
-    }
-
-    /// Cooperative process cancellation preserves the same redacted bytes and CAS-failure
-    /// accounting as the ordinary settled capture. None retains the original transport.
-    pub fn capture_settled_with_stdin_controlled(
+    /// Run a command with its input on stdin, outside argv's platform-sized ceiling, until it
+    /// exits, reaches its deadline or observes cooperative cancellation. Redacted stdout and
+    /// stderr are stored to the CAS before this returns, so even a failure leaves the bytes
+    /// inspectable; a storage failure refuses the output without erasing usage the adapter
+    /// can still decode from stdout.
+    pub fn capture(
         &self,
         cas: &Cas,
         command: &Command,
         input: Vec<u8>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> SettledCapture {
-        let mut capture = self.capture_process(command, Some(input), cancellation);
+        let mut capture = self.capture_process(command, input, cancellation);
         for bytes in [&capture.stdout, &capture.stderr] {
             if bytes.is_empty() {
                 continue;
@@ -1675,7 +1353,7 @@ impl ModelRunner {
     fn capture_process(
         &self,
         command: &Command,
-        input: Option<Vec<u8>>,
+        input: Vec<u8>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> SettledCapture {
         let mut capture = SettledCapture {
@@ -1709,8 +1387,10 @@ impl ModelRunner {
             cmd.env(&grant.name, &grant.value);
         }
         let output = match cancellation {
-            Some(flag) => run_supervised_captured_cancellable(&mut cmd, input, self.timeout, flag),
-            None => run_supervised_captured(&mut cmd, input, self.timeout),
+            Some(flag) => {
+                run_supervised_captured_cancellable(&mut cmd, Some(input), self.timeout, flag)
+            }
+            None => run_supervised_captured(&mut cmd, Some(input), self.timeout),
         };
         capture.stdout = redact(output.stdout, &self.grants);
         capture.stderr = redact(output.stderr, &self.grants);
@@ -1722,7 +1402,6 @@ impl ModelRunner {
         capture.status = output.status.map_err(|error| match error {
             SupervisedError::TimedOut { .. } => RunnerError::TimedOut {
                 after_ms: self.timeout.as_millis() as u64,
-                raw_artifact: None,
             },
             SupervisedError::Spawn(error) => {
                 RunnerError::Unavailable(format!("{}: {error}", command.program))

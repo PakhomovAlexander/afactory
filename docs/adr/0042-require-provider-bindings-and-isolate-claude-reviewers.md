@@ -1,6 +1,9 @@
 # Require Provider bindings and isolate Claude reviewers
 
-**Status:** accepted (2026-09-01)
+**Status:** accepted (2026-09-01); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the durable, fenced, charged Provider Operation
+that doctor and run shared, with its Campaign/Round admission evidence and smoke budget. Both
+commands now admit Providers through the Review Task's captured Provider admission Attempts.
 
 Every packaged model Worker must be bound explicitly with `--provider NODE=ID`. Missing bindings,
 unknown node names, unavailable contexts, failed structural authentication, failed inference

@@ -5,9 +5,11 @@ use review_core::EventType;
 use review_core::task::TaskPhaseV1;
 use review_core::task::execution::TaskExecutionRecordV1;
 use review_pipeline::task::TaskRuntime;
+use review_pipeline::task::campaign_review::plan::CampaignReviewPlanCompiler;
+use review_pipeline::task::campaign_review::{
+    CapturedCampaignReviewRound, host::CampaignReviewTaskHost,
+};
 use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
-use review_pipeline::task::legacy_review::plan::LegacyReviewPlanCompiler;
-use review_pipeline::task::legacy_review::{CapturedLegacyReviewRound, host::LegacyReviewTaskHost};
 use review_store::{Cas, EventStore, NewEvent, SharedEventStore};
 use std::collections::BTreeMap;
 
@@ -18,27 +20,44 @@ kind = "whole-tree"
 [[nodes]]
 id = "generation"
 kind = "generation"
-outputs = [
-  { name = "assigned", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-  { name = "history", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
-]
+outputs = [{ name = "history", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 runner = { program = "/bin/true" }
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
+inputs = [{ name = "reports", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[edges]]
+from = { node = "generation", port = "history" }
+to = { node = "reviewer", port = "prior_findings" }
 [[edges]]
 from = { node = "reviewer", port = "result" }
 to = { node = "ledger", port = "reports" }
 "#;
 
-fn command_pipeline_returning(result: &str) -> String {
-    let command = format!("cat >/dev/null; printf '%s' '{result}'");
+/// A reviewer that answers `result` and dispositions the one prior Finding it is assigned in a
+/// later Round `not_reproduced`, which changes no Ledger state, reading its ID from its input.
+fn command_pipeline_returning(result: &serde_json::Value) -> String {
+    let mut answered = result.clone();
+    answered["dispositions"] = serde_json::json!([{
+        "finding_id": "FINDING", "position": "not_reproduced", "reason": "re-reported as its own claim",
+    }]);
+    let quoted = |text: &str| text.replace('\'', "'\\''");
+    let answered = answered.to_string();
+    let (head, tail) = answered.split_once("FINDING").unwrap();
+    let command = format!(
+        "finding=$(sed -n 's/.*\"finding_id\":\"\\(sha256:[0-9a-f]*\\)\".*/\\1/p'); \
+         if test -n \"$finding\"; then printf '%s%s%s' '{}' \"$finding\" '{}'; \
+         else printf '%s' '{}'; fi",
+        quoted(head),
+        quoted(tail),
+        quoted(&result.to_string()),
+    );
     PIPELINE.replace(
         "runner = { program = \"/bin/true\" }",
         &format!(
@@ -68,7 +87,7 @@ mod plan {
     use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
     use review_core::task::{TaskResultV1, TaskRevisionV1};
     use review_graph::task::OperatorAttemptCost;
-    use review_pipeline::task::legacy_review::plan::ReviewPlanSettings;
+    use review_pipeline::task::campaign_review::plan::ReviewPlanSettings;
     use review_pipeline::task::{TaskOperatorHost, TaskWorkOutput};
     use review_store::store::task::execution::PreparedTaskAttempt;
     // Admission must not reach execution or silently grant domain acceptance.
@@ -78,7 +97,8 @@ mod plan {
             &self,
             _: &Cas,
             _: &TaskInvocationV1,
-            _: &[String],
+            _definition: &review_graph::task::CompiledNode,
+            _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
             panic!("plan admission rendered Worker context")
         }
@@ -86,7 +106,9 @@ mod plan {
             &self,
             _: &Cas,
             _: &TaskInvocationV1,
+            _definition: &review_graph::task::CompiledNode,
             _: Option<&PreparedTaskAttempt>,
+            _cancellation: Option<&std::sync::atomic::AtomicBool>,
         ) -> TaskWorkOutput {
             panic!("plan admission executed work")
         }
@@ -96,7 +118,7 @@ mod plan {
             &self,
             _: &Cas,
             _: &TaskInvocationV1,
-            _: &[String],
+            _: &review_store::store::task::execution::ReservedTaskAttempt,
             _: &str,
         ) -> Result<(), String> {
             Err("not executing".into())
@@ -108,6 +130,7 @@ mod plan {
             _: &ExecutionPlanV1,
             _: &TaskInvocationV1,
             _: &TaskOutputV1,
+            _definition: &review_graph::task::CompiledNode,
         ) -> Result<(), String> {
             Err("not executing".into())
         }
@@ -124,7 +147,7 @@ mod plan {
     pub(super) fn settings() -> ReviewPlanSettings {
         ReviewPlanSettings {
             mode: "light".into(),
-            resources: review_config::task::legacy_review::resources::ReviewResourcePolicy {
+            resources: review_config::task::campaign_review::resources::ReviewResourcePolicy {
                 uncapped_attempt_tokens: 1,
             },
             outputs: BTreeMap::from([(
@@ -163,19 +186,18 @@ fn admit_heavy(
     store: &mut EventStore,
     declared_demands: bool,
 ) -> (
-    LegacyReviewPlanCompiler,
+    CampaignReviewPlanCompiler,
     review_store::store::task::TaskLease,
 ) {
     let returned = serde_json::json!({
-        "verdict":"request-changes", "summary":null,
         "findings":[{"severity":"major", "file":".af/pipelines/review.toml", "line":1,
             "title":"Missing required behavior", "body":"The required behavior is absent",
             "fix":"Implement the missing behavior", "confidence":0.9,
             "rule_id":"fixture/required-behavior@1", "occurrence_key":"required-behavior"}],
         "benchmark_demands":[{"claim":"latency is bounded", "why":"measure the acceptance limit",
-            "suggested_method":"run the latency benchmark"}], "disputes":[]
+            "suggested_method":"run the latency benchmark"}], "dispositions":[]
     });
-    let definition = command_pipeline_returning(&returned.to_string());
+    let definition = command_pipeline_returning(&returned);
     let definition = if declared_demands {
         definition.replace(
         "outputs = [{ name = \"findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"same_subject\" }]",
@@ -192,7 +214,7 @@ pub(super) fn admit_heavy_definition(
     store: &mut EventStore,
     definition: &str,
 ) -> (
-    LegacyReviewPlanCompiler,
+    CampaignReviewPlanCompiler,
     review_store::store::task::TaskLease,
 ) {
     admit_heavy_definition_with_limits(cas, store, definition, capture::limits())
@@ -204,7 +226,7 @@ pub(super) fn admit_heavy_definition_with_limits(
     definition: &str,
     limits: review_core::task::TaskLimitsV1,
 ) -> (
-    LegacyReviewPlanCompiler,
+    CampaignReviewPlanCompiler,
     review_store::store::task::TaskLease,
 ) {
     let round = captured_fixture::open_round_authority_with_convergence(
@@ -220,14 +242,11 @@ pub(super) fn admit_heavy_definition_with_limits(
     );
     let mut settings = plan::settings();
     settings.mode = "heavy".into();
-    let compiler = LegacyReviewPlanCompiler::capture_v3(
+    let compiler = CampaignReviewPlanCompiler::capture(
         cas,
-        CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap(),
+        CapturedCampaignReviewRound::load(cas, store, "review", &round).unwrap(),
         cas.put(b"heavy Review fixture engine").unwrap(),
-        review_pipeline::task::legacy_review::plan::ReviewPlanSettingsV2 {
-            review: settings,
-            provider_probes: BTreeMap::new(),
-        },
+        settings,
     )
     .unwrap();
     let task = compiler
@@ -236,7 +255,7 @@ pub(super) fn admit_heavy_definition_with_limits(
     let revision_id = plan::artifact(cas, review_core::task::TASK_REVISION_V1, &task);
     let compiled = compiler.compile(cas, &revision_id).unwrap().0;
     let plan_id = plan::artifact(cas, review_core::task::EXECUTION_PLAN_V1, &compiled);
-    let authority = CapturedTaskAuthority::for_legacy_review(
+    let authority = CapturedTaskAuthority::for_campaign_review(
         &compiler,
         &plan::RefuseExecution,
         &NoTaskDeveloper,
@@ -260,11 +279,8 @@ pub(super) fn observe_charge(
 ) {
     let usage_id = plan::artifact(
         cas,
-        review_core::task::usage::TASK_TOKEN_USAGE_V1,
-        review_core::task::usage::TaskTokenUsageV1 {
-            chargeable_tokens: charge.into(),
-            ..Default::default()
-        },
+        review_core::task::usage::TASK_TOKEN_USAGE_V3,
+        review_core::task::usage::TaskTokenUsageV3::charge_only(u128::from(charge)),
     );
     store
         .observe_task_usage(
@@ -404,7 +420,7 @@ pub fn run_numeric_rounds(
     let mut store = EventStore::open(temp.path().join("events.sqlite")).unwrap();
     let (compiler, lease) = admit_heavy(&cas, &mut store, declared_demands);
     let shared = SharedEventStore::new(&mut store);
-    let host = LegacyReviewTaskHost::new(
+    let host = CampaignReviewTaskHost::new(
         &cas,
         shared.clone(),
         &compiler,
@@ -412,7 +428,7 @@ pub fn run_numeric_rounds(
         BTreeMap::new(),
     )
     .unwrap();
-    let authority = CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+    let authority = CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
     let runtime =
         TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host).unwrap();
     assert!(runtime.execute().unwrap().complete());
@@ -439,7 +455,7 @@ pub fn run_numeric_rounds(
     assert!(conclusion.can_continue);
     assert!(!conclusion.resources_failed);
     assert_eq!(runtime.projection().unwrap().phase, TaskPhaseV1::Running {});
-    let reopened = LegacyReviewTaskHost::new(
+    let reopened = CampaignReviewTaskHost::new(
         &cas,
         shared.clone(),
         &compiler,
@@ -482,7 +498,7 @@ pub fn run_numeric_rounds(
         );
         let candidate_id = plan::artifact(&cas, review_core::task::TASK_RESULT_V1, candidate);
         let finish_authority =
-            CapturedTaskAuthority::for_legacy_review(&compiler, assembly_host, &NoTaskDeveloper);
+            CapturedTaskAuthority::for_campaign_review(&compiler, assembly_host, &NoTaskDeveloper);
         assert!(
             shared
                 .lock()
@@ -495,9 +511,9 @@ pub fn run_numeric_rounds(
     }
     assert_eq!(runtime.projection().unwrap().phase, TaskPhaseV1::Running {});
     let next_round = start_next_round(&cas, &mut shared.lock().unwrap(), declared_demands);
-    let successor = LegacyReviewPlanCompiler::reopen(
+    let successor = CampaignReviewPlanCompiler::reopen(
         &cas,
-        CapturedLegacyReviewRound::load(&cas, &shared.lock().unwrap(), "review", &next_round)
+        CapturedCampaignReviewRound::load(&cas, &shared.lock().unwrap(), "review", &next_round)
             .unwrap(),
         &state.revision.provenance.adapter_id,
         compiler.policy_id(),
@@ -583,19 +599,13 @@ pub fn run_numeric_rounds(
         review_store::store::task::review_handoff::capture_task_review_handoff(&cas, &handoff)
             .unwrap();
     let next_authority =
-        CapturedTaskAuthority::for_legacy_review(&successor, &host, &NoTaskDeveloper);
+        CapturedTaskAuthority::for_campaign_review(&successor, &host, &NoTaskDeveloper);
     let transition = shared
         .lock()
         .unwrap()
         .continue_task_review(&cas, &lease, &handoff_id, &next_authority)
         .unwrap();
-    assert_eq!(transition.event_type, EventType::TaskTransitionV2);
-    assert!(
-        serde_json::from_value::<review_core::task::event::TaskTransitionV1>(
-            transition.payload.clone()
-        )
-        .is_err()
-    );
+    assert_eq!(transition.event_type, EventType::TaskTransitionV5);
     assert_eq!(
         review_store::store::task::review_handoff::read_task_transition(&transition)
             .unwrap()
@@ -629,7 +639,7 @@ pub fn run_numeric_rounds(
         .unwrap()
         .admit_task_plan(&cas, &lease, &next_authority)
         .unwrap();
-    let next_host = LegacyReviewTaskHost::new(
+    let next_host = CampaignReviewTaskHost::new(
         &cas,
         shared.clone(),
         &successor,
@@ -638,7 +648,7 @@ pub fn run_numeric_rounds(
     )
     .unwrap();
     let next_authority =
-        CapturedTaskAuthority::for_legacy_review(&successor, &next_host, &NoTaskDeveloper);
+        CapturedTaskAuthority::for_campaign_review(&successor, &next_host, &NoTaskDeveloper);
     let next_runtime = TaskRuntime::with_store(
         shared.clone(),
         &cas,
@@ -784,10 +794,15 @@ pub fn run_numeric_rounds(
     drop(locked);
     if finish_terminal_round {
         let third_round = start_next_round(&cas, &mut shared.lock().unwrap(), declared_demands);
-        let third_compiler = LegacyReviewPlanCompiler::reopen(
+        let third_compiler = CampaignReviewPlanCompiler::reopen(
             &cas,
-            CapturedLegacyReviewRound::load(&cas, &shared.lock().unwrap(), "review", &third_round)
-                .unwrap(),
+            CapturedCampaignReviewRound::load(
+                &cas,
+                &shared.lock().unwrap(),
+                "review",
+                &third_round,
+            )
+            .unwrap(),
             &second_state.revision.provenance.adapter_id,
             successor.policy_id(),
         )
@@ -817,8 +832,11 @@ pub fn run_numeric_rounds(
                 &third_handoff,
             )
             .unwrap();
-        let third_authority =
-            CapturedTaskAuthority::for_legacy_review(&third_compiler, &next_host, &NoTaskDeveloper);
+        let third_authority = CapturedTaskAuthority::for_campaign_review(
+            &third_compiler,
+            &next_host,
+            &NoTaskDeveloper,
+        );
         shared
             .lock()
             .unwrap()
@@ -829,7 +847,7 @@ pub fn run_numeric_rounds(
             .unwrap()
             .admit_task_plan(&cas, &lease, &third_authority)
             .unwrap();
-        let third_host = LegacyReviewTaskHost::new(
+        let third_host = CampaignReviewTaskHost::new(
             &cas,
             shared.clone(),
             &third_compiler,
@@ -837,7 +855,7 @@ pub fn run_numeric_rounds(
             BTreeMap::new(),
         )
         .unwrap();
-        let third_authority = CapturedTaskAuthority::for_legacy_review(
+        let third_authority = CapturedTaskAuthority::for_campaign_review(
             &third_compiler,
             &third_host,
             &NoTaskDeveloper,

@@ -1,6 +1,8 @@
 # ADR-0063: Require goal acceptance alongside embedded Review
 
-Status: accepted for the Task increment implementation; unreleased.
+Status: accepted for the Task increment implementation; unreleased. Superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): persisted legacy contracts, the frozen v0.8.0
+fixtures and the compatibility gate.
 
 ## Context
 

@@ -1,6 +1,8 @@
 # Transport proposal declarations beside Reviewer Results
 
-**Status:** accepted (2026-08-31)
+**Status:** accepted (2026-08-31); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): `ReviewerResult@1`. The runner extracts the
+declaration before normalizing `ReviewerResult@2`, the only reviewer result.
 
 Reviewers may return one optional Proposal declaration beside the flat fields of their final
 Reviewer Result. The declaration carries the exact Git patch text, its complete declared path

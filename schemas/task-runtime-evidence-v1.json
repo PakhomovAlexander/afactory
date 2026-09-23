@@ -32,7 +32,7 @@
       "required": ["span_id", "kind", "label", "started_unix_ms", "elapsed_ms"],
       "properties": {
         "span_id": {"$ref": "#/$defs/digest"},
-        "kind": {"enum": ["check", "dependency_preparation", "verification"]},
+        "kind": {"enum": ["check", "dependency_preparation"]},
         "label": {"$ref": "#/$defs/name"},
         "started_unix_ms": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
         "elapsed_ms": {"$ref": "#/$defs/safe"}
@@ -40,20 +40,17 @@
     },
     "cache": {
       "type": "object", "additionalProperties": false,
-      "required": ["observation_id", "layer", "kind", "eligible", "result", "source_digest", "bytes_available", "lookup_ms", "materialization_ms"],
+      "required": ["observation_id", "kind", "eligible", "source_digest", "bytes_available", "lookup_ms", "materialization_ms"],
       "properties": {
         "observation_id": {"$ref": "#/$defs/digest"},
-        "layer": {"enum": ["dependency_preparation", "tool_internal", "provider_internal"]},
         "kind": {"$ref": "#/$defs/name"},
         "eligible": {"type": "boolean"},
-        "result": {"enum": ["prepared", "hit", "miss", "unknown"]},
         "source_digest": {"$ref": "#/$defs/digest"},
         "toolchain_id": {"$ref": "#/$defs/digest"},
         "bytes_available": {"$ref": "#/$defs/safe"},
         "lookup_ms": {"$ref": "#/$defs/safe"},
         "materialization_ms": {"$ref": "#/$defs/safe"}
-      },
-      "allOf": [{"if": {"properties": {"layer": {"const": "dependency_preparation"}}}, "then": {"properties": {"result": {"const": "prepared"}}}}]
+      }
     }
   }
 }

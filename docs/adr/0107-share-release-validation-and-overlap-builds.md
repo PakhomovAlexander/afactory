@@ -1,7 +1,12 @@
 # Share release validation and overlap builds
 
-**Status:** accepted (2026-09-17). Refines ADR-0045 execution scheduling; preserves
-its tagged-source checks, consumer validation and signed publication requirements.
+**Status:** accepted (2026-09-17). Refines ADR-0045 execution scheduling; preserves its
+tagged-source checks, consumer validation and signed publication requirements. Superseded in
+part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the CI-economics report that computed
+wall time apart from summed runner time was dropped before GA. `scripts/ci-step.py` records one
+`af.ci-step/1` per step, whose `tokens` and `billed_runner_minutes` are always null because a
+step's elapsed time is neither provider nor GitHub billing; a wall-versus-runner comparison is
+read from `gh run view`.
 
 RC3 spent 28m 34s in the release workflow after two sequential PR gates. Release
 builds waited for validation despite being independent, main repeated Linux checks,
@@ -43,8 +48,8 @@ protection or ruleset that names the old PR contexts when rolling this out. The 
 repository had no protection rules or rulesets when inspected for this PR; no remote
 rule mutation is needed. The README badge follows the main Release workflow.
 
-See [release performance](../development/release-performance.md) for the observed
-baseline, workflow graph, measurement commands and limits of savings estimates.
+See the release performance record, kept in git history, for the observed baseline, workflow
+graph, measurement commands and limits of savings estimates.
 
 Local native-provider probe timeouts block promoting nextest to the required CI gate.
 Keep this rollout decision separate from the independent workflow/cache improvements.
