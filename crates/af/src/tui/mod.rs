@@ -855,30 +855,30 @@ impl App {
     /// After a hand-off: read the scope again, since the child may have changed what the
     /// panes show, and say how it went.
     fn finish(&mut self, outcome: Result<(), String>, done: String) {
-        self.reload();
-        match outcome {
-            Ok(()) => self.say(done),
-            Err(error) => self.say_error(error),
+        // A configuration that no longer loads is the news, whatever the child did: the
+        // settings on screen are the old ones, and saying "edited" would call them current.
+        match (self.reload(), outcome) {
+            (Err(stale), _) => self.say_error(stale),
+            (Ok(()), Ok(())) => self.say(done),
+            (Ok(()), Err(error)) => self.say_error(error),
         }
     }
 
-    fn reload(&mut self) {
-        match self.scope.reload() {
-            Ok(scope) => self.scope = scope,
-            Err(error) => self.say_error(error),
-        }
-        let loaded = self.panes.settings.load(&self.scope);
-        if let Err(error) = loaded {
-            self.say_error(error);
-        }
+    /// Read the scope and the settings pane again. On failure the scope and the pane keep
+    /// what they showed, and the error names why they are stale.
+    fn reload(&mut self) -> Result<(), String> {
+        self.scope = self.scope.reload()?;
+        self.panes.settings.load(&self.scope)
     }
 
     /// `R`: the opened pane reads everything again.
     fn refresh(&mut self) {
         let tab = self.opened_tab();
         if tab.is_none() {
-            self.reload();
-            self.say("settings read again");
+            match self.reload() {
+                Ok(()) => self.say("settings read again"),
+                Err(error) => self.say_error(format!("settings not refreshed: {error}")),
+            }
             return;
         }
         let refreshed = self.panes.get_mut(tab).refresh(&self.scope);

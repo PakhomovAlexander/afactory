@@ -236,7 +236,10 @@ impl Pane for PipelinesPane {
     fn status(&self, row: usize) -> Option<String> {
         let entry = self.selected_entry()?;
         let preview = self.previews.get(&entry.id)?.as_ref().ok()?;
-        preview.slots.get(&row).cloned()
+        // The preview's slot rows count from its first line; a modified entry shows one
+        // notice row above it.
+        let line = row.checked_sub(usize::from(entry.modified))?;
+        preview.slots.get(&line).cloned()
     }
 
     fn poll(&mut self) -> bool {

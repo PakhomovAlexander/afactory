@@ -82,6 +82,15 @@ impl Pane for SettingsPane {
         if key != Key::Char('e') {
             return Ok(None);
         }
+        // A highlighted layer whose file exists is edited by that exact path: with two present
+        // directory layers, `af config edit --layer directory` would pick the nearest one.
+        if let Some(layer) = self.layer(row)
+            && layer.edit.is_some()
+            && let Some(path) = &layer.path
+            && path.is_file()
+        {
+            return Ok(Some(Effect::OpenEditor(path.clone())));
+        }
         let layer = layer_name(self.target(row)?);
         let mut words = Vec::from(["config", "edit", "--layer", layer].map(str::to_owned));
         if let Some(repo) = &self.repo {

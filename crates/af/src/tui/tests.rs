@@ -253,6 +253,57 @@ fn the_pipelines_pane_is_the_task_plan_tree_preview() {
     let status = status_line(&mut app);
     assert!(status.contains(" -> command Worker"), "{status}");
     assert!(status.contains("fixture/"), "{status}");
+    let binding = app.pane().status(slot).unwrap();
+    // The working tree drifts from HEAD: the pane says so on its first row, still shows the
+    // committed plan, and the Worker binding follows its row down by one.
+    let file = root.join("hub/.af/task-packages/fixture/implementation/pipeline.toml");
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, format!("{text}# drifted\n")).unwrap();
+    press(&mut app, &mut host, b"R");
+    let deadline = Instant::now() + Duration::from_secs(600);
+    while app.panes.pipelines.busy().is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "the preview plan never recompiled"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+        app.poll();
+    }
+    let drifted: Vec<String> = app.pane().rows().iter().map(Row::text).collect();
+    assert!(
+        drifted[0].starts_with("working tree differs from HEAD"),
+        "{drifted:#?}"
+    );
+    assert_eq!(
+        stable_lines(&drifted[1..].join("\n")),
+        stable_lines(&shown.join("\n")),
+        "the committed plan is unchanged"
+    );
+    assert_eq!(app.pane().status(slot), None);
+    assert_eq!(app.pane().status(slot + 1), Some(binding));
+}
+
+#[test]
+fn e_edits_the_highlighted_layer_file_exactly_and_a_refresh_names_a_broken_config() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    // Every editable, present layer row hands off its own path, not a layer name.
+    let project = root.join("hub/.af/af.toml");
+    let rows: Vec<String> = app.pane().rows().iter().map(Row::text).collect();
+    let row = rows
+        .iter()
+        .position(|row| row.starts_with("project "))
+        .expect("the project layer row");
+    let effect = app.panes.settings.key(Key::Char('e'), row).unwrap();
+    assert_eq!(effect, Some(Effect::OpenEditor(project.clone())));
+    // `R` on the settings pane after the project layer stops parsing: the old values stay on
+    // screen and the status line says the settings were not refreshed, and why.
+    std::fs::write(&project, "this = is not [toml\n").unwrap();
+    press(&mut app, &mut host, b"R");
+    let status = status_line(&mut app);
+    assert!(status.contains("settings not refreshed"), "{status}");
+    assert!(!status.contains("read again"), "{status}");
 }
 
 #[test]

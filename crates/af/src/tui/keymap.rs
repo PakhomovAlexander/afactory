@@ -34,15 +34,34 @@ pub(crate) enum Key {
 pub(crate) struct Decoder {
     /// An escape sequence the last chunk ended inside, `ESC` included.
     pending: Vec<u8>,
+    /// A sequence grew past any real one: its bytes are dropped up to its final byte.
+    discarding: bool,
 }
+
+/// No terminal key sequence is longer than this; a longer one is a malformed stream.
+const LONGEST_SEQUENCE: usize = 32;
 
 impl Decoder {
     /// The keys one read's bytes complete, with any earlier partial sequence in front.
     pub(crate) fn feed(&mut self, bytes: &[u8]) -> Vec<Key> {
+        let mut bytes = bytes;
+        if self.discarding {
+            match bytes.iter().position(|byte| (0x40..=0x7e).contains(byte)) {
+                Some(end) => {
+                    self.discarding = false;
+                    bytes = &bytes[end + 1..];
+                }
+                None => return Vec::new(),
+            }
+        }
         let mut input = std::mem::take(&mut self.pending);
         input.extend_from_slice(bytes);
         let (keys, rest) = decode_prefix(&input);
-        self.pending = rest;
+        if rest.len() > LONGEST_SEQUENCE {
+            self.discarding = true;
+        } else {
+            self.pending = rest;
+        }
         keys
     }
 
@@ -435,6 +454,22 @@ mod tests {
         assert_eq!(decoder.flush(), Vec::<Key>::new());
         // ESC followed by an ordinary key in the same read is Escape, then that key.
         assert_eq!(decoder.feed(b"\x1bq"), vec![Key::Esc, Key::Char('q')]);
+    }
+
+    #[test]
+    fn an_unterminated_sequence_is_bounded_and_dropped_through_its_terminator() {
+        let mut decoder = Decoder::default();
+        // A malformed stream: ESC [ then parameter bytes that never end.
+        assert_eq!(decoder.feed(b"\x1b["), Vec::<Key>::new());
+        for _ in 0..100 {
+            assert_eq!(decoder.feed(b"1;2;3;4;5;6;7;8;9;"), Vec::<Key>::new());
+            assert!(decoder.pending.len() <= LONGEST_SEQUENCE);
+        }
+        assert!(decoder.discarding);
+        // Its payload is never read as keys; the first final byte ends it, and decoding resumes.
+        assert_eq!(decoder.feed(b"999999x"), Vec::<Key>::new());
+        assert!(!decoder.discarding);
+        assert_eq!(decoder.feed(b"jk"), vec![Key::Char('j'), Key::Char('k')]);
     }
 
     #[test]
