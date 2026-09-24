@@ -105,7 +105,8 @@ pub(crate) struct PipelinesPane {
     error: Option<String>,
     selected: Option<String>,
     previews: BTreeMap<String, Compiled>,
-    job: Option<(String, Receiver<Compiled>)>,
+    /// The entry being compiled, and the commit it was compiled at.
+    job: Option<(String, String, Receiver<Compiled>)>,
     rows: Vec<Row>,
     spinner: usize,
 }
@@ -124,8 +125,11 @@ impl PipelinesPane {
         self.entry(id).map(|entry| entry.path.clone())
     }
 
-    /// Read `HEAD` again. On failure the previous entries stay, marked by the error.
+    /// Read `HEAD` again. On failure the previous entries of the same repository stay, marked
+    /// by the error; nothing is compiled from them until a read succeeds.
     fn discover(&mut self) {
+        self.previews.clear();
+        self.job = None;
         let Some(root) = self.root.clone() else {
             self.entries.clear();
             self.commit.clear();
@@ -140,8 +144,33 @@ impl PipelinesPane {
             }
             Err(error) => self.error = Some(error),
         }
+    }
+
+    /// Everything read for one repository, dropped when the scope names another: entries of
+    /// project A must never be listed, opened or edited under project B.
+    fn forget(&mut self) {
+        self.entries.clear();
+        self.commit.clear();
+        self.error = None;
+        self.selected = None;
         self.previews.clear();
         self.job = None;
+    }
+
+    /// The rows above an entry's own: the failed-read notice and the working-tree notice.
+    fn notice_rows(&self, entry: &Entry) -> Vec<Row> {
+        let mut rows = Vec::new();
+        if let Some(error) = &self.error {
+            rows.push(Row::painted(
+                format!("HEAD could not be read; shown from the last successful read: {error}"),
+                Paint::Error,
+            ));
+        }
+        if entry.modified {
+            let note = "working tree differs from HEAD: shown as committed; gf opens the file";
+            rows.push(Row::painted(note, Paint::Muted));
+        }
+        rows
     }
 
     /// `HEAD` may have moved since the entries were read; a preview compiles `HEAD`, so the
@@ -158,6 +187,11 @@ impl PipelinesPane {
 
     fn compile(&mut self) {
         self.ensure_current();
+        if self.error.is_some() {
+            // Stale entries are shown, never planned: a preview would compile a HEAD the
+            // entries were not read from.
+            return;
+        }
         let Some(entry) = self.selected_entry().cloned() else {
             return;
         };
@@ -169,7 +203,7 @@ impl PipelinesPane {
         else {
             return;
         };
-        let running = self.job.as_ref().is_some_and(|(id, _)| *id == entry.id);
+        let running = self.job.as_ref().is_some_and(|(id, _, _)| *id == entry.id);
         if running || self.previews.contains_key(&entry.id) {
             return;
         }
@@ -195,11 +229,15 @@ impl PipelinesPane {
             return;
         }
         let task = preview_task(&entry.label, kind, *max_attempts);
+        // The preview compiles the exact commit the entries were read from, not a `HEAD` that
+        // may move before the thread gets to it.
+        let commit = self.commit.clone();
+        let at = commit.clone();
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = sender.send(plan(&root, &task));
+            let _ = sender.send(plan(&root, &task, &at));
         });
-        self.job = Some((entry.id, receiver));
+        self.job = Some((entry.id, commit, receiver));
     }
 
     fn rebuild(&mut self) {
@@ -211,11 +249,7 @@ impl PipelinesPane {
 
     fn entry_rows(&self, entry: &Entry) -> Vec<Row> {
         let heading = format!("PIPE  {} ({})", entry.label, entry.id);
-        let mut rows = Vec::new();
-        if entry.modified {
-            let note = "working tree differs from HEAD: shown as committed; gf opens the file";
-            rows.push(Row::painted(note, Paint::Muted));
-        }
+        let mut rows = self.notice_rows(entry);
         match (&entry.source, self.previews.get(&entry.id)) {
             (Source::Review, _) => {
                 let title = format!("{heading}  [review pipeline]");
@@ -288,7 +322,11 @@ impl PipelinesPane {
 
 impl Pane for PipelinesPane {
     fn load(&mut self, scope: &Scope) -> Result<(), String> {
-        self.root = scope.toplevel().map(Path::to_path_buf);
+        let root = scope.toplevel().map(Path::to_path_buf);
+        if root != self.root {
+            self.forget();
+        }
+        self.root = root;
         self.discover();
         self.compile();
         self.rebuild();
@@ -325,19 +363,21 @@ impl Pane for PipelinesPane {
     fn status(&self, row: usize) -> Option<String> {
         let entry = self.selected_entry()?;
         let preview = self.previews.get(&entry.id)?.as_ref().ok()?;
-        // The preview's slot rows count from its first line; a modified entry shows one
-        // notice row above it.
-        let line = row.checked_sub(usize::from(entry.modified))?;
+        // The preview's slot rows count from its first line; the notices sit above it.
+        let line = row.checked_sub(self.notice_rows(entry).len())?;
         preview.slots.get(&line).cloned()
     }
 
     fn poll(&mut self) -> bool {
-        let Some((id, receiver)) = self.job.as_ref() else {
+        let Some((id, commit, receiver)) = self.job.as_ref() else {
             return false;
         };
         match receiver.try_recv() {
             Ok(compiled) => {
-                self.previews.insert(id.clone(), compiled);
+                // A result for a commit the pane no longer shows is dropped, not shown.
+                if *commit == self.commit {
+                    self.previews.insert(id.clone(), compiled);
+                }
                 self.job = None;
             }
             Err(TryRecvError::Empty) => self.spinner = self.spinner.wrapping_add(1),
@@ -365,13 +405,14 @@ impl Pane for PipelinesPane {
     }
 }
 
-/// Write the preview Task file into a scratch directory and plan it the `af task plan` way.
-fn plan(root: &Path, task: &serde_json::Value) -> Compiled {
+/// Write the preview Task file into a scratch directory and plan it the `af task plan` way,
+/// with the given commit as its authority.
+fn plan(root: &Path, task: &serde_json::Value, commit: &str) -> Compiled {
     let scratch = tempfile::tempdir().map_err(|error| error.to_string())?;
     let file = scratch.path().join("pipeline-preview.json");
     let bytes = serde_json::to_vec_pretty(task).map_err(|error| error.to_string())?;
     std::fs::write(&file, bytes).map_err(|error| error.to_string())?;
-    task_execution::plan_tree_preview(&file, root)
+    task_execution::plan_tree_preview_at(&file, root, commit)
 }
 
 /// The commit `HEAD` names, or an empty string for an unborn `HEAD`.
@@ -428,7 +469,7 @@ fn discover(root: &Path) -> Result<Discovery, String> {
         found.entries.push(Entry {
             label: stem.to_string_lossy().into_owned(),
             path: root.join(&id),
-            modified: differs(root, &id, &declaration),
+            modified: differs(root, &commit, &id),
             declaration,
             id,
             source: Source::Review,
@@ -455,7 +496,7 @@ fn discover(root: &Path) -> Result<Discovery, String> {
         found.entries.push(Entry {
             label,
             path: root.join(&id),
-            modified: differs(root, &id, &declaration),
+            modified: differs(root, &commit, &id),
             declaration,
             id,
             source: Source::Package {
@@ -542,9 +583,11 @@ fn committed(root: &Path, commit: &str, path: &str) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|error| format!("{path}: {error}"))
 }
 
-/// Whether the working-tree file differs from the committed text, or is gone.
-fn differs(root: &Path, path: &str, committed: &str) -> bool {
-    std::fs::read(root.join(path)).ok().as_deref() != Some(committed.as_bytes())
+/// Whether the working-tree file differs from the commit in bytes, mode or existence, as git
+/// judges it. A git that cannot answer counts as a difference: the marker errs on the side of
+/// saying the working tree is not what is shown.
+fn differs(root: &Path, commit: &str, path: &str) -> bool {
+    git(root, &["diff", "--quiet", commit, "--", path]).is_err()
 }
 
 /// One git command against exactly this repository: the environment is cleared, so an inherited
@@ -681,6 +724,38 @@ mod tests {
             "{rows:#?}"
         );
         assert!(pane.items()[0].muted);
+        // An opened stale entry says so too, above its own rows, and compiles nothing.
+        pane.open(Some("x"));
+        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        assert!(
+            rows[0].starts_with("HEAD could not be read; shown from the last successful read"),
+            "{rows:#?}"
+        );
+        assert!(pane.busy().is_none());
+        // Another repository is another scope: nothing of the old one survives the change.
+        let other = temp.path().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        pane.load(&scope(&other)).unwrap();
+        assert!(pane.entries.is_empty());
+        assert!(pane.selected.is_none());
+        assert!(pane.error.is_some());
+    }
+
+    #[test]
+    fn a_mode_only_change_marks_the_working_tree_as_different() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "p", "fixture/p");
+        commit_all(root, "package");
+        let found = discover(root).unwrap();
+        assert!(!found.entries[0].modified);
+        let file = root.join(".af/task-packages/p/pipeline.toml");
+        let permissions = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+        std::fs::set_permissions(&file, permissions).unwrap();
+        assert!(
+            discover(root).unwrap().entries[0].modified,
+            "the executable bit differs"
+        );
     }
 
     #[test]

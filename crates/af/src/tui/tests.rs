@@ -33,6 +33,22 @@ fn copy_tree(source: &Path, destination: &Path) {
     }
 }
 
+fn git_out(repo: &Path, args: &[&str]) -> Vec<u8> {
+    let output = Command::new("git")
+        .current_dir(repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
 fn git(repo: &Path, args: &[&str]) {
     let output = Command::new("git")
         .current_dir(repo)
@@ -237,7 +253,8 @@ fn the_pipelines_pane_is_the_task_plan_tree_preview() {
     let file = root.join("preview.json");
     let task = panes::pipelines::preview_task("fixture/implementation", "implement", 3);
     std::fs::write(&file, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
-    let again = crate::task_execution::plan_tree_preview(&file, &root.join("hub")).unwrap();
+    let again =
+        crate::task_execution::plan_tree_preview_at(&file, &root.join("hub"), "HEAD").unwrap();
     let shown_text = shown.join("\n");
     assert_eq!(stable_lines(&shown_text), stable_lines(&again.text));
     // The frame paints those rows beside the bar, clipped to the main pane.
@@ -294,6 +311,26 @@ fn the_pipelines_pane_is_the_task_plan_tree_preview() {
     let last = status.lines().last().unwrap().trim_end().to_owned();
     assert!(last.ends_with(&binding), "{last}");
     assert!(!last.starts_with("NORMAL  pipelines/"), "{last}");
+    // The preview is bound to the commit the entries were read from: after HEAD moves to a
+    // commit whose package no longer matches its pin, that commit's preview is what the
+    // moving `HEAD` would give, while the entries' commit still plans exactly as shown.
+    let hub = root.join("hub");
+    let first = String::from_utf8(git_out(&hub, &["rev-parse", "HEAD"])).unwrap();
+    let pipeline = hub.join(".af/task-packages/fixture/implementation/pipeline.toml");
+    let text = std::fs::read_to_string(&pipeline).unwrap();
+    std::fs::write(&pipeline, format!("{text}# moved\n")).unwrap();
+    git(&hub, &["add", "-A"]);
+    git(&hub, &["commit", "-qm", "moved"]);
+    let preview_file = root.join("preview.json");
+    let at_first =
+        crate::task_execution::plan_tree_preview_at(&preview_file, &hub, first.trim()).unwrap();
+    assert_eq!(stable_lines(&at_first.text), stable_lines(&again.text));
+    let at_head = crate::task_execution::plan_tree_preview_at(&preview_file, &hub, "HEAD");
+    assert_ne!(
+        at_head.map(|preview| stable_lines(&preview.text)),
+        Ok(stable_lines(&again.text)),
+        "HEAD moved to a commit that plans differently"
+    );
 }
 
 #[test]

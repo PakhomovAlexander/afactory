@@ -873,8 +873,14 @@ pub(crate) struct TreePreview {
 /// The `--tree` preview of the plan `af task plan --file FILE` captures, compiled the same way
 /// into a scratch Store that is discarded on return. No `--state` or XDG Store is written,
 /// nothing is admitted, no Worker runs, and nothing is printed; the policy comes from the
-/// committed `HEAD`, exactly as `af task plan` takes it.
-pub(crate) fn plan_tree_preview(file: &Path, repo: &Path) -> Result<TreePreview, String> {
+/// committed authority, exactly as `af task plan --authority` takes it.
+/// `authority` is the selector the plan compiles: a commit id binds the preview to the exact
+/// commit whose declarations a caller shows, however `HEAD` moves meanwhile.
+pub(crate) fn plan_tree_preview_at(
+    file: &Path,
+    repo: &Path,
+    authority: &str,
+) -> Result<TreePreview, String> {
     let bytes = input_file::read(file, 16 * 1024 * 1024)?;
     let task: TaskFile = parse(file, &bytes)?;
     let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
@@ -885,7 +891,7 @@ pub(crate) fn plan_tree_preview(file: &Path, repo: &Path) -> Result<TreePreview,
         source_bindings: None,
         repo: repo.to_path_buf(),
         state: Some(state.clone()),
-        authority: "HEAD".into(),
+        authority: authority.into(),
         uncommitted: false,
         json: false,
         plan_only: true,
@@ -2611,7 +2617,7 @@ mod tree_preview_tests {
         let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
         let projection = store.task_projection(&cas, PREVIEW_TASK_ID).unwrap();
         let printed = preview::current(&cas, &projection.unwrap(), true).unwrap();
-        let silent = plan_tree_preview(&file, &repo).unwrap();
+        let silent = plan_tree_preview_at(&file, &repo, "HEAD").unwrap();
         assert_eq!(stable_lines(&silent.text), stable_lines(&printed));
         let text = &silent.text;
         assert!(

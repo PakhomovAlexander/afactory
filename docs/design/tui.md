@@ -182,14 +182,17 @@ PIPE  review@1.0.0 (.af/pipelines/review.toml)  [configured]
 
 The bar lists what `HEAD` commits under `.af/pipelines/` and `.af/task-packages/`, because that
 is the authority a plan compiles; every declaration is read from the one commit resolved at
-load, and a preview reads the entries again first when `HEAD` has moved. A working-tree file
-that differs from `HEAD` is marked `*` and its pane says so, while `gf` still opens the
-working-tree file, and the pane reads again after an editor hand-off. Git runs with a cleared
-environment, so an inherited `GIT_DIR` cannot point it at another repository. A read of `HEAD`
-that fails is shown as an error above the last good entries, never as an empty list; only an
-unborn `HEAD` lists nothing. A package file is previewed only when the committed catalog pins
-its name at that file; a file the catalog pins elsewhere, or not at all, says so and shows its
-contract instead of another file's plan. Selecting a pipeline package with
+load, a preview compiles that exact commit (never a `HEAD` that moved meanwhile) and reads the
+entries again first when `HEAD` has moved, and a result for a commit the pane no longer shows
+is dropped. A working-tree file that differs from `HEAD` in bytes, mode or existence, as `git
+diff` judges it, is marked `*` and its pane says so, while `gf` still opens the working-tree
+file, and the pane reads again after an editor hand-off. Git runs with a cleared environment,
+so an inherited `GIT_DIR` cannot point it at another repository. A read of `HEAD` that fails is
+shown as an error above the last good entries of the same repository, on the folder and on an
+opened entry, and nothing is compiled from them; a scope change drops them; only an unborn
+`HEAD` lists nothing. A package file is previewed only when the committed catalog pins its name
+at that file; a file the catalog pins elsewhere, or not at all, says so and shows its contract
+instead of another file's plan. Selecting a pipeline package with
 no captured Task compiles a plan the token-free way `af task plan` does and renders that text; the two renders agree line for line except the identity lines
 (`PLAN`, `TIME`, `--confirm-plan`), which carry a fresh plan identity and deadline on every
 compilation. A package whose compilation the kernel refuses (required facts or public inputs
@@ -246,7 +249,9 @@ The TUI is a new module tree under `crates/af/src/tui/`:
 
 ```
 crates/af/src/tui/
-  mod.rs        launch(scope), event loop, terminal session (raw mode, alternate screen)
+  mod.rs        launch(scope), event loop
+  term.rs       the /dev/tty raw-mode session; its panic hook restores the terminal only when
+                the thread that entered raw mode panics, never for a background thread
   keymap.rs     mode + key sequence parser (gg, zo, ]], <C-w>l), one table, unit-tested
   tree.rs       the left bar: Node { kind, label, children, folded }, fold/search/motion
   scope.rs      user vs project resolution, path roots
