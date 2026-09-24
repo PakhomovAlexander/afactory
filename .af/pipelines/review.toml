@@ -1,5 +1,5 @@
-# Diff review for this repository: a correctness and architecture reviewer (Fable 5.1/high),
-# a performance reviewer (Opus 5/xhigh) and a bug-bounty reviewer (GPT-5.6-Sol/high).
+# Diff review for this repository: a correctness and architecture reviewer (Opus 5.5/high),
+# a performance reviewer (Opus 5.5/xhigh) and a bug-bounty reviewer (GPT-6-Sol/high).
 # Bind the three Workers to admitted Providers at run time, for example
 # `--provider correctness=claude-main --provider performance=claude-main --provider bugs=codex-main`.
 # One light Round per change, then fixes and the project Gates.

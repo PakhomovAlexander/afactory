@@ -4,4 +4,4 @@ subjects = ["diff", "whole-tree"]
 
 [runner]
 program = "claude"
-args = [{ value = "--model" }, { value = "claude-opus-5" }, { value = "--effort" }, { value = "xhigh" }]
+args = [{ value = "--model" }, { value = "claude-opus-5-5" }, { value = "--effort" }, { value = "xhigh" }]
