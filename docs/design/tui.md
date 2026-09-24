@@ -90,8 +90,8 @@ few pane-local verbs, listed in its section and in the status line.
 | `]]` `[[` | next / previous sibling folder in the bar (providers → workers → …) |
 | `Enter` `o` | open the selected node in the main pane |
 | `y` | yank the selected id (Task id, plan id, provider id) via OSC 52 |
-| `gf` | open the file behind the node in `$EDITOR` (worker prompt, pipeline TOML, config layer); the screen is released and re-entered |
-| `R` | refresh the focused pane from disk (providers: run the bounded probe) |
+| `gf` | open the file behind the node in `$EDITOR` (worker prompt, pipeline TOML, config layer); the screen is released and re-entered, and the panes the edit could have changed read again |
+| `R` | refresh the pane under the focus from disk: the bar's selected node's pane when the bar has focus, the opened pane otherwise (providers: run the bounded probe) |
 | `?` on the status line focus, `:help` | key help overlay |
 | `q` `:q` `ZZ` | quit; `<C-c>` cancels a prompt or a running probe first |
 

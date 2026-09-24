@@ -443,3 +443,58 @@ fn search_finds_bar_nodes_and_main_rows() {
         "{status}"
     );
 }
+
+#[test]
+fn r_and_gf_act_on_the_bar_selection_while_another_pane_is_open() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    // Settings stays open; the bar cursor moves to the review pipeline.
+    press(&mut app, &mut host, b"]]]]]]j");
+    assert_eq!(app.breadcrumb(), "pipelines/review");
+    assert_eq!(app.opened, Opened::Root);
+    let file = root.join("hub/.af/pipelines/review.toml");
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, format!("{text}# edited\n")).unwrap();
+    let marked = |app: &App| {
+        app.panes
+            .pipelines
+            .items()
+            .iter()
+            .any(|item| item.id == ".af/pipelines/review.toml" && item.muted)
+    };
+    assert!(!marked(&app), "the pane has not read again yet");
+    // `gf` from the bar: the editor came back, and the Pipelines pane already marks the file.
+    app.finish(Ok(()), "edited".to_owned());
+    assert!(marked(&app));
+    assert_eq!(app.opened, Opened::Root, "what was opened stays opened");
+    // `R` on the bar selection refreshes that pane, not the opened Settings.
+    std::fs::write(&file, text).unwrap();
+    press(&mut app, &mut host, b"R");
+    assert!(!marked(&app));
+    let status = status_line(&mut app);
+    assert!(!status.contains("settings read again"), "{status}");
+}
+
+#[test]
+fn an_entry_head_no_longer_commits_falls_back_to_its_folder() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]j\r");
+    assert_eq!(app.breadcrumb(), "pipelines/review");
+    let hub = root.join("hub");
+    git(&hub, &["rm", "-q", ".af/pipelines/review.toml"]);
+    git(&hub, &["commit", "-qm", "drop the review pipeline"]);
+    // Opening it again reads the new HEAD: the entry is gone, the folder is shown, the bar
+    // no longer lists it.
+    app.show(Opened::Item(
+        Tab::Pipelines,
+        ".af/pipelines/review.toml".to_owned(),
+    ));
+    assert_eq!(app.opened, Opened::Folder(Tab::Pipelines));
+    let status = status_line(&mut app);
+    assert!(status.contains("no longer listed"), "{status}");
+    let bar = app.frame(100, 30).text();
+    assert!(!bar.contains("      review"), "{bar}");
+}

@@ -324,6 +324,22 @@ impl App {
         }
     }
 
+    /// The pane behind the bar's selected node; `None` for the root.
+    fn selected_tab(&self) -> Option<Tab> {
+        match self.tree.selected().kind {
+            NodeKind::Root => None,
+            NodeKind::Folder(tab) | NodeKind::Item(tab) => Some(tab),
+        }
+    }
+
+    /// The pane a key on the focused region means: the bar's selection, or the opened pane.
+    fn focused_tab(&self) -> Option<Tab> {
+        match self.focus {
+            Focus::Bar => self.selected_tab(),
+            Focus::Main => self.opened_tab(),
+        }
+    }
+
     fn pane(&self) -> &dyn Pane {
         self.panes.get(self.opened_tab())
     }
@@ -346,11 +362,32 @@ impl App {
     }
 
     fn show(&mut self, opened: Opened) {
-        match &opened {
-            Opened::Root => {}
-            Opened::Folder(tab) => self.panes.get_mut(Some(*tab)).open(None),
-            Opened::Item(tab, id) => self.panes.get_mut(Some(*tab)).open(Some(id.as_str())),
-        }
+        let opened = match opened {
+            Opened::Root => Opened::Root,
+            Opened::Folder(tab) => {
+                self.panes.get_mut(Some(tab)).open(None);
+                Opened::Folder(tab)
+            }
+            Opened::Item(tab, id) => {
+                self.panes.get_mut(Some(tab)).open(Some(id.as_str()));
+                // Opening may have read HEAD again; an entry it no longer commits falls back
+                // to the folder, and the bar follows what the pane lists now.
+                let listed = self
+                    .panes
+                    .get(Some(tab))
+                    .items()
+                    .iter()
+                    .any(|item| item.id == id);
+                if listed {
+                    Opened::Item(tab, id)
+                } else {
+                    self.panes.get_mut(Some(tab)).open(None);
+                    self.say_error(format!("{id} is no longer listed; showing the folder"));
+                    Opened::Folder(tab)
+                }
+            }
+        };
+        self.sync();
         self.opened = opened;
         self.main = View::default();
         self.help = None;
@@ -858,18 +895,26 @@ impl App {
         // A configuration that no longer loads is the news, whatever the child did: the
         // settings on screen are the old ones, and saying "edited" would call them current.
         let reloaded = self.reload();
-        // The child may have changed what the opened pane shows (an edited pipeline now
-        // differs from HEAD): that pane reads again too, keeping what is opened.
-        if let Some(tab) = self.opened_tab() {
+        // The child may have changed what a pane shows (an edited pipeline now differs from
+        // HEAD): the opened pane reads again, and so does the pane behind the bar's selection
+        // when `gf` came from the bar, keeping what is opened.
+        let mut touched: Vec<Tab> = self.opened_tab().into_iter().collect();
+        if self.focus == Focus::Bar
+            && let Some(tab) = self.selected_tab()
+            && !touched.contains(&tab)
+        {
+            touched.push(tab);
+        }
+        for tab in touched {
             if let Err(error) = self.panes.get_mut(Some(tab)).refresh(&self.scope) {
                 self.say_error(error);
             }
-            self.sync();
-            let opened = self.opened.clone();
-            self.show(opened);
         }
+        self.sync();
+        let opened = self.opened.clone();
+        self.show(opened);
         match (reloaded, outcome) {
-            (Err(stale), _) => self.say_error(stale),
+            (Err(stale), _) => self.say_error(format!("settings are stale: {stale}")),
             (Ok(()), Ok(())) => self.say(done),
             (Ok(()), Err(error)) => self.say_error(error),
         }
@@ -882,9 +927,10 @@ impl App {
         self.panes.settings.load(&self.scope)
     }
 
-    /// `R`: the opened pane reads everything again.
+    /// `R`: the pane under the focus reads everything again: the bar's selected node when the
+    /// bar has focus, the opened pane otherwise.
     fn refresh(&mut self) {
-        let tab = self.opened_tab();
+        let tab = self.focused_tab();
         if tab.is_none() {
             match self.reload() {
                 Ok(()) => self.say("settings read again"),

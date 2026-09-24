@@ -415,13 +415,27 @@ fn plan(root: &Path, task: &serde_json::Value, commit: &str) -> Compiled {
     task_execution::plan_tree_preview_at(&file, root, commit)
 }
 
-/// The commit `HEAD` names, or an empty string for an unborn `HEAD`.
+/// The commit `HEAD` names, or an empty string for an unborn `HEAD`: a symbolic `HEAD` whose
+/// branch does not exist yet. A `HEAD` that names a missing commit, a detached `HEAD` that does
+/// not resolve, no repository and no git are all errors, never an empty list.
 fn head(root: &Path) -> Result<String, String> {
     match git(root, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]) {
-        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).trim().to_owned()),
-        // `--quiet` makes a missing HEAD exit 1 with nothing on stderr; any other failure
+        Ok(bytes) => return Ok(String::from_utf8_lossy(&bytes).trim().to_owned()),
+        // `--quiet` makes an unresolvable HEAD exit 1 with nothing on stderr; anything else
         // (no repository, an unreadable object store, no git) says why.
+        Err(error) if error.is_empty() => {}
+        Err(error) => return Err(error),
+    }
+    let branch = match git(root, &["symbolic-ref", "--quiet", "HEAD"]) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).trim().to_owned(),
+        Err(error) if error.is_empty() => {
+            return Err("HEAD is detached and names no commit".to_owned());
+        }
+        Err(error) => return Err(error),
+    };
+    match git(root, &["show-ref", "--verify", "--quiet", &branch]) {
         Err(error) if error.is_empty() => Ok(String::new()),
+        Ok(_) => Err(format!("HEAD ({branch}) names a missing commit")),
         Err(error) => Err(error),
     }
 }
@@ -702,6 +716,24 @@ mod tests {
         let found = discover(&unborn).unwrap();
         assert!(found.commit.is_empty());
         assert!(found.entries.is_empty());
+        // A branch that names a commit the repository does not have is not unborn: an error.
+        let broken = temp.path().join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        package(&broken, "p", "fixture/p");
+        commit_all(&broken, "package");
+        let head_ref = String::from_utf8(git(&broken, &["symbolic-ref", "HEAD"]).unwrap()).unwrap();
+        std::fs::write(
+            broken.join(".git").join(head_ref.trim()),
+            "0123456789abcdef0123456789abcdef01234567\n",
+        )
+        .unwrap();
+        let error = discover(&broken).unwrap_err();
+        assert!(
+            error.contains("missing commit")
+                || error.contains("bad ref")
+                || error.contains("bad object"),
+            "{error}"
+        );
         // The pane keeps the last good entries and names the error on a failed refresh.
         let mut pane = PipelinesPane {
             root: Some(plain.clone()),

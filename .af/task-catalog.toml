@@ -84,8 +84,8 @@ digest = "sha256:2ed15b94bdbb3a3c5b04e9edd8e137fd116a678c574eadba8da7b7b255edd25
 path = ".af/task-packages/kernel/uix"
 
 [packages."kernel/review-light"]
-version = "1.1.0"
-digest = "sha256:3c398924b6583adde3438b95530799776456d7c52c4e15d278ed56b68f7fe6cb"
+version = "1.2.0"
+digest = "sha256:c6bed1e2d5d1f493278c8559fff8a851d66b403dabce5f0aba2c74b98f53ec47"
 path = ".af/task-packages/kernel/review-light"
 
 [packages."kernel/implementation-reviewed"]
