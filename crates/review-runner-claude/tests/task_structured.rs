@@ -64,6 +64,7 @@ fn typed_native_command_preserves_input_schema_and_role_permissions() {
         WorkerAccess::ReadOnly,
         WorkerAccess::ExecuteChecks,
         WorkerAccess::WriteSource,
+        WorkerAccess::WriteSourceWithShell,
     ] {
         let (returned, flags, received) = invoke(
             &input,
@@ -98,6 +99,7 @@ fn typed_native_command_preserves_input_schema_and_role_permissions() {
             WorkerAccess::ReadOnly => "Read,Glob,Grep",
             WorkerAccess::ExecuteChecks => "Read,Glob,Grep,Bash",
             WorkerAccess::WriteSource => "Read,Glob,Grep,Edit,Write",
+            WorkerAccess::WriteSourceWithShell => "Read,Glob,Grep,Edit,Write,Bash",
         };
         assert_eq!(task_tools(access), tools);
         for (flag, expected) in [
@@ -110,14 +112,15 @@ fn typed_native_command_preserves_input_schema_and_role_permissions() {
             let at = flags.iter().position(|v| *v == flag).unwrap();
             assert_eq!(flags[at + 1], expected);
         }
-        // A shell never arrives with edit tools, and only the execute-checks access has one.
-        assert_eq!(
-            flags.iter().any(|v| v.contains("Bash")),
-            access == WorkerAccess::ExecuteChecks
-        );
+        // A shell arrives only with an access that has one; edit tools only with a writer. Both
+        // together only for a writer that declared `execute-checks`.
+        assert_eq!(flags.iter().any(|v| v.contains("Bash")), access.has_shell());
         assert_eq!(
             flags.iter().any(|v| v.contains("Edit")),
-            access == WorkerAccess::WriteSource
+            matches!(
+                access,
+                WorkerAccess::WriteSource | WorkerAccess::WriteSourceWithShell
+            )
         );
     }
 }

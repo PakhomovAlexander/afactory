@@ -16,6 +16,14 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
+- Give a source-writing Worker that declares `execute-checks` a shell (ADR-0120): `worker_access`
+  maps `write-source` plus `execute-checks` to `WorkerAccess::WriteSourceWithShell`, the Claude
+  adapter grants `Read,Glob,Grep,Edit,Write,Bash` and Codex runs `workspace-write`, and the shell's
+  process group dies with the Attempt. Candidate capture skips the scratch a shell leaves: paths
+  under a top-level name the source did not hold, and new top-level dotfiles
+  (`SealedSandbox::capture_snapshot_where`). A writer without `execute-checks` is unchanged. The
+  kernel's `kernel/implementer` declares it and formats, lints and tests before replying.
+
 ## [0.9.0-rc.7] - 2026-09-24
 
 ### Authority compatibility

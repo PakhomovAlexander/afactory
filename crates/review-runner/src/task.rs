@@ -406,12 +406,21 @@ pub enum WorkerAccess {
     ExecuteChecks,
     /// Edit files inside the sandbox; the kernel captures the sealed tree as the candidate.
     WriteSource,
+    /// Edit files and run a shell inside the sandbox, so the Worker can format, lint and test
+    /// what it wrote. The kernel captures the sealed tree as the candidate, minus the scratch a
+    /// shell leaves: anything added beneath a top-level name the source did not have.
+    WriteSourceWithShell,
 }
 
 impl WorkerAccess {
     /// Whether the adapter must let the process write inside its sandbox root.
     pub fn writes_sandbox(self) -> bool {
         !matches!(self, Self::ReadOnly)
+    }
+
+    /// Whether the Worker runs a shell: its process group then dies with the Attempt.
+    pub fn has_shell(self) -> bool {
+        matches!(self, Self::ExecuteChecks | Self::WriteSourceWithShell)
     }
 }
 

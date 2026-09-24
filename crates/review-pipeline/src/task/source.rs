@@ -32,7 +32,11 @@ pub struct SnapshotTaskEnvironment {
 /// turns `execute-checks` into a shell; any other Worker keeps its read-only source.
 pub fn worker_access(signature: &OperatorSignature) -> WorkerAccess {
     if signature.effects.contains("write-source") {
-        WorkerAccess::WriteSource
+        if signature.effects.contains("execute-checks") {
+            WorkerAccess::WriteSourceWithShell
+        } else {
+            WorkerAccess::WriteSource
+        }
     } else if signature.effects.contains("execute-checks") && signature.roles.contains("review") {
         WorkerAccess::ExecuteChecks
     } else {
@@ -80,6 +84,35 @@ impl SnapshotTaskEnvironment {
         review_sandbox::admit(self.policy, &sandbox).map_err(|e| e.to_string())?;
         Ok(sandbox)
     }
+}
+
+/// The top-level names the materialized source holds.
+fn owned_top_levels(sealed: &SealedSandbox) -> BTreeSet<String> {
+    sealed
+        .baseline
+        .entries
+        .iter()
+        .map(|entry| top_level(&entry.path).to_owned())
+        .collect()
+}
+
+/// The top-level name a Manifest path lives under: its first component.
+fn top_level(path: &str) -> &str {
+    path.split_once('/').map_or(path, |(first, _)| first)
+}
+
+/// Scratch a shell-enabled writer leaves in its clone: a path under a top-level name the
+/// source did not hold (`target/`, `.cache/`), or a new top-level dotfile (`.claude.json`).
+/// Everything else it added, changed or removed is its candidate.
+fn shell_scratch(access: WorkerAccess, owned: &BTreeSet<String>, path: &str) -> bool {
+    if access != WorkerAccess::WriteSourceWithShell {
+        return false;
+    }
+    let top = top_level(path);
+    if owned.contains(top) {
+        return false;
+    }
+    path.contains('/') || top.starts_with('.')
 }
 
 /// Every path by which a Worker without a candidate port changed its declared source, sorted.
@@ -220,7 +253,9 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
         // writable so it can build and run the candidate, sealed back never.
         let mode = match worker_access(signature) {
             WorkerAccess::ReadOnly => Mode::ReadOnly,
-            WorkerAccess::ExecuteChecks | WorkerAccess::WriteSource => Mode::EphemeralWrite,
+            WorkerAccess::ExecuteChecks
+            | WorkerAccess::WriteSource
+            | WorkerAccess::WriteSourceWithShell => Mode::EphemeralWrite,
         };
         self.materialize_mode(cas, invocation, mode, candidate_port(signature))
     }
@@ -253,7 +288,13 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
         }
         let source = &invocation.inputs["source"];
         let parent_snapshot_id = source_input(cas, source)?;
-        let manifest = sealed.capture_snapshot(cas).map_err(|e| e.to_string())?;
+        // A Worker with a shell leaves scratch behind (build output, tool caches); it is not
+        // part of what the Worker wrote, so it never reaches the candidate.
+        let access = worker_access(signature);
+        let owned = owned_top_levels(&sealed);
+        let manifest = sealed
+            .capture_snapshot_where(cas, |path| !shell_scratch(access, &owned, path))
+            .map_err(|e| e.to_string())?;
         let manifest_id = cas
             .put_json(&serde_json::to_value(&manifest).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
@@ -478,7 +519,7 @@ mod tests {
 
     #[test]
     fn only_a_review_worker_turns_execute_checks_into_a_shell() {
-        use WorkerAccess::{ExecuteChecks, ReadOnly, WriteSource};
+        use WorkerAccess::{ExecuteChecks, ReadOnly, WriteSource, WriteSourceWithShell};
         for (effects, roles, access) in [
             ("read-source", "review", ReadOnly),
             ("", "review", ReadOnly),
@@ -487,7 +528,16 @@ mod tests {
             ("read-source execute-checks", "author", ReadOnly),
             ("read-source execute-checks", "", ReadOnly),
             ("write-source", "author", WriteSource),
-            ("write-source execute-checks", "review", WriteSource),
+            (
+                "write-source execute-checks",
+                "review",
+                WriteSourceWithShell,
+            ),
+            (
+                "write-source execute-checks",
+                "implement",
+                WriteSourceWithShell,
+            ),
         ] {
             assert_eq!(
                 worker_access(&signature(effects, roles)),
@@ -515,6 +565,40 @@ mod tests {
         let sandbox = Sandbox::materialize(&manifest, cas, Mode::EphemeralWrite).unwrap();
         edit(sandbox.root());
         sandbox.seal().unwrap()
+    }
+
+    #[test]
+    fn a_shell_writer_candidate_keeps_its_edits_and_drops_its_scratch() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let sealed = sealed_after(&cas, |root| {
+            // What it wrote: an edit, a new file beside the source, a new root file.
+            std::fs::write(root.join("lib.rs"), "pub fn b() {}\n").unwrap();
+            std::fs::write(root.join("src/extra.rs"), "pub fn c() {}\n").unwrap();
+            std::fs::write(root.join("NOTES.md"), "root file\n").unwrap();
+            // What its shell left: build output, a tool cache, a HOME dotfile.
+            std::fs::create_dir_all(root.join("target/debug")).unwrap();
+            std::fs::write(root.join("target/debug/out"), "binary\n").unwrap();
+            std::fs::create_dir_all(root.join(".cache/tool")).unwrap();
+            std::fs::write(root.join(".cache/tool/x"), "cache\n").unwrap();
+            std::fs::write(root.join(".claude.json"), "{}\n").unwrap();
+        });
+        let owned = owned_top_levels(&sealed);
+        let paths = |access: WorkerAccess| -> Vec<String> {
+            sealed
+                .capture_snapshot_where(&cas, |path| !shell_scratch(access, &owned, path))
+                .unwrap()
+                .entries
+                .into_iter()
+                .map(|entry| entry.path)
+                .collect()
+        };
+        assert_eq!(
+            paths(WorkerAccess::WriteSourceWithShell),
+            ["NOTES.md", "lib.rs", "src/extra.rs", "src/main.rs"]
+        );
+        // A writer without a shell keeps its old contract: the whole sealed tree.
+        assert_eq!(paths(WorkerAccess::WriteSource).len(), 7);
     }
 
     #[test]

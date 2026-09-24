@@ -1,9 +1,9 @@
 schema = "af.worker/1"
 name = "kernel/implementer"
-version = "1.3.0"
+version = "1.4.0"
 
 [signature]
-effects = ["write-source"]
+effects = ["write-source", "execute-checks"]
 roles = ["implement"]
 worker_input_type = "af/ImplementationInput@1"
 worker_output_type = "af/ImplementationReport@1"
