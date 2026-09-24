@@ -915,6 +915,8 @@ impl<'a> CapturedTaskHost<'a> {
                         Duration::from_millis(remaining),
                         cancellation,
                         &command_environment,
+                        // The command transport's exit policy follows the same captured effects.
+                        super::source::worker_access(&worker.signature),
                     )
                 }
                 WorkerTransport::Model(adapter) => review_runner::task::invoke_model(
@@ -924,7 +926,8 @@ impl<'a> CapturedTaskHost<'a> {
                     &worker.contract,
                     attempt.context_id(),
                     Duration::from_millis(remaining),
-                    worker.signature.effects.contains("write-source"),
+                    // The adapter's tools follow the same captured effects as the sandbox mode.
+                    super::source::worker_access(&worker.signature),
                     cancellation,
                 ),
             };

@@ -96,7 +96,7 @@ print(json.dumps({{'type':'turn.completed','usage':{{'input_tokens':184467440737
         temporary.path(),
         b"native request".to_vec(),
         Duration::from_secs(5),
-        false,
+        review_runner::task::WorkerAccess::ReadOnly,
         None,
         &[],
     );

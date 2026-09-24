@@ -12,7 +12,9 @@ use review_core::CredentialModeV1;
 use review_core::task::execution::TaskInvocationV1;
 use review_core::task::feedback::TaskFeedbackCodeV1;
 use review_core::task::usage::TaskTokenUsageV3;
-use review_runner::task::{ModelWorkerReturn, WorkerContract, WorkerModelAdapter, invoke_model};
+use review_runner::task::{
+    ModelWorkerReturn, WorkerAccess, WorkerContract, WorkerModelAdapter, invoke_model,
+};
 use review_store::Cas;
 use serde_json::json;
 
@@ -98,7 +100,7 @@ impl WorkerModelAdapter for NativeModel<'_> {
         workdir: &Path,
         input: Vec<u8>,
         timeout: Duration,
-        writable: bool,
+        access: WorkerAccess,
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
@@ -115,7 +117,7 @@ impl WorkerModelAdapter for NativeModel<'_> {
         assert_eq!(workdir, self.fixture.directory.path());
         assert_eq!(input, self.fixture.input);
         assert_eq!(timeout, TIMEOUT);
-        assert!(writable);
+        assert_eq!(access, WorkerAccess::ExecuteChecks);
         ModelWorkerReturn {
             usage_observation: None,
             message: if self.failed {
@@ -144,7 +146,7 @@ fn native_transport_forwards_exact_invocation_and_retains_success_or_failed_evid
                 &fixture.contract,
                 &fixture.context_id,
                 TIMEOUT,
-                true,
+                WorkerAccess::ExecuteChecks,
                 cancellation,
             );
             assert_eq!(result.reply.is_err(), failed);
@@ -189,7 +191,7 @@ fn context_and_output_checks_run_around_the_adapter_and_retain_failed_usage() {
             &fixture.contract,
             &wrong_context,
             TIMEOUT,
-            true,
+            WorkerAccess::ExecuteChecks,
             None,
         );
         assert!(rejected.reply.is_err());
@@ -207,7 +209,7 @@ fn context_and_output_checks_run_around_the_adapter_and_retain_failed_usage() {
             &fixture.contract,
             &fixture.context_id,
             TIMEOUT,
-            true,
+            WorkerAccess::ExecuteChecks,
             None,
         );
         assert_eq!(result.reply.is_err(), expected_feedback.is_some());

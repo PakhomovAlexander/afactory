@@ -202,15 +202,16 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
     fn model_settings(&self) -> Option<(String, String)> {
         self.inner.model_settings()
     }
-    /// Sandbox-local environment (a carried Build Cache location) is forwarded to the native
-    /// client exactly as it arrived, and only after the identity recheck passes.
+    /// Sandbox-local environment (a carried Build Cache location) and the kernel-derived access
+    /// are forwarded to the native client exactly as they arrived, and only after the identity
+    /// recheck passes.
     fn invoke(
         &self,
         cas: &Cas,
         workdir: &Path,
         input: Vec<u8>,
         timeout: Duration,
-        writable: bool,
+        access: review_runner::task::WorkerAccess,
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
@@ -241,7 +242,7 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             workdir,
             input,
             remaining,
-            writable,
+            access,
             cancellation,
             environment,
         )

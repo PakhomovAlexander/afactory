@@ -49,6 +49,8 @@ fn report(output: &Output) -> serde_json::Value {
 fn onboarded_repo(root: &Path) -> PathBuf {
     let repo = root.join("repo");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
+    // A `.git` the kernel accepts as a repository holds a HEAD.
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     let created = onboard(
         &repo,
         &["--runner", "codex", "--gate", "check=make check", "--apply"],
@@ -144,6 +146,8 @@ fn a_receipted_release_pins_itself_with_every_published_digest() {
     let real = sandbox.adopt_real_binary_with(&digest);
     let repo = sandbox.path("repo");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
+    // A `.git` the kernel accepts as a repository holds a HEAD.
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     let created = sandbox
         .command(&real)
         .args(["onboard", "--repo"])
@@ -212,6 +216,8 @@ fn a_release_whose_published_digest_disagrees_with_the_receipt_is_not_pinned() {
     let real = sandbox.adopt_real_binary_with(&"f".repeat(64));
     let repo = sandbox.path("repo");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
+    // A `.git` the kernel accepts as a repository holds a HEAD.
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     let refused = sandbox
         .command(&real)
         .args(["onboard", "--repo"])

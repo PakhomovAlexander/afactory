@@ -59,11 +59,11 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
             _: &std::path::Path,
             input: Vec<u8>,
             _: std::time::Duration,
-            writable: bool,
+            access: review_runner::task::WorkerAccess,
             _: Option<&std::sync::atomic::AtomicBool>,
             _: &[(String, String)],
         ) -> ModelWorkerReturn {
-            assert!(!writable);
+            assert_eq!(access, review_runner::task::WorkerAccess::ReadOnly);
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             let (bytes, cost) = if n == 0 {
                 assert_eq!(input, b"Reply with exactly: OK\n");

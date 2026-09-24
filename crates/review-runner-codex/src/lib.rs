@@ -10,8 +10,9 @@
 //! <mode> -o <staging>/last-message <flags> -`, with the prompt streamed on stdin. Events arrive
 //! as JSONL on stdout; the `-o` file holds the final answer; `turn.completed` events carry token
 //! usage. `--ephemeral` keeps session files off the host, `-C` roots the model in the kernel's
-//! sandbox, and `-s` is `workspace-write` when the Worker may edit its own copy — and nothing
-//! else — and `read-only` otherwise.
+//! sandbox, and `-s` is `workspace-write` when the Worker may write its own copy — and nothing
+//! else — and `read-only` otherwise. A source-writing Worker and a reviewer declaring
+//! `execute-checks` both write their copy; only the first has it captured as a candidate.
 //!
 //! Chargeable usage is uncached input plus output. Codex includes cache reads in
 //! `input_tokens` but also reports `cached_input_tokens`, so subtracting the latter makes the

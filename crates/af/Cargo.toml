@@ -27,7 +27,8 @@ review-source-task = { path = "../review-source-task" }
 review-store = { path = "../review-store" }
 review-sandbox = { path = "../review-sandbox" }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
-rustix = { version = "1.1.4", features = ["fs"] }
+# `termios` drives the `af` browser's raw-mode terminal session (ADR-0119).
+rustix = { version = "1.1.4", features = ["fs", "termios"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 semver = "1.0.27"

@@ -857,7 +857,26 @@ fn onboard_af_from_argv(argv: &[String]) -> Option<String> {
     None
 }
 
+/// `af` with no subcommand — bare, or with only `--repo DIR` — opens the browser, which is
+/// machine-local like bootstrap: a project pin naming an older release must not exec it away.
+fn browser_invocation(argv: &[String]) -> bool {
+    let mut words = argv.iter().skip(1);
+    while let Some(word) = words.next() {
+        if word == "--repo" {
+            if words.next().is_none() {
+                return false;
+            }
+        } else if !word.starts_with("--repo=") {
+            return false;
+        }
+    }
+    true
+}
+
 fn exempt_from_dispatch(argv: &[String]) -> bool {
+    if browser_invocation(argv) {
+        return true;
+    }
     let first = argv.get(1).map(String::as_str);
     // Bootstrap is machine-local, not project authority. Dispatching it through an older project
     // pin would make the newly installed command disappear precisely where users need it.
@@ -1765,6 +1784,13 @@ mod tests {
             "codex"
         ])));
         assert!(exempt_from_dispatch(&argv(&["af", "provider", "recover"])));
+        // The browser: bare, or with only a repository to open.
+        assert!(exempt_from_dispatch(&argv(&["af", "--repo", "/tmp/x"])));
+        assert!(exempt_from_dispatch(&argv(&["af", "--repo=/tmp/x"])));
+        assert!(!exempt_from_dispatch(&argv(&["af", "--repo"])));
+        assert!(!exempt_from_dispatch(&argv(&[
+            "af", "--repo", "/tmp/x", "task", "list"
+        ])));
         assert!(!exempt_from_dispatch(&argv(&["af", "review", "plan"])));
         assert_eq!(
             repo_from_argv(&argv(&["af", "review", "plan", "--repo", "/x"])),

@@ -1189,7 +1189,7 @@ impl TaskDomain for ReviewTaskDomain {
             super::source::add_review_inputs(
                 cas,
                 input,
-                review_sandbox::Mode::ReadOnly,
+                false,
                 &subject.snapshot_id,
                 &mut manifest,
             )?;

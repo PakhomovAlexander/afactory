@@ -16,6 +16,39 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
+- Bare `af` at a terminal opens a read-first, vim-shaped browser (ADR-0119,
+  `docs/design/tui.md` package M1). On a pipe, bare `af` still prints help to stderr and exits
+  2. The scope comes from `config::load`: the user scope outside a repository, the project scope
+  inside one, or `af --repo DIR`. A 28-column folding bar holds `providers/`, `workers/`,
+  `pipelines/` and `tasks/`. Beside it, the Settings pane shows the layer table and the effective
+  values with their origins, as `af config paths` and `af config show --origin` print them, and
+  `e` opens a layer with `af config edit`. The Providers pane shows the `af provider status`
+  columns with a bar per quota window, and `R` runs the bounded usage probe off the key loop. The
+  Pipelines pane shows, verbatim, the `af task explain --tree` text of a token-free plan compiled
+  as `af task plan` compiles one, into a scratch Store; the status line shows the highlighted
+  slot's Worker binding. The Workers and Tasks panes arrive in later packages. `:` lines are
+  parsed by the CLI's own clap definition. The terminal runs through `rustix::termios`, an
+  existing dependency, instead of the planned `crossterm`. No `--json` document, schema or
+  fixture changes. Discovery under `.af/task-packages/` walks every real directory, however deep, and keeps walking below a package. Escape sequences split across terminal reads decode whole (`tui::keymap::Decoder`), and a lone `ESC` is Escape only after a read brought nothing. Outside a repository the user scope never opens a directory layer, so a broken `.af/af.toml` above a plain directory cannot block it. `af --repo DIR` with no subcommand is exempt from pin dispatch like bare `af`. The bar lists the pipelines `HEAD` commits and reads every declaration from `HEAD`, the authority a preview compiles, marking a working-tree file that differs; a package the kernel refuses to plan shows its declared contract; a review Pipeline shows its committed declaration. `af config edit user` names the user layer without reading the ladder, so a directory layer that does not parse cannot block it. `e` on a highlighted layer opens that exact file, so two present directory layers cannot swap; a settings refresh or an editor hand-off whose reload fails says the settings are stale and why, instead of calling them refreshed; the Worker-binding status follows a modified package's notice row; a malformed escape stream is bounded and dropped through its terminator. Git runs for the pipelines pane with a cleared environment and an allowlist, so an inherited `GIT_DIR` cannot redirect it; a failed read of `HEAD` is an error above the last good entries, not an empty catalog; entries are bound to one resolved commit and read again before a preview when `HEAD` moved; a package is previewed only when the committed catalog pins its name at that file; an editor hand-off refreshes the opened pane; the status line yields the breadcrumb before cutting a binding or an error at 80 columns. A preview compiles the exact commit its entries were read from (`plan_tree_preview_at`), and a result for a commit the pane left is dropped; drift is judged by `git diff` (bytes, mode, existence); a failed `HEAD` read is shown on an opened entry too and nothing is compiled from stale entries; a scope change drops the previous repository's entries; the terminal's panic hook restores the screen only from the thread that owns it. `R` acts on the bar's selected node while the bar has focus; an editor hand-off from the bar refreshes that node's pane too and the bar follows; opening an entry the new `HEAD` no longer commits falls back to its folder; a failed reload after an editor is reported as stale settings; an unborn `HEAD` is told apart from a branch naming a missing commit. The kernel's review-light reviewers get two Attempts each, so a malformed reply is retried instead of ending the round. A toplevel is an ancestor whose `.git` git would open, not any path so named; a cancelled provider probe is forgotten and the last complete inventory stays; a modified pipeline's bar label carries `*`; a reload that finds the place became another scope enters it and drops the old entries.
+- Let a review Worker that declares `execute-checks` build and drive the candidate (ADR-0118). A
+  model Worker whose `roles` contain `review` and whose effects are
+  `["read-source", "execute-checks"]` now runs in the same `Mode::EphemeralWrite` clone that
+  AF-owned preparation uses, with its readable Review inputs, instead of a read-only tree. The
+  Claude adapter adds `Bash` to its adapter-owned `--tools` and `--allowedTools` and keeps
+  `--safe-mode --restricted --permission-mode dontAsk --strict-mcp-config`. Codex runs
+  `-s workspace-write` rooted at the sandbox. The model process's whole group is killed when it
+  exits, so a shell child cannot outlive the Attempt; wall-clock and token bounds are unchanged.
+  Nothing is sealed back. At `finish` every Snapshot entry must be byte-identical; anything the
+  reviewer added — build output, its harness, the dotfiles tools write into `HOME`, which is the
+  sandbox root — is discarded with the clone and is not a source edit.
+  Any source edit fails the Attempt with a diagnostic naming the changed paths, and a read-only
+  Worker's refusal names its paths the same way. The adapter's `writable: bool` became the
+  kernel-derived `review_runner::task::WorkerAccess`, computed from the captured effects by
+  `review_pipeline::task::source::worker_access`, so no package or `.af/` policy can name a tool.
+  Existing Workers derive exactly the access they had; fixtures and `--json` documents are
+  unchanged. A command Worker declaring the same effect runs under the process-group-killing
+  exit policy too, so a background child it starts cannot outlive its Attempt
+  (`crates/review-runner/tests/task_command_process_group.rs`).
 - Kill a supervised child's process group before reaping the child, not after: a reaped pid is
   free for reuse, so the late `SIGKILL` could land on an unrelated process that had just been
   spawned into its own group under the recycled id — on a loaded machine, a fresh `git rev-parse`
@@ -118,7 +151,7 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   leader's exit without reaping and ends the process group before waiting, so a same-group
   descendant cannot outlive it; every untrusted label a refusal echoes — destination port,
   Task ID, output port, artifact spelling and the bindable-port reason — goes through the
-  preview's display sanitizer; the `af/task-inspection@11` schema gains the optional `input_bindings` property.
+  preview's display sanitizer; the `af/task-inspection@11` schema gains the optional `input_bindings` property. A command Worker declaring the same effect runs under the process-group-killing exit policy too, so a background child it starts cannot outlive its Attempt (`crates/review-runner/tests/task_command_process_group.rs`).
 
 ## [0.9.0-rc.6] - 2026-09-21
 

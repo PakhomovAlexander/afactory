@@ -125,7 +125,7 @@ impl ProviderTaskDomain<'_> {
             directory.path(),
             PROBE_INPUT.to_vec(),
             timeout,
-            false,
+            review_runner::task::WorkerAccess::ReadOnly,
             cancellation,
             &[],
         );

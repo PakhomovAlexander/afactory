@@ -201,13 +201,35 @@ pub(crate) fn bin_home() -> Result<PathBuf, String> {
     xdg("XDG_BIN_HOME", ".local/bin")
 }
 
-/// The git toplevel at or above `start`, if any: the first ancestor holding `.git`.
+/// The git toplevel at or above `start`, if any: the first ancestor whose `.git` is a
+/// repository git would open, not merely a path by that name.
 pub(crate) fn git_toplevel(start: &Path) -> Option<PathBuf> {
     let start = std::fs::canonicalize(start).ok()?;
     start
         .ancestors()
-        .find(|dir| dir.join(".git").exists())
+        .find(|dir| is_git_repository(&dir.join(".git")))
         .map(Path::to_path_buf)
+}
+
+/// A `.git` git itself opens: a directory holding `HEAD`, or a linked worktree's file naming
+/// a `gitdir:` that holds `HEAD`. An empty directory or an arbitrary file is neither.
+fn is_git_repository(dot_git: &Path) -> bool {
+    if dot_git.is_dir() {
+        return dot_git.join("HEAD").is_file();
+    }
+    let Ok(text) = std::fs::read_to_string(dot_git) else {
+        return false;
+    };
+    let Some(target) = text.trim().strip_prefix("gitdir:") else {
+        return false;
+    };
+    let target = Path::new(target.trim());
+    let dir = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        dot_git.parent().unwrap_or(Path::new("")).join(target)
+    };
+    dir.join("HEAD").is_file()
 }
 
 // ------------------------------------------------------------------------------------------
@@ -224,7 +246,34 @@ pub(crate) fn load_machine() -> Result<Config, String> {
     load_with(None, true)
 }
 
+/// The machine-owned inputs of a load: the system and user directories and the environment.
+/// Every command reads the machine's own; a test pins them, so a render of the ladder cannot
+/// depend on the machine running it.
+pub(crate) struct MachineRoots {
+    pub(crate) system: PathBuf,
+    pub(crate) user: PathBuf,
+    pub(crate) environment: Vec<(String, String)>,
+}
+
+impl MachineRoots {
+    fn current() -> Result<Self, String> {
+        Ok(Self {
+            system: PathBuf::from("/etc/af"),
+            user: config_home()?.join("af"),
+            environment: std::env::vars().collect(),
+        })
+    }
+}
+
 fn load_with(repo: Option<&Path>, machine_scope: bool) -> Result<Config, String> {
+    load_rooted(repo, machine_scope, &MachineRoots::current()?)
+}
+
+pub(crate) fn load_rooted(
+    repo: Option<&Path>,
+    machine_scope: bool,
+    roots: &MachineRoots,
+) -> Result<Config, String> {
     let start = match repo {
         Some(repo) => repo.to_path_buf(),
         None => std::env::current_dir().map_err(|error| format!("current directory: {error}"))?,
@@ -243,12 +292,12 @@ fn load_with(repo: Option<&Path>, machine_scope: bool) -> Result<Config, String>
     );
 
     let mut planned: Vec<(&'static str, PathBuf)> = Vec::new();
-    let system = PathBuf::from("/etc/af");
+    let system = &roots.system;
     planned.push(("system", system.join("config.toml")));
-    planned.extend(conf_d(&system).into_iter().map(|path| ("system", path)));
-    let user = config_home()?.join("af");
+    planned.extend(conf_d(system).into_iter().map(|path| ("system", path)));
+    let user = &roots.user;
     planned.push(("user", user.join("config.toml")));
-    planned.extend(conf_d(&user).into_iter().map(|path| ("user", path)));
+    planned.extend(conf_d(user).into_iter().map(|path| ("user", path)));
     let directory_root = toplevel
         .clone()
         .unwrap_or_else(|| std::fs::canonicalize(&start).unwrap_or(start.clone()));
@@ -296,7 +345,7 @@ fn load_with(repo: Option<&Path>, machine_scope: bool) -> Result<Config, String>
         });
     }
 
-    for (name, raw) in std::env::vars() {
+    for (name, raw) in roots.environment.iter().cloned() {
         let Some(rest) = name.strip_prefix("AF_") else {
             continue;
         };
@@ -494,7 +543,7 @@ pub(crate) fn show(repo: Option<&Path>, origin: bool, json: bool) -> Result<(), 
     Ok(())
 }
 
-fn flatten(value: &Value, prefix: &str, out: &mut Vec<(String, String)>) {
+pub(crate) fn flatten(value: &Value, prefix: &str, out: &mut Vec<(String, String)>) {
     match value {
         Value::Table(table) => {
             for (key, value) in table {
@@ -524,9 +573,28 @@ pub(crate) fn paths(repo: Option<&Path>) -> Result<(), String> {
 }
 
 pub(crate) fn edit(layer: LayerArg, repo: Option<&Path>) -> Result<(), String> {
+    let path = layer_path(layer, repo)?;
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("creating {}: {error}", parent.display()))?;
+        }
+        std::fs::write(&path, "version = 1\n")
+            .map_err(|error| format!("creating {}: {error}", path.display()))?;
+    }
+    open_in_editor(&path)
+}
+
+/// The file one layer lives in. The user layer is machine-owned and named without reading
+/// the ladder, so a directory or project layer that does not parse cannot stand in its way;
+/// the other layers need the ladder to know where they are.
+pub(crate) fn layer_path(layer: LayerArg, repo: Option<&Path>) -> Result<PathBuf, String> {
+    if layer == LayerArg::User {
+        return Ok(config_home()?.join("af/config.toml"));
+    }
     let config = load(repo)?;
-    let path = match layer {
-        LayerArg::User => config_home()?.join("af/config.toml"),
+    Ok(match layer {
+        LayerArg::User => unreachable!("named above"),
         LayerArg::Directory => {
             let candidates: Vec<&LayerFile> = config
                 .files
@@ -552,15 +620,11 @@ pub(crate) fn edit(layer: LayerArg, repo: Option<&Path>) -> Result<(), String> {
                 ".af/af.local.toml"
             })
         }
-    };
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("creating {}: {error}", parent.display()))?;
-        }
-        std::fs::write(&path, "version = 1\n")
-            .map_err(|error| format!("creating {}: {error}", path.display()))?;
-    }
+    })
+}
+
+/// Run `$EDITOR` on one file and wait for it. `af config edit` and the browser's `gf` share it.
+pub(crate) fn open_in_editor(path: &Path) -> Result<(), String> {
     let editor = std::env::var("EDITOR")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -571,7 +635,7 @@ pub(crate) fn edit(layer: LayerArg, repo: Option<&Path>) -> Result<(), String> {
         .ok_or("EDITOR is empty — fix: export EDITOR=vim")?;
     let status = std::process::Command::new(program)
         .args(args)
-        .arg(&path)
+        .arg(path)
         .status()
         .map_err(|error| format!("running {program}: {error}"))?;
     if !status.success() {
@@ -623,5 +687,46 @@ mod tests {
         let policy = config.self_policy().unwrap();
         assert_eq!(policy.auto_update, AutoUpdate::Notify);
         assert_eq!(policy.keep_versions, 3);
+    }
+
+    #[test]
+    fn the_user_layer_path_ignores_a_broken_directory_layer() {
+        let temp = tempfile::tempdir().unwrap();
+        let above = temp.path().join("above");
+        let plain = above.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::create_dir_all(above.join(".af")).unwrap();
+        std::fs::write(above.join(".af/af.toml"), "this = is not [toml\n").unwrap();
+        let user = layer_path(LayerArg::User, Some(&plain)).unwrap();
+        assert!(user.ends_with("af/config.toml"), "{}", user.display());
+        assert!(layer_path(LayerArg::Directory, Some(&plain)).is_err());
+    }
+
+    #[test]
+    fn only_a_real_git_directory_or_worktree_file_makes_a_toplevel() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        // A directory named `.git` with nothing in it, and a file that is not a gitdir pointer.
+        std::fs::create_dir_all(root.join("fake/.git")).unwrap();
+        std::fs::create_dir_all(root.join("junk")).unwrap();
+        std::fs::write(root.join("junk/.git"), "not a repository\n").unwrap();
+        assert_eq!(git_toplevel(&root.join("fake")), None);
+        assert_eq!(git_toplevel(&root.join("junk")), None);
+        // A repository proper, and a linked worktree whose `.git` file names it.
+        std::fs::create_dir_all(root.join("real/.git")).unwrap();
+        std::fs::write(root.join("real/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(root.join("real/deeper")).unwrap();
+        assert_eq!(
+            git_toplevel(&root.join("real/deeper")),
+            Some(root.join("real"))
+        );
+        std::fs::create_dir_all(root.join("linked")).unwrap();
+        std::fs::write(root.join("linked/.git"), "gitdir: ../real/.git\n").unwrap();
+        assert_eq!(
+            git_toplevel(&root.join("linked")),
+            Some(root.join("linked"))
+        );
+        std::fs::write(root.join("linked/.git"), "gitdir: ../nowhere/.git\n").unwrap();
+        assert_eq!(git_toplevel(&root.join("linked")), None);
     }
 }

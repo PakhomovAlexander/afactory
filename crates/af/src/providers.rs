@@ -288,30 +288,55 @@ pub fn print_status(json: bool, usage: UsageProbe) -> Result<i32, String> {
     Ok(code)
 }
 
+/// The `af provider status` table header; the browser's Providers pane prints the same one.
+pub(crate) fn status_table_header() -> String {
+    format!(
+        "{:<24} {:<8} {:<19} {:<18} SUBSCRIPTION",
+        "ID", "KIND", "STATUS", "AUTH"
+    )
+}
+
+/// One provider's row of the `af provider status` table.
+pub(crate) fn status_table_row(provider: &ProviderStatus) -> String {
+    format!(
+        "{:<24} {:<8} {:<19} {:<18} {}",
+        provider.id, provider.kind, provider.status, provider.auth_type, provider.subscription
+    )
+}
+
+/// An ambient CLI context `af` discovered but cannot bind: it needs `af provider setup` first.
+pub(crate) fn is_ambient_candidate(provider: &ProviderStatus) -> bool {
+    matches!(provider.id.as_str(), "claude-ambient" | "codex-ambient")
+        && provider
+            .source
+            .starts_with("ambient CLI candidate; unstable local context label")
+}
+
+/// The setup line printed for an ambient `kind`, naming the first free `<kind>-main` ID.
+pub(crate) fn setup_hint(kind: &str, ids: &BTreeSet<String>) -> String {
+    let id = available_provider_id(kind, ids);
+    format!("set up {kind}: af provider setup {id} --kind {kind} --login")
+}
+
+/// Where the Provider registry is read from, when it can be named at all.
+pub(crate) fn registry_location() -> Option<PathBuf> {
+    registry_path().ok().flatten()
+}
+
 fn print_status_table(inventory: &ProviderInventory, usage: UsageProbe) {
     if inventory.providers.is_empty() {
         println!("No supported provider CLI is installed and no provider registry entries exist");
         return;
     }
-    println!(
-        "{:<24} {:<8} {:<19} {:<18} SUBSCRIPTION",
-        "ID", "KIND", "STATUS", "AUTH"
-    );
+    println!("{}", status_table_header());
     let mut ambient = BTreeSet::new();
     let mut ids = BTreeSet::new();
     for provider in &inventory.providers {
         ids.insert(provider.id.clone());
-        if matches!(provider.id.as_str(), "claude-ambient" | "codex-ambient")
-            && provider
-                .source
-                .starts_with("ambient CLI candidate; unstable local context label")
-        {
+        if is_ambient_candidate(provider) {
             ambient.insert(provider.kind.clone());
         }
-        println!(
-            "{:<24} {:<8} {:<19} {:<18} {}",
-            provider.id, provider.kind, provider.status, provider.auth_type, provider.subscription
-        );
+        println!("{}", status_table_row(provider));
         for limit in &provider.limits {
             println!("  limit  {}", format_limit(limit));
         }
@@ -327,8 +352,7 @@ fn print_status_table(inventory: &ProviderInventory, usage: UsageProbe) {
         println!();
         println!("Ambient IDs are discovered only and cannot be selected by --provider.");
         for kind in ambient {
-            let id = available_provider_id(&kind, &ids);
-            println!("  set up {kind}: af provider setup {id} --kind {kind} --login");
+            println!("  {}", setup_hint(&kind, &ids));
         }
     }
 }

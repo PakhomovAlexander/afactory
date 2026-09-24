@@ -176,11 +176,11 @@ fn publication_recovers(before_attempt: bool) {
             _: &std::path::Path,
             input: Vec<u8>,
             _: std::time::Duration,
-            writable: bool,
+            access: review_runner::task::WorkerAccess,
             _: Option<&std::sync::atomic::AtomicBool>,
             _: &[(String, String)],
         ) -> ModelWorkerReturn {
-            assert!(!writable);
+            assert_eq!(access, review_runner::task::WorkerAccess::ReadOnly);
             let request: serde_json::Value = serde_json::from_slice(&input).unwrap();
             assert!(request["inputs"]["input"].is_array());
             let bytes = serde_json::to_vec(&json!({"schema":"af.worker-reply/1","outputs":{"output":[{"outcome":"passed","text":"Checked document"}]}})).unwrap();

@@ -333,6 +333,8 @@ impl CampaignReviewTaskHost<'_, '_> {
                     timeout,
                     cancellation,
                     &environment,
+                    // Legacy review command Workers read their Snapshot and nothing more.
+                    review_runner::task::WorkerAccess::ReadOnly,
                 ),
                 // Preserve the native Review capability profile: ADR-0042 keeps Claude
                 // read-only, while the legacy Codex adapter permits sandbox Proposals.
@@ -343,7 +345,11 @@ impl CampaignReviewTaskHost<'_, '_> {
                         sandbox.root(),
                         bytes,
                         timeout,
-                        provider_kind == "codex",
+                        if provider_kind == "codex" {
+                            review_runner::task::WorkerAccess::WriteSource
+                        } else {
+                            review_runner::task::WorkerAccess::ReadOnly
+                        },
                         cancellation,
                         &environment,
                     )

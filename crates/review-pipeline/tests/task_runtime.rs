@@ -72,11 +72,11 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             _: &std::path::Path,
             input: Vec<u8>,
             _: std::time::Duration,
-            writable: bool,
+            access: review_runner::task::WorkerAccess,
             _: Option<&std::sync::atomic::AtomicBool>,
             _: &[(String, String)],
         ) -> ModelWorkerReturn {
-            assert!(!writable);
+            assert_eq!(access, review_runner::task::WorkerAccess::ReadOnly);
             let request: Value = serde_json::from_slice(&input).unwrap();
             self.0.lock().unwrap().push(request);
             let reply = serde_json::to_vec(&json!({
@@ -771,7 +771,7 @@ fn substituted_resolved_context_is_rejected_before_model_dispatch() {
             _: &std::path::Path,
             _: Vec<u8>,
             _: std::time::Duration,
-            _: bool,
+            _: review_runner::task::WorkerAccess,
             _: Option<&std::sync::atomic::AtomicBool>,
             _: &[(String, String)],
         ) -> ModelWorkerReturn {
@@ -1325,11 +1325,11 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
             _: &std::path::Path,
             input: Vec<u8>,
             _: std::time::Duration,
-            writable: bool,
+            access: review_runner::task::WorkerAccess,
             _: Option<&std::sync::atomic::AtomicBool>,
             _: &[(String, String)],
         ) -> ModelWorkerReturn {
-            assert!(!writable);
+            assert_eq!(access, review_runner::task::WorkerAccess::ReadOnly);
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             let (bytes, cost) = if n == 0 {
                 assert_eq!(input, b"Reply with exactly: OK\n");
@@ -1478,11 +1478,11 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
             _: &std::path::Path,
             bytes: Vec<u8>,
             _: std::time::Duration,
-            writable: bool,
+            access: review_runner::task::WorkerAccess,
             _: Option<&std::sync::atomic::AtomicBool>,
             _: &[(String, String)],
         ) -> ModelWorkerReturn {
-            assert!(!writable);
+            assert_eq!(access, review_runner::task::WorkerAccess::ReadOnly);
             let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
             assert_eq!(
                 request["inputs"]

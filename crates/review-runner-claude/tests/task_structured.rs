@@ -1,8 +1,8 @@
 use review_core::{Arg, Command};
 use review_runner::task::{
-    MAX_WORKER_BYTES, WORKER_REPLY_FORMAT, WorkerContract, WorkerModelAdapter,
+    MAX_WORKER_BYTES, WORKER_REPLY_FORMAT, WorkerAccess, WorkerContract, WorkerModelAdapter,
 };
-use review_runner_claude::task::ClaudeTaskAdapter;
+use review_runner_claude::task::{ClaudeTaskAdapter, task_tools};
 use review_store::Cas;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, os::unix::fs::PermissionsExt, time::Duration};
@@ -16,7 +16,7 @@ fn request(payload: Value) -> Value {
 fn invoke(
     input: &Value,
     envelope: &Value,
-    writable: bool,
+    access: WorkerAccess,
 ) -> (review_runner::task::ModelWorkerReturn, String, Vec<u8>) {
     let temp = tempfile::tempdir().unwrap();
     let cas = Cas::open(temp.path().join("cas")).unwrap();
@@ -38,7 +38,7 @@ fn invoke(
         temp.path(),
         input.to_string().into_bytes(),
         Duration::from_secs(5),
-        writable,
+        access,
         None,
         &[],
     );
@@ -60,12 +60,16 @@ fn typed_native_command_preserves_input_schema_and_role_permissions() {
         "properties":{"text":{"type":"string"}}});
     let input = request(payload.clone());
     let reply = json!({"schema":"af.worker-reply/1","outputs":{"document":[{"text":"Hello"}]}});
-    for writable in [false, true] {
+    for access in [
+        WorkerAccess::ReadOnly,
+        WorkerAccess::ExecuteChecks,
+        WorkerAccess::WriteSource,
+    ] {
         let (returned, flags, received) = invoke(
             &input,
             &json!({"is_error":false,"result":"```json\nignored prose\n```",
             "structured_output":reply,"usage":{"input_tokens":10,"output_tokens":5}}),
-            writable,
+            access,
         );
         assert_eq!(received, input.to_string().as_bytes());
         assert_eq!(
@@ -90,29 +94,90 @@ fn typed_native_command_preserves_input_schema_and_role_permissions() {
         for flag in ["--safe-mode", "--restricted", "--strict-mcp-config"] {
             assert!(flags.contains(&flag));
         }
+        let tools = match access {
+            WorkerAccess::ReadOnly => "Read,Glob,Grep",
+            WorkerAccess::ExecuteChecks => "Read,Glob,Grep,Bash",
+            WorkerAccess::WriteSource => "Read,Glob,Grep,Edit,Write",
+        };
+        assert_eq!(task_tools(access), tools);
         for (flag, expected) in [
             ("--permission-mode", "dontAsk"),
-            (
-                "--tools",
-                if writable {
-                    "Read,Glob,Grep,Edit,Write"
-                } else {
-                    "Read,Glob,Grep"
-                },
-            ),
-            (
-                "--allowedTools",
-                if writable {
-                    "Read,Glob,Grep,Edit,Write"
-                } else {
-                    "Read,Glob,Grep"
-                },
-            ),
+            ("--tools", tools),
+            ("--allowedTools", tools),
         ] {
+            // Each adapter-owned flag appears once, so no earlier value can compete with it.
+            assert_eq!(flags.iter().filter(|v| **v == flag).count(), 1);
             let at = flags.iter().position(|v| *v == flag).unwrap();
             assert_eq!(flags[at + 1], expected);
         }
+        // A shell never arrives with edit tools, and only the execute-checks access has one.
+        assert_eq!(
+            flags.iter().any(|v| v.contains("Bash")),
+            access == WorkerAccess::ExecuteChecks
+        );
+        assert_eq!(
+            flags.iter().any(|v| v.contains("Edit")),
+            access == WorkerAccess::WriteSource
+        );
     }
+}
+
+#[test]
+fn execute_checks_command_derives_bash_from_the_access_alone() {
+    // Package runner args are restricted to one --model and one --effort; tool, permission
+    // and MCP flags are refused before a command exists.
+    for (option, value) in [
+        ("--tools", "Read,Glob,Grep,Bash,Edit"),
+        ("--allowedTools", "Bash"),
+        ("--permission-mode", "bypassPermissions"),
+        ("--mcp-config", "servers.json"),
+        ("--dangerously-skip-permissions", "true"),
+    ] {
+        assert!(
+            ClaudeTaskAdapter::new(&Command::new(
+                "claude",
+                vec![
+                    Arg::literal("--model"),
+                    Arg::literal("claude-fixture-1"),
+                    Arg::literal(option),
+                    Arg::literal(value),
+                ],
+            ))
+            .is_err(),
+            "{option} is package-supplied authority"
+        );
+    }
+    let payload = json!({"type":"object","required":["text"],"additionalProperties":false,
+        "properties":{"text":{"type":"string"}}});
+    let (_, flags, _) = invoke(
+        &request(payload),
+        &json!({"is_error":false,"structured_output":{},"usage":{"input_tokens":1,"output_tokens":1}}),
+        WorkerAccess::ExecuteChecks,
+    );
+    let flags: Vec<_> = flags.lines().collect();
+    let tail = [
+        "--safe-mode",
+        "--restricted",
+        "--permission-mode",
+        "dontAsk",
+        "--strict-mcp-config",
+        "--tools",
+        "Read,Glob,Grep,Bash",
+        "--allowedTools",
+        "Read,Glob,Grep,Bash",
+    ];
+    let at = flags.iter().position(|v| *v == "--safe-mode").unwrap();
+    assert_eq!(&flags[at..at + tail.len()], tail);
+    assert_eq!(
+        &flags[..at],
+        [
+            "-p",
+            "--output-format",
+            "json",
+            "--model",
+            "claude-fixture-1",
+        ]
+    );
 }
 
 #[test]
@@ -154,7 +219,7 @@ fn typed_reply_never_falls_back_and_failed_outputs_keep_accounting() {
         if let Some(structured) = structured {
             envelope["structured_output"] = structured;
         }
-        let (returned, _, _) = invoke(&request(payload.clone()), &envelope, false);
+        let (returned, _, _) = invoke(&request(payload.clone()), &envelope, WorkerAccess::ReadOnly);
         assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 21);
         assert!(returned.usage_observation.is_none());
         assert_eq!(
@@ -176,13 +241,17 @@ fn malformed_or_oversized_typed_requests_do_not_spawn_and_legacy_stays_textual()
         request(json!({"$id":"https://untrusted.invalid","type":"object"})),
         request(json!({"description":"x".repeat(MAX_WORKER_BYTES)})),
     ] {
-        let (returned, flags, received) = invoke(&input, &envelope, false);
+        let (returned, flags, received) = invoke(&input, &envelope, WorkerAccess::ReadOnly);
         assert!(returned.message.is_err());
         assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 0);
         assert!(returned.raw_artifact_ids.is_empty());
         assert!(flags.is_empty() && received.is_empty());
     }
-    let (returned, flags, _) = invoke(&json!({"legacy":"review"}), &envelope, false);
+    let (returned, flags, _) = invoke(
+        &json!({"legacy":"review"}),
+        &envelope,
+        WorkerAccess::ReadOnly,
+    );
     assert_eq!(returned.message.unwrap(), b"legacy result");
     assert!(!flags.lines().any(|arg| arg == "--json-schema"));
 }
@@ -199,7 +268,7 @@ fn nested_payload_references_keep_their_own_roots_and_literal_values() {
     let (returned, flags, _) = invoke(
         &input,
         &json!({"is_error":false,"structured_output":{},"usage":{"input_tokens":1,"output_tokens":1}}),
-        false,
+        WorkerAccess::ReadOnly,
     );
     assert!(returned.message.is_ok());
     let args: Vec<_> = flags.lines().collect();

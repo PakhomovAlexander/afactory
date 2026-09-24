@@ -9,6 +9,8 @@ use review_config::lock::{Lockfile, Pin};
 fn repo(root: &Path) -> PathBuf {
     let repo = root.join("repo");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
+    // A `.git` the kernel accepts as a repository holds a HEAD.
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     repo
 }
 
@@ -153,6 +155,8 @@ fn preview_rejects_a_repository_path_that_cannot_be_copied_as_utf8() {
         return;
     };
     std::fs::create_dir_all(repo.join(".git")).unwrap();
+    // A `.git` the kernel accepts as a repository holds a HEAD.
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_af"))
         .arg("onboard")
         .arg("--repo")
@@ -202,6 +206,8 @@ fn preview_rejects_a_non_utf8_canonical_repository_reached_as_dot() {
         return;
     };
     std::fs::create_dir_all(repo.join(".git")).unwrap();
+    // A `.git` the kernel accepts as a repository holds a HEAD.
+    std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_af"))
         .args(["onboard", "--repo", ".", "--gate", "check=true", "--json"])
         .current_dir(&repo)

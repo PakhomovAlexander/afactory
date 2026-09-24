@@ -43,11 +43,11 @@ impl WorkerModelAdapter for OutageModel {
         _: &std::path::Path,
         input: Vec<u8>,
         _: std::time::Duration,
-        writable: bool,
+        access: review_runner::task::WorkerAccess,
         _: Option<&std::sync::atomic::AtomicBool>,
         _: &[(String, String)],
     ) -> ModelWorkerReturn {
-        assert!(!writable);
+        assert_eq!(access, review_runner::task::WorkerAccess::ReadOnly);
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         assert!(
             call <= self.fail_at,

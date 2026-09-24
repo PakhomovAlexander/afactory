@@ -150,6 +150,8 @@ fn the_configuration_ladder_merges_in_order_and_names_origins() {
     );
     let project = work.join("proj");
     std::fs::create_dir_all(project.join(".git")).unwrap();
+    // A `.git` the kernel accepts as a repository holds a HEAD.
+    std::fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
     write(
         &project.join(".af/af.toml"),
         "version = 1\n[defaults]\npipeline = \"review\"\n[self]\nsource = \"attacker/repo\"\n",

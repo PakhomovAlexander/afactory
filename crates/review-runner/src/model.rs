@@ -32,7 +32,8 @@ use review_core::{
 use review_store::Cas;
 
 use review_process::{
-    SupervisedError, run_supervised_captured, run_supervised_captured_cancellable,
+    ExitPolicy, SupervisedError, run_supervised_captured_cancellable_with_policy,
+    run_supervised_captured_with_policy,
 };
 
 /// Why a supervised process yielded no capture, or an input could not be composed. Each is a
@@ -1289,6 +1290,7 @@ pub struct ModelRunner {
     timeout: Duration,
     grants: Vec<Grant>,
     environment: Vec<Grant>,
+    exit_policy: ExitPolicy,
 }
 
 impl ModelRunner {
@@ -1298,7 +1300,16 @@ impl ModelRunner {
             timeout,
             grants: Vec::new(),
             environment: Vec::new(),
+            exit_policy: ExitPolicy::PreserveProcessGroup,
         }
+    }
+
+    /// End the whole process group when the model process exits, as a check does. An Attempt
+    /// that may run a shell sets this so no background child outlives it and keeps writing into
+    /// the sandbox the kernel is about to seal; deadline and cancellation already kill the group.
+    pub fn killing_process_group_on_exit(mut self) -> Self {
+        self.exit_policy = ExitPolicy::KillProcessGroup;
+        self
     }
 
     /// Grant one credential to the child. The value never appears in anything stored: it is
@@ -1387,10 +1398,19 @@ impl ModelRunner {
             cmd.env(&grant.name, &grant.value);
         }
         let output = match cancellation {
-            Some(flag) => {
-                run_supervised_captured_cancellable(&mut cmd, Some(input), self.timeout, flag)
-            }
-            None => run_supervised_captured(&mut cmd, Some(input), self.timeout),
+            Some(flag) => run_supervised_captured_cancellable_with_policy(
+                &mut cmd,
+                Some(input),
+                self.timeout,
+                self.exit_policy,
+                flag,
+            ),
+            None => run_supervised_captured_with_policy(
+                &mut cmd,
+                Some(input),
+                self.timeout,
+                self.exit_policy,
+            ),
         };
         capture.stdout = redact(output.stdout, &self.grants);
         capture.stderr = redact(output.stderr, &self.grants);

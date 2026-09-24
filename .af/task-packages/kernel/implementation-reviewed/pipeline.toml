@@ -1,7 +1,7 @@
 schema = "af.pipeline/1"
 name = "kernel/implementation-reviewed"
-version = "1.0.0"
-max_attempts = 9
+version = "1.1.0"
+max_attempts = 16
 max_parallel = 2
 
 [contract.inputs.history]

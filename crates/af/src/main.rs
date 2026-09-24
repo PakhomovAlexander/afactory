@@ -46,6 +46,7 @@ mod selfmgmt;
 mod task;
 mod task_execution;
 mod topics;
+mod tui;
 
 use review_config::captured_review::ReviewMode as CampaignMode;
 
@@ -1050,8 +1051,22 @@ fn main() {
         return;
     }
     let Some(command) = parsed.command else {
-        let _ = cli::Af::command().print_help();
-        std::process::exit(2);
+        if !tui::wanted() {
+            // Not a terminal: the usage error a bare `af` has always been, help on stderr.
+            let refused = cli::Af::command()
+                .arg_required_else_help(true)
+                .try_get_matches_from(["af"]);
+            match refused {
+                Err(error) => error.exit(),
+                Ok(_) => std::process::exit(2),
+            }
+        }
+        let code = tui::launch(parsed.repo.as_deref()).unwrap_or_else(|error| {
+            eprintln!("af: {error}");
+            1
+        });
+        selfmgmt::after_command(&argv);
+        std::process::exit(code);
     };
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
         cli::Command::Review(namespace) => ("af review", review_command(namespace)),

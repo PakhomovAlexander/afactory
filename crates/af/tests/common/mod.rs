@@ -210,6 +210,8 @@ impl Sandbox {
     pub fn pinned_repo(&self, name: &str, lock: &str) -> PathBuf {
         let repo = self.path(name);
         std::fs::create_dir_all(repo.join(".git")).unwrap();
+        // A `.git` the kernel accepts as a repository holds a HEAD.
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
         write(&repo.join(".af/af.lock"), lock);
         repo
     }
