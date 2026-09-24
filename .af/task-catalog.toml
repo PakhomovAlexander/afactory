@@ -59,8 +59,8 @@ digest = "sha256:1356e5cfe8f8444f0244b4a74686536d9340aefd8b0d7f289222fe66cbcf9f3
 path = ".af/task-packages/warm/verification-kind"
 
 [packages."kernel/implementer"]
-version = "1.3.0"
-digest = "sha256:920f8229e882e9250ad78669a309401af7e13cf548245bdc52ca748913e2eede"
+version = "1.4.0"
+digest = "sha256:efec01c69b13f76ec9d2102aead4a0c0a18fda93aa6adc1d00adbf309e9511cf"
 path = ".af/task-packages/kernel/implementer"
 
 [packages."kernel/correctness"]

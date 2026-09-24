@@ -582,9 +582,15 @@ fn adapter_flags_derive_from_the_captured_effects_alone() {
         assert_eq!(task_tools(access), "Read,Glob,Grep");
         assert_eq!(task_sandbox_mode(access), "read-only");
     }
-    let writer = worker_access(&bare_signature("write-source execute-checks", "review"));
+    let writer = worker_access(&bare_signature("write-source", "implement"));
+    assert_eq!(writer, WorkerAccess::WriteSource);
     assert_eq!(task_tools(writer), "Read,Glob,Grep,Edit,Write");
     assert_eq!(task_sandbox_mode(writer), "workspace-write");
+    // A writer that also declares `execute-checks` gets a shell to format, lint and test.
+    let shell = worker_access(&bare_signature("write-source execute-checks", "implement"));
+    assert_eq!(shell, WorkerAccess::WriteSourceWithShell);
+    assert_eq!(task_tools(shell), "Read,Glob,Grep,Edit,Write,Bash");
+    assert_eq!(task_sandbox_mode(shell), "workspace-write");
 }
 
 #[test]

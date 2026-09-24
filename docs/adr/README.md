@@ -205,3 +205,5 @@ future readers need.
 - [0118 — Let a review Worker that declares `execute-checks` run in an ephemeral
   clone](0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md)
 - [0119 — Open a read-first browser on bare `af`](0119-open-a-read-first-browser-on-bare-af.md)
+- [0120 — Give a source-writing Worker that declares `execute-checks` a
+  shell](0120-give-a-source-writing-worker-a-shell.md)

@@ -137,7 +137,7 @@ fn command_runner(
         });
     }
     let mut runner = ModelRunner::new(workdir, remaining);
-    if access == WorkerAccess::ExecuteChecks {
+    if access.has_shell() {
         // A shell granted to run the candidate must not leave children behind: the same
         // process-group policy the model adapters apply to an execute-checks Attempt.
         runner = runner.killing_process_group_on_exit();

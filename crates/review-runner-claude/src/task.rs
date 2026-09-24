@@ -15,6 +15,8 @@ pub fn task_tools(access: WorkerAccess) -> &'static str {
         WorkerAccess::ExecuteChecks => "Read,Glob,Grep,Bash",
         // Native file edits only; the kernel captures the sealed tree as the candidate.
         WorkerAccess::WriteSource => "Read,Glob,Grep,Edit,Write",
+        // Edits plus a shell to format, lint and test them; still no MCP or permission flags.
+        WorkerAccess::WriteSourceWithShell => "Read,Glob,Grep,Edit,Write,Bash",
     }
 }
 
@@ -120,7 +122,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         let mut runner = ModelRunner::new(workdir, timeout)
             .with_env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
             .with_env("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1");
-        if access == WorkerAccess::ExecuteChecks {
+        if access.has_shell() {
             // A shell child must not outlive the Attempt that started it.
             runner = runner.killing_process_group_on_exit();
         }

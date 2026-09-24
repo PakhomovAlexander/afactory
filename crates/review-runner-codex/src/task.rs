@@ -102,7 +102,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             &last_message,
         );
         let mut runner = ModelRunner::new(workdir, timeout);
-        if access == WorkerAccess::ExecuteChecks {
+        if access.has_shell() {
             // A shell child must not outlive the Attempt that started it.
             runner = runner.killing_process_group_on_exit();
         }

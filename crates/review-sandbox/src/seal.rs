@@ -70,9 +70,22 @@ impl SealedSandbox {
     /// has a different boundary: its derived Snapshot is the output, so every entry must name a
     /// verified CAS object before the Snapshot can be recorded.
     pub fn capture_snapshot(&self, cas: &Cas) -> Result<Manifest, std::io::Error> {
+        self.capture_snapshot_where(cas, |_| true)
+    }
+
+    /// The same capture of only the sealed entries `keep` accepts, by Manifest path. The
+    /// excluded entries are never read or published.
+    pub fn capture_snapshot_where(
+        &self,
+        cas: &Cas,
+        keep: impl Fn(&str) -> bool,
+    ) -> Result<Manifest, std::io::Error> {
         let mut entries = Vec::with_capacity(self.final_manifest.entries.len());
         let mut buffer = vec![0_u8; 64 * 1024];
         for expected in &self.final_manifest.entries {
+            if !keep(&expected.path) {
+                continue;
+            }
             let path = self.root.join(fs_path(&expected.path));
             let metadata = std::fs::symlink_metadata(&path)?;
             let kind = if metadata.file_type().is_symlink() {

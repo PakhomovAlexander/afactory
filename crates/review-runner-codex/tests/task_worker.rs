@@ -73,6 +73,7 @@ fn execute_checks_runs_workspace_write_rooted_at_the_sandbox() {
         (WorkerAccess::ReadOnly, "read-only"),
         (WorkerAccess::ExecuteChecks, "workspace-write"),
         (WorkerAccess::WriteSource, "workspace-write"),
+        (WorkerAccess::WriteSourceWithShell, "workspace-write"),
     ] {
         assert_eq!(task_sandbox_mode(access), mode);
         let temp = tempfile::tempdir().unwrap();
