@@ -61,7 +61,8 @@ Three regions, fixed for the whole session:
   `pipelines/`, `tasks/`. Selecting the root row opens the settings pane for the scope.
 - **Main pane**: one renderer per node kind (§5). Scrollable; never wider than the terminal.
 - **Status line**: vim mode word, breadcrumb of the selected node, the key legend for the
-  focused region. `:` opens a one-line command prompt in the same row; `/` a search prompt.
+  focused region or the highlighted row's binding or the last message. At a narrow width the
+  breadcrumb shrinks to the mode word, then goes, before the right-hand text is cut. `:` opens a one-line command prompt in the same row; `/` a search prompt.
 
 Glyphs are printable ASCII only (`v`/`>` for folds, `+--`/`'--` for tree branches, `#`/`.` for
 bars). This keeps the existing `terminal_data_is_printable_ascii` test meaningful and matches the
@@ -180,8 +181,15 @@ PIPE  review@1.0.0 (.af/pipelines/review.toml)  [configured]
 ```
 
 The bar lists what `HEAD` commits under `.af/pipelines/` and `.af/task-packages/`, because that
-is the authority a plan compiles; a working-tree file that differs from `HEAD` is marked `*` and
-its pane says so, while `gf` still opens the working-tree file. Selecting a pipeline package with
+is the authority a plan compiles; every declaration is read from the one commit resolved at
+load, and a preview reads the entries again first when `HEAD` has moved. A working-tree file
+that differs from `HEAD` is marked `*` and its pane says so, while `gf` still opens the
+working-tree file, and the pane reads again after an editor hand-off. Git runs with a cleared
+environment, so an inherited `GIT_DIR` cannot point it at another repository. A read of `HEAD`
+that fails is shown as an error above the last good entries, never as an empty list; only an
+unborn `HEAD` lists nothing. A package file is previewed only when the committed catalog pins
+its name at that file; a file the catalog pins elsewhere, or not at all, says so and shows its
+contract instead of another file's plan. Selecting a pipeline package with
 no captured Task compiles a plan the token-free way `af task plan` does and renders that text; the two renders agree line for line except the identity lines
 (`PLAN`, `TIME`, `--confirm-plan`), which carry a fresh plan identity and deadline on every
 compilation. A package whose compilation the kernel refuses (required facts or public inputs

@@ -857,7 +857,18 @@ impl App {
     fn finish(&mut self, outcome: Result<(), String>, done: String) {
         // A configuration that no longer loads is the news, whatever the child did: the
         // settings on screen are the old ones, and saying "edited" would call them current.
-        match (self.reload(), outcome) {
+        let reloaded = self.reload();
+        // The child may have changed what the opened pane shows (an edited pipeline now
+        // differs from HEAD): that pane reads again too, keeping what is opened.
+        if let Some(tab) = self.opened_tab() {
+            if let Err(error) = self.panes.get_mut(Some(tab)).refresh(&self.scope) {
+                self.say_error(error);
+            }
+            self.sync();
+            let opened = self.opened.clone();
+            self.show(opened);
+        }
+        match (reloaded, outcome) {
             (Err(stale), _) => self.say_error(stale),
             (Ok(()), Ok(())) => self.say(done),
             (Ok(()), Err(error)) => self.say_error(error),
@@ -1004,6 +1015,15 @@ impl App {
             Some((text, false)) => (text.clone(), Paint::Status),
             None => (self.legend(), Paint::Status),
         };
+        // The message, binding or legend on the right is what the line is for. At a narrow
+        // width the breadcrumb shrinks to the mode word, then goes, before the right is cut.
+        let fits = |left: &str| left.len() + 2 + right.len() <= width;
+        if !fits(&left) {
+            left = word.to_owned();
+        }
+        if !fits(&left) {
+            return vec![Span::new(right, paint)];
+        }
         let gap = width.saturating_sub(left.len() + right.len()).max(2);
         vec![
             Span::new(left, Paint::Status),

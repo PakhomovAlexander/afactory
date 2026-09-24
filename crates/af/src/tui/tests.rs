@@ -284,7 +284,40 @@ fn the_pipelines_pane_is_the_task_plan_tree_preview() {
         "the committed plan is unchanged"
     );
     assert_eq!(app.pane().status(slot), None);
-    assert_eq!(app.pane().status(slot + 1), Some(binding));
+    assert_eq!(app.pane().status(slot + 1), Some(binding.clone()));
+    // At the 80-column minimum the binding is what the status line shows: the breadcrumb
+    // yields before the binding is cut. (R put the cursor back on the first row.)
+    for _ in 0..=slot {
+        press(&mut app, &mut host, b"j");
+    }
+    let status = app.frame(80, 24).text();
+    let last = status.lines().last().unwrap().trim_end().to_owned();
+    assert!(last.ends_with(&binding), "{last}");
+    assert!(!last.starts_with("NORMAL  pipelines/"), "{last}");
+}
+
+#[test]
+fn an_editor_hand_off_refreshes_the_opened_pane() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]j\r");
+    assert_eq!(app.breadcrumb(), "pipelines/review");
+    let rows: Vec<String> = app.pane().rows().iter().map(Row::text).collect();
+    assert!(rows[0].starts_with("PIPE  review"), "{rows:#?}");
+    // The child edited the file; coming back, the pane already says the tree differs.
+    let file = root.join("hub/.af/pipelines/review.toml");
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, format!("{text}# edited\n")).unwrap();
+    app.finish(Ok(()), "edited".to_owned());
+    let rows: Vec<String> = app.pane().rows().iter().map(Row::text).collect();
+    assert!(
+        rows[0].starts_with("working tree differs from HEAD"),
+        "{rows:#?}"
+    );
+    assert_eq!(app.breadcrumb(), "pipelines/review");
+    let bar = app.frame(100, 30).text();
+    assert!(bar.contains("review"), "{bar}");
 }
 
 #[test]
