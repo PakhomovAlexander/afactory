@@ -16,6 +16,29 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
+## [0.9.0-rc.7] - 2026-09-24
+
+### Authority compatibility
+
+Committed `.af/` policy keeps working as is; `execute-checks` on a review Worker is opt-in.
+
+### Changes
+
+- release: v0.9.0-rc.6 (#107)
+- Name the CLI crate after its binary: crates/af (#108)
+- Bump base64 from 0.22.1 to 0.23.1 (#103)
+- Bump the cargo-minor-and-patch group across 1 directory with 3 updates (#101)
+- test: stop reporting a reaped descendant as live after cancellation (#109)
+- Take the toml, toml_edit and jsonschema updates, parsing TOML documents as tables (#111)
+- Bump toml from 0.8.23 to 1.1.6+spec-1.1.0 (#102)
+- Bump toml_edit from 0.22.27 to 0.25.15+spec-1.1.0 (#105)
+- Bump jsonschema from 0.26.2 to 0.56.0 (#104)
+- Make Provider onboarding safe for agents (#112)
+- Remove pre-GA legacy, migration and compatibility code (#114)
+- Keep .af/ to declarations: layout table, undeclared-path report, Task input bindings (ADR-0112..0114) (#113)
+- Pin Opus 5.5 and GPT-6 Sol defaults (#116)
+- Fix source install adoption by af self (#115)
+- Bare af opens a vim-native TUI; review Workers may run a shell (execute-checks) (#117)
 - Bare `af` at a terminal opens a read-first, vim-shaped browser (ADR-0119,
   `docs/design/tui.md` package M1). On a pipe, bare `af` still prints help to stderr and exits
   2. The scope comes from `config::load`: the user scope outside a repository, the project scope
