@@ -923,7 +923,14 @@ impl App {
     /// Read the scope and the settings pane again. On failure the scope and the pane keep
     /// what they showed, and the error names why they are stale.
     fn reload(&mut self) -> Result<(), String> {
-        self.scope = self.scope.reload()?;
+        let scope = self.scope.reload()?;
+        if scope.kind != self.scope.kind || scope.root != self.scope.root {
+            // The place became another scope (a repository lost its `.git`, say): everything
+            // read for the old one goes, the way `:cd` and `:scope` change places.
+            self.enter_scope(scope);
+            return Ok(());
+        }
+        self.scope = scope;
         self.panes.settings.load(&self.scope)
     }
 

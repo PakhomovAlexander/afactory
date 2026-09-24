@@ -23,7 +23,11 @@ mouse support.
 | `af --repo DIR` | project | as above, for `DIR` |
 | `af` with stdout not a tty | — | prints help, exit 2 (today's behaviour) |
 
-Scope resolution reuses `config::load(repo)`: `toplevel == None` means user scope. The user scope
+Scope resolution reuses `config::load(repo)`: `toplevel == None` means user scope. A toplevel is
+an ancestor whose `.git` git itself would open (a directory holding `HEAD`, or a linked
+worktree's `gitdir:` file naming one), never a mere path called `.git`. A reload that finds the
+place has become another scope enters that scope the way `:cd` does, dropping the old one's
+entries. The user scope
 still shows project Tasks — grouped by repository — because the Store is user-wide; the project
 scope filters the same Store by repository identity. `arg_required_else_help` on `Af` goes away;
 `Option<Command>::None` dispatches to `tui::launch(scope)`.
@@ -145,7 +149,8 @@ The main pane shows the same columns as the CLI table for the selected provider,
 `ProviderLimit` as a bar with `used_percent` and `format_limit`'s reset text, then `detail` as
 `note`. Ambient candidates render greyed with the `af provider setup` hint the CLI prints.
 
-`R` runs the provider probe (the bounded, possibly charged probe in `providers`) with a spinner in the bar
+`R` runs the provider probe (a probe cancelled with `<C-c>` is forgotten: the last complete
+inventory stays, and `R` probes again) (the bounded, possibly charged probe in `providers`) with a spinner in the bar
 row, polled from the event loop without blocking key handling.
 
 ### 5.3 Workers
@@ -185,7 +190,7 @@ is the authority a plan compiles; every declaration is read from the one commit 
 load, a preview compiles that exact commit (never a `HEAD` that moved meanwhile) and reads the
 entries again first when `HEAD` has moved, and a result for a commit the pane no longer shows
 is dropped. A working-tree file that differs from `HEAD` in bytes, mode or existence, as `git
-diff` judges it, is marked `*` and its pane says so, while `gf` still opens the working-tree
+diff` judges it, carries `*` in its bar label (selected or not) and its pane says so, while `gf` still opens the working-tree
 file, and the pane reads again after an editor hand-off. Git runs with a cleared environment,
 so an inherited `GIT_DIR` cannot point it at another repository. A read of `HEAD` that fails is
 shown as an error above the last good entries of the same repository, on the folder and on an

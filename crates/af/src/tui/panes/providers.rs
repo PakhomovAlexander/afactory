@@ -167,10 +167,13 @@ impl Pane for ProvidersPane {
         self.job.as_ref().map(|_| spinner)
     }
 
+    /// Stop the probe and forget it: whatever it returns is never shown, so the last complete
+    /// inventory and its usage stay on screen and `R` can probe again.
     fn cancel(&mut self) -> bool {
-        match &self.job {
+        match self.job.take() {
             Some(job) => {
                 job.cancel.store(true, Ordering::Release);
+                self.rebuild();
                 true
             }
             None => false,

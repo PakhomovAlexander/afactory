@@ -352,7 +352,11 @@ fn an_editor_hand_off_refreshes_the_opened_pane() {
         rows[0].starts_with("working tree differs from HEAD"),
         "{rows:#?}"
     );
-    assert_eq!(app.breadcrumb(), "pipelines/review");
+    assert_eq!(
+        app.breadcrumb(),
+        "pipelines/review *",
+        "the bar row carries the marker"
+    );
     let bar = app.frame(100, 30).text();
     assert!(bar.contains("review"), "{bar}");
 }
@@ -468,10 +472,15 @@ fn r_and_gf_act_on_the_bar_selection_while_another_pane_is_open() {
     app.finish(Ok(()), "edited".to_owned());
     assert!(marked(&app));
     assert_eq!(app.opened, Opened::Root, "what was opened stays opened");
+    // The bar row itself carries the marker, selected or not.
+    let bar = app.frame(100, 30).text();
+    assert!(bar.contains("review *"), "{bar}");
     // `R` on the bar selection refreshes that pane, not the opened Settings.
     std::fs::write(&file, text).unwrap();
     press(&mut app, &mut host, b"R");
     assert!(!marked(&app));
+    let bar = app.frame(100, 30).text();
+    assert!(!bar.contains("review *"), "{bar}");
     let status = status_line(&mut app);
     assert!(!status.contains("settings read again"), "{status}");
 }
@@ -497,4 +506,25 @@ fn an_entry_head_no_longer_commits_falls_back_to_its_folder() {
     assert!(status.contains("no longer listed"), "{status}");
     let bar = app.frame(100, 30).text();
     assert!(!bar.contains("      review"), "{bar}");
+}
+
+#[test]
+fn a_repository_that_stops_being_one_reloads_as_the_user_scope() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]j\r");
+    assert_eq!(app.breadcrumb(), "pipelines/review");
+    // `.git` goes away under the open browser; `R` on the root reads the place again.
+    std::fs::rename(root.join("hub/.git"), root.join("hub-git-moved")).unwrap();
+    press(&mut app, &mut host, b"gg");
+    press(&mut app, &mut host, b"R");
+    assert_eq!(app.scope.kind, ScopeKind::User);
+    let screen = app.frame(100, 30).text();
+    assert!(screen.contains("SETTINGS  user: ~"), "{screen}");
+    assert!(!screen.contains("(project)"), "{screen}");
+    assert!(
+        app.panes.pipelines.items().is_empty(),
+        "no project pipelines remain listed"
+    );
 }

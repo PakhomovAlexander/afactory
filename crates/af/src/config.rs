@@ -201,13 +201,35 @@ pub(crate) fn bin_home() -> Result<PathBuf, String> {
     xdg("XDG_BIN_HOME", ".local/bin")
 }
 
-/// The git toplevel at or above `start`, if any: the first ancestor holding `.git`.
+/// The git toplevel at or above `start`, if any: the first ancestor whose `.git` is a
+/// repository git would open, not merely a path by that name.
 pub(crate) fn git_toplevel(start: &Path) -> Option<PathBuf> {
     let start = std::fs::canonicalize(start).ok()?;
     start
         .ancestors()
-        .find(|dir| dir.join(".git").exists())
+        .find(|dir| is_git_repository(&dir.join(".git")))
         .map(Path::to_path_buf)
+}
+
+/// A `.git` git itself opens: a directory holding `HEAD`, or a linked worktree's file naming
+/// a `gitdir:` that holds `HEAD`. An empty directory or an arbitrary file is neither.
+fn is_git_repository(dot_git: &Path) -> bool {
+    if dot_git.is_dir() {
+        return dot_git.join("HEAD").is_file();
+    }
+    let Ok(text) = std::fs::read_to_string(dot_git) else {
+        return false;
+    };
+    let Some(target) = text.trim().strip_prefix("gitdir:") else {
+        return false;
+    };
+    let target = Path::new(target.trim());
+    let dir = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        dot_git.parent().unwrap_or(Path::new("")).join(target)
+    };
+    dir.join("HEAD").is_file()
 }
 
 // ------------------------------------------------------------------------------------------
@@ -678,5 +700,33 @@ mod tests {
         let user = layer_path(LayerArg::User, Some(&plain)).unwrap();
         assert!(user.ends_with("af/config.toml"), "{}", user.display());
         assert!(layer_path(LayerArg::Directory, Some(&plain)).is_err());
+    }
+
+    #[test]
+    fn only_a_real_git_directory_or_worktree_file_makes_a_toplevel() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        // A directory named `.git` with nothing in it, and a file that is not a gitdir pointer.
+        std::fs::create_dir_all(root.join("fake/.git")).unwrap();
+        std::fs::create_dir_all(root.join("junk")).unwrap();
+        std::fs::write(root.join("junk/.git"), "not a repository\n").unwrap();
+        assert_eq!(git_toplevel(&root.join("fake")), None);
+        assert_eq!(git_toplevel(&root.join("junk")), None);
+        // A repository proper, and a linked worktree whose `.git` file names it.
+        std::fs::create_dir_all(root.join("real/.git")).unwrap();
+        std::fs::write(root.join("real/.git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(root.join("real/deeper")).unwrap();
+        assert_eq!(
+            git_toplevel(&root.join("real/deeper")),
+            Some(root.join("real"))
+        );
+        std::fs::create_dir_all(root.join("linked")).unwrap();
+        std::fs::write(root.join("linked/.git"), "gitdir: ../real/.git\n").unwrap();
+        assert_eq!(
+            git_toplevel(&root.join("linked")),
+            Some(root.join("linked"))
+        );
+        std::fs::write(root.join("linked/.git"), "gitdir: ../nowhere/.git\n").unwrap();
+        assert_eq!(git_toplevel(&root.join("linked")), None);
     }
 }

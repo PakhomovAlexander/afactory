@@ -336,9 +336,16 @@ impl Pane for PipelinesPane {
     fn items(&self) -> Vec<Item> {
         let mut items = Vec::new();
         for entry in &self.entries {
+            // The marker is in the label, so the selected row shows it too: paint alone is
+            // overridden by the cursor. The id stays the committed path.
+            let label = if entry.modified {
+                format!("{} *", entry.label)
+            } else {
+                entry.label.clone()
+            };
             items.push(Item {
                 id: entry.id.clone(),
-                label: entry.label.clone(),
+                label,
                 muted: entry.modified || self.error.is_some(),
             });
         }
