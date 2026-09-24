@@ -24,6 +24,7 @@ use paint::{Frame, Paint, Span};
 use panes::pipelines::PipelinesPane;
 use panes::providers::ProvidersPane;
 use panes::settings::SettingsPane;
+use panes::tasks::TasksPane;
 use panes::{Effect, Pane, Placeholder, Row};
 use scope::{Scope, ScopeKind};
 use tree::{NodeKind, Tab, Tree};
@@ -65,6 +66,9 @@ y                  copy the selected id to the clipboard (OSC 52)
 gf                 open the file behind the node in $EDITOR
 R                  read the pane again; providers: probe quota windows
 q ZZ :q            quit; <C-c> first cancels a prompt or a running probe
+
+tasks: Enter on a HISTORY row shows its artifact (q or Esc returns),
+       p opens the Task's pipeline, y copies the Task id
 
 :e user|directory|project|local   af config edit --layer ...
 :help [TOPIC|COMMAND]             af help ...
@@ -154,7 +158,7 @@ pub(crate) struct Panes {
     providers: ProvidersPane,
     pipelines: PipelinesPane,
     workers: Placeholder,
-    tasks: Placeholder,
+    tasks: TasksPane,
 }
 
 impl Panes {
@@ -164,7 +168,7 @@ impl Panes {
             providers,
             pipelines: PipelinesPane::default(),
             workers: Placeholder::new("WORKERS", 4),
-            tasks: Placeholder::new("TASKS", 3),
+            tasks: TasksPane::default(),
         }
     }
 
@@ -328,7 +332,7 @@ impl App {
     fn selected_tab(&self) -> Option<Tab> {
         match self.tree.selected().kind {
             NodeKind::Root => None,
-            NodeKind::Folder(tab) | NodeKind::Item(tab) => Some(tab),
+            NodeKind::Folder(tab) | NodeKind::Group(tab) | NodeKind::Item(tab) => Some(tab),
         }
     }
 
@@ -355,13 +359,22 @@ impl App {
         let row = self.tree.selected();
         let opened = match row.kind {
             NodeKind::Root => Opened::Root,
-            NodeKind::Folder(tab) => Opened::Folder(tab),
+            NodeKind::Folder(tab) | NodeKind::Group(tab) => Opened::Folder(tab),
             NodeKind::Item(tab) => Opened::Item(tab, row.id),
         };
         self.show(opened);
     }
 
     fn show(&mut self, opened: Opened) {
+        // The pane the main pane leaves stops its background reads.
+        let leaving = self.opened_tab();
+        let entering = match &opened {
+            Opened::Root => None,
+            Opened::Folder(tab) | Opened::Item(tab, _) => Some(*tab),
+        };
+        if leaving.is_some() && leaving != entering {
+            self.panes.get_mut(leaving).close();
+        }
         let opened = match opened {
             Opened::Root => Opened::Root,
             Opened::Folder(tab) => {
@@ -372,12 +385,7 @@ impl App {
                 self.panes.get_mut(Some(tab)).open(Some(id.as_str()));
                 // Opening may have read HEAD again; an entry it no longer commits falls back
                 // to the folder, and the bar follows what the pane lists now.
-                let listed = self
-                    .panes
-                    .get(Some(tab))
-                    .items()
-                    .iter()
-                    .any(|item| item.id == id);
+                let listed = listed(&self.panes.get(Some(tab)).items(), &id);
                 if listed {
                     Opened::Item(tab, id)
                 } else {
@@ -399,7 +407,13 @@ impl App {
         match row.kind {
             NodeKind::Root => self.scope.name(),
             NodeKind::Folder(tab) => format!("{}/", tab.name()),
-            NodeKind::Item(tab) => format!("{}/{}", tab.name(), row.label),
+            // A Task row's label is its fitted progress; its id is the path to it.
+            NodeKind::Item(Tab::Tasks) | NodeKind::Group(Tab::Tasks) => {
+                format!("{}/{}", Tab::Tasks.name(), row.id)
+            }
+            NodeKind::Group(tab) | NodeKind::Item(tab) => {
+                format!("{}/{}", tab.name(), row.label)
+            }
         }
     }
 
@@ -435,6 +449,16 @@ impl App {
 
     fn action(&mut self, action: Action) -> Option<Effect> {
         let page = isize::try_from(self.size.1.saturating_sub(1)).unwrap_or(isize::MAX);
+        // `q` and `Esc` first close a view the opened pane put over itself.
+        if matches!(action, Action::Quit | Action::Cancel)
+            && let Some(row) = self.panes.get_mut(self.opened_tab()).back()
+        {
+            self.main = View {
+                cursor: row,
+                ..View::default()
+            };
+            return None;
+        }
         match action {
             Action::Down => self.step(1),
             Action::Up => self.step(-1),
@@ -462,7 +486,7 @@ impl App {
             Action::NextFolder => self.tree.next_folder(),
             Action::PreviousFolder => self.tree.previous_folder(),
             Action::Open if self.focus == Focus::Bar => self.open_selected(),
-            Action::Open => {}
+            Action::Open => return self.open_row(),
             Action::Yank => return self.yank(),
             Action::EditFile => return self.edit_file(),
             Action::Refresh => return Some(Effect::Refresh),
@@ -581,7 +605,8 @@ impl App {
         let row = self.tree.selected();
         match row.kind {
             NodeKind::Root => Some(self.scope.root.display().to_string()),
-            NodeKind::Folder(_) => None,
+            NodeKind::Folder(_) | NodeKind::Group(_) => None,
+            NodeKind::Item(Tab::Tasks) => self.panes.tasks.task_id(&row.id),
             NodeKind::Item(_) => Some(row.label),
         }
     }
@@ -603,8 +628,19 @@ impl App {
             NodeKind::Root => self.panes.settings.file(0),
             NodeKind::Item(Tab::Pipelines) => self.panes.pipelines.entry_file(&row.id),
             NodeKind::Item(Tab::Providers) => self.panes.providers.file(0),
-            NodeKind::Folder(_) | NodeKind::Item(_) => None,
+            NodeKind::Folder(_) | NodeKind::Group(_) | NodeKind::Item(_) => None,
         }
+    }
+
+    /// `Enter` in the main pane: the opened pane's verb for the row under the cursor. A view
+    /// the pane opens over itself starts at its top.
+    fn open_row(&mut self) -> Option<Effect> {
+        let before = self.pane().nested();
+        let effect = self.pane_key(Key::Enter);
+        if !before && self.pane().nested() {
+            self.main = View::default();
+        }
+        effect
     }
 
     fn pane_key(&mut self, key: Key) -> Option<Effect> {
@@ -856,7 +892,22 @@ impl App {
                 self.finish(outcome, format!("edited {shown}"));
             }
             Effect::RunCommand(words) => self.run_command(&words, host),
+            Effect::OpenPipeline(name) => self.open_pipeline(&name),
         }
+    }
+
+    /// Open a Pipeline the Pipelines pane lists by name, as selecting it in the bar would.
+    fn open_pipeline(&mut self, name: &str) {
+        let items = self.panes.pipelines.items();
+        // A working-tree file that differs from HEAD carries ` *` after its name.
+        let named = |item: &&tree::Item| item.label.trim_end_matches(" *") == name;
+        let Some(item) = items.iter().find(named) else {
+            self.say_error(format!("pipeline {name} is not listed under pipelines/"));
+            return;
+        };
+        let id = item.id.clone();
+        self.tree.select(NodeKind::Item(Tab::Pipelines), &id);
+        self.show(Opened::Item(Tab::Pipelines, id));
     }
 
     /// A command line parsed by the CLI's own clap definition, so the browser never grows a
@@ -1140,6 +1191,17 @@ fn handed_off(
     let outcome = child();
     host.reenter()?;
     outcome
+}
+
+/// Whether `id` is an entry of `items` or of a group among them.
+fn listed(items: &[tree::Item], id: &str) -> bool {
+    items.iter().any(|item| {
+        item.id == id
+            || item
+                .children
+                .as_deref()
+                .is_some_and(|inner| listed(inner, id))
+    })
 }
 
 fn root_label(scope: &Scope) -> String {

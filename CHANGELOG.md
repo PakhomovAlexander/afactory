@@ -23,6 +23,19 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   under a top-level name the source did not hold, and new top-level dotfiles
   (`SealedSandbox::capture_snapshot_where`). A writer without `execute-checks` is unchanged. The
   kernel's `kernel/implementer` declares it and formats, lints and tests before replying.
+- The browser's Tasks pane (ADR-0121, `docs/design/tui.md` package M3) lists the scope's Tasks
+  under `running/`, `awaiting approval/`, `done/` and `failed/`, newest first, as
+  `task-id  outcome  progress%`. The user scope adds one level per repository's Task state. A
+  Store the binary cannot read is an error row naming its directory. One Task's pane shows TASK,
+  PLAN and SNAP lines, one PROGRESS row per stage of the plan's graph order (`[ok]`, `[..]` with
+  its attempt, `[!!]`, `[  ]`, with recorded wall and charged tokens), the TOKENS and TIME totals,
+  and one HISTORY row per event. Every value comes from `af task list --json` and the
+  `af task explain --json` document (`af task show --json` with the plan and its graph), or from an
+  artifact they name. A running opened Task is read again about once a second off the key loop.
+  `Enter` on a HISTORY row shows its artifact, `p` opens the Task's pipeline, `y` yanks the Task
+  id and `R` reads again. The `af task show` builder is split from its printer, and
+  `default_task_state` is the one spelling of the default `--state`. No `--json` document
+  changes.
 
 ## [0.9.0-rc.7] - 2026-09-24
 

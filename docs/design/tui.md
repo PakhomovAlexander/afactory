@@ -297,6 +297,26 @@ Tests: keymap sequences, tree folding and search, and one golden render per pane
    **Delivered** (package M1, ADR-0119). The terminal runs on `rustix::termios` rather than
    `crossterm`, whose lock entries the package could not add under `--locked`; see the ADR.
 3. Tasks pane: list, detail, progress, tokens, time, history; running-Task poll.
+   **Delivered** (package M3, ADR-0121). Deviations from §5.5:
+   - The pane reads the `af task explain --json` document, which is `af task show --json` with
+     the plan and its graph, for the graph order, the Attempt allowances and the Pipeline name.
+     It resolves the artifacts that document names for the goal and for the node each execution
+     record ran.
+   - No `TaskCompleted@1` event exists. TOKENS takes `chargeable` from the document, and it
+     shows a component only when `attempt_walls` covers every settled Attempt; otherwise the
+     component is `-`.
+   - TIME shows the wall between the first and last events, plus the check and
+     dependency-preparation spans. No record carries a verification time.
+   - SNAP names the source Snapshot, the derived Snapshot and the policy, not `HEAD@commit`,
+     which no document carries.
+   - Artifact IDs print as eight hex digits, times of day in UTC (`12:04:31Z`), and numbers
+     without separators, so each equals its field.
+   - An empty state group is not listed. A bar row that does not fit cuts the outcome first,
+     down to nothing, and then the Task id.
+   - The user scope's repository level is named by the opaque Task-state directory, because the
+     Store records no repository path.
+   - `p` opens the Pipelines pane's entry of the Task's Pipeline, which is the committed
+     package's plan. The captured `ExecutionPlan` stays with `af task explain`.
 4. Workers pane: identity, prompt, then the State section once Attempt records are indexed by
    Worker in the Store.
 5. Command line and the run/deliver hand-off; `gf`; yank.

@@ -347,6 +347,7 @@ impl Pane for PipelinesPane {
                 id: entry.id.clone(),
                 label,
                 muted: entry.modified || self.error.is_some(),
+                children: None,
             });
         }
         items

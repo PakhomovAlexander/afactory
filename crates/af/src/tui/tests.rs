@@ -11,6 +11,8 @@ use crate::providers::{ProviderInventory, ProviderLimit, ProviderStatus, UsagePr
 
 const SETTINGS: &str = include_str!("../../tests/fixtures/tui/settings-100x30.txt");
 const PROVIDERS: &str = include_str!("../../tests/fixtures/tui/providers-100x30.txt");
+const TASKS: &str = include_str!("../../tests/fixtures/tui/tasks-100x30.txt");
+const TASK: &str = include_str!("../../tests/fixtures/tui/task-100x30.txt");
 
 fn workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -79,6 +81,48 @@ pub(crate) fn hub_repo(root: &Path) -> PathBuf {
     repo
 }
 
+/// The hub with two Tasks recorded, token-free, in the Task state `af task` resolves for it
+/// under `root/state`: `pagination-cli`, whose command-Worker implementer writes the fix, then
+/// `pagination-unfinished`, run after the implementer stopped writing it, so its check fails.
+/// Returns the repository and that Task state directory.
+pub(crate) fn hub_with_tasks(root: &Path) -> (PathBuf, PathBuf) {
+    let repo = hub_repo(root);
+    let xdg = root.join("state");
+    let state = crate::task_execution::default_task_state(&xdg, &repo).unwrap();
+    record_task(root, &repo, &state, "pagination-cli");
+    let implementer = repo.join(".af/task-packages/fixture/implementer");
+    let worker = "import json,sys\njson.load(sys.stdin)\nprint(json.dumps({'schema':'af.worker-reply/1',\
+                  'outputs':{'report':[{'summary':'Left pagination as it was'}]}}))\n";
+    std::fs::write(implementer.join("worker.py"), worker).unwrap();
+    let catalog = repo.join(".af/task-catalog.toml");
+    let text = std::fs::read_to_string(&catalog).unwrap();
+    let mut value: toml::Value = toml::from_str(&text).unwrap();
+    let digest = review_config::lock::package_digest("fixture/implementer", &implementer);
+    value["packages"]["fixture/implementer"]["digest"] = toml::Value::String(digest.unwrap());
+    std::fs::write(&catalog, toml::to_string(&value).unwrap()).unwrap();
+    git(&repo, &["add", "-A"]);
+    git(
+        &repo,
+        &[
+            "commit",
+            "-qm",
+            "an implementer that leaves pagination unfinished",
+        ],
+    );
+    record_task(root, &repo, &state, "pagination-unfinished");
+    (repo, state)
+}
+
+/// Run the fixture's ticket under `task_id` the way `af task start --execute` runs it.
+fn record_task(root: &Path, repo: &Path, state: &Path, task_id: &str) {
+    let ticket = std::fs::read(repo.join("ticket.json")).unwrap();
+    let mut task: serde_json::Value = serde_json::from_slice(&ticket).unwrap();
+    task["task_id"] = serde_json::Value::String(task_id.to_owned());
+    let file = root.join(format!("{task_id}.json"));
+    std::fs::write(&file, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
+    crate::task_execution::run_silently(&file, repo, state).unwrap();
+}
+
 /// Lines two captures of one Task file share: the plan ID covers the deadline and TIME counts
 /// down to it, so those lines keep only their label.
 pub(crate) fn stable_lines(text: &str) -> Vec<String> {
@@ -112,6 +156,7 @@ fn hub_scope(root: &Path, repo: &Path) -> Scope {
         config,
         home: Some(root.to_path_buf()),
         registry: Some(root.join("config/af/providers.toml")),
+        state: Some(root.join("state")),
     }
 }
 
@@ -167,6 +212,10 @@ fn temp_root() -> (tempfile::TempDir, PathBuf) {
 
 fn hub_app(root: &Path) -> App {
     let repo = hub_repo(root);
+    app_at(root, repo)
+}
+
+fn app_at(root: &Path, repo: PathBuf) -> App {
     let scope = hub_scope(root, &repo);
     let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
     let mut app = App::new(scope, Some(repo), Panes::new(providers));
@@ -527,4 +576,237 @@ fn a_repository_that_stops_being_one_reloads_as_the_user_scope() {
         app.panes.pipelines.items().is_empty(),
         "no project pipelines remain listed"
     );
+}
+
+/// A frame with what differs between two recordings of one Task masked: artifact IDs (eight
+/// hex digits), times of day and durations. The padding that right-aligns a duration folds to
+/// two spaces, so no column after it depends on how long anything took.
+fn masked(frame: &str) -> String {
+    let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    let single = |word: &str| {
+        let seconds = word.strip_suffix('s').and_then(|rest| rest.split_once('.'));
+        word.strip_suffix("ms").is_some_and(digits)
+            || seconds.is_some_and(|(whole, tenth)| digits(whole) && digits(tenth))
+    };
+    let pair = |word: &str, next: &str| {
+        let unit = |word: &str, unit: char| word.strip_suffix(unit).is_some_and(digits);
+        (unit(word, 'm') && next.len() == 3 && unit(next, 's'))
+            || (unit(word, 'h') && next.len() == 3 && unit(next, 'm'))
+    };
+    let mut text = String::new();
+    for line in frame.lines() {
+        let words: Vec<&str> = line.split(' ').collect();
+        let mut kept: Vec<String> = Vec::new();
+        let mut index = 0;
+        while index < words.len() {
+            let word = words[index];
+            let next = words.get(index + 1).copied().unwrap_or_default();
+            let taken = if pair(word, next) {
+                2
+            } else if single(word) {
+                1
+            } else {
+                0
+            };
+            if taken > 0 {
+                while kept.last().is_some_and(String::is_empty) {
+                    kept.pop();
+                }
+                kept.push(String::new());
+                kept.push("<t>".to_owned());
+                index += taken;
+                continue;
+            }
+            let hex = word.len() == 8 && word.bytes().all(|b| b.is_ascii_hexdigit());
+            let clock = word.len() == 9
+                && word.ends_with('Z')
+                && word.split(':').count() == 3
+                && word[..8].bytes().all(|b| b.is_ascii_digit() || b == b':');
+            kept.push(match (hex, clock) {
+                (true, _) => "########".to_owned(),
+                (_, true) => "hh:mm:ssZ".to_owned(),
+                _ => word.to_owned(),
+            });
+            index += 1;
+        }
+        text.push_str(&kept.join(" "));
+        text.push('\n');
+    }
+    text
+}
+
+#[test]
+fn masking_folds_durations_and_hides_ids_and_times() {
+    let line = "PLAN  96779029  configured  STATE done  started 15:32:48Z  elapsed 1m 02s\n";
+    let expected = "PLAN  ########  configured  STATE done  started hh:mm:ssZ  elapsed  <t>\n";
+    assert_eq!(masked(line), expected);
+    let row = "  [ok]  check                 46ms        0 tok\n";
+    let wider = "  [ok]  check               1.3s        0 tok\n";
+    assert_eq!(masked(row), masked(wider));
+    assert_eq!(masked(row), "  [ok]  check  <t>        0 tok\n");
+}
+
+#[test]
+fn the_tasks_pane_golden_at_100x30_and_its_verbs() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]\r");
+    assert_eq!(app.breadcrumb(), "tasks/");
+    // The Store's directory is named after the repository's temporary path.
+    let opaque = state.file_name().unwrap().to_string_lossy().into_owned();
+    let frame = app.frame(100, 30).text().replace(&opaque, "<repository>");
+    assert_eq!(masked(&frame), TASKS);
+    press(&mut app, &mut host, b"jj");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    // `y` on the bar copies the Task id, not the row's progress text.
+    press(&mut app, &mut host, b"y");
+    assert_eq!(host.sent, b"\x1b]52;c;cGFnaW5hdGlvbi1jbGk=\x07");
+    press(&mut app, &mut host, b"\r");
+    assert_eq!(masked(&app.frame(100, 30).text()), TASK);
+    // With the main pane focused, the legend names the pane's verbs.
+    press(&mut app, &mut host, b"\t");
+    let status = status_line(&mut app);
+    assert!(status.ends_with("Enter artifact  p pipeline  y yank id  R re-read  Tab bar"));
+    // Enter on a HISTORY row shows its artifact; `q` and `Esc` come back to that row.
+    let shown = crate::task_execution::inspection_document(&state, "pagination-cli", false);
+    let shown = shown.unwrap().unwrap();
+    let plan_id = shown["plan_id"].as_str().unwrap().to_owned();
+    press(&mut app, &mut host, b"/plan_admitted\r");
+    let row = app.main.cursor;
+    for back in [&b"q"[..], b"\x1b"] {
+        press(&mut app, &mut host, b"\r");
+        assert_eq!(app.main_rows()[0].text(), format!("ARTIFACT  {plan_id}"));
+        let json: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+        let typed = "  \"type\": \"af/ExecutionPlan@1\"".to_owned();
+        assert!(json.contains(&typed), "{json:#?}");
+        assert_eq!(app.main.cursor, 0);
+        let status = status_line(&mut app);
+        assert!(status.ends_with("q/Esc back to the Task"), "{status}");
+        press(&mut app, &mut host, back);
+        assert!(!app.quit);
+        assert!(
+            app.main_rows()[0]
+                .text()
+                .starts_with("TASK  pagination-cli")
+        );
+        assert_eq!(app.main.cursor, row);
+    }
+    press(&mut app, &mut host, b"gg\r");
+    let status = status_line(&mut app);
+    assert!(
+        status.contains("Enter opens the artifact of a HISTORY row"),
+        "{status}"
+    );
+    // `y` in the main pane copies the Task id too.
+    host.sent.clear();
+    press(&mut app, &mut host, b"y");
+    assert_eq!(host.sent, b"\x1b]52;c;cGFnaW5hdGlvbi1jbGk=\x07");
+    // `R` reads the Store again at once and keeps the Task open.
+    press(&mut app, &mut host, b"R");
+    assert!(
+        app.main_rows()[0]
+            .text()
+            .starts_with("TASK  pagination-cli")
+    );
+    // At the 80x24 minimum the bar hides and the pane starts at the first column.
+    let small = app.frame(80, 24).text();
+    assert!(
+        small.starts_with("TASK  pagination-cli  implement: "),
+        "{small}"
+    );
+    assert!(small.contains("\nPROGRESS  6 / 6 stages\n"), "{small}");
+    // `p` opens the Task's pipeline where the Pipelines pane lists it.
+    press(&mut app, &mut host, b"p");
+    assert_eq!(app.breadcrumb(), "pipelines/fixture/implementation");
+    let package = ".af/task-packages/fixture/implementation/pipeline.toml";
+    assert_eq!(app.opened, Opened::Item(Tab::Pipelines, package.to_owned()));
+    // A pipeline the pane does not list is named on the status line, and nothing moves.
+    app.apply(
+        Effect::OpenPipeline("elsewhere/pipeline".to_owned()),
+        &mut host,
+    );
+    let status = status_line(&mut app);
+    assert!(status.contains("pipeline elsewhere/pipeline is not listed under pipelines/"));
+    assert_eq!(app.opened, Opened::Item(Tab::Pipelines, package.to_owned()));
+}
+
+#[test]
+fn a_store_this_binary_cannot_read_is_an_error_row_naming_it() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo(&root);
+    let state = crate::task_execution::default_task_state(&root.join("state"), &repo).unwrap();
+    std::fs::create_dir_all(state.join("cas/objects")).unwrap();
+    std::fs::write(
+        state.join("events.sqlite"),
+        "records another release wrote\n",
+    )
+    .unwrap();
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]\r");
+    let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+    let shown = state.strip_prefix(&root).unwrap().display();
+    let refusal = format!("~/{shown}: this Store cannot be read: ");
+    let row = rows.iter().find(|row| row.starts_with(&refusal));
+    assert!(
+        row.is_some_and(|row| row.len() > refusal.len()),
+        "{rows:#?}"
+    );
+    let bar = app.frame(100, 30).text();
+    assert!(bar.contains("      ! Store unreadable"), "{bar}");
+    // The row opens the same refusal, never an empty list.
+    press(&mut app, &mut host, b"j\r");
+    assert_eq!(app.breadcrumb(), "tasks/!unreadable");
+    let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+    assert!(
+        rows.iter().any(|row| row.starts_with(&refusal)),
+        "{rows:#?}"
+    );
+}
+
+#[test]
+fn only_an_opened_running_task_is_read_again_about_once_a_second() {
+    let (_temp, root) = temp_root();
+    let (repo, _state) = hub_with_tasks(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]jj\r");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    let second = Duration::from_millis(1_100);
+    std::thread::sleep(second);
+    app.poll();
+    assert_eq!(
+        app.panes.tasks.reads(),
+        0,
+        "a finished Task is not read again"
+    );
+    // The same Task as its phase read while it ran: the next poll reads the Store on a
+    // thread, and the one after it collects what the thread read.
+    let running = serde_json::json!({"kind": "running"});
+    *app.panes.tasks.detail_document().unwrap() = {
+        let mut document = app.panes.tasks.detail_document().unwrap().clone();
+        document["phase"] = running.clone();
+        document
+    };
+    app.poll();
+    assert_eq!(app.panes.tasks.reads(), 1);
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !app.panes.tasks.poll() {
+        assert!(Instant::now() < deadline, "the live read never finished");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // It found the Task finished, so nothing is read again.
+    std::thread::sleep(second);
+    app.poll();
+    assert_eq!(app.panes.tasks.reads(), 1);
+    assert!(app.main_rows()[1].text().contains("STATE done"));
+    // A running Task whose pane is not opened is not read either.
+    app.panes.tasks.detail_document().unwrap()["phase"] = running;
+    press(&mut app, &mut host, b"gg]]\r");
+    assert_eq!(app.opened, Opened::Folder(Tab::Providers));
+    std::thread::sleep(second);
+    app.poll();
+    assert_eq!(app.panes.tasks.reads(), 1);
 }

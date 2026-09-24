@@ -414,3 +414,206 @@ fn the_pipelines_pane_prints_what_task_plan_and_explain_tree_print() {
     browser.keys(b":q\r");
     assert_eq!(browser.exit_code(), 0);
 }
+
+/// A time of day and a duration, spelled the way the Tasks pane spells them.
+fn clock(unix_ms: u64) -> String {
+    let seconds = unix_ms / 1_000 % 86_400;
+    let (hours, minutes) = (seconds / 3_600, seconds / 60 % 60);
+    format!("{hours:02}:{minutes:02}:{:02}Z", seconds % 60)
+}
+
+fn duration(ms: u64) -> String {
+    if ms < 1_000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        format!("{}.{}s", ms / 1_000, ms % 1_000 / 100)
+    } else if ms < 3_600_000 {
+        format!("{}m {:02}s", ms / 60_000, ms / 1_000 % 60)
+    } else {
+        format!("{}h {:02}m", ms / 3_600_000, ms / 60_000 % 60)
+    }
+}
+
+fn short(id: &str) -> String {
+    id.trim_start_matches("sha256:").chars().take(8).collect()
+}
+
+/// The hub with the pagination ticket run to its end by `af task start --execute`, into the
+/// Task state `af task` resolves for the hub under the test's `XDG_STATE_HOME`.
+fn hub_with_a_task(root: &Path, home: &Path) -> PathBuf {
+    let repo = hub(root);
+    let ticket = root.join("ticket.json");
+    std::fs::copy(repo.join("ticket.json"), &ticket).unwrap();
+    let file = ticket.to_str().unwrap();
+    let args = ["task", "start", "--execute", "--file", file, "--json"];
+    let started = af(&repo, home, &args);
+    let stderr = String::from_utf8_lossy(&started.stderr);
+    assert!(started.status.success(), "{stderr}");
+    repo
+}
+
+/// Every number the Tasks pane shows for a Task equals the same field of the document
+/// `af task show --json` prints for it.
+#[test]
+fn the_tasks_pane_shows_the_numbers_af_task_show_json_records() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub_with_a_task(&root, &home);
+    let shown = af(&repo, &home, &["task", "show", "pagination-cli", "--json"]);
+    assert!(shown.status.success());
+    let show: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let mut browser = Browser::launch(&repo, &home);
+    browser.wait_for("the bar", |screen| shows(screen, "  v tasks/"));
+    // ]] four times reaches tasks/; its first group is done/, and in it the Task.
+    browser.keys(b"]]]]]]]]");
+    browser.keys(b"jj");
+    browser.keys(b"\r");
+    let opened = |screen: &Screen| {
+        let lines = screen.lines();
+        lines
+            .iter()
+            .any(|line| line.get(28..) == Some("HISTORY  (af task show)"))
+    };
+    let screen = browser.wait_for("the Task", opened);
+    let main: Vec<String> = screen
+        .lines()
+        .iter()
+        .map(|line| line.get(28..).unwrap_or("").to_owned())
+        .collect();
+    let text = screen.text();
+    let line = |prefix: &str| {
+        let found = main.iter().find(|line| line.starts_with(prefix));
+        found
+            .unwrap_or_else(|| panic!("no {prefix} line on:\n{text}"))
+            .clone()
+    };
+
+    let history = show["history"].as_array().unwrap();
+    let time = |event: &serde_json::Value| event["transition"]["now_unix_ms"].as_u64().unwrap();
+    let (first, last) = (time(&history[0]), time(history.last().unwrap()));
+    let plan = short(show["plan_id"].as_str().unwrap());
+    let elapsed = duration(last - first);
+    let expected = format!(
+        "PLAN  {plan}  configured  STATE done  started {}  elapsed {elapsed}",
+        clock(first)
+    );
+    assert_eq!(line("PLAN "), expected);
+
+    let report = &show["run_reports"].as_array().unwrap().last().unwrap()["report"];
+    let nodes = report["nodes"].as_array().unwrap();
+    let settled = nodes
+        .iter()
+        .filter(|node| {
+            let kind = node["outcome"]["kind"].as_str();
+            matches!(kind, Some("completed" | "failed" | "suppressed"))
+        })
+        .count();
+    let expected = format!("PROGRESS  {settled} / {} stages", nodes.len());
+    assert_eq!(line("PROGRESS "), expected);
+    let percent = settled * 100 / nodes.len();
+    let bar = bar_rows(&screen);
+    let row = bar
+        .iter()
+        .find(|row| row.trim_start().starts_with("pagination"));
+    assert!(row.unwrap().ends_with(&format!("  {percent}%")), "{text}");
+
+    // The check's wall is its recorded Attempt wall, its tokens the charge it settled with.
+    let walls = show["attempt_walls"].as_array().unwrap();
+    let wall = walls
+        .iter()
+        .find(|wall| wall["node_id"] == "root.nodes.check")
+        .unwrap();
+    let records = show["execution_records"].as_array().unwrap();
+    let settled_check = records
+        .iter()
+        .find(|entry| {
+            entry["record"]["kind"] == "settled"
+                && entry["record"]["attempt_id"] == wall["attempt_id"]
+        })
+        .unwrap();
+    let charged = settled_check["record"]["charged_tokens"].as_str().unwrap();
+    let check = line("  [ok]  check ");
+    let wall_ms = wall["elapsed_ms"].as_u64().unwrap();
+    let words: Vec<&str> = check.split_whitespace().collect();
+    assert_eq!(
+        words[2..],
+        [duration(wall_ms).as_str(), charged, "tok"],
+        "{check}"
+    );
+
+    // Chargeable is the document's; the components are `-`, because the Attempt walls that
+    // carry them cover only some of the settled Attempts.
+    let settled_attempts = records
+        .iter()
+        .filter(|entry| entry["record"]["kind"] == "settled")
+        .count();
+    assert!(walls.len() < settled_attempts);
+    let chargeable = show["chargeable_tokens"].as_str().unwrap();
+    let expected =
+        format!("TOKENS  chargeable {chargeable}  input -  output -  cache read -  reasoning -");
+    assert_eq!(line("TOKENS "), expected);
+
+    let mut checks = 0;
+    for observation in show["runtime_observations"].as_array().unwrap() {
+        for span in observation["record"]["spans"].as_array().unwrap() {
+            if span["kind"] == "check" {
+                checks += span["elapsed_ms"].as_u64().unwrap();
+            }
+        }
+    }
+    let expected = format!(
+        "TIME  wall {elapsed}  checks {}  dependency prep -",
+        duration(checks)
+    );
+    assert_eq!(line("TIME "), expected);
+
+    // Each HISTORY row is one event: its sequence, and the artifact its change names.
+    let start = main
+        .iter()
+        .position(|line| line == "HISTORY  (af task show)")
+        .unwrap();
+    let rows = &main[start + 1..ROWS - 1];
+    assert!(rows.len() > 10, "{text}");
+    for (row, event) in rows.iter().zip(history) {
+        let words: Vec<&str> = row.split_whitespace().collect();
+        assert_eq!(words[0], event["sequence"].as_u64().unwrap().to_string());
+        let change = event["transition"]["change"].as_object().unwrap();
+        assert_eq!(words[1], change["kind"].as_str().unwrap());
+        let id = change
+            .values()
+            .filter_map(serde_json::Value::as_str)
+            .find(|value| value.starts_with("sha256:"));
+        assert_eq!(*words.last().unwrap(), id.map_or("-".to_owned(), short));
+    }
+    browser.keys(b"q");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// Outside a repository the bar lists every repository's Task state, one level each.
+#[test]
+fn the_user_scope_groups_tasks_by_repository() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    hub_with_a_task(&root, &home);
+    let local = home.join("state/af/task/local");
+    let mut entries = std::fs::read_dir(&local).unwrap();
+    let repository = entries.next().unwrap().unwrap().file_name();
+    let repository = repository.to_string_lossy().into_owned();
+    let plain = home.join("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    let mut browser = Browser::launch(&plain, &home);
+    let grouped = format!("    v {repository}/ (1)");
+    let listed = |screen: &Screen| bar_rows(screen).contains(&grouped);
+    let screen = browser.wait_for("the repository group", listed);
+    let bar = bar_rows(&screen);
+    let at = bar.iter().position(|row| *row == grouped).unwrap();
+    assert_eq!(bar[at + 1], "      v done/ (1)", "{}", screen.text());
+    assert_eq!(
+        bar[at + 2],
+        "          pagination~  100%",
+        "{}",
+        screen.text()
+    );
+    browser.keys(b"q");
+    assert_eq!(browser.exit_code(), 0);
+}

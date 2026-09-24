@@ -418,19 +418,26 @@ pub(super) fn engine(cas: &Cas) -> Result<String, String> {
     cas.put_json(&json!({"schema":"af.task-engine/1","binary_digest":digest,"version":env!("CARGO_PKG_VERSION"),"graph":"af.compiled-task/1"})).map_err(|e|e.to_string())
 }
 
+/// Where every repository's default Task state lives under an XDG state root.
+pub(crate) fn local_task_states(xdg_state: &Path) -> PathBuf {
+    xdg_state.join("af/task/local")
+}
+
+/// The Task state `af task` reads and writes for a canonical repository path when no `--state`
+/// is given: one opaque directory per repository under [`local_task_states`].
+pub(crate) fn default_task_state(xdg_state: &Path, repo: &Path) -> Result<PathBuf, String> {
+    use sha2::{Digest, Sha256};
+    let identity = Sha256::digest(repo.as_os_str().as_encoded_bytes());
+    super::normalize_absolute(
+        &local_task_states(xdg_state).join(&review_core::hex::encode(&identity)[..16]),
+    )
+}
+
 pub(crate) fn state_path(repo: &Path, state: Option<&Path>) -> Result<(PathBuf, PathBuf), String> {
     let repo = std::fs::canonicalize(repo).map_err(|e| e.to_string())?;
     let state = match state {
         Some(path) => super::resolve_filesystem_path(path)?,
-        None => {
-            use sha2::{Digest, Sha256};
-            let identity = Sha256::digest(repo.as_os_str().as_encoded_bytes());
-            super::normalize_absolute(
-                &super::xdg_state_root()?
-                    .join("af/task/local")
-                    .join(&review_core::hex::encode(&identity)[..16]),
-            )?
-        }
+        None => default_task_state(&super::xdg_state_root()?, &repo)?,
     };
     if state.starts_with(&repo) {
         return Err("Task state must be outside the repository".into());
@@ -2130,6 +2137,69 @@ fn recorded_undeclared_af_paths(
     ))
 }
 
+/// The document `af task show --json` prints for a Task, or `af task explain --json` with
+/// `explain`, read from `state` with the same default resolution those commands use: the
+/// `--json` document, byte for byte, as a value. `None` when the Store holds no such Task.
+/// Nothing is written.
+pub(crate) fn inspection_document(
+    state: &Path,
+    id: &str,
+    explain: bool,
+) -> Result<Option<serde_json::Value>, String> {
+    if !state.join("events.sqlite").is_file() {
+        return Ok(None);
+    }
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    if store
+        .task_projection(&cas, id)
+        .map_err(|e| e.to_string())?
+        .is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(inspection(&cas, &store, id, explain, None)?.value))
+}
+
+/// One recorded artifact of a Task state directory, as the Store holds it: the envelope an
+/// inspection document names by ID. Nothing is written.
+pub(crate) fn recorded_artifact(state: &Path, id: &str) -> Result<serde_json::Value, String> {
+    if !review_core::is_digest(id) {
+        return Err(format!("{id} is not an artifact ID"));
+    }
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    cas.get_json(id).map_err(|e| e.to_string())
+}
+
+/// `af task start --execute` without printing: a test records a real Task this way.
+#[cfg(test)]
+pub(crate) fn run_silently(file: &Path, repo: &Path, state: &Path) -> Result<i32, String> {
+    let options = StartOptions {
+        file: file.to_path_buf(),
+        bindings: None,
+        source_bindings: None,
+        repo: repo.to_path_buf(),
+        state: Some(state.to_path_buf()),
+        authority: "HEAD".into(),
+        uncommitted: false,
+        json: false,
+        plan_only: false,
+        timeout_secs: None,
+        optimization_history: None,
+    };
+    start_kind(options, None, Presentation::Silent)
+}
+
+/// The inspection document of one Task, and what its text form needs besides.
+struct Inspection {
+    value: serde_json::Value,
+    state: TaskProjection,
+    result: Option<TaskResultV1>,
+    bindings: Option<review_core::task::input_bindings::TaskInputBindingsV1>,
+    reports: Vec<serde_json::Value>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn present_with_format(
     cas: &Cas,
@@ -2140,6 +2210,107 @@ fn present_with_format(
     tree: bool,
     undeclared: Option<&review_config::layout::PathGroup>,
 ) -> Result<i32, String> {
+    let Inspection {
+        value,
+        state,
+        result,
+        bindings,
+        reports,
+    } = inspection(cas, store, id, explain, undeclared)?;
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&value).map_err(|e| e.to_string())?
+        );
+    } else if explain && state.plan_id.is_some() {
+        print!("{}", preview::current(cas, &state, tree)?);
+    } else {
+        println!(
+            "Task {}: {}",
+            state.task_id,
+            result.as_ref().map_or(
+                match &state.phase {
+                    TaskPhaseV1::Waiting { reason } => match reason {
+                        TaskWaitingReasonV1::NeedsPlanReview => "needs-plan-review",
+                        TaskWaitingReasonV1::NeedsResources => "needs-resources",
+                        TaskWaitingReasonV1::NeedsInput => "needs-input",
+                        TaskWaitingReasonV1::NeedsHuman => "needs-human",
+                    },
+                    _ => "planned",
+                },
+                |r| r.domain_conclusion.as_str()
+            )
+        );
+        if let Some(id) = state.plan_id {
+            println!("Plan {id}");
+        }
+        // One line per bound port, through the same sanitizer the preview uses: a referenced
+        // Task ID is untrusted display data wherever it is printed.
+        for (port, binding) in bindings.iter().flat_map(|record| &record.bindings) {
+            match &binding.task {
+                Some(task) => println!(
+                    "bound {} <- task {}/{} ({})",
+                    preview::text(port),
+                    preview::text(&task.task_id),
+                    preview::text(&task.port),
+                    preview::acceptance_name(task.acceptance)
+                ),
+                None => println!(
+                    "bound {} <- artifact {}",
+                    preview::text(port),
+                    preview::text(&binding.artifact_id)
+                ),
+            }
+        }
+        if let Some(last) = reports.last().and_then(|r| r["diagnostics"].as_object()) {
+            for (node, diagnostic) in last {
+                if let Some(message) = diagnostic["message"].as_str() {
+                    println!("{node}: {message}");
+                }
+            }
+        }
+        if explain {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?
+            );
+        }
+    }
+    if result.as_ref().is_some_and(|r| {
+        matches!(
+            r.domain_conclusion.as_str(),
+            "pass" | "changes_requested" | "convergence_exhausted" | "incomplete"
+        )
+    }) {
+        return Ok(result.map_or(0, |r| match r.domain_conclusion.as_str() {
+            "pass" => 0,
+            "changes_requested" | "convergence_exhausted" => 3,
+            _ => 4,
+        }));
+    }
+    let pending = if state.phase
+        == (TaskPhaseV1::Waiting {
+            reason: TaskWaitingReasonV1::NeedsHuman,
+        }) {
+        4
+    } else {
+        0
+    };
+    Ok(result.map_or(pending, |r| match r.acceptance {
+        TaskAcceptanceV1::Satisfied => 0,
+        TaskAcceptanceV1::Unsatisfied => 3,
+        TaskAcceptanceV1::Inconclusive => 4,
+    }))
+}
+
+/// Build the inspection document every `af task` presentation of one Task prints.
+fn inspection(
+    cas: &Cas,
+    store: &EventStore,
+    id: &str,
+    explain: bool,
+    undeclared: Option<&review_config::layout::PathGroup>,
+) -> Result<Inspection, String> {
     let state: TaskProjection = store
         .task_projection(cas, id)
         .map_err(|e| e.to_string())?
@@ -2445,90 +2616,13 @@ fn present_with_format(
         .map_err(|e| e.to_string())?;
         value["plan"] = serde_json::to_value(plan).map_err(|e| e.to_string())?;
     }
-    if json_output {
-        println!(
-            "{}",
-            serde_json::to_string(&value).map_err(|e| e.to_string())?
-        );
-    } else if explain && state.plan_id.is_some() {
-        print!("{}", preview::current(cas, &state, tree)?);
-    } else {
-        println!(
-            "Task {}: {}",
-            state.task_id,
-            result.as_ref().map_or(
-                match &state.phase {
-                    TaskPhaseV1::Waiting { reason } => match reason {
-                        TaskWaitingReasonV1::NeedsPlanReview => "needs-plan-review",
-                        TaskWaitingReasonV1::NeedsResources => "needs-resources",
-                        TaskWaitingReasonV1::NeedsInput => "needs-input",
-                        TaskWaitingReasonV1::NeedsHuman => "needs-human",
-                    },
-                    _ => "planned",
-                },
-                |r| r.domain_conclusion.as_str()
-            )
-        );
-        if let Some(id) = state.plan_id {
-            println!("Plan {id}");
-        }
-        // One line per bound port, through the same sanitizer the preview uses: a referenced
-        // Task ID is untrusted display data wherever it is printed.
-        for (port, binding) in bindings.iter().flat_map(|record| &record.bindings) {
-            match &binding.task {
-                Some(task) => println!(
-                    "bound {} <- task {}/{} ({})",
-                    preview::text(port),
-                    preview::text(&task.task_id),
-                    preview::text(&task.port),
-                    preview::acceptance_name(task.acceptance)
-                ),
-                None => println!(
-                    "bound {} <- artifact {}",
-                    preview::text(port),
-                    preview::text(&binding.artifact_id)
-                ),
-            }
-        }
-        if let Some(last) = reports.last().and_then(|r| r["diagnostics"].as_object()) {
-            for (node, diagnostic) in last {
-                if let Some(message) = diagnostic["message"].as_str() {
-                    println!("{node}: {message}");
-                }
-            }
-        }
-        if explain {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?
-            );
-        }
-    }
-    if result.as_ref().is_some_and(|r| {
-        matches!(
-            r.domain_conclusion.as_str(),
-            "pass" | "changes_requested" | "convergence_exhausted" | "incomplete"
-        )
-    }) {
-        return Ok(result.map_or(0, |r| match r.domain_conclusion.as_str() {
-            "pass" => 0,
-            "changes_requested" | "convergence_exhausted" => 3,
-            _ => 4,
-        }));
-    }
-    let pending = if state.phase
-        == (TaskPhaseV1::Waiting {
-            reason: TaskWaitingReasonV1::NeedsHuman,
-        }) {
-        4
-    } else {
-        0
-    };
-    Ok(result.map_or(pending, |r| match r.acceptance {
-        TaskAcceptanceV1::Satisfied => 0,
-        TaskAcceptanceV1::Unsatisfied => 3,
-        TaskAcceptanceV1::Inconclusive => 4,
-    }))
+    Ok(Inspection {
+        value,
+        state,
+        result,
+        bindings,
+        reports,
+    })
 }
 
 fn delivery_view(cas: &Cas, task: &TaskProjection) -> Result<Option<serde_json::Value>, String> {
