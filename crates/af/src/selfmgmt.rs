@@ -175,6 +175,31 @@ fn default_version(paths: &Paths) -> Option<String> {
         .and_then(|component| component.as_os_str().to_str().map(str::to_string))
 }
 
+fn running_binary_is(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    let Ok(running) = std::env::current_exe().and_then(std::fs::metadata) else {
+        return false;
+    };
+    let Ok(candidate) = std::fs::metadata(path) else {
+        return false;
+    };
+    running.dev() == candidate.dev() && running.ino() == candidate.ino()
+}
+
+fn default_status(paths: &Paths, version: Option<&str>) -> &'static str {
+    if version.is_some() {
+        return "managed";
+    }
+    match std::fs::symlink_metadata(&paths.bin) {
+        Ok(metadata) if metadata.file_type().is_symlink() => "unmanaged-symlink",
+        Ok(metadata) if metadata.is_file() => "unmanaged-file",
+        Ok(_) => "unmanaged-path",
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "absent",
+        Err(_) => "inaccessible",
+    }
+}
+
 fn running_receipt(paths: &Paths) -> Option<Receipt> {
     let exe = std::env::current_exe().ok()?;
     let exe = std::fs::canonicalize(exe).ok()?;
@@ -747,6 +772,7 @@ fn set_default(paths: &Paths, version: &str) -> Result<(), String> {
     }
     if paths.bin.exists()
         && std::fs::symlink_metadata(&paths.bin).is_ok_and(|m| !m.file_type().is_symlink())
+        && !running_binary_is(&paths.bin)
     {
         return Err(format!(
             "{} exists and is not a symlink — fix: move it aside; af manages this path as a symlink into {}",
@@ -1181,6 +1207,7 @@ struct StatusView {
     running: PathBuf,
     receipt: Option<Receipt>,
     default: Option<String>,
+    default_status: &'static str,
     installed: Vec<String>,
     pin: Option<PinView>,
     pinned_projects: Vec<SeenPin>,
@@ -1226,6 +1253,7 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
     });
     let state = read_state(&paths);
     let cache = read_cache(&paths);
+    let default = default_version(&paths);
     let view = StatusView {
         version: VERSION,
         target: TARGET,
@@ -1233,7 +1261,8 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
         release_key: release_key_source(),
         running: running.clone(),
         receipt: running_receipt(&paths),
-        default: default_version(&paths),
+        default_status: default_status(&paths, default.as_deref()),
+        default,
         installed: installed_list,
         pin,
         pinned_projects: state.pins,
@@ -1288,9 +1317,17 @@ pub(crate) fn status(json: bool) -> Result<(), String> {
             other => other.to_string(),
         }
     );
-    match &view.default {
-        Some(version) => println!("default:    {} -> af {version}", paths.bin.display()),
-        None => println!("default:    {} (absent)", paths.bin.display()),
+    match (&view.default, view.default_status) {
+        (Some(version), _) => println!("default:    {} -> af {version}", paths.bin.display()),
+        (None, "absent") => println!("default:    {} (absent)", paths.bin.display()),
+        (None, "unmanaged-file") if running_binary_is(&paths.bin) => println!(
+            "default:    {} (unmanaged running binary; `af self install {VERSION}` adopts it)",
+            paths.bin.display()
+        ),
+        (None, status) => println!(
+            "default:    {} ({status}; move it aside before `af self install {VERSION}`)",
+            paths.bin.display()
+        ),
     }
     println!(
         "installed:  {}",

@@ -41,6 +41,12 @@ target, build from source:
 cargo install --path crates/af --locked
 ```
 
+A source install has no signed release receipt, so `af self update`, `rollback`, and `uninstall`
+refuse to manage it. `af self status` identifies that state and prints the exact
+`af self install <version>` command. That command replaces the running source-installed executable
+with a verified release and adopts the self-managed layout. It never replaces an unrelated file at
+the default path.
+
 `af` runs on Linux and macOS only. Windows and other non-unix hosts are unsupported, and so are the
 BSDs: a source build on any of them stops with a compile error.
 

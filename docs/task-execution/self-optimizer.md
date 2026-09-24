@@ -122,7 +122,7 @@ af catalog sync --source ../afactory --revision HEAD \
 Review the lock, add it to `.af/task-catalog.toml`, retain the project's admitted `codex`
 Provider principal/model policy, and commit that authority before running
 `af self optimize --strategy light`. Catalog capture computes digests from committed bytes; do
-not hand-type them. The model manifests request the captured `codex`, `gpt-5.6-sol`, `high`
+not hand-type them. The model manifests request the captured `codex`, `gpt-6-sol`, `high`
 preset. If that preset is not admitted, change and review the package before catalog capture
 rather than substituting it at dispatch.
 

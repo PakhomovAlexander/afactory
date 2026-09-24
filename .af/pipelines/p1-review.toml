@@ -1,5 +1,5 @@
 # Warm-layers package review: the campaign's two reviewers (correctness and bug bounty, both
-# GPT-5.6-Sol/high) over a diff Subject with the project Gates. Bind at run time, for example
+# GPT-6-Sol/high) over a diff Subject with the project Gates. Bind at run time, for example
 # `--provider correctness=codex-main --provider bugs=codex-main`. One light Round per package.
 
 version = 2

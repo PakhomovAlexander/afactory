@@ -20,22 +20,22 @@ uix = "required"
 
 [packages."warm/implementer"]
 version = "1.2.0"
-digest = "sha256:d466c9eec40868c07027860373ab096fdf62e59f06e117273d383e724b7878f3"
+digest = "sha256:41859cec49d6dafb5b28ac09f481b23f38f8d4b859cd4b672fc7160acfbaacb5"
 path = ".af/task-packages/warm/implementer"
 
 [packages."warm/correctness"]
 version = "1.0.0"
-digest = "sha256:2a9d68a37d88fc284b1b0fd2ec5e38a1f301f4f2f344976d31b272c447365498"
+digest = "sha256:abd803546bde2b5a9ebe2920ae161ec2488568d4749d742403c818301604331d"
 path = ".af/task-packages/warm/correctness"
 
 [packages."warm/bugs"]
 version = "1.0.0"
-digest = "sha256:14398c40dc4f356a6fdcc985594ebabfaf587f1bf7895de1f27219b4b2b3dc81"
+digest = "sha256:83821fae727188bc212ebeb94bf2804739761d1824d59c99900b0467ca5f65ef"
 path = ".af/task-packages/warm/bugs"
 
 [packages."warm/evaluator"]
 version = "1.0.0"
-digest = "sha256:346caf4b211a07ed1b0efcacf079ebeb7bec0b01846243f823eb1cba8acdc8cf"
+digest = "sha256:c15968ac1f8fe2b6985417bf8f0ecf16eb8d6f17f66641a92307cae87836dd25"
 path = ".af/task-packages/warm/evaluator"
 
 [packages."warm/review-light"]

@@ -128,7 +128,7 @@ stages of that Campaign or Task. Afactory does not ask for per-call confirmation
 Review Campaigns are light by default: one closed Round, then fix concrete Findings and run the \
 deterministic project gate. Do not start another Campaign. Use `--heavy` only when a human \
 explicitly requests convergence review, and repeat that explicit mode when resuming it.",
-        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus/high; architecture = machine-configured Codex (default)\n  claude  both Workers = Claude Opus/high\n  codex   both Workers = machine-configured Codex\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  af onboard\n  af onboard --gate 'check=make check' --apply\n  af onboard --runner mixed --apply\n  af onboard --refresh-lock\n  af onboard --refresh-lock --af 0.9.0     move the pin to 0.9.0"
+        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus 5.5/high; architecture = GPT-6 Sol/high (default)\n  claude  both Workers = Claude Opus 5.5/high\n  codex   both Workers = GPT-6 Sol/high\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  af onboard\n  af onboard --gate 'check=make check' --apply\n  af onboard --runner mixed --apply\n  af onboard --refresh-lock\n  af onboard --refresh-lock --af 0.9.0     move the pin to 0.9.0"
     )]
     Onboard(OnboardArgs),
     /// Start, inspect, and deliver an implement Task
@@ -178,8 +178,11 @@ is run by that version: `af` execs it, installing it on demand when the archive 
 digest the lock records. Outside a lock, releases are verified against their signed \
 `SHA256SUMS`. Updates are checked by a detached, rate-limited child and applied by the policy \
 in `[self]` (see `af help self`).\n\n\
-Never: touches a binary it did not install, stores a token, changes the version a pinned \
-project runs, or activates a release older than 0.8.0 (the oldest supported release).",
+An explicit `af self install V` run from a cargo/source-installed af at the default path replaces \
+that running executable with the verified release and adopts the self-managed layout. Other \
+binary-management commands never touch an unmanaged binary, and install never replaces an \
+unrelated file at that path. It never stores a token, changes the version a pinned project runs, \
+or activates a release older than 0.8.0 (the oldest supported release).",
         after_long_help = "Examples:\n  af self status\n  af self update --check\n  af self update\n  af self rollback\n  af self setup-shell --write"
     )]
     SelfCmd {
@@ -1261,7 +1264,7 @@ token.",
     },
     /// Make the previously active version the default again
     Rollback,
-    /// Install an exact version without making it the default
+    /// Install an exact version, making it the default when no managed default exists
     Install {
         /// Version to install (e.g. 0.8.0)
         version: String,

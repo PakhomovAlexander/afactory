@@ -1,7 +1,7 @@
 # Explicit whole-tree review of the current implementation.
 # No canonical Diff or Base is claimed; baseline and complete path index travel in captured focus.
-# The same three reviewers as `review.toml`: correctness and architecture (Fable 5.1/high),
-# performance (Opus 5/xhigh) and bug bounty (GPT-5.6-Sol/high), bound to admitted Providers at
+# The same three reviewers as `review.toml`: correctness and architecture (Opus 5.5/high),
+# performance (Opus 5.5/xhigh) and bug bounty (GPT-6-Sol/high), bound to admitted Providers at
 # run time. One light Round per change, then fixes and the project Gates.
 
 version = 2
