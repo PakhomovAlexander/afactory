@@ -137,7 +137,6 @@ impl Progress {
 /// What the records of one attempt-bearing node add up to.
 #[derive(Default)]
 struct Track {
-    invoked: bool,
     attempts: u64,
     open: bool,
     ok: bool,
@@ -147,34 +146,47 @@ struct Track {
 }
 
 /// The stages of a Task's plan in graph order, from an `af task explain --json` document.
-/// `node_of` names the node of an invocation or output artifact the records name.
+/// `node_of` names the node and the plan of an invocation or output artifact the records name.
+/// Only records of the document's current plan count: a source refresh or a Review
+/// continuation installs a new plan whose nodes may reuse an earlier plan's names.
 pub(crate) fn stages(
     document: &Value,
-    node_of: &mut dyn FnMut(&str) -> Result<String, String>,
+    node_of: &mut dyn FnMut(&str) -> Result<Invoked, String>,
 ) -> Result<Vec<Stage>, String> {
     let finished = document["phase"]["kind"] == "finished";
+    let current = document["plan_id"].as_str();
     let mut tracks: BTreeMap<String, Track> = BTreeMap::new();
+    // The current plan's Attempts, by id, and the node each ran.
     let mut attempts: BTreeMap<String, String> = BTreeMap::new();
     for entry in array(&document["execution_records"]) {
         let record = &entry["record"];
         let attempt = record["attempt_id"].as_str();
-        let node = match (record["kind"].as_str(), attempt) {
+        let invoked = match (record["kind"].as_str(), attempt) {
             (Some("invocation" | "reserved"), _) => node_of(text(&record["invocation_id"])?)?,
-            (Some("published"), None) => node_of(text(&record["output_id"])?)?,
+            // A published output with no Attempt, and a dynamic Scatter's completion of its
+            // parent, both name the output of the node's own invocation.
+            (Some("published"), None) | (Some("owned_children_completed"), _) => {
+                node_of(text(&record["output_id"])?)?
+            }
             (Some(_), Some(attempt)) => match attempts.get(attempt) {
-                Some(node) => node.clone(),
+                Some(node) => Invoked {
+                    node: node.clone(),
+                    plan_id: None,
+                },
                 None => continue,
             },
             _ => continue,
         };
+        if invoked.plan_id.is_some() && invoked.plan_id.as_deref() != current {
+            continue;
+        }
+        let node = invoked.node;
         let track = tracks.entry(node.clone()).or_default();
         match record["kind"].as_str() {
-            Some("invocation") => track.invoked = true,
             Some("reserved") => {
                 if let Some(attempt) = attempt {
                     attempts.insert(attempt.to_owned(), node);
                 }
-                track.invoked = true;
                 track.attempts += 1;
                 track.open = true;
             }
@@ -189,7 +201,7 @@ pub(crate) fn stages(
                 track.ok |= succeeded;
                 track.failed = !succeeded;
             }
-            Some("published") => {
+            Some("published" | "owned_children_completed") => {
                 track.ok = true;
                 track.failed = false;
             }
@@ -212,6 +224,13 @@ pub(crate) fn stages(
     }
     let mut walls: BTreeMap<&str, u64> = BTreeMap::new();
     for wall in array(&document["attempt_walls"]) {
+        // A wall of an earlier plan's Attempt is not this plan's stage time.
+        let ours = wall["attempt_id"]
+            .as_str()
+            .is_some_and(|attempt| attempts.contains_key(attempt));
+        if !ours {
+            continue;
+        }
         if let (Some(node), Some(ms)) = (wall["node_id"].as_str(), wall["elapsed_ms"].as_u64()) {
             let total = walls.entry(node).or_default();
             *total = total.saturating_add(ms);
@@ -233,8 +252,6 @@ pub(crate) fn stages(
             Mark::Failed
         } else if outcome == Some("suppressed") {
             Mark::Skipped
-        } else if !finished && track.invoked {
-            Mark::Running
         } else {
             Mark::NotReached
         };
@@ -296,12 +313,17 @@ fn spans(document: &Value, kind: &str) -> Option<u64> {
     total
 }
 
-/// When the Task opened and when its last event was recorded.
-fn span_of(document: &Value) -> Option<(u64, u64)> {
+/// When the Task opened, and when it finished or else recorded its last event. A finished
+/// Task still records delivery, adoption and lease events later; they are not its run time.
+pub(crate) fn span_of(document: &Value) -> Option<(u64, u64)> {
     let history = array(&document["history"]);
-    let first = history.first()?["transition"]["now_unix_ms"].as_u64()?;
-    let last = history.last()?["transition"]["now_unix_ms"].as_u64()?;
-    Some((first, last))
+    let at = |event: &Value| event["transition"]["now_unix_ms"].as_u64();
+    let first = at(history.first()?)?;
+    let finished = history
+        .iter()
+        .find(|event| event["transition"]["change"]["kind"] == "finished");
+    let end = at(finished.or(history.last())?)?;
+    Some((first, end))
 }
 
 /// A duration as the pane prints it.
@@ -374,24 +396,35 @@ fn stage_name(node: &str) -> String {
 /// changes, and neither does a finished Task.
 #[derive(Clone, Default)]
 struct Cache {
-    nodes: BTreeMap<String, String>,
+    nodes: BTreeMap<String, Invoked>,
     finished: BTreeMap<String, Summary>,
 }
 
-/// The node an invocation artifact ran, or the node whose invocation an output answers.
-fn node_of(dir: &Path, id: &str, cache: &mut Cache) -> Result<String, String> {
-    if let Some(node) = cache.nodes.get(id) {
-        return Ok(node.clone());
+/// The node an invocation ran and the plan it ran under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Invoked {
+    pub(crate) node: String,
+    /// `None` only where a record names no invocation of its own.
+    pub(crate) plan_id: Option<String>,
+}
+
+/// The node and plan of an invocation artifact, or of the invocation an output answers.
+fn node_of(dir: &Path, id: &str, cache: &mut Cache) -> Result<Invoked, String> {
+    if let Some(invoked) = cache.nodes.get(id) {
+        return Ok(invoked.clone());
     }
     let envelope = task_execution::recorded_artifact(dir, id)?;
     let payload = &envelope["payload"];
-    let node = match (payload["node"].as_str(), payload["invocation_id"].as_str()) {
-        (Some(node), _) => node.to_owned(),
+    let invoked = match (payload["node"].as_str(), payload["invocation_id"].as_str()) {
+        (Some(node), _) => Invoked {
+            node: node.to_owned(),
+            plan_id: payload["plan_id"].as_str().map(str::to_owned),
+        },
         (None, Some(invocation)) => node_of(dir, invocation, cache)?,
         (None, None) => return Err(format!("artifact {id} names no node")),
     };
-    cache.nodes.insert(id.to_owned(), node.clone());
-    Ok(node)
+    cache.nodes.insert(id.to_owned(), invoked.clone());
+    Ok(invoked)
 }
 
 /// What the bar needs of one Task beyond its list entry.
@@ -460,7 +493,10 @@ fn read_store(dir: &Path, shown: &str, repo: Option<String>, cache: &mut Cache) 
             let cached = result.as_ref().and_then(|id| cache.finished.get(id));
             let summary = match cached {
                 Some(summary) => Ok(summary.clone()),
-                None => summary(dir, &task_id, cache),
+                // A Task the Store lists but cannot inspect is the Store's refusal, named with
+                // the Task: it is never grouped by a summary it does not have.
+                None => Ok(summary(dir, &task_id, cache)
+                    .map_err(|error| format!("Task {task_id}: {error}"))?),
             };
             if let (Some(id), Ok(summary)) = (result, &summary) {
                 cache.finished.insert(id, summary.clone());

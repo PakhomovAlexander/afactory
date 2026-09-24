@@ -44,7 +44,7 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 Committed `.af/` policy keeps working as is; `execute-checks` on a review Worker is opt-in.
 
 ### Changes
-
+ Stage progress counts only records of the Task's current plan, so a refresh or a Review continuation that reuses node names starts from nothing; a dynamic Scatter's completion settles its parent; an invocation without a reserved Attempt is not shown running; a finished Task's elapsed and wall time end at its `finished` transition; a Task the Store lists but the pane cannot inspect refuses the Store with the cause instead of being grouped by a partial summary.
 - release: v0.9.0-rc.6 (#107)
 - Name the CLI crate after its binary: crates/af (#108)
 - Bump base64 from 0.22.1 to 0.23.1 (#103)

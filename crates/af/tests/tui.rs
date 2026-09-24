@@ -490,7 +490,13 @@ fn the_tasks_pane_shows_the_numbers_af_task_show_json_records() {
 
     let history = show["history"].as_array().unwrap();
     let time = |event: &serde_json::Value| event["transition"]["now_unix_ms"].as_u64().unwrap();
-    let (first, last) = (time(&history[0]), time(history.last().unwrap()));
+    // A finished Task's elapsed time ends at its `finished` transition; later lease events
+    // are history, not run time.
+    let finished = history
+        .iter()
+        .find(|event| event["transition"]["change"]["kind"] == "finished")
+        .unwrap();
+    let (first, last) = (time(&history[0]), time(finished));
     let plan = short(show["plan_id"].as_str().unwrap());
     let elapsed = duration(last - first);
     let expected = format!(

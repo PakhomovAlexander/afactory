@@ -249,3 +249,125 @@ fn the_pane_reads_the_show_document_with_the_plan_and_its_graph() {
     let nowhere = task_execution::inspection_document(&root.join("none"), "absent", false);
     assert_eq!(nowhere, Ok(None));
 }
+
+#[test]
+fn only_the_current_plans_records_make_its_stages() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let done = document(&state, "pagination-cli");
+    // A refresh installed a new plan with the same node names: none of the old plan's
+    // records, Attempts, walls or charges belong to it.
+    let mut replanned = done.clone();
+    replanned["plan_id"] =
+        json!("sha256:0000000000000000000000000000000000000000000000000000000000000000");
+    replanned["run_reports"] = json!([]);
+    replanned["phase"] = json!({"kind": "running"});
+    let mut cache = Cache::default();
+    let stages = stages(&replanned, &mut |id| node_of(&state, id, &mut cache)).unwrap();
+    assert!(
+        stages.iter().all(|stage| stage.mark == Mark::NotReached),
+        "{stages:#?}"
+    );
+    assert!(
+        stages
+            .iter()
+            .all(|stage| stage.attempts == 0 && stage.wall_ms.is_none())
+    );
+    assert!(stages.iter().all(|stage| stage.tokens.is_none()));
+    assert_eq!(Progress::of(&stages).percent(), 0);
+}
+
+#[test]
+fn a_scatter_completion_settles_its_parent_and_a_bare_invocation_is_not_running() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let done = document(&state, "pagination-cli");
+    let started = sequence_of(&done, "started", 0);
+    let running = running_at(&done, started);
+    // The inputs node published its output without an Attempt; recorded instead as a dynamic
+    // Scatter's completion of its parent, the node is settled just the same.
+    let mut scattered = running.clone();
+    for entry in scattered["execution_records"].as_array_mut().unwrap() {
+        let record = &mut entry["record"];
+        if record["kind"] == "published" && record["attempt_id"].is_null() {
+            let output = record["output_id"].clone();
+            *record = json!({"kind": "owned_children_completed",
+                "child_set_id": "sha256:01", "output_id": output});
+        }
+    }
+    assert_eq!(
+        marks(&state, &scattered)[0],
+        ("inputs".to_owned(), Mark::Ok)
+    );
+    // The implementer invoked but holding no reserved Attempt yet: not running.
+    let mut invoked = running.clone();
+    let kept: Vec<Value> = array(&running["execution_records"])
+        .iter()
+        .filter(|entry| {
+            entry["record"]["attempt_id"].is_null() || entry["record"]["kind"] == "published"
+        })
+        .cloned()
+        .collect();
+    invoked["execution_records"] = json!(kept);
+    assert_eq!(
+        marks(&state, &invoked)[1],
+        ("implement".to_owned(), Mark::NotReached)
+    );
+}
+
+#[test]
+fn a_finished_task_runs_until_it_finished_whatever_it_records_later() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let done = document(&state, "pagination-cli");
+    let (first, end) = span_of(&done).unwrap();
+    let finished = array(&done["history"])
+        .iter()
+        .find(|event| event["transition"]["change"]["kind"] == "finished")
+        .unwrap()["transition"]["now_unix_ms"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(end, finished);
+    // A delivery ten days later is history, not run time.
+    let mut delivered = done.clone();
+    let later = finished + 10 * 86_400_000;
+    delivered["history"].as_array_mut().unwrap().push(json!({
+        "sequence": 9999,
+        "transition": {"writer": "cli", "epoch": 9, "now_unix_ms": later,
+            "change": {"kind": "lease_released"}}
+    }));
+    assert_eq!(span_of(&delivered), Some((first, finished)));
+}
+
+#[test]
+fn a_task_the_store_cannot_inspect_is_the_stores_refusal() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let unfinished = document(&state, "pagination-unfinished");
+    // An invocation its records name is gone from the Store: the Task still lists, but the
+    // pane cannot tell which node its records belong to.
+    let invocation = array(&unfinished["execution_records"])
+        .iter()
+        .find_map(|entry| entry["record"]["invocation_id"].as_str())
+        .unwrap()
+        .trim_start_matches("sha256:")
+        .to_owned();
+    let object = state
+        .join("cas/objects")
+        .join(&invocation[..2])
+        .join(&invocation[2..]);
+    std::fs::remove_file(&object).unwrap();
+    let mut cache = Cache::default();
+    let store = read_store(&state, "state", None, &mut cache);
+    // Whether listing or inspecting hits the gap, the Store is refused with the cause, and
+    // no Task of it is grouped by a summary it could not read.
+    let error = store.tasks.as_ref().err().expect("the Store is refused");
+    assert!(error.contains(&invocation), "{error}");
+    let items = store_items(&store, 0);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].label, "! Store unreadable");
+}
