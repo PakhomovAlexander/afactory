@@ -159,6 +159,9 @@ pub(crate) fn stages(
     // The highest charge recorded for each Attempt: a usage observation may exceed the charge
     // its settlement names, and the Store keeps the higher one.
     let mut observed: BTreeMap<String, u128> = BTreeMap::new();
+    // Each settled Attempt's node and the charge its settlement names; summed after the scan,
+    // since a usage observation may arrive after the settlement it raises.
+    let mut settled_charges: BTreeMap<String, (String, u128)> = BTreeMap::new();
     for entry in array(&document["execution_records"]) {
         let record = &entry["record"];
         let attempt = record["attempt_id"].as_str();
@@ -209,9 +212,9 @@ pub(crate) fn stages(
                 track.settled += 1;
                 let charged = text(&record["charged_tokens"])?;
                 let charged: u128 = charged.parse().map_err(|_| "a charge is not decimal")?;
-                let seen = attempt.and_then(|attempt| observed.get(attempt)).copied();
-                let charged = charged.max(seen.unwrap_or(0));
-                track.tokens = track.tokens.saturating_add(charged);
+                if let Some(attempt) = attempt {
+                    settled_charges.insert(attempt.to_owned(), (node.clone(), charged));
+                }
                 let succeeded = record["result"]["kind"] == "succeeded";
                 track.ok |= succeeded;
                 track.failed = !succeeded;
@@ -222,6 +225,11 @@ pub(crate) fn stages(
             }
             _ => {}
         }
+    }
+    for (attempt, (node, charged)) in &settled_charges {
+        let charged = (*charged).max(observed.get(attempt).copied().unwrap_or(0));
+        let track = tracks.entry(node.clone()).or_default();
+        track.tokens = track.tokens.saturating_add(charged);
     }
     // The last whole-Round report of the current plan: every compiled node with its outcome,
     // including a failure before any Attempt and a suppressed branch.
@@ -274,7 +282,9 @@ pub(crate) fn stages(
         let exhausted = allowance.as_u64().is_some_and(|max| track.attempts >= max);
         let closed = match mark {
             Mark::Ok | Mark::Skipped => true,
-            Mark::Failed => finished || outcome == Some("failed") || exhausted,
+            // A failed report of an unfinished Task does not close a stage the plan may run
+            // again; only a finished Task or a spent allowance does.
+            Mark::Failed => finished || exhausted,
             Mark::Running | Mark::NotReached => false,
         };
         stages.push(Stage {

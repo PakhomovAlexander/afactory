@@ -737,4 +737,35 @@ fn a_released_reservation_is_no_attempt_and_an_observed_charge_counts() {
     list.insert(settled, json!({"artifact_id": "sha256:bb", "record": {"kind": "usage_observed",
         "attempt_id": attempt, "charged_tokens": "100", "usage_id": "sha256:cc", "raw_artifact_ids": []}}));
     assert_eq!(stage(&state, &observed, "implement").tokens, Some(100));
+    // The same observation recorded after the settlement raises the charge too.
+    let mut late = done.clone();
+    late["execution_records"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"artifact_id": "sha256:dd",
+        "record": {"kind": "usage_observed", "attempt_id": attempt, "charged_tokens": "100",
+        "usage_id": "sha256:ee", "raw_artifact_ids": []}}));
+    assert_eq!(stage(&state, &late, "implement").tokens, Some(100));
+}
+
+#[test]
+fn a_failed_report_of_an_unfinished_task_leaves_a_retryable_stage_open() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let mut failed = document(&state, "pagination-unfinished");
+    let nodes = failed["run_reports"][0]["report"]["nodes"]
+        .as_array_mut()
+        .unwrap();
+    for node in nodes {
+        if node["node"] == "root.nodes.evaluate" {
+            node["outcome"] =
+                json!({"kind": "failed", "diagnostic_id": "sha256:00", "class": "execution"});
+        }
+    }
+    failed["phase"] = json!({"kind": "running"});
+    failed["graph"]["allowances"]["root.nodes.evaluate"]["max_attempts"] = json!(3);
+    let evaluate = stage(&state, &failed, "evaluate");
+    assert_eq!(evaluate.mark, Mark::Failed);
+    assert!(!evaluate.closed, "the plan may run it again");
 }
