@@ -844,3 +844,20 @@ fn a_store_refused_on_a_live_read_closes_its_opened_task() {
         "{rows:#?}"
     );
 }
+
+#[test]
+fn the_user_scope_reads_a_symlinked_task_state_directory() {
+    let (_temp, root) = temp_root();
+    let (_repo, state) = hub_with_tasks(&root);
+    let xdg = root.join("xdg-state");
+    let local = crate::task_execution::local_task_states(&xdg);
+    std::fs::create_dir_all(&local).unwrap();
+    std::os::unix::fs::symlink(&state, local.join("0123456789abcdef")).unwrap();
+    std::os::unix::fs::symlink(root.join("gone"), local.join("fedcba9876543210")).unwrap();
+    let found = crate::tui::panes::tasks::user_targets(&xdg).unwrap();
+    let names: Vec<&str> = found.iter().map(|(_, name)| name.as_str()).collect();
+    assert_eq!(names, ["0123456789abcdef", "fedcba9876543210"]);
+    // The link to nothing is listed so the pane can refuse it, never shown as no Tasks.
+    let gone = crate::tui::panes::tasks::refusal_of(&found[1].0);
+    assert!(gone.is_some_and(|why| why.contains("link to nothing")));
+}

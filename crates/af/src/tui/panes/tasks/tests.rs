@@ -572,11 +572,7 @@ fn every_number_the_task_pane_shows_is_the_show_documents() {
             assert!(row.contains(&format!("{tokens} tok")), "{row}");
         }
     }
-    let settled = detail
-        .stages
-        .iter()
-        .filter(|stage| stage.mark.settled())
-        .count();
+    let settled = detail.stages.iter().filter(|stage| stage.closed).count();
     assert_eq!(
         line("PROGRESS"),
         format!("PROGRESS  {settled} / {} stages", detail.stages.len())
@@ -606,4 +602,63 @@ fn an_explicit_read_inspects_finished_tasks_again() {
         store.tasks.is_err(),
         "the Store is refused once the Task cannot be inspected"
     );
+}
+
+#[test]
+fn a_failed_attempt_with_a_retry_left_is_not_a_closed_stage() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let done = document(&state, "pagination-cli");
+    let settled = sequence_of(&done, "settled", 0);
+    let mut retrying = running_at(&done, settled);
+    for entry in retrying["execution_records"].as_array_mut().unwrap() {
+        if entry["record"]["kind"] == "settled" {
+            entry["record"]["result"] = json!({"kind": "failed", "diagnostic_id": "sha256:00"});
+        }
+    }
+    // The implementer may run twice: its first failure is shown failed, not closed.
+    retrying["graph"]["allowances"]["root.nodes.implement"]["max_attempts"] = json!(2);
+    let implement = stage(&state, &retrying, "implement");
+    assert_eq!(implement.mark, Mark::Failed);
+    assert!(!implement.closed, "a retry remains");
+    // With one Attempt allowed, the same failure closes the stage.
+    retrying["graph"]["allowances"]["root.nodes.implement"]["max_attempts"] = json!(1);
+    assert!(stage(&state, &retrying, "implement").closed);
+}
+
+#[test]
+fn a_refreshed_task_runs_until_its_last_finish() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let done = document(&state, "pagination-cli");
+    let (first, end) = span_of(&done).unwrap();
+    let mut refreshed = done.clone();
+    let later = end + 60_000;
+    let history = refreshed["history"].as_array_mut().unwrap();
+    history.push(json!({"sequence": 9998, "transition": {"writer": "cli", "epoch": 9,
+        "now_unix_ms": end + 1_000, "change": {"kind": "source_refreshed", "revision_id": "sha256:01"}}}));
+    history.push(
+        json!({"sequence": 9999, "transition": {"writer": "cli", "epoch": 9,
+        "now_unix_ms": later, "change": {"kind": "finished", "result_id": "sha256:02"}}}),
+    );
+    assert_eq!(span_of(&refreshed), Some((first, later)));
+}
+
+#[test]
+fn the_bar_groups_a_task_by_the_phase_its_inspection_read() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let mut cache = Cache::default();
+    let store = read_store(&state, "state", None, &mut cache);
+    let mut tasks = store.tasks.unwrap();
+    let listed = tasks
+        .iter_mut()
+        .find(|task| task.task_id == "pagination-cli")
+        .unwrap();
+    // The list read still saw it running; the inspection read it finished and satisfied.
+    listed.entry["phase"] = json!({"kind": "running"});
+    assert_eq!(listed.state(), State::Done);
 }

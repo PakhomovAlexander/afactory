@@ -123,9 +123,14 @@ impl PipelinesPane {
     /// The bar id of the package the committed catalog pins under `name`: the Pipeline a Task
     /// selected by that name ran, not another file that declares the same name.
     /// The same, from a fresh read of `HEAD`: `p` names the package the catalog pins now.
-    pub(crate) fn pinned_entry_now(&mut self, name: &str) -> Option<String> {
+    pub(crate) fn pinned_entry_now(&mut self, name: &str) -> Result<Option<String>, String> {
         self.ensure_current();
-        self.pinned_entry(name)
+        match &self.error {
+            // The entries are the last good read's; a jump from them could open a package the
+            // catalog no longer pins.
+            Some(error) => Err(format!("HEAD could not be read: {error}")),
+            None => Ok(self.pinned_entry(name)),
+        }
     }
 
     pub(crate) fn pinned_entry(&self, name: &str) -> Option<String> {
@@ -935,9 +940,17 @@ mod tests {
         git(root, &["add", "-A"]).unwrap();
         git(root, &["commit", "-qm", "repin"]).unwrap();
         assert_eq!(
-            pane.pinned_entry_now("fixture/p").as_deref(),
+            pane.pinned_entry_now("fixture/p").unwrap().as_deref(),
             Some(".af/task-packages/other/pipeline.toml")
         );
+        // HEAD becomes unreadable: the jump is refused, never taken from the stale entries.
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/nowhere\n").unwrap();
+        std::fs::write(
+            root.join(".git/refs/heads/nowhere"),
+            "0123456789abcdef0123456789abcdef01234567\n",
+        )
+        .unwrap();
+        assert!(pane.pinned_entry_now("fixture/p").is_err());
     }
 
     #[test]

@@ -903,6 +903,13 @@ impl App {
         let found = self.panes.pipelines.pinned_entry_now(name);
         // The fresh read of HEAD may have changed what the bar lists.
         self.sync();
+        let found = match found {
+            Ok(found) => found,
+            Err(error) => {
+                self.say_error(format!("pipeline {name}: {error}"));
+                return;
+            }
+        };
         let Some(id) = found else {
             let why = "the committed catalog pins no listed package under that name";
             self.say_error(format!(

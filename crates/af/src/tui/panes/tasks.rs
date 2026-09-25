@@ -92,11 +92,6 @@ impl Mark {
             Mark::Skipped | Mark::NotReached => "[  ]",
         }
     }
-
-    /// A settled stage will not run again in this plan.
-    pub(crate) fn settled(self) -> bool {
-        matches!(self, Mark::Ok | Mark::Failed | Mark::Skipped)
-    }
 }
 
 /// One node of the plan's graph order.
@@ -108,6 +103,9 @@ pub(crate) struct Stage {
     pub(crate) attempts: u64,
     /// The node's Attempt allowance in the compiled graph.
     pub(crate) max_attempts: Option<u64>,
+    /// It will not run again in this plan: done, skipped, or failed with no Attempt left (or
+    /// closed failed by the plan's report, or the Task finished). PROGRESS counts these.
+    pub(crate) closed: bool,
     /// The recorded wall of its Attempts (`attempt_walls`), when the document carries one.
     pub(crate) wall_ms: Option<u64>,
     /// The charge its settled Attempts recorded, when one settled.
@@ -122,7 +120,7 @@ pub(crate) struct Progress {
 
 impl Progress {
     pub(crate) fn of(stages: &[Stage]) -> Progress {
-        let settled = stages.iter().filter(|stage| stage.mark.settled()).count();
+        let settled = stages.iter().filter(|stage| stage.closed).count();
         Progress {
             settled,
             stages: stages.len(),
@@ -256,9 +254,16 @@ pub(crate) fn stages(
             Mark::NotReached
         };
         let allowance = &document["graph"]["allowances"][node]["max_attempts"];
+        let exhausted = allowance.as_u64().is_some_and(|max| track.attempts >= max);
+        let closed = match mark {
+            Mark::Ok | Mark::Skipped => true,
+            Mark::Failed => finished || outcome == Some("failed") || exhausted,
+            Mark::Running | Mark::NotReached => false,
+        };
         stages.push(Stage {
             node: node.to_owned(),
             mark,
+            closed,
             attempts: track.attempts,
             max_attempts: allowance.as_u64(),
             wall_ms: walls.get(node).copied(),
@@ -319,8 +324,10 @@ pub(crate) fn span_of(document: &Value) -> Option<(u64, u64)> {
     let history = array(&document["history"]);
     let at = |event: &Value| event["transition"]["now_unix_ms"].as_u64();
     let first = at(history.first()?)?;
+    // A refreshed issue Task finishes again; its time ends at the result it shows now.
     let finished = history
         .iter()
+        .rev()
         .find(|event| event["transition"]["change"]["kind"] == "finished");
     let end = at(finished.or(history.last())?)?;
     Some((first, end))
@@ -430,6 +437,9 @@ fn node_of(dir: &Path, id: &str, cache: &mut Cache) -> Result<Invoked, String> {
 /// What the bar needs of one Task beyond its list entry.
 #[derive(Clone, Debug)]
 struct Summary {
+    /// The phase the inspection read: the bar groups by it, so a Task that finished between
+    /// the list read and its inspection is not left under the list read's phase.
+    phase: Value,
     acceptance: Option<String>,
     started: Option<u64>,
     progress: Progress,
@@ -440,6 +450,7 @@ fn summary(dir: &Path, task_id: &str, cache: &mut Cache) -> Result<Summary, Stri
         .ok_or_else(|| format!("Task {task_id} is not in {}", dir.display()))?;
     let stages = stages(&document, &mut |id| node_of(dir, id, cache))?;
     Ok(Summary {
+        phase: document["phase"].clone(),
         acceptance: document["result"]["acceptance"].as_str().map(str::to_owned),
         started: span_of(&document).map(|(first, _)| first),
         progress: Progress::of(&stages),
@@ -456,9 +467,10 @@ struct Listed {
 
 impl Listed {
     fn state(&self) -> State {
-        let acceptance = self.summary.as_ref().ok();
-        let acceptance = acceptance.and_then(|summary| summary.acceptance.as_deref());
-        state_of(&self.entry["phase"], acceptance)
+        match &self.summary {
+            Ok(summary) => state_of(&summary.phase, summary.acceptance.as_deref()),
+            Err(_) => state_of(&self.entry["phase"], None),
+        }
     }
 
     fn outcome(&self) -> &str {
@@ -486,9 +498,18 @@ struct Store {
 
 /// An existing directory with entries but no `events.sqlite` holds something the running
 /// binary does not read as a Task Store; an absent or empty one holds no Tasks yet.
+/// Why the pane refuses a Task state directory before reading it, if it does.
+#[cfg(test)]
+pub(crate) fn refusal_of(dir: &Path) -> Option<String> {
+    not_a_store(dir)
+}
+
 /// A directory that exists but cannot be listed is refused too: it may hold anything.
 fn not_a_store(dir: &Path) -> Option<String> {
     let unreadable = |error: std::io::Error| Some(format!("{}: {error}", dir.display()));
+    if std::fs::symlink_metadata(dir).is_ok() && std::fs::metadata(dir).is_err() {
+        return Some(format!("{} is a link to nothing", dir.display()));
+    }
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
@@ -804,6 +825,22 @@ fn targets(scope: &Scope) -> Result<Vec<Target>, String> {
             repo: None,
         }]);
     }
+    let mut targets = Vec::new();
+    for (dir, name) in user_targets(root)? {
+        let shown = scope.abbreviate(&dir);
+        targets.push(Target {
+            dir,
+            shown,
+            repo: Some(name),
+        });
+    }
+    Ok(targets)
+}
+
+/// Every repository's Task state directory under the XDG state root, sorted, with its opaque
+/// name. A symlink to a Store is read through it, as `af task` reads the path; a link to
+/// nothing is still listed, so the pane shows its refusal rather than skipping it.
+pub(crate) fn user_targets(root: &Path) -> Result<Vec<(PathBuf, String)>, String> {
     let local = task_execution::local_task_states(root);
     let entries = match std::fs::read_dir(&local) {
         Ok(entries) => entries,
@@ -813,16 +850,13 @@ fn targets(scope: &Scope) -> Result<Vec<Target>, String> {
     let mut targets = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|error| format!("{}: {error}", local.display()))?;
-        let is_dir = entry.file_type().is_ok_and(|kind| kind.is_dir());
+        let kind = entry.file_type().ok();
+        let is_dir = kind.is_some_and(|kind| kind.is_dir())
+            || (kind.is_some_and(|kind| kind.is_symlink())
+                && std::fs::metadata(entry.path()).map_or(true, |meta| meta.is_dir()));
         if is_dir {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let dir = entry.path();
-            let shown = scope.abbreviate(&dir);
-            targets.push(Target {
-                dir,
-                shown,
-                repo: Some(name),
-            });
+            targets.push((entry.path(), name));
         }
     }
     targets.sort();
@@ -919,6 +953,7 @@ impl TasksPane {
     fn read_now(&mut self) {
         self.job = None;
         self.cache.finished.clear();
+        self.cache.nodes.clear();
         let reread = read(&self.targets, self.opened_task(), self.cache.clone());
         self.apply(reread);
     }
@@ -1109,6 +1144,10 @@ impl Pane for TasksPane {
     }
 
     fn open(&mut self, item: Option<&str>) {
+        if item != self.selected.as_deref() {
+            // A slow read of the previously opened Task must not delay the new one's.
+            self.job = None;
+        }
         self.opened = true;
         self.artifact = None;
         self.detail = None;
