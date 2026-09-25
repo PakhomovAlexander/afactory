@@ -2048,8 +2048,20 @@ pub(super) fn show_if_common(id: &str, state: &Path, json: bool) -> Result<bool,
     Ok(true)
 }
 
+/// Whether a Task state directory holds a Store. Only a missing `events.sqlite` means none;
+/// a permission or any other error reading it is the caller's error, never an empty Store.
+pub(crate) fn store_present(state: &Path) -> Result<bool, String> {
+    let path = state.join("events.sqlite");
+    match std::fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() => Ok(true),
+        Ok(_) => Err(format!("{} is not a file", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("{}: {error}", path.display())),
+    }
+}
+
 pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String> {
-    if !state.join("events.sqlite").is_file() {
+    if !store_present(state)? {
         return Ok(vec![]);
     }
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
@@ -2146,7 +2158,7 @@ pub(crate) fn inspection_document(
     id: &str,
     explain: bool,
 ) -> Result<Option<serde_json::Value>, String> {
-    if !state.join("events.sqlite").is_file() {
+    if !store_present(state)? {
         return Ok(None);
     }
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;

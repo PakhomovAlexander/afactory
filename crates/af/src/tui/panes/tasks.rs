@@ -484,8 +484,22 @@ struct Store {
     tasks: Result<Vec<Listed>, String>,
 }
 
+/// An existing directory with entries but no `events.sqlite` holds something the running
+/// binary does not read as a Task Store; an absent or empty one holds no Tasks yet.
+fn not_a_store(dir: &Path) -> Option<String> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let held = entries.filter_map(Result::ok).count();
+    let store = dir.join("events.sqlite");
+    (held > 0 && std::fs::symlink_metadata(&store).is_err())
+        .then(|| format!("holds {held} entries but no events.sqlite"))
+}
+
 fn read_store(dir: &Path, shown: &str, repo: Option<String>, cache: &mut Cache) -> Store {
-    let tasks = task_execution::list_common(dir).and_then(|entries| {
+    let tasks = match not_a_store(dir) {
+        Some(refusal) => Err(refusal),
+        None => task_execution::list_common(dir),
+    };
+    let tasks = tasks.and_then(|entries| {
         let mut tasks = Vec::new();
         for entry in entries {
             let task_id = text(&entry["task_id"])?.to_owned();
@@ -647,10 +661,7 @@ impl Detail {
         for event in array(&document["history"]) {
             let change = &event["transition"]["change"];
             let mut what = change["kind"].as_str().unwrap_or("-").to_owned();
-            let id = change.as_object().and_then(|fields| {
-                let mut ids = fields.values().filter_map(Value::as_str);
-                ids.find(|value| review_core::is_digest(value))
-            });
+            let id = change_artifact(change);
             if let Some(kind) = id.and_then(|id| kinds.get(id)) {
                 what = format!("{what} {kind}");
             }
@@ -667,6 +678,27 @@ impl Detail {
         }
         (rows, artifacts)
     }
+}
+
+/// The recorded artifact a Task change is about, by its kind: a revocation, not the decision
+/// it revokes; a report, not an event id. A change about no artifact names none.
+pub(crate) fn change_artifact(change: &Value) -> Option<&str> {
+    let field = match change["kind"].as_str()? {
+        "recording_resumed" | "review_integration_finished" | "run_reported" => "report_id",
+        "review_integration_selected" => "phase_id",
+        "review_continued" => "handoff_id",
+        "adoption_observation_recorded" => "observation_id",
+        "opened" | "source_refreshed" => "revision_id",
+        "plan_proposed" | "plan_admitted" | "planning_completed" => "plan_id",
+        "plan_decided" => "decision_id",
+        "approval_revoked" => "revocation_id",
+        "finished" => "result_id",
+        "execution_recorded" | "delivery_recorded" => "record_id",
+        _ => return None,
+    };
+    change[field]
+        .as_str()
+        .filter(|id| review_core::is_digest(id))
 }
 
 fn stage_row(stage: &Stage) -> Row {
@@ -711,11 +743,25 @@ fn read(targets: &[Target], opened: Option<(PathBuf, String)>, mut cache: Cache)
         let repo = target.repo.clone();
         stores.push(read_store(&target.dir, &target.shown, repo, &mut cache));
     }
-    let detail = opened.map(|(dir, task_id)| Detail::read(&dir, &task_id, &mut cache));
+    let detail = opened.map(|(dir, task_id)| {
+        let detail = Detail::read(&dir, &task_id, &mut cache);
+        if let Err(error) = &detail {
+            refuse(&mut stores, &dir, &task_id, error);
+        }
+        detail
+    });
     Reread {
         stores,
         detail,
         cache,
+    }
+}
+
+/// A Task a Store lists but cannot be inspected refuses the whole Store: no other Task of it
+/// is shown as if the Store were readable.
+fn refuse(stores: &mut [Store], dir: &Path, task_id: &str, error: &str) {
+    for store in stores.iter_mut().filter(|store| store.dir == dir) {
+        store.tasks = Err(format!("Task {task_id}: {error}"));
     }
 }
 
@@ -864,8 +910,14 @@ impl TasksPane {
     fn apply(&mut self, reread: Reread) {
         self.stores = reread.stores;
         self.cache = reread.cache;
-        if let Some(detail) = reread.detail {
-            self.detail = Some(detail);
+        match reread.detail {
+            // The Store was refused with the cause; the folder shows it, not the Task.
+            Some(Err(_)) => {
+                self.detail = None;
+                self.selected = None;
+            }
+            Some(detail) => self.detail = Some(detail),
+            None => {}
         }
         self.rebuild();
     }
@@ -1035,7 +1087,13 @@ impl Pane for TasksPane {
         self.detail = None;
         self.selected = item.filter(|id| self.task(id).is_some()).map(str::to_owned);
         if let Some((dir, task_id)) = self.opened_task() {
-            self.detail = Some(Detail::read(&dir, &task_id, &mut self.cache));
+            match Detail::read(&dir, &task_id, &mut self.cache) {
+                Ok(detail) => self.detail = Some(Ok(detail)),
+                Err(error) => {
+                    refuse(&mut self.stores, &dir, &task_id, &error);
+                    self.selected = None;
+                }
+            }
         }
         self.next = Some(Instant::now() + LIVE);
         self.rebuild();

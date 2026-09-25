@@ -371,3 +371,199 @@ fn a_task_the_store_cannot_inspect_is_the_stores_refusal() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].label, "! Store unreadable");
 }
+
+#[test]
+fn a_history_row_opens_the_artifact_its_change_is_about() {
+    let digest = |n: u8| format!("sha256:{}", format!("{n:02x}").repeat(32));
+    let revoked = json!({"kind": "approval_revoked", "decision_id": digest(1),
+        "reason": "stale", "revocation_id": digest(2)});
+    assert_eq!(change_artifact(&revoked), Some(digest(2).as_str()));
+    let integrated = json!({"kind": "review_integration_finished", "phase_id": digest(3),
+        "report_id": digest(4), "integration_committed_event_id": digest(5)});
+    assert_eq!(change_artifact(&integrated), Some(digest(4).as_str()));
+    let finished = json!({"kind": "finished", "result_id": digest(6)});
+    assert_eq!(change_artifact(&finished), Some(digest(6).as_str()));
+    assert_eq!(change_artifact(&json!({"kind": "lease_released"})), None);
+    assert_eq!(
+        change_artifact(&json!({"kind": "opened", "revision_id": "not-a-digest"})),
+        None
+    );
+}
+
+#[test]
+fn opening_a_task_the_store_can_no_longer_inspect_refuses_the_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let mut cache = Cache::default();
+    let mut stores = vec![read_store(&state, "state", None, &mut cache)];
+    assert!(stores[0].tasks.is_ok(), "the folder loaded");
+    // After the folder loaded, the Task's revision is gone; opening it cannot be read.
+    let unfinished = document(&state, "pagination-unfinished");
+    let revision = unfinished["revision_id"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("sha256:");
+    std::fs::remove_file(
+        state
+            .join("cas/objects")
+            .join(&revision[..2])
+            .join(&revision[2..]),
+    )
+    .unwrap();
+    let error = Detail::read(&state, "pagination-unfinished", &mut cache)
+        .err()
+        .unwrap();
+    refuse(&mut stores, &state, "pagination-unfinished", &error);
+    let refused = stores[0].tasks.as_ref().err().unwrap();
+    assert!(
+        refused.starts_with("Task pagination-unfinished: "),
+        "{refused}"
+    );
+    assert_eq!(store_items(&stores[0], 0)[0].label, "! Store unreadable");
+}
+
+#[test]
+fn only_a_missing_store_is_empty() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    // Absent, or present and empty: no Tasks yet.
+    assert_eq!(not_a_store(&root.join("absent")), None);
+    std::fs::create_dir_all(root.join("empty")).unwrap();
+    assert_eq!(not_a_store(&root.join("empty")), None);
+    assert_eq!(
+        task_execution::store_present(&root.join("empty")),
+        Ok(false)
+    );
+    // Present with entries in another layout: refused, never "no Tasks".
+    std::fs::create_dir_all(root.join("other/cas")).unwrap();
+    let refusal = not_a_store(&root.join("other")).unwrap();
+    assert!(refusal.contains("no events.sqlite"), "{refusal}");
+    let mut cache = Cache::default();
+    let store = read_store(&root.join("other"), "other", None, &mut cache);
+    assert!(store.tasks.is_err());
+    // A Store the process may not traverse is an error, not an empty listing.
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root.join("hub-root"));
+    let locked = std::os::unix::fs::PermissionsExt::from_mode(0o000);
+    std::fs::set_permissions(&state, locked).unwrap();
+    let listed = task_execution::list_common(&state);
+    let open = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    std::fs::set_permissions(&state, open).unwrap();
+    let error = listed.unwrap_err();
+    assert!(error.contains("events.sqlite"), "{error}");
+}
+
+#[test]
+fn every_number_the_task_pane_shows_is_the_show_documents() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let show = document(&state, "pagination-cli");
+    let mut cache = Cache::default();
+    let detail = Detail::read(&state, "pagination-cli", &mut cache).unwrap();
+    let (rows, _) = detail.rows(0);
+    let text: Vec<String> = rows.iter().map(Row::text).collect();
+    let line = |prefix: &str| {
+        text.iter()
+            .find(|row| row.starts_with(prefix))
+            .unwrap()
+            .clone()
+    };
+
+    // TOKENS: chargeable as recorded, each component the sum over the Attempts' usage.
+    let walls = array(&show["attempt_walls"]);
+    // A component is the sum only when every Attempt's usage carries it; otherwise `-`.
+    let sum = |key: &str| -> String {
+        let values: Option<Vec<u128>> = walls
+            .iter()
+            .map(|wall| wall["usage"][key].as_str().and_then(|n| n.parse().ok()))
+            .collect();
+        match values {
+            Some(values) if !values.is_empty() => values.iter().sum::<u128>().to_string(),
+            _ => "-".to_owned(),
+        }
+    };
+    let expected = format!(
+        "TOKENS  chargeable {}  input {}  output {}  cache read {}  reasoning {}",
+        show["chargeable_tokens"].as_str().unwrap(),
+        sum("input_tokens"),
+        sum("output_tokens"),
+        sum("cache_read_tokens"),
+        sum("reasoning_tokens"),
+    );
+    assert_eq!(line("TOKENS"), expected);
+
+    // TIME and PLAN: from the first event to the `finished` transition.
+    let history = array(&show["history"]);
+    let at = |event: &Value| event["transition"]["now_unix_ms"].as_u64().unwrap();
+    let finished = history
+        .iter()
+        .find(|event| event["transition"]["change"]["kind"] == "finished")
+        .unwrap();
+    let elapsed = duration(at(finished) - at(&history[0]));
+    assert!(
+        line("TIME").starts_with(&format!("TIME  wall {elapsed}  ")),
+        "{}",
+        line("TIME")
+    );
+    assert!(
+        line("PLAN").ends_with(&format!("elapsed {elapsed}")),
+        "{}",
+        line("PLAN")
+    );
+
+    // PROGRESS: each stage's wall is its Attempts' recorded walls, and its charge the sum of
+    // its settled Attempts' `charged_tokens`, both straight from the document.
+    let mut owner: BTreeMap<String, String> = BTreeMap::new();
+    let mut charged: BTreeMap<String, u128> = BTreeMap::new();
+    for entry in array(&show["execution_records"]) {
+        let record = &entry["record"];
+        match record["kind"].as_str() {
+            Some("reserved") => {
+                let invocation = record["invocation_id"].as_str().unwrap();
+                let node = node_of(&state, invocation, &mut cache).unwrap().node;
+                owner.insert(record["attempt_id"].as_str().unwrap().to_owned(), node);
+            }
+            Some("settled") => {
+                let node = owner[record["attempt_id"].as_str().unwrap()].clone();
+                let n: u128 = record["charged_tokens"].as_str().unwrap().parse().unwrap();
+                *charged.entry(node).or_default() += n;
+            }
+            _ => {}
+        }
+    }
+    for stage in &detail.stages {
+        let own: Vec<&Value> = walls
+            .iter()
+            .filter(|wall| wall["node_id"] == stage.node.as_str())
+            .collect();
+        let wall = (!own.is_empty()).then(|| {
+            own.iter()
+                .map(|wall| wall["elapsed_ms"].as_u64().unwrap())
+                .sum::<u64>()
+        });
+        assert_eq!(stage.wall_ms, wall, "{}", stage.node);
+        assert_eq!(
+            stage.tokens,
+            charged.get(&stage.node).copied(),
+            "{}",
+            stage.node
+        );
+        let row = stage_row(stage).text();
+        if let Some(wall) = wall {
+            assert!(row.contains(&duration(wall)), "{row}");
+        }
+        if let Some(tokens) = stage.tokens {
+            assert!(row.contains(&format!("{tokens} tok")), "{row}");
+        }
+    }
+    let settled = detail
+        .stages
+        .iter()
+        .filter(|stage| stage.mark.settled())
+        .count();
+    assert_eq!(
+        line("PROGRESS"),
+        format!("PROGRESS  {settled} / {} stages", detail.stages.len())
+    );
+}
