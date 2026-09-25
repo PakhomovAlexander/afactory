@@ -802,11 +802,22 @@ fn only_an_opened_running_task_is_read_again_about_once_a_second() {
     app.poll();
     assert_eq!(app.panes.tasks.reads(), 1);
     assert!(app.main_rows()[1].text().contains("STATE done"));
+    // A Task awaiting approval is read again too: the CLI may start it at any moment.
+    app.panes.tasks.detail_document().unwrap()["phase"] = serde_json::json!({"kind": "ready"});
+    std::thread::sleep(second);
+    app.poll();
+    assert_eq!(app.panes.tasks.reads(), 2, "an awaiting Task is live");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !app.panes.tasks.poll() {
+        assert!(Instant::now() < deadline, "the live read never finished");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(app.main_rows()[1].text().contains("STATE done"));
     // A running Task whose pane is not opened is not read either.
     app.panes.tasks.detail_document().unwrap()["phase"] = running;
     press(&mut app, &mut host, b"gg]]\r");
     assert_eq!(app.opened, Opened::Folder(Tab::Providers));
     std::thread::sleep(second);
     app.poll();
-    assert_eq!(app.panes.tasks.reads(), 1);
+    assert_eq!(app.panes.tasks.reads(), 2);
 }

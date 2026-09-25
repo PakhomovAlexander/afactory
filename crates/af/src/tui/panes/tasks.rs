@@ -486,9 +486,21 @@ struct Store {
 
 /// An existing directory with entries but no `events.sqlite` holds something the running
 /// binary does not read as a Task Store; an absent or empty one holds no Tasks yet.
+/// A directory that exists but cannot be listed is refused too: it may hold anything.
 fn not_a_store(dir: &Path) -> Option<String> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    let held = entries.filter_map(Result::ok).count();
+    let unreadable = |error: std::io::Error| Some(format!("{}: {error}", dir.display()));
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => return unreadable(error),
+    };
+    let mut held = 0;
+    for entry in entries {
+        if let Err(error) = entry {
+            return unreadable(error);
+        }
+        held += 1;
+    }
     let store = dir.join("events.sqlite");
     (held > 0 && std::fs::symlink_metadata(&store).is_err())
         .then(|| format!("holds {held} entries but no events.sqlite"))
@@ -927,9 +939,12 @@ impl TasksPane {
     }
 
     /// Whether the opened Task is running, so the pane reads it again.
+    /// Whether the opened Task is unfinished, so the pane reads it again: a Task awaiting
+    /// approval may start running at any moment from the CLI.
     fn live(&self) -> bool {
-        let running = matches!(&self.detail, Some(Ok(detail)) if detail.state() == State::Running);
-        self.opened && running
+        let unfinished = matches!(&self.detail,
+            Some(Ok(detail)) if matches!(detail.state(), State::Running | State::Awaiting));
+        self.opened && unfinished
     }
 
     fn rebuild(&mut self) {

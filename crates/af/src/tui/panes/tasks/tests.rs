@@ -442,6 +442,14 @@ fn only_a_missing_store_is_empty() {
     let mut cache = Cache::default();
     let store = read_store(&root.join("other"), "other", None, &mut cache);
     assert!(store.tasks.is_err());
+    // A directory that may be searched but not listed is refused, not taken as empty.
+    std::fs::create_dir_all(root.join("unlistable/cas")).unwrap();
+    let search_only = std::os::unix::fs::PermissionsExt::from_mode(0o111);
+    std::fs::set_permissions(root.join("unlistable"), search_only).unwrap();
+    let refused = not_a_store(&root.join("unlistable"));
+    let listable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    std::fs::set_permissions(root.join("unlistable"), listable).unwrap();
+    assert!(refused.is_some_and(|why| why.contains("unlistable")));
     // A dangling `events.sqlite` link is a Store that cannot be read.
     std::fs::create_dir_all(root.join("dangling")).unwrap();
     std::os::unix::fs::symlink("missing.sqlite", root.join("dangling/events.sqlite")).unwrap();

@@ -120,6 +120,18 @@ impl PipelinesPane {
         self.entry(self.selected.as_deref()?)
     }
 
+    /// The bar id of the package the committed catalog pins under `name`: the Pipeline a Task
+    /// selected by that name ran, not another file that declares the same name.
+    pub(crate) fn pinned_entry(&self, name: &str) -> Option<String> {
+        self.entries
+            .iter()
+            .find(|entry| {
+                entry.label == name
+                    && matches!(&entry.source, Source::Package { pin: Pin::Here, .. })
+            })
+            .map(|entry| entry.id.clone())
+    }
+
     /// The pipeline file behind a bar entry, for `gf` on the bar.
     pub(crate) fn entry_file(&self, id: &str) -> Option<PathBuf> {
         self.entry(id).map(|entry| entry.path.clone())
@@ -885,6 +897,16 @@ mod tests {
             Pin::Elsewhere(".af/task-packages/pinned".into())
         );
         assert_eq!(pin("loose"), Pin::Absent);
+        // `p` from a Task opens the pinned file, never a shadow of the same name.
+        let pane = PipelinesPane {
+            entries: entries.clone(),
+            ..PipelinesPane::default()
+        };
+        assert_eq!(
+            pane.pinned_entry("fixture/p").as_deref(),
+            Some(".af/task-packages/pinned/pipeline.toml")
+        );
+        assert_eq!(pane.pinned_entry("fixture/loose"), None);
         // Opening the shadow row refuses, with the reason and the file's own contract, rather
         // than compiling the pinned file's plan under this row.
         let mut pane = PipelinesPane::default();

@@ -898,14 +898,15 @@ impl App {
 
     /// Open a Pipeline the Pipelines pane lists by name, as selecting it in the bar would.
     fn open_pipeline(&mut self, name: &str) {
-        let items = self.panes.pipelines.items();
-        // A working-tree file that differs from HEAD carries ` *` after its name.
-        let named = |item: &&tree::Item| item.label.trim_end_matches(" *") == name;
-        let Some(item) = items.iter().find(named) else {
-            self.say_error(format!("pipeline {name} is not listed under pipelines/"));
+        // A Task selects its Pipeline by name through the committed catalog, so `p` opens the
+        // file the catalog pins under that name, never another file declaring the same name.
+        let Some(id) = self.panes.pipelines.pinned_entry(name) else {
+            let why = "the committed catalog pins no listed package under that name";
+            self.say_error(format!(
+                "pipeline {name} is not listed under pipelines/: {why}"
+            ));
             return;
         };
-        let id = item.id.clone();
         self.tree.select(NodeKind::Item(Tab::Pipelines), &id);
         self.show(Opened::Item(Tab::Pipelines, id));
     }
