@@ -442,6 +442,13 @@ fn only_a_missing_store_is_empty() {
     let mut cache = Cache::default();
     let store = read_store(&root.join("other"), "other", None, &mut cache);
     assert!(store.tasks.is_err());
+    // A dangling `events.sqlite` link is a Store that cannot be read.
+    std::fs::create_dir_all(root.join("dangling")).unwrap();
+    std::os::unix::fs::symlink("missing.sqlite", root.join("dangling/events.sqlite")).unwrap();
+    let error = task_execution::store_present(&root.join("dangling")).unwrap_err();
+    assert!(error.contains("link to nothing"), "{error}");
+    let store = read_store(&root.join("dangling"), "dangling", None, &mut cache);
+    assert!(store.tasks.is_err());
     // A Store the process may not traverse is an error, not an empty listing.
     let (_repo, state) = crate::tui::tests::hub_with_tasks(&root.join("hub-root"));
     let locked = std::os::unix::fs::PermissionsExt::from_mode(0o000);
@@ -565,5 +572,30 @@ fn every_number_the_task_pane_shows_is_the_show_documents() {
     assert_eq!(
         line("PROGRESS"),
         format!("PROGRESS  {settled} / {} stages", detail.stages.len())
+    );
+}
+
+#[test]
+fn an_explicit_read_inspects_finished_tasks_again() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let mut cache = Cache::default();
+    assert!(read_store(&state, "state", None, &mut cache).tasks.is_ok());
+    assert!(!cache.finished.is_empty(), "finished summaries were cached");
+    // A finished Task loses an artifact only its inspection reads.
+    let done = document(&state, "pagination-cli");
+    let plan = done["plan_id"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("sha256:")
+        .to_owned();
+    std::fs::remove_file(state.join("cas/objects").join(&plan[..2]).join(&plan[2..])).unwrap();
+    // The live read's cache would still group it; an explicit read (load, `R`) clears it.
+    cache.finished.clear();
+    let store = read_store(&state, "state", None, &mut cache);
+    assert!(
+        store.tasks.is_err(),
+        "the Store is refused once the Task cannot be inspected"
     );
 }

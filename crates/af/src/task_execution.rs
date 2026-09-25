@@ -2055,7 +2055,13 @@ pub(crate) fn store_present(state: &Path) -> Result<bool, String> {
     match std::fs::metadata(&path) {
         Ok(metadata) if metadata.is_file() => Ok(true),
         Ok(_) => Err(format!("{} is not a file", path.display())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        // A link whose target is gone is a Store that cannot be read, not a missing one.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match std::fs::symlink_metadata(&path) {
+                Ok(_) => Err(format!("{} is a link to nothing", path.display())),
+                Err(_) => Ok(false),
+            }
+        }
         Err(error) => Err(format!("{}: {error}", path.display())),
     }
 }

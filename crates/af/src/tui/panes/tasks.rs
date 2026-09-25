@@ -901,8 +901,12 @@ impl TasksPane {
         Some((store.dir.clone(), task.task_id.clone()))
     }
 
+    /// A load or `R`: every listed Task is inspected again. Only the live read of a running
+    /// Task reuses finished summaries; an explicit read never trusts them, so a Task that can
+    /// no longer be inspected refuses its Store.
     fn read_now(&mut self) {
         self.job = None;
+        self.cache.finished.clear();
         let reread = read(&self.targets, self.opened_task(), self.cache.clone());
         self.apply(reread);
     }
