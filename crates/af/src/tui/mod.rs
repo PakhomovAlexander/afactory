@@ -900,7 +900,10 @@ impl App {
     fn open_pipeline(&mut self, name: &str) {
         // A Task selects its Pipeline by name through the committed catalog, so `p` opens the
         // file the catalog pins under that name, never another file declaring the same name.
-        let Some(id) = self.panes.pipelines.pinned_entry(name) else {
+        let found = self.panes.pipelines.pinned_entry_now(name);
+        // The fresh read of HEAD may have changed what the bar lists.
+        self.sync();
+        let Some(id) = found else {
             let why = "the committed catalog pins no listed package under that name";
             self.say_error(format!(
                 "pipeline {name} is not listed under pipelines/: {why}"

@@ -122,6 +122,12 @@ impl PipelinesPane {
 
     /// The bar id of the package the committed catalog pins under `name`: the Pipeline a Task
     /// selected by that name ran, not another file that declares the same name.
+    /// The same, from a fresh read of `HEAD`: `p` names the package the catalog pins now.
+    pub(crate) fn pinned_entry_now(&mut self, name: &str) -> Option<String> {
+        self.ensure_current();
+        self.pinned_entry(name)
+    }
+
     pub(crate) fn pinned_entry(&self, name: &str) -> Option<String> {
         self.entries
             .iter()
@@ -922,6 +928,16 @@ mod tests {
             "{rows:#?}"
         );
         assert!(pane.busy().is_none(), "nothing is compiled for a shadow");
+        // HEAD moves: the catalog now pins the name at the other file. `p` follows it.
+        let mut pane = PipelinesPane::default();
+        pane.load(&scope(root)).unwrap();
+        catalog(root, &[("fixture/p", "other")]);
+        git(root, &["add", "-A"]).unwrap();
+        git(root, &["commit", "-qm", "repin"]).unwrap();
+        assert_eq!(
+            pane.pinned_entry_now("fixture/p").as_deref(),
+            Some(".af/task-packages/other/pipeline.toml")
+        );
     }
 
     #[test]

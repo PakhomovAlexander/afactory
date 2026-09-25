@@ -935,6 +935,14 @@ impl TasksPane {
             Some(detail) => self.detail = Some(detail),
             None => {}
         }
+        // A Store refused as a whole takes its opened Task with it, even when that one Task
+        // could still be inspected by path: the folder shows the refusal instead.
+        if let Some(id) = self.selected.clone()
+            && self.task(&id).is_none()
+        {
+            self.selected = None;
+            self.detail = None;
+        }
         self.rebuild();
     }
 

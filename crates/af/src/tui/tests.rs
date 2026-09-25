@@ -821,3 +821,26 @@ fn only_an_opened_running_task_is_read_again_about_once_a_second() {
     app.poll();
     assert_eq!(app.panes.tasks.reads(), 2);
 }
+
+#[test]
+fn a_store_refused_on_a_live_read_closes_its_opened_task() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]jj\r");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    // The directory stays searchable (the Task still inspects by path) but cannot be listed.
+    let search_only = std::os::unix::fs::PermissionsExt::from_mode(0o111);
+    std::fs::set_permissions(&state, search_only).unwrap();
+    press(&mut app, &mut host, b"R");
+    let listable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    std::fs::set_permissions(&state, listable).unwrap();
+    let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row.starts_with("TASK  pagination-cli")),
+        "{rows:#?}"
+    );
+}
