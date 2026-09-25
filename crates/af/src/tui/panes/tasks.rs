@@ -135,6 +135,8 @@ impl Progress {
 /// What the records of one attempt-bearing node add up to.
 #[derive(Default)]
 struct Track {
+    /// The last event sequence that recorded one of this node's records.
+    last_sequence: u64,
     attempts: u64,
     open: bool,
     ok: bool,
@@ -162,6 +164,17 @@ pub(crate) fn stages(
     // Each settled Attempt's node and the charge its settlement names; summed after the scan,
     // since a usage observation may arrive after the settlement it raises.
     let mut settled_charges: BTreeMap<String, (String, u128)> = BTreeMap::new();
+    // The event sequence that recorded each execution record, to tell a report's outcome from
+    // records written after it.
+    let mut sequence_of: BTreeMap<&str, u64> = BTreeMap::new();
+    for event in array(&document["history"]) {
+        let change = &event["transition"]["change"];
+        if let (Some(id), Some(sequence)) =
+            (change["record_id"].as_str(), event["sequence"].as_u64())
+        {
+            sequence_of.insert(id, sequence);
+        }
+    }
     for entry in array(&document["execution_records"]) {
         let record = &entry["record"];
         let attempt = record["attempt_id"].as_str();
@@ -186,6 +199,12 @@ pub(crate) fn stages(
         }
         let node = invoked.node;
         let track = tracks.entry(node.clone()).or_default();
+        if let Some(sequence) = entry["artifact_id"]
+            .as_str()
+            .and_then(|id| sequence_of.get(id))
+        {
+            track.last_sequence = track.last_sequence.max(*sequence);
+        }
         match record["kind"].as_str() {
             Some("reserved") => {
                 if let Some(attempt) = attempt {
@@ -239,10 +258,18 @@ pub(crate) fn stages(
     let last = reports
         .map(|entry| &entry["report"])
         .find(|report| report["plan_id"].as_str() == current && report["phase_id"].is_null());
+    let through = last.and_then(|report| report["through_sequence"].as_u64());
     for node in last.map(|report| array(&report["nodes"])).unwrap_or(&[]) {
         if let (Some(name), Some(kind)) = (node["node"].as_str(), node["outcome"]["kind"].as_str())
         {
-            outcomes.insert(name, kind);
+            // A report speaks for a node only until a newer record of that node exists: a
+            // retry that ran after it is what the stage shows.
+            let newer = tracks
+                .get(name)
+                .is_some_and(|track| through.is_some_and(|through| track.last_sequence > through));
+            if !newer {
+                outcomes.insert(name, kind);
+            }
         }
     }
     let mut walls: BTreeMap<&str, u64> = BTreeMap::new();
@@ -480,7 +507,12 @@ fn summary(dir: &Path, task_id: &str, cache: &mut Cache) -> Result<Summary, Stri
     let document = task_execution::inspection_document(dir, task_id, true)?
         .ok_or_else(|| format!("Task {task_id} is not in {}", dir.display()))?;
     let stages = stages(&document, &mut |id| node_of(dir, id, cache))?;
-    Ok(Summary {
+    Ok(summary_of(&document, &stages))
+}
+
+/// A bar row's summary from one inspection read and the stages computed from it.
+fn summary_of(document: &Value, stages: &[Stage]) -> Summary {
+    Summary {
         phase: document["phase"].clone(),
         outcome: document["result"]["domain_conclusion"]
             .as_str()
@@ -491,9 +523,9 @@ fn summary(dir: &Path, task_id: &str, cache: &mut Cache) -> Result<Summary, Stri
             _ => None,
         },
         acceptance: document["result"]["acceptance"].as_str().map(str::to_owned),
-        started: span_of(&document).map(|(first, _)| first),
-        progress: Progress::of(&stages),
-    })
+        started: span_of(document).map(|(first, _)| first),
+        progress: Progress::of(stages),
+    }
 }
 
 /// One Task as `af task list` lists it.
@@ -946,7 +978,11 @@ pub(crate) struct TasksPane {
 impl TasksPane {
     /// The bar id of a Task, a group or an unreadable Store.
     fn id(store: &Store, name: &str) -> String {
-        match &store.repo {
+        TasksPane::id_of(&store.repo, name)
+    }
+
+    fn id_of(repo: &Option<String>, name: &str) -> String {
+        match repo {
             Some(repo) => format!("{repo}/{name}"),
             None => name.to_owned(),
         }
@@ -1001,6 +1037,23 @@ impl TasksPane {
         self.apply(reread);
     }
 
+    /// The opened Task's bar row, rebuilt from the same read as its detail, so the bar and the
+    /// main pane never disagree about its state, outcome, progress or charge.
+    fn sync_selected_row(&mut self) {
+        let (Some(id), Some(Ok(detail))) = (self.selected.clone(), &self.detail) else {
+            return;
+        };
+        let summary = summary_of(&detail.document, &detail.stages);
+        for store in &mut self.stores {
+            let named = |task: &&mut Listed| TasksPane::id_of(&store.repo, &task.task_id) == id;
+            if let Ok(tasks) = &mut store.tasks
+                && let Some(task) = tasks.iter_mut().find(named)
+            {
+                task.summary = Ok(summary.clone());
+            }
+        }
+    }
+
     fn apply(&mut self, reread: Reread) {
         self.stores = reread.stores;
         self.cache = reread.cache;
@@ -1024,6 +1077,7 @@ impl TasksPane {
             // An artifact opened from its HISTORY goes too, so the refusal is what shows.
             self.artifact = None;
         }
+        self.sync_selected_row();
         self.rebuild();
     }
 
@@ -1206,7 +1260,10 @@ impl Pane for TasksPane {
         self.selected = item.filter(|id| self.task(id).is_some()).map(str::to_owned);
         if let Some((dir, task_id)) = self.opened_task() {
             match Detail::read(&dir, &task_id, &mut self.cache) {
-                Ok(detail) => self.detail = Some(Ok(detail)),
+                Ok(detail) => {
+                    self.detail = Some(Ok(detail));
+                    self.sync_selected_row();
+                }
                 Err(error) => {
                     refuse(&mut self.stores, &dir, &task_id, &error);
                     self.selected = None;

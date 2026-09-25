@@ -769,3 +769,72 @@ fn a_failed_report_of_an_unfinished_task_leaves_a_retryable_stage_open() {
     assert_eq!(evaluate.mark, Mark::Failed);
     assert!(!evaluate.closed, "the plan may run it again");
 }
+
+#[test]
+fn a_record_newer_than_the_last_report_decides_the_stage() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let mut retried = document(&state, "pagination-cli");
+    retried["phase"] = json!({"kind": "running"});
+    let report = &mut retried["run_reports"]
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap()["report"];
+    for node in report["nodes"].as_array_mut().unwrap() {
+        if node["node"] == "root.nodes.check" {
+            node["outcome"] =
+                json!({"kind": "failed", "diagnostic_id": "sha256:00", "class": "execution"});
+        }
+    }
+    // The report was written before the check's records: the recorded success decides.
+    report["through_sequence"] = json!(1);
+    assert_eq!(stage(&state, &retried, "check").mark, Mark::Ok);
+    // Written after them, the report's failure decides.
+    let report = &mut retried["run_reports"]
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap()["report"];
+    report["through_sequence"] = json!(1_000_000);
+    assert_eq!(stage(&state, &retried, "check").mark, Mark::Failed);
+}
+
+#[test]
+fn opening_a_task_rebuilds_its_bar_row_from_the_same_read() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let mut cache = Cache::default();
+    let mut pane = TasksPane {
+        targets: vec![Target {
+            dir: state.clone(),
+            shown: "state".into(),
+            repo: None,
+        }],
+        ..TasksPane::default()
+    };
+    pane.stores = vec![read_store(&state, "state", None, &mut cache)];
+    // The bar read the Task while it still ran, with an old outcome and charge.
+    for task in pane.stores[0].tasks.as_mut().unwrap() {
+        if task.task_id == "pagination-cli" {
+            let summary = task.summary.as_mut().unwrap();
+            summary.phase = json!({"kind": "running"});
+            summary.outcome = None;
+            summary.chargeable = Some("1".into());
+        }
+    }
+    pane.open(Some("pagination-cli"));
+    let (_, task) = pane.task("pagination-cli").unwrap();
+    assert_eq!(task.state(), State::Done);
+    let show = document(&state, "pagination-cli");
+    assert_eq!(
+        task.outcome(),
+        show["result"]["domain_conclusion"].as_str().unwrap()
+    );
+    assert!(folder_row(task).text().contains(&format!(
+        "{} tok",
+        show["chargeable_tokens"].as_str().unwrap()
+    )));
+}
