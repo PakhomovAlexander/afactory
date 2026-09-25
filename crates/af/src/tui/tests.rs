@@ -878,3 +878,49 @@ fn the_user_scope_reads_a_symlinked_task_state_directory() {
     let gone = crate::tui::panes::tasks::refusal_of(&found[1].0);
     assert!(gone.is_some_and(|why| why.contains("link to nothing")));
 }
+
+#[test]
+fn a_history_artifact_the_store_cannot_give_back_refuses_the_store() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]]]jj\r");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    press(&mut app, &mut host, b"\t");
+    let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+    let history = rows
+        .iter()
+        .position(|row| row.starts_with("HISTORY"))
+        .unwrap();
+    // The artifact of the first HISTORY row is removed before Enter opens it.
+    let show = crate::task_execution::inspection_document(&state, "pagination-cli", false)
+        .unwrap()
+        .unwrap();
+    let first =
+        crate::tui::panes::tasks::change_artifact(&show["history"][0]["transition"]["change"])
+            .unwrap()
+            .trim_start_matches("sha256:")
+            .to_owned();
+    std::fs::remove_file(
+        state
+            .join("cas/objects")
+            .join(&first[..2])
+            .join(&first[2..]),
+    )
+    .unwrap();
+    for _ in 0..=history {
+        press(&mut app, &mut host, b"j");
+    }
+    press(&mut app, &mut host, b"\r");
+    let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+    assert!(
+        !rows
+            .iter()
+            .any(|row| row.starts_with("TASK  pagination-cli")),
+        "{rows:#?}"
+    );
+    assert!(!rows[0].starts_with("ARTIFACT"), "{rows:#?}");
+    let bar = app.frame(100, 30).text();
+    assert!(bar.contains("! Store unreadable"), "{bar}");
+}

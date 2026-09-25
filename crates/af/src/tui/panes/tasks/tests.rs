@@ -679,3 +679,62 @@ fn the_bar_groups_a_task_by_the_phase_its_inspection_read() {
     );
     assert!(!row.contains("999 tok"), "{row}");
 }
+
+#[test]
+fn a_released_reservation_is_no_attempt_and_an_observed_charge_counts() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let done = document(&state, "pagination-cli");
+    let base = stage(&state, &done, "implement");
+    let records = done["execution_records"].as_array().unwrap();
+    let reserved = records
+        .iter()
+        .find(|entry| {
+            entry["record"]["kind"] == "reserved"
+                && stage_name(
+                    &node_of(
+                        &state,
+                        entry["record"]["invocation_id"].as_str().unwrap(),
+                        &mut Cache::default(),
+                    )
+                    .unwrap()
+                    .node,
+                ) == "implement"
+        })
+        .unwrap()
+        .clone();
+    let attempt = reserved["record"]["attempt_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // A reservation released before dispatch, then the real one: still one Attempt.
+    let mut released = done.clone();
+    let mut early = reserved.clone();
+    early["record"]["attempt_id"] = json!("released-attempt");
+    let list = released["execution_records"].as_array_mut().unwrap();
+    let at = list.iter().position(|entry| entry == &reserved).unwrap();
+    list.insert(
+        at,
+        json!({"artifact_id": "sha256:aa", "record":
+        {"kind": "released", "attempt_id": "released-attempt", "reason": "recovery"}}),
+    );
+    list.insert(at, early);
+    assert_eq!(
+        stage(&state, &released, "implement").attempts,
+        base.attempts
+    );
+    // A usage observation above the settlement's charge is the charge that counts.
+    let mut observed = done.clone();
+    let list = observed["execution_records"].as_array_mut().unwrap();
+    let settled = list
+        .iter()
+        .position(|entry| {
+            entry["record"]["kind"] == "settled"
+                && entry["record"]["attempt_id"] == attempt.as_str()
+        })
+        .unwrap();
+    list.insert(settled, json!({"artifact_id": "sha256:bb", "record": {"kind": "usage_observed",
+        "attempt_id": attempt, "charged_tokens": "100", "usage_id": "sha256:cc", "raw_artifact_ids": []}}));
+    assert_eq!(stage(&state, &observed, "implement").tokens, Some(100));
+}

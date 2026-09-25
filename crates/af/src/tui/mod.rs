@@ -646,6 +646,8 @@ impl App {
     fn pane_key(&mut self, key: Key) -> Option<Effect> {
         let (tab, row) = (self.opened_tab(), self.main.cursor);
         let outcome = self.panes.get_mut(tab).key(key, row);
+        // A pane key may change what the pane lists (a Store refused on a failed read).
+        self.sync();
         match outcome {
             Ok(effect) => effect,
             Err(error) => {

@@ -156,6 +156,9 @@ pub(crate) fn stages(
     let mut tracks: BTreeMap<String, Track> = BTreeMap::new();
     // The current plan's Attempts, by id, and the node each ran.
     let mut attempts: BTreeMap<String, String> = BTreeMap::new();
+    // The highest charge recorded for each Attempt: a usage observation may exceed the charge
+    // its settlement names, and the Store keeps the higher one.
+    let mut observed: BTreeMap<String, u128> = BTreeMap::new();
     for entry in array(&document["execution_records"]) {
         let record = &entry["record"];
         let attempt = record["attempt_id"].as_str();
@@ -188,12 +191,26 @@ pub(crate) fn stages(
                 track.attempts += 1;
                 track.open = true;
             }
-            Some("released") => track.open = false,
+            // A reservation released before dispatch consumed no Attempt.
+            Some("released") => {
+                track.open = false;
+                track.attempts = track.attempts.saturating_sub(1);
+            }
+            Some("usage_observed") => {
+                if let Some(attempt) = attempt {
+                    let charged = text(&record["charged_tokens"])?;
+                    let charged: u128 = charged.parse().map_err(|_| "a charge is not decimal")?;
+                    let seen = observed.entry(attempt.to_owned()).or_default();
+                    *seen = (*seen).max(charged);
+                }
+            }
             Some("settled") => {
                 track.open = false;
                 track.settled += 1;
                 let charged = text(&record["charged_tokens"])?;
                 let charged: u128 = charged.parse().map_err(|_| "a charge is not decimal")?;
+                let seen = attempt.and_then(|attempt| observed.get(attempt)).copied();
+                let charged = charged.max(seen.unwrap_or(0));
                 track.tokens = track.tokens.saturating_add(charged);
                 let succeeded = record["result"]["kind"] == "succeeded";
                 track.ok |= succeeded;
@@ -1212,8 +1229,21 @@ impl Pane for TasksPane {
                 let Some(id) = self.history.get(&row) else {
                     return Err("Enter opens the artifact of a HISTORY row".to_owned());
                 };
-                let value = task_execution::recorded_artifact(&detail.dir, id)
-                    .map_err(|error| format!("{id}: {error}"))?;
+                let value = match task_execution::recorded_artifact(&detail.dir, id) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        // An artifact the Store records but cannot give back refuses the Store,
+                        // as any other failed read of it does.
+                        let error = format!("{id}: {error}");
+                        let (dir, task_id) = (detail.dir.clone(), detail.task_id.clone());
+                        refuse(&mut self.stores, &dir, &task_id, &error);
+                        self.selected = None;
+                        self.detail = None;
+                        self.artifact = None;
+                        self.rebuild();
+                        return Err(error);
+                    }
+                };
                 let pretty = serde_json::to_string_pretty(&value)
                     .map_err(|error| format!("{id}: {error}"))?;
                 let mut rows = vec![
