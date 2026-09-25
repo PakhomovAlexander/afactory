@@ -838,3 +838,63 @@ fn opening_a_task_rebuilds_its_bar_row_from_the_same_read() {
         show["chargeable_tokens"].as_str().unwrap()
     )));
 }
+
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+#[test]
+fn one_stores_cached_summary_never_stands_in_for_anothers() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, first) = crate::tui::tests::hub_with_tasks(&root);
+    // A second Store holding the same finished results, as a copied Task state would.
+    let second = root.join("second-store");
+    copy_dir(&first, &second);
+    let mut cache = Cache::default();
+    let store = read_store(&first, "first", None, &mut cache);
+    assert!(store.tasks.is_ok());
+    // What the first Store's summaries say, altered, stays with the first Store.
+    for summary in cache.finished.values_mut() {
+        summary.chargeable = Some("424242".into());
+    }
+    let other = read_store(&second, "second", None, &mut cache);
+    for task in other.tasks.as_ref().unwrap() {
+        let summary = task.summary.as_ref().unwrap();
+        assert_ne!(
+            summary.chargeable.as_deref(),
+            Some("424242"),
+            "{}",
+            task.task_id
+        );
+    }
+    // And the second Store's reads fail closed on their own: a gap there is its refusal.
+    let unfinished = document(&second, "pagination-unfinished");
+    let invocation = array(&unfinished["execution_records"])
+        .iter()
+        .find_map(|entry| entry["record"]["invocation_id"].as_str())
+        .unwrap()
+        .trim_start_matches("sha256:")
+        .to_owned();
+    let object = second
+        .join("cas/objects")
+        .join(&invocation[..2])
+        .join(&invocation[2..]);
+    std::fs::remove_file(object).unwrap();
+    cache.finished.clear();
+    assert!(
+        read_store(&second, "second", None, &mut cache)
+            .tasks
+            .is_err()
+    );
+    assert!(read_store(&first, "first", None, &mut cache).tasks.is_ok());
+}

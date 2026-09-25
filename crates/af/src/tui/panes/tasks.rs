@@ -453,12 +453,13 @@ fn stage_name(node: &str) -> String {
     parts.join(".")
 }
 
-/// What stays true between reads: the node of an invocation or output artifact never
-/// changes, and neither does a finished Task.
+/// What stays true between reads of one Store: the node of an invocation or output artifact
+/// never changes, and neither does a finished Task. Both are keyed by the Store's directory as
+/// well, so one Store's reads never stand in for another's, even for a shared artifact id.
 #[derive(Clone, Default)]
 struct Cache {
-    nodes: BTreeMap<String, Invoked>,
-    finished: BTreeMap<String, Summary>,
+    nodes: BTreeMap<(PathBuf, String), Invoked>,
+    finished: BTreeMap<(PathBuf, String), Summary>,
 }
 
 /// The node an invocation ran and the plan it ran under.
@@ -471,7 +472,8 @@ pub(crate) struct Invoked {
 
 /// The node and plan of an invocation artifact, or of the invocation an output answers.
 fn node_of(dir: &Path, id: &str, cache: &mut Cache) -> Result<Invoked, String> {
-    if let Some(invoked) = cache.nodes.get(id) {
+    let key = (dir.to_path_buf(), id.to_owned());
+    if let Some(invoked) = cache.nodes.get(&key) {
         return Ok(invoked.clone());
     }
     let envelope = task_execution::recorded_artifact(dir, id)?;
@@ -484,7 +486,7 @@ fn node_of(dir: &Path, id: &str, cache: &mut Cache) -> Result<Invoked, String> {
         (None, Some(invocation)) => node_of(dir, invocation, cache)?,
         (None, None) => return Err(format!("artifact {id} names no node")),
     };
-    cache.nodes.insert(id.to_owned(), invoked.clone());
+    cache.nodes.insert(key, invoked.clone());
     Ok(invoked)
 }
 
@@ -612,7 +614,8 @@ fn read_store(dir: &Path, shown: &str, repo: Option<String>, cache: &mut Cache) 
         for entry in entries {
             let task_id = text(&entry["task_id"])?.to_owned();
             let result = entry["phase"]["result_id"].as_str().map(str::to_owned);
-            let cached = result.as_ref().and_then(|id| cache.finished.get(id));
+            let key = result.as_ref().map(|id| (dir.to_path_buf(), id.clone()));
+            let cached = key.as_ref().and_then(|key| cache.finished.get(key));
             let summary = match cached {
                 Some(summary) => Ok(summary.clone()),
                 // A Task the Store lists but cannot inspect is the Store's refusal, named with
@@ -620,8 +623,8 @@ fn read_store(dir: &Path, shown: &str, repo: Option<String>, cache: &mut Cache) 
                 None => Ok(summary(dir, &task_id, cache)
                     .map_err(|error| format!("Task {task_id}: {error}"))?),
             };
-            if let (Some(id), Ok(summary)) = (result, &summary) {
-                cache.finished.insert(id, summary.clone());
+            if let (Some(key), Ok(summary)) = (key, &summary) {
+                cache.finished.insert(key, summary.clone());
             }
             tasks.push(Listed {
                 task_id,
