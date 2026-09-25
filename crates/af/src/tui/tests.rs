@@ -830,6 +830,19 @@ fn a_store_refused_on_a_live_read_closes_its_opened_task() {
     let mut host = Recorder::default();
     press(&mut app, &mut host, b"]]]]]]]]jj\r");
     assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    // An artifact is open from the Task's HISTORY when the Store turns unreadable.
+    press(&mut app, &mut host, b"\t");
+    let history = app
+        .main_rows()
+        .iter()
+        .position(|row| row.text().starts_with("HISTORY"))
+        .unwrap();
+    for _ in 0..=history {
+        press(&mut app, &mut host, b"j");
+    }
+    press(&mut app, &mut host, b"\r");
+    let top = app.main_rows()[0].text();
+    assert!(top.starts_with("ARTIFACT"), "{top}");
     // The directory stays searchable (the Task still inspects by path) but cannot be listed.
     let search_only = std::os::unix::fs::PermissionsExt::from_mode(0o111);
     std::fs::set_permissions(&state, search_only).unwrap();
@@ -842,6 +855,10 @@ fn a_store_refused_on_a_live_read_closes_its_opened_task() {
             .iter()
             .any(|row| row.starts_with("TASK  pagination-cli")),
         "{rows:#?}"
+    );
+    assert!(
+        !rows[0].starts_with("ARTIFACT"),
+        "the opened artifact goes too: {rows:#?}"
     );
 }
 

@@ -440,6 +440,10 @@ struct Summary {
     /// The phase the inspection read: the bar groups by it, so a Task that finished between
     /// the list read and its inspection is not left under the list read's phase.
     phase: Value,
+    /// The outcome and charge from that same read, so a row never pairs a new group with an
+    /// old outcome.
+    outcome: Option<String>,
+    chargeable: Option<String>,
     acceptance: Option<String>,
     started: Option<u64>,
     progress: Progress,
@@ -451,6 +455,14 @@ fn summary(dir: &Path, task_id: &str, cache: &mut Cache) -> Result<Summary, Stri
     let stages = stages(&document, &mut |id| node_of(dir, id, cache))?;
     Ok(Summary {
         phase: document["phase"].clone(),
+        outcome: document["result"]["domain_conclusion"]
+            .as_str()
+            .map(str::to_owned),
+        chargeable: match &document["chargeable_tokens"] {
+            Value::String(n) => Some(n.clone()),
+            Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        },
         acceptance: document["result"]["acceptance"].as_str().map(str::to_owned),
         started: span_of(&document).map(|(first, _)| first),
         progress: Progress::of(&stages),
@@ -474,6 +486,10 @@ impl Listed {
     }
 
     fn outcome(&self) -> &str {
+        if let Ok(summary) = &self.summary {
+            // A Task without a result lists as `incomplete`, as `af task list` prints it.
+            return summary.outcome.as_deref().unwrap_or("incomplete");
+        }
         // `af task list` prints a Task without a result the same way.
         self.entry["outcome"].as_str().unwrap_or("incomplete")
     }
@@ -966,6 +982,7 @@ impl TasksPane {
             Some(Err(_)) => {
                 self.detail = None;
                 self.selected = None;
+                self.artifact = None;
             }
             Some(detail) => self.detail = Some(detail),
             None => {}
@@ -977,6 +994,8 @@ impl TasksPane {
         {
             self.selected = None;
             self.detail = None;
+            // An artifact opened from its HISTORY goes too, so the refusal is what shows.
+            self.artifact = None;
         }
         self.rebuild();
     }
@@ -1050,7 +1069,13 @@ impl TasksPane {
 }
 
 fn folder_row(task: &Listed) -> Row {
-    let tokens = task.entry["chargeable_tokens"].as_str().unwrap_or("-");
+    let listed = task.entry["chargeable_tokens"].as_str();
+    let inspected = task
+        .summary
+        .as_ref()
+        .ok()
+        .and_then(|summary| summary.chargeable.as_deref());
+    let tokens = inspected.or(listed).unwrap_or("-");
     let line = format!(
         "    {:<24} {:<18} {:>4}  {tokens} tok",
         task.task_id,

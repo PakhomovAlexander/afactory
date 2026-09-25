@@ -660,5 +660,22 @@ fn the_bar_groups_a_task_by_the_phase_its_inspection_read() {
         .unwrap();
     // The list read still saw it running; the inspection read it finished and satisfied.
     listed.entry["phase"] = json!({"kind": "running"});
+    listed.entry["outcome"] = serde_json::Value::Null;
+    listed.entry["chargeable_tokens"] = json!("999");
     assert_eq!(listed.state(), State::Done);
+    // Its outcome and charge come from that same read, not the older list entry.
+    let show = document(&state, "pagination-cli");
+    assert_eq!(
+        listed.outcome(),
+        show["result"]["domain_conclusion"].as_str().unwrap()
+    );
+    let row = folder_row(listed).text();
+    assert!(
+        row.contains(&format!(
+            "{} tok",
+            show["chargeable_tokens"].as_str().unwrap()
+        )),
+        "{row}"
+    );
+    assert!(!row.contains("999 tok"), "{row}");
 }
