@@ -136,14 +136,18 @@ fn stable_lines(text: &str) -> Vec<String> {
 /// erase; graphic rendition and private modes are ignored.
 struct Screen {
     cells: Vec<Vec<char>>,
+    rows: usize,
+    columns: usize,
     row: usize,
     column: usize,
 }
 
 impl Screen {
-    fn parse(bytes: &[u8]) -> Screen {
+    fn parse(bytes: &[u8], rows: usize, columns: usize) -> Screen {
         let mut screen = Screen {
-            cells: vec![vec![' '; COLS]; ROWS],
+            cells: vec![vec![' '; columns]; rows],
+            rows,
+            columns,
             row: 0,
             column: 0,
         };
@@ -154,9 +158,9 @@ impl Screen {
             match byte {
                 0x1b => index = screen.escape(bytes, index),
                 b'\r' => screen.column = 0,
-                b'\n' => screen.row = (screen.row + 1).min(ROWS - 1),
+                b'\n' => screen.row = (screen.row + 1).min(screen.rows - 1),
                 0x20..=0x7e => {
-                    if screen.row < ROWS && screen.column < COLS {
+                    if screen.row < screen.rows && screen.column < screen.columns {
                         screen.cells[screen.row][screen.column] = char::from(byte);
                     }
                     screen.column += 1;
@@ -187,7 +191,9 @@ impl Screen {
                         self.row = usize::max(row, 1) - 1;
                         self.column = usize::max(column, 1) - 1;
                     }
-                    b'J' if parameters == "2" => self.cells = vec![vec![' '; COLS]; ROWS],
+                    b'J' if parameters == "2" => {
+                        self.cells = vec![vec![' '; self.columns]; self.rows];
+                    }
                     _ => {}
                 }
                 end + 1
@@ -224,14 +230,21 @@ struct Browser {
     writer: Box<dyn Write + Send>,
     output: Receiver<Vec<u8>>,
     bytes: Vec<u8>,
+    rows: usize,
+    columns: usize,
     _master: Box<dyn MasterPty + Send>,
 }
 
 impl Browser {
     fn launch(cwd: &Path, home: &Path) -> Browser {
+        Browser::launch_sized(cwd, home, ROWS, COLS)
+    }
+
+    /// The browser on a terminal of `rows` x `columns`.
+    fn launch_sized(cwd: &Path, home: &Path, rows: usize, columns: usize) -> Browser {
         let size = PtySize {
-            rows: ROWS as u16,
-            cols: COLS as u16,
+            rows: rows as u16,
+            cols: columns as u16,
             pixel_width: 0,
             pixel_height: 0,
         };
@@ -260,6 +273,8 @@ impl Browser {
             writer,
             output,
             bytes: Vec::new(),
+            rows,
+            columns,
             _master: pair.master,
         }
     }
@@ -271,7 +286,7 @@ impl Browser {
             while let Ok(chunk) = self.output.try_recv() {
                 self.bytes.extend(chunk);
             }
-            let screen = Screen::parse(&self.bytes);
+            let screen = Screen::parse(&self.bytes, self.rows, self.columns);
             if ready(&screen) {
                 return screen;
             }
@@ -621,5 +636,35 @@ fn the_user_scope_groups_tasks_by_repository() {
         screen.text()
     );
     browser.keys(b"q");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// The Tasks pane at the 80x24 minimum on a real pseudo-terminal: the bar is hidden below 90
+/// columns, the Task's rows fit the main pane, and the status line names the pane.
+#[test]
+fn the_tasks_pane_at_80x24_on_a_pseudo_terminal() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub_with_a_task(&root, &home);
+    let mut browser = Browser::launch_sized(&repo, &home, 24, 80);
+    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
+    browser.wait_for("the project settings at 80x24", ready);
+    // The bar starts hidden at 80 columns; <C-b> shows it, and ]] four times reaches tasks/.
+    browser.keys(b"\x02");
+    browser.keys(b"]]]]]]]]");
+    browser.keys(b"jj");
+    browser.keys(b"\r");
+    let opened = |screen: &Screen| screen.text().contains("TASK  pagination-cli");
+    let screen = browser.wait_for("the Task at 80x24", opened);
+    let lines = screen.lines();
+    assert_eq!(lines.len(), 24);
+    assert!(
+        lines.iter().all(|line| line.len() <= 80),
+        "{}",
+        screen.text()
+    );
+    assert!(screen.text().contains("PROGRESS"), "{}", screen.text());
+    assert!(lines[23].starts_with("NORMAL"), "{}", screen.text());
+    browser.keys(b":q\r");
     assert_eq!(browser.exit_code(), 0);
 }

@@ -292,16 +292,17 @@ pub(crate) fn stages(
         let node = text(node)?;
         let track = tracks.get(node).unwrap_or(&empty);
         let outcome = outcomes.get(node).copied();
+        // A report not superseded by newer records decides the stage over older records.
         let mark = if !finished && track.open {
             Mark::Running
         } else if outcome == Some("failed") {
             Mark::Failed
+        } else if outcome == Some("suppressed") {
+            Mark::Skipped
         } else if track.ok || outcome == Some("completed") {
             Mark::Ok
         } else if track.failed {
             Mark::Failed
-        } else if outcome == Some("suppressed") {
-            Mark::Skipped
         } else {
             Mark::NotReached
         };

@@ -799,6 +799,18 @@ fn a_record_newer_than_the_last_report_decides_the_stage() {
         .unwrap()["report"];
     report["through_sequence"] = json!(1_000_000);
     assert_eq!(stage(&state, &retried, "check").mark, Mark::Failed);
+    // A later report that suppressed it shows it skipped, over the older success.
+    let report = &mut retried["run_reports"]
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap()["report"];
+    for node in report["nodes"].as_array_mut().unwrap() {
+        if node["node"] == "root.nodes.check" {
+            node["outcome"] = json!({"kind": "suppressed"});
+        }
+    }
+    assert_eq!(stage(&state, &retried, "check").mark, Mark::Skipped);
 }
 
 #[test]
