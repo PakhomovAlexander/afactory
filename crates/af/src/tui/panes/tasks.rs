@@ -235,7 +235,9 @@ pub(crate) fn stages(
                     settled_charges.insert(attempt.to_owned(), (node.clone(), charged));
                 }
                 let succeeded = record["result"]["kind"] == "succeeded";
-                track.ok |= succeeded;
+                // The latest settlement decides: a newer failure after an earlier success is a
+                // failure, and a newer success after a failure is a success.
+                track.ok = succeeded;
                 track.failed = !succeeded;
             }
             Some("published" | "owned_children_completed") => {
@@ -253,6 +255,8 @@ pub(crate) fn stages(
     // The last whole-Round report of the current plan: every compiled node with its outcome,
     // including a failure before any Attempt and a suppressed branch.
     let mut outcomes: BTreeMap<&str, &str> = BTreeMap::new();
+    // Why the report suppressed a node, where it did.
+    let mut suppressed: BTreeMap<&str, &str> = BTreeMap::new();
     let current = document["plan_id"].as_str();
     let reports = array(&document["run_reports"]).iter().rev();
     let last = reports
@@ -269,6 +273,9 @@ pub(crate) fn stages(
                 .is_some_and(|track| through.is_some_and(|through| track.last_sequence > through));
             if !newer {
                 outcomes.insert(name, kind);
+                if let Some(reason) = node["outcome"]["reason"].as_str() {
+                    suppressed.insert(name, reason);
+                }
             }
         }
     }
@@ -309,7 +316,10 @@ pub(crate) fn stages(
         let allowance = &document["graph"]["allowances"][node]["max_attempts"];
         let exhausted = allowance.as_u64().is_some_and(|max| track.attempts >= max);
         let closed = match mark {
-            Mark::Ok | Mark::Skipped => true,
+            Mark::Ok => true,
+            // A branch not selected will not run; a node suppressed for a missing upstream runs
+            // when the unfinished Task recovers its upstream, so it is not settled yet.
+            Mark::Skipped => finished || suppressed.get(node) != Some(&"upstream_missing"),
             // A failed report of an unfinished Task does not close a stage the plan may run
             // again; only a finished Task or a spent allowance does.
             Mark::Failed => finished || exhausted,

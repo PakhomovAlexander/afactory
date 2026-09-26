@@ -928,3 +928,72 @@ fn a_long_task_id_leaves_room_for_the_goal() {
         "TASK  pagination-cli  implement: \"fix the page size\""
     );
 }
+
+#[test]
+fn the_latest_settlement_decides_and_a_recoverable_suppression_stays_open() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let done = document(&state, "pagination-cli");
+    // A newer settlement of the check fails after its earlier success: the stage is failed,
+    // and with an Attempt left it is not closed.
+    let mut retried = done.clone();
+    retried["phase"] = json!({"kind": "running"});
+    retried["run_reports"] = json!([]);
+    retried["graph"]["allowances"]["root.nodes.check"]["max_attempts"] = json!(3);
+    let records = retried["execution_records"].as_array().unwrap().clone();
+    let settled = records
+        .iter()
+        .filter(|entry| entry["record"]["kind"] == "settled")
+        .find(|entry| {
+            let attempt = entry["record"]["attempt_id"].as_str().unwrap();
+            records.iter().any(|reserved| {
+                reserved["record"]["kind"] == "reserved"
+                    && reserved["record"]["attempt_id"] == attempt
+                    && stage_name(
+                        &node_of(
+                            &state,
+                            reserved["record"]["invocation_id"].as_str().unwrap(),
+                            &mut Cache::default(),
+                        )
+                        .unwrap()
+                        .node,
+                    ) == "check"
+            })
+        })
+        .unwrap()
+        .clone();
+    let mut later = settled.clone();
+    later["record"]["result"] = json!({"kind": "failed", "diagnostic_id": "sha256:00"});
+    retried["execution_records"]
+        .as_array_mut()
+        .unwrap()
+        .push(later);
+    let check = stage(&state, &retried, "check");
+    assert_eq!(check.mark, Mark::Failed);
+    assert!(!check.closed);
+    // A node suppressed for a missing upstream, in an unfinished Task, is skipped but open;
+    // a branch not selected is closed.
+    let mut waiting = document(&state, "pagination-unfinished");
+    waiting["phase"] = json!({"kind": "waiting", "reason": "recovery"});
+    let nodes = waiting["run_reports"][0]["report"]["nodes"]
+        .as_array_mut()
+        .unwrap();
+    for node in nodes {
+        if node["node"] == "root.nodes.evaluate" {
+            node["outcome"] = json!({"kind": "suppressed", "reason": "upstream_missing"});
+        }
+    }
+    let evaluate = stage(&state, &waiting, "evaluate");
+    assert_eq!(evaluate.mark, Mark::Skipped);
+    assert!(!evaluate.closed, "it runs when the upstream recovers");
+    let nodes = waiting["run_reports"][0]["report"]["nodes"]
+        .as_array_mut()
+        .unwrap();
+    for node in nodes {
+        if node["node"] == "root.nodes.evaluate" {
+            node["outcome"] = json!({"kind": "suppressed", "reason": "branch_not_selected"});
+        }
+    }
+    assert!(stage(&state, &waiting, "evaluate").closed);
+}
