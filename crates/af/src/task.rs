@@ -1767,14 +1767,7 @@ fn is_executable(metadata: &std::fs::Metadata) -> bool {
 fn resolve_task_state(state: &Option<PathBuf>, repository: &Path) -> Result<PathBuf, String> {
     match state {
         Some(state) => resolve_filesystem_path(state),
-        None => {
-            let identity = Sha256::digest(repository.as_os_str().as_encoded_bytes());
-            normalize_absolute(
-                &xdg_state_root()?
-                    .join("af/task/local")
-                    .join(&review_core::hex::encode(&identity)[..16]),
-            )
-        }
+        None => super::task_execution::default_task_state(&xdg_state_root()?, repository),
     }
 }
 

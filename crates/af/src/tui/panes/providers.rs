@@ -120,6 +120,7 @@ impl Pane for ProvidersPane {
                 id: provider.id.clone(),
                 label: provider.id.clone(),
                 muted: providers::is_ambient_candidate(provider),
+                children: None,
             });
         }
         items

@@ -120,6 +120,29 @@ impl PipelinesPane {
         self.entry(self.selected.as_deref()?)
     }
 
+    /// The bar id of the package the committed catalog pins under `name`: the Pipeline a Task
+    /// selected by that name ran, not another file that declares the same name.
+    /// The same, from a fresh read of `HEAD`: `p` names the package the catalog pins now.
+    pub(crate) fn pinned_entry_now(&mut self, name: &str) -> Result<Option<String>, String> {
+        self.ensure_current();
+        match &self.error {
+            // The entries are the last good read's; a jump from them could open a package the
+            // catalog no longer pins.
+            Some(error) => Err(format!("HEAD could not be read: {error}")),
+            None => Ok(self.pinned_entry(name)),
+        }
+    }
+
+    pub(crate) fn pinned_entry(&self, name: &str) -> Option<String> {
+        self.entries
+            .iter()
+            .find(|entry| {
+                entry.label == name
+                    && matches!(&entry.source, Source::Package { pin: Pin::Here, .. })
+            })
+            .map(|entry| entry.id.clone())
+    }
+
     /// The pipeline file behind a bar entry, for `gf` on the bar.
     pub(crate) fn entry_file(&self, id: &str) -> Option<PathBuf> {
         self.entry(id).map(|entry| entry.path.clone())
@@ -179,7 +202,9 @@ impl PipelinesPane {
         let Some(root) = &self.root else {
             return;
         };
-        if head(root).is_ok_and(|commit| commit == self.commit) {
+        // A failed read is never trusted to still be current: once HEAD reads again, even at
+        // the same commit, the entries are read again and the error cleared.
+        if self.error.is_none() && head(root).is_ok_and(|commit| commit == self.commit) {
             return;
         }
         self.discover();
@@ -347,6 +372,7 @@ impl Pane for PipelinesPane {
                 id: entry.id.clone(),
                 label,
                 muted: entry.modified || self.error.is_some(),
+                children: None,
             });
         }
         items
@@ -884,6 +910,16 @@ mod tests {
             Pin::Elsewhere(".af/task-packages/pinned".into())
         );
         assert_eq!(pin("loose"), Pin::Absent);
+        // `p` from a Task opens the pinned file, never a shadow of the same name.
+        let pane = PipelinesPane {
+            entries: entries.clone(),
+            ..PipelinesPane::default()
+        };
+        assert_eq!(
+            pane.pinned_entry("fixture/p").as_deref(),
+            Some(".af/task-packages/pinned/pipeline.toml")
+        );
+        assert_eq!(pane.pinned_entry("fixture/loose"), None);
         // Opening the shadow row refuses, with the reason and the file's own contract, rather
         // than compiling the pinned file's plan under this row.
         let mut pane = PipelinesPane::default();
@@ -899,6 +935,33 @@ mod tests {
             "{rows:#?}"
         );
         assert!(pane.busy().is_none(), "nothing is compiled for a shadow");
+        // HEAD moves: the catalog now pins the name at the other file. `p` follows it.
+        let mut pane = PipelinesPane::default();
+        pane.load(&scope(root)).unwrap();
+        catalog(root, &[("fixture/p", "other")]);
+        git(root, &["add", "-A"]).unwrap();
+        git(root, &["commit", "-qm", "repin"]).unwrap();
+        assert_eq!(
+            pane.pinned_entry_now("fixture/p").unwrap().as_deref(),
+            Some(".af/task-packages/other/pipeline.toml")
+        );
+        // HEAD becomes unreadable: the jump is refused, never taken from the stale entries.
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/nowhere\n").unwrap();
+        std::fs::write(
+            root.join(".git/refs/heads/nowhere"),
+            "0123456789abcdef0123456789abcdef01234567\n",
+        )
+        .unwrap();
+        assert!(pane.pinned_entry_now("fixture/p").is_err());
+        // HEAD reads again at the same commit: the jump works again.
+        let good = git(root, &["rev-parse", "main"]).unwrap();
+        let good = String::from_utf8(good).unwrap();
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert!(!good.trim().is_empty());
+        assert_eq!(
+            pane.pinned_entry_now("fixture/p").unwrap().as_deref(),
+            Some(".af/task-packages/other/pipeline.toml")
+        );
     }
 
     #[test]
