@@ -202,7 +202,9 @@ impl PipelinesPane {
         let Some(root) = &self.root else {
             return;
         };
-        if head(root).is_ok_and(|commit| commit == self.commit) {
+        // A failed read is never trusted to still be current: once HEAD reads again, even at
+        // the same commit, the entries are read again and the error cleared.
+        if self.error.is_none() && head(root).is_ok_and(|commit| commit == self.commit) {
             return;
         }
         self.discover();
@@ -951,6 +953,15 @@ mod tests {
         )
         .unwrap();
         assert!(pane.pinned_entry_now("fixture/p").is_err());
+        // HEAD reads again at the same commit: the jump works again.
+        let good = git(root, &["rev-parse", "main"]).unwrap();
+        let good = String::from_utf8(good).unwrap();
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert!(!good.trim().is_empty());
+        assert_eq!(
+            pane.pinned_entry_now("fixture/p").unwrap().as_deref(),
+            Some(".af/task-packages/other/pipeline.toml")
+        );
     }
 
     #[test]

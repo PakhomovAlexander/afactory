@@ -910,3 +910,21 @@ fn one_stores_cached_summary_never_stands_in_for_anothers() {
     );
     assert!(read_store(&first, "first", None, &mut cache).tasks.is_ok());
 }
+
+#[test]
+fn a_long_task_id_leaves_room_for_the_goal() {
+    let id = "a-very-long-task-identifier-with-fifty-three-characters";
+    let title = task_title(
+        id,
+        "implement",
+        "VISIBLE-GOAL-MARKER and more words after it",
+    );
+    assert!(title.len() <= MAIN, "{title}");
+    assert!(title.contains("VISIBLE-GOAL-MA"), "{title}");
+    // A short id is left whole.
+    let title = task_title("pagination-cli", "implement", "fix the page size");
+    assert_eq!(
+        title,
+        "TASK  pagination-cli  implement: \"fix the page size\""
+    );
+}

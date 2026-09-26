@@ -419,6 +419,27 @@ pub(crate) fn short(id: Option<&str>) -> String {
     }
 }
 
+/// The TASK line in the main pane's width. The goal keeps at least 16 columns: the id is
+/// cut first (it is also on the bar and in HISTORY), then the kind.
+pub(crate) fn task_title(task_id: &str, kind: &str, goal: &str) -> String {
+    const GOAL: usize = 16;
+    let (mut task_id, mut kind) = (paint::ascii(task_id), paint::ascii(kind));
+    // "TASK  " + id + "  " + kind + ": \"" + goal + "\""
+    let frame = 6 + 2 + 3 + 1;
+    let over = |id: &str, kind: &str| (frame + id.len() + kind.len() + GOAL).saturating_sub(MAIN);
+    let cut = over(&task_id, &kind);
+    if cut > 0 {
+        task_id = clip(&task_id, task_id.len().saturating_sub(cut).max(8));
+    }
+    let cut = over(&task_id, &kind);
+    if cut > 0 {
+        kind = clip(&kind, kind.len().saturating_sub(cut).max(4));
+    }
+    let room = MAIN.saturating_sub(frame + task_id.len() + kind.len());
+    let goal = clip(goal, room);
+    format!("TASK  {task_id}  {kind}: \"{goal}\"")
+}
+
 /// `text` in at most `width` columns, a cut marked with `~`.
 fn clip(text: &str, width: usize) -> String {
     let text = paint::ascii(text);
@@ -693,12 +714,7 @@ impl Detail {
         let document = &self.document;
         let state = self.state();
         let mut rows = Vec::new();
-        let (task_id, kind) = (paint::ascii(&self.task_id), paint::ascii(&self.kind));
-        let room = MAIN
-            .saturating_sub(6 + task_id.len() + 2 + kind.len() + 4)
-            .max(16);
-        let goal = clip(&self.goal, room);
-        let title = format!("TASK  {task_id}  {kind}: \"{goal}\"");
+        let title = task_title(&self.task_id, &self.kind, &self.goal);
         rows.push(Row::painted(title, Paint::Title));
         let plan = &document["plan"];
         let origin = if plan.is_null() {
