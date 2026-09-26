@@ -481,7 +481,19 @@ pub(crate) fn fit(task_id: &str, outcome: &str, percent: &str, width: usize) -> 
 /// A stage's node without the root call and `nodes.` segments: `root.nodes.check` is `check`.
 fn stage_name(node: &str) -> String {
     let node = node.strip_prefix("root.").unwrap_or(node);
-    let parts: Vec<&str> = node.split('.').filter(|part| *part != "nodes").collect();
+    // A qualified path alternates the structural `nodes` marker with node ids
+    // (`nodes.review.nodes.checks`); only a marker is dropped, so a node whose id is itself
+    // `nodes` keeps its name.
+    let mut parts = Vec::new();
+    let mut marker = true;
+    for part in node.split('.') {
+        if marker && part == "nodes" {
+            marker = false;
+            continue;
+        }
+        parts.push(part);
+        marker = true;
+    }
     parts.join(".")
 }
 

@@ -997,3 +997,16 @@ fn the_latest_settlement_decides_and_a_recoverable_suppression_stays_open() {
     }
     assert!(stage(&state, &waiting, "evaluate").closed);
 }
+
+#[test]
+fn a_stage_named_nodes_keeps_its_name() {
+    assert_eq!(stage_name("root.nodes.implement"), "implement");
+    assert_eq!(
+        stage_name("root.nodes.review.nodes.checks"),
+        "review.checks"
+    );
+    assert_eq!(stage_name("root.nodes.nodes"), "nodes");
+    assert_eq!(stage_name("root.nodes.review.nodes.nodes"), "review.nodes");
+    assert_eq!(stage_name("root.providers.admit0"), "providers.admit0");
+    assert_eq!(stage_name("root.inputs"), "inputs");
+}
