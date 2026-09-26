@@ -209,3 +209,5 @@ future readers need.
   shell](0120-give-a-source-writing-worker-a-shell.md)
 - [0121 — Show recorded Tasks in the browser from their inspection
   documents](0121-show-recorded-tasks-in-the-browser.md)
+- [0122 — Show committed Workers and the Attempts their recorded plans
+  bound](0122-show-committed-workers-and-their-recorded-attempts.md)

@@ -451,7 +451,7 @@ fn plan(root: &Path, task: &serde_json::Value, commit: &str) -> Compiled {
 /// The commit `HEAD` names, or an empty string for an unborn `HEAD`: a symbolic `HEAD` whose
 /// branch does not exist yet. A `HEAD` that names a missing commit, a detached `HEAD` that does
 /// not resolve, no repository and no git are all errors, never an empty list.
-fn head(root: &Path) -> Result<String, String> {
+pub(crate) fn head(root: &Path) -> Result<String, String> {
     match git(root, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]) {
         Ok(bytes) => return Ok(String::from_utf8_lossy(&bytes).trim().to_owned()),
         // `--quiet` makes an unresolvable HEAD exit 1 with nothing on stderr; anything else
@@ -557,7 +557,7 @@ fn discover(root: &Path) -> Result<Discovery, String> {
 }
 
 /// Package name to package directory, as the committed catalog's `[packages]` table pins them.
-fn pinned_paths(catalog: &Value) -> BTreeMap<String, String> {
+pub(crate) fn pinned_paths(catalog: &Value) -> BTreeMap<String, String> {
     let mut pinned = BTreeMap::new();
     if let Some(packages) = catalog.get("packages").and_then(Value::as_table) {
         for (name, pin) in packages {
@@ -625,7 +625,7 @@ fn contract_rows(value: &Value) -> Vec<Row> {
 }
 
 /// The text one commit holds at a repository-relative path.
-fn committed(root: &Path, commit: &str, path: &str) -> Result<String, String> {
+pub(crate) fn committed(root: &Path, commit: &str, path: &str) -> Result<String, String> {
     let bytes = git(root, &["show", &format!("{commit}:{path}")])?;
     String::from_utf8(bytes).map_err(|error| format!("{path}: {error}"))
 }
@@ -633,7 +633,7 @@ fn committed(root: &Path, commit: &str, path: &str) -> Result<String, String> {
 /// Whether the working-tree file differs from the commit in bytes, mode or existence, as git
 /// judges it. A git that cannot answer counts as a difference: the marker errs on the side of
 /// saying the working tree is not what is shown.
-fn differs(root: &Path, commit: &str, path: &str) -> bool {
+pub(crate) fn differs(root: &Path, commit: &str, path: &str) -> bool {
     git(root, &["diff", "--quiet", commit, "--", path]).is_err()
 }
 
@@ -654,7 +654,7 @@ fn git_command(root: &Path, args: &[&str]) -> Command {
 }
 
 /// The command's stdout, or its stderr trimmed (empty when it said nothing).
-fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+pub(crate) fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     let output = git_command(root, args)
         .output()
         .map_err(|error| format!("running git: {error}"))?;
@@ -667,7 +667,7 @@ fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
 
 /// A pipeline declaration read leniently: one that does not parse still lists, and its preview
 /// reports the compiler's own refusal.
-fn declared(text: &str) -> Value {
+pub(crate) fn declared(text: &str) -> Value {
     toml::from_str(text).unwrap_or_else(|_| Value::Table(toml::map::Map::new()))
 }
 

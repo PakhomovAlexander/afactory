@@ -25,7 +25,8 @@ use panes::pipelines::PipelinesPane;
 use panes::providers::ProvidersPane;
 use panes::settings::SettingsPane;
 use panes::tasks::TasksPane;
-use panes::{Effect, Pane, Placeholder, Row};
+use panes::workers::WorkersPane;
+use panes::{Effect, Pane, Row};
 use scope::{Scope, ScopeKind};
 use tree::{NodeKind, Tab, Tree};
 
@@ -67,6 +68,8 @@ gf                 open the file behind the node in $EDITOR
 R                  read the pane again; providers: probe quota windows
 q ZZ :q            quit; <C-c> first cancels a prompt or a running probe
 
+workers: gf opens the prompt (or the declaration), y copies the name;
+         the folder lists its Workers once it is first opened
 tasks: Enter on a HISTORY row shows its artifact (q or Esc returns),
        p opens the Task's pipeline, y copies the Task id
 
@@ -157,7 +160,7 @@ pub(crate) struct Panes {
     settings: SettingsPane,
     providers: ProvidersPane,
     pipelines: PipelinesPane,
-    workers: Placeholder,
+    workers: WorkersPane,
     tasks: TasksPane,
 }
 
@@ -167,7 +170,7 @@ impl Panes {
             settings: SettingsPane::default(),
             providers,
             pipelines: PipelinesPane::default(),
-            workers: Placeholder::new("WORKERS", 4),
+            workers: WorkersPane::default(),
             tasks: TasksPane::default(),
         }
     }
@@ -627,6 +630,7 @@ impl App {
         match row.kind {
             NodeKind::Root => self.panes.settings.file(0),
             NodeKind::Item(Tab::Pipelines) => self.panes.pipelines.entry_file(&row.id),
+            NodeKind::Item(Tab::Workers) => self.panes.workers.entry_file(&row.id),
             NodeKind::Item(Tab::Providers) => self.panes.providers.file(0),
             NodeKind::Folder(_) | NodeKind::Group(_) | NodeKind::Item(_) => None,
         }

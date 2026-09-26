@@ -36,6 +36,16 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   id and `R` reads again. The `af task show` builder is split from its printer, and
   `default_task_state` is the one spelling of the default `--state`. No `--json` document
   changes.
+- The browser's Workers pane (ADR-0122, `docs/design/tui.md` package M4) lists the reviewer
+  Workers and Task Worker packages `HEAD` commits under `.af/workers/`, `.af/task-packages/`,
+  `.af/packages/` and `.af/vendor/`, grouped by source when more than one has Workers. The
+  folder is read when it is first opened. One Worker's pane shows IDENTITY (its declaration and
+  its `af.lock` or catalog pin, `unpinned` or `pinned elsewhere`), then STATE, then PROMPT
+  (`reviewer.md` or `instructions.md` as committed, with `gf` opening the working-tree file).
+  STATE counts the Attempts in this scope's Task Stores whose invocation ran a slot that the
+  recorded plan binds to the Worker: reserved, settled ok, settled failed and released, plus
+  the tokens charged and the wall time. A drifted file is marked `*`, and a failed read of
+  `HEAD` is shown above the last good entries. No `--json` document changes.
 
 ## [0.9.0-rc.7] - 2026-09-24
 

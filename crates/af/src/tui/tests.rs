@@ -13,6 +13,7 @@ const SETTINGS: &str = include_str!("../../tests/fixtures/tui/settings-100x30.tx
 const PROVIDERS: &str = include_str!("../../tests/fixtures/tui/providers-100x30.txt");
 const TASKS: &str = include_str!("../../tests/fixtures/tui/tasks-100x30.txt");
 const TASK: &str = include_str!("../../tests/fixtures/tui/task-100x30.txt");
+const WORKER: &str = include_str!("../../tests/fixtures/tui/worker-100x30.txt");
 
 fn workspace() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -923,4 +924,122 @@ fn a_history_artifact_the_store_cannot_give_back_refuses_the_store() {
     assert!(!rows[0].starts_with("ARTIFACT"), "{rows:#?}");
     let bar = app.frame(100, 30).text();
     assert!(bar.contains("! Store unreadable"), "{bar}");
+}
+
+/// What `af task show --json` records for one Worker across the Tasks of a Store, derived here
+/// without the pane: each reservation's invocation names its node and plan, the plan names its
+/// compiled graph, and the graph binds the node's slot to a Worker. Returns the STATE rows the
+/// pane must show.
+fn derived_state(state: &Path, task_ids: &[&str], worker: &str) -> Vec<String> {
+    let artifact = |id: &str| crate::task_execution::recorded_artifact(state, id).unwrap();
+    let (mut open, mut ok, mut failed, mut released, mut tokens) = (0, 0, 0, 0, 0_u128);
+    for task_id in task_ids {
+        let show = crate::task_execution::inspection_document(state, task_id, false);
+        let show = show.unwrap().unwrap();
+        let records: Vec<&serde_json::Value> = show["execution_records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| &entry["record"])
+            .collect();
+        for reserved in records.iter().filter(|record| record["kind"] == "reserved") {
+            let invocation = artifact(reserved["invocation_id"].as_str().unwrap());
+            let node = invocation["payload"]["node"].as_str().unwrap();
+            let plan = artifact(invocation["payload"]["plan_id"].as_str().unwrap());
+            let graph = artifact(plan["payload"]["compiled_graph_id"].as_str().unwrap());
+            let graph = &graph["payload"];
+            let Some(slot) = graph["nodes"][node]["operator"]["operator"]["slot"].as_str() else {
+                continue;
+            };
+            if graph["slots"][slot]["worker"] != worker {
+                continue;
+            }
+            let attempt = &reserved["attempt_id"];
+            let own: Vec<&&serde_json::Value> = records
+                .iter()
+                .filter(|record| record["attempt_id"] == *attempt)
+                .collect();
+            if own.iter().any(|record| record["kind"] == "released") {
+                released += 1;
+                continue;
+            }
+            match own.iter().find(|record| record["kind"] == "settled") {
+                None => open += 1,
+                Some(settled) if settled["result"]["kind"] == "succeeded" => ok += 1,
+                Some(_) => failed += 1,
+            }
+            let charges = own
+                .iter()
+                .filter_map(|record| record["charged_tokens"].as_str());
+            tokens += charges
+                .map(|n| n.parse::<u128>().unwrap())
+                .max()
+                .unwrap_or(0);
+        }
+    }
+    vec![
+        format!(
+            "attempts  reserved {open}  settled ok {ok}  settled failed {failed}  released {released}"
+        ),
+        format!("tokens    charged {tokens}"),
+    ]
+}
+
+#[test]
+fn the_workers_pane_golden_at_100x30_and_its_state_is_af_task_shows() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let mut app = app_at(&root, repo.clone());
+    let mut host = Recorder::default();
+    // Nothing is read until the folder opens, so no other pane's bar changes.
+    let folders: Vec<String> = app.tree.rows().iter().map(|row| row.text()).collect();
+    let at = folders
+        .iter()
+        .position(|row| row == "  v workers/")
+        .unwrap();
+    assert_eq!(folders[at + 1], "  v pipelines/", "{folders:#?}");
+    press(&mut app, &mut host, b"]]]]\r");
+    assert_eq!(app.breadcrumb(), "workers/");
+    let listed: Vec<String> = app
+        .panes
+        .workers
+        .items()
+        .into_iter()
+        .map(|i| i.label)
+        .collect();
+    assert_eq!(listed, ["fixture/evaluator", "fixture/implementer"]);
+    press(&mut app, &mut host, b"jj");
+    assert_eq!(app.breadcrumb(), "workers/fixture/implementer");
+    press(&mut app, &mut host, b"\r");
+    let frame = app.frame(100, 30).text();
+    assert_eq!(masked(&frame), WORKER, "{frame}");
+    // Every STATE number is what the Store's `af task show --json` documents record.
+    let tasks = ["pagination-cli", "pagination-unfinished"];
+    for (worker, down) in [
+        ("fixture/implementer", &b""[..]),
+        ("fixture/evaluator", b"k\r"),
+    ] {
+        press(&mut app, &mut host, down);
+        assert_eq!(app.breadcrumb(), format!("workers/{worker}"));
+        let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
+        let at = rows
+            .iter()
+            .position(|row| row.starts_with("attempts  "))
+            .unwrap();
+        assert_eq!(
+            rows[at..at + 2],
+            derived_state(&state, &tasks, worker),
+            "{rows:#?}"
+        );
+    }
+    // `y` copies the Worker's name; `gf` opens its declaration, since it commits no prompt.
+    press(&mut app, &mut host, b"\ty");
+    assert_eq!(host.sent, b"\x1b]52;c;Zml4dHVyZS9ldmFsdWF0b3I=\x07");
+    let declaration = repo.join(".af/task-packages/fixture/evaluator/worker.toml");
+    assert_eq!(app.pane().file(app.main.cursor), Some(declaration.clone()));
+    assert_eq!(app.node_file(), Some(declaration));
+    // At the 80x24 minimum the bar hides and the pane starts at the first column.
+    let small = app.frame(80, 24).text();
+    assert!(small.starts_with("WORKER  fixture/evaluator\n"), "{small}");
+    assert!(small.lines().all(|line| line.len() <= 80), "{small}");
 }

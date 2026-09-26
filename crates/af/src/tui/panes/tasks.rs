@@ -338,11 +338,11 @@ pub(crate) fn stages(
     Ok(stages)
 }
 
-fn array(value: &Value) -> &[Value] {
+pub(crate) fn array(value: &Value) -> &[Value] {
     value.as_array().map_or(&[], Vec::as_slice)
 }
 
-fn text(value: &Value) -> Result<&str, String> {
+pub(crate) fn text(value: &Value) -> Result<&str, String> {
     value
         .as_str()
         .ok_or_else(|| "a recorded field is not text".to_owned())
@@ -501,7 +501,7 @@ fn stage_name(node: &str) -> String {
 /// never changes, and neither does a finished Task. Both are keyed by the Store's directory as
 /// well, so one Store's reads never stand in for another's, even for a shared artifact id.
 #[derive(Clone, Default)]
-struct Cache {
+pub(crate) struct Cache {
     nodes: BTreeMap<(PathBuf, String), Invoked>,
     finished: BTreeMap<(PathBuf, String), Summary>,
 }
@@ -515,7 +515,7 @@ pub(crate) struct Invoked {
 }
 
 /// The node and plan of an invocation artifact, or of the invocation an output answers.
-fn node_of(dir: &Path, id: &str, cache: &mut Cache) -> Result<Invoked, String> {
+pub(crate) fn node_of(dir: &Path, id: &str, cache: &mut Cache) -> Result<Invoked, String> {
     let key = (dir.to_path_buf(), id.to_owned());
     if let Some(invoked) = cache.nodes.get(&key) {
         return Ok(invoked.clone());
@@ -626,7 +626,7 @@ pub(crate) fn refusal_of(dir: &Path) -> Option<String> {
 }
 
 /// A directory that exists but cannot be listed is refused too: it may hold anything.
-fn not_a_store(dir: &Path) -> Option<String> {
+pub(crate) fn not_a_store(dir: &Path) -> Option<String> {
     let unreadable = |error: std::io::Error| Some(format!("{}: {error}", dir.display()));
     if std::fs::symlink_metadata(dir).is_ok() && std::fs::metadata(dir).is_err() {
         return Some(format!("{} is a link to nothing", dir.display()));
@@ -917,9 +917,9 @@ fn refuse(stores: &mut [Store], dir: &Path, task_id: &str, error: &str) {
 
 /// One Task state directory a scope reads.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct Target {
-    dir: PathBuf,
-    shown: String,
+pub(crate) struct Target {
+    pub(crate) dir: PathBuf,
+    pub(crate) shown: String,
     /// The repository group the user scope lists it under: the directory's opaque name.
     repo: Option<String>,
 }
@@ -927,7 +927,7 @@ struct Target {
 /// The Task state directories a scope reads, or why the scope names none: the project scope
 /// reads the directory `af task` resolves for the repository without `--state`, and the user
 /// scope every repository's.
-fn targets(scope: &Scope) -> Result<Vec<Target>, String> {
+pub(crate) fn targets(scope: &Scope) -> Result<Vec<Target>, String> {
     let Some(root) = &scope.state else {
         return Err("no Task state: neither XDG_STATE_HOME nor HOME is set".to_owned());
     };

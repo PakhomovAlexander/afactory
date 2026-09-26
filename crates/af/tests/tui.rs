@@ -1,6 +1,7 @@
 //! Bare `af`: help and exit 2 on a pipe, the browser on a terminal. The browser runs in a real
 //! pseudo-terminal at 100x30 and is driven key by key; its Pipelines pane is compared line for
-//! line with what `af task plan` and `af task explain --tree` print for the same Task file.
+//! line with what `af task plan` and `af task explain --tree` print for the same Task file, and
+//! its Tasks and Workers panes with what `af task show --json` records.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -667,4 +668,141 @@ fn the_tasks_pane_at_80x24_on_a_pseudo_terminal() {
     assert!(lines[23].starts_with("NORMAL"), "{}", screen.text());
     browser.keys(b":q\r");
     assert_eq!(browser.exit_code(), 0);
+}
+
+/// One recorded artifact, read from the Task state's content-addressed objects.
+fn recorded(state: &Path, id: &str) -> serde_json::Value {
+    let hex = id.trim_start_matches("sha256:");
+    let path = state.join("cas/objects").join(&hex[..2]).join(&hex[2..]);
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
+/// The STATE counts of `worker` as the `af task show --json` document of `show` records them:
+/// each reservation's invocation names its node and plan, the plan its compiled graph, and the
+/// graph the Worker its slot binds.
+fn attempts_of(show: &serde_json::Value, state: &Path, worker: &str) -> String {
+    let records: Vec<&serde_json::Value> = show["execution_records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| &entry["record"])
+        .collect();
+    let (mut open, mut ok, mut failed, mut released) = (0, 0, 0, 0);
+    for reserved in records.iter().filter(|record| record["kind"] == "reserved") {
+        let invocation = recorded(state, reserved["invocation_id"].as_str().unwrap());
+        let node = invocation["payload"]["node"].as_str().unwrap();
+        let plan = recorded(state, invocation["payload"]["plan_id"].as_str().unwrap());
+        let graph = recorded(
+            state,
+            plan["payload"]["compiled_graph_id"].as_str().unwrap(),
+        );
+        let graph = &graph["payload"];
+        let slot = &graph["nodes"][node]["operator"]["operator"]["slot"];
+        let Some(slot) = slot.as_str() else {
+            continue;
+        };
+        if graph["slots"][slot]["worker"] != worker {
+            continue;
+        }
+        let own = |kind: &str| {
+            let attempt = &reserved["attempt_id"];
+            let found = records
+                .iter()
+                .find(|record| record["attempt_id"] == *attempt && record["kind"] == kind);
+            found.copied()
+        };
+        match (own("released"), own("settled")) {
+            (Some(_), _) => released += 1,
+            (None, None) => open += 1,
+            (None, Some(settled)) if settled["result"]["kind"] == "succeeded" => ok += 1,
+            (None, Some(_)) => failed += 1,
+        }
+    }
+    format!(
+        "attempts  reserved {open}  settled ok {ok}  settled failed {failed}  released {released}"
+    )
+}
+
+/// The Workers pane on a real pseudo-terminal at 100x30 and at the 80x24 minimum: the folder
+/// lists the hub's Task Worker packages once opened, and one Worker's STATE counts are those
+/// `af task show --json` records for the Task that ran it.
+#[test]
+fn the_workers_pane_shows_the_attempts_af_task_show_json_records() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub_with_a_task(&root, &home);
+    let shown = af(&repo, &home, &["task", "show", "pagination-cli", "--json"]);
+    assert!(shown.status.success());
+    let show: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let local = home.join("state/af/task/local");
+    let mut stores = std::fs::read_dir(&local).unwrap();
+    let state = stores.next().unwrap().unwrap().path();
+    let expected = attempts_of(&show, &state, "fixture/implementer");
+    assert_eq!(
+        expected,
+        "attempts  reserved 0  settled ok 1  settled failed 0  released 0"
+    );
+    for (rows, columns) in [(ROWS, COLS), (24, 80)] {
+        let mut browser = Browser::launch_sized(&repo, &home, rows, columns);
+        let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
+        browser.wait_for("the project settings", ready);
+        let narrow = columns < 90;
+        if narrow {
+            // The bar starts hidden below 90 columns; <C-b> shows it.
+            browser.keys(b"\x02");
+        }
+        // ]] twice reaches workers/; opening it lists the Worker packages HEAD commits.
+        browser.keys(b"]]]]");
+        browser.keys(b"\r");
+        let listed = |screen: &Screen| {
+            let bar = bar_rows(screen);
+            bar.contains(&"      fixture/evaluator".to_owned())
+                && bar.contains(&"      fixture/implementer".to_owned())
+        };
+        browser.wait_for("the Workers in the bar", listed);
+        browser.keys(b"jj");
+        browser.keys(b"\r");
+        if narrow {
+            // <C-b> hides the bar again, so the pane starts at the first column.
+            browser.keys(b"\x02");
+        }
+        let left = if narrow { 0 } else { 28 };
+        let main = |screen: &Screen| -> Vec<String> {
+            let lines = screen.lines();
+            let main = lines.iter().map(|line| line.get(left..).unwrap_or(""));
+            main.map(str::to_owned).collect()
+        };
+        let opened = |screen: &Screen| {
+            let main = main(screen);
+            main.first()
+                .is_some_and(|line| line == "WORKER  fixture/implementer")
+                && main.iter().any(|line| line.starts_with("attempts  "))
+        };
+        let screen = browser.wait_for("the Worker's pane", opened);
+        let text = screen.text();
+        let lines = screen.lines();
+        assert_eq!(lines.len(), rows);
+        assert!(lines.iter().all(|line| line.len() <= columns), "{text}");
+        let main = main(&screen);
+        let line = |prefix: &str| {
+            let found = main.iter().find(|line| line.starts_with(prefix));
+            found
+                .unwrap_or_else(|| panic!("no {prefix} line on:\n{text}"))
+                .clone()
+        };
+        assert_eq!(line("IDENTITY "), "IDENTITY  worker.toml at HEAD");
+        assert_eq!(line("name "), "name      fixture/implementer");
+        assert_eq!(line("roles "), "roles     implement");
+        assert_eq!(line("attempts "), expected, "{text}");
+        assert_eq!(
+            line("tokens "),
+            format!(
+                "tokens    charged {}",
+                show["chargeable_tokens"].as_str().unwrap()
+            )
+        );
+        assert!(lines[rows - 1].starts_with("NORMAL"), "{text}");
+        browser.keys(b":q\r");
+        assert_eq!(browser.exit_code(), 0);
+    }
 }
