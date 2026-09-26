@@ -23,6 +23,19 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   under a top-level name the source did not hold, and new top-level dotfiles
   (`SealedSandbox::capture_snapshot_where`). A writer without `execute-checks` is unchanged. The
   kernel's `kernel/implementer` declares it and formats, lints and tests before replying.
+- The browser's Tasks pane (ADR-0121, `docs/design/tui.md` package M3) lists the scope's Tasks
+  under `running/`, `awaiting approval/`, `done/` and `failed/`, newest first, as
+  `task-id  outcome  progress%`. The user scope adds one level per repository's Task state. A
+  Store the binary cannot read is an error row naming its directory. One Task's pane shows TASK,
+  PLAN and SNAP lines, one PROGRESS row per stage of the plan's graph order (`[ok]`, `[..]` with
+  its attempt, `[!!]`, `[  ]`, with recorded wall and charged tokens), the TOKENS and TIME totals,
+  and one HISTORY row per event. Every value comes from `af task list --json` and the
+  `af task explain --json` document (`af task show --json` with the plan and its graph), or from an
+  artifact they name. A running opened Task is read again about once a second off the key loop.
+  `Enter` on a HISTORY row shows its artifact, `p` opens the Task's pipeline, `y` yanks the Task
+  id and `R` reads again. The `af task show` builder is split from its printer, and
+  `default_task_state` is the one spelling of the default `--state`. No `--json` document
+  changes.
 
 ## [0.9.0-rc.7] - 2026-09-24
 
@@ -31,7 +44,7 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 Committed `.af/` policy keeps working as is; `execute-checks` on a review Worker is opt-in.
 
 ### Changes
-
+ Stage progress counts only records of the Task's current plan, so a refresh or a Review continuation that reuses node names starts from nothing; a dynamic Scatter's completion settles its parent; an invocation without a reserved Attempt is not shown running; a finished Task's elapsed and wall time end at its `finished` transition; a Task the Store lists but the pane cannot inspect refuses the Store with the cause instead of being grouped by a partial summary. Opening a Task that can no longer be inspected refuses its Store the same way; a HISTORY row opens the artifact its change is about by change kind (a revocation, not the decision; a report, not an event id); an existing state directory that is not a Task Store, or one the process may not read, is refused, never listed as empty (`task_execution::store_present`), a dangling `events.sqlite` link included. A load or `R` inspects every listed Task again rather than reusing a finished Task's cached summary. A state directory that exists but cannot be listed is refused; an opened Task awaiting approval is read live too, since the CLI may start it; `p` opens the package the committed catalog pins under the Task's Pipeline name at a fresh read of `HEAD`, never another file declaring that name; a Store refused on a live read closes its opened Task. A load or `R` re-resolves every recorded artifact as well; PROGRESS counts a failed stage only once no Attempt is left for it; `p` is refused when `HEAD` cannot be read; a refreshed Task's time ends at its last finish; the bar groups a Task by the phase its inspection read; opening another Task drops the previous one's live read; the user scope reads a symlinked Task state directory and refuses a link to nothing. A bar row's outcome and charge come from the same inspection read as its group, and a Store refused on a live read also closes an artifact opened from the Task's HISTORY. A reservation released before dispatch is not counted as an Attempt; a stage's charge takes an Attempt's highest recorded charge, a usage observation included even when it arrives after the settlement; a failed report of an unfinished Task leaves a stage with Attempts left open; a record newer than the last run report decides its stage, so a retry after a failed report shows; opening a Task rebuilds its bar row from the same read as its detail; cached summaries and artifact lookups are kept per Store, so one Store's reads never stand in for another's; a run report not superseded by newer records decides its stage over an older success (a later suppression shows skipped); `crates/af/tests/tui.rs` also drives the Tasks pane at 80x24 on a pseudo-terminal; `p` works again once `HEAD` reads again after a failure; the TASK line cuts a long id before it hides the goal; a stage's latest settlement decides its mark (a newer failure after a success is failed); a node suppressed for a missing upstream stays open while the Task can still recover; a HISTORY artifact the Store cannot give back refuses the Store.
 - release: v0.9.0-rc.6 (#107)
 - Name the CLI crate after its binary: crates/af (#108)
 - Bump base64 from 0.22.1 to 0.23.1 (#103)

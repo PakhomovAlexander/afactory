@@ -12,6 +12,7 @@ use super::tree::Item;
 pub(crate) mod pipelines;
 pub(crate) mod providers;
 pub(crate) mod settings;
+pub(crate) mod tasks;
 
 /// One main-pane row.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -50,6 +51,8 @@ pub(crate) enum Effect {
     /// Copy the text to the terminal's clipboard with OSC 52.
     Yank(String),
     Refresh,
+    /// Open the named Pipeline in the Pipelines pane, when that pane lists it.
+    OpenPipeline(String),
 }
 
 pub(crate) trait Pane {
@@ -63,6 +66,20 @@ pub(crate) trait Pane {
 
     /// Show one entry, or the folder itself for `None`.
     fn open(&mut self, _item: Option<&str>) {}
+
+    /// The main pane shows another pane now; background reads for this one stop.
+    fn close(&mut self) {}
+
+    /// Whether a pane-local view, like an artifact opened from a row, covers the pane.
+    fn nested(&self) -> bool {
+        false
+    }
+
+    /// `q` or `Esc` on a pane-local view: close it, and return the row the cursor goes back
+    /// to; `None` when no such view is open.
+    fn back(&mut self) -> Option<usize> {
+        None
+    }
 
     /// What the main pane paints.
     fn rows(&self) -> &[Row];

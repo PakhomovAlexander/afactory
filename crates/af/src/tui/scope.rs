@@ -23,6 +23,9 @@ pub(crate) struct Scope {
     pub(crate) home: Option<PathBuf>,
     /// The machine-local Provider registry `af provider` reads.
     pub(crate) registry: Option<PathBuf>,
+    /// The XDG state root under which `af task` keeps every repository's default Task state;
+    /// `None` when neither `XDG_STATE_HOME` nor `HOME` names one.
+    pub(crate) state: Option<PathBuf>,
 }
 
 impl Scope {
@@ -55,6 +58,7 @@ impl Scope {
             config: config::load_machine()?,
             home: Some(home),
             registry: crate::providers::registry_location(),
+            state: crate::xdg_state_root().ok(),
         })
     }
 
@@ -65,6 +69,7 @@ impl Scope {
             config,
             home: config::home().ok(),
             registry: crate::providers::registry_location(),
+            state: crate::xdg_state_root().ok(),
         }
     }
 

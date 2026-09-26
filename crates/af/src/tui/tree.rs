@@ -27,6 +27,8 @@ impl Tab {
 pub(crate) enum NodeKind {
     Root,
     Folder(Tab),
+    /// A folding group a pane puts inside its folder, like the Tasks pane's `done/`.
+    Group(Tab),
     Item(Tab),
 }
 
@@ -38,6 +40,8 @@ pub(crate) struct Item {
     pub(crate) label: String,
     /// Discovered but not selectable, like an ambient Provider candidate.
     pub(crate) muted: bool,
+    /// `Some` for a group that folds, holding its entries; `None` for an entry.
+    pub(crate) children: Option<Vec<Item>>,
 }
 
 #[derive(Clone, Debug)]
@@ -63,13 +67,20 @@ impl Node {
     }
 
     fn item(tab: Tab, item: Item) -> Node {
+        let (kind, children) = match item.children {
+            Some(children) => {
+                let nodes = children.into_iter().map(|it| Node::item(tab, it));
+                (NodeKind::Group(tab), nodes.collect())
+            }
+            None => (NodeKind::Item(tab), Vec::new()),
+        };
         Node {
-            kind: NodeKind::Item(tab),
+            kind,
             id: item.id,
             label: item.label,
             muted: item.muted,
             folded: false,
-            children: Vec::new(),
+            children,
         }
     }
 }
@@ -123,13 +134,16 @@ impl Tree {
     }
 
     /// Replace one folder's entries, keeping the cursor on the node it was on when that node
-    /// is still there.
+    /// is still there, and every group folded that was folded.
     pub(crate) fn set_items(&mut self, tab: Tab, items: Vec<Item>) {
         let selected = self.selected();
         let wanted = NodeKind::Folder(tab);
         let folders = &mut self.root.children;
         if let Some(folder) = folders.iter_mut().find(|node| node.kind == wanted) {
+            let mut folded = Vec::new();
+            folded_groups(&folder.children, &mut folded);
             folder.children = items.into_iter().map(|it| Node::item(tab, it)).collect();
+            fold_groups(&mut folder.children, &folded);
         }
         let rows = self.rows();
         let same = |row: &Row| row.kind == selected.kind && row.id == selected.id;
@@ -196,14 +210,31 @@ impl Tree {
         }
     }
 
-    /// `zR` and `zM`: every folder open or closed. The scope root stays open, so the four
-    /// folders are always visible.
+    /// `zR` and `zM`: every folder and group open or closed. The scope root stays open, so
+    /// the four folders are always visible.
     pub(crate) fn fold_all(&mut self, folded: bool) {
         let selected = self.selected();
-        for folder in &mut self.root.children {
-            folder.folded = folded;
-        }
+        fold_every(&mut self.root.children, folded);
         self.focus(&selected.path);
+    }
+
+    /// Put the cursor on the node of `kind` and `id`, opening the folders around it; `false`
+    /// when no such node exists.
+    pub(crate) fn select(&mut self, kind: NodeKind, id: &str) -> bool {
+        let mut all = Vec::new();
+        preorder(&self.root, &mut Vec::new(), &mut all);
+        let found = all.into_iter().find(|(path, _)| {
+            let node = self.get(path);
+            node.kind == kind && node.id == id
+        });
+        let Some((path, _)) = found else {
+            return false;
+        };
+        for length in 0..path.len() {
+            self.node(&path[..length]).folded = false;
+        }
+        self.focus(&path);
+        true
     }
 
     /// `h`: close an open folder, otherwise step to the parent.
@@ -291,6 +322,14 @@ impl Tree {
         self.focus(path);
     }
 
+    fn get(&self, path: &[usize]) -> &Node {
+        let mut node = &self.root;
+        for index in path {
+            node = &node.children[*index];
+        }
+        node
+    }
+
     fn node(&mut self, path: &[usize]) -> &mut Node {
         let mut node = &mut self.root;
         for index in path {
@@ -317,6 +356,34 @@ fn parent(path: &[usize]) -> &[usize] {
     &path[..path.len().saturating_sub(1)]
 }
 
+/// The ids of every folded group under `nodes`.
+fn folded_groups(nodes: &[Node], folded: &mut Vec<String>) {
+    for node in nodes {
+        if node.folded && matches!(node.kind, NodeKind::Group(_)) {
+            folded.push(node.id.clone());
+        }
+        folded_groups(&node.children, folded);
+    }
+}
+
+fn fold_groups(nodes: &mut [Node], folded: &[String]) {
+    for node in nodes {
+        if matches!(node.kind, NodeKind::Group(_)) && folded.contains(&node.id) {
+            node.folded = true;
+        }
+        fold_groups(&mut node.children, folded);
+    }
+}
+
+fn fold_every(nodes: &mut [Node], folded: bool) {
+    for node in nodes {
+        if !matches!(node.kind, NodeKind::Item(_)) {
+            node.folded = folded;
+        }
+        fold_every(&mut node.children, folded);
+    }
+}
+
 fn is_folder(row: &Row) -> bool {
     matches!(row.kind, NodeKind::Folder(_))
 }
@@ -330,7 +397,7 @@ fn visit(node: &Node, depth: usize, path: &mut Vec<usize>, rows: &mut Vec<Row>) 
         muted: node.muted,
         fold: match node.kind {
             NodeKind::Item(_) => None,
-            NodeKind::Root | NodeKind::Folder(_) => Some(node.folded),
+            NodeKind::Root | NodeKind::Folder(_) | NodeKind::Group(_) => Some(node.folded),
         },
         path: path.clone(),
     });
@@ -362,6 +429,7 @@ mod tests {
             id: id.to_owned(),
             label: id.to_owned(),
             muted: false,
+            children: None,
         }
     }
 
@@ -491,6 +559,59 @@ mod tests {
         assert_eq!(selected(&tree), "codex-main");
         assert!(!tree.search("nothing", true));
         assert_eq!(selected(&tree), "codex-main");
+    }
+
+    fn group(id: &str, children: Vec<Item>) -> Item {
+        Item {
+            id: id.to_owned(),
+            label: format!("{id} ({})", children.len()),
+            muted: false,
+            children: Some(children),
+        }
+    }
+
+    #[test]
+    fn groups_fold_keep_their_folds_across_a_reread_and_select_opens_them() {
+        let mut tree = Tree::new("hub  (project)");
+        let tasks = || {
+            vec![
+                group("running/", vec![item("b")]),
+                group("done/", vec![item("a"), item("c")]),
+            ]
+        };
+        tree.set_items(Tab::Tasks, tasks());
+        let expected = [
+            "  v tasks/",
+            "    v running/ (1)",
+            "        b",
+            "    v done/ (2)",
+            "        a",
+            "        c",
+        ];
+        assert_eq!(texts(&tree)[4..], expected);
+        // `]]` stops at the four folders only.
+        tree.bottom();
+        tree.previous_folder();
+        assert_eq!(selected(&tree), "tasks/");
+        tree.move_by(3);
+        assert_eq!(selected(&tree), "done/ (2)");
+        assert_eq!(tree.selected().kind, NodeKind::Group(Tab::Tasks));
+        tree.fold_close();
+        assert_eq!(texts(&tree).len(), 8);
+        // A re-read keeps the group folded and the cursor on it.
+        tree.set_items(Tab::Tasks, tasks());
+        assert_eq!(texts(&tree)[7], "    > done/ (2)");
+        assert_eq!(selected(&tree), "done/ (2)");
+        // `select` opens the group around the entry it lands on.
+        assert!(tree.select(NodeKind::Item(Tab::Tasks), "c"));
+        assert_eq!(selected(&tree), "c");
+        assert_eq!(texts(&tree)[7], "    v done/ (2)");
+        assert!(!tree.select(NodeKind::Item(Tab::Tasks), "missing"));
+        // `zM` folds the groups too, and `zR` opens them.
+        tree.fold_all(true);
+        tree.fold_all(false);
+        tree.select(NodeKind::Folder(Tab::Tasks), "tasks");
+        assert_eq!(texts(&tree)[4..], expected);
     }
 
     #[test]
