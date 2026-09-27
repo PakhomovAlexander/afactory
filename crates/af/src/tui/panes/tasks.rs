@@ -1096,14 +1096,44 @@ impl TasksPane {
         let (_, task) = self.task(id)?;
         let summary = task.summary.as_ref().ok();
         let plan = summary.and_then(|summary| summary.plan_id.as_deref());
-        prefill(key, &task.task_id, plan, task.state())
+        self.verb(key, &task.task_id, plan, task.state())
     }
 
-    /// Every Task id this scope lists, once each and sorted: what the `:` line completes a
-    /// Task ID argument from.
+    /// `r` or `D` for a Task this pane lists. The user scope lists every repository's Stores,
+    /// but a handed-off command runs from the home directory and names a Task only by its id,
+    /// and the pane knows its repository only by the opaque state-directory name: no line it
+    /// could prefill would reach that Task, so it says where to press the key instead.
+    fn verb(
+        &self,
+        key: Key,
+        task_id: &str,
+        plan: Option<&str>,
+        state: State,
+    ) -> Option<Result<String, String>> {
+        let line = prefill(key, task_id, plan, state)?;
+        if self.user_scope() {
+            let Key::Char(pressed) = key else {
+                return Some(line);
+            };
+            return Some(Err(format!(
+                "{task_id} is listed from the user scope, which cannot name its repository: \
+                 :cd into that repository and press {pressed} there"
+            )));
+        }
+        Some(line)
+    }
+
+    /// The user scope lists Stores by repository; a project scope has one, its own.
+    fn user_scope(&self) -> bool {
+        self.stores.iter().any(|store| store.repo.is_some())
+    }
+
+    /// Every Task id this scope lists that a handed-off command can resolve, once each and
+    /// sorted: what the `:` line completes a Task ID argument from. That is the project
+    /// scope's own Store; a user-scope Task lives in a Store the command would not read.
     pub(crate) fn task_ids(&self) -> Vec<String> {
         let mut ids = Vec::new();
-        for store in &self.stores {
+        for store in self.stores.iter().filter(|store| store.repo.is_none()) {
             for task in store.tasks.iter().flatten() {
                 ids.push(task.task_id.clone());
             }
@@ -1435,7 +1465,7 @@ impl Pane for TasksPane {
             },
             Key::Char('r' | 'D') => {
                 let plan = detail.document["plan_id"].as_str();
-                match prefill(key, &detail.task_id, plan, detail.state()) {
+                match self.verb(key, &detail.task_id, plan, detail.state()) {
                     Some(line) => line.map(|line| Some(Effect::Prefill(line))),
                     None => Ok(None),
                 }

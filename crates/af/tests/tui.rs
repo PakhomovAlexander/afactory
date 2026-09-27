@@ -987,3 +987,24 @@ fn ctrl_c_stops_the_handed_off_command_not_the_browser() {
     browser.keys(b":q\r");
     assert_eq!(browser.exit_code(), 0);
 }
+
+/// A command that ends at once shows its own exit, every time. The hand-off also covers the
+/// race where such a command ends before its process group takes the terminal's foreground
+/// (the group is gone, and its exit is reported, not a failed hand-off); `af` starts too
+/// slowly for this test to reach that race on demand, so this guards the ordinary path.
+#[test]
+fn a_command_that_ends_at_once_still_shows_its_exit() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub(&root);
+    let mut browser = Browser::launch(&repo, &home);
+    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
+    browser.wait_for("project settings", ready);
+    let line = "--version";
+    for _ in 0..8 {
+        hand_off(&mut browser, line, "exit 0");
+        back_in_the_browser(&mut browser, &format!("af {line}: exit 0"));
+    }
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+}

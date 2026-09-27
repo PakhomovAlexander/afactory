@@ -70,7 +70,10 @@ The terminal is handed over in this order:
    It gives that group the terminal's foreground with `tcsetpgrp`, then sends the group
    `SIGCONT`. A child that touched the terminal before its group owned the foreground was
    stopped by `SIGTTIN` or `SIGTTOU`, and continues now. `<C-c>`, `<C-\>` and `<C-z>` reach
-   the child's group, never the browser.
+   the child's group, never the browser. A command may end before its group takes the
+   foreground, and then `tcsetpgrp` fails because the group is gone. The browser, which never
+   gave the foreground away, reaps that child and reports its own exit, not a failed hand-off;
+   only a child still running is killed as one.
 3. The browser waits with `waitpid(WUNTRACED)`. A child stopped by `<C-z>` is continued at once,
    because the browser has no job control and nothing else would resume it.
 4. When the child ends, the browser takes the foreground back with `SIGTTOU` blocked for that
@@ -90,11 +93,14 @@ already dependencies of `af`, with no `unsafe` code.
 After a hand-off the browser reads again everything the child may have changed:
 
 - the scope and the settings, as after an editor;
-- the Tasks, Workers and Providers panes, whether opened or not;
+- the Tasks, Workers and Providers panes, whether opened or not, as far as each has read
+  (below);
 - the opened pane and the pane behind the bar's selection.
 
 Providers are discovered again without the charged probe, which only `R` asks for. The Workers
-folder stays unread until it is first opened. What is opened stays opened, and the bar keeps its
+pane reads nothing until it is first opened, because its STATE scans every Task (ADR-0122). Once
+it has read, a hand-off reads it again whether it is opened or not. Until then there is nothing
+stale to read again, and its first open reads what the child left. What is opened stays opened, and the bar keeps its
 selection where the selected node still exists. A reload of the scope keeps the home directory,
 the Provider registry and the Task state root, because they come from the process environment
 and a child cannot change them. The status line then says `af LINE: exit N`. A non-zero exit,
@@ -108,7 +114,7 @@ visible subcommands of the command the earlier words name, and after `help` it o
 subcommands. The completion never uses a hand-written list of commands. When the command takes
 a Task ID as its first positional argument (`task_id`: `task run`, `show`, `explain`, `deliver`
 and the other `task` verbs declaring one), the ID completes from the Task IDs the Tasks pane
-lists for this scope. After a flag, or after a word that names no subcommand, nothing is
+lists for this scope, and only from a project scope's own Store (see Prefills). After a flag, or after a word that names no subcommand, nothing is
 guessed. One match is filled in, followed by a space. Several matches are listed on the status
 line.
 
@@ -124,6 +130,12 @@ the opened pane's legend lists them.
   left to type.
 - `D` on a running, awaiting or failed Task opens nothing. The status line says that only a
   verified Task can be delivered, and why this one is not.
+
+In the user scope the Tasks pane lists every repository's Store, but a handed-off command runs
+from the home directory and names a Task only by its ID. The pane knows a Store's repository
+only by its opaque state-directory name (ADR-0035), so no line it could prefill would reach that
+Task. There `r` and `D` open nothing, and the status line says to `:cd` into the Task's
+repository and press the key there; completion offers no Task ID.
 
 Neither verb submits. The user reads the line and presses Enter, or `Esc`. The `--confirm`
 value stays untyped because ADR-0031 makes delivery's Task-ID confirmation a deliberate human

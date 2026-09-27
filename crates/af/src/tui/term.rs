@@ -166,6 +166,16 @@ impl Host for Session {
         if grouped {
             let handed = termios::Pid::from_raw(raw).ok_or("the command has no process id")?;
             if let Err(error) = termios::tcsetpgrp(&self.tty, handed) {
+                // A fast command may have ended before its group could take the foreground:
+                // its group is gone, and what it did is its exit, not a failed hand-off. The
+                // browser never gave the foreground away, so nothing is taken back.
+                match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+                    Ok(WaitStatus::Exited(_, code)) => return Ok(Exit::Code(code)),
+                    Ok(WaitStatus::Signaled(_, signal, _)) => {
+                        return Ok(Exit::Signal(signal as i32));
+                    }
+                    _ => {}
+                }
                 let _ = signal::killpg(pid, Signal::SIGKILL);
                 let _ = wait_for(pid, grouped);
                 return Err(format!("handing the terminal to the command: {error}"));

@@ -1231,6 +1231,82 @@ fn a_hand_off_releases_first_reenters_after_and_reads_the_panes_again() {
     );
 }
 
+/// The Workers pane reads nothing until first opened (ADR-0122). Once it has read, a hand-off
+/// re-reads it whether it is opened or not; until then it stays unread, and its first open
+/// reads fresh.
+#[test]
+fn a_hand_off_rereads_a_workers_pane_that_has_read_even_when_not_opened() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo(&root);
+    let mut app = app_at(&root, repo.clone());
+    let mut host = Recorder::default();
+    let declaration = repo.join(".af/task-packages/fixture/implementer/worker.toml");
+    let edit = move || {
+        let text = std::fs::read_to_string(&declaration).unwrap();
+        std::fs::write(&declaration, format!("{text}# edited\n")).unwrap();
+    };
+    // Never opened: a hand-off leaves it unread.
+    host.child = Some(Box::new(edit.clone()));
+    press(&mut app, &mut host, b":task list\r");
+    assert!(app.panes.workers.items().is_empty(), "the scan stays lazy");
+    // Opened once, then another pane opened in its place.
+    press(&mut app, &mut host, b"]]]]\r");
+    assert_eq!(app.breadcrumb(), "workers/");
+    let label = |app: &App| -> Vec<String> {
+        app.panes
+            .workers
+            .items()
+            .into_iter()
+            .map(|item| item.label)
+            .collect()
+    };
+    assert_eq!(label(&app), ["fixture/evaluator", "fixture/implementer *"]);
+    press(&mut app, &mut host, b"gg\r");
+    assert_eq!(app.opened, Opened::Root);
+    // The child restores the declaration; the unopened Workers pane follows.
+    host.child = Some(Box::new(move || git(&repo, &["checkout", "--", "."])));
+    press(&mut app, &mut host, b":task list\r");
+    assert_eq!(app.opened, Opened::Root);
+    assert_eq!(label(&app), ["fixture/evaluator", "fixture/implementer"]);
+}
+
+/// The user scope lists every repository's Tasks, but a handed-off command runs from home and
+/// names a Task only by id: `r` and `D` say where to press them, and completion offers no id.
+#[test]
+fn a_user_scope_task_is_neither_prefilled_nor_completed() {
+    let (_temp, root) = temp_root();
+    let (_repo, _state) = hub_with_tasks(&root);
+    let mut scope = Scope::user().unwrap();
+    scope.home = Some(root.clone());
+    scope.state = Some(root.join("state"));
+    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let mut app = App::new(scope, None, Panes::new(providers));
+    app.frame(100, 30);
+    fn leaves(items: Vec<crate::tui::tree::Item>, found: &mut Vec<String>) {
+        for item in items {
+            match item.children {
+                Some(children) => leaves(children, found),
+                None => found.push(item.id),
+            }
+        }
+    }
+    let mut ids = Vec::new();
+    leaves(app.panes.tasks.items(), &mut ids);
+    let id = ids
+        .iter()
+        .find(|id| id.ends_with("/pagination-cli"))
+        .unwrap();
+    for key in ['r', 'D'] {
+        let refused = app.panes.tasks.bar_verb(id, Key::Char(key)).unwrap();
+        let why = refused.unwrap_err();
+        assert!(
+            why.contains("user scope") && why.contains(&format!("press {key} there")),
+            "{why}"
+        );
+    }
+    assert!(app.panes.tasks.task_ids().is_empty());
+}
+
 /// `<Tab>` completes subcommand names at every level from the clap definition itself.
 #[test]
 fn completion_comes_from_the_clap_definition() {
