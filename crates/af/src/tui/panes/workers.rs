@@ -222,10 +222,18 @@ fn discover(root: &Path) -> Result<Discovery, String> {
                 None
             };
             let mut drifted = Vec::new();
-            for file in [id.as_str(), prompt_path.as_str()] {
-                if differs(root, &commit, file) {
-                    drifted.push(file.to_owned());
-                }
+            if differs(root, &commit, id) {
+                drifted.push(id.clone());
+            }
+            // `git diff` ignores an untracked file: a prompt `HEAD` lacks differs when the
+            // working tree has one, a link included.
+            let prompt_drifts = if prompt.is_some() {
+                differs(root, &commit, &prompt_path)
+            } else {
+                std::fs::symlink_metadata(root.join(&prompt_path)).is_ok()
+            };
+            if prompt_drifts {
+                drifted.push(prompt_path.clone());
             }
             let pins = match kind {
                 Kind::Reviewer => &reviewers,

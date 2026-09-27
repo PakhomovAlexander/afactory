@@ -63,7 +63,8 @@ through the Pipelines pane's own helpers (`head`, `git`, `committed`, `differs`,
 - Sources come in that order, and entries within a source come by path. When more than one
   source has Workers, each source is a folding group named after its directory.
 - A declaration or prompt whose working-tree file differs from `HEAD` marks the bar label with
-  `*`, and the pane names the file. `HEAD` is what is shown.
+  `*`, and the pane names the file. `HEAD` is what is shown. A prompt `HEAD` does not commit
+  differs when the working tree has one, even untracked, since `git diff` does not see it.
 - A failed read of `HEAD` is shown above the last good entries of the same repository.
 - A scope change drops everything read for the old scope.
 - The user scope lists nothing and says that Workers belong to a project.

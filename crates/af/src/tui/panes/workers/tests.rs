@@ -196,6 +196,41 @@ fn a_working_tree_that_differs_from_head_is_marked_and_head_is_what_is_shown() {
 }
 
 #[test]
+fn a_prompt_only_the_working_tree_has_is_drift() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    worker(root, ".af/task-packages/w", "fixture/w");
+    commit_all(root, "a worker without its prompt");
+    let mut pane = WorkersPane::default();
+    pane.load(&scope(root)).unwrap();
+    pane.open(Some(".af/task-packages/w/worker.toml"));
+    assert_eq!(pane.items()[0].label, "fixture/w");
+    // An untracked prompt: `git diff` does not see it, the pane does.
+    let prompt = ".af/task-packages/w/instructions.md";
+    write(root, prompt, "Not committed yet.\n");
+    pane.open(Some(".af/task-packages/w/worker.toml"));
+    assert_eq!(pane.items()[0].label, "fixture/w *");
+    let rows = texts(pane.rows());
+    assert!(
+        rows[0].starts_with("working tree differs from HEAD in instructions.md:"),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.starts_with("This package commits no instructions.md")),
+        "HEAD is still what is shown: {rows:#?}"
+    );
+    // A link counts, even one to nothing.
+    std::fs::remove_file(root.join(prompt)).unwrap();
+    std::os::unix::fs::symlink("missing.md", root.join(prompt)).unwrap();
+    pane.open(Some(".af/task-packages/w/worker.toml"));
+    assert_eq!(pane.items()[0].label, "fixture/w *");
+    std::fs::remove_file(root.join(prompt)).unwrap();
+    pane.open(Some(".af/task-packages/w/worker.toml"));
+    assert_eq!(pane.items()[0].label, "fixture/w");
+}
+
+#[test]
 fn a_failed_read_of_head_keeps_the_last_entries_under_the_error() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
