@@ -157,6 +157,36 @@ branch and worktree. Retry the same explicitly confirmed Task with a new absent 
 worktree; the next attempt releases only Afactory's internal ownership ref and never removes the
 preserved target. Operator changes to an unsealed worktree are therefore never deleted.
 
+## Warm checks
+
+A code policy may declare a `[warm]` table
+([ADR-0123](adr/0123-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)):
+
+```toml
+[warm]
+build_cache = ["cargo_target"]
+caches = ["cargo"]      # optional: Cache Snapshots from machine policy
+max_bytes = 8589934592  # optional: the default, 8 GiB; at most 32 GiB
+```
+
+It grants a check one thing: a `CARGO_TARGET_DIR` that survives it. The directory is
+`$XDG_CACHE_HOME/af/task-build-cache/<project>/<toolchain>/cargo_target`, created with mode
+`0700` and keyed by the repository and by the toolchain the check resolves. That toolchain is
+the Snapshot's `rust-toolchain.toml`, `rustc -vV`, `cargo -vV`, the host triple, and the
+check's `PATH`, `LC_ALL` and `TZ`. A later check with the same key starts from the earlier
+build. A declared `caches` kind gives the check an offline `CARGO_HOME` from the machine's
+cache policy, as a Gate's `[gate] caches` do; that directory is materialized beside the check,
+never into the source. `[warm]` refuses a great deal. It never runs with
+`require_container = true`: such a policy is refused before any Worker starts. The directory
+never enters a Worker sandbox, a Snapshot or a delivered worktree, and its bytes never change a
+check's result. A check whose toolchain cannot be resolved, whose directory another check holds
+for 60 seconds, or whose directory is already above `max_bytes` runs cold and says why. A check
+that grows the directory past the bound is stopped and fails with `warm_cache_bound_exceeded`.
+The directory is then removed, never trimmed. This is candidate-built state on your machine,
+not isolation. `af task show` prints one line per warm check, such as
+`check kernel: 812345 ms, cargo_target warm 2147483648` or `cargo_target cold busy`. Deleting
+`$XDG_CACHE_HOME/af/task-build-cache` is always safe.
+
 ## Troubleshooting
 
 | Symptom | Meaning and action |

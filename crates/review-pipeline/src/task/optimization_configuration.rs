@@ -1319,6 +1319,7 @@ impl super::host::TaskEnvironment for OptimizationEnvironment {
                 bytes_available: prepared.snapshot.as_ref().map_or(0, |value| value.bytes),
                 lookup_ms,
                 materialization_ms,
+                evicted_bytes: None,
             }],
         };
         evidence.validate()?;

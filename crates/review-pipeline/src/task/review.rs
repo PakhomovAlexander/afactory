@@ -343,6 +343,21 @@ impl ReviewTaskDomain {
         self
     }
 
+    /// The checks this domain runs are the code domain's, so a `[warm] caches` kind resolves
+    /// through the same machine-local policy.
+    pub fn with_cache_source_resolver<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn(
+                review_sandbox::CacheKind,
+            ) -> Result<review_sandbox::CacheSource, review_sandbox::CacheError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.code = self.code.with_cache_source_resolver(resolver);
+        self
+    }
+
     // Every external domain boundary starts fresh. Keeping the operation guard alive
     // prevents another concurrent callback from sharing or clearing this operation's memo.
     fn begin_operation(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {

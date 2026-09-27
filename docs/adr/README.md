@@ -211,3 +211,5 @@ future readers need.
   documents](0121-show-recorded-tasks-in-the-browser.md)
 - [0122 — Show committed Workers and the Attempts their recorded plans
   bound](0122-show-committed-workers-and-their-recorded-attempts.md)
+- [0123 — Warm Task checks through a toolchain-keyed, bounded, machine-local
+  cache](0123-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)

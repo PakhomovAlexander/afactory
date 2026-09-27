@@ -259,6 +259,26 @@ pub fn materialize_cache(
     sandbox: &Sandbox,
     cas: &Cas,
 ) -> Result<CacheSnapshot, CacheError> {
+    materialize_cache_below(source, sandbox.root(), cas)
+}
+
+/// Materialize one requested cache below a Task check's private runtime directory. The check's
+/// source is a read-only materialization that never receives cache bytes, so the reserved
+/// `.af-cache/<kind>` layout lives beside `HOME` instead, and [`CacheKind::environment`] of the
+/// same directory points the check at it. The directory is discarded with the check.
+pub fn materialize_cache_into_runtime(
+    source: &CacheSource,
+    runtime: &Path,
+    cas: &Cas,
+) -> Result<CacheSnapshot, CacheError> {
+    materialize_cache_below(source, runtime, cas)
+}
+
+fn materialize_cache_below(
+    source: &CacheSource,
+    root: &Path,
+    cas: &Cas,
+) -> Result<CacheSnapshot, CacheError> {
     let started_unix_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis() as u64);
@@ -275,7 +295,7 @@ pub fn materialize_cache(
     }
     let preflight = preflight(source.kind, &source.source, source.limits)?;
     let lookup_ms = lookup_started.elapsed().as_millis() as u64;
-    let cache_root = sandbox.root().join(CACHE_ROOT);
+    let cache_root = root.join(CACHE_ROOT);
     if std::fs::symlink_metadata(&cache_root).is_ok() {
         return Err(cache_error(
             CacheErrorKind::MaterializationFailed,
@@ -294,7 +314,7 @@ pub fn materialize_cache(
             format!("normalizing sandbox cache root metadata: {error}"),
         )
     })?;
-    let target = sandbox.root().join(source.kind.relative_root());
+    let target = root.join(source.kind.relative_root());
 
     let materialization_started = std::time::Instant::now();
     let result = materialize_preflight(source, &preflight, &target, cas).map(|mut snapshot| {

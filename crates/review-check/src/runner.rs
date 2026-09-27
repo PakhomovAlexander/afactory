@@ -146,6 +146,13 @@ impl<'a> CheckRunner<'a> {
         self
     }
 
+    /// The exact environment a host-local check receives, in the order it is applied. A caller
+    /// that must run a probe under the check's own environment reads it here rather than
+    /// rebuilding it.
+    pub fn local_environment(&self) -> &[(String, String)] {
+        &self.local_env
+    }
+
     pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
         self.timeout = timeout;
         self

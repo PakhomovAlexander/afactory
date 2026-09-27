@@ -50,6 +50,12 @@ expanded tree, Claude/Codex workflow and the automation boundary.
 - A Worker's sandbox and a model Worker's tools derive from its captured effects alone. A review
   Worker that declares `execute-checks` gets a shell in an ephemeral-write clone that seals
   nothing back ([ADR-0118](adr/0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md)).
+- A code policy's `[warm]` table lets a `trusted_local` Task check reuse one machine-local,
+  toolchain-keyed build directory. The directory is bounded in bytes before, during and after
+  every check, and is removed rather than repaired. It is never inside a Worker sandbox, a
+  Snapshot or a delivered tree, and `require_container = true` refuses it. Warm or cold is
+  runtime evidence only
+  ([ADR-0123](adr/0123-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)).
 
 ## Worker effects: what `execute-checks` grants a reviewer
 

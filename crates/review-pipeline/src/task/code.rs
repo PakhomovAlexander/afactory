@@ -28,6 +28,10 @@ use super::host::TaskDomain;
 use super::source::{
     invocation_producer, seal_candidate, source_input, source_snapshot, validate_seal,
 };
+use super::warm_check::{
+    CacheSourceResolver, CodeWarmPolicy, ToolchainDeclaration, WARM_CACHE_BOUND_EXCEEDED,
+    WarmCheckHost, WarmSession,
+};
 use super::{TaskOperatorHost, TaskWorkOutput, envelope};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,6 +49,14 @@ pub struct CodeTaskPolicy {
     )]
     pub check_process_wall_ms: Option<u64>,
     pub require_container: bool,
+    /// The Warm Check Cache (ADR-0123). Absent, every check builds cold and the captured policy
+    /// is byte-identical to one written before the table existed.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub warm: Option<CodeWarmPolicy>,
 }
 
 impl CodeTaskPolicy {
@@ -70,6 +82,17 @@ impl CodeTaskPolicy {
             return Err(
                 "Code Task requires bounded named checks and at least one required verifier".into(),
             );
+        }
+        if let Some(warm) = &self.warm {
+            if self.require_container {
+                return Err(
+                    "Code policy declares [warm] together with require_container = true: a Warm \
+                     Check Cache is machine-local, candidate-built state that only trusted_local \
+                     checks may use, so a container policy refuses it"
+                        .into(),
+                );
+            }
+            warm.validate()?;
         }
         Ok(())
     }
@@ -201,6 +224,7 @@ pub struct CodeTaskDomain {
     policy_id: String,
     policy: CodeTaskPolicy,
     graph: CompiledTask,
+    warm: WarmCheckHost,
 }
 
 impl CodeTaskDomain {
@@ -232,7 +256,37 @@ impl CodeTaskDomain {
             policy_id: policy_id.into(),
             policy,
             graph,
+            warm: WarmCheckHost::default(),
         })
+    }
+
+    /// Resolve a `[warm] caches` kind through the machine's cache policy, as a Gate resolves
+    /// `[gate] caches`. Without a resolver a declared Cache Snapshot is unavailable and its check
+    /// does not run.
+    pub fn with_cache_source_resolver<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn(
+                review_sandbox::CacheKind,
+            ) -> Result<review_sandbox::CacheSource, review_sandbox::CacheError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.warm.resolver =
+            Some(std::sync::Arc::new(resolver) as std::sync::Arc<CacheSourceResolver>);
+        self
+    }
+
+    /// Keep warm build directories below `root` instead of `$XDG_CACHE_HOME/af/task-build-cache`.
+    pub fn with_task_build_cache_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.warm.root = Some(root.into());
+        self
+    }
+
+    /// How long a check waits for another holder of its warm directory before it runs cold.
+    pub fn with_task_build_cache_lock_wait(mut self, wait: Duration) -> Self {
+        self.warm.lock_wait = wait;
+        self
     }
 
     fn operator(&self, input: &TaskInvocationV1) -> Result<&TaskOperatorV1, String> {
@@ -301,11 +355,23 @@ impl CodeTaskDomain {
         attempt: &PreparedTaskAttempt,
         names: &BTreeSet<String>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> Result<(ArtifactInputV1, String), String> {
+    ) -> Result<(ArtifactInputV1, Vec<String>), String> {
         let source = input.inputs.get("source").ok_or("Check needs source")?;
-        let (snapshot_id, _, manifest) = source_snapshot(cas, source)?;
+        let (snapshot_id, snapshot, manifest) = source_snapshot(cas, source)?;
+        let mut session = match &self.policy.warm {
+            Some(warm) => Some(WarmSession::new(
+                &self.warm,
+                warm,
+                review_source_git::task::read_origin(cas, &snapshot.origin_id)?.repository_id(),
+                ToolchainDeclaration::from_manifest(cas, &manifest)?,
+            )),
+            None => None,
+        };
         let mut checks = BTreeMap::new();
         let mut spans = Vec::new();
+        // Under [warm] every check's span travels with its own cache observations, so a reader
+        // never has to guess which check an observation belongs to.
+        let mut warm_evidence = Vec::new();
         for name in names {
             let definition = self
                 .policy
@@ -332,13 +398,58 @@ impl CodeTaskDomain {
                 .with_env(
                     "XDG_CACHE_HOME",
                     runtime.path().join("cache").display().to_string(),
-                )
-                .with_env(
+                );
+            let mut prepared = match session.as_mut() {
+                Some(session) if remaining > 0 => Some(session.prepare(
+                    cas,
+                    runner.local_environment(),
+                    sandbox.root(),
+                    runtime.path(),
+                    cancellation,
+                    Duration::from_millis(remaining),
+                )?),
+                _ => None,
+            };
+            // Preparation — the toolchain probe, the lock wait, a Cache Snapshot copy — spent
+            // Attempt time. The check runs against what is left now, not what was left before.
+            let prepared_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_millis() as u64;
+            let remaining = attempt
+                .reservation()
+                .deadline_unix_ms
+                .saturating_sub(prepared_at)
+                .min(remaining);
+            let runner = runner.with_timeout(Duration::from_millis(remaining));
+            let exhausted_preparing = prepared.is_some() && remaining == 0;
+            let runner = match &prepared {
+                None => runner.with_env(
                     "CARGO_TARGET_DIR",
                     runtime.path().join("target").display().to_string(),
-                );
-            let (mut result, timing) = if remaining > 0 {
-                let execution = runner.run_observed(definition);
+                ),
+                Some(prepared) => prepared
+                    .environment
+                    .iter()
+                    .fold(runner, |runner, (key, value)| {
+                        runner.with_env(key.clone(), value.clone())
+                    }),
+            };
+            let refusal = prepared.as_ref().and_then(|p| p.refusal.clone());
+            let mut exceeded = None;
+            let (mut result, timing) = if remaining > 0 && refusal.is_none() {
+                let execution = match (
+                    session.as_ref(),
+                    prepared.as_ref().and_then(|p| p.directory.as_ref()),
+                ) {
+                    (Some(session), Some(directory)) => {
+                        let (execution, over) =
+                            session.run_monitored(runner, definition, directory, cancellation);
+                        exceeded = over;
+                        execution
+                    }
+                    _ => runner.run_observed(definition),
+                };
                 (
                     execution.result,
                     Some((execution.started_unix_ms, execution.elapsed_ms)),
@@ -349,7 +460,13 @@ impl CodeTaskDomain {
                         name: name.clone(),
                         status: CheckStatus::NotRun,
                         exit_code: None,
-                        reason: Some("Task check deadline expired".into()),
+                        reason: Some(refusal.unwrap_or_else(|| {
+                            if exhausted_preparing {
+                                "Task check deadline expired during warm preparation".into()
+                            } else {
+                                "Task check deadline expired".into()
+                            }
+                        })),
                         program: Some(definition.command.program.clone()),
                         args: definition.command.args.clone(),
                         stdout: None,
@@ -359,24 +476,59 @@ impl CodeTaskDomain {
                     None,
                 )
             };
-            if let Some((started_unix_ms, elapsed_ms)) = timing {
-                let span_id = cas
-                    .put_json(&json!([
-                        attempt.task_id(),
-                        attempt.id(),
-                        input.node,
-                        name,
+            if exceeded.is_some() {
+                result.status = CheckStatus::Failed;
+                result.exit_code = None;
+                result.reason = Some(WARM_CACHE_BOUND_EXCEEDED.into());
+            }
+            let mut observations = Vec::new();
+            if let (Some(session), Some(prepared)) = (session.as_ref(), prepared.take()) {
+                observations = prepared.observations;
+                if let Some(evicted) = session.finish(prepared.directory, exceeded)? {
+                    // One declared kind, one observation: the eviction after the check lands on
+                    // the same record that measured the directory before it.
+                    let target = observations
+                        .iter_mut()
+                        .find(|observation| {
+                            observation.eligible && observation.kind == "cargo_target"
+                        })
+                        .ok_or("Warm check evicted a directory it never observed")?;
+                    target.evicted_bytes = Some(evicted);
+                }
+            }
+            let span = match timing {
+                Some((started_unix_ms, elapsed_ms)) => {
+                    let span_id = cas
+                        .put_json(&json!([
+                            attempt.task_id(),
+                            attempt.id(),
+                            input.node,
+                            name,
+                            started_unix_ms,
+                            elapsed_ms
+                        ]))
+                        .map_err(|e| e.to_string())?;
+                    Some(TaskRuntimeSpanV1 {
+                        span_id,
+                        kind: TaskRuntimeSpanKindV1::Check,
+                        label: name.clone(),
                         started_unix_ms,
-                        elapsed_ms
-                    ]))
-                    .map_err(|e| e.to_string())?;
-                spans.push(TaskRuntimeSpanV1 {
-                    span_id,
-                    kind: TaskRuntimeSpanKindV1::Check,
-                    label: name.clone(),
-                    started_unix_ms,
-                    elapsed_ms,
-                });
+                        elapsed_ms,
+                    })
+                }
+                None => None,
+            };
+            if session.is_some() {
+                let caches = observations
+                    .into_iter()
+                    .map(|observation| {
+                        observation
+                            .record(cas, [attempt.task_id(), attempt.id(), &input.node, name])
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                warm_evidence.push((span, caches));
+            } else {
+                spans.extend(span);
             }
             let sealed = sandbox.seal().map_err(|e| e.to_string())?;
             if !sealed.unchanged() {
@@ -413,27 +565,46 @@ impl CodeTaskDomain {
             )
             .map_err(|e| e.to_string())?
             .0;
-        let evidence = TaskRuntimeEvidenceV1 {
+        let evidence = |spans: Vec<TaskRuntimeSpanV1>, caches| TaskRuntimeEvidenceV1 {
             task_id: attempt.task_id().into(),
             attempt_id: attempt.id().into(),
             node: input.node.clone(),
             context_id: attempt.context_id().into(),
             spans,
-            caches: vec![],
+            caches,
         };
-        evidence.validate()?;
-        let evidence_id = cas
-            .put_artifact(
-                TASK_RUNTIME_EVIDENCE_V1,
-                invocation_producer(cas, input, Some(attempt))?,
-                std::iter::once(attempt.context_id().to_owned())
-                    .chain(evidence.spans.iter().map(|span| span.span_id.clone()))
-                    .collect(),
-                Some(snapshot_id.clone()),
-                serde_json::to_value(evidence).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?
-            .0;
+        let groups = if session.is_some() {
+            warm_evidence
+                .into_iter()
+                .filter(|(span, caches)| span.is_some() || !caches.is_empty())
+                .map(|(span, caches)| evidence(span.into_iter().collect(), caches))
+                .collect::<Vec<_>>()
+        } else {
+            vec![evidence(spans, vec![])]
+        };
+        if groups.is_empty() {
+            evidence(vec![], vec![]).validate()?;
+        }
+        let mut evidence_ids = Vec::with_capacity(groups.len());
+        for evidence in groups {
+            evidence.validate()?;
+            let evidence_id = cas
+                .put_artifact(
+                    TASK_RUNTIME_EVIDENCE_V1,
+                    invocation_producer(cas, input, Some(attempt))?,
+                    std::iter::once(attempt.context_id().to_owned())
+                        .chain(evidence.spans.iter().map(|span| span.span_id.clone()))
+                        .chain(evidence.caches.iter().flat_map(|cache| {
+                            [cache.observation_id.clone(), cache.source_digest.clone()]
+                        }))
+                        .collect(),
+                    Some(snapshot_id.clone()),
+                    serde_json::to_value(evidence).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?
+                .0;
+            evidence_ids.push(evidence_id);
+        }
         Ok((
             ArtifactInputV1 {
                 artifact_ids: vec![id],
@@ -441,7 +612,7 @@ impl CodeTaskDomain {
                 cardinality: PortCardinality::One,
                 snapshot_id: Some(snapshot_id),
             },
-            evidence_id,
+            evidence_ids,
         ))
     }
 
@@ -895,14 +1066,14 @@ impl TaskOperatorHost for CodeTaskDomain {
                 seal_candidate(cas, input)?,
             )])),
             TaskOperatorV1::Check { checks } => {
-                let (receipt, evidence_id) = self.checks(
+                let (receipt, evidence_ids) = self.checks(
                     cas,
                     input,
                     attempt.ok_or("Check has no started Attempt")?,
                     checks,
                     cancellation,
                 )?;
-                raw_artifact_ids.push(evidence_id);
+                raw_artifact_ids.extend(evidence_ids);
                 Ok(BTreeMap::from([("result".into(), receipt)]))
             }
             TaskOperatorV1::Accept {} => self.accept(cas, input),

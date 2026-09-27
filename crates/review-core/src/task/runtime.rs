@@ -42,7 +42,8 @@ impl TaskRuntimeSpanV1 {
 }
 
 /// Dependency bytes AF prepared for a sandbox. It records availability and host time only,
-/// never a tool or provider cache result.
+/// never a tool or provider cache result. A Warm Check Cache observation that was not eligible
+/// names its reason after the kind, as in `cargo_target:busy` (ADR-0123).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskCacheObservationV1 {
@@ -59,20 +60,40 @@ pub struct TaskCacheObservationV1 {
     pub bytes_available: u64,
     pub lookup_ms: u64,
     pub materialization_ms: u64,
+    /// Bytes a warm layer removed once this check ended above its byte bound (ADR-0123): the
+    /// same observation records availability before the check and eviction after it, so one
+    /// declared kind yields exactly one observation per check. Absent when nothing was evicted.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    pub evicted_bytes: Option<u64>,
 }
 
 impl TaskCacheObservationV1 {
     pub fn validate(&self) -> Result<(), String> {
         require(
             is_digest(&self.observation_id)
-                && is_name(&self.kind)
+                && is_cache_kind(&self.kind)
                 && is_digest(&self.source_digest)
                 && self.toolchain_id.as_deref().is_none_or(is_digest)
                 && self.bytes_available <= crate::json::SAFE_INTEGER_MAX as u64
                 && self.lookup_ms <= crate::json::SAFE_INTEGER_MAX as u64
-                && self.materialization_ms <= crate::json::SAFE_INTEGER_MAX as u64,
+                && self.materialization_ms <= crate::json::SAFE_INTEGER_MAX as u64
+                && self
+                    .evicted_bytes
+                    .is_none_or(|bytes| bytes <= crate::json::SAFE_INTEGER_MAX as u64),
             "Task cache evidence requires bounded identity and measurements",
         )
+    }
+}
+
+/// A cache kind, optionally followed by one `:reason` naming why it was not eligible.
+pub fn is_cache_kind(value: &str) -> bool {
+    match value.split_once(':') {
+        Some((kind, reason)) => is_name(kind) && is_name(reason),
+        None => is_name(value),
     }
 }
 

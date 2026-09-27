@@ -1328,6 +1328,7 @@ dependencies = [
  "review-config",
  "review-core",
  "review-graph",
+ "review-process",
  "review-runner",
  "review-runner-claude",
  "review-runner-codex",

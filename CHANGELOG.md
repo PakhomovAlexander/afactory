@@ -16,6 +16,20 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
+- Warm Task checks (ADR-0123, `docs/design/research-pipelines.md` package R1). A code policy
+  may declare `[warm] build_cache = ["cargo_target"]`, `caches = ["cargo"]` and `max_bytes`
+  (default 8 GiB, at most 32 GiB). A `trusted_local` Task check then builds into
+  `$XDG_CACHE_HOME/af/task-build-cache/<project>/<toolchain>/cargo_target`. The toolchain key
+  digests the Snapshot's `rust-toolchain.toml`, `rustc -vV`, `cargo -vV`, the host triple and
+  the check's fixed environment. The directory has one exclusive lock; a check that waits 60 s
+  for it runs cold. It is bounded before, during (`warm_cache_bound_exceeded`) and after every
+  check, and removed rather than repaired. Declared Cache Snapshots bind `CARGO_HOME` from the
+  check's runtime directory. `[warm]` with `require_container = true` is refused at load. Each
+  warm check records its own `TaskRuntimeEvidence@1` with one cache observation per kind, whose
+  `kind` may carry a `:reason` suffix. `af task show` prints `check <name>: <ms> ms, cargo_target
+  warm <bytes>` or `cold <reason>`. `schemas/code-task-policy-v1.json` is new. `scripts/verify.sh`
+  honours a `CARGO_TARGET_DIR` that is already set. A policy without `[warm]` is captured, run
+  and shown exactly as before.
 - Give a source-writing Worker that declares `execute-checks` a shell (ADR-0120): `worker_access`
   maps `write-source` plus `execute-checks` to `WorkerAccess::WriteSourceWithShell`, the Claude
   adapter grants `Read,Glob,Grep,Edit,Write,Bash` and Codex runs `workspace-write`, and the shell's

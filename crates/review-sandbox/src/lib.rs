@@ -33,6 +33,7 @@ pub mod build_cache;
 pub mod cache;
 pub mod container;
 pub mod seal;
+pub mod task_build_cache;
 pub mod workspace;
 
 pub use build_cache::{
@@ -41,10 +42,15 @@ pub use build_cache::{
 };
 pub use cache::{
     CacheEnvironment, CacheError, CacheErrorKind, CacheKind, CacheLimits, CacheMaterialization,
-    CacheSnapshot, CacheSource, materialize_cache, remove_materialized_caches,
+    CacheSnapshot, CacheSource, materialize_cache, materialize_cache_into_runtime,
+    remove_materialized_caches,
 };
 pub use container::{Availability, ContainerProvider};
 pub use seal::{MutationSet, SealedSandbox};
+pub use task_build_cache::{
+    TaskBuildCacheLock, WarmDirectory, default_task_build_cache_root, directory_bytes,
+    lock_task_build_cache,
+};
 pub use workspace::{
     RecordedPreparation, WorkspaceError, WorkspacePreparation, WorkspaceRoot,
     default_workspace_cache_root, prepare_workspace, workspace_id,

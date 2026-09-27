@@ -1783,7 +1783,8 @@ fn captured_domain(
 ) -> Result<Box<dyn TaskDomain>, String> {
     match profile {
         TaskKindProfile::Implementation if authority.review_policy_id.is_none() => Ok(Box::new(
-            CodeTaskDomain::captured(cas, authority.code_policy_id()?, graph)?,
+            CodeTaskDomain::captured(cas, authority.code_policy_id()?, graph)?
+                .with_cache_source_resolver(crate::caches::resolve_kind),
         )),
         TaskKindProfile::Review
         | TaskKindProfile::Implementation
@@ -1797,7 +1798,8 @@ fn captured_domain(
                     .ok_or("Review Task lost its captured policy")?,
                 graph,
             )?
-            .with_review_task(profile == TaskKindProfile::Review),
+            .with_review_task(profile == TaskKindProfile::Review)
+            .with_cache_source_resolver(crate::caches::resolve_kind),
         )),
         TaskKindProfile::Document => Ok(Box::new(DocumentTaskDomain::captured(
             cas,
@@ -2280,6 +2282,9 @@ fn present_with_format(
                 ),
             }
         }
+        for line in check_cache_lines(&value) {
+            println!("{line}");
+        }
         if let Some(last) = reports.last().and_then(|r| r["diagnostics"].as_object()) {
             for (node, diagnostic) in last {
                 if let Some(message) = diagnostic["message"].as_str() {
@@ -2319,6 +2324,73 @@ fn present_with_format(
         TaskAcceptanceV1::Unsatisfied => 3,
         TaskAcceptanceV1::Inconclusive => 4,
     }))
+}
+
+/// One line per check that recorded Warm Check Cache observations (ADR-0123): its host-observed
+/// elapsed time and, per declared kind, `warm <bytes>` or `cold <reason>`. A check without
+/// observations prints nothing, so a Task whose policy has no `[warm]` reads as before.
+fn check_cache_lines(inspection: &serde_json::Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    for observation in inspection["runtime_observations"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let record = &observation["record"];
+        let Some(caches) = record["caches"].as_array().filter(|c| !c.is_empty()) else {
+            continue;
+        };
+        let checks = record["spans"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|span| span["kind"] == "check")
+            .collect::<Vec<_>>();
+        let [check] = checks.as_slice() else {
+            if checks.is_empty() && record["spans"].as_array().is_none_or(Vec::is_empty) {
+                lines.push(format!("check not run: {}", cache_states(caches)));
+            }
+            continue;
+        };
+        lines.push(format!(
+            "check {}: {} ms, {}",
+            preview::text(check["label"].as_str().unwrap_or_default()),
+            check["elapsed_ms"],
+            cache_states(caches)
+        ));
+    }
+    lines
+}
+
+fn cache_states(caches: &[serde_json::Value]) -> String {
+    let mut seen = BTreeSet::new();
+    caches
+        .iter()
+        .map(|cache| {
+            let kind = cache["kind"].as_str().unwrap_or_default();
+            let (base, reason) = kind.split_once(':').unwrap_or((kind, ""));
+            let bytes = &cache["bytes_available"];
+            let first = seen.insert(base.to_owned());
+            let base = preview::text(base);
+            let reason = preview::text(reason);
+            if cache["eligible"] == true {
+                let state = if bytes.as_u64().is_some_and(|bytes| bytes > 0) {
+                    format!("{base} warm {bytes}")
+                } else {
+                    format!("{base} cold empty")
+                };
+                match cache["evicted_bytes"].as_u64() {
+                    Some(evicted) => format!("{state}, removed {evicted} (bound_exceeded)"),
+                    None => state,
+                }
+            } else if first {
+                format!("{base} cold {reason}")
+            } else {
+                format!("{base} removed {bytes} ({reason})")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Build the inspection document every `af task` presentation of one Task prints.

@@ -32,3 +32,6 @@ provenance = "literal"
 [[checks.markdownlint.command.args]]
 value = "**/*.md"
 provenance = "literal"
+
+[warm]
+build_cache = ["cargo_target"]

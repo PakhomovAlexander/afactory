@@ -30,7 +30,8 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 157] = [
+const SCHEMAS: [&str; 158] = [
+    "code-task-policy-v1.json",
     "task-input-bindings-v1.json",
     "task-source-origin-v2.json",
     "provider-status-v1.json",
@@ -725,6 +726,60 @@ fn light_optimizer_schemas_reject_rust_validator_divergences() {
             "optimization-proposal-v1.json",
             &proposal,
             "proposal text uses the same control-character contract",
+        );
+    }
+}
+
+#[test]
+fn task_runtime_cache_observations_name_at_most_one_reason() {
+    use review_core::task::runtime::{TaskCacheObservationV1, TaskRuntimeEvidenceV1};
+    let digest = |fill: char| format!("sha256:{}", fill.to_string().repeat(64));
+    let mut evidence = TaskRuntimeEvidenceV1 {
+        task_id: "warm-check".into(),
+        attempt_id: "A".repeat(26),
+        node: "root.nodes.check".into(),
+        context_id: digest('a'),
+        spans: vec![],
+        caches: vec![TaskCacheObservationV1 {
+            observation_id: digest('b'),
+            kind: "cargo_target".into(),
+            eligible: true,
+            source_digest: digest('c'),
+            toolchain_id: Some(digest('d')),
+            bytes_available: 4096,
+            lookup_ms: 1,
+            materialization_ms: 0,
+            evicted_bytes: None,
+        }],
+    };
+    for kind in [
+        "cargo_target",
+        "cargo_target:busy",
+        "cargo_target:toolchain_unresolved",
+        "cargo_target:bound_exceeded",
+        "cargo:unavailable",
+    ] {
+        evidence.caches[0].kind = kind.into();
+        evidence.validate().unwrap();
+        assert_valid(
+            "task-runtime-evidence-v1.json",
+            &serde_json::to_value(&evidence).unwrap(),
+        );
+    }
+    for kind in [
+        "",
+        "cargo_target:",
+        ":busy",
+        "cargo_target:busy:again",
+        "cargo target:busy",
+        "cargo_target:_busy",
+    ] {
+        evidence.caches[0].kind = kind.into();
+        assert!(evidence.validate().is_err(), "{kind}");
+        assert_invalid(
+            "task-runtime-evidence-v1.json",
+            &serde_json::to_value(&evidence).unwrap(),
+            kind,
         );
     }
 }

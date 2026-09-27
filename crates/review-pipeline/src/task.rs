@@ -19,6 +19,7 @@ pub use provider_admissions::TaskProviderAdmissionReport;
 mod report;
 pub mod review;
 pub mod source;
+pub mod warm_check;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, atomic::AtomicBool};

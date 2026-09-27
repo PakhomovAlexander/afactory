@@ -107,6 +107,16 @@ version = "1.0.0"
 digest = "sha256:a410f4e80545b4d1a7295746f4a3d66f5438fe6129df15956d5a823722cc5a4f"
 path = ".af/task-packages/kernel/verification"
 
+[packages."kernel/gate-accept"]
+version = "1.0.0"
+digest = "sha256:d3063056f77a8a93c55b646edae89dd41ac03994042032ab728cbc927b36f717"
+path = ".af/task-packages/kernel/gate-accept"
+
+[packages."kernel/gate-bench"]
+version = "1.0.0"
+digest = "sha256:5644bf8e52efd02be0892236d4fd979dd0547b4148e013ecad3a61278e68a16e"
+path = ".af/task-packages/kernel/gate-bench"
+
 [kinds]
 verification = "warm/verification-kind"
 

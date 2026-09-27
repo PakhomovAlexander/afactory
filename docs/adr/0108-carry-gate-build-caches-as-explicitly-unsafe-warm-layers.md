@@ -2,7 +2,9 @@
 
 Date: 2026-09-17
 Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
-legacy Kernel's in-memory record of a Worker's clone measurement.
+legacy Kernel's in-memory record of a Worker's clone measurement; and by
+[ADR-0123](0123-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md): the one-Round
+scope of a candidate-built build cache, for Task checks only.
 
 Implements package P2 of [`docs/design/worker-warm-layers.md`](../design/worker-warm-layers.md)
 on top of [ADR-0107](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md) (the
