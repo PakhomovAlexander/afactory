@@ -71,7 +71,9 @@ The terminal is handed over in this order:
    (the leave sequence cannot be written, or the terminal refuses the mode) is an error, and
    the browser re-enters the screen before it reports it; nothing runs on a terminal that did
    not leave. Closing the browser restores the saved mode best effort.
-2. `Host::run` spawns the child with inherited stdin, stdout and stderr, in a new process group.
+2. `Host::run` reads the terminal's foreground group first; a terminal that will not say is
+   refused, because without the browser's own group nothing keeps `<C-c>` from it. It spawns
+   the child with inherited stdin, stdout and stderr, in a new process group.
    It gives that group the terminal's foreground with `tcsetpgrp`, then sends the group
    `SIGCONT`. Only then does it turn `ISIG` on, with `SIGTTOU` blocked because the browser is
    now in the background, so `<C-c>` reaches the command from its first moment on the
@@ -84,13 +86,16 @@ The terminal is handed over in this order:
 3. The browser waits with `waitpid(WUNTRACED)`. A child stopped by `<C-z>` is continued at once,
    because the browser has no job control and nothing else would resume it.
 4. When the child ends, the browser turns `ISIG` off and only then takes the foreground back,
-   both with `SIGTTOU` blocked. `Host::pause` reads Enter in raw mode and returns to cooked mode
+   both with `SIGTTOU` blocked. If the terminal refuses to turn `ISIG` off, the browser never
+   takes it back: it ends without touching the terminal, which the shell reclaims as it does
+   from any finished job, and `af` reports why. `Host::pause` reads Enter in raw mode and returns to cooked mode
    without `ISIG`, and `Host::reenter` goes raw. So from the release to the re-entry the browser
    never owns the foreground while `ISIG` is on; every change of mode is one `tcsetattr`, not a
    pass through the saved mode, which is restored only when the browser closes.
 5. `Host::pause` prints one line on the released screen, `af LINE: exit N -- Enter returns to
-   the browser`. For a child a signal ended, the line says `killed by SIGINT` and starts on a
-   fresh line. The browser discards any unread input, then reads the terminal in raw mode until
+   the browser` (`killed by SIGINT` for a child a signal ended). It starts on a fresh line
+   whatever the command left: a line's width of spaces wraps only when the cursor was mid-line,
+   and a carriage return follows, so output that ended with a newline gets no blank line. The browser discards any unread input, then reads the terminal in raw mode until
    Enter.
 6. `Host::reenter` enters the alternate screen again. Keys the browser had already read in the
    same read as the command line were typed before the command ran; they are dropped, and the
@@ -128,7 +133,8 @@ or a signal, is shown as an error.
 
 ### Completion
 
-`<Tab>` completes the last word of the `:` line from the clap definition. At the first word it
+`<Tab>` completes the last word of the `:` line from the clap definition, the earlier words
+split as the line will parse (a quoted value stays one word). At the first word it
 offers the browser's own verbs and the top-level subcommands. At any later level it offers the
 visible subcommands of the command the earlier words name, and after `help` it offers the same
 subcommands. The completion never uses a hand-written list of commands. When the command takes

@@ -239,6 +239,8 @@ struct Recorder {
     unspawnable: Option<String>,
     /// A release that fails, and why.
     unreleasable: Option<String>,
+    /// A re-entry that fails, and why: the terminal was left to the shell.
+    unreenterable: Option<String>,
     child: Option<Box<dyn FnMut()>>,
 }
 
@@ -254,6 +256,9 @@ impl Host for Recorder {
 
     fn reenter(&mut self) -> Result<(), String> {
         self.events.push("reenter".to_owned());
+        if let Some(error) = &self.unreenterable {
+            return Err(error.clone());
+        }
         Ok(())
     }
 
@@ -1166,7 +1171,8 @@ fn command_lines_route_to_the_browser_a_refusal_or_a_hand_off() {
     press(&mut app, &mut host, b":task show nothing\r");
     let killed = "af task show nothing: killed by SIGINT";
     assert_eq!(app.message, Some((killed.to_owned(), true)));
-    let pause = format!("pause \n{killed} -- Enter returns to the browser");
+    // `pause` itself starts the line fresh, whatever the command left.
+    let pause = format!("pause {killed} -- Enter returns to the browser");
     assert!(host.events.contains(&pause), "{:?}", host.events);
 
     // A child that cannot be spawned: the error, and the terminal re-entered, without a wait.
@@ -1368,6 +1374,24 @@ fn an_editor_runs_in_its_own_group_like_a_command() {
     assert!(message.contains("EDITOR is not set"), "{message}");
 }
 
+/// A terminal the browser cannot take back after a command: it cannot paint, so it ends, and
+/// says why once the terminal is the shell's again. Nothing is read or painted after it.
+#[test]
+fn a_terminal_that_cannot_be_retaken_ends_the_browser() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder {
+        unreenterable: Some("the terminal was left to the shell".to_owned()),
+        ..Recorder::default()
+    };
+    press(&mut app, &mut host, b":task list\r");
+    assert!(app.quit);
+    assert_eq!(
+        app.fatal.as_deref(),
+        Some("af task list: the terminal was left to the shell")
+    );
+}
+
 /// `<Tab>` completes subcommand names at every level from the clap definition itself.
 #[test]
 fn completion_comes_from_the_clap_definition() {
@@ -1505,6 +1529,7 @@ fn the_tasks_pane_prefills_run_and_deliver_and_completes_task_ids() {
         "task show --json pagination-u",
         "task show --repo . pagination-u",
         "task show --repo=. pagination-u",
+        "task show --repo 'a repo with spaces' pagination-u",
     ] {
         press(&mut app, &mut host, b"\x1b");
         press(&mut app, &mut host, format!(":{typed}\t").as_bytes());

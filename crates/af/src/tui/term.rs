@@ -35,6 +35,9 @@ pub(crate) struct Session {
     active: bool,
     /// The screen was lost (a hand-off) and must be painted whole.
     dirty: bool,
+    /// A hand-off could not make the terminal safe to take back: the browser stays off it and
+    /// ends, leaving the terminal to the shell as any finished job does.
+    lost: bool,
 }
 
 impl Session {
@@ -52,6 +55,7 @@ impl Session {
             saved,
             active: false,
             dirty: true,
+            lost: false,
         };
         session.enter()?;
         Ok(session)
@@ -167,6 +171,9 @@ impl Host for Session {
     }
 
     fn reenter(&mut self) -> Result<(), String> {
+        if self.lost {
+            return Err("the terminal was left to the shell".to_owned());
+        }
         self.enter()
     }
 
@@ -174,70 +181,75 @@ impl Host for Session {
     /// ends: `<C-c>` and `<C-\>` signal the child, never the browser.
     fn run(&mut self, child: &HandOff) -> Result<Exit, String> {
         use std::os::unix::process::CommandExt as _;
-        let browser = termios::tcgetpgrp(&self.tty).ok();
+        // The command must own the foreground apart from the browser: without the browser's own
+        // group there is no way to keep `<C-c>` from the browser, so nothing runs.
+        let browser = termios::tcgetpgrp(&self.tty)
+            .map_err(|error| format!("reading the terminal's foreground: {error}"))?;
         let mut command = Command::new(&child.program);
         command.args(&child.args).current_dir(&child.dir);
         command.envs(child.env.iter().map(|(name, value)| (name, value)));
-        if browser.is_some() {
-            command.process_group(0);
-        } else {
-            // No foreground to hand over: the child shares the browser's group, as an editor.
-            self.cook(true)?;
-        }
+        command.process_group(0);
         let spawned = command
             .spawn()
             .map_err(|error| format!("{}: {error}", child.program.display()))?;
         let raw = i32::try_from(spawned.id()).map_err(|error| error.to_string())?;
         let pid = Pid::from_raw(raw);
-        let grouped = browser.is_some();
-        if grouped {
-            let handed = termios::Pid::from_raw(raw).ok_or("the command has no process id")?;
-            if let Err(error) = termios::tcsetpgrp(&self.tty, handed) {
-                // A fast command may have ended before its group could take the foreground:
-                // its group is gone, and what it did is its exit, not a failed hand-off. The
-                // browser never gave the foreground away, so nothing is taken back.
-                match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
-                    Ok(WaitStatus::Exited(_, code)) => return Ok(Exit::Code(code)),
-                    Ok(WaitStatus::Signaled(_, signal, _)) => {
-                        return Ok(Exit::Signal(signal as i32));
-                    }
-                    _ => {}
+        let handed = termios::Pid::from_raw(raw).ok_or("the command has no process id")?;
+        if let Err(error) = termios::tcsetpgrp(&self.tty, handed) {
+            // A fast command may have ended before its group could take the foreground: its
+            // group is gone, and what it did is its exit, not a failed hand-off. The browser
+            // never gave the foreground away, so nothing is taken back.
+            match waitpid(pid, Some(WaitPidFlag::WNOHANG)) {
+                Ok(WaitStatus::Exited(_, code)) => return Ok(Exit::Code(code)),
+                Ok(WaitStatus::Signaled(_, signal, _)) => {
+                    return Ok(Exit::Signal(signal as i32));
                 }
-                let _ = signal::killpg(pid, Signal::SIGKILL);
-                let _ = wait_for(pid, grouped);
-                return Err(format!("handing the terminal to the command: {error}"));
+                _ => {}
             }
-            // The command's group owns the foreground: its keys may raise signals now, and
-            // they reach the command, never the browser. The browser is in the background.
-            let cooked = from_the_background(|| self.cook(true))
-                .map_err(|error| format!("restoring the terminal: {error}"))
-                .and_then(|cooked| cooked);
-            // A child that touched the terminal before its group owned the foreground was
-            // stopped for it; it continues now that it does.
-            let _ = signal::killpg(pid, Signal::SIGCONT);
-            if let Err(error) = cooked {
-                let _ = signal::killpg(pid, Signal::SIGKILL);
-                let _ = wait_for(pid, grouped);
-                let _ = self.take_foreground(browser.unwrap_or(handed));
-                return Err(error);
-            }
+            let _ = signal::killpg(pid, Signal::SIGKILL);
+            let _ = wait_for(pid);
+            return Err(format!("handing the terminal to the command: {error}"));
         }
-        let exit = wait_for(pid, grouped);
+        // The command's group owns the foreground: its keys may raise signals now, and they
+        // reach the command, never the browser. The browser is in the background.
+        let cooked = from_the_background(|| self.cook(true))
+            .map_err(|error| format!("restoring the terminal: {error}"))
+            .and_then(|cooked| cooked);
+        // A child that touched the terminal before its group owned the foreground was stopped
+        // for it; it continues now that it does.
+        let _ = signal::killpg(pid, Signal::SIGCONT);
+        if let Err(error) = cooked {
+            // Signals are still off: taking the foreground back is safe.
+            let _ = signal::killpg(pid, Signal::SIGKILL);
+            let _ = wait_for(pid);
+            let _ = self.take_foreground(browser);
+            return Err(error);
+        }
+        let exit = wait_for(pid);
         // `wait_for` reaped the process; the handle only names it.
         drop(spawned);
-        if let Some(group) = browser {
-            // Signals off before the browser owns the foreground again, so no key raises one
-            // in the browser between here and its raw session.
-            let quiet = from_the_background(|| self.cook(false))
-                .map_err(|error| format!("restoring the terminal: {error}"))
-                .and_then(|quiet| quiet);
-            self.take_foreground(group)?;
-            quiet?;
+        // Signals off before the browser owns the foreground again, so no key raises one in the
+        // browser between here and its raw session. A terminal that refuses is not taken back
+        // at all: the browser ends without touching it, and the shell takes it back.
+        let quiet = from_the_background(|| self.cook(false))
+            .map_err(|error| format!("restoring the terminal: {error}"))
+            .and_then(|quiet| quiet);
+        if let Err(error) = quiet {
+            self.lost = true;
+            return Err(format!(
+                "{error}; the browser leaves the terminal to the shell and ends"
+            ));
         }
+        self.take_foreground(browser)?;
         exit
     }
 
     fn pause(&mut self, line: &str) -> Result<(), String> {
+        // A fresh line whatever the command left: a line's width of spaces wraps only when the
+        // cursor was mid-line, and the carriage return then starts the line after its output;
+        // at the start of a line the spaces stay on it and nothing is added.
+        let (columns, _) = self.size();
+        self.send(format!("{}\r", " ".repeat(columns)).as_bytes())?;
         self.send(line.as_bytes())?;
         // Keys typed before the line was shown were meant for the command, not for this wait.
         let _ = termios::tcflush(&self.tty, QueueSelector::IFlush);
@@ -291,17 +303,13 @@ fn from_the_background<T>(call: impl FnOnce() -> T) -> Result<T, Errno> {
 
 /// Wait for a handed-off child to end. A child stopped by `<C-z>` is continued: the browser
 /// has no job control, and a stopped command would hold the terminal with nobody to resume it.
-fn wait_for(pid: Pid, grouped: bool) -> Result<Exit, String> {
+fn wait_for(pid: Pid) -> Result<Exit, String> {
     loop {
         match waitpid(pid, Some(WaitPidFlag::WUNTRACED)) {
             Ok(WaitStatus::Exited(_, code)) => return Ok(Exit::Code(code)),
             Ok(WaitStatus::Signaled(_, signal, _)) => return Ok(Exit::Signal(signal as i32)),
             Ok(WaitStatus::Stopped(..)) => {
-                let _ = if grouped {
-                    signal::killpg(pid, Signal::SIGCONT)
-                } else {
-                    signal::kill(pid, Signal::SIGCONT)
-                };
+                let _ = signal::killpg(pid, Signal::SIGCONT);
             }
             Ok(_) | Err(Errno::EINTR) => {}
             Err(error) => return Err(format!("waiting for the command: {error}")),
@@ -393,6 +401,7 @@ mod tests {
             saved,
             active: true,
             dirty: false,
+            lost: false,
         };
         let error = session.release().unwrap_err();
         assert!(error.starts_with("restoring the terminal: "), "{error}");

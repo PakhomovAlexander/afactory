@@ -157,7 +157,11 @@ pub(crate) fn launch(repo: Option<&Path>) -> Result<i32, String> {
     let mut session = term::Session::open()?;
     let outcome = run(&mut app, &mut session);
     session.close();
-    outcome.map(|()| 0)
+    outcome?;
+    match app.fatal.take() {
+        Some(why) => Err(why),
+        None => Ok(0),
+    }
 }
 
 /// The event loop: paint what changed, read keys for at most a tenth of a second, collect
@@ -308,6 +312,8 @@ pub(crate) struct App {
     quit: bool,
     /// `$EDITOR` as the browser started with it: what `gf` and `:e` run.
     editor: Option<String>,
+    /// Why the browser ended without its terminal, reported after it closes.
+    fatal: Option<String>,
     /// The terminal was handed to a child since the event loop last looked: keys it read
     /// before are dropped.
     handed: bool,
@@ -338,6 +344,7 @@ impl App {
             size: (BAR_MIN_WIDTH, MIN_HEIGHT),
             quit: false,
             editor: std::env::var("EDITOR").ok(),
+            fatal: None,
             handed: false,
             exe: std::env::current_exe().map_err(|error| format!("the af executable: {error}")),
         };
@@ -886,7 +893,12 @@ impl App {
             Some((head, word)) => (Some(head), word),
             None => (None, text.as_str()),
         };
-        let before: Vec<&str> = head.unwrap_or_default().split_whitespace().collect();
+        // The finished words, as the line will parse: quoted values stay one word. A head
+        // that does not parse yet (an open quote) is split on spaces.
+        let finished = head.unwrap_or_default();
+        let words = shell_words::split(finished)
+            .unwrap_or_else(|_| finished.split_whitespace().map(str::to_owned).collect());
+        let before: Vec<&str> = words.iter().map(String::as_str).collect();
         let mut matches = Vec::new();
         for choice in self.completions(&before) {
             if choice.starts_with(word) && !matches.contains(&choice) {
@@ -1090,12 +1102,22 @@ impl App {
         }
         let ran = host.run(&child);
         let reentered = host.reenter();
+        if let Err(error) = &reentered {
+            self.lose_terminal(format!("{program}: {error}"));
+        }
         match (ran, reentered) {
             (Err(error), _) => Err(format!("running {program}: {error}")),
             (Ok(_), Err(error)) => Err(error),
             (Ok(Exit::Code(0)), Ok(())) => Ok(()),
             (Ok(exit), Ok(())) => Err(format!("{program} {}", exit.describe())),
         }
+    }
+
+    /// The browser could not take the terminal back after a hand-off: it cannot paint, so it
+    /// ends, and `af` reports why once the terminal is the shell's again.
+    fn lose_terminal(&mut self, why: String) {
+        self.fatal = Some(why);
+        self.quit = true;
     }
 
     /// Run `af WORDS` as a child of this very executable, in the scope's root, with the
@@ -1129,21 +1151,18 @@ impl App {
         self.handed = true;
         let ran = host.run(&child);
         let paused = match ran {
-            Ok(exit) => {
-                // A command a signal ended may have stopped mid-line.
-                let lead = if matches!(exit, Exit::Signal(_)) {
-                    "\n"
-                } else {
-                    ""
-                };
-                let ended = exit.describe();
-                host.pause(&format!(
-                    "{lead}af {line}: {ended} -- Enter returns to the browser"
-                ))
-            }
+            // `pause` starts its line fresh, however the command left the last one.
+            Ok(exit) => host.pause(&format!(
+                "af {line}: {} -- Enter returns to the browser",
+                exit.describe()
+            )),
             Err(_) => Ok(()),
         };
         let reentered = host.reenter();
+        if let Err(error) = &reentered {
+            self.lose_terminal(format!("af {line}: {error}"));
+            return;
+        }
         let reread = self.reread();
         let outcome = match (ran, paused, reentered, reread) {
             (Err(error), ..) => Err(format!("af {line}: {error}")),

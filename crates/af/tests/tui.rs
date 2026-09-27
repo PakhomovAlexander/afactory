@@ -1079,3 +1079,23 @@ fn ctrl_c_in_an_editor_stops_the_editor_not_the_browser() {
     browser.keys(b":q\r");
     assert_eq!(browser.exit_code(), 0);
 }
+
+/// Whatever a command's output left the cursor on, the exit line starts a line of its own, and
+/// a command that ended its output with a newline gets no blank line before it.
+#[test]
+fn the_exit_line_starts_its_own_line() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub(&root);
+    let mut browser = Browser::launch(&repo, &home);
+    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
+    browser.wait_for("project settings", ready);
+    // `af --version` ends its output with a newline: the exit line follows it directly.
+    let line = "--version";
+    let (screen, at) = hand_off(&mut browser, line, "exit 0");
+    let lines = screen.lines();
+    assert!(lines[at - 1].starts_with("af "), "{lines:#?}");
+    back_in_the_browser(&mut browser, &format!("af {line}: exit 0"));
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+}
