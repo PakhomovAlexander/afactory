@@ -93,8 +93,8 @@ digest = "sha256:5d4b4eec72574adf86f2f1de69647249c6b7ec1f6893b0aaff4d59dfae4d8e2
 path = ".af/task-packages/kernel/implementation-reviewed"
 
 [packages."kernel/review-code"]
-version = "1.0.0"
-digest = "sha256:b5ade91f51b2a5431af530c46492c77b97042f0abfb6555daf5f76267c758d52"
+version = "1.1.0"
+digest = "sha256:1e7a06ef48b749397d90faa10f66ea9bc2dd1ad7ad542fc6f71171855d0ed3ac"
 path = ".af/task-packages/kernel/review-code"
 
 [packages."kernel/verification-reviewed"]
