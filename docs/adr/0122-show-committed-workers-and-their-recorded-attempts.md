@@ -29,6 +29,10 @@ Five facts shape the answer:
 - A Review-domain operator runs a reviewer package and a primitive runs a Task Worker package.
   The two may share a name and are still two Workers, so STATE matches the kind as well as the
   name.
+- A plan binds each slot to an exact package: its `bindings[slot].package_digest`. STATE counts
+  only the Attempts whose plan bound the digest the committed pin records, so a package changed
+  since a Task ran does not inherit that Task's Attempts. Attempts of the same name at another
+  digest are counted on one `other` line, so the history does not silently vanish.
 - The recorded package artifact carries a name, a version and a digest, but no path. The
   kernel resolves a slot's Worker by name through the committed pin.
 - The kernel's own prompt conventions are fixed. The reviewer adapters send `reviewer.md`, and
@@ -65,7 +69,8 @@ through the Pipelines pane's own helpers (`head`, `git`, `committed`, `differs`,
 - A declaration or prompt whose working-tree file differs from `HEAD` marks the bar label with
   `*`, and the pane names the file. `HEAD` is what is shown. A prompt `HEAD` does not commit
   differs when the working tree has one, even untracked, since `git diff` does not see it.
-- A failed read of `HEAD` is shown above the last good entries of the same repository.
+- A failed read of `HEAD` is shown above the last good entries of the same repository. Their
+  drift is still read, against the commit they were read from.
 - A scope change drops everything read for the old scope.
 - The user scope lists nothing and says that Workers belong to a project.
 
@@ -124,7 +129,8 @@ as `HEAD` commits it, shown as plain scrollable text. A package without that fil
 nothing else is guessed. `gf` at or below the PROMPT rule opens the prompt's working-tree
 path, even when `HEAD` commits no prompt; above it, `gf` opens the declaration. `gf` on a bar
 entry opens the prompt when `HEAD` commits one, and the declaration otherwise. `y`, in the pane
-or on a bar entry, copies the Worker's declared name, never the drift marker.
+or on a bar entry, copies the Worker's declared name, never the drift marker; a declaration
+without a name yanks nothing, since its label is only its directory.
 
 ## Consequences
 

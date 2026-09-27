@@ -43,7 +43,8 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   its `af.lock` or catalog pin, `unpinned` or `pinned elsewhere`), then STATE, then PROMPT
   (`reviewer.md` or `instructions.md` as committed, with `gf` opening the working-tree file).
   STATE counts the Attempts in this scope's Task Stores whose invocation ran a slot that the
-  recorded plan binds to the Worker, a Review shard's through the node that owns it, and a
+  recorded plan binds to the Worker at the digest the committed pin records (other digests of
+  the name on one `other` line), a Review shard's through the node that owns it, and a
   reviewer and a Task package of one name apart: reserved, settled ok, settled failed and
   released, plus the tokens charged and the wall time. Every open reads again. A drifted file is marked `*`, and a failed read of
   `HEAD` is shown above the last good entries. No `--json` document changes.

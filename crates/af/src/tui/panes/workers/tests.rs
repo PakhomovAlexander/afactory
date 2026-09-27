@@ -261,6 +261,22 @@ fn a_failed_read_of_head_keeps_the_last_entries_under_the_error() {
         rows[2].starts_with("HEAD could not be read; the entries below"),
         "{rows:#?}"
     );
+    // The kept entries still follow the working tree: drift is read against their commit.
+    assert_eq!(pane.items()[0].label, "fixture/w");
+    let declaration = root.join(".af/task-packages/w/worker.toml");
+    let text = std::fs::read_to_string(&declaration).unwrap();
+    std::fs::write(&declaration, format!("{text}# edited\n")).unwrap();
+    write(root, ".af/task-packages/w/instructions.md", "Untracked.\n");
+    pane.refresh(&scope(root)).unwrap();
+    assert!(pane.error.is_some());
+    assert_eq!(pane.items()[0].label, "fixture/w *");
+    assert_eq!(
+        pane.entries[0].drifted,
+        [
+            ".af/task-packages/w/worker.toml",
+            ".af/task-packages/w/instructions.md"
+        ]
+    );
     // An unborn HEAD lists nothing, and is no error.
     let unborn = temp.path().join("unborn");
     std::fs::create_dir_all(&unborn).unwrap();
@@ -526,7 +542,12 @@ fn graph() -> Json {
 }
 
 fn task(name: &str) -> Worker {
-    (Kind::Task, name.to_owned())
+    (Kind::Task, name.to_owned(), None)
+}
+
+/// A recorded plan of `graph` whose bindings record no package digest.
+fn plan(graph: Json) -> Json {
+    recorded_plan(&graph, &Json::Null)
 }
 
 fn record(kind: &str, attempt: &str, extra: Json) -> Json {
@@ -549,21 +570,21 @@ fn settled(attempt: &str, charged: &str, result: &str) -> Json {
 #[test]
 fn attempts_are_attributed_through_the_recorded_plan_never_by_name() {
     assert_eq!(
-        worker_of(&graph(), "root.nodes.implement"),
+        worker_of(&plan(graph()), "root.nodes.implement"),
         Some(task("fixture/implementer"))
     );
     assert_eq!(
-        worker_of(&graph(), "root.nodes.implementer"),
+        worker_of(&plan(graph()), "root.nodes.implementer"),
         Some(task("fixture/evaluator"))
     );
     assert_eq!(
-        worker_of(&graph(), "root.nodes.review"),
-        Some((Kind::Reviewer, "bugs".to_owned()))
+        worker_of(&plan(graph()), "root.nodes.review"),
+        Some((Kind::Reviewer, "bugs".to_owned(), None))
     );
     // A Provider admission serves several slots, and a check none: no one Worker ran either.
-    assert_eq!(worker_of(&graph(), "root.nodes.admit"), None);
-    assert_eq!(worker_of(&graph(), "root.nodes.check"), None);
-    assert_eq!(worker_of(&graph(), "root.nodes.missing"), None);
+    assert_eq!(worker_of(&plan(graph()), "root.nodes.admit"), None);
+    assert_eq!(worker_of(&plan(graph()), "root.nodes.check"), None);
+    assert_eq!(worker_of(&plan(graph()), "root.nodes.missing"), None);
     // The earlier plan bound the same node to another Worker: its Attempt is that Worker's.
     let mut earlier = graph();
     earlier["slots"]["root.slots.writer"]["worker"] = json!("fixture/old-writer");
@@ -596,10 +617,10 @@ fn attempts_are_attributed_through_the_recorded_plan_never_by_name() {
         })
     };
     let mut asked = Vec::new();
-    let mut compiled = |plan: &str| {
-        asked.push(plan.to_owned());
-        match plan {
-            "plan-before" => Ok(earlier.clone()),
+    let mut compiled = |id: &str| {
+        asked.push(id.to_owned());
+        match id {
+            "plan-before" => Ok(plan(earlier.clone())),
             other => Err(format!("no plan {other}")),
         }
     };
@@ -609,7 +630,7 @@ fn attempts_are_attributed_through_the_recorded_plan_never_by_name() {
         ["plan-before"],
         "the current plan's graph is the document's"
     );
-    let workers: Vec<&str> = tallies.keys().map(|(_, name)| name.as_str()).collect();
+    let workers: Vec<&str> = tallies.keys().map(|(_, name, _)| name.as_str()).collect();
     assert_eq!(
         workers,
         [
@@ -743,7 +764,7 @@ fn an_owned_shard_runs_the_operator_its_owner_registered() {
     };
     let mut compiled = |plan: &str| Err(format!("no plan {plan}"));
     let tallies = tally(&document, &mut invoked, &mut compiled).unwrap();
-    let bugs = (Kind::Reviewer, "bugs".to_owned());
+    let bugs = (Kind::Reviewer, "bugs".to_owned(), None);
     assert_eq!(tallies.keys().collect::<Vec<_>>(), [&bugs]);
     assert_eq!(
         tallies[&bugs],
@@ -787,7 +808,7 @@ fn a_reviewer_and_a_task_package_sharing_a_name_keep_their_own_attempts() {
     let tallies = tally(&document, &mut invoked, &mut compiled).unwrap();
     assert_eq!(tallies[&task("bugs")].ok, 1);
     assert_eq!(tallies[&task("bugs")].tokens, 10);
-    let review = &tallies[&(Kind::Reviewer, "bugs".to_owned())];
+    let review = &tallies[&(Kind::Reviewer, "bugs".to_owned(), None)];
     assert_eq!((review.failed, review.tokens), (1, 3));
 
     // In the pane, each package shows only its own kind's Attempts.
@@ -843,12 +864,13 @@ fn every_open_reads_the_stores_and_the_working_tree_again() {
             .find(|row| row.starts_with("attempts"))
             .unwrap()
     };
+    // Only the second Task ran the digest `HEAD` pins; the first ran the earlier package.
     let before = attempts(&mut pane);
-    assert!(before.contains("settled ok 2"), "{before}");
+    assert!(before.contains("settled ok 1"), "{before}");
     // Another Attempt settles under the same `HEAD`: reopening counts it.
     crate::tui::tests::record_task(&root, &repo, &state, "pagination-again");
     let after = attempts(&mut pane);
-    assert!(after.contains("settled ok 3"), "{before} then {after}");
+    assert!(after.contains("settled ok 2"), "{before} then {after}");
     // The declaration drifts in the working tree: reopening marks it.
     let declaration = repo.join(id);
     let text = std::fs::read_to_string(&declaration).unwrap();
@@ -860,4 +882,100 @@ fn every_open_reads_the_stores_and_the_working_tree_again() {
         "{rows:#?}"
     );
     assert!(pane.items().iter().any(|item| item.label.ends_with(" *")));
+}
+
+#[test]
+fn state_counts_only_the_digest_the_committed_pin_records() {
+    let bindings = json!({"root.slots.writer": {"package_digest": "sha256:new"}});
+    let mut before = graph();
+    before["slots"]["root.slots.judge"]["worker"] = json!("unused");
+    let document = json!({
+        "plan_id": "plan-now",
+        "graph": graph(),
+        "plan": {"bindings": bindings},
+        "execution_records": [
+            reserved("new", "inv-now"),
+            settled("new", "10", "succeeded"),
+            reserved("old", "inv-before"),
+            settled("old", "7", "failed"),
+        ],
+        "attempt_walls": []
+    });
+    let mut invoked = |id: &str| {
+        let plan = if id == "inv-now" {
+            "plan-now"
+        } else {
+            "plan-before"
+        };
+        Ok(Invoked {
+            node: "root.nodes.implement".to_owned(),
+            plan_id: Some(plan.to_owned()),
+        })
+    };
+    let old = json!({"root.slots.writer": {"package_digest": "sha256:old"}});
+    let mut compiled = |_: &str| Ok(recorded_plan(&before, &old));
+    let tallies = tally(&document, &mut invoked, &mut compiled).unwrap();
+    let at = |digest: &str| {
+        (
+            Kind::Task,
+            "fixture/implementer".to_owned(),
+            Some(digest.to_owned()),
+        )
+    };
+    assert_eq!(tallies[&at("sha256:new")].ok, 1);
+    assert_eq!(tallies[&at("sha256:old")].failed, 1);
+
+    // The pane shows the pinned digest's Attempts, and counts the other digest apart.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    worker(root, ".af/task-packages/implementer", "fixture/implementer");
+    write(
+        root,
+        CATALOG,
+        "[packages.\"fixture/implementer\"]\npath = \".af/task-packages/implementer\"\n\
+         version = \"1.2.0\"\ndigest = \"sha256:new\"\n",
+    );
+    commit_all(root, "pinned at the new digest");
+    let mut pane = WorkersPane::default();
+    pane.load(&scope(root)).unwrap();
+    pane.open(Some(".af/task-packages/implementer/worker.toml"));
+    pane.stores = vec![Store {
+        shown: "state".to_owned(),
+        tallies: Ok(tallies),
+    }];
+    pane.rebuild();
+    let rows = texts(pane.rows());
+    let from = rows
+        .iter()
+        .position(|row| row.starts_with("attempts"))
+        .unwrap();
+    assert_eq!(
+        rows[from],
+        "attempts  reserved 0  settled ok 1  settled failed 0  released 0"
+    );
+    assert_eq!(rows[from + 1], "tokens    charged 10");
+    assert_eq!(
+        rows[from + 3],
+        "other     1 Attempts ran this name at an unpinned digest"
+    );
+}
+
+#[test]
+fn a_declaration_without_a_name_yanks_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        ".af/task-packages/nameless/worker.toml",
+        "schema = \"af.worker/1\"\n",
+    );
+    commit_all(root, "a worker that names nothing");
+    let mut pane = WorkersPane::default();
+    pane.load(&scope(root)).unwrap();
+    let id = ".af/task-packages/nameless/worker.toml";
+    pane.open(Some(id));
+    // The directory stands in as its label, never as its name.
+    assert_eq!(pane.items()[0].label, "nameless");
+    assert_eq!(pane.yank(0), None);
+    assert_eq!(pane.entry_name(id), None);
 }

@@ -930,7 +930,9 @@ fn a_history_artifact_the_store_cannot_give_back_refuses_the_store() {
 /// without the pane: each reservation's invocation names its node and plan, the plan names its
 /// compiled graph, and the graph binds the node's slot to a Worker. Returns the STATE rows the
 /// pane must show.
-fn derived_state(state: &Path, task_ids: &[&str], worker: &str) -> Vec<String> {
+/// STATE as derived straight from each Task's show document: the Attempts whose plan bound the
+/// node's slot to `worker` at `digest`, the digest the committed catalog pins.
+fn derived_state(state: &Path, task_ids: &[&str], worker: &str, digest: &str) -> Vec<String> {
     let artifact = |id: &str| crate::task_execution::recorded_artifact(state, id).unwrap();
     let (mut open, mut ok, mut failed, mut released, mut tokens) = (0, 0, 0, 0, 0_u128);
     for task_id in task_ids {
@@ -951,7 +953,8 @@ fn derived_state(state: &Path, task_ids: &[&str], worker: &str) -> Vec<String> {
             let Some(slot) = graph["nodes"][node]["operator"]["operator"]["slot"].as_str() else {
                 continue;
             };
-            if graph["slots"][slot]["worker"] != worker {
+            let bound = &plan["payload"]["bindings"][slot]["package_digest"];
+            if graph["slots"][slot]["worker"] != worker || bound != digest {
                 continue;
             }
             let attempt = &reserved["attempt_id"];
@@ -1015,6 +1018,14 @@ fn the_workers_pane_golden_at_100x30_and_its_state_is_af_task_shows() {
     assert_eq!(masked(&frame), WORKER, "{frame}");
     // Every STATE number is what the Store's `af task show --json` documents record.
     let tasks = ["pagination-cli", "pagination-unfinished"];
+    let catalog = std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap();
+    let catalog: toml::Value = toml::from_str(&catalog).unwrap();
+    let pinned = |worker: &str| {
+        catalog["packages"][worker]["digest"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
     for (worker, down) in [
         ("fixture/implementer", &b""[..]),
         ("fixture/evaluator", b"k\r"),
@@ -1028,7 +1039,7 @@ fn the_workers_pane_golden_at_100x30_and_its_state_is_af_task_shows() {
             .unwrap();
         assert_eq!(
             rows[at..at + 2],
-            derived_state(&state, &tasks, worker),
+            derived_state(&state, &tasks, worker, &pinned(worker)),
             "{rows:#?}"
         );
     }

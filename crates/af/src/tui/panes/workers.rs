@@ -166,6 +166,31 @@ impl Entry {
     }
 }
 
+/// The declaration and prompt files whose working-tree copy differs from `commit`. `git diff`
+/// ignores an untracked file, so a prompt `commit` lacks differs when the working tree has
+/// one, a link included. A comparison git cannot make counts as a difference.
+fn drift(
+    root: &Path,
+    commit: &str,
+    declaration: &str,
+    prompt: &str,
+    prompt_committed: bool,
+) -> Vec<String> {
+    let mut drifted = Vec::new();
+    if differs(root, commit, declaration) {
+        drifted.push(declaration.to_owned());
+    }
+    let prompt_drifts = if prompt_committed {
+        differs(root, commit, prompt)
+    } else {
+        std::fs::symlink_metadata(root.join(prompt)).is_ok()
+    };
+    if prompt_drifts {
+        drifted.push(prompt.to_owned());
+    }
+    drifted
+}
+
 /// What one read of `HEAD` found.
 #[derive(Debug)]
 struct Discovery {
@@ -221,20 +246,7 @@ fn discover(root: &Path) -> Result<Discovery, String> {
             } else {
                 None
             };
-            let mut drifted = Vec::new();
-            if differs(root, &commit, id) {
-                drifted.push(id.clone());
-            }
-            // `git diff` ignores an untracked file: a prompt `HEAD` lacks differs when the
-            // working tree has one, a link included.
-            let prompt_drifts = if prompt.is_some() {
-                differs(root, &commit, &prompt_path)
-            } else {
-                std::fs::symlink_metadata(root.join(&prompt_path)).is_ok()
-            };
-            if prompt_drifts {
-                drifted.push(prompt_path.clone());
-            }
+            let drifted = drift(root, &commit, id, &prompt_path, prompt.is_some());
             let pins = match kind {
                 Kind::Reviewer => &reviewers,
                 Kind::Task => &catalog,
@@ -289,9 +301,10 @@ impl Tally {
     }
 }
 
-/// A Worker package as a plan binds it: the kind of package and its name. A reviewer and a
-/// Task package may share a name; they are still two Workers.
-pub(crate) type Worker = (Kind, String);
+/// A Worker package as a plan binds it: the kind of package, its name, and the package digest
+/// the plan bound (`None` when the plan records none). A reviewer and a Task package may share
+/// a name, and one name may be bound at several digests; each is its own Worker.
+pub(crate) type Worker = (Kind, String, Option<String>);
 
 /// One reservation of a Worker's slot, as its records leave it.
 struct Reservation {
@@ -302,23 +315,30 @@ struct Reservation {
     charged: u128,
 }
 
-/// The Worker a node of a compiled graph runs: the package the graph binds to the node's one
+/// A recorded plan as the pane reads it: `{"graph": <compiled graph>, "bindings": <the plan's
+/// effective Worker bindings by slot>}`.
+fn recorded_plan(graph: &Json, bindings: &Json) -> Json {
+    serde_json::json!({"graph": graph, "bindings": bindings})
+}
+
+/// The Worker a node of a recorded plan runs: the package the plan binds to the node's one
 /// slot. A node that names no slot, or several (a Provider admission, an optimization
 /// experiment), runs no single Worker.
-pub(crate) fn worker_of(graph: &Json, node: &str) -> Option<Worker> {
-    operator_worker(graph, &graph["nodes"][node]["operator"])
+pub(crate) fn worker_of(plan: &Json, node: &str) -> Option<Worker> {
+    operator_worker(plan, &plan["graph"]["nodes"][node]["operator"])
 }
 
 /// The Worker a compiled operator runs: a reviewer package for a Review-domain operation, a
-/// Task Worker package for a primitive.
-fn operator_worker(graph: &Json, operator: &Json) -> Option<Worker> {
+/// Task Worker package for a primitive, at the digest the plan's binding of its slot records.
+fn operator_worker(plan: &Json, operator: &Json) -> Option<Worker> {
     let (kind, slot) = match operator["kind"].as_str()? {
-        "primitive" => (Kind::Task, operator["operator"]["slot"].as_str()),
-        "review_domain" => (Kind::Reviewer, operator["operation"]["slot"].as_str()),
+        "primitive" => (Kind::Task, operator["operator"]["slot"].as_str()?),
+        "review_domain" => (Kind::Reviewer, operator["operation"]["slot"].as_str()?),
         _ => return None,
     };
-    let worker = graph["slots"][slot?]["worker"].as_str()?;
-    Some((kind, worker.to_owned()))
+    let worker = plan["graph"]["slots"][slot]["worker"].as_str()?;
+    let digest = plan["bindings"][slot]["package_digest"].as_str();
+    Some((kind, worker.to_owned(), digest.map(str::to_owned)))
 }
 
 /// Each owned child invocation a Task registered, to the invocation of the node that owns it.
@@ -335,8 +355,8 @@ fn owners(document: &Json) -> Result<BTreeMap<&str, &str>, String> {
 
 /// Per Worker, the Attempts one Task's `af task explain --json` document records. A
 /// reservation's node comes from its invocation (`invoked`), and its Worker from that node's
-/// slot in the compiled graph of the plan the invocation ran under: the document's own graph
-/// for its current plan, `graph` for an earlier one. Never from a name. An owned child (a
+/// slot in the plan the invocation ran under: the document's own graph and bindings for its
+/// current plan, `recorded` (see `recorded_plan`) for an earlier one. Never from a name. An owned child (a
 /// Review shard such as `parent.slice1`) is no node of the graph: it runs the operator the
 /// graph's `owned_children` records for the node whose invocation registered it.
 ///
@@ -345,7 +365,7 @@ fn owners(document: &Json) -> Result<BTreeMap<&str, &str>, String> {
 pub(crate) fn tally(
     document: &Json,
     invoked: &mut dyn FnMut(&str) -> Result<Invoked, String>,
-    graph: &mut dyn FnMut(&str) -> Result<Json, String>,
+    recorded: &mut dyn FnMut(&str) -> Result<Json, String>,
 ) -> Result<BTreeMap<Worker, Tally>, String> {
     let current = document["plan_id"].as_str();
     let owners = owners(document)?;
@@ -364,17 +384,17 @@ pub(crate) fn tally(
                 let plan = plan.ok_or("a reservation names no plan")?;
                 if !graphs.contains_key(plan) {
                     let compiled = if Some(plan) == current {
-                        document["graph"].clone()
+                        recorded_plan(&document["graph"], &document["plan"]["bindings"])
                     } else {
-                        graph(plan)?
+                        recorded(plan)?
                     };
                     graphs.insert(plan.to_owned(), compiled);
                 }
                 let compiled = &graphs[plan];
                 let worker = match owners.get(invocation) {
-                    Some(parent) if compiled["nodes"].get(&run.node).is_none() => {
+                    Some(parent) if compiled["graph"]["nodes"].get(&run.node).is_none() => {
                         let owner = invoked(parent)?;
-                        let template = &compiled["owned_children"][&owner.node];
+                        let template = &compiled["graph"]["owned_children"][&owner.node];
                         operator_worker(compiled, &template["operator"])
                     }
                     _ => worker_of(compiled, &run.node),
@@ -439,11 +459,12 @@ pub(crate) fn tally(
     Ok(tallies)
 }
 
-/// The compiled graph of a recorded plan, through the plan's `compiled_graph_id`.
-fn compiled_graph(dir: &Path, plan: &str) -> Result<Json, String> {
+/// A recorded plan's bindings, and its compiled graph through the plan's `compiled_graph_id`.
+fn plan_of(dir: &Path, plan: &str) -> Result<Json, String> {
     let plan = task_execution::recorded_artifact(dir, plan)?;
     let graph = tasks::text(&plan["payload"]["compiled_graph_id"])?;
-    Ok(task_execution::recorded_artifact(dir, graph)?["payload"].clone())
+    let graph = &task_execution::recorded_artifact(dir, graph)?["payload"];
+    Ok(recorded_plan(graph, &plan["payload"]["bindings"]))
 }
 
 fn task_tally(
@@ -454,7 +475,7 @@ fn task_tally(
     let document = task_execution::inspection_document(dir, task_id, true)?
         .ok_or_else(|| format!("not in {}", dir.display()))?;
     let invoked = &mut |id: &str| tasks::node_of(dir, id, cache);
-    tally(&document, invoked, &mut |plan| compiled_graph(dir, plan))
+    tally(&document, invoked, &mut |plan| plan_of(dir, plan))
 }
 
 /// One Task state directory, and every Worker's Attempts in it or why it cannot be read.
@@ -521,9 +542,10 @@ impl WorkersPane {
         self.entry(self.selected.as_deref()?)
     }
 
-    /// The declared name behind a bar entry, without the drift marker its label carries.
+    /// The declared name behind a bar entry, without the drift marker its label carries; none
+    /// when the declaration names none (its label is then only its directory).
     pub(crate) fn entry_name(&self, id: &str) -> Option<String> {
-        self.entry(id).map(|entry| entry.label.clone())
+        self.entry(id)?.name.clone()
     }
 
     /// The file behind a bar entry, for `gf` on the bar: its prompt when `HEAD` commits one,
@@ -563,7 +585,15 @@ impl WorkersPane {
                 self.entries = found.entries;
                 self.error = None;
             }
-            Err(error) => self.error = Some(error),
+            Err(error) => {
+                // The kept entries still show the working tree's drift from their commit.
+                for entry in &mut self.entries {
+                    let prompt = entry.prompt_path();
+                    let committed = entry.prompt.is_some();
+                    entry.drifted = drift(&root, &self.commit, &entry.id, &prompt, committed);
+                }
+                self.error = Some(error);
+            }
         }
         self.stores = self.targets.iter().map(read_store).collect();
     }
@@ -688,8 +718,8 @@ impl WorkersPane {
 
     fn state_rows(&self, entry: &Entry) -> Vec<Row> {
         let mut rows = self.store_refusals();
-        let worker = match (&entry.pin, &entry.name) {
-            (Pin::Here { .. }, Some(name)) => (entry.kind, name.clone()),
+        let (name, digest) = match (&entry.pin, &entry.name) {
+            (Pin::Here { digest, .. }, Some(name)) => (name, digest),
             _ => {
                 let lock = entry.kind.lock();
                 let unbound = "No plan binds this package: a plan binds a Worker by its name,";
@@ -699,20 +729,37 @@ impl WorkersPane {
                 return rows;
             }
         };
-        let mut total = Tally::default();
+        // A plan binds the package at an exact digest: only Attempts of the digest the committed
+        // pin records are this package's. Other digests of the name are counted apart.
+        let (mut total, mut other) = (Tally::default(), Tally::default());
         for store in &self.stores {
-            if let Ok(tallies) = &store.tallies
-                && let Some(tally) = tallies.get(&worker)
-            {
-                total.add(tally);
+            let Ok(tallies) = &store.tallies else {
+                continue;
+            };
+            for ((kind, bound, at), tally) in tallies {
+                if *kind != entry.kind || bound != name {
+                    continue;
+                }
+                if at == digest {
+                    total.add(tally);
+                } else {
+                    other.add(tally);
+                }
             }
         }
+        let others = (other.attempts() + other.released > 0).then(|| {
+            let count = other.attempts();
+            let other = format!("other     {count} Attempts ran this name at an unpinned digest");
+            Row::painted(other, Paint::Muted)
+        });
         if total == Tally::default() {
             let none = "No Attempt in this scope's Task Stores ran a slot bound to this Worker.";
             rows.push(Row::plain(none));
+            rows.extend(others);
             return rows;
         }
         rows.extend(tally_rows(&total));
+        rows.extend(others);
         rows
     }
 }
@@ -961,7 +1008,7 @@ impl Pane for WorkersPane {
     }
 
     fn yank(&self, _row: usize) -> Option<String> {
-        self.selected_entry().map(|entry| entry.label.clone())
+        self.selected_entry()?.name.clone()
     }
 }
 
