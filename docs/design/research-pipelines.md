@@ -529,6 +529,34 @@ withdrawn — R6 declares an objective and records whatever the comparison concl
 
 ### Packages
 
-Filled as the campaign runs: Task IDs, plan identities, chargeable tokens, Findings and their
-dispositions, kernel defects surfaced, and the measured cold and warm check spans on this
-repository.
+#### R1
+
+Task `research-r1` (plan `sha256:c7835d9b…`, source 34a3e4e) was started while another session
+was running a Task on this machine and stopped with `SIGTERM` before any Worker had replied. The
+implementer's Attempt had already been reserved, so on resume the node had "exhausted its
+Attempt limit" and the Task ended `incomplete`; the ledger charged that interrupted Attempt its
+full 1,500,000-token reservation (ADR-0068 accounting, not Provider spend). Rule learned: look
+for other `af task run` processes before launching, never interrupt a running Task to serialize.
+
+Task `research-r1b` (plan `sha256:cdecf975…`, same source): implementer (Claude Opus 5.5, high,
+with a shell) completed one Attempt of 431,817 chargeable tokens and sealed every deliverable it
+could reach — the `[warm]` policy table, the toolchain-keyed locked cache directory, the
+three-point byte bound with a sampling monitor, the cache observations and the `af task show`
+line, `scripts/verify.sh`, the fixtures, ADR-0123 and the changelog entry. It reported two
+deliverables it could not do: the `[warm]` declaration in this repository's `.af/code-policy.toml`
+(a Worker may not edit `.af/`) and the paired benchmark (it may not run `make check`). The gate
+passed on the first try: `kernel` 15.3 min cold, `markdownlint` 0.3 min. The `bugs` reviewer
+(GPT-5.6 Terra) returned malformed JSON and its slot had one Attempt, so the Round ended
+incomplete and the Task `changes_requested` at 723,510 tokens; `kernel/review-code` now gives
+each reviewer two Attempts. The `correctness` reviewer (GPT-6 Sol) returned five majors, all
+fixed by hand on the materialized candidate (commit 769b11a): the missing policy declaration; a
+link *below* the cache root was reused, so `WarmDirectory::ensure` now walks the whole directory
+without following links and removes it on any link, special file or foreign owner; warm
+preparation could outlive the Attempt deadline, so the probe and the lock wait are bounded by the
+remaining time, the check's timeout is recomputed after preparation, and exhausting it records
+`not_run`; an eviction produced a second observation for one kind, so it is now the
+`evicted_bytes` field of the kind's one observation; and the benchmark evidence was absent. The
+benchmark harness is `kernel/gate-bench`: the repository's checks and a command evaluator that
+passes when they passed, so paired cold and warm gates run without a model.
+
+Verification and the paired benchmark: pending.
