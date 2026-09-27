@@ -142,24 +142,36 @@ after a sleep has already cost this project several verification Tasks.
 
 Deliverables:
 
-1. `af.code-task-policy/1` gains an optional `[warm]` table: `build_cache = ["cargo_target"]`
-   (the only kind this package installs), `caches = [...]` naming Cache Snapshot kinds resolved
-   through the machine's cache policy exactly as a review Gate resolves `[gate] caches`
-   (ADR-0036), and `max_bytes` (default 8 GiB, hard maximum 32 GiB). A policy that declares
-   `[warm]` together with `require_container = true` is refused at load with a message naming
-   both, mirroring ADR-0108's rule for Build Caches.
-2. The check runner (`code.rs`, `checks`) binds `CARGO_TARGET_DIR` for a declared
-   `cargo_target` to a persistent directory
-   `$XDG_CACHE_HOME/af/task-build-cache/<project>/<toolchain>/cargo_target`, where `<project>`
-   is the Store's repository identity and `<toolchain>` is the digest of: the Snapshot's
-   `rust-toolchain.toml` or `rust-toolchain` bytes (absent: the literal `none`), the complete
-   `rustc -vV` and `cargo -vV` output of the `rustc` and `cargo` the check's `PATH` resolves,
-   the host target triple, and the check's fixed environment (`PATH`, `LC_ALL`, `TZ`). The two
-   version commands run once per check Attempt before the first check, under the check's own
-   environment and a 30-second bound; a failure to resolve either means no warm cache and a
-   recorded reason. `HOME` and `XDG_CACHE_HOME` stay fresh per check. A declared Cache
-   Snapshot binds `CARGO_HOME` and `CARGO_NET_OFFLINE` exactly as a Gate does, materialized
-   into the runtime directory, never into the source tree.
+1. `af.code-task-policy/1` gains an optional `[warm]` table: `build_cache` naming warm kinds —
+   `cargo_target` (the build directory, bound as `CARGO_TARGET_DIR`) and `cargo_home` (Cargo's
+   registry and git caches, bound as `CARGO_HOME`; the kernel never places a credential in it
+   and treats one that holds `credentials.toml` as suspect) — `caches = [...]` naming Cache
+   Snapshot kinds resolved through the machine's cache policy exactly as a review Gate resolves
+   `[gate] caches` (ADR-0036), and `max_bytes` (default 8 GiB, hard maximum 32 GiB, shared by
+   every warm kind of one toolchain key). A policy that declares `[warm]` together with
+   `require_container = true` is refused at load with a message naming both, mirroring
+   ADR-0108's rule for Build Caches. A declared `caches = ["cargo"]` Cache Snapshot takes
+   precedence over a `cargo_home` warm directory for `CARGO_HOME`: the two are never bound at
+   once, and the superseded kind records an ineligible `cargo_home:superseded` observation.
+2. The check runner (`code.rs`, `checks`) binds each declared warm kind to a persistent
+   directory `$XDG_CACHE_HOME/af/task-build-cache/<project>/<toolchain>/<kind>`, where
+   `<project>` is the Store's repository identity and `<toolchain>` is the digest of: the
+   Snapshot's `rust-toolchain.toml` or `rust-toolchain` bytes (absent: the literal `none`), the
+   complete `rustc -vV` and `cargo -vV` output of the `rustc` and `cargo` the check's `PATH`
+   resolves, the host target triple, and the check's fixed environment (`PATH`, `LC_ALL`, `TZ`,
+   `RUSTUP_HOME`). The two version commands run once per check Attempt before the first check,
+   under the check's own environment and a 30-second bound; a failure to resolve either means no
+   warm cache and a recorded reason. `HOME` and `XDG_CACHE_HOME` stay fresh per check. A
+   declared Cache Snapshot binds `CARGO_HOME` and `CARGO_NET_OFFLINE` exactly as a Gate does,
+   materialized into the runtime directory, never into the source tree.
+   Under `[warm]` the check environment also carries the kernel's rustup home — `RUSTUP_HOME`
+   from the kernel's own environment, else `$HOME/.rustup` of the kernel's `HOME` when that
+   directory exists — and `RUSTUP_AUTO_INSTALL=0`, for the probe and for the check alike. Without
+   it a rustup proxy `rustc` or `cargo` sees the check's empty `HOME`, downloads the whole
+   toolchain into it before answering, and does so again on every check; with it the installed
+   toolchain answers at once, and a toolchain the machine lacks is a probe failure
+   (`cold toolchain_unresolved`), never a download. The rustup home is read by the toolchain,
+   not written by the check: it is not a warm kind, carries no bound and is never removed.
 3. Bounds and exclusion. One exclusive advisory lock per cache directory; a check that cannot
    take it within 60 seconds runs cold in its private runtime directory and records why.
    `max_bytes` is enforced three times: before the check (a directory already above the bound
@@ -180,8 +192,9 @@ Deliverables:
    `af task show` prints one line per check with elapsed time, cache kind and `warm <bytes>` or
    `cold <reason>`, and `af/task-inspection@11` carries the observations in its existing
    `runtime_observations` field.
-5. This repository's `.af/code-policy.toml` declares `[warm] build_cache = ["cargo_target"]`;
-   `scripts/verify.sh` honours a `CARGO_TARGET_DIR` that is already set instead of deriving one.
+5. This repository's `.af/code-policy.toml` declares
+   `[warm] build_cache = ["cargo_target", "cargo_home"]`; `scripts/verify.sh` honours a
+   `CARGO_TARGET_DIR` that is already set instead of deriving one.
 6. Tests and fixtures, all deterministic: a code Task run twice in one Store, whose second
    check observes `bytes_available > 0` under the same `toolchain_id` and whose derived
    Snapshot, candidate, delivery receipt and check outcome equal the first run's; a changed
@@ -559,4 +572,20 @@ remaining time, the check's timeout is recomputed after preparation, and exhaust
 benchmark harness is `kernel/gate-bench`: the repository's checks and a command evaluator that
 passes when they passed, so paired cold and warm gates run without a model.
 
-Verification and the paired benchmark: pending.
+Verification Task `research-r1-verify` on a3c4511 (270,563 tokens) ended `changes_requested`
+and surfaced the defect that decides whether R1 does anything on this machine: its gate passed
+(`kernel` 15.7 min) but recorded `cargo_target cold toolchain_unresolved` — the probe's
+`rustc -vV` exceeded its 30-second bound. Reproduced by hand: with the check's fresh `HOME`, the
+rustup proxy `rustc` reports "syncing channel updates … downloading 5 components" and installs
+the pinned 1.88.0 toolchain into that `HOME` before answering. Every Task check on this machine
+has therefore been downloading a Rust toolchain and the whole crate registry into a throwaway
+directory and then compiling cold; the 15-minute gate is that, not only compilation. R1.1, R1.2
+and R1.5 are amended above: under `[warm]` the kernel's rustup home is bound for the probe and
+the check with `RUSTUP_AUTO_INSTALL=0`, and a second warm kind, `cargo_home`, keeps the registry
+beside the build directory. The reviewers added six defects — a fast over-bound check passes
+because the monitor samples every five seconds; an unreadable subdirectory is skipped by the byte
+walk and the suspect walk; a suspect directory that `ensure` discards is still reported warm with
+its old bytes (both reviewers); a check that never starts loses its evidence or its name; and the
+paired benchmark is absent — and the evaluator asked for the byte-identity proof of a Task
+without `[warm]` and a sandbox-manifest proof that no cache byte reaches a Worker. All of it is
+the scope of Task `research-r1c`; the paired benchmark follows it.
