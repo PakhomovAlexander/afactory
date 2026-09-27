@@ -33,5 +33,8 @@ provenance = "literal"
 value = "**/*.md"
 provenance = "literal"
 
+# A full `make check` of this workspace leaves about 8.6 GB of debug and test output; the
+# default 8 GiB bound evicted a warm directory 35 s into the first warm gate.
 [warm]
 build_cache = ["cargo_target", "cargo_home"]
+max_bytes = 17179869184
