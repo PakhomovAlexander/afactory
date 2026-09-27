@@ -13,6 +13,7 @@ pub(crate) mod pipelines;
 pub(crate) mod providers;
 pub(crate) mod settings;
 pub(crate) mod tasks;
+pub(crate) mod workers;
 
 /// One main-pane row.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -131,35 +132,3 @@ pub(crate) trait Pane {
 
 /// The spinner frames background work shows, in ASCII.
 pub(crate) const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
-
-/// A folder whose pane arrives in a later package of docs/design/tui.md section 7.
-pub(crate) struct Placeholder {
-    rows: Vec<Row>,
-}
-
-impl Placeholder {
-    pub(crate) fn new(title: &str, step: u8) -> Placeholder {
-        Placeholder {
-            rows: vec![
-                Row::painted(title, Paint::Title),
-                Row::blank(),
-                Row::plain("This pane arrives in a later package"),
-                Row::plain(format!("(docs/design/tui.md section 7, step {step}).")),
-            ],
-        }
-    }
-}
-
-impl Pane for Placeholder {
-    fn load(&mut self, _scope: &Scope) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn rows(&self) -> &[Row] {
-        &self.rows
-    }
-
-    fn legend(&self) -> &'static str {
-        "j/k move  Tab bar  :cmd  q quit"
-    }
-}

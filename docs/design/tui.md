@@ -168,9 +168,9 @@ Main pane, three sections separated by rules:
 2. **State** — derived only from Store records for this scope: how many Attempts of this Worker
    are `reserved`, `started`, `settled ok`, `settled failed`, `abandoned`, plus tokens charged
    and wall time across those Attempts. Empty when the Store has no Attempt naming the Worker.
-3. **Prompt** — the package's instruction file (`reviewer.md` today; whatever the package
-   declares as its prompt) rendered as plain text, scrollable, with `gf` to edit. If a package
-   has no prompt file the section says so instead of guessing.
+3. **Prompt** — the file the kernel sends: `reviewer.md` for a reviewer Worker,
+   `instructions.md` for a Task Worker package (§8), rendered as plain text, scrollable, with
+   `gf` to edit. If a package has no prompt file the section says so instead of guessing.
 
 ### 5.4 Pipelines
 
@@ -317,8 +317,29 @@ Tests: keymap sequences, tree folding and search, and one golden render per pane
      Store records no repository path.
    - `p` opens the Pipelines pane's entry of the Task's Pipeline, which is the committed
      package's plan. The captured `ExecutionPlan` stays with `af task explain`.
-4. Workers pane: identity, prompt, then the State section once Attempt records are indexed by
-   Worker in the Store.
+4. Workers pane: identity, state and prompt. **Delivered** (package M4, ADR-0122). Deviations
+   from §5.3:
+   - The folder reads nothing until it or one of its entries is first opened. STATE scans every
+     Task of the scope's Stores (§8), and an unopened folder costs nothing. Until then the bar
+     shows an empty `workers/`, as it did before, and `/` finds no Worker.
+   - The user scope lists no Worker, and synced catalogs are not read. The pane says that
+     Workers belong to a project.
+   - The bar and every pane read what `HEAD` commits, like the Pipelines pane. A drifted
+     declaration or prompt is marked `*`.
+   - STATE counts reserved (open), settled ok, settled failed and released. No record kind is
+     `abandoned`, and a started Attempt is still reserved until it settles. Released
+     reservations are not Attempts, so they are neither charged nor timed. An Attempt's charge
+     is the highest its settlement or a usage observation records. The wall is the sum of the
+     recorded `attempt_walls`, with how many Attempts recorded one.
+   - An Attempt reaches a Worker through its invocation's node, the node's single slot in the
+     compiled graph of the plan the invocation ran under, and that slot's Worker name. The
+     name then reaches the one package the committed pin places at it. An operator that serves
+     several slots (a Provider admission, an optimization experiment) is credited to no Worker.
+   - The Store keeps no index by Worker. The scan runs on each read of the opened pane.
+   - IDENTITY shows the pin with eight hex digits of its digest. A reviewer's model and effort
+     are read from its args, the way the kernel reads them.
+   - `gf` on a bar entry opens the prompt when `HEAD` commits one, and the declaration
+     otherwise.
 5. Command line and the run/deliver hand-off; `gf`; yank.
 
 ## 7a. Review
@@ -334,6 +355,10 @@ source-only review.
 
 - Worker "state" needs the Store to answer "which Attempts named this Worker"; today that is a
   scan of every Task's execution records. Cheap for one repository, slow for the user scope. An
-  index by `worker` in `tasks.sqlite` is the clean fix and belongs to step 4.
-- Which file is a package's prompt: the first cut looks for `reviewer.md`, then any single `*.md`
-  beside `worker.toml`; a declared `prompt = "…"` field in `af.worker/1` would remove the guess.
+  index by `worker` in `tasks.sqlite` is the clean fix. Step 4 kept the scan: it runs only when
+  the Workers pane is opened in a project scope, and the user scope lists no Worker.
+- Which file is a package's prompt. **Answered** by package M4 (ADR-0122): the file the kernel
+  itself sends, by the kernel's convention. That is `reviewer.md` for a reviewer Worker and
+  `instructions.md` for a Task Worker package. A package without that file says so, and no
+  other Markdown file is guessed. A declared `prompt = "…"` field in `af.worker/1` would still
+  make the convention explicit.
