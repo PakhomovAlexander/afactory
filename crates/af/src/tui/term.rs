@@ -7,13 +7,18 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
+use std::process::Command;
 use std::sync::{Mutex, MutexGuard, Once, PoisonError, TryLockError};
 use std::thread::ThreadId;
 
-use rustix::termios::{self, OptionalActions, SpecialCodeIndex, Termios};
+use nix::errno::Errno;
+use nix::sys::signal::{self, SigSet, SigmaskHow, Signal};
+use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
+use nix::unistd::Pid;
+use rustix::termios::{self, OptionalActions, QueueSelector, SpecialCodeIndex, Termios};
 
-use super::Host;
 use super::paint::{self, Frame};
+use super::{Exit, HandOff, Host};
 
 /// Alternate screen, cursor hidden, no autowrap, cleared.
 const ENTER: &[u8] = b"\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[2J";
@@ -115,6 +120,22 @@ impl Session {
     }
 }
 
+impl Session {
+    /// Give the terminal's foreground back to the browser's process group. The browser is in
+    /// the background until this returns, so `SIGTTOU` is blocked for the call: blocked, the
+    /// change is allowed and nothing stops the browser.
+    fn take_foreground(&self, group: termios::Pid) -> Result<(), String> {
+        let mut blocked = SigSet::empty();
+        blocked.add(Signal::SIGTTOU);
+        let mut previous = SigSet::empty();
+        signal::pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&blocked), Some(&mut previous))
+            .map_err(|error| format!("taking the terminal back: {error}"))?;
+        let taken = termios::tcsetpgrp(&self.tty, group);
+        let _ = signal::pthread_sigmask(SigmaskHow::SIG_SETMASK, Some(&previous), None);
+        taken.map_err(|error| format!("taking the terminal back: {error}"))
+    }
+}
+
 impl Host for Session {
     fn release(&mut self) -> Result<(), String> {
         self.leave();
@@ -123,6 +144,69 @@ impl Host for Session {
 
     fn reenter(&mut self) -> Result<(), String> {
         self.enter()
+    }
+
+    /// The child runs in its own process group, which owns the terminal's foreground until it
+    /// ends: `<C-c>` and `<C-\>` signal the child, never the browser.
+    fn run(&mut self, child: &HandOff) -> Result<Exit, String> {
+        use std::os::unix::process::CommandExt as _;
+        let browser = termios::tcgetpgrp(&self.tty).ok();
+        let mut command = Command::new(&child.program);
+        command.args(&child.args).current_dir(&child.dir);
+        command.envs(child.env.iter().map(|(name, value)| (name, value)));
+        if browser.is_some() {
+            command.process_group(0);
+        }
+        let spawned = command
+            .spawn()
+            .map_err(|error| format!("{}: {error}", child.program.display()))?;
+        let raw = i32::try_from(spawned.id()).map_err(|error| error.to_string())?;
+        let pid = Pid::from_raw(raw);
+        let grouped = browser.is_some();
+        if grouped {
+            let handed = termios::Pid::from_raw(raw).ok_or("the command has no process id")?;
+            if let Err(error) = termios::tcsetpgrp(&self.tty, handed) {
+                let _ = signal::killpg(pid, Signal::SIGKILL);
+                let _ = wait_for(pid, grouped);
+                return Err(format!("handing the terminal to the command: {error}"));
+            }
+            // A child that touched the terminal before its group owned the foreground was
+            // stopped for it; it continues now that it does.
+            let _ = signal::killpg(pid, Signal::SIGCONT);
+        }
+        let exit = wait_for(pid, grouped);
+        // `wait_for` reaped the process; the handle only names it.
+        drop(spawned);
+        if let Some(group) = browser {
+            self.take_foreground(group)?;
+        }
+        exit
+    }
+
+    fn pause(&mut self, line: &str) -> Result<(), String> {
+        self.send(line.as_bytes())?;
+        // Keys typed before the line was shown were meant for the command, not for this wait.
+        let _ = termios::tcflush(&self.tty, QueueSelector::IFlush);
+        let mut raw = self.saved.clone();
+        raw.make_raw();
+        raw.special_codes[SpecialCodeIndex::VMIN] = 1;
+        raw.special_codes[SpecialCodeIndex::VTIME] = 0;
+        *lock() = Some((self.saved.clone(), std::thread::current().id()));
+        termios::tcsetattr(&self.tty, OptionalActions::Now, &raw)
+            .map_err(|error| format!("entering raw mode: {error}"))?;
+        let mut byte = [0_u8; 1];
+        let outcome = loop {
+            match self.tty.read(&mut byte) {
+                Ok(0) => break Err("the terminal closed".to_owned()),
+                Ok(_) if matches!(byte[0], b'\r' | b'\n') => break Ok(()),
+                Ok(_) => {}
+                Err(error) if transient(&error) => {}
+                Err(error) => break Err(format!("reading the terminal: {error}")),
+            }
+        };
+        let _ = termios::tcsetattr(&self.tty, OptionalActions::Now, &self.saved);
+        *lock() = None;
+        outcome
     }
 
     fn send(&mut self, bytes: &[u8]) -> Result<(), String> {
@@ -135,6 +219,26 @@ impl Host for Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.leave();
+    }
+}
+
+/// Wait for a handed-off child to end. A child stopped by `<C-z>` is continued: the browser
+/// has no job control, and a stopped command would hold the terminal with nobody to resume it.
+fn wait_for(pid: Pid, grouped: bool) -> Result<Exit, String> {
+    loop {
+        match waitpid(pid, Some(WaitPidFlag::WUNTRACED)) {
+            Ok(WaitStatus::Exited(_, code)) => return Ok(Exit::Code(code)),
+            Ok(WaitStatus::Signaled(_, signal, _)) => return Ok(Exit::Signal(signal as i32)),
+            Ok(WaitStatus::Stopped(..)) => {
+                let _ = if grouped {
+                    signal::killpg(pid, Signal::SIGCONT)
+                } else {
+                    signal::kill(pid, Signal::SIGCONT)
+                };
+            }
+            Ok(_) | Err(Errno::EINTR) => {}
+            Err(error) => return Err(format!("waiting for the command: {error}")),
+        }
     }
 }
 

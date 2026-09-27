@@ -71,13 +71,18 @@ q ZZ :q            quit; <C-c> first cancels a prompt or a running probe
 workers: gf opens the prompt (or the declaration), y copies the name;
          the folder lists its Workers once it is first opened
 tasks: Enter on a HISTORY row shows its artifact (q or Esc returns),
-       p opens the Task's pipeline, y copies the Task id
+       p opens the Task's pipeline, y copies the Task id,
+       r fills the : line with `task run ID --confirm-plan PLAN`,
+       D on a verified Task with `task deliver ID ... --confirm `
+       (type the Task id to confirm); Enter on the line runs it
 
 :e user|directory|project|local   af config edit --layer ...
 :help [TOPIC|COMMAND]             af help ...
 :cd DIR                           browse another directory
 :scope user|project               switch the scope
-Any other : line is parsed as an af command line.";
+Any other : line is an af command line: it runs as `af ...` in this
+scope's root with the terminal handed to it; Enter comes back.
+Tab completes commands, and a Task ID from the Tasks pane.";
 
 /// What an effect needs from the terminal: handing it to a child and taking it back, and
 /// writing one control sequence.
@@ -85,6 +90,40 @@ pub(crate) trait Host {
     fn release(&mut self) -> Result<(), String>;
     fn reenter(&mut self) -> Result<(), String>;
     fn send(&mut self, bytes: &[u8]) -> Result<(), String>;
+    /// Run a command on the released terminal, which the command owns until it ends.
+    fn run(&mut self, child: &HandOff) -> Result<Exit, String>;
+    /// Print `line` on the released screen and wait for Enter.
+    fn pause(&mut self, line: &str) -> Result<(), String>;
+}
+
+/// A `:` line handed the terminal: the running `af` executable with the parsed words as its
+/// arguments, in the scope's root, with the browser's environment plus `env`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HandOff {
+    pub(crate) program: PathBuf,
+    pub(crate) args: Vec<String>,
+    pub(crate) dir: PathBuf,
+    pub(crate) env: Vec<(String, String)>,
+}
+
+/// How a handed-off command ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Exit {
+    Code(i32),
+    Signal(i32),
+}
+
+impl Exit {
+    /// `exit N`, or the signal that ended the command.
+    pub(crate) fn describe(self) -> String {
+        match self {
+            Exit::Code(code) => format!("exit {code}"),
+            Exit::Signal(number) => match nix::sys::signal::Signal::try_from(number) {
+                Ok(signal) => format!("killed by {}", signal.as_str()),
+                Err(_) => format!("killed by signal {number}"),
+            },
+        }
+    }
 }
 
 /// Whether bare `af` opens the browser: only when stdout is a terminal.
@@ -257,6 +296,9 @@ pub(crate) struct App {
     bar_top: usize,
     size: (usize, usize),
     quit: bool,
+    /// The running `af` executable, which a `:` command line runs as. It is resolved once, so
+    /// the hand-off runs these very bytes even after `af self` changes the release a link names.
+    exe: Result<PathBuf, String>,
 }
 
 impl App {
@@ -280,6 +322,7 @@ impl App {
             bar_top: 0,
             size: (BAR_MIN_WIDTH, MIN_HEIGHT),
             quit: false,
+            exe: std::env::current_exe().map_err(|error| format!("the af executable: {error}")),
         };
         app.load();
         app
@@ -496,6 +539,7 @@ impl App {
             Action::Quit => return Some(Effect::Quit),
             Action::Command => self.begin(Mode::Command),
             Action::Cancel => self.cancel(),
+            Action::Pane(key) if self.focus == Focus::Bar => return self.bar_key(key),
             Action::Pane(key) => return self.pane_key(key),
         }
         None
@@ -648,6 +692,24 @@ impl App {
         effect
     }
 
+    /// A pane-local key while the bar has focus: `r` and `D` act on the bar's selected Task;
+    /// any other key is the opened pane's, as it always was.
+    fn bar_key(&mut self, key: Key) -> Option<Effect> {
+        let row = self.tree.selected();
+        if row.kind == NodeKind::Item(Tab::Tasks)
+            && let Some(line) = self.panes.tasks.bar_verb(&row.id, key)
+        {
+            return match line {
+                Ok(line) => Some(Effect::Prefill(line)),
+                Err(error) => {
+                    self.say_error(error);
+                    None
+                }
+            };
+        }
+        self.pane_key(key)
+    }
+
     fn pane_key(&mut self, key: Key) -> Option<Effect> {
         let (tab, row) = (self.opened_tab(), self.main.cursor);
         let outcome = self.panes.get_mut(tab).key(key, row);
@@ -792,36 +854,52 @@ impl App {
         words
     }
 
-    /// `<Tab>` on the `:` line: complete the verb, or the argument of `:e` and `:scope`.
+    /// `<Tab>` on the `:` line: complete the last word from what the clap definition declares
+    /// at that point (and the browser's own verbs), or a Task ID argument from the Tasks pane.
+    /// One match is filled in; several are listed on the status line.
     fn complete(&mut self) {
         let text = self.prompt.text.clone();
         let (head, word) = match text.rsplit_once(' ') {
-            Some((head, word)) => (head.trim(), word),
-            None => ("", text.as_str()),
+            Some((head, word)) => (Some(head), word),
+            None => (None, text.as_str()),
         };
-        let choices: &[&str] = match head {
-            "" => &["cd", "e", "help", "q", "scope"],
-            "e" | "edit" => &["user", "directory", "project", "local"],
-            "scope" => &["user", "project"],
-            _ => &[],
-        };
+        let before: Vec<&str> = head.unwrap_or_default().split_whitespace().collect();
         let mut matches = Vec::new();
-        for choice in choices {
-            if choice.starts_with(word) {
-                matches.push(*choice);
+        for choice in self.completions(&before) {
+            if choice.starts_with(word) && !matches.contains(&choice) {
+                matches.push(choice);
             }
         }
         match matches.as_slice() {
             [] => {}
             [only] => {
-                let completed = if head.is_empty() {
-                    format!("{only} ")
-                } else {
-                    format!("{head} {only}")
+                let completed = match head {
+                    Some(head) => format!("{head} {only} "),
+                    None => format!("{only} "),
                 };
                 self.prompt.set(&completed);
             }
             many => self.say(many.join("  ")),
+        }
+    }
+
+    /// What may follow `before` on the `:` line.
+    fn completions(&self, before: &[&str]) -> Vec<String> {
+        let owned = |choices: &[&str]| choices.iter().map(|choice| (*choice).to_owned()).collect();
+        match before {
+            [] => {
+                let mut choices: Vec<String> = owned(&["cd", "e", "help", "q", "scope"]);
+                choices.extend(subcommands(&[]).unwrap_or_default());
+                choices
+            }
+            ["e" | "edit"] => owned(&["user", "directory", "project", "local"]),
+            ["scope"] => owned(&["user", "project"]),
+            ["help", path @ ..] => subcommands(path).unwrap_or_default(),
+            path => match subcommands(path) {
+                Some(names) if !names.is_empty() => names,
+                Some(_) if takes_task_id(path) => self.panes.tasks.task_ids(),
+                _ => Vec::new(),
+            },
         }
     }
 
@@ -900,6 +978,11 @@ impl App {
             }
             Effect::RunCommand(words) => self.run_command(&words, host),
             Effect::OpenPipeline(name) => self.open_pipeline(&name),
+            Effect::Prefill(line) => {
+                // Never submitted: the user reads the line and presses Enter, or `Esc`.
+                self.begin(Mode::Command);
+                self.prompt.set(&line);
+            }
         }
     }
 
@@ -929,8 +1012,9 @@ impl App {
     }
 
     /// A command line parsed by the CLI's own clap definition, so the browser never grows a
-    /// second grammar. This package runs `af config edit`, with the terminal handed over, and
-    /// `af help`; any other command is named, not run.
+    /// second grammar. `af config edit` and `af help` run in the browser; a line without a
+    /// subcommand would open a second browser and is refused; any other command runs as a
+    /// child with the terminal handed to it.
     fn run_command(&mut self, words: &[String], host: &mut dyn Host) {
         let argv = std::iter::once("af").chain(words.iter().map(String::as_str));
         let parsed = match cli::Af::try_parse_from(argv) {
@@ -941,6 +1025,13 @@ impl App {
                 return;
             }
         };
+        if parsed.command.is_none() && !parsed.version {
+            let line = shell_words::join(words);
+            self.say_error(format!(
+                "af {line} would open a second browser; :cd DIR browses another directory"
+            ));
+            return;
+        }
         match handoff(parsed.command) {
             Handoff::Edit(layer, repo) => {
                 let outcome = handed_off(host, || crate::config::edit(layer, repo.as_deref()));
@@ -950,12 +1041,93 @@ impl App {
                 self.help = Some(help_rows(&topic));
                 self.main = View::default();
             }
-            Handoff::Other => {
-                let line = words.join(" ");
-                let later = "the browser hands commands off in a later package";
-                self.say_error(format!("af {line} runs from the shell; {later}"));
+            Handoff::Other => self.hand_off(words, host),
+        }
+    }
+
+    /// Run `af WORDS` as a child of this very executable, in the scope's root, with the
+    /// terminal handed to it; show how it ended and wait for Enter; then read again what it
+    /// may have changed.
+    fn hand_off(&mut self, words: &[String], host: &mut dyn Host) {
+        let line = shell_words::join(words);
+        let program = match &self.exe {
+            Ok(program) => program.clone(),
+            Err(error) => {
+                self.say_error(format!("af {line}: {error}"));
+                return;
+            }
+        };
+        let (name, value) = crate::selfmgmt::undispatched_child();
+        let child = HandOff {
+            program,
+            args: words.to_vec(),
+            dir: self.scope.root.clone(),
+            env: vec![(name.to_owned(), value)],
+        };
+        if let Err(error) = host.release() {
+            self.say_error(format!("af {line}: {error}"));
+            return;
+        }
+        let ran = host.run(&child);
+        let paused = match ran {
+            Ok(exit) => {
+                // A command a signal ended may have stopped mid-line.
+                let lead = if matches!(exit, Exit::Signal(_)) {
+                    "\n"
+                } else {
+                    ""
+                };
+                let ended = exit.describe();
+                host.pause(&format!(
+                    "{lead}af {line}: {ended} -- Enter returns to the browser"
+                ))
+            }
+            Err(_) => Ok(()),
+        };
+        let reentered = host.reenter();
+        let reread = self.reread();
+        let outcome = match (ran, paused, reentered, reread) {
+            (Err(error), ..) => Err(format!("af {line}: {error}")),
+            (Ok(exit), Err(error), ..) | (Ok(exit), Ok(()), Err(error), _) => {
+                Err(format!("af {line}: {}; {error}", exit.describe()))
+            }
+            (Ok(exit), Ok(()), Ok(()), Err(stale)) => Err(format!(
+                "af {line}: {}; settings are stale: {stale}",
+                exit.describe()
+            )),
+            (Ok(Exit::Code(0)), Ok(()), Ok(()), Ok(())) => Ok(format!("af {line}: exit 0")),
+            (Ok(exit), Ok(()), Ok(()), Ok(())) => Err(format!("af {line}: {}", exit.describe())),
+        };
+        match outcome {
+            Ok(done) => self.say(done),
+            Err(error) => self.say_error(error),
+        }
+    }
+
+    /// After a handed-off command: the scope and settings, and the Tasks, Workers and
+    /// Providers panes whether opened or not, read again; the opened pane and the pane behind
+    /// the bar's selection too, as after an editor. What is opened stays opened, and the bar
+    /// keeps its selection where it still exists. `Err` names why the settings are stale.
+    fn reread(&mut self) -> Result<(), String> {
+        let reloaded = self.reload();
+        let mut touched = vec![Tab::Providers, Tab::Workers, Tab::Tasks];
+        for tab in [self.opened_tab(), self.selected_tab()]
+            .into_iter()
+            .flatten()
+        {
+            if !touched.contains(&tab) {
+                touched.push(tab);
             }
         }
+        for tab in touched {
+            if let Err(error) = self.panes.get_mut(Some(tab)).reread(&self.scope) {
+                self.say_error(error);
+            }
+        }
+        self.sync();
+        let opened = self.opened.clone();
+        self.show(opened);
+        reloaded
     }
 
     /// After a hand-off: read the scope again, since the child may have changed what the
@@ -1198,6 +1370,32 @@ fn handoff(command: Option<cli::Command>) -> Handoff {
         Some(cli::Command::Help { words }) => Handoff::Help(words),
         _ => Handoff::Other,
     }
+}
+
+/// The subcommand names the clap definition declares below `path`, hidden ones left out;
+/// `None` when `path` is not a chain of subcommands.
+fn subcommands(path: &[&str]) -> Option<Vec<String>> {
+    let root = cli::Af::command();
+    let mut current = &root;
+    for word in path {
+        current = current.find_subcommand(word)?;
+    }
+    let visible = current.get_subcommands().filter(|sub| !sub.is_hide_set());
+    Some(visible.map(|sub| sub.get_name().to_owned()).collect())
+}
+
+/// Whether the command at `path` (a `task` subcommand) takes a Task ID as its first positional
+/// argument, and `path` has not given it yet: `task run`, `show`, `explain`, `deliver`, ...
+fn takes_task_id(path: &[&str]) -> bool {
+    let ["task", verb] = path else {
+        return false;
+    };
+    let root = cli::Af::command();
+    let command = root
+        .find_subcommand("task")
+        .and_then(|task| task.find_subcommand(verb));
+    let first = command.and_then(|command| command.get_positionals().next());
+    first.is_some_and(|argument| argument.get_id() == "task_id")
 }
 
 /// Hand the terminal to a child, and take it back whatever the child did.

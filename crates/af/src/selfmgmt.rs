@@ -951,6 +951,16 @@ fn pinned_everywhere(paths: &Paths) -> BTreeSet<String> {
     versions
 }
 
+/// The variable a child of this `af` carries so that it runs as this binary, never dispatched
+/// to another version: the browser's command-line hand-off (ADR-0123). A browser that was
+/// itself dispatched passes on the version it was dispatched from.
+pub(crate) fn undispatched_child() -> (&'static str, String) {
+    let from = std::env::var(DISPATCHED_ENV)
+        .ok()
+        .filter(|from| !from.is_empty());
+    (DISPATCHED_ENV, from.unwrap_or_else(|| VERSION.to_owned()))
+}
+
 /// Exec the version this project pins, when it is not the one running. Installs it on demand.
 /// Returns only when the running binary should continue.
 pub(crate) fn maybe_dispatch(argv: &[String]) {

@@ -545,6 +545,8 @@ struct Summary {
     outcome: Option<String>,
     chargeable: Option<String>,
     acceptance: Option<String>,
+    /// The Task's current plan, which `r` confirms.
+    plan_id: Option<String>,
     started: Option<u64>,
     progress: Progress,
 }
@@ -569,6 +571,7 @@ fn summary_of(document: &Value, stages: &[Stage]) -> Summary {
             _ => None,
         },
         acceptance: document["result"]["acceptance"].as_str().map(str::to_owned),
+        plan_id: document["plan_id"].as_str().map(str::to_owned),
         started: span_of(document).map(|(first, _)| first),
         progress: Progress::of(stages),
     }
@@ -605,6 +608,46 @@ impl Listed {
             Err(_) => "?%".to_owned(),
         }
     }
+}
+
+/// The `:` line `r` or `D` prefills for a Task, or why `D` refuses it; `None` for another key.
+/// `r` confirms the plan the pane shows. `D` stops after `--confirm`: delivery asks for the Task
+/// id again as its explicit confirmation (ADR-0031), so the user types it (ADR-0123).
+pub(crate) fn prefill(
+    key: Key,
+    task_id: &str,
+    plan_id: Option<&str>,
+    state: State,
+) -> Option<Result<String, String>> {
+    let id = shell_words::quote(task_id);
+    let line = match (key, state) {
+        (Key::Char('r'), _) => match plan_id {
+            Some(plan) => {
+                let plan = shell_words::quote(plan);
+                Ok(format!("task run {id} --confirm-plan {plan}"))
+            }
+            None => Err(format!("Task {task_id} records no plan to confirm")),
+        },
+        (Key::Char('D'), State::Done) => {
+            let branch = shell_words::quote(&format!("af/{task_id}")).into_owned();
+            let worktree = shell_words::quote(&format!("../{task_id}")).into_owned();
+            Ok(format!(
+                "task deliver {id} --branch {branch} --worktree {worktree} --confirm "
+            ))
+        }
+        (Key::Char('D'), unverified) => {
+            let why = match unverified {
+                State::Running => "is still running",
+                State::Awaiting => "is awaiting approval",
+                State::Done | State::Failed => "finished without satisfying its acceptance",
+            };
+            Err(format!(
+                "only a verified Task can be delivered: {task_id} {why}"
+            ))
+        }
+        _ => return None,
+    };
+    Some(line)
 }
 
 /// One Task state directory, the repository group the user scope lists it under, and what
@@ -1047,6 +1090,29 @@ impl TasksPane {
         self.task(id).map(|(_, task)| task.task_id.clone())
     }
 
+    /// `r` or `D` on the bar's Task `id`: the line to prefill, or why not; `None` when `id`
+    /// is no Task or the key is neither.
+    pub(crate) fn bar_verb(&self, id: &str, key: Key) -> Option<Result<String, String>> {
+        let (_, task) = self.task(id)?;
+        let summary = task.summary.as_ref().ok();
+        let plan = summary.and_then(|summary| summary.plan_id.as_deref());
+        prefill(key, &task.task_id, plan, task.state())
+    }
+
+    /// Every Task id this scope lists, once each and sorted: what the `:` line completes a
+    /// Task ID argument from.
+    pub(crate) fn task_ids(&self) -> Vec<String> {
+        let mut ids = Vec::new();
+        for store in &self.stores {
+            for task in store.tasks.iter().flatten() {
+                ids.push(task.task_id.clone());
+            }
+        }
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
     /// Live reads started so far.
     #[cfg(test)]
     pub(crate) fn reads(&self) -> usize {
@@ -1367,6 +1433,13 @@ impl Pane for TasksPane {
                 Some(pipeline) => Ok(Some(Effect::OpenPipeline(pipeline.to_owned()))),
                 None => Err(format!("Task {} records no plan", detail.task_id)),
             },
+            Key::Char('r' | 'D') => {
+                let plan = detail.document["plan_id"].as_str();
+                match prefill(key, &detail.task_id, plan, detail.state()) {
+                    Some(line) => line.map(|line| Some(Effect::Prefill(line))),
+                    None => Ok(None),
+                }
+            }
             _ => Ok(None),
         }
     }
@@ -1374,7 +1447,9 @@ impl Pane for TasksPane {
     fn legend(&self) -> &'static str {
         match (&self.artifact, &self.detail) {
             (Some(_), _) => "j/k scroll  y yank Task id  q/Esc back to the Task",
-            (None, Some(Ok(_))) => "Enter artifact  p pipeline  y yank id  R re-read  Tab bar",
+            (None, Some(Ok(_))) => {
+                "r run  D deliver  Enter artifact  p pipeline  y yank id  R re-read  Tab bar"
+            }
             _ => "j/k move  R re-read  Tab bar  :cmd  q quit",
         }
     }

@@ -54,6 +54,8 @@ pub(crate) enum Effect {
     Refresh,
     /// Open the named Pipeline in the Pipelines pane, when that pane lists it.
     OpenPipeline(String),
+    /// Open the `:` line holding this text, for the user to review; nothing is submitted.
+    Prefill(String),
 }
 
 pub(crate) trait Pane {
@@ -101,6 +103,12 @@ pub(crate) trait Pane {
 
     /// `R`: read everything again.
     fn refresh(&mut self, scope: &Scope) -> Result<(), String> {
+        self.load(scope)
+    }
+
+    /// After a command handed the terminal ran: read again what it may have changed, without
+    /// anything `R` alone may start (a charged probe).
+    fn reread(&mut self, scope: &Scope) -> Result<(), String> {
         self.load(scope)
     }
 

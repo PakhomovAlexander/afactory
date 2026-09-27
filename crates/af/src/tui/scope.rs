@@ -73,12 +73,18 @@ impl Scope {
         }
     }
 
-    /// The same scope read from disk again.
+    /// The same scope read from disk again. The home directory, the Provider registry and the
+    /// Task state root come from this process's environment, which nothing the browser hands
+    /// the terminal to can change, so they are kept.
     pub(crate) fn reload(&self) -> Result<Scope, String> {
-        match self.kind {
-            ScopeKind::User => Scope::user(),
-            ScopeKind::Project => Scope::resolve(Some(self.root.as_path())),
-        }
+        let mut scope = match self.kind {
+            ScopeKind::User => Scope::user()?,
+            ScopeKind::Project => Scope::resolve(Some(self.root.as_path()))?,
+        };
+        scope.home.clone_from(&self.home);
+        scope.registry.clone_from(&self.registry);
+        scope.state.clone_from(&self.state);
+        Ok(scope)
     }
 
     pub(crate) fn toplevel(&self) -> Option<&Path> {

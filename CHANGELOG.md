@@ -48,6 +48,20 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   reviewer and a Task package of one name apart: reserved, settled ok, settled failed and
   released, plus the tokens charged and the wall time. Every open reads again. A drifted file is marked `*`, and a failed read of
   `HEAD` is shown above the last good entries. No `--json` document changes.
+- The browser's `:` line runs `af` commands (ADR-0123, `docs/design/tui.md` package M5). A line
+  that clap parses and the browser does not own (`:q`, `:cd`, `:scope`, `:e` and `:help` keep
+  their behaviour) runs as a child of the running `af` executable, with exactly the parsed words
+  as its arguments. It runs in the scope's root, inherits the environment, and carries
+  `AF_DISPATCHED_FROM`, so it is never dispatched to another release. The browser releases the
+  terminal, and the child's process group owns the foreground, so `<C-c>` stops the child, not
+  the browser. The released screen then shows `af LINE: exit N` (or the signal) and waits for
+  Enter. After it, the browser reads again the scope, the settings and the Tasks, Workers and
+  Providers panes (without the charged probe), keeping what is opened. A line without a
+  subcommand, which would open a second browser, is refused. `<Tab>` completes subcommands at
+  every level from the clap definition, and a Task ID argument from the Tasks pane. In the Tasks
+  pane, `r` prefills `task run ID --confirm-plan PLAN`, and `D` on a verified Task prefills
+  `task deliver ID --branch af/ID --worktree ../ID --confirm` and a space, with the
+  confirmation left to type. `D` on an unverified Task says why. No `--json` document changes.
 
 ## [0.9.0-rc.7] - 2026-09-24
 

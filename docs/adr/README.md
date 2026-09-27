@@ -211,3 +211,5 @@ future readers need.
   documents](0121-show-recorded-tasks-in-the-browser.md)
 - [0122 — Show committed Workers and the Attempts their recorded plans
   bound](0122-show-committed-workers-and-their-recorded-attempts.md)
+- [0123 — Hand the terminal to `af` commands typed in the
+  browser](0123-hand-the-terminal-to-af-commands-typed-in-the-browser.md)

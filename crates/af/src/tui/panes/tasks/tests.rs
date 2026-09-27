@@ -1010,3 +1010,38 @@ fn a_stage_named_nodes_keeps_its_name() {
     assert_eq!(stage_name("root.providers.admit0"), "providers.admit0");
     assert_eq!(stage_name("root.inputs"), "inputs");
 }
+
+#[test]
+fn r_prefills_the_run_of_the_shown_plan_and_d_only_a_verified_tasks_delivery() {
+    let run = prefill(Key::Char('r'), "t-1", Some("sha256:ab"), State::Failed);
+    assert_eq!(
+        run,
+        Some(Ok("task run t-1 --confirm-plan sha256:ab".to_owned()))
+    );
+    let run = prefill(Key::Char('r'), "t-1", None, State::Done);
+    assert_eq!(
+        run,
+        Some(Err("Task t-1 records no plan to confirm".to_owned()))
+    );
+    // The confirmation is left to type: the line ends at `--confirm `.
+    let deliver = prefill(Key::Char('D'), "t-1", Some("sha256:ab"), State::Done);
+    let expected = "task deliver t-1 --branch af/t-1 --worktree ../t-1 --confirm ";
+    assert_eq!(deliver, Some(Ok(expected.to_owned())));
+    for (state, why) in [
+        (State::Running, "is still running"),
+        (State::Awaiting, "is awaiting approval"),
+        (State::Failed, "finished without satisfying its acceptance"),
+    ] {
+        let refused = prefill(Key::Char('D'), "t-1", Some("sha256:ab"), state);
+        let expected = format!("only a verified Task can be delivered: t-1 {why}");
+        assert_eq!(refused, Some(Err(expected)));
+    }
+    // A Task id the shell would split is quoted, so the line parses back to the same words.
+    let quoted = prefill(Key::Char('D'), "a b", None, State::Done)
+        .unwrap()
+        .unwrap();
+    let words = shell_words::split(&quoted).unwrap();
+    assert_eq!(words[2], "a b");
+    assert_eq!(words[4], "af/a b");
+    assert_eq!(prefill(Key::Char('x'), "t-1", None, State::Done), None);
+}

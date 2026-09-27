@@ -224,25 +224,53 @@ fn app_at(root: &Path, repo: PathBuf) -> App {
     app
 }
 
-/// A terminal that records what the browser sends it and never runs a child.
+/// A terminal that records what the browser sends it and does to it, in order, and never runs a
+/// child: `child` stands for what one would do to the disk, and `exit` for how it ends.
 #[derive(Default)]
 struct Recorder {
     sent: Vec<u8>,
     released: usize,
+    /// `release`, `run ARGS`, `pause LINE` and `reenter`, as they happened.
+    events: Vec<String>,
+    runs: Vec<HandOff>,
+    /// How a child ends; `exit 0` when unset.
+    exit: Option<Exit>,
+    /// A child that cannot be spawned, and why.
+    unspawnable: Option<String>,
+    child: Option<Box<dyn FnMut()>>,
 }
 
 impl Host for Recorder {
     fn release(&mut self) -> Result<(), String> {
         self.released += 1;
+        self.events.push("release".to_owned());
         Ok(())
     }
 
     fn reenter(&mut self) -> Result<(), String> {
+        self.events.push("reenter".to_owned());
         Ok(())
     }
 
     fn send(&mut self, bytes: &[u8]) -> Result<(), String> {
         self.sent.extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn run(&mut self, child: &HandOff) -> Result<Exit, String> {
+        self.events.push(format!("run {}", child.args.join(" ")));
+        self.runs.push(child.clone());
+        if let Some(error) = &self.unspawnable {
+            return Err(error.clone());
+        }
+        if let Some(child) = &mut self.child {
+            child();
+        }
+        Ok(self.exit.unwrap_or(Exit::Code(0)))
+    }
+
+    fn pause(&mut self, line: &str) -> Result<(), String> {
+        self.events.push(format!("pause {line}"));
         Ok(())
     }
 }
@@ -1064,4 +1092,275 @@ fn the_workers_pane_golden_at_100x30_and_its_state_is_af_task_shows() {
     let small = app.frame(80, 24).text();
     assert!(small.starts_with("WORKER  fixture/evaluator\n"), "{small}");
     assert!(small.lines().all(|line| line.len() <= 80), "{small}");
+}
+
+/// The `:` lines the browser owns keep their behaviour; a line without a subcommand is refused;
+/// any other command line runs as a child of this executable in the scope's root.
+#[test]
+fn command_lines_route_to_the_browser_a_refusal_or_a_hand_off() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    for (line, said) in [
+        (
+            &b":--repo .\r"[..],
+            "af --repo . would open a second browser",
+        ),
+        (b":cd nowhere\r", "nowhere: not a directory"),
+        (
+            b":scope elsewhere\r",
+            "the scope is user or project, not elsewhere",
+        ),
+        (b":frobnicate\r", "unrecognized subcommand 'frobnicate'"),
+    ] {
+        press(&mut app, &mut host, line);
+        let status = status_line(&mut app);
+        assert!(status.contains(said), "{status}");
+    }
+    press(&mut app, &mut host, b":help task\r");
+    assert!(
+        app.main_rows()
+            .iter()
+            .any(|row| row.text().contains("af task"))
+    );
+    press(&mut app, &mut host, b"q");
+    assert!(host.events.is_empty(), "{:?}", host.events);
+
+    press(&mut app, &mut host, b":task show pagination-cli\r");
+    let line = "af task show pagination-cli";
+    assert_eq!(
+        host.events,
+        [
+            "release".to_owned(),
+            "run task show pagination-cli".to_owned(),
+            format!("pause {line}: exit 0 -- Enter returns to the browser"),
+            "reenter".to_owned(),
+        ]
+    );
+    let child = &host.runs[0];
+    assert_eq!(child.program, std::env::current_exe().unwrap());
+    assert_eq!(child.args, ["task", "show", "pagination-cli"]);
+    assert_eq!(child.dir, root.join("hub"), "the repository toplevel");
+    assert!(
+        child
+            .env
+            .iter()
+            .any(|(name, _)| name == "AF_DISPATCHED_FROM"),
+        "{:?}",
+        child.env
+    );
+    assert_eq!(app.message, Some((format!("{line}: exit 0"), false)));
+
+    // A command that fails, or that a signal ends, is an error on the status line.
+    host.events.clear();
+    host.exit = Some(Exit::Code(2));
+    press(&mut app, &mut host, b":task show nothing\r");
+    let failed = Some(("af task show nothing: exit 2".to_owned(), true));
+    assert_eq!(app.message, failed);
+    host.exit = Some(Exit::Signal(2));
+    press(&mut app, &mut host, b":task show nothing\r");
+    let killed = "af task show nothing: killed by SIGINT";
+    assert_eq!(app.message, Some((killed.to_owned(), true)));
+    let pause = format!("pause \n{killed} -- Enter returns to the browser");
+    assert!(host.events.contains(&pause), "{:?}", host.events);
+
+    // A child that cannot be spawned: the error, and the terminal re-entered, without a wait.
+    host.events.clear();
+    host.unspawnable = Some("no such file".to_owned());
+    press(&mut app, &mut host, b":task list\r");
+    assert_eq!(host.events, ["release", "run task list", "reenter"]);
+    let error = Some(("af task list: no such file".to_owned(), true));
+    assert_eq!(app.message, error);
+    assert_eq!(app.mode, Mode::Normal);
+
+    press(&mut app, &mut host, b":q\r");
+    assert!(app.quit);
+}
+
+/// Released before the child, re-entered after the wait; then the panes the child may have
+/// changed are read again, keeping what is opened and the bar's selection.
+#[test]
+fn a_hand_off_releases_first_reenters_after_and_reads_the_panes_again() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo(&root);
+    let mut app = app_at(&root, repo.clone());
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]]]]]j\r");
+    assert_eq!(app.breadcrumb(), "pipelines/review");
+    press(&mut app, &mut host, b"gg");
+    assert!(app.panes.tasks.task_ids().is_empty());
+    let recorded = |app: &App| {
+        let rows = app.tree.rows();
+        rows.iter().any(|row| row.id == "pagination-cli")
+    };
+    assert!(!recorded(&app));
+    // The child records a Task and edits the opened pipeline.
+    let state = crate::task_execution::default_task_state(&root.join("state"), &repo).unwrap();
+    let (at, hub) = (root.clone(), repo.clone());
+    host.child = Some(Box::new(move || {
+        record_task(&at, &hub, &state, "pagination-cli");
+        let file = hub.join(".af/pipelines/review.toml");
+        let text = std::fs::read_to_string(&file).unwrap();
+        std::fs::write(&file, format!("{text}# edited\n")).unwrap();
+    }));
+    press(
+        &mut app,
+        &mut host,
+        b":task start --file ticket.json --execute\r",
+    );
+    assert_eq!(host.events[0], "release");
+    assert!(host.events[1].starts_with("run task start"));
+    assert!(host.events[2].starts_with("pause "));
+    assert_eq!(host.events[3], "reenter");
+    // The Tasks pane was never opened, and lists the Task now.
+    assert_eq!(app.panes.tasks.task_ids(), ["pagination-cli"]);
+    assert!(recorded(&app));
+    // The opened pipeline reads again and still shows; the bar keeps the root selected.
+    let package = ".af/pipelines/review.toml".to_owned();
+    assert_eq!(app.opened, Opened::Item(Tab::Pipelines, package));
+    let rows: Vec<String> = app.pane().rows().iter().map(Row::text).collect();
+    assert!(
+        rows[0].starts_with("working tree differs from HEAD"),
+        "{rows:#?}"
+    );
+    assert_eq!(app.breadcrumb(), "hub");
+    let status = status_line(&mut app);
+    assert!(
+        status.ends_with("af task start --file ticket.json --execute: exit 0"),
+        "{status}"
+    );
+}
+
+/// `<Tab>` completes subcommand names at every level from the clap definition itself.
+#[test]
+fn completion_comes_from_the_clap_definition() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    let names = |path: &[&str]| -> Vec<String> {
+        let mut command = cli::Af::command();
+        for word in path {
+            command = command.find_subcommand(word).unwrap().clone();
+        }
+        let visible = command.get_subcommands().filter(|sub| !sub.is_hide_set());
+        visible.map(|sub| sub.get_name().to_owned()).collect()
+    };
+    // The browser's verbs, then every top-level command.
+    press(&mut app, &mut host, b":\t");
+    let mut all = vec!["cd", "e", "help", "q", "scope"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for name in names(&[]) {
+        if !all.contains(&name) {
+            all.push(name);
+        }
+    }
+    assert_eq!(app.message, Some((all.join("  "), false)));
+    press(&mut app, &mut host, b"\x1b:ta\t");
+    assert_eq!(app.prompt.text, "task ");
+    press(&mut app, &mut host, b"\t");
+    assert_eq!(app.message, Some((names(&["task"]).join("  "), false)));
+    press(&mut app, &mut host, b"sh\t");
+    assert_eq!(app.prompt.text, "task show ");
+    for (typed, completed) in [
+        (&b":provider st\t"[..], "provider status "),
+        (b":help ta\t", "help task "),
+        (b":sc\t", "scope "),
+        (b":scope u\t", "scope user "),
+        (b":e lo\t", "e local "),
+    ] {
+        press(&mut app, &mut host, b"\x1b");
+        press(&mut app, &mut host, typed);
+        assert_eq!(app.prompt.text, completed);
+    }
+    // Past a flag, or a word that is no subcommand, nothing is guessed.
+    press(&mut app, &mut host, b"\x1b:task show --json \t");
+    assert_eq!(app.prompt.text, "task show --json ");
+    press(&mut app, &mut host, b"\x1b:frob \t");
+    assert_eq!(app.prompt.text, "frob ");
+    assert!(host.events.is_empty());
+}
+
+/// `r` and `D` from the bar and from the opened Task prefill the `:` line and never submit it;
+/// `D` refuses a Task that is not verified. A Task ID completes from the Tasks pane.
+#[test]
+fn the_tasks_pane_prefills_run_and_deliver_and_completes_task_ids() {
+    let (_temp, root) = temp_root();
+    let (repo, state) = hub_with_tasks(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    let plan = |task_id: &str| {
+        let shown = crate::task_execution::inspection_document(&state, task_id, false);
+        shown.unwrap().unwrap()["plan_id"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let run = format!(
+        "task run pagination-cli --confirm-plan {}",
+        plan("pagination-cli")
+    );
+    let deliver = "task deliver pagination-cli --branch af/pagination-cli --worktree ../pagination-cli --confirm ";
+    press(&mut app, &mut host, b"]]]]]]]]jj");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    for (key, line) in [(&b"r"[..], run.as_str()), (b"D", deliver)] {
+        press(&mut app, &mut host, key);
+        assert_eq!(app.mode, Mode::Command);
+        assert_eq!(app.prompt.text, line);
+        assert_eq!(app.prompt.cursor, line.len());
+        press(&mut app, &mut host, b"\x1b");
+    }
+    // Opened, with the main pane focused: the same lines, and the legend names the verbs.
+    press(&mut app, &mut host, b"\r\t");
+    let status = status_line(&mut app);
+    assert!(status.contains("r run  D deliver"), "{status}");
+    for (key, line) in [(&b"r"[..], run.as_str()), (b"D", deliver)] {
+        press(&mut app, &mut host, key);
+        assert_eq!(app.prompt.text, line);
+        press(&mut app, &mut host, b"\x1b");
+    }
+    assert!(host.events.is_empty(), "nothing was submitted");
+    // Enter on the prefilled line is what runs it, as typed.
+    press(&mut app, &mut host, b"r\r");
+    let words: Vec<String> = shell_words::split(&run).unwrap();
+    assert_eq!(host.runs[0].args, words);
+
+    // A Task that failed its acceptance is not verified: `D` says why, `r` still prefills.
+    press(&mut app, &mut host, b"\t");
+    assert!(
+        app.tree
+            .select(NodeKind::Item(Tab::Tasks), "pagination-unfinished")
+    );
+    press(&mut app, &mut host, b"D");
+    assert_eq!(app.mode, Mode::Normal);
+    let refused = "only a verified Task can be delivered: pagination-unfinished finished without \
+                   satisfying its acceptance";
+    assert_eq!(app.message, Some((refused.to_owned(), true)));
+    press(&mut app, &mut host, b"r");
+    let rerun = format!(
+        "task run pagination-unfinished --confirm-plan {}",
+        plan("pagination-unfinished")
+    );
+    assert_eq!(app.prompt.text, rerun);
+    press(&mut app, &mut host, b"\x1b");
+
+    // Task IDs complete from what the pane lists for this scope.
+    press(&mut app, &mut host, b":task show pag\t");
+    let both = "pagination-cli  pagination-unfinished".to_owned();
+    assert_eq!(app.message, Some((both, false)));
+    press(&mut app, &mut host, b"ination-c\t");
+    assert_eq!(app.prompt.text, "task show pagination-cli ");
+    for verb in ["run", "explain", "deliver"] {
+        press(&mut app, &mut host, b"\x1b");
+        press(
+            &mut app,
+            &mut host,
+            format!(":task {verb} pagination-u\t").as_bytes(),
+        );
+        assert_eq!(
+            app.prompt.text,
+            format!("task {verb} pagination-unfinished ")
+        );
+    }
 }
