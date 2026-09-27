@@ -1298,6 +1298,7 @@ impl super::host::TaskEnvironment for OptimizationEnvironment {
             attempt_id: attempt.id().into(),
             node: input.node.clone(),
             context_id: attempt.context_id().into(),
+            check: None,
             spans: prepared
                 .snapshot
                 .is_some()

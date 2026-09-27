@@ -16,6 +16,28 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
+- Warm Task checks bind the kernel's rustup home and keep Cargo's home warm (ADR-0123 amended,
+  package R1 of `docs/design/research-pipelines.md`). Under `[warm]` a check and its toolchain
+  probe receive `RUSTUP_HOME`, from the kernel's own, else its `HOME`'s `.rustup`, and
+  `RUSTUP_AUTO_INSTALL=0`. A rustup proxy therefore answers from the installed toolchain
+  instead of downloading one into the check's fresh `HOME`. That download is what made the
+  probe exceed its 30 s bound. `RUSTUP_HOME` joins the toolchain key, and where it came from,
+  or why it is unset, is recorded. `build_cache` admits `cargo_home`, bound as `CARGO_HOME`
+  beside `cargo_target` under one toolchain key and one shared `max_bytes`. A `cargo_home`
+  holding `credentials.toml` is suspect. A declared `caches = ["cargo"]` supersedes it
+  (`cargo_home:superseded`). Four verification findings are closed. First, the directories are
+  measured again after every check, so a fast check that wrote past the bound fails with
+  `warm_cache_bound_exceeded` too. Second, traversal is descriptor-relative
+  (`openat`/`fstatat`, `O_NOFOLLOW`) and fails closed: an unreadable subtree makes a
+  directory suspect before reuse and fails a check that left it. Third, `ensure()` reports a
+  discard, and bytes are measured only after it, so a recreated directory is cold, never its
+  old size. Fourth, every warm check, started or not, keeps one evidence group naming it
+  (`TaskRuntimeEvidence@1` gains an optional `check` binding) with one observation per
+  declared kind, such as `deadline_exhausted` or `cache_refused`. `af task show` never prints
+  an unnamed line. A checked-in golden recorded by a kernel without this package pins every
+  document of a Task without `[warm]`, and a fixture proves from the implementer's sandbox
+  manifest, the sealed candidate, the derived Snapshot and the delivered tree that no cache
+  byte reaches them.
 - Warm Task checks (ADR-0123, `docs/design/research-pipelines.md` package R1). A code policy
   may declare `[warm] build_cache = ["cargo_target"]`, `caches = ["cargo"]` and `max_bytes`
   (default 8 GiB, at most 32 GiB). A `trusted_local` Task check then builds into
@@ -29,7 +51,11 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   `kind` may carry a `:reason` suffix. `af task show` prints `check <name>: <ms> ms, cargo_target
   warm <bytes>` or `cold <reason>`. `schemas/code-task-policy-v1.json` is new. `scripts/verify.sh`
   honours a `CARGO_TARGET_DIR` that is already set. A policy without `[warm]` is captured, run
-  and shown exactly as before.
+  and shown exactly as before. A check holds an exclusive lock over its whole toolchain key from preparation to the end of
+  its removal step, the bound is measured over the whole key, a directory that is suspect once
+  the check ended (a link, a special file, a forbidden `credentials.toml`, a root swapped for a
+  link) fails the check with `warm_cache_suspect` and is removed under the lock, and a root that
+  is no longer a real directory counts as above every bound.
 - Give a source-writing Worker that declares `execute-checks` a shell (ADR-0120): `worker_access`
   maps `write-source` plus `execute-checks` to `WorkerAccess::WriteSourceWithShell`, the Claude
   adapter grants `Read,Glob,Grep,Edit,Write,Bash` and Codex runs `workspace-write`, and the shell's

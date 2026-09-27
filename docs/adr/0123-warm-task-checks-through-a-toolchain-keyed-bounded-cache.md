@@ -1,6 +1,8 @@
 # ADR-0123: Warm Task checks through a toolchain-keyed, bounded, machine-local cache
 
-Status: accepted, 2026-09-27. Supersedes in part
+Status: accepted, 2026-09-27; amended the same day by package R1's follow-up (Task
+`research-r1c`, see [Amendment](#amendment-rustup-home-cargo_home-and-fail-closed-bounds)).
+Supersedes in part
 [ADR-0108](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md): the one-Round
 scope of a candidate-built build cache, for Task checks only.
 
@@ -40,7 +42,8 @@ read-only, so a build directory it reuses never needs to travel through a Worker
 ## Decision
 
 - **Admission.** `af.code-task-policy/1` gains an optional `[warm]` table:
-  `build_cache = ["cargo_target"]`, the only kind installed; `caches = ["cargo"]`, naming Cache
+  `build_cache = ["cargo_target"]`, the only kind installed at first (the amendment below adds
+  `cargo_home`); `caches = ["cargo"]`, naming Cache
   Snapshot kinds; and `max_bytes`, which defaults to 8 GiB and may be at most 32 GiB. Loading
   the policy refuses a `[warm]` table together with `require_container = true`, and the refusal
   names both. Loading happens at Task capture, before any Worker or Provider admission. A
@@ -56,7 +59,7 @@ read-only, so a build directory it reuses never needs to travel through a Worker
   - the complete `rustc -vV` output;
   - the complete `cargo -vV` output;
   - the host triple `rustc` reports;
-  - the check's fixed `PATH`, `LC_ALL` and `TZ`.
+  - the check's fixed `PATH`, `LC_ALL` and `TZ`, and, since the amendment, `RUSTUP_HOME`.
 
   Both version commands run once per check Attempt, before its first check. They run in the
   check's working directory, under the check's exact environment, with a 30-second supervised
@@ -76,7 +79,8 @@ read-only, so a build directory it reuses never needs to travel through a Worker
   samples the directory's size every five seconds. Above the bound it ends the check's process
   group through the check runner's supervised cancellation. The check is recorded `failed` with
   reason `warm_cache_bound_exceeded`, and the directory is removed before the lock is released.
-  After the check, a directory above the bound is removed, so the next check runs cold. A
+  After the check, a directory above the bound is removed, so the next check runs cold; since the
+  amendment that measurement comes before the result is accepted and fails the check. A
   removal during or after the check is recorded on the kind's one observation as
   `evicted_bytes`, so every declared kind yields exactly one observation per check: the bytes
   available before the check and, when it happened, the eviction after it. Only a removal
@@ -102,6 +106,83 @@ read-only, so a build directory it reuses never needs to travel through a Worker
   or `<kind> cold <reason>`. A check is warm or cold only in this evidence. Its
   `CheckResult@1` bytes, receipt outcome and every Snapshot are the same either way.
 
+## Amendment: rustup home, `cargo_home` and fail-closed bounds
+
+The verification Task of R1 recorded `cargo_target cold toolchain_unresolved` on this machine: the
+probe's `rustc -vV` exceeded its 30-second bound. A check receives a fresh `HOME`. A rustup proxy
+`rustc` or `cargo` that finds no rustup home below that `HOME` syncs the channel and installs the
+pinned toolchain there before answering. So the probe timed out. Every Task check also
+downloaded a toolchain, and the whole crate registry, into a directory discarded after it. The
+reviewers found five more defects, each closed below.
+
+Options considered for the toolchain:
+
+- **Raise the probe's bound.** Rejected: the probe would answer, but every check would still
+  download a toolchain and the registry, and the key would be computed from a toolchain the
+  check just installed.
+- **Make the rustup home a warm kind.** Rejected: the installed toolchains are the machine's,
+  not candidate-built state. Bounding or removing them would delete the operator's toolchains,
+  and a check could write a toolchain that the next Task then runs.
+- **Pass the kernel's `HOME` to the check.** Rejected: it hands a candidate the operator's whole
+  home, including credentials, which the runner's allowlist exists to withhold.
+- **Pass only the rustup home, and forbid installing (chosen).**
+
+Decisions, each extending the rule above that it names:
+
+- **Rustup home.** Under `[warm]`, and only then, the check and its toolchain probe receive
+  `RUSTUP_HOME` and `RUSTUP_AUTO_INSTALL=0`. `RUSTUP_HOME` is the kernel process's own, made
+  absolute, else `$HOME/.rustup` of the kernel's `HOME` when that directory exists, else it is
+  unset. The installed toolchain answers at once. A toolchain the machine lacks fails the probe
+  (`toolchain_unresolved`) and is never downloaded. `RUSTUP_HOME` joins the key's fixed
+  environment. The kernel never creates, writes, bounds or removes the rustup home. Where the
+  value came from is recorded on each warm check as `rustup_home`: `kernel_environment`,
+  `kernel_home`, `unset_no_home` or `unset_not_installed`.
+- **`cargo_home`.** `build_cache` admits a second kind, `cargo_home`, the directory
+  `<project>/<toolchain>/cargo_home` bound as `CARGO_HOME`. It is Cargo's registry and git
+  cache. It has its own lock and the same validation, removal and observation rules as
+  `cargo_target`. Locks are always taken in one kind order, so two checks never hold one kind
+  each while waiting for the other's. `max_bytes` bounds the kinds of one toolchain key
+  together: before, during and after the check, their combined bytes are compared with it, and
+  crossing it removes every one of them. A `cargo_home` holding `credentials.toml`, or Cargo's
+  older `credentials`, is suspect and removed before reuse. A declared `caches = ["cargo"]` Cache
+  Snapshot takes precedence for `CARGO_HOME`. The two are never bound at once, and the
+  `cargo_home` kind records the ineligible `cargo_home:superseded`. The warm kinds are their own
+  closed vocabulary, not a Gate's `build_caches` of ADR-0108.
+- **Bounds, after every execution.** The five-second monitor stays for long checks. Once any
+  monitored check has ended, and before its result is accepted, the directories are measured
+  again. Above the bound the check is `failed` with `warm_cache_bound_exceeded` and the
+  directories are removed under their locks. A check that writes past the bound between two
+  samples therefore fails too. The eviction stays on each kind's one observation as
+  `evicted_bytes`.
+- **Traversal fails closed.** The byte count and the suspect walk open each directory relative
+  to its parent's descriptor with `O_NOFOLLOW` and inspect each entry with
+  `fstatat(AT_SYMLINK_NOFOLLOW)`. Only an entry that vanished during the walk is skipped. Any
+  other failure, such as an unreadable subtree, is never skipped: before reuse it makes the
+  directory suspect, so the directory is removed. After a check it is a directory above every
+  bound, so the check that left it fails through the bound path.
+- **Measured after validation.** `ensure()` reports whether it reused, created or discarded the
+  directory, and bytes are measured only after it. A discarded directory is recreated empty
+  and recorded as an eligible observation with `bytes_available = 0`, a cold check, never with
+  the discarded directory's old bytes.
+- **Every check keeps its evidence and its name.** Every check of a warm Task has exactly one
+  `af/TaskRuntimeEvidence@1` group. The group carries a `check` binding with the check's name,
+  its final outcome and its `rustup_home`, and one observation per declared kind, whether or not
+  the check started. A check skipped because the Attempt's deadline ran out before or during
+  preparation records `<kind>:deadline_exhausted` for every kind. A check that did not run
+  because a declared Cache Snapshot was refused records the refused kind as `unavailable` and
+  every other kind it had prepared as `<kind>:cache_refused`. `af task show` prints named lines
+  from that binding, `check <name>: <outcome> in <ms> ms, …` or
+  `check <name>: not_run, never started, …`, and never an unnamed line. The binding is optional
+  and absent without `[warm]`, so those records keep their bytes.
+- **Proof of the unchanged path.** A checked-in golden, recorded by a kernel built from the
+  Snapshot this amendment started from, holds the revision, plan, run authority, `af task show
+  --json` inspection, check receipt, check result, delivery receipt and delivered tree of a Task
+  without `[warm]`. The golden is normalized only where two independent runs differ: deadlines,
+  Attempt identities, times, fixture paths, and the engine digest of the running `af`
+  executable. The current kernel must reproduce it. A second fixture shows that no path or
+  content of a populated cache directory appears in the implementer Worker's sandbox manifest,
+  the sealed candidate manifest, the derived Snapshot or the delivered tree.
+
 ## Consequences
 
 - A second check on one project and toolchain starts from the first one's build. How much faster
@@ -117,4 +198,25 @@ read-only, so a build directory it reuses never needs to travel through a Worker
 - `scripts/verify.sh` honours a `CARGO_TARGET_DIR` that is already set, so the kernel's own gate
   builds into whatever directory its check was given.
 - A policy without `[warm]` is unchanged: same captured policy bytes, one runtime record per
-  check Attempt with no cache observation, no cache line in `af task show`.
+  check Attempt with no cache observation or check binding, no cache line in `af task show`, no
+  rustup variables in the check's environment.
+- A machine without a rustup home, or without the pinned toolchain, runs every warm check cold
+  and says so. It no longer downloads a toolchain per check.
+
+### After the second review
+
+Three rules were added when the follow-up Task's reviewers read the amendment:
+
+- **One key, one holder.** A check takes an exclusive lock over the whole toolchain key
+  (`<project>/<toolchain>/warm.lock`) before any kind's lock and holds it until its removal step
+  has ended, so two checks of one project and toolchain never overlap whatever kinds each
+  declares; a check that cannot take it within the wait runs cold and records `busy`. The bound
+  is measured over the whole key directory, held kinds or not.
+- **Suspect after the check, not only before it.** Once a check ended, every directory it used
+  is judged as `ensure` judges it before reuse: a link, a special file, another user's entry, a
+  forbidden name such as a Cargo `credentials.toml`, or a root that is no longer a private real
+  directory makes it suspect. The check fails with reason `warm_cache_suspect`, and every
+  directory of the key is removed under the lock before it is released.
+- **A swapped root is uninspectable.** A warm root that is a link or a file once the check ended
+  cannot be counted; it is above every bound, the check fails through the bound path, and the
+  entry is removed.

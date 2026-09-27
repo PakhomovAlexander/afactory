@@ -48,8 +48,9 @@ pub use cache::{
 pub use container::{Availability, ContainerProvider};
 pub use seal::{MutationSet, SealedSandbox};
 pub use task_build_cache::{
-    TaskBuildCacheLock, WarmDirectory, default_task_build_cache_root, directory_bytes,
-    lock_task_build_cache,
+    Ensured, TaskBuildCacheKeyLock, TaskBuildCacheLock, Uninspectable, WarmDirectory,
+    default_task_build_cache_root, directory_bytes, lock_task_build_cache,
+    lock_task_build_cache_key,
 };
 pub use workspace::{
     RecordedPreparation, WorkspaceError, WorkspacePreparation, WorkspaceRoot,

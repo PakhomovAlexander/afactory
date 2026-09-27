@@ -10,7 +10,8 @@ use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::pipeline::*;
 use review_core::task::plan::ExecutionPlanV1;
 use review_core::task::runtime::{
-    TASK_RUNTIME_EVIDENCE_V1, TaskRuntimeEvidenceV1, TaskRuntimeSpanKindV1, TaskRuntimeSpanV1,
+    TASK_RUNTIME_EVIDENCE_V1, TaskRuntimeCheckOutcomeV1, TaskRuntimeCheckV1, TaskRuntimeEvidenceV1,
+    TaskRuntimeSpanKindV1, TaskRuntimeSpanV1,
 };
 use review_core::task::verification::*;
 use review_core::task::*;
@@ -29,8 +30,9 @@ use super::source::{
     invocation_producer, seal_candidate, source_input, source_snapshot, validate_seal,
 };
 use super::warm_check::{
-    CacheSourceResolver, CodeWarmPolicy, ToolchainDeclaration, WARM_CACHE_BOUND_EXCEEDED,
-    WarmCheckHost, WarmSession,
+    CacheSourceResolver, CodeWarmPolicy, DEADLINE_EXHAUSTED, Excess, PreparedCheck, RustupHome,
+    ToolchainDeclaration, WARM_CACHE_BOUND_EXCEEDED, WARM_CACHE_SUSPECT, WarmCheckHost,
+    WarmSession,
 };
 use super::{TaskOperatorHost, TaskWorkOutput, envelope};
 
@@ -367,10 +369,14 @@ impl CodeTaskDomain {
             )),
             None => None,
         };
+        // Under [warm] the probe and the check see the kernel's rustup home, so an installed
+        // toolchain answers at once and a missing one fails instead of downloading.
+        let rustup = session.as_ref().map(|_| RustupHome::of_kernel());
         let mut checks = BTreeMap::new();
         let mut spans = Vec::new();
-        // Under [warm] every check's span travels with its own cache observations, so a reader
-        // never has to guess which check an observation belongs to.
+        // Under [warm] every check, started or not, has one group naming it, holding its span
+        // and its cache observations, so a reader never has to guess which check an
+        // observation belongs to.
         let mut warm_evidence = Vec::new();
         for name in names {
             let definition = self
@@ -399,6 +405,10 @@ impl CodeTaskDomain {
                     "XDG_CACHE_HOME",
                     runtime.path().join("cache").display().to_string(),
                 );
+            let runner = rustup
+                .iter()
+                .flat_map(RustupHome::environment)
+                .fold(runner, |runner, (key, value)| runner.with_env(key, value));
             let mut prepared = match session.as_mut() {
                 Some(session) if remaining > 0 => Some(session.prepare(
                     cas,
@@ -408,7 +418,16 @@ impl CodeTaskDomain {
                     cancellation,
                     Duration::from_millis(remaining),
                 )?),
-                _ => None,
+                // The deadline ran out before this check could prepare: it keeps its name and
+                // one observation per declared kind.
+                Some(session) => Some(PreparedCheck {
+                    key_lock: None,
+                    environment: Vec::new(),
+                    directories: Vec::new(),
+                    observations: session.skipped(cas, DEADLINE_EXHAUSTED)?,
+                    refusal: None,
+                }),
+                None => None,
             };
             // Preparation — the toolchain probe, the lock wait, a Cache Snapshot copy — spent
             // Attempt time. The check runs against what is left now, not what was left before.
@@ -416,13 +435,14 @@ impl CodeTaskDomain {
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| e.to_string())?
                 .as_millis() as u64;
+            let exhausted_before = remaining == 0;
             let remaining = attempt
                 .reservation()
                 .deadline_unix_ms
                 .saturating_sub(prepared_at)
                 .min(remaining);
             let runner = runner.with_timeout(Duration::from_millis(remaining));
-            let exhausted_preparing = prepared.is_some() && remaining == 0;
+            let exhausted_preparing = prepared.is_some() && !exhausted_before && remaining == 0;
             let runner = match &prepared {
                 None => runner.with_env(
                     "CARGO_TARGET_DIR",
@@ -436,15 +456,16 @@ impl CodeTaskDomain {
                     }),
             };
             let refusal = prepared.as_ref().and_then(|p| p.refusal.clone());
-            let mut exceeded = None;
-            let (mut result, timing) = if remaining > 0 && refusal.is_none() {
+            let started = remaining > 0 && refusal.is_none();
+            let mut exceeded: Option<Excess> = None;
+            let (mut result, timing) = if started {
                 let execution = match (
                     session.as_ref(),
-                    prepared.as_ref().and_then(|p| p.directory.as_ref()),
+                    prepared.as_ref().map(|p| p.directories.as_slice()),
                 ) {
-                    (Some(session), Some(directory)) => {
+                    (Some(session), Some(directories)) if !directories.is_empty() => {
                         let (execution, over) =
-                            session.run_monitored(runner, definition, directory, cancellation);
+                            session.run_monitored(runner, definition, directories, cancellation);
                         exceeded = over;
                         execution
                     }
@@ -476,24 +497,47 @@ impl CodeTaskDomain {
                     None,
                 )
             };
-            if exceeded.is_some() {
-                result.status = CheckStatus::Failed;
-                result.exit_code = None;
-                result.reason = Some(WARM_CACHE_BOUND_EXCEEDED.into());
-            }
             let mut observations = Vec::new();
             if let (Some(session), Some(prepared)) = (session.as_ref(), prepared.take()) {
                 observations = prepared.observations;
-                if let Some(evicted) = session.finish(prepared.directory, exceeded)? {
-                    // One declared kind, one observation: the eviction after the check lands on
-                    // the same record that measured the directory before it.
-                    let target = observations
-                        .iter_mut()
-                        .find(|observation| {
-                            observation.eligible && observation.kind == "cargo_target"
-                        })
-                        .ok_or("Warm check evicted a directory it never observed")?;
-                    target.evicted_bytes = Some(evicted);
+                if !started {
+                    // Nothing prepared was used; the locks are released without a removal.
+                    drop(prepared.directories);
+                    if exhausted_preparing {
+                        observations =
+                            session.not_started(cas, observations, DEADLINE_EXHAUSTED)?;
+                    }
+                } else {
+                    let reason = match &exceeded {
+                        Some(Excess::Suspect(detail)) => {
+                            eprintln!(
+                                "warm check cache diagnostic: suspect after the check: {detail}"
+                            );
+                            WARM_CACHE_SUSPECT
+                        }
+                        _ => WARM_CACHE_BOUND_EXCEEDED,
+                    };
+                    let key_lock = prepared.key_lock;
+                    let evicted = session.finish(prepared.directories, exceeded)?;
+                    // The key stays locked until every directory of this check is removed.
+                    drop(key_lock);
+                    if !evicted.is_empty() {
+                        // Above the bound or suspect once the check ended, however fast it was:
+                        // the check fails, and each kind's eviction lands on the same record
+                        // that measured its directory before the check.
+                        result.status = CheckStatus::Failed;
+                        result.exit_code = None;
+                        result.reason = Some(reason.into());
+                    }
+                    for (kind, bytes) in evicted {
+                        let target = observations
+                            .iter_mut()
+                            .find(|observation| {
+                                observation.eligible && observation.kind == kind.as_str()
+                            })
+                            .ok_or("Warm check evicted a directory it never observed")?;
+                        target.evicted_bytes = Some(bytes);
+                    }
                 }
             }
             let span = match timing {
@@ -518,22 +562,32 @@ impl CodeTaskDomain {
                 }
                 None => None,
             };
-            if session.is_some() {
-                let caches = observations
-                    .into_iter()
-                    .map(|observation| {
-                        observation
-                            .record(cas, [attempt.task_id(), attempt.id(), &input.node, name])
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                warm_evidence.push((span, caches));
-            } else {
-                spans.extend(span);
-            }
             let sealed = sandbox.seal().map_err(|e| e.to_string())?;
             if !sealed.unchanged() {
                 result.status = CheckStatus::Failed;
                 result.reason = Some("Check mutated its input Snapshot".into());
+            }
+            match &rustup {
+                Some(rustup) => {
+                    let caches = observations
+                        .into_iter()
+                        .map(|observation| {
+                            observation
+                                .record(cas, [attempt.task_id(), attempt.id(), &input.node, name])
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let check = TaskRuntimeCheckV1 {
+                        name: name.clone(),
+                        outcome: match result.status {
+                            CheckStatus::Passed => TaskRuntimeCheckOutcomeV1::Passed,
+                            CheckStatus::Failed => TaskRuntimeCheckOutcomeV1::Failed,
+                            CheckStatus::NotRun => TaskRuntimeCheckOutcomeV1::NotRun,
+                        },
+                        rustup_home: rustup.source,
+                    };
+                    warm_evidence.push((check, span, caches));
+                }
+                None => spans.extend(span),
             }
             let id = cas
                 .put_json(&serde_json::to_value(result).map_err(|e| e.to_string())?)
@@ -565,25 +619,27 @@ impl CodeTaskDomain {
             )
             .map_err(|e| e.to_string())?
             .0;
-        let evidence = |spans: Vec<TaskRuntimeSpanV1>, caches| TaskRuntimeEvidenceV1 {
+        let evidence = |check, spans: Vec<TaskRuntimeSpanV1>, caches| TaskRuntimeEvidenceV1 {
             task_id: attempt.task_id().into(),
             attempt_id: attempt.id().into(),
             node: input.node.clone(),
             context_id: attempt.context_id().into(),
+            check,
             spans,
             caches,
         };
         let groups = if session.is_some() {
             warm_evidence
                 .into_iter()
-                .filter(|(span, caches)| span.is_some() || !caches.is_empty())
-                .map(|(span, caches)| evidence(span.into_iter().collect(), caches))
+                .map(|(check, span, caches)| {
+                    evidence(Some(check), span.into_iter().collect(), caches)
+                })
                 .collect::<Vec<_>>()
         } else {
-            vec![evidence(spans, vec![])]
+            vec![evidence(None, spans, vec![])]
         };
         if groups.is_empty() {
-            evidence(vec![], vec![]).validate()?;
+            evidence(None, vec![], vec![]).validate()?;
         }
         let mut evidence_ids = Vec::with_capacity(groups.len());
         for evidence in groups {

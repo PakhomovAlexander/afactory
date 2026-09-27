@@ -57,7 +57,7 @@
       }
     },
     "warm": {
-      "description": "An explicitly unsafe, machine-local layer only a trusted_local check touches: a toolchain-keyed, byte-bounded build directory and administrator-approved Cache Snapshots. Refused together with require_container = true.",
+      "description": "An explicitly unsafe, machine-local layer only a trusted_local check touches: toolchain-keyed, byte-bounded build directories (`cargo_target` bound as CARGO_TARGET_DIR, `cargo_home` bound as CARGO_HOME) and administrator-approved Cache Snapshots. A declared `cargo` Cache Snapshot supersedes a `cargo_home` directory. Refused together with require_container = true.",
       "type": "object",
       "additionalProperties": false,
       "anyOf": [{"required": ["build_cache"]}, {"required": ["caches"]}],
@@ -66,7 +66,7 @@
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"enum": ["cargo_target"]}
+          "items": {"enum": ["cargo_target", "cargo_home"]}
         },
         "caches": {
           "type": "array",
@@ -75,7 +75,7 @@
           "items": {"enum": ["cargo"]}
         },
         "max_bytes": {
-          "description": "The directory's byte bound; 8 GiB when absent.",
+          "description": "The byte bound shared by every build directory of one toolchain key; 8 GiB when absent.",
           "type": "integer",
           "minimum": 1,
           "maximum": 34359738368

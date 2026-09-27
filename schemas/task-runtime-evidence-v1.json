@@ -29,6 +29,9 @@
     "context_id": {
       "$ref": "#/$defs/digest"
     },
+    "check": {
+      "$ref": "#/$defs/check"
+    },
     "spans": {
       "type": "array",
       "maxItems": 10000,
@@ -56,7 +59,59 @@
       ]
     }
   ],
+  "if": {
+    "required": [
+      "check"
+    ]
+  },
+  "then": {
+    "required": [
+      "caches"
+    ],
+    "properties": {
+      "spans": {
+        "maxItems": 1,
+        "items": {
+          "properties": {
+            "kind": {
+              "const": "check"
+            }
+          }
+        }
+      }
+    }
+  },
   "$defs": {
+    "check": {
+      "description": "The one check a warm evidence group belongs to (ADR-0123), present whether or not the check started, with the check's outcome and where its RUSTUP_HOME came from. A named group always carries one cache observation per declared warm kind.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "outcome",
+        "rustup_home"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "outcome": {
+          "enum": [
+            "passed",
+            "failed",
+            "not_run"
+          ]
+        },
+        "rustup_home": {
+          "enum": [
+            "kernel_environment",
+            "kernel_home",
+            "unset_no_home",
+            "unset_not_installed"
+          ]
+        }
+      }
+    },
     "digest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"

@@ -589,3 +589,21 @@ its old bytes (both reviewers); a check that never starts loses its evidence or 
 paired benchmark is absent — and the evaluator asked for the byte-identity proof of a Task
 without `[warm]` and a sandbox-manifest proof that no cache byte reaches a Worker. All of it is
 the scope of Task `research-r1c`; the paired benchmark follows it.
+
+Task `research-r1c` (plan `sha256:6f99c787…`, source b77116a): the implementer completed one
+Attempt of 503,000 chargeable tokens and delivered the whole amendment on top of the R1 code —
+`RustupHome::of_kernel()` and the two rustup variables for probe and check, the `cargo_home`
+kind with its own lock and the shared bound, the post-execution measurement that catches a fast
+over-bound check, descriptor-relative fail-closed traversal, measurement after validation, a
+named evidence group per check whether it ran or not, the schema and ADR amendments and eleven new
+unit tests — and reported the one `.af/` line it may not write. The gate passed (`kernel`
+15.1 min, still cold: the kernel running the Task predates the amendment). Both reviewers replied
+this time: `bugs` (Terra) two majors and `correctness` (Sol) two majors, three distinct defects —
+the shared bound was not serialized across checks declaring different kinds; a credential a check
+writes into its `cargo_home` survived a passing check; a root swapped for a link during a fast
+check escaped the final count. The evaluator failed the Task only on the missing policy line. The
+Task charged 835,692 tokens. Fixed by hand on the materialized candidate: one exclusive lock over
+the whole toolchain key held from preparation to removal, the bound measured over the whole key,
+every used directory judged suspect after the check exactly as before it (reason
+`warm_cache_suspect`, removal under the lock), and a non-directory root counted as uninspectable;
+three unit tests pin them, and `.af/code-policy.toml` declares both kinds.

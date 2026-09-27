@@ -164,28 +164,49 @@ A code policy may declare a `[warm]` table
 
 ```toml
 [warm]
-build_cache = ["cargo_target"]
+build_cache = ["cargo_target", "cargo_home"]
 caches = ["cargo"]      # optional: Cache Snapshots from machine policy
 max_bytes = 8589934592  # optional: the default, 8 GiB; at most 32 GiB
 ```
 
-It grants a check one thing: a `CARGO_TARGET_DIR` that survives it. The directory is
-`$XDG_CACHE_HOME/af/task-build-cache/<project>/<toolchain>/cargo_target`, created with mode
-`0700` and keyed by the repository and by the toolchain the check resolves. That toolchain is
-the Snapshot's `rust-toolchain.toml`, `rustc -vV`, `cargo -vV`, the host triple, and the
-check's `PATH`, `LC_ALL` and `TZ`. A later check with the same key starts from the earlier
-build. A declared `caches` kind gives the check an offline `CARGO_HOME` from the machine's
-cache policy, as a Gate's `[gate] caches` do; that directory is materialized beside the check,
-never into the source. `[warm]` refuses a great deal. It never runs with
-`require_container = true`: such a policy is refused before any Worker starts. The directory
-never enters a Worker sandbox, a Snapshot or a delivered worktree, and its bytes never change a
-check's result. A check whose toolchain cannot be resolved, whose directory another check holds
-for 60 seconds, or whose directory is already above `max_bytes` runs cold and says why. A check
-that grows the directory past the bound is stopped and fails with `warm_cache_bound_exceeded`.
-The directory is then removed, never trimmed. This is candidate-built state on your machine,
-not isolation. `af task show` prints one line per warm check, such as
-`check kernel: 812345 ms, cargo_target warm 2147483648` or `cargo_target cold busy`. Deleting
-`$XDG_CACHE_HOME/af/task-build-cache` is always safe.
+It grants a check directories that survive it. `cargo_target` becomes the check's
+`CARGO_TARGET_DIR` and `cargo_home` its `CARGO_HOME`, Cargo's registry and git caches. Each is
+`$XDG_CACHE_HOME/af/task-build-cache/<project>/<toolchain>/<kind>`, created with mode `0700` and
+keyed by the repository and by the toolchain the check resolves. That toolchain is the
+Snapshot's `rust-toolchain.toml`, `rustc -vV`, `cargo -vV`, the host triple, and the check's
+`PATH`, `LC_ALL`, `TZ` and `RUSTUP_HOME`. A later check with the same key starts from the
+earlier build. `max_bytes` bounds the kinds of one key together, not each on its own.
+
+Under `[warm]` a check and its toolchain probe also receive the kernel's rustup home: its own
+`RUSTUP_HOME`, else `$HOME/.rustup` when that directory exists. They also receive
+`RUSTUP_AUTO_INSTALL=0`. The installed toolchain answers at once, and a toolchain the machine
+lacks is `cold toolchain_unresolved`, never a download into the check's throwaway `HOME`. The
+kernel only passes that path on. It never writes, bounds or removes the rustup home.
+
+A declared `caches` kind gives the check an offline `CARGO_HOME` from the machine's cache
+policy, as a Gate's `[gate] caches` do. That directory is materialized beside the check, never
+into the source. It takes precedence over `cargo_home`: the two are never bound at once, and
+the `cargo_home` kind records `cargo_home:superseded`.
+
+`[warm]` refuses a great deal. It never runs with `require_container = true`: such a policy is
+refused before any Worker starts. No directory ever enters a Worker sandbox, a Snapshot or a
+delivered worktree, and its bytes never change a check's result. Before reuse the whole
+directory is inspected without following links, relative to each parent's descriptor. It is
+removed and recreated empty, so the check runs cold, when it is suspect. Suspect means a link, a
+special file, another user's entry, a widened mode, a `credentials.toml` in a `cargo_home`, or
+any entry the inspection cannot read. A check runs cold and says why when its toolchain cannot
+be resolved, when another check holds its directory for 60 seconds, or when its directories are
+already above `max_bytes`. The directories are measured again when the check ends and before
+its result counts. A check that grew them past the bound fails with
+`warm_cache_bound_exceeded`, however fast it was, and so does one that left anything the
+measurement cannot read. The directories are then removed, never trimmed. This is
+candidate-built state on your machine, not isolation.
+
+`af task show` prints one line per warm check, named even when the check never started:
+`check kernel: passed in 812345 ms, cargo_target warm 2147483648, cargo_home warm 409600`, or
+`check kernel: not_run, never started, cargo_target cold deadline_exhausted`. Deleting
+`$XDG_CACHE_HOME/af/task-build-cache` is always safe. A policy without `[warm]` records every
+document exactly as before.
 
 ## Troubleshooting
 

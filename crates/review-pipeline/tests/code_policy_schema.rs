@@ -46,6 +46,9 @@ fn accepted_policies_round_trip_through_the_schema() {
         Some(json!({"caches": ["cargo"]})),
         Some(json!({"build_cache": ["cargo_target"], "caches": ["cargo"], "max_bytes": 1})),
         Some(json!({"build_cache": ["cargo_target"], "max_bytes": 34_359_738_368_u64})),
+        Some(json!({"build_cache": ["cargo_home"]})),
+        Some(json!({"build_cache": ["cargo_target", "cargo_home"]})),
+        Some(json!({"build_cache": ["cargo_home", "cargo_target"], "caches": ["cargo"]})),
     ] {
         let value = policy(warm.clone(), false);
         let parsed: CodeTaskPolicy = serde_json::from_value(value.clone()).unwrap();
@@ -78,6 +81,8 @@ fn refused_warm_shapes_are_refused_by_both() {
         json!({}),
         json!({"build_cache": []}),
         json!({"build_cache": ["cargo_target", "cargo_target"]}),
+        json!({"build_cache": ["cargo_home", "cargo_home"]}),
+        json!({"build_cache": ["cargo_home", "rustup_home"]}),
         json!({"caches": ["cargo", "cargo"]}),
         json!({"build_cache": ["target"]}),
         json!({"caches": ["npm"]}),

@@ -739,6 +739,7 @@ fn task_runtime_cache_observations_name_at_most_one_reason() {
         attempt_id: "A".repeat(26),
         node: "root.nodes.check".into(),
         context_id: digest('a'),
+        check: None,
         spans: vec![],
         caches: vec![TaskCacheObservationV1 {
             observation_id: digest('b'),
@@ -758,6 +759,10 @@ fn task_runtime_cache_observations_name_at_most_one_reason() {
         "cargo_target:toolchain_unresolved",
         "cargo_target:bound_exceeded",
         "cargo:unavailable",
+        "cargo_home",
+        "cargo_home:superseded",
+        "cargo_target:deadline_exhausted",
+        "cargo_home:cache_refused",
     ] {
         evidence.caches[0].kind = kind.into();
         evidence.validate().unwrap();
@@ -782,6 +787,117 @@ fn task_runtime_cache_observations_name_at_most_one_reason() {
             kind,
         );
     }
+}
+
+#[test]
+fn a_warm_evidence_group_names_its_check_whether_or_not_it_started() {
+    use review_core::task::runtime::{
+        TaskCacheObservationV1, TaskRuntimeCheckOutcomeV1, TaskRuntimeCheckV1,
+        TaskRuntimeEvidenceV1, TaskRuntimeRustupHomeV1, TaskRuntimeSpanKindV1, TaskRuntimeSpanV1,
+    };
+    let digest = |fill: char| format!("sha256:{}", fill.to_string().repeat(64));
+    let observation = |kind: &str| TaskCacheObservationV1 {
+        observation_id: digest('b'),
+        kind: kind.into(),
+        eligible: !kind.contains(':'),
+        source_digest: digest('c'),
+        toolchain_id: None,
+        bytes_available: 0,
+        lookup_ms: 0,
+        materialization_ms: 0,
+        evicted_bytes: None,
+    };
+    let span = |label: &str, kind| TaskRuntimeSpanV1 {
+        span_id: digest('e'),
+        kind,
+        label: label.into(),
+        started_unix_ms: 1,
+        elapsed_ms: 2,
+    };
+    let skipped = TaskRuntimeEvidenceV1 {
+        task_id: "warm-check".into(),
+        attempt_id: "A".repeat(26),
+        node: "root.nodes.check".into(),
+        context_id: digest('a'),
+        check: Some(TaskRuntimeCheckV1 {
+            name: "kernel".into(),
+            outcome: TaskRuntimeCheckOutcomeV1::NotRun,
+            rustup_home: TaskRuntimeRustupHomeV1::UnsetNotInstalled,
+        }),
+        spans: vec![],
+        caches: vec![
+            observation("cargo_target:deadline_exhausted"),
+            observation("cargo_home:deadline_exhausted"),
+        ],
+    };
+    skipped.validate().unwrap();
+    let value = serde_json::to_value(&skipped).unwrap();
+    assert_eq!(
+        value["check"],
+        json!({"name": "kernel", "outcome": "not_run", "rustup_home": "unset_not_installed"})
+    );
+    assert_valid("task-runtime-evidence-v1.json", &value);
+
+    let mut ran = skipped.clone();
+    ran.check.as_mut().unwrap().outcome = TaskRuntimeCheckOutcomeV1::Passed;
+    ran.check.as_mut().unwrap().rustup_home = TaskRuntimeRustupHomeV1::KernelEnvironment;
+    ran.spans = vec![span("kernel", TaskRuntimeSpanKindV1::Check)];
+    ran.validate().unwrap();
+    assert_valid(
+        "task-runtime-evidence-v1.json",
+        &serde_json::to_value(&ran).unwrap(),
+    );
+
+    let mut refused = Vec::new();
+    let mut without_caches = skipped.clone();
+    without_caches.caches.clear();
+    without_caches.spans = vec![span("kernel", TaskRuntimeSpanKindV1::Check)];
+    refused.push(("a named group without observations", without_caches));
+    let mut two_spans = ran.clone();
+    two_spans
+        .spans
+        .push(span("kernel", TaskRuntimeSpanKindV1::Check));
+    refused.push(("two spans for one check", two_spans));
+    let mut preparation = ran.clone();
+    preparation.spans = vec![span("kernel", TaskRuntimeSpanKindV1::DependencyPreparation)];
+    refused.push(("a span of another kind", preparation));
+    for (label, evidence) in refused {
+        assert!(evidence.validate().is_err(), "{label}");
+        assert_invalid(
+            "task-runtime-evidence-v1.json",
+            &serde_json::to_value(&evidence).unwrap(),
+            label,
+        );
+    }
+    // A span of another check is refused by the typed contract; the schema cannot compare
+    // two string fields.
+    let mut other = ran.clone();
+    other.spans = vec![span("markdownlint", TaskRuntimeSpanKindV1::Check)];
+    assert!(other.validate().is_err());
+    for (field, value) in [
+        ("outcome", json!("skipped")),
+        ("rustup_home", json!("/Users/me/.rustup")),
+        ("name", json!("not a name")),
+    ] {
+        let mut value_json = serde_json::to_value(&skipped).unwrap();
+        value_json["check"][field] = value;
+        assert_invalid("task-runtime-evidence-v1.json", &value_json, field);
+        assert!(
+            serde_json::from_value::<TaskRuntimeEvidenceV1>(value_json.clone())
+                .map_or(true, |evidence| evidence.validate().is_err())
+        );
+    }
+    let mut value_json = serde_json::to_value(&skipped).unwrap();
+    value_json["check"]["path"] = json!("/tmp");
+    assert_invalid(
+        "task-runtime-evidence-v1.json",
+        &value_json,
+        "unknown check field",
+    );
+    assert!(serde_json::from_value::<TaskRuntimeEvidenceV1>(value_json).is_err());
+    let mut value_json = serde_json::to_value(&skipped).unwrap();
+    value_json["check"] = json!(null);
+    assert!(serde_json::from_value::<TaskRuntimeEvidenceV1>(value_json).is_err());
 }
 
 #[test]

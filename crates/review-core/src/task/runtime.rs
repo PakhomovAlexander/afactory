@@ -97,6 +97,39 @@ pub fn is_cache_kind(value: &str) -> bool {
     }
 }
 
+/// How a warm check ended, as its `CheckResult@1` status says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRuntimeCheckOutcomeV1 {
+    Passed,
+    Failed,
+    NotRun,
+}
+
+/// Where a warm check's `RUSTUP_HOME` came from (ADR-0123): the kernel's own `RUSTUP_HOME`, the
+/// kernel `HOME`'s `.rustup`, or why it was left unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskRuntimeRustupHomeV1 {
+    KernelEnvironment,
+    KernelHome,
+    /// The kernel had neither `RUSTUP_HOME` nor an absolute `HOME`.
+    UnsetNoHome,
+    /// The kernel `HOME` has no `.rustup` directory.
+    UnsetNotInstalled,
+}
+
+/// The check one warm evidence group belongs to (ADR-0123). It names the check and its outcome
+/// whether or not the check started, so a check skipped before its command ran keeps its name
+/// and its cache observations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskRuntimeCheckV1 {
+    pub name: String,
+    pub outcome: TaskRuntimeCheckOutcomeV1,
+    pub rustup_home: TaskRuntimeRustupHomeV1,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskRuntimeEvidenceV1 {
@@ -104,6 +137,14 @@ pub struct TaskRuntimeEvidenceV1 {
     pub attempt_id: String,
     pub node: String,
     pub context_id: String,
+    /// Present only on a warm check's group; absent, the record is byte-identical to one written
+    /// before warm checks existed.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    pub check: Option<TaskRuntimeCheckV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub spans: Vec<TaskRuntimeSpanV1>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -130,6 +171,19 @@ impl TaskRuntimeEvidenceV1 {
         }
         for cache in &self.caches {
             cache.validate()?;
+        }
+        if let Some(check) = &self.check {
+            // A named group is one check's: its only span is that check's, and a check that
+            // never started still states what every declared kind was.
+            require(
+                is_name(&check.name)
+                    && !self.caches.is_empty()
+                    && self.spans.len() <= 1
+                    && self.spans.iter().all(|span| {
+                        span.kind == TaskRuntimeSpanKindV1::Check && span.label == check.name
+                    }),
+                "Task runtime check evidence names one check and its cache observations",
+            )?;
         }
         require(
             !self.spans.is_empty() || !self.caches.is_empty(),

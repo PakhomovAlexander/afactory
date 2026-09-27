@@ -34,4 +34,4 @@ value = "**/*.md"
 provenance = "literal"
 
 [warm]
-build_cache = ["cargo_target"]
+build_cache = ["cargo_target", "cargo_home"]

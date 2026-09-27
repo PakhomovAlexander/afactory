@@ -2326,9 +2326,10 @@ fn present_with_format(
     }))
 }
 
-/// One line per check that recorded Warm Check Cache observations (ADR-0123): its host-observed
-/// elapsed time and, per declared kind, `warm <bytes>` or `cold <reason>`. A check without
-/// observations prints nothing, so a Task whose policy has no `[warm]` reads as before.
+/// One line per warm check (ADR-0123), named by its evidence group's check binding: its outcome,
+/// its host-observed elapsed time or that it never started, and, per declared kind,
+/// `warm <bytes>` or `cold <reason>`. A check without observations prints nothing, so a Task
+/// whose policy has no `[warm]` reads as before, and no line is ever printed without a name.
 fn check_cache_lines(inspection: &serde_json::Value) -> Vec<String> {
     let mut lines = Vec::new();
     for observation in inspection["runtime_observations"]
@@ -2346,16 +2347,31 @@ fn check_cache_lines(inspection: &serde_json::Value) -> Vec<String> {
             .flatten()
             .filter(|span| span["kind"] == "check")
             .collect::<Vec<_>>();
-        let [check] = checks.as_slice() else {
-            if checks.is_empty() && record["spans"].as_array().is_none_or(Vec::is_empty) {
-                lines.push(format!("check not run: {}", cache_states(caches)));
-            }
+        let span = match checks.as_slice() {
+            [] => None,
+            [check] => Some(check),
+            _ => continue,
+        };
+        let binding = &record["check"];
+        let Some(name) = binding["name"]
+            .as_str()
+            .or_else(|| span.and_then(|check| check["label"].as_str()))
+        else {
             continue;
         };
+        let timing = match (span, binding["outcome"].as_str()) {
+            (Some(check), Some(outcome)) => {
+                format!("{} in {} ms", preview::text(outcome), check["elapsed_ms"])
+            }
+            (Some(check), None) => format!("{} ms", check["elapsed_ms"]),
+            (None, outcome) => format!(
+                "{}, never started",
+                preview::text(outcome.unwrap_or("not_run"))
+            ),
+        };
         lines.push(format!(
-            "check {}: {} ms, {}",
-            preview::text(check["label"].as_str().unwrap_or_default()),
-            check["elapsed_ms"],
+            "check {}: {timing}, {}",
+            preview::text(name),
             cache_states(caches)
         ));
     }
@@ -2816,5 +2832,49 @@ mod tree_preview_tests {
             let row = lines[*line];
             assert!(row.contains("command Worker"), "{row}");
         }
+    }
+}
+
+#[cfg(test)]
+mod check_cache_line_tests {
+    use super::*;
+
+    fn group(record: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"runtime_observations": [{"record": record}]})
+    }
+
+    #[test]
+    fn every_warm_line_is_named_by_its_check_binding() {
+        let span = serde_json::json!({"kind": "check", "label": "kernel", "elapsed_ms": 812});
+        let warm =
+            serde_json::json!({"kind": "cargo_target", "eligible": true, "bytes_available": 4096});
+        let started = group(serde_json::json!({
+            "check": {"name": "kernel", "outcome": "passed", "rustup_home": "kernel_home"},
+            "spans": [span],
+            "caches": [warm, {"kind": "cargo_home", "eligible": true, "bytes_available": 0}],
+        }));
+        assert_eq!(
+            check_cache_lines(&started),
+            ["check kernel: passed in 812 ms, cargo_target warm 4096, cargo_home cold empty"]
+        );
+        let skipped = group(serde_json::json!({
+            "check": {"name": "markdownlint", "outcome": "not_run", "rustup_home": "kernel_home"},
+            "caches": [
+                {"kind": "cargo_target:deadline_exhausted", "eligible": false, "bytes_available": 0},
+                {"kind": "cargo_home:deadline_exhausted", "eligible": false, "bytes_available": 0},
+            ],
+        }));
+        assert_eq!(
+            check_cache_lines(&skipped),
+            [
+                "check markdownlint: not_run, never started, cargo_target cold deadline_exhausted, \
+              cargo_home cold deadline_exhausted"
+            ]
+        );
+        // A group that names no check prints nothing rather than an unnamed line.
+        let unnamed = group(serde_json::json!({
+            "caches": [{"kind": "cargo_target:busy", "eligible": false, "bytes_available": 0}],
+        }));
+        assert!(check_cache_lines(&unnamed).is_empty());
     }
 }
