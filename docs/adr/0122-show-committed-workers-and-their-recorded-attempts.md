@@ -31,7 +31,10 @@ Five facts shape the answer:
   name.
 - A plan binds each slot to an exact package: its `bindings[slot].package_digest`. STATE counts
   only the Attempts whose plan bound the digest the committed pin records, so a package changed
-  since a Task ran does not inherit that Task's Attempts. Attempts of the same name at another
+  since a Task ran does not inherit that Task's Attempts. A captured Review binds a reviewer
+  slot to an `af/LegacyReviewDependency@1` rather than to the package, and that dependency's
+  digest covers Campaign and pipeline data, so for it the package digest is the dependency's
+  `original_package_digest`. Attempts of the same name at another
   digest are counted on one `other` line, so the history does not silently vanish.
 - The recorded package artifact carries a name, a version and a digest, but no path. The
   kernel resolves a slot's Worker by name through the committed pin.
@@ -63,7 +66,7 @@ through the Pipelines pane's own helpers (`head`, `git`, `committed`, `differs`,
 
 - It lists `.af/workers/*/reviewer.toml` exactly one level deep.
 - It lists every `worker.toml` under `.af/task-packages/`, `.af/packages/` and `.af/vendor/`,
-  however deep.
+  however deep, including one directly at a source root.
 - Sources come in that order, and entries within a source come by path. When more than one
   source has Workers, each source is a folding group named after its directory.
 - A declaration or prompt whose working-tree file differs from `HEAD` marks the bar label with

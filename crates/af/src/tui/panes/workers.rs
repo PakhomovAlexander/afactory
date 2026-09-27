@@ -83,7 +83,7 @@ fn source_of(path: &str) -> Option<(&'static str, Kind)> {
         let declares = match kind {
             // One directory per reviewer, named by the Worker: the registry looks nowhere else.
             Kind::Reviewer => rest.split('/').count() == 2 && rest.ends_with("/reviewer.toml"),
-            Kind::Task => rest.ends_with("/worker.toml"),
+            Kind::Task => rest == "worker.toml" || rest.ends_with("/worker.toml"),
         };
         return declares.then_some((source, kind));
     }
@@ -321,6 +321,34 @@ fn recorded_plan(graph: &Json, bindings: &Json) -> Json {
     serde_json::json!({"graph": graph, "bindings": bindings})
 }
 
+/// The artifact type a captured Review binds a reviewer slot to, in place of the package.
+const REVIEW_DEPENDENCY: &str = "af/LegacyReviewDependency@1";
+
+/// A plan's bindings with each `package_digest` as the committed pin would record it. A Task
+/// binds a slot to the package itself, so its digest is the pin's. A captured Review binds a
+/// reviewer slot to a Review dependency whose own digest covers Campaign and pipeline data; the
+/// reviewer package it ran is its `original_package_digest` (none for a slot no reviewer
+/// package fills). `package` reads a recorded artifact.
+fn pinned_bindings(
+    bindings: &Json,
+    package: &mut dyn FnMut(&str) -> Result<Json, String>,
+) -> Result<Json, String> {
+    let mut pinned = bindings.clone();
+    let Some(slots) = pinned.as_object_mut() else {
+        return Ok(pinned);
+    };
+    for binding in slots.values_mut() {
+        let Some(id) = binding["package_artifact_id"].as_str() else {
+            continue;
+        };
+        let artifact = package(id)?;
+        if artifact["type"] == REVIEW_DEPENDENCY {
+            binding["package_digest"] = artifact["payload"]["original_package_digest"].clone();
+        }
+    }
+    Ok(pinned)
+}
+
 /// The Worker a node of a recorded plan runs: the package the plan binds to the node's one
 /// slot. A node that names no slot, or several (a Provider admission, an optimization
 /// experiment), runs no single Worker.
@@ -366,6 +394,7 @@ pub(crate) fn tally(
     document: &Json,
     invoked: &mut dyn FnMut(&str) -> Result<Invoked, String>,
     recorded: &mut dyn FnMut(&str) -> Result<Json, String>,
+    package: &mut dyn FnMut(&str) -> Result<Json, String>,
 ) -> Result<BTreeMap<Worker, Tally>, String> {
     let current = document["plan_id"].as_str();
     let owners = owners(document)?;
@@ -384,7 +413,8 @@ pub(crate) fn tally(
                 let plan = plan.ok_or("a reservation names no plan")?;
                 if !graphs.contains_key(plan) {
                     let compiled = if Some(plan) == current {
-                        recorded_plan(&document["graph"], &document["plan"]["bindings"])
+                        let bindings = pinned_bindings(&document["plan"]["bindings"], package)?;
+                        recorded_plan(&document["graph"], &bindings)
                     } else {
                         recorded(plan)?
                     };
@@ -464,7 +494,9 @@ fn plan_of(dir: &Path, plan: &str) -> Result<Json, String> {
     let plan = task_execution::recorded_artifact(dir, plan)?;
     let graph = tasks::text(&plan["payload"]["compiled_graph_id"])?;
     let graph = &task_execution::recorded_artifact(dir, graph)?["payload"];
-    Ok(recorded_plan(graph, &plan["payload"]["bindings"]))
+    let package = &mut |id: &str| task_execution::recorded_artifact(dir, id);
+    let bindings = pinned_bindings(&plan["payload"]["bindings"], package)?;
+    Ok(recorded_plan(graph, &bindings))
 }
 
 fn task_tally(
@@ -475,7 +507,8 @@ fn task_tally(
     let document = task_execution::inspection_document(dir, task_id, true)?
         .ok_or_else(|| format!("not in {}", dir.display()))?;
     let invoked = &mut |id: &str| tasks::node_of(dir, id, cache);
-    tally(&document, invoked, &mut |plan| plan_of(dir, plan))
+    let package = &mut |id: &str| task_execution::recorded_artifact(dir, id);
+    tally(&document, invoked, &mut |plan| plan_of(dir, plan), package)
 }
 
 /// One Task state directory, and every Worker's Attempts in it or why it cannot be read.

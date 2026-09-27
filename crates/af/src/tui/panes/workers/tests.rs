@@ -545,6 +545,11 @@ fn task(name: &str) -> Worker {
     (Kind::Task, name.to_owned(), None)
 }
 
+/// A recorded artifact reader for plans whose bindings name no package artifact.
+fn no_package(id: &str) -> Result<Json, String> {
+    Err(format!("no package {id}"))
+}
+
 /// A recorded plan of `graph` whose bindings record no package digest.
 fn plan(graph: Json) -> Json {
     recorded_plan(&graph, &Json::Null)
@@ -624,7 +629,7 @@ fn attempts_are_attributed_through_the_recorded_plan_never_by_name() {
             other => Err(format!("no plan {other}")),
         }
     };
-    let tallies = tally(&document, &mut invoked, &mut compiled).unwrap();
+    let tallies = tally(&document, &mut invoked, &mut compiled, &mut no_package).unwrap();
     assert_eq!(
         asked,
         ["plan-before"],
@@ -690,7 +695,7 @@ fn the_accounting_takes_each_attempts_highest_charge_and_skips_released_reservat
         })
     };
     let mut compiled = |plan: &str| Err(format!("no plan {plan}"));
-    let tallies = tally(&document, &mut invoked, &mut compiled).unwrap();
+    let tallies = tally(&document, &mut invoked, &mut compiled, &mut no_package).unwrap();
     let tally = tallies[&task("fixture/implementer")];
     assert_eq!(
         tally,
@@ -722,7 +727,7 @@ fn the_accounting_takes_each_attempts_highest_charge_and_skips_released_reservat
     // A charge that is not a decimal refuses the Task, as the Tasks pane refuses it.
     let mut broken = document.clone();
     broken["execution_records"][1]["record"]["charged_tokens"] = json!("ten");
-    assert!(super::tally(&broken, &mut invoked, &mut compiled).is_err());
+    assert!(super::tally(&broken, &mut invoked, &mut compiled, &mut no_package).is_err());
 }
 
 #[test]
@@ -763,7 +768,7 @@ fn an_owned_shard_runs_the_operator_its_owner_registered() {
         })
     };
     let mut compiled = |plan: &str| Err(format!("no plan {plan}"));
-    let tallies = tally(&document, &mut invoked, &mut compiled).unwrap();
+    let tallies = tally(&document, &mut invoked, &mut compiled, &mut no_package).unwrap();
     let bugs = (Kind::Reviewer, "bugs".to_owned(), None);
     assert_eq!(tallies.keys().collect::<Vec<_>>(), [&bugs]);
     assert_eq!(
@@ -805,7 +810,7 @@ fn a_reviewer_and_a_task_package_sharing_a_name_keep_their_own_attempts() {
         })
     };
     let mut compiled = |plan: &str| Err(format!("no plan {plan}"));
-    let tallies = tally(&document, &mut invoked, &mut compiled).unwrap();
+    let tallies = tally(&document, &mut invoked, &mut compiled, &mut no_package).unwrap();
     assert_eq!(tallies[&task("bugs")].ok, 1);
     assert_eq!(tallies[&task("bugs")].tokens, 10);
     let review = &tallies[&(Kind::Reviewer, "bugs".to_owned(), None)];
@@ -914,7 +919,7 @@ fn state_counts_only_the_digest_the_committed_pin_records() {
     };
     let old = json!({"root.slots.writer": {"package_digest": "sha256:old"}});
     let mut compiled = |_: &str| Ok(recorded_plan(&before, &old));
-    let tallies = tally(&document, &mut invoked, &mut compiled).unwrap();
+    let tallies = tally(&document, &mut invoked, &mut compiled, &mut no_package).unwrap();
     let at = |digest: &str| {
         (
             Kind::Task,
@@ -978,4 +983,94 @@ fn a_declaration_without_a_name_yanks_nothing() {
     assert_eq!(pane.items()[0].label, "nameless");
     assert_eq!(pane.yank(0), None);
     assert_eq!(pane.entry_name(id), None);
+}
+
+#[test]
+fn a_captured_review_attempt_is_its_reviewers_at_the_package_it_ran() {
+    // A captured Review binds the reviewer slot to a Review dependency: its own digest covers
+    // Campaign data; the reviewer package it ran is its original package digest.
+    let bindings = json!({
+        "root.slots.bugs": {"package_digest": "sha256:dependency",
+            "package_artifact_id": "sha256:dep-artifact"},
+        "root.slots.writer": {"package_digest": "sha256:task-package",
+            "package_artifact_id": "sha256:task-artifact"}
+    });
+    let document = json!({
+        "plan_id": "plan",
+        "graph": graph(),
+        "plan": {"bindings": bindings},
+        "execution_records": [
+            reserved("r", "inv-review"),
+            settled("r", "5", "succeeded"),
+            reserved("w", "inv-implement"),
+            settled("w", "9", "succeeded"),
+        ],
+        "attempt_walls": []
+    });
+    let mut invoked = |id: &str| {
+        let node = match id {
+            "inv-review" => "root.nodes.review",
+            _ => "root.nodes.implement",
+        };
+        Ok(Invoked {
+            node: node.to_owned(),
+            plan_id: None,
+        })
+    };
+    let mut compiled = |plan: &str| Err(format!("no plan {plan}"));
+    let mut package = |id: &str| match id {
+        "sha256:dep-artifact" => Ok(json!({"type": "af/LegacyReviewDependency@1",
+            "payload": {"name": "bugs", "original_package_digest": "sha256:reviewer"}})),
+        "sha256:task-artifact" => Ok(json!({"type": "af/TaskPackage@1",
+            "payload": {"digest": "sha256:task-package"}})),
+        other => Err(format!("no package {other}")),
+    };
+    let tallies = tally(&document, &mut invoked, &mut compiled, &mut package).unwrap();
+    let reviewer = (
+        Kind::Reviewer,
+        "bugs".to_owned(),
+        Some("sha256:reviewer".to_owned()),
+    );
+    assert_eq!(tallies[&reviewer].tokens, 5);
+    let writer = (
+        Kind::Task,
+        "fixture/implementer".to_owned(),
+        Some("sha256:task-package".to_owned()),
+    );
+    assert_eq!(tallies[&writer].tokens, 9);
+    assert_eq!(tallies.len(), 2);
+    // A binding whose package cannot be read refuses the Task, never guesses its digest.
+    let mut unreadable = |id: &str| Err(format!("no package {id}"));
+    assert!(tally(&document, &mut invoked, &mut compiled, &mut unreadable).is_err());
+}
+
+#[test]
+fn a_task_worker_may_sit_at_its_source_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    worker(root, ".af/vendor", "fixture/vendored");
+    write(
+        root,
+        CATALOG,
+        "[packages.\"fixture/vendored\"]\npath = \".af/vendor\"\nversion = \"1.2.0\"\n",
+    );
+    commit_all(root, "a package at the vendor root");
+    assert_eq!(
+        source_of(".af/vendor/worker.toml"),
+        Some((".af/vendor/", Kind::Task))
+    );
+    let mut pane = WorkersPane::default();
+    pane.load(&scope(root)).unwrap();
+    pane.open(Some(".af/vendor/worker.toml"));
+    assert_eq!(pane.items()[0].label, "fixture/vendored");
+    let rows = texts(pane.rows());
+    assert!(
+        rows.contains(&"path      .af/vendor".to_owned()),
+        "{rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.starts_with("pin       .af/task-catalog.toml  1.2.0")),
+        "{rows:#?}"
+    );
 }
