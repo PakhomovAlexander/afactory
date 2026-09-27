@@ -28,6 +28,10 @@ fn copy_tree(source: &Path, destination: &Path) {
             copy_tree(&entry.path(), &target);
         } else {
             std::fs::copy(entry.path(), &target).unwrap();
+            // The source may be a read-only materialized tree (the kernel's own check run);
+            // the copy is a fixture the tests edit.
+            let permissions = std::os::unix::fs::PermissionsExt::from_mode(0o644);
+            std::fs::set_permissions(&target, permissions).unwrap();
         }
     }
 }
