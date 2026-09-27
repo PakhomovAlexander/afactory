@@ -16,7 +16,10 @@ const ROWS: usize = 30;
 const COLS: usize = 100;
 
 fn workspace() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    // Resolved at run time: a test binary a warm gate reuses was compiled in another sandbox.
+    std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
 fn copy_tree(source: &Path, destination: &Path) {

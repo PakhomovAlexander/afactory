@@ -769,7 +769,12 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     std::fs::write(
         repo.join("rust-toolchain.toml"),
         std::fs::read_to_string(
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../rust-toolchain.toml"),
+            std::env::var_os("AF_WORKSPACE_ROOT")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+                })
+                .join("rust-toolchain.toml"),
         )
         .unwrap(),
     )

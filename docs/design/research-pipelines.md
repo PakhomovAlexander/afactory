@@ -607,3 +607,13 @@ the whole toolchain key held from preparation to removal, the bound measured ove
 every used directory judged suspect after the check exactly as before it (reason
 `warm_cache_suspect`, removal under the lock), and a non-directory root counted as uninspectable;
 three unit tests pin them, and `.af/code-policy.toml` declares both kinds.
+
+The first paired runs on that tree taught two more things, both recorded here rather than argued
+away. The default 8 GiB bound is smaller than one `make check` of this workspace: the first warm
+gate started at 8.2 GB and was evicted 35 seconds in at 8.63 GB, exactly as designed, so this
+repository's policy now sets `max_bytes` to 16 GiB. And a warm target directory hands the next
+gate test binaries that were compiled in the previous gate's sandbox, so any test that bakes a
+fixture path in at compile time — `env!("CARGO_MANIFEST_DIR")` without the run-time
+`AF_WORKSPACE_ROOT` fallback `scripts/verify.sh` exports for exactly this — looks for a destroyed
+directory: two tests in `review-config` failed the first warm gate (8.9 min, versus 14.0 cold,
+before failing). Nine such paths were made run-time and a test now refuses any new one.

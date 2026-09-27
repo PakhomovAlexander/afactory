@@ -55,7 +55,10 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   its removal step, the bound is measured over the whole key, a directory that is suspect once
   the check ended (a link, a special file, a forbidden `credentials.toml`, a root swapped for a
   link) fails the check with `warm_cache_suspect` and is removed under the lock, and a root that
-  is no longer a real directory counts as above every bound.
+  is no longer a real directory counts as above every bound. Every compile-time
+  `CARGO_MANIFEST_DIR` in the workspace is now a fallback behind the run-time `AF_WORKSPACE_ROOT`,
+  because a warm gate reuses test binaries compiled in the previous gate's sandbox, and a test
+  refuses a new one; this repository bounds its warm cache at 16 GiB.
 - Give a source-writing Worker that declares `execute-checks` a shell (ADR-0120): `worker_access`
   maps `write-source` plus `execute-checks` to `WorkerAccess::WriteSourceWithShell`, the Claude
   adapter grants `Read,Glob,Grep,Edit,Write,Bash` and Codex runs `workspace-write`, and the shell's

@@ -1012,8 +1012,12 @@ mod derived_package_tests {
                 .0;
             let mut outer: review_core::task::plan::ExecutionPlanV1 = serde_json::from_slice(
                 &std::fs::read(
-                    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                        .join("../../fixtures/task-contracts/v1/execution-plan.json"),
+                    std::env::var_os("AF_WORKSPACE_ROOT")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|| {
+                            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+                        })
+                        .join("fixtures/task-contracts/v1/execution-plan.json"),
                 )
                 .unwrap(),
             )
