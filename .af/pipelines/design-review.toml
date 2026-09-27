@@ -1,4 +1,4 @@
-# Design-note review: one bug-bounty reviewer (GPT-6-Sol/xhigh) over a diff Subject, with the
+# Design-note review: one design reviewer (GPT-6 Sol/high) over a diff Subject, with the
 # markdown Gate only. This is the documented cheap-iteration path (docs/non-goals.md): a separate
 # pipeline with one reviewer, its own budgets, its own Campaign and its own Ledger. Bind at run
 # time, for example `--provider design=codex-main`.
@@ -30,7 +30,7 @@ kind = "reviewer"
 inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }, { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }, { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
-package = "bugs-xhigh"
+package = "design-sol"
 demands = "required"
 
 [[nodes]]

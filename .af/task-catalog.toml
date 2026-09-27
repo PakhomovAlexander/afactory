@@ -16,7 +16,6 @@ allow_targeted_repairs = false
 [review.reviewers]
 bugs = "required"
 correctness = "required"
-uix = "required"
 
 [packages."warm/implementer"]
 version = "1.2.0"
@@ -89,8 +88,8 @@ digest = "sha256:c6bed1e2d5d1f493278c8559fff8a851d66b403dabce5f0aba2c74b98f53ec4
 path = ".af/task-packages/kernel/review-light"
 
 [packages."kernel/implementation-reviewed"]
-version = "1.1.0"
-digest = "sha256:a5c9033413d1a5307b7dd25b8a7ac53d65e3c07d9d7be058c228e9cf71d6268d"
+version = "1.2.0"
+digest = "sha256:5d4b4eec72574adf86f2f1de69647249c6b7ec1f6893b0aaff4d59dfae4d8e2a"
 path = ".af/task-packages/kernel/implementation-reviewed"
 
 [packages."kernel/review-code"]
@@ -99,8 +98,8 @@ digest = "sha256:b5ade91f51b2a5431af530c46492c77b97042f0abfb6555daf5f76267c758d5
 path = ".af/task-packages/kernel/review-code"
 
 [packages."kernel/verification-reviewed"]
-version = "1.1.0"
-digest = "sha256:e6cab3d407cb88e8c10325a64c4ad3e1a7c86746012d5b23b502318398b7cec5"
+version = "1.2.0"
+digest = "sha256:e6050fa5881728e9d8a4f5e94a186d18380924fde4f0355e249b533bc8d8ef85"
 path = ".af/task-packages/kernel/verification-reviewed"
 
 [packages."kernel/verification"]
