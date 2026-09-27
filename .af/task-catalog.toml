@@ -109,7 +109,7 @@ path = ".af/task-packages/kernel/verification"
 
 [packages."kernel/gate-accept"]
 version = "1.0.0"
-digest = "sha256:d3063056f77a8a93c55b646edae89dd41ac03994042032ab728cbc927b36f717"
+digest = "sha256:7c24a6860a110d827e00875639b194302b04bae5a226b0ac8c5101c68571a9d7"
 path = ".af/task-packages/kernel/gate-accept"
 
 [packages."kernel/gate-bench"]
