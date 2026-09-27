@@ -125,21 +125,34 @@ impl Session {
     /// the background until this returns, so `SIGTTOU` is blocked for the call: blocked, the
     /// change is allowed and nothing stops the browser.
     fn take_foreground(&self, group: termios::Pid) -> Result<(), String> {
-        let mut blocked = SigSet::empty();
-        blocked.add(Signal::SIGTTOU);
-        let mut previous = SigSet::empty();
-        signal::pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&blocked), Some(&mut previous))
+        let taken = from_the_background(|| termios::tcsetpgrp(&self.tty, group))
             .map_err(|error| format!("taking the terminal back: {error}"))?;
-        let taken = termios::tcsetpgrp(&self.tty, group);
-        let _ = signal::pthread_sigmask(SigmaskHow::SIG_SETMASK, Some(&previous), None);
         taken.map_err(|error| format!("taking the terminal back: {error}"))
+    }
+}
+
+impl Session {
+    /// The saved cooked mode with or without the keys that raise signals.
+    fn cook(&self, signals: bool) -> Result<(), String> {
+        let mut cooked = self.saved.clone();
+        if !signals {
+            cooked.local_modes.remove(termios::LocalModes::ISIG);
+        }
+        termios::tcsetattr(&self.tty, OptionalActions::Now, &cooked)
+            .map_err(|error| format!("restoring the terminal: {error}"))
     }
 }
 
 impl Host for Session {
     fn release(&mut self) -> Result<(), String> {
         self.leave();
-        Ok(())
+        // `<C-c>` is a byte, not a signal to the browser's group, until `run` hands the
+        // foreground to the command or `cooked` asks for signals.
+        self.cook(false)
+    }
+
+    fn cooked(&mut self) -> Result<(), String> {
+        self.cook(true)
     }
 
     fn reenter(&mut self) -> Result<(), String> {
@@ -156,6 +169,9 @@ impl Host for Session {
         command.envs(child.env.iter().map(|(name, value)| (name, value)));
         if browser.is_some() {
             command.process_group(0);
+        } else {
+            // No foreground to hand over: the child shares the browser's group, as an editor.
+            self.cook(true)?;
         }
         let spawned = command
             .spawn()
@@ -180,9 +196,20 @@ impl Host for Session {
                 let _ = wait_for(pid, grouped);
                 return Err(format!("handing the terminal to the command: {error}"));
             }
+            // The command's group owns the foreground: its keys may raise signals now, and
+            // they reach the command, never the browser. The browser is in the background.
+            let cooked = from_the_background(|| self.cook(true))
+                .map_err(|error| format!("restoring the terminal: {error}"))
+                .and_then(|cooked| cooked);
             // A child that touched the terminal before its group owned the foreground was
             // stopped for it; it continues now that it does.
             let _ = signal::killpg(pid, Signal::SIGCONT);
+            if let Err(error) = cooked {
+                let _ = signal::killpg(pid, Signal::SIGKILL);
+                let _ = wait_for(pid, grouped);
+                let _ = self.take_foreground(browser.unwrap_or(handed));
+                return Err(error);
+            }
         }
         let exit = wait_for(pid, grouped);
         // `wait_for` reaped the process; the handle only names it.
@@ -230,6 +257,18 @@ impl Drop for Session {
     fn drop(&mut self) {
         self.leave();
     }
+}
+
+/// Run a terminal call the browser makes while another process group owns the foreground. It
+/// would raise `SIGTTOU`, which stops the browser; with the signal blocked, the call is allowed.
+fn from_the_background<T>(call: impl FnOnce() -> T) -> Result<T, Errno> {
+    let mut blocked = SigSet::empty();
+    blocked.add(Signal::SIGTTOU);
+    let mut previous = SigSet::empty();
+    signal::pthread_sigmask(SigmaskHow::SIG_BLOCK, Some(&blocked), Some(&mut previous))?;
+    let outcome = call();
+    let _ = signal::pthread_sigmask(SigmaskHow::SIG_SETMASK, Some(&previous), None);
+    Ok(outcome)
 }
 
 /// Wait for a handed-off child to end. A child stopped by `<C-z>` is continued: the browser

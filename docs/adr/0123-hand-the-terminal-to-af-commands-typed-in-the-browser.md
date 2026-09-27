@@ -65,10 +65,15 @@ Self-management therefore never sends the child to another release partway throu
 
 The terminal is handed over in this order:
 
-1. `Host::release` leaves the alternate screen, shows the cursor and restores cooked mode.
+1. `Host::release` leaves the alternate screen, shows the cursor and restores cooked mode
+   without `ISIG`: until the child's group owns the foreground, `<C-c>` is a byte, not a signal
+   to the browser's group. An editor, which runs in the browser's own group, asks for the
+   signals back with `Host::cooked`.
 2. `Host::run` spawns the child with inherited stdin, stdout and stderr, in a new process group.
    It gives that group the terminal's foreground with `tcsetpgrp`, then sends the group
-   `SIGCONT`. A child that touched the terminal before its group owned the foreground was
+   `SIGCONT`. Only then does it turn `ISIG` on, with `SIGTTOU` blocked because the browser is
+   now in the background, so `<C-c>` reaches the command from its first moment on the
+   foreground. A child that touched the terminal before its group owned the foreground was
    stopped by `SIGTTIN` or `SIGTTOU`, and continues now. `<C-c>`, `<C-\>` and `<C-z>` reach
    the child's group, never the browser. A command may end before its group takes the
    foreground, and then `tcsetpgrp` fails because the group is gone. The browser, which never
@@ -82,7 +87,9 @@ The terminal is handed over in this order:
    the browser`. For a child a signal ended, the line says `killed by SIGINT` and starts on a
    fresh line. The browser discards any unread input, then reads the terminal in raw mode until
    Enter.
-6. `Host::reenter` enters the alternate screen again.
+6. `Host::reenter` enters the alternate screen again. Keys the browser had already read in the
+   same read as the command line were typed before the command ran; they are dropped, and the
+   key decoder starts clean, so nothing typed ahead is replayed in the browser.
 
 A child that cannot be spawned is an error on the status line. The terminal is re-entered
 without the wait. The process-group calls are `rustix::termios` and `nix` calls that are
@@ -114,14 +121,18 @@ visible subcommands of the command the earlier words name, and after `help` it o
 subcommands. The completion never uses a hand-written list of commands. When the command takes
 a Task ID as its first positional argument (`task_id`: `task run`, `show`, `explain`, `deliver`
 and the other `task` verbs declaring one), the ID completes from the Task IDs the Tasks pane
-lists for this scope, and only from a project scope's own Store (see Prefills). After a flag, or after a word that names no subcommand, nothing is
+lists for this scope, and only from a project scope's own Store (see Prefills). Options the
+command declares may come before the ID, with their values (`task show --repo . ID`); an
+option still waiting for its value completes nothing. After a flag, or after a word that names no subcommand, nothing is
 guessed. One match is filled in, followed by a space. Several matches are listed on the status
 line.
 
 ### Prefills
 
-The Tasks pane gains two verbs. They work on the bar's selected Task and on the opened Task, and
-the opened pane's legend lists them.
+The Tasks pane gains two verbs. They work on the bar's selected Task when the bar has focus and
+on the opened Task when the main pane has focus, and the opened pane's legend lists them. With
+the bar on a row that is no Task, they act on nothing and say so; they never fall through to a
+Task opened in the main pane.
 
 - `r` opens the `:` line holding `task run ID --confirm-plan PLAN`. PLAN is the current
   recorded plan from the same inspection read the pane shows.
@@ -151,7 +162,7 @@ same arguments.
   the browser.
 - The browser's `Host` gains `run` and `pause`. A recording `Host` proves the order: release,
   run, pause, re-entry, then the re-read panes.
-- The instant between restoring cooked mode and handing over the foreground (one `fork` and
-  `exec`) is the only moment in which `<C-c>` still reaches the browser.
+- No moment of the hand-off lets `<C-c>` reach the browser: `ISIG` is off from the release
+  until the command's group owns the foreground.
 - A command whose line is wider than the terminal wraps its exit line.
 - No wire contract, schema, fixture or `--json` document changes. `CONTEXT.md` gains no term.

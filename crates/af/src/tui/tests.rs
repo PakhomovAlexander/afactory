@@ -1439,4 +1439,39 @@ fn the_tasks_pane_prefills_run_and_deliver_and_completes_task_ids() {
             format!("task {verb} pagination-unfinished ")
         );
     }
+    // Options the command declares may come before the ID, with their values.
+    for typed in [
+        "task show --json pagination-u",
+        "task show --repo . pagination-u",
+    ] {
+        press(&mut app, &mut host, b"\x1b");
+        press(&mut app, &mut host, format!(":{typed}\t").as_bytes());
+        let (head, _) = typed.rsplit_once(' ').unwrap();
+        assert_eq!(app.prompt.text, format!("{head} pagination-unfinished "));
+    }
+    // An option waiting for its value, or an ID already given, completes no Task ID.
+    for typed in [
+        "task show --repo pagination-u",
+        "task show pagination-cli pagination-u",
+    ] {
+        press(&mut app, &mut host, b"\x1b");
+        press(&mut app, &mut host, format!(":{typed}\t").as_bytes());
+        assert_eq!(app.prompt.text, typed);
+    }
+    press(&mut app, &mut host, b"\x1b");
+
+    // With the bar on a row that is no Task, `r` and `D` act on nothing, not on the Task
+    // opened in the main pane.
+    assert!(matches!(app.opened, Opened::Item(Tab::Tasks, _)));
+    assert_eq!(app.focus, Focus::Bar);
+    press(&mut app, &mut host, b"gg");
+    for key in [&b"r"[..], b"D"] {
+        press(&mut app, &mut host, key);
+        assert_eq!(app.mode, Mode::Normal);
+        let (message, error) = app.message.clone().unwrap();
+        assert!(
+            error && message.starts_with("r and D act on a Task"),
+            "{message}"
+        );
+    }
 }

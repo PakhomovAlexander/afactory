@@ -87,7 +87,15 @@ Tab completes commands, and a Task ID from the Tasks pane.";
 /// What an effect needs from the terminal: handing it to a child and taking it back, and
 /// writing one control sequence.
 pub(crate) trait Host {
+    /// Leave the browser's screen and cook the terminal, but keep its keys from raising
+    /// signals: until a handed-off command's process group owns the foreground, `<C-c>` would
+    /// signal the browser's group, so `run` enables them only once it does.
     fn release(&mut self) -> Result<(), String>;
+    /// Let the released terminal's keys raise signals again, for a child that runs in the
+    /// browser's own process group (an editor).
+    fn cooked(&mut self) -> Result<(), String> {
+        Ok(())
+    }
     fn reenter(&mut self) -> Result<(), String>;
     fn send(&mut self, bytes: &[u8]) -> Result<(), String>;
     /// Run a command on the released terminal, which the command owns until it ends.
@@ -187,6 +195,12 @@ fn run(app: &mut App, session: &mut term::Session) -> Result<(), String> {
                 app.apply(effect, session);
             }
             if app.quit {
+                break;
+            }
+            // Keys read in the same read as a command were typed before it ran: they are not
+            // meant for the browser the user comes back to.
+            if std::mem::take(&mut app.handed) {
+                decoder = keymap::Decoder::default();
                 break;
             }
         }
@@ -296,6 +310,9 @@ pub(crate) struct App {
     bar_top: usize,
     size: (usize, usize),
     quit: bool,
+    /// The terminal was handed to a child since the event loop last looked: keys it read
+    /// before are dropped.
+    handed: bool,
     /// The running `af` executable, which a `:` command line runs as. It is resolved once, so
     /// the hand-off runs these very bytes even after `af self` changes the release a link names.
     exe: Result<PathBuf, String>,
@@ -322,6 +339,7 @@ impl App {
             bar_top: 0,
             size: (BAR_MIN_WIDTH, MIN_HEIGHT),
             quit: false,
+            handed: false,
             exe: std::env::current_exe().map_err(|error| format!("the af executable: {error}")),
         };
         app.load();
@@ -692,22 +710,28 @@ impl App {
         effect
     }
 
-    /// A pane-local key while the bar has focus: `r` and `D` act on the bar's selected Task;
-    /// any other key is the opened pane's, as it always was.
+    /// A pane-local key while the bar has focus: `r` and `D` act on the bar's selected Task and
+    /// on nothing else, never on a Task opened in the main pane; any other key is the opened
+    /// pane's, as it always was.
     fn bar_key(&mut self, key: Key) -> Option<Effect> {
-        let row = self.tree.selected();
-        if row.kind == NodeKind::Item(Tab::Tasks)
-            && let Some(line) = self.panes.tasks.bar_verb(&row.id, key)
-        {
-            return match line {
-                Ok(line) => Some(Effect::Prefill(line)),
-                Err(error) => {
-                    self.say_error(error);
-                    None
-                }
-            };
+        if !matches!(key, Key::Char('r' | 'D')) {
+            return self.pane_key(key);
         }
-        self.pane_key(key)
+        let row = self.tree.selected();
+        let verb = (row.kind == NodeKind::Item(Tab::Tasks))
+            .then(|| self.panes.tasks.bar_verb(&row.id, key))
+            .flatten();
+        match verb {
+            Some(Ok(line)) => Some(Effect::Prefill(line)),
+            Some(Err(error)) => {
+                self.say_error(error);
+                None
+            }
+            None => {
+                self.say_error("r and D act on a Task: select one in the bar, or open it");
+                None
+            }
+        }
     }
 
     fn pane_key(&mut self, key: Key) -> Option<Effect> {
@@ -897,7 +921,7 @@ impl App {
             ["help", path @ ..] => subcommands(path).unwrap_or_default(),
             path => match subcommands(path) {
                 Some(names) if !names.is_empty() => names,
-                Some(_) if takes_task_id(path) => self.panes.tasks.task_ids(),
+                _ if takes_task_id(path) => self.panes.tasks.task_ids(),
                 _ => Vec::new(),
             },
         }
@@ -972,6 +996,7 @@ impl App {
                 }
             }
             Effect::OpenEditor(path) => {
+                self.handed = true;
                 let outcome = handed_off(host, || crate::config::open_in_editor(&path));
                 let shown = self.scope.display(&path);
                 self.finish(outcome, format!("edited {shown}"));
@@ -1034,6 +1059,7 @@ impl App {
         }
         match handoff(parsed.command) {
             Handoff::Edit(layer, repo) => {
+                self.handed = true;
                 let outcome = handed_off(host, || crate::config::edit(layer, repo.as_deref()));
                 self.finish(outcome, "configuration edited".to_owned());
             }
@@ -1068,6 +1094,7 @@ impl App {
             self.say_error(format!("af {line}: {error}"));
             return;
         }
+        self.handed = true;
         let ran = host.run(&child);
         let paused = match ran {
             Ok(exit) => {
@@ -1384,26 +1411,61 @@ fn subcommands(path: &[&str]) -> Option<Vec<String>> {
     Some(visible.map(|sub| sub.get_name().to_owned()).collect())
 }
 
-/// Whether the command at `path` (a `task` subcommand) takes a Task ID as its first positional
-/// argument, and `path` has not given it yet: `task run`, `show`, `explain`, `deliver`, ...
+/// Whether `path` is a `task` subcommand taking a Task ID as its first positional argument
+/// (`task run`, `show`, `explain`, `deliver`, ...) and has not given it yet. Options may come
+/// first: the ID is still to come while every later word is an option the command declares, or
+/// the value such an option takes.
 fn takes_task_id(path: &[&str]) -> bool {
-    let ["task", verb] = path else {
+    let ["task", verb, rest @ ..] = path else {
         return false;
     };
     let root = cli::Af::command();
-    let command = root
+    let Some(command) = root
         .find_subcommand("task")
-        .and_then(|task| task.find_subcommand(verb));
-    let first = command.and_then(|command| command.get_positionals().next());
-    first.is_some_and(|argument| argument.get_id() == "task_id")
+        .and_then(|task| task.find_subcommand(verb))
+    else {
+        return false;
+    };
+    let first = command.get_positionals().next();
+    if first.is_none_or(|argument| argument.get_id() != "task_id") {
+        return false;
+    }
+    let mut words = rest.iter();
+    while let Some(word) = words.next() {
+        let argument = if let Some(long) = word.strip_prefix("--") {
+            if long.contains('=') {
+                continue;
+            }
+            command.get_arguments().find(|a| a.get_long() == Some(long))
+        } else if let Some(short) = word.strip_prefix('-')
+            && let [short] = short.chars().collect::<Vec<_>>()[..]
+        {
+            command
+                .get_arguments()
+                .find(|a| a.get_short() == Some(short))
+        } else {
+            // A positional word: the Task ID was given.
+            return false;
+        };
+        let Some(argument) = argument else {
+            return false;
+        };
+        // An option still waiting for its value is completed as that value, not as the ID.
+        if argument.get_action().takes_values() && words.next().is_none() {
+            return false;
+        }
+    }
+    true
 }
 
-/// Hand the terminal to a child, and take it back whatever the child did.
+/// Hand the terminal to a child, and take it back whatever the child did. The child runs in the
+/// browser's own process group, so the terminal is cooked in full, signals included.
 fn handed_off(
     host: &mut dyn Host,
     child: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     host.release()?;
+    host.cooked()?;
     let outcome = child();
     host.reenter()?;
     outcome

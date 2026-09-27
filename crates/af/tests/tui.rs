@@ -1008,3 +1008,28 @@ fn a_command_that_ends_at_once_still_shows_its_exit() {
     browser.keys(b":q\r");
     assert_eq!(browser.exit_code(), 0);
 }
+
+/// Keys that arrive in the same read as a command line were typed before the command ran:
+/// they are dropped, never replayed in the browser the user returns to. Here the `q` after
+/// `:task list` would otherwise quit the browser.
+#[test]
+fn keys_read_with_a_command_line_are_not_replayed_after_it() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub(&root);
+    let mut browser = Browser::launch(&repo, &home);
+    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
+    browser.wait_for("project settings", ready);
+    let line = "task list";
+    browser.keys(format!(":{line}\rq").as_bytes());
+    let shown = exit_line(line, "exit 0");
+    browser.wait_for("the exit line", |screen| screen.lines().contains(&shown));
+    back_in_the_browser(&mut browser, &format!("af {line}: exit 0"));
+    // Still running: a key now is the browser's.
+    browser.keys(b"]]");
+    browser.wait_for("the bar moved", |screen| {
+        screen.lines()[ROWS - 1].starts_with("NORMAL  providers/")
+    });
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+}
