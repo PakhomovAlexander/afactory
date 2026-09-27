@@ -1110,17 +1110,16 @@ impl TasksPane {
         plan: Option<&str>,
         state: State,
     ) -> Option<Result<String, String>> {
-        let line = prefill(key, task_id, plan, state)?;
-        if self.user_scope() {
-            let Key::Char(pressed) = key else {
-                return Some(line);
-            };
+        // Asked first: whatever the Task's plan or state, from here no line reaches it.
+        if self.user_scope()
+            && let Key::Char(pressed @ ('r' | 'D')) = key
+        {
             return Some(Err(format!(
                 "{task_id} is listed from the user scope, which cannot name its repository: \
                  :cd into that repository and press {pressed} there"
             )));
         }
-        Some(line)
+        prefill(key, task_id, plan, state)
     }
 
     /// The user scope lists Stores by repository; a project scope has one, its own.

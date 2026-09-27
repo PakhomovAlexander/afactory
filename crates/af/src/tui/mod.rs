@@ -1071,7 +1071,14 @@ impl App {
         match handoff(parsed.command) {
             Handoff::Edit(layer, repo) => {
                 self.handed = true;
-                let outcome = crate::config::edit_target(layer, repo.as_deref())
+                // The browser's scope is where a typed command runs, whatever directory `af`
+                // started in: no `--repo` means its root, and a relative one is from there.
+                let repo = match repo {
+                    Some(dir) if dir.is_relative() => self.scope.root.join(dir),
+                    Some(dir) => dir,
+                    None => self.scope.root.clone(),
+                };
+                let outcome = crate::config::edit_target(layer, Some(&repo))
                     .and_then(|path| self.edit(host, &path));
                 self.finish(outcome, "configuration edited".to_owned());
             }
@@ -1483,6 +1490,10 @@ fn takes_task_id(path: &[&str]) -> bool {
     }
     let mut words = rest.iter();
     while let Some(word) = words.next() {
+        if *word == "--" {
+            // The end of options: the ID is next unless a positional word already follows.
+            return words.next().is_none();
+        }
         let argument = if let Some(long) = word.strip_prefix("--") {
             if let Some((name, _)) = long.split_once('=') {
                 // `--name=value`: a declared option that takes a value, its value attached.
@@ -1506,9 +1517,16 @@ fn takes_task_id(path: &[&str]) -> bool {
         let Some(argument) = argument else {
             return false;
         };
-        // An option still waiting for its value is completed as that value, not as the ID.
-        if argument.get_action().takes_values() && words.next().is_none() {
-            return false;
+        // An option still waiting for its value is completed as that value, not as the ID;
+        // another option where its value belongs leaves it waiting still.
+        if argument.get_action().takes_values() {
+            match words.next() {
+                None => return false,
+                Some(value) if value.starts_with('-') && !argument.is_allow_hyphen_values_set() => {
+                    return false;
+                }
+                Some(_) => {}
+            }
         }
     }
     true

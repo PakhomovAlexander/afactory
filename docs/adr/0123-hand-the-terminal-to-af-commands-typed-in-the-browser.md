@@ -86,8 +86,8 @@ The terminal is handed over in this order:
 3. The browser waits with `waitpid(WUNTRACED)`. A child stopped by `<C-z>` is continued at once,
    because the browser has no job control and nothing else would resume it.
 4. When the child ends, the browser turns `ISIG` off and only then takes the foreground back,
-   both with `SIGTTOU` blocked. If the terminal refuses to turn `ISIG` off, the browser never
-   takes it back: it ends without touching the terminal, which the shell reclaims as it does
+   both with `SIGTTOU` blocked. If the terminal refuses to turn `ISIG` off, or refuses the
+   foreground back, the browser never touches it again: it ends without touching the terminal, which the shell reclaims as it does
    from any finished job, and `af` reports why. `Host::pause` reads Enter in raw mode and returns to cooked mode
    without `ISIG`, and `Host::reenter` goes raw. So from the release to the re-entry the browser
    never owns the foreground while `ISIG` is on; every change of mode is one `tcsetattr`, not a
@@ -111,7 +111,10 @@ already dependencies of `af`, with no `unsafe` code.
 process group owning the foreground, so `<C-c>` in the editor reaches the editor and never the
 browser. `$EDITOR` is read once when the browser starts. There is no Enter wait, since the
 editor's own screen is what the user left, and an editor that exits non-zero or is killed is an
-error on the status line. `af config edit` from the shell runs the editor as before.
+error on the status line. A typed `:config edit` runs where the browser is: without `--repo`
+it edits the current scope's layer, and a relative `--repo` is resolved from the scope root,
+not from the directory `af` started in. `af config edit` from the shell runs the editor as
+before.
 
 ### What is read again
 
@@ -142,7 +145,8 @@ a Task ID as its first positional argument (`task_id`: `task run`, `show`, `expl
 and the other `task` verbs declaring one), the ID completes from the Task IDs the Tasks pane
 lists for this scope, and only from a project scope's own Store (see Prefills). Options the
 command declares may come before the ID, with their values (`task show --repo . ID`); an
-option still waiting for its value completes nothing. After a flag, or after a word that names no subcommand, nothing is
+option still waiting for its value (another option where its value belongs included) completes
+nothing, and `--` ends the options. After a flag, or after a word that names no subcommand, nothing is
 guessed. One match is filled in, followed by a space. Several matches are listed on the status
 line.
 

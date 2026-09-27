@@ -1303,17 +1303,17 @@ fn a_user_scope_task_is_neither_prefilled_nor_completed() {
     }
     let mut ids = Vec::new();
     leaves(app.panes.tasks.items(), &mut ids);
-    let id = ids
-        .iter()
-        .find(|id| id.ends_with("/pagination-cli"))
-        .unwrap();
-    for key in ['r', 'D'] {
-        let refused = app.panes.tasks.bar_verb(id, Key::Char(key)).unwrap();
-        let why = refused.unwrap_err();
-        assert!(
-            why.contains("user scope") && why.contains(&format!("press {key} there")),
-            "{why}"
-        );
+    // Verified or not, the guidance comes first: no line from here would reach the Task.
+    for task in ["/pagination-cli", "/pagination-unfinished"] {
+        let id = ids.iter().find(|id| id.ends_with(task)).unwrap();
+        for key in ['r', 'D'] {
+            let refused = app.panes.tasks.bar_verb(id, Key::Char(key)).unwrap();
+            let why = refused.unwrap_err();
+            assert!(
+                why.contains("user scope") && why.contains(&format!("press {key} there")),
+                "{why}"
+            );
+        }
     }
     assert!(app.panes.tasks.task_ids().is_empty());
 }
@@ -1390,6 +1390,36 @@ fn a_terminal_that_cannot_be_retaken_ends_the_browser() {
         app.fatal.as_deref(),
         Some("af task list: the terminal was left to the shell")
     );
+}
+
+/// A typed `:config edit` runs where the browser is: after `:cd` into another repository, the
+/// project layer is that repository's, not the one `af` started in; a relative `--repo` is
+/// from there too.
+#[test]
+fn a_typed_config_edit_follows_the_browsers_scope() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    app.editor = Some("true".to_owned());
+    let other = root.join("other");
+    std::fs::create_dir_all(other.join("nested")).unwrap();
+    git(&other, &["init", "-q", "-b", "main"]);
+    let mut host = Recorder::default();
+    press(
+        &mut app,
+        &mut host,
+        format!(":cd {}\r", other.display()).as_bytes(),
+    );
+    assert_eq!(app.scope.root, other);
+    press(&mut app, &mut host, b":config edit --layer project\r");
+    let edited = other.join(".af/af.toml").display().to_string();
+    assert_eq!(host.runs.last().unwrap().args.last(), Some(&edited));
+    press(
+        &mut app,
+        &mut host,
+        b":config edit --layer local --repo nested\r",
+    );
+    let local = other.join(".af/af.local.toml").display().to_string();
+    assert_eq!(host.runs.last().unwrap().args.last(), Some(&local));
 }
 
 /// `<Tab>` completes subcommand names at every level from the clap definition itself.
@@ -1530,6 +1560,7 @@ fn the_tasks_pane_prefills_run_and_deliver_and_completes_task_ids() {
         "task show --repo . pagination-u",
         "task show --repo=. pagination-u",
         "task show --repo 'a repo with spaces' pagination-u",
+        "task show -- pagination-u",
     ] {
         press(&mut app, &mut host, b"\x1b");
         press(&mut app, &mut host, format!(":{typed}\t").as_bytes());
@@ -1542,6 +1573,8 @@ fn the_tasks_pane_prefills_run_and_deliver_and_completes_task_ids() {
         "task show pagination-cli pagination-u",
         "task show --not-a-real-option=value pagination-u",
         "task show --json=yes pagination-u",
+        "task show --repo --json pagination-u",
+        "task show -- pagination-cli pagination-u",
     ] {
         press(&mut app, &mut host, b"\x1b");
         press(&mut app, &mut host, format!(":{typed}\t").as_bytes());

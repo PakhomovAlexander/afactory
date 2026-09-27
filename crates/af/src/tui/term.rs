@@ -145,6 +145,16 @@ impl Session {
 }
 
 impl Session {
+    /// Take the foreground back after a hand-off, or give up the terminal: a browser still in
+    /// the background must not touch it again (re-entering would stop it with `SIGTTOU`), so
+    /// it ends and leaves the terminal to the shell.
+    fn retake(&mut self, group: termios::Pid) -> Result<(), String> {
+        self.take_foreground(group).map_err(|error| {
+            self.lost = true;
+            format!("{error}; the browser leaves the terminal to the shell and ends")
+        })
+    }
+
     /// Give the terminal's foreground back to the browser's process group. The browser is in
     /// the background until this returns, so `SIGTTOU` is blocked for the call: blocked, the
     /// change is allowed and nothing stops the browser.
@@ -222,7 +232,7 @@ impl Host for Session {
             // Signals are still off: taking the foreground back is safe.
             let _ = signal::killpg(pid, Signal::SIGKILL);
             let _ = wait_for(pid);
-            let _ = self.take_foreground(browser);
+            self.retake(browser)?;
             return Err(error);
         }
         let exit = wait_for(pid);
@@ -240,7 +250,7 @@ impl Host for Session {
                 "{error}; the browser leaves the terminal to the shell and ends"
             ));
         }
-        self.take_foreground(browser)?;
+        self.retake(browser)?;
         exit
     }
 
