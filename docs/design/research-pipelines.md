@@ -1,6 +1,6 @@
 # Research Pipelines — design and implementation plan
 
-**Status:** proposed, 2026-09-27. **Baseline:** kernel `main` 1447494 (after v0.9.0-rc.7; ADR-0118
+**Status:** proposed 2026-09-27; reviewed the same day (§6) and revised. **Baseline:** kernel `main` 1447494 (after v0.9.0-rc.7; ADR-0118
 and ADR-0120 give review and source-writing Workers a shell). **Execution model:** every package
 below is one Task file kept outside the repository, compiled and run through the campaign
 Pipeline `kernel/implementation-reviewed` from `.af/task-catalog.toml`. Package IDs are local
@@ -51,22 +51,32 @@ These decisions are fixed for every package:
 
 - **The kernel measures; a model never writes a number the kernel did not record.** A
   measurement is a declared command from the committed code policy, run by an installed operator
-  in a read-only materialization of an exact Snapshot, repeated a declared number of times, with
-  its wall time, exit status, output digest and any metrics the command itself reports in a
-  typed line. A comparison is a deterministic fold over two such artifacts under a declared
-  objective. Neither invokes a Provider. A model may propose the candidate and may read the
+  with a read-only materialization of an exact Snapshot as its working directory and a private,
+  bounded, writable runtime directory for everything the command produces, repeated a declared
+  number of times, with its wall time, exit status, output digests and any metrics the command
+  itself reports in a typed line that names each value's unit. The source is verified unchanged
+  after every repetition and the runtime directory is discarded once its metrics are recorded. A
+  comparison is a deterministic fold over two such artifacts under a declared objective, with
+  exact decimal arithmetic and stated rules for even samples, a zero baseline and an unchanged
+  result. Neither invokes a Provider. A model may propose the candidate and may read the
   comparison; it cannot author either artifact.
-- **Warm caches are machine-local, bounded and never part of a Snapshot.** A Task check may reuse
-  a build directory across Attempts and Tasks of one project only under the `trusted_local`
-  isolation policy, only when the code policy declares it, keyed by the toolchain identity of the
-  Snapshot, bounded in bytes, and removed rather than repaired when the key changes or the bound
-  is exceeded. `require_container = true` refuses it, as ADR-0108 refuses Build Caches outside
-  `trusted_local`. Cold or warm is recorded in `af/TaskRuntimeEvidence@1` so a measurement can
-  say which it was.
-- **A report is accepted by an independent verifier, not by its author.** The report profile
-  reuses the Document renderer, checks and verification receipt; its author reads the source
-  Snapshot and may run commands in an ephemeral clone that seals nothing back (ADR-0118's access
-  for a non-writing Worker); its verifier runs on a distinct principal, receives the report, the
+- **A Warm Check Cache is an explicitly unsafe, machine-local layer that only a check ever
+  touches.** A Task check may reuse a build directory across Attempts and Tasks of one project
+  only under the `trusted_local` isolation policy, only when the committed code policy declares
+  it, keyed by the resolved toolchain identity (declaration bytes, `rustc -vV`, `cargo -vV`,
+  target triple and the check's fixed environment), bounded in bytes during and after the check,
+  and removed rather than repaired when the key changes, the bound is exceeded or the directory
+  is otherwise suspect. It is never cloned into a Worker sandbox, never enters a Snapshot,
+  candidate or delivered tree, and `require_container = true` refuses it. This deliberately
+  widens ADR-0108's one-Round Build Cache scope for checks alone; the R1 ADR says so, supersedes
+  that clause in part, and states the admission, validation and invalidation rules. Cold or warm
+  is recorded in `af/TaskRuntimeEvidence@1`, so a measurement can say which it was.
+- **A report is accepted by an independent verifier, not by its author, and its acceptance is
+  bound to the exact source Snapshot it cites.** The report profile reuses the Document renderer
+  and the Document Task's shape, with its own versioned sources, check and verification
+  artifacts that retain the source Snapshot identity; its author reads the source Snapshot and
+  may run commands in an ephemeral clone that seals nothing back (ADR-0118's access for a
+  non-writing Worker); its verifier runs on a distinct principal, receives the report, the
   requirements, the check receipt and the same source Snapshot, and its negative verdict stays
   negative. A report has no `snapshot` output and is never delivered to a worktree; `af task
   output --format markdown` is its only exit.
@@ -141,46 +151,66 @@ Deliverables:
 2. The check runner (`code.rs`, `checks`) binds `CARGO_TARGET_DIR` for a declared
    `cargo_target` to a persistent directory
    `$XDG_CACHE_HOME/af/task-build-cache/<project>/<toolchain>/cargo_target`, where `<project>`
-   is the Store's repository identity and `<toolchain>` the digest of the Snapshot's
-   `rust-toolchain.toml` or `rust-toolchain` bytes (absent file: the literal `none`). `HOME` and
-   `XDG_CACHE_HOME` stay fresh per check. A declared Cache Snapshot binds `CARGO_HOME` and
-   `CARGO_NET_OFFLINE` exactly as a Gate does, materialized into the runtime directory, never
-   into the source tree.
+   is the Store's repository identity and `<toolchain>` is the digest of: the Snapshot's
+   `rust-toolchain.toml` or `rust-toolchain` bytes (absent: the literal `none`), the complete
+   `rustc -vV` and `cargo -vV` output of the `rustc` and `cargo` the check's `PATH` resolves,
+   the host target triple, and the check's fixed environment (`PATH`, `LC_ALL`, `TZ`). The two
+   version commands run once per check Attempt before the first check, under the check's own
+   environment and a 30-second bound; a failure to resolve either means no warm cache and a
+   recorded reason. `HOME` and `XDG_CACHE_HOME` stay fresh per check. A declared Cache
+   Snapshot binds `CARGO_HOME` and `CARGO_NET_OFFLINE` exactly as a Gate does, materialized
+   into the runtime directory, never into the source tree.
 3. Bounds and exclusion. One exclusive advisory lock per cache directory; a check that cannot
-   take it within 60 seconds runs cold in its private runtime directory and records why. After a
-   check, a directory above `max_bytes` is removed whole and recorded; a directory whose
-   `<toolchain>` key no longer matches is never reused. The cache directory is created with mode
-   `0700`, holds no credential, and is never read by candidate capture: it sits outside every
-   sandbox.
+   take it within 60 seconds runs cold in its private runtime directory and records why.
+   `max_bytes` is enforced three times: before the check (a directory already above the bound
+   is removed and the check runs cold), during the check (a monitor samples the directory's
+   size at most every five seconds and, above the bound, ends the check's process group through
+   the supervised kill path, records the check as `failed` with reason
+   `warm_cache_bound_exceeded`, and removes the directory before the lock is released), and
+   after the check (a directory above the bound is removed and recorded, so the next check runs
+   cold). A directory whose `<toolchain>` key no longer matches is never reused. The cache
+   directory is created with mode `0700`, holds no credential, is never read by candidate
+   capture and is never mounted, cloned or copied into any Worker sandbox: it sits outside every
+   sandbox, and only the kernel's check runner opens it.
 4. Evidence. Every check records one `TaskCacheObservationV1` per declared kind — `kind`,
    `eligible`, `toolchain_id`, `bytes_available` before the check, `lookup_ms` and
    `materialization_ms` — beside the existing `Check` span; `bytes_available = 0` on an eligible
-   observation is a cold check. `af task show` prints one line per check with elapsed time,
-   cache kind and `warm <bytes>` or `cold <reason>`, and `af/task-inspection@11` carries the
-   observations in its existing `runtime_observations` field.
+   observation is a cold check, and an ineligible observation names its reason in `kind`
+   (`cargo_target:busy`, `cargo_target:toolchain_unresolved`, `cargo_target:bound_exceeded`).
+   `af task show` prints one line per check with elapsed time, cache kind and `warm <bytes>` or
+   `cold <reason>`, and `af/task-inspection@11` carries the observations in its existing
+   `runtime_observations` field.
 5. This repository's `.af/code-policy.toml` declares `[warm] build_cache = ["cargo_target"]`;
    `scripts/verify.sh` honours a `CARGO_TARGET_DIR` that is already set instead of deriving one.
-6. Tests and fixtures: a code Task run twice in one Store, whose second check observes
-   `bytes_available > 0` and a shorter check span; a changed `rust-toolchain.toml` producing a
-   cold check under a new key; a `max_bytes` of one byte producing removal after the check and a
-   cold next check; a policy with `[warm]` and `require_container = true` refused at load; the
-   busy-lock path running cold; and a byte-identity test that a warm check's derived Snapshot,
-   candidate and delivery receipt equal the cold check's.
-7. One ADR recording the decision and the options rejected (capturing the target into the CAS as
-   ADR-0108 does; pointing every check at one shared host directory without a key; a
-   per-Attempt clone of the previous check's output), linked from `docs/adr/README.md`; a
-   `CHANGELOG.md` entry under Unreleased; a paragraph in `docs/tasks.md` on what `[warm]` grants
-   and refuses.
+6. Tests and fixtures, all deterministic: a code Task run twice in one Store, whose second
+   check observes `bytes_available > 0` under the same `toolchain_id` and whose derived
+   Snapshot, candidate, delivery receipt and check outcome equal the first run's; a changed
+   `rust-toolchain.toml` producing a cold check under a new key; a stubbed `rustc` on `PATH`
+   reporting a different version producing a new key; a `max_bytes` of one byte producing the
+   pre-check removal and a cold check; a check whose command writes past the bound being ended
+   with `warm_cache_bound_exceeded` and the directory gone afterwards; a policy with `[warm]`
+   and `require_container = true` refused at load; the busy-lock path running cold; and a Task
+   without `[warm]` producing byte-identical revision, plan, inspection and delivery documents
+   to today's.
+7. One ADR recording the decision and the options rejected (capturing the target into the CAS
+   as ADR-0108 does; pointing every check at one shared host directory without a key; a
+   per-Attempt clone of the previous check's output), superseding ADR-0108's one-Round scope in
+   part for Task checks only and stating the admission, validation and invalidation rules of §2,
+   linked from `docs/adr/README.md`; a `CHANGELOG.md` entry under Unreleased; a paragraph in
+   `docs/tasks.md` on what `[warm]` grants and refuses.
 
 Acceptance:
 
-- On this repository, a second consecutive Task check of an unchanged workspace completes in
-  under a third of the cold check's span, proven by the recorded `Check` spans of the fixture
-  and stated for the real repository in the execution record.
-- No warm check changes any Snapshot, candidate, receipt or `--json` document byte relative to a
-  cold check, proven by the byte-identity test.
+- Cache selection, reuse and integrity are pinned by the deterministic fixtures above. The
+  speed claim is benchmark Evidence, not a fixture gate: §6 records at least five paired cold
+  and warm checks of this repository on the same pinned Snapshot and toolchain, with each
+  `Check` span, the median ratio, the spread and the machine's load and power conditions.
+- A warm check changes no Snapshot, candidate, delivery tree or check outcome relative to a cold
+  check; only `runtime_observations` and the `af task show` cache line differ, and they differ
+  accurately. A Task whose policy has no `[warm]` is byte-identical to today in every document.
 - `require_container = true` with `[warm]` is refused before any Worker or Provider admission.
-- Existing fixtures and `--json` outputs without `[warm]` are byte-identical.
+- No Worker sandbox, Snapshot or delivered tree ever contains a byte of the cache directory,
+  proven by the fixture's manifests.
 
 ### R2 — Measure and compare
 
@@ -191,107 +221,160 @@ Deliverables:
 
 1. `af.code-task-policy/1` gains `[measures.<name>]` and `[objectives.<name>]`. A measure has a
    `command` (program plus args with `literal` or `untrusted` provenance, as a check has),
-   `repetitions` (1 to 16), `warm` (`true` runs on the R1 cache, `false` runs cold in a fresh
-   runtime directory), `wall_ms` per repetition (at most 3,600,000), and `metrics`: a list of
-   `{ key, unit }` with `unit` one of `ms`, `bytes`, `count`, `ratio`; `elapsed_ms` is always
-   recorded and needs no declaration. An objective names one `measure`, one `metric`, a
-   `direction` (`lower` or `higher`), `min_improvement_ratio` (0 to 1) and `min_repetitions`
-   (default 3).
-2. A new artifact `af/Measurement@1`: the Snapshot ID, the measure name, the resolved command
-   identity, the toolchain identity, `warm` and the observed cache bytes, one record per
+   `repetitions` (1 to 16), `warm` (`true` binds the R1 cache as `CARGO_TARGET_DIR`; `false`
+   binds a fresh directory inside the repetition's runtime directory), `wall_ms` per repetition
+   (at most 3,600,000), and `metrics`: a list of `{ key, unit }` with `unit` one of `ms`,
+   `bytes`, `count`, `ratio`; `elapsed_ms` is the built-in metric, always recorded, and a
+   declared metric may not reuse its key. An objective names one `measure`, one `metric`, a
+   `direction` (`lower` or `higher`), `min_improvement_ratio` (0 to 1 inclusive) and
+   `min_repetitions` (1 to 16, default 3). The plan compiler refuses a plan whose
+   `measure` nodes' summed `repetitions × wall_ms`, plus the summed `wall_ms` of the checks
+   the same Attempt owns, exceeds the captured `check_wall_ms`, and it refuses a `measure`
+   whose name the captured policy lacks or a `compare` whose two inputs name different measures.
+2. Execution. Each repetition runs with the read-only source materialization as its working
+   directory and a private runtime directory holding `HOME`, `TMPDIR`, `XDG_CACHE_HOME` and,
+   for `warm = false`, `CARGO_TARGET_DIR`; a declared Cache Snapshot binds `CARGO_HOME` as in
+   R1. After every repetition the source Manifest is re-verified and a changed or added source
+   entry fails the measurement with the same message a mutated check produces. The runtime
+   directory is measured by the command itself (a wrapper reports the bytes it cares about),
+   then discarded. A repetition that exits non-zero, exceeds its `wall_ms`, is cut by the
+   Attempt deadline, or reports a malformed line fails the measurement: no later repetition
+   runs, the failed repetition's receipts are retained, and the measurement's outcome is
+   `failed` with the reason (`exit`, `timeout`, `deadline`, `malformed_report`, `unit_mismatch`,
+   `source_mutated`). A measurement is never silently partial.
+3. A new artifact `af/Measurement@1`: the Snapshot ID, the measure name, the resolved command
+   identity, the R1 `toolchain_id`, `warm` and the observed cache bytes, one record per
    repetition — started time, `elapsed_ms`, exit status, stdout and stderr digests, the metrics
    parsed from the command's last stdout line when it is an `af.measure-report/1` JSON object
-   (`{"schema":"af.measure-report/1","metrics":{"<key>":<number>}}`) — and per-metric
-   `median`, `min`, `max` and `n`. A repetition that exits non-zero, times out or reports a
-   metric with the wrong unit fails the measurement; a failed measurement is recorded with its
-   receipts and its outcome is `failed`.
-3. A new artifact `af/MeasurementComparison@1`: the two Measurement IDs, the objective, and per
-   metric the baseline and candidate medians, the signed delta, the ratio, `n` on each side and a
-   conclusion `improved`, `regressed`, `unchanged` or `inconclusive`. The comparison's outcome is
-   `passed` when the objective's metric improved by at least `min_improvement_ratio` with at
-   least `min_repetitions` on both sides, `failed` when it regressed or the improvement is below
-   the threshold with sufficient repetitions, and `inconclusive` otherwise or when either
-   measurement failed. Medians are exact decimals; no metric is ever saturated or clamped.
-4. Two installed operators in the code domain, closed like every other member of
+   `{"schema":"af.measure-report/1","metrics":{"<key>":{"value":"<decimal>","unit":"<unit>"}}}`,
+   whose keys must equal the declared set and whose units must equal the declared units — and
+   per metric `median`, `min`, `max` and `n`. Values are finite, non-negative decimals with at
+   most 38 significant digits, encoded as canonical decimal strings, the encoding
+   `TaskTokenUsageV3` already uses for charges. The median of an even sample is the exact mean
+   of the two middle values.
+4. A new artifact `af/MeasurementComparison@1`: the two Measurement IDs, the objective, and per
+   metric the baseline and candidate medians, the signed improvement (`baseline − candidate`
+   for `lower`, `candidate − baseline` for `higher`), the ratio (`improvement / baseline`) and
+   `n` on each side, with a conclusion: `improved` when the improvement is strictly positive
+   and the ratio is at least `min_improvement_ratio`; `regressed` when the improvement is
+   strictly negative; `unchanged` when the improvement is zero, including a zero baseline with a
+   zero candidate; `inconclusive` when either side has fewer than `min_repetitions`, either
+   measurement failed, or the baseline is zero and the candidate is not. The comparison's
+   outcome is `passed` only for `improved` on the objective's metric, `failed` for `regressed`
+   or for `unchanged` and for an improvement below the threshold with sufficient repetitions,
+   and `inconclusive` otherwise. `min_improvement_ratio = 0` therefore still requires a strictly
+   positive improvement. No value is saturated, clamped or rounded.
+5. Two installed operators in the code domain, closed like every other member of
    `TaskOperatorV1`: `measure { measures }` (input `source: af/SourceTree@1`, one
    `af/Measurement@1` output per declared measure, `outcome_port` semantics so `when` and
    `select` can branch on it) and `compare { objective }` (inputs `baseline` and `candidate`,
    each `af/Measurement@1` with `cardinality = "one"`, output `af/MeasurementComparison@1`
-   with an outcome). Both materialize nothing writable, invoke no Provider, and run under the
-   Task's check wall allowance; the plan compiler refuses a `compare` whose two inputs name
-   different measures or a `measure` whose name the captured policy lacks.
-5. A `kernel/experiment` Pipeline package (this repository) and a `builtin/experiment` starter:
+   with an outcome). Both invoke no Provider and run inside the Task's check wall allowance
+   under the compiler rule in deliverable 1.
+6. A `kernel/experiment` Pipeline package (this repository) and a `builtin/experiment` starter:
    `measure` the source as the baseline; implementer (`write-source`, `execute-checks`) → seal
    → checks → `measure` the candidate → `compare` → independent evaluator (`verify`) whose
    contract declares an additional `comparison` input beside `checks`, `requirements` and
    `source` → `accept`. The Task kind is `implement` with `verification = "evaluation"`; public
-   outputs are `snapshot`, `verification`, `baseline`, `candidate` and `comparison`. The evaluator
-   is asked whether the requirements are met given the comparison; a `failed` comparison cannot
-   be talked into a `passed` evaluation, because the Pipeline gates the evaluator on the
-   comparison outcome with `when`.
-6. `af task output --port comparison --format markdown` renders a comparison as one table;
+   outputs are `snapshot`, `verification`, `baseline`, `candidate` and `comparison`. The
+   evaluator is gated on the comparison outcome with `when`, so a `failed` comparison cannot be
+   talked into a `passed` evaluation.
+7. This repository's `.af/code-policy.toml` declares `[measures.release_build]`: command
+   `scripts/measure-release.sh`, `repetitions = 3`, `warm = false`, metrics `target_bytes` and
+   `binary_bytes` (both `bytes`); and `[objectives.release_build_time]`: measure
+   `release_build`, metric `elapsed_ms`, direction `lower`, `min_improvement_ratio = 0.10`,
+   `min_repetitions = 3`. The committed `scripts/measure-release.sh` runs
+   `cargo build --release -p af --locked` with the `CARGO_TARGET_DIR` the kernel bound, then
+   prints the report line from that directory's byte total and the `af` binary's size.
+8. `af task output --port comparison --format markdown` renders a comparison as one table;
    `--format json` is unchanged. `af task show` prints each measurement's median elapsed time and
    each comparison's conclusion.
-7. Tests and fixtures: a credential-free fixture repository whose measured command is a Python
-   script that writes a deterministic number of bytes and reports `bytes_written`, with an
-   improving candidate (comparison `passed`), a regressing candidate (`failed`), `repetitions = 1`
-   under `min_repetitions = 3` (`inconclusive`), a non-zero exit (measurement `failed`,
-   comparison `inconclusive`, evaluator never dispatched), and a malformed report line; schema
-   parity entries for both artifacts and the two policy tables.
-8. One ADR (options rejected: letting the implementer report its own numbers; a generic
-   `command` operator with untyped output; reusing `optimization_experiment` for source
-   candidates), a `CHANGELOG.md` entry, and `docs/task-execution/experiments.md` linked from
-   `docs/README.md` and `docs/task-execution.md`.
+9. Tests and fixtures: a credential-free fixture repository whose measured command is a Python
+   script that writes a deterministic number of bytes into `$TMPDIR` and reports `bytes_written`
+   with its unit, with an improving candidate (comparison `passed`), a regressing candidate
+   (`failed`), an unchanged candidate (`failed`), `repetitions = 1` under `min_repetitions = 3`
+   (`inconclusive`), a non-zero exit (measurement `failed`, comparison `inconclusive`,
+   evaluator never dispatched), a report line with `unit = "count"` for a `bytes` metric
+   (`unit_mismatch`), a command that writes into the source (`source_mutated`), an even sample
+   whose median is the exact mean, a zero baseline, and a plan whose repetition budget exceeds
+   `check_wall_ms` refused at compile; schema parity entries for both artifacts and the two
+   policy tables.
+10. One ADR (options rejected: letting the implementer report its own numbers; a generic
+    `command` operator with untyped output; reusing `optimization_experiment` for source
+    candidates), a `CHANGELOG.md` entry, and `docs/task-execution/experiments.md` linked from
+    `docs/README.md` and `docs/task-execution.md`.
 
 Acceptance:
 
 - `af catalog test` passes for `kernel/experiment` and the starter; `af task plan` compiles the
-  experiment Pipeline on this repository with zero Attempts.
-- The fixture's five outcomes are pinned by tests, and a comparison over the same two
+  experiment Pipeline on this repository, with the committed `release_build` measure and
+  objective, with zero Attempts.
+- The fixture's outcomes above are pinned by tests, and a comparison over the same two
   Measurements replays byte-identically without spending an Attempt.
-- No measurement or comparison payload carries a value the kernel did not observe or compute.
+- No measurement or comparison payload carries a value the kernel did not observe or compute,
+  and the source Snapshot is unchanged after every repetition.
 - Existing Pipelines, fixtures and `--json` outputs are byte-identical.
 
 ### R3 — Report Tasks
 
-**Depends on:** nothing in code; sequenced after R2 so the campaign's experiment can feed its
-first report.
+**Depends on:** R2 (the report profile declares the `comparison` and `measurements` ports whose
+types R2 installs).
 
 Deliverables:
 
 1. A new installed profile `TaskKindProfile::Report`, built-in kind string `report`, also
-   reachable through an `af.task-kind/1` package. Inputs: `requirements` (`af/Requirements@1`),
-   `source` (`af/SourceTree@1`), optional `sources` (`af/DocumentSources@1`). Required outputs:
-   `report: af/Document@1` and `verification: af/DocumentVerification@1` covering `verified`.
-   Allowed effects: `read-source` and `execute-checks`; `write-source` is refused. The profile has
-   no `snapshot` output, so `af task deliver` refuses a report Task before any Git mutation with
-   a message naming `af task output`.
-2. `worker_access` grants `ExecuteChecks` — an ephemeral-write clone that seals nothing back and
+   reachable through an `af.task-kind/1` package. Root inputs: `requirements`
+   (`af/Requirements@1`), `source` (`af/SourceTree@1`), optional `sources`
+   (`af/ReportSources@1`), optional `comparison` (`af/MeasurementComparison@1`,
+   `cardinality = "one"`) and optional `measurements` (`af/Measurement@1`,
+   `cardinality = "many"`). Required outputs: `report: af/Document@1` and
+   `verification: af/ReportVerification@1` covering `verified`. Allowed effects: `read-source`
+   and `execute-checks`; `write-source` is refused. The profile has no `snapshot` output, so
+   `af task deliver` refuses a report Task before any Git mutation with a message naming
+   `af task output`.
+2. `af/ReportSources@1`: zero to 256 captured entries of `{ title, uri, revision, text }`, each
+   at most 256 KiB and at most 4 MiB in total, declared in a Task file as `report_sources =
+   "<path>"` in the `af.document-sources/1` file shape the Document profile already reads. The
+   Document profile and `af/DocumentSources@1` are unchanged.
+3. `worker_access` grants `ExecuteChecks` — an ephemeral-write clone that seals nothing back and
    a shell — to a Worker whose `roles` contain `author` and whose effects are `read-source`
    plus `execute-checks` without `write-source`, exactly as ADR-0118 grants it to the `review`
    role. The effects table in `docs/task-execution.md` gains the row.
-3. `af/DocumentDraft@2`: `af/DocumentDraft@1` plus an optional `path` and `line` on a citation,
-   naming an entry of the source Snapshot's Manifest. The renderer prints such a citation as
-   `path:line`; `document_check` verifies that every cited path exists in the Manifest and every
-   cited source key exists in `sources`. The report profile accepts drafts of either version;
-   the Document profile is unchanged.
-4. `af.document-task-policy/1` gains optional `max_source_entries` (default 32, maximum 256)
-   and `max_source_bytes` (default 256 KiB, maximum 4 MiB), and the report profile reads them.
-5. The Pipeline shape is the Document Pipeline with a source: author (`verify`-style Worker slot
-   with `roles = ["author"]`) → `document_seal` → `document_check` → verifier (independent of
-   the author; its contract declares `requirements`, `document`, `checks` and `source`) →
-   `document_accept`. A `kernel/report` Pipeline package with `kernel/analyst` (Claude Opus 5.5,
-   high, `read-source` + `execute-checks`, 1.5M tokens, 3 hours) and `kernel/report-verifier`
-   (GPT-6 Sol, high, `read-source`) for this repository; a `builtin/report` starter with
-   command substitutes for `af catalog init --profile report`.
-6. `af task output --port report --format markdown` works unchanged; `af task show` prints the
-   report's title and the verifier's outcome.
-7. Tests and fixtures: the starter's command author writes a report citing two paths, the
-   verifier accepts it; a citation of an absent path fails `document_check`; a negative verifier
-   verdict stays `unsatisfied`; a report Task with `write-source` on its author is refused at
-   planning; delivery of a satisfied report Task is refused with the named message; schema
-   parity for `DocumentDraft@2` and the policy fields.
-8. One ADR (options rejected: widening the Document profile in place; an implement Pipeline with
+4. `af/DocumentDraft@2`: `af/DocumentDraft@1` plus an optional repository citation of
+   `{ path, line? }`, where `path` is spelled exactly as `review_core::encode_path` spells the
+   Manifest entry it names, that entry is a regular or executable file (not a symlink or a
+   directory) whose first 8 KiB hold no NUL byte, and `line`, when present, is at least 1 and
+   at most the file's line count. The renderer prints such a citation as `path` or `path:line`.
+   The report profile accepts drafts of either version; the Document profile is unchanged.
+5. Three installed operators for the report profile, mirroring the Document ones:
+   `report_seal` (renders the draft to `af/Document@1` and records the source Snapshot and
+   Manifest IDs), `report_check` (the Document checks plus every repository citation resolved
+   against that exact Manifest, producing `af/ReportCheckReceipt@1`, which retains the
+   document, sources, policy and source Snapshot identities) and `report_accept` (producing
+   `af/ReportVerification@1`, which retains the acceptance invocation, exact Document, policy,
+   check receipt, selected evaluation and source Snapshot). Sealing, checks, verifier admission
+   and acceptance all revalidate the same Snapshot ID through `same_as` port affinity; a
+   verifier whose `source` differs from the check receipt's is refused at admission.
+6. The Pipeline shape is the Document Pipeline with a source: author (`roles = ["author"]`)
+   → `report_seal` → `report_check` → verifier (independent of the author; its contract
+   declares `requirements`, `document`, `checks`, `source` and the optional `comparison` and
+   `measurements`) → `report_accept`. A `kernel/report` Pipeline package with `kernel/analyst`
+   (Claude Opus 5.5, high, `read-source` + `execute-checks`, 1.5M tokens, 3 hours) and
+   `kernel/report-verifier` (GPT-6 Sol, high, `read-source`) for this repository; a
+   `builtin/report` starter with command substitutes for `af catalog init --profile report`.
+   The author and the verifier receive `comparison` and `measurements` as exact artifacts in
+   their context manifests when bound, and nothing when absent.
+7. `af task output --port report --format markdown` works unchanged; `af task show` prints the
+   report's title, the verifier's outcome and the cited Snapshot.
+8. Tests and fixtures: the starter's command author writes a report citing two paths and one
+   `path:line`, the verifier accepts it; a citation of an absent path, of a directory, of a
+   symlink, of a file with a NUL byte, or of a line past the end fails `report_check`; a report
+   Task without `report_sources` runs with an empty set; a 4 MiB-plus sources file is refused at
+   capture; a negative verifier verdict stays `unsatisfied`; a verifier bound to a different
+   Snapshot is refused at admission; a report Task with `write-source` on its author is refused
+   at planning; delivery of a satisfied report Task is refused with the named message; schema
+   parity for the three new artifacts, `DocumentDraft@2` and `ReportSources@1`.
+9. One ADR (options rejected: widening the Document profile in place; an implement Pipeline with
    a report side output; a free-form `research` profile with model-judged acceptance), a
    `CHANGELOG.md` entry, `docs/task-execution/report.md` linked from `docs/README.md`, and
    CONTEXT.md terms **Measurement**, **Comparison** and **Report Task** with the nearby terms they
@@ -303,6 +386,8 @@ Acceptance:
   three command Attempts and no credential, and `af task output` writes its Markdown.
 - The author's sandbox seals byte-identical to its source; an author that edits its source fails
   its Attempt with the ADR-0118 message.
+- Every report receipt names the source Snapshot its citations were checked against, and no
+  report is accepted whose check, verifier and acceptance name different Snapshots.
 - A report Task cannot be delivered; a Document Task and an implement Task are unchanged,
   proven by byte-identical existing fixtures.
 
@@ -314,21 +399,25 @@ Deliverables:
 
 1. ADR-0117's binding rule is widened: a Task file's `inputs` table may bind any root input port
    the selected Pipeline declares, when the referenced Task is recorded and `Finished`, the
-   named output is in its result, every artifact verifies in the CAS, and the recorded type and
-   cardinality equal the port's exactly. `requirements`, `base` and `continuation` stay refused
-   by name for the reasons ADR-0117 gives. `source` keeps its re-rooting rules unchanged.
+   named output is in its result's `outputs`, every artifact verifies in the CAS, and the
+   recorded type and cardinality equal the port's exactly. `requirements`, `base` and
+   `continuation` stay refused by name for the reasons ADR-0117 gives. `source` keeps its
+   re-rooting rules unchanged. Only result outputs bind: an Attempt's `raw_artifact_ids`, runtime
+   evidence and other non-output records are not bindable, and a Task file that names one is
+   refused with a message saying so.
 2. `af/TaskInputBindings@1` records every binding as today; `af task explain` and `af task
    show` display them unchanged.
-3. A three-Task fixture in one Store: the R2 experiment Task, a report Task binding
-   `comparison` and `source` to it, and a second report Task binding `sources` to a Document
-   Task's `document` output being refused because the types differ.
+3. A three-Task fixture in one Store: the R2 experiment Task; a report Task binding
+   `comparison`, `measurements` (from the experiment's `baseline` and `candidate` outputs) and
+   `source` to it and running to `verified`; and a report Task binding `sources` to a Document
+   Task's `document` output, refused at plan time because the types differ.
 4. One ADR amending ADR-0117 (status note on 0117's line), a `CHANGELOG.md` entry, and the
    updated `docs/task-execution/task-inputs.md`.
 
 Acceptance:
 
-- A bound `comparison` reaches the report author as an exact artifact, proven by the fixture's
-  context manifest.
+- A bound `comparison` and both bound `measurements` reach the report author and verifier as
+  exact artifacts, proven by the fixture's context manifests.
 - Every refusal is raised before any Worker or Provider admission and names the port and the
   type mismatch.
 - A Task file without `inputs` keeps byte-identical revision, plan and inspection documents.
@@ -339,23 +428,35 @@ Acceptance:
 
 Deliverables:
 
-1. `af task list --sizes` prints, per Task, the bytes of CAS objects only that Task references
-   and the bytes it shares with other Tasks, plus the Store total and object count; `--json`
-   carries the same numbers.
+1. `af task list --sizes` prints, per Task, the bytes of CAS objects only that Task reaches and
+   the bytes it shares with other records, plus the Store total and object count; `--json`
+   carries the same numbers. Reachability is the transitive walk of deliverable 3.
 2. `af task gc --state DIR --older-than DAYS --keep N [--apply]` previews and, with `--apply`,
-   collects finished Tasks beyond the newest `N` whose last event is older than `DAYS`: it
-   appends one `task_collected` event naming the Task, the time and the bytes freed, then removes
-   every CAS object no retained Task references. A Task that is `Running`, holds a writer lease
-   or is referenced by another Task's `af/TaskInputBindings@1` is never collected, and the
-   preview says so. Without `--apply` nothing is written.
-3. A collected Task's projection reports `collected <time>` with its ID, kind, outcome and
-   chargeable tokens; `af task show` prints that instead of the artifact-backed sections, and
-   `af task output` refuses with the same word. Replay of a collected Task never treats a missing
-   artifact as corruption.
-4. Tests and fixtures: two finished Tasks, `--keep 1` collecting the older one, its exclusive
-   objects gone, the shared objects and the retained Task's `show` byte-identical; a running Task
-   refused; a Task referenced by a binding refused; `gc` without `--apply` writing nothing.
-5. One ADR (options rejected: deleting a Task's events; a reference count kept in the CAS;
+   collects finished Tasks beyond the newest `N` whose last event is older than `DAYS`. A Task
+   that is `Running`, holds a writer lease, or is named by another Task's
+   `af/TaskInputBindings@1` is never collected, and the preview says so. Without `--apply`
+   nothing is written.
+3. Collection is one versioned transition: the command takes an exclusive Store lease that no
+   live writer holds, appends one `task_collected` event carrying `af/TaskCollected@1` — the
+   Task's ID, kind, revision ID, outcome, chargeable tokens, last event time, collection time
+   and the byte total the preview computed — and only then sweeps. The sweep walks every record
+   in the Store that is not collected (every Task's revision, plan, execution records, results,
+   `raw_artifact_ids`, input bindings, delivery records, and every Campaign record the Store
+   holds) transitively through the artifacts they reference, and removes each CAS object the
+   walk did not reach. A collected Task's tombstone references no artifact, so its objects
+   become unreachable unless another record reaches them. If the process stops between the
+   tombstone and the end of the sweep, the next `gc --apply` finishes the sweep from the same
+   reachability rule; a tombstoned Task whose objects still exist is consistent, never corrupt.
+4. A collected Task's projection stops artifact validation at the tombstone: `af task list` and
+   `af task show` report `collected <time>` with the retained summary instead of the
+   artifact-backed sections, `af task output` and `af task deliver` refuse with the same word,
+   and replay never reports a missing artifact of a collected Task as corruption.
+5. Tests and fixtures: two finished Tasks, `--keep 1` collecting the older one, its exclusive
+   objects gone, the shared objects and the retained Task's `show` byte-identical; a running
+   Task refused; a Task named by a binding refused; a sweep interrupted after the tombstone and
+   completed by the next run; a Store with a Campaign whose records reach an object a collected
+   Task also referenced keeping that object; `gc` without `--apply` writing nothing.
+6. One ADR (options rejected: deleting a Task's events; a reference count kept in the CAS;
    `af review gc` semantics of removing whole directories), a `CHANGELOG.md` entry, and a
    paragraph in `docs/tasks.md`.
 
@@ -368,16 +469,21 @@ Acceptance:
 ### R6 — First research Tasks (campaign closure, no package code)
 
 With R1–R4 delivered and the kernel built from the branch, two research Tasks run against this
-repository and their spend and outcome are recorded in §6:
+repository and their spend and outcome are recorded in §6. Neither Task asserts an improvement:
+the declared objective and the recorded comparison are the result.
 
-1. **Release build.** An experiment Task whose measure is `cargo build --release -p af --locked`
-   with `warm = false`, `repetitions = 3`, metrics `elapsed_ms` and `target_bytes` (reported by a
-   wrapper script), objective `elapsed_ms lower by 0.10`. The implementer may change `Cargo.toml`
-   profiles, feature flags and the release script and nothing else, stated in the requirements.
-2. **Cycle time and disk.** A report Task whose author reads this repository, the recorded
-   `af/TaskRuntimeEvidence@1` of the campaign's own Tasks (bound through R4) and the experiment's
-   comparison, and answers where the cycle's time and disk go and which change this plan should
-   make next.
+1. **Release build.** An experiment Task on `kernel/experiment` using the committed
+   `release_build` measure and `release_build_time` objective from R2. The requirements state
+   that the implementer may change `Cargo.toml` profiles, feature flags and
+   `scripts/measure-release.sh`'s build invocation and nothing else. Every repetition's receipt is
+   retained; the exact medians, the comparison rule and any `inconclusive` are the outcome.
+2. **Cycle time and disk.** A report Task on `kernel/report` whose author reads this
+   repository, with `comparison` and `measurements` bound to the release-build Task through
+   R4, and with `report_sources` holding the `af task show --json` documents of every Task of
+   this campaign, exported by the coordinator into the sources file (one entry per Task, each
+   under 256 KiB, the file under 4 MiB). It answers where the cycle's time and disk go, using
+   the recorded check spans and cache observations, and which change this plan should make
+   next.
 
 If either Task fails, the failure and its evidence are the result; no number is invented.
 
@@ -391,6 +497,37 @@ revision. Anything unverified is not merged. The design itself is reviewed once,
 this document and recorded in §6.
 
 ## 6. Execution record
+
+### Design review
+
+Campaign `research-design` (Pipeline `design-review`, one GPT-6 Sol high reviewer, Codex) over
+the design commit d4531f5 against 4097093: 5m43s, 238,045 tokens, 16 Findings (10 blockers, 6
+majors) and two required Demands. Every Finding is fixed in this revision of the note:
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | Persistent build cache crosses ADR-0108's trust scope | §2 and R1.7: an explicitly unsafe Warm Check Cache with admission, validation and invalidation rules; the R1 ADR supersedes ADR-0108's one-Round scope in part, for checks only |
+| 2 | Toolchain declaration bytes are not a toolchain identity | R1.2: key includes `rustc -vV`, `cargo -vV`, target triple and the fixed check environment |
+| 3 | Post-check removal does not enforce the byte bound | R1.3: bound enforced before, during (monitor, supervised kill, `warm_cache_bound_exceeded`) and after the check |
+| 4 | Warm and cold inspection JSON cannot be byte-identical | R1 acceptance: byte identity for Snapshots, candidates, delivery and outcomes; `runtime_observations` differ accurately; no-`[warm]` Tasks byte-identical |
+| 5 | The speed ratio is an unstable fixture gate | R1 acceptance: deterministic fixtures for selection and reuse; the speed claim is benchmark Evidence recorded here (Demand 1) |
+| 6 | The measurement line cannot report a wrong unit | R2.3: every reported value carries its unit; `unit_mismatch` fails the measurement |
+| 7 | Comparison arithmetic lacks zero and decimal rules | R2.3–R2.4: canonical decimals, even-sample median, signed improvement, zero-baseline rules, strictly positive improvement for `passed` |
+| 8 | Read-only measurement conflicts with the required commands | §2 and R2.2: read-only source as working directory plus a private writable runtime directory, source re-verified after every repetition |
+| 9 | Repetition limits define no aggregate wall bound | R2.1–R2.2: compile-time fit against `check_wall_ms`; deadline and timeout are `failed` reasons, never a partial measurement |
+| 10 | Optional and enlarged sources conflict with `DocumentSources@1` | R3.2: `af/ReportSources@1` (0–256 entries, 4 MiB); the Document profile is unchanged |
+| 11 | Repository citation coordinates are underspecified | R3.4: `encode_path` spelling, regular file, no NUL in the first 8 KiB, `line` in range |
+| 12 | Report acceptance is not bound to its source Snapshot | R3.5: `report_seal`, `report_check` and `report_accept` with `ReportCheckReceipt@1` and `ReportVerification@1` retaining the Snapshot; `same_as` affinity throughout |
+| 13 | R4 binds a port the report profile never declares | R3.1: optional `comparison` and `measurements` root ports on the report profile, wired to author and verifier |
+| 14 | Collection lacks a replay-safe reachability rule | R5.3–R5.4: `af/TaskCollected@1` tombstone, exclusive lease, Store-wide transitive walk, crash recovery, projection stops at the tombstone |
+| 15 | R4 cannot bind raw Task runtime evidence | R4.1 refuses non-output records by name; R6.2 captures `af task show --json` documents into `report_sources` instead |
+| 16 | The release experiment has no committed measure | R2.7: `release_build` measure, `release_build_time` objective and `scripts/measure-release.sh` committed by R2 |
+
+Demands: (1) the warm-check speed claim is satisfied by the paired cold and warm checks R1's
+acceptance now requires this record to hold; (2) the release-build improvement claim is
+withdrawn — R6 declares an objective and records whatever the comparison concludes.
+
+### Packages
 
 Filled as the campaign runs: Task IDs, plan identities, chargeable tokens, Findings and their
 dispositions, kernel defects surfaced, and the measured cold and warm check spans on this
