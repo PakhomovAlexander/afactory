@@ -610,6 +610,7 @@ impl App {
             NodeKind::Root => Some(self.scope.root.display().to_string()),
             NodeKind::Folder(_) | NodeKind::Group(_) => None,
             NodeKind::Item(Tab::Tasks) => self.panes.tasks.task_id(&row.id),
+            NodeKind::Item(Tab::Workers) => self.panes.workers.entry_name(&row.id),
             NodeKind::Item(_) => Some(row.label),
         }
     }

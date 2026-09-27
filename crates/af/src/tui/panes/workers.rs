@@ -34,7 +34,7 @@ const CATALOG: &str = ".af/task-catalog.toml";
 const LOCK: &str = ".af/af.lock";
 
 /// What a declaration makes: which lock pins it, and which file the kernel sends as its prompt.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Kind {
     /// `.af/workers/<name>/reviewer.toml`, pinned in `af.lock`.
     Reviewer,
@@ -281,9 +281,13 @@ impl Tally {
     }
 }
 
+/// A Worker package as a plan binds it: the kind of package and its name. A reviewer and a
+/// Task package may share a name; they are still two Workers.
+pub(crate) type Worker = (Kind, String);
+
 /// One reservation of a Worker's slot, as its records leave it.
 struct Reservation {
-    worker: String,
+    worker: Worker,
     released: bool,
     /// `Some(succeeded)` once settled.
     settled: Option<bool>,
@@ -293,20 +297,40 @@ struct Reservation {
 /// The Worker a node of a compiled graph runs: the package the graph binds to the node's one
 /// slot. A node that names no slot, or several (a Provider admission, an optimization
 /// experiment), runs no single Worker.
-pub(crate) fn worker_of(graph: &Json, node: &str) -> Option<String> {
-    let operator = &graph["nodes"][node]["operator"];
-    let slot = match operator["kind"].as_str()? {
-        "primitive" => operator["operator"]["slot"].as_str(),
-        "review_domain" => operator["operation"]["slot"].as_str(),
-        _ => None,
-    }?;
-    graph["slots"][slot]["worker"].as_str().map(str::to_owned)
+pub(crate) fn worker_of(graph: &Json, node: &str) -> Option<Worker> {
+    operator_worker(graph, &graph["nodes"][node]["operator"])
 }
 
-/// Per Worker name, the Attempts one Task's `af task explain --json` document records. A
+/// The Worker a compiled operator runs: a reviewer package for a Review-domain operation, a
+/// Task Worker package for a primitive.
+fn operator_worker(graph: &Json, operator: &Json) -> Option<Worker> {
+    let (kind, slot) = match operator["kind"].as_str()? {
+        "primitive" => (Kind::Task, operator["operator"]["slot"].as_str()),
+        "review_domain" => (Kind::Reviewer, operator["operation"]["slot"].as_str()),
+        _ => return None,
+    };
+    let worker = graph["slots"][slot?]["worker"].as_str()?;
+    Some((kind, worker.to_owned()))
+}
+
+/// Each owned child invocation a Task registered, to the invocation of the node that owns it.
+fn owners(document: &Json) -> Result<BTreeMap<&str, &str>, String> {
+    let mut owners = BTreeMap::new();
+    for set in tasks::array(&document["owned_child_sets"]) {
+        let parent = tasks::text(&set["record"]["parent_invocation_id"])?;
+        for child in tasks::array(&set["record"]["children"]) {
+            owners.insert(tasks::text(&child["invocation_id"])?, parent);
+        }
+    }
+    Ok(owners)
+}
+
+/// Per Worker, the Attempts one Task's `af task explain --json` document records. A
 /// reservation's node comes from its invocation (`invoked`), and its Worker from that node's
 /// slot in the compiled graph of the plan the invocation ran under: the document's own graph
-/// for its current plan, `graph` for an earlier one. Never from a name.
+/// for its current plan, `graph` for an earlier one. Never from a name. An owned child (a
+/// Review shard such as `parent.slice1`) is no node of the graph: it runs the operator the
+/// graph's `owned_children` records for the node whose invocation registered it.
 ///
 /// The accounting is the Tasks pane's: an Attempt's charge is the highest its settlement or a
 /// usage observation records, and a released reservation is no Attempt.
@@ -314,8 +338,9 @@ pub(crate) fn tally(
     document: &Json,
     invoked: &mut dyn FnMut(&str) -> Result<Invoked, String>,
     graph: &mut dyn FnMut(&str) -> Result<Json, String>,
-) -> Result<BTreeMap<String, Tally>, String> {
+) -> Result<BTreeMap<Worker, Tally>, String> {
     let current = document["plan_id"].as_str();
+    let owners = owners(document)?;
     let mut graphs: BTreeMap<String, Json> = BTreeMap::new();
     let mut reservations: BTreeMap<String, Reservation> = BTreeMap::new();
     for entry in tasks::array(&document["execution_records"]) {
@@ -325,8 +350,9 @@ pub(crate) fn tally(
         };
         match record["kind"].as_str() {
             Some("reserved") => {
-                let invoked = invoked(tasks::text(&record["invocation_id"])?)?;
-                let plan = invoked.plan_id.as_deref().or(current);
+                let invocation = tasks::text(&record["invocation_id"])?;
+                let run = invoked(invocation)?;
+                let plan = run.plan_id.as_deref().or(current);
                 let plan = plan.ok_or("a reservation names no plan")?;
                 if !graphs.contains_key(plan) {
                     let compiled = if Some(plan) == current {
@@ -336,7 +362,16 @@ pub(crate) fn tally(
                     };
                     graphs.insert(plan.to_owned(), compiled);
                 }
-                if let Some(worker) = worker_of(&graphs[plan], &invoked.node) {
+                let compiled = &graphs[plan];
+                let worker = match owners.get(invocation) {
+                    Some(parent) if compiled["nodes"].get(&run.node).is_none() => {
+                        let owner = invoked(parent)?;
+                        let template = &compiled["owned_children"][&owner.node];
+                        operator_worker(compiled, &template["operator"])
+                    }
+                    _ => worker_of(compiled, &run.node),
+                };
+                if let Some(worker) = worker {
                     let reservation = Reservation {
                         worker,
                         released: false,
@@ -365,7 +400,7 @@ pub(crate) fn tally(
             _ => {}
         }
     }
-    let mut tallies: BTreeMap<String, Tally> = BTreeMap::new();
+    let mut tallies: BTreeMap<Worker, Tally> = BTreeMap::new();
     for reservation in reservations.values() {
         let tally = tallies.entry(reservation.worker.clone()).or_default();
         if reservation.released {
@@ -407,7 +442,7 @@ fn task_tally(
     dir: &Path,
     task_id: &str,
     cache: &mut Cache,
-) -> Result<BTreeMap<String, Tally>, String> {
+) -> Result<BTreeMap<Worker, Tally>, String> {
     let document = task_execution::inspection_document(dir, task_id, true)?
         .ok_or_else(|| format!("not in {}", dir.display()))?;
     let invoked = &mut |id: &str| tasks::node_of(dir, id, cache);
@@ -417,7 +452,7 @@ fn task_tally(
 /// One Task state directory, and every Worker's Attempts in it or why it cannot be read.
 struct Store {
     shown: String,
-    tallies: Result<BTreeMap<String, Tally>, String>,
+    tallies: Result<BTreeMap<Worker, Tally>, String>,
 }
 
 /// A Store the Tasks pane would refuse is refused here with the same words; so is one with a
@@ -430,7 +465,7 @@ fn read_store(target: &Target) -> Store {
     };
     let tallies = listed.and_then(|entries| {
         let mut cache = Cache::default();
-        let mut total: BTreeMap<String, Tally> = BTreeMap::new();
+        let mut total: BTreeMap<Worker, Tally> = BTreeMap::new();
         for entry in entries {
             let task_id = tasks::text(&entry["task_id"])?;
             let counted = task_tally(dir, task_id, &mut cache)
@@ -478,6 +513,11 @@ impl WorkersPane {
         self.entry(self.selected.as_deref()?)
     }
 
+    /// The declared name behind a bar entry, without the drift marker its label carries.
+    pub(crate) fn entry_name(&self, id: &str) -> Option<String> {
+        self.entry(id).map(|entry| entry.label.clone())
+    }
+
     /// The file behind a bar entry, for `gf` on the bar: its prompt when `HEAD` commits one,
     /// otherwise its declaration.
     pub(crate) fn entry_file(&self, id: &str) -> Option<PathBuf> {
@@ -518,17 +558,6 @@ impl WorkersPane {
             Err(error) => self.error = Some(error),
         }
         self.stores = self.targets.iter().map(read_store).collect();
-    }
-
-    /// `HEAD` may have moved since the entries were read; opening one reads again then.
-    fn ensure_current(&mut self) {
-        let Some(root) = &self.root else {
-            return;
-        };
-        if self.error.is_none() && head(root).is_ok_and(|commit| commit == self.commit) {
-            return;
-        }
-        self.read();
     }
 
     fn rebuild(&mut self) {
@@ -651,8 +680,8 @@ impl WorkersPane {
 
     fn state_rows(&self, entry: &Entry) -> Vec<Row> {
         let mut rows = self.store_refusals();
-        let name = match (&entry.pin, &entry.name) {
-            (Pin::Here { .. }, Some(name)) => name,
+        let worker = match (&entry.pin, &entry.name) {
+            (Pin::Here { .. }, Some(name)) => (entry.kind, name.clone()),
             _ => {
                 let lock = entry.kind.lock();
                 let unbound = "No plan binds this package: a plan binds a Worker by its name,";
@@ -665,7 +694,7 @@ impl WorkersPane {
         let mut total = Tally::default();
         for store in &self.stores {
             if let Ok(tallies) = &store.tallies
-                && let Some(tally) = tallies.get(name)
+                && let Some(tally) = tallies.get(&worker)
             {
                 total.add(tally);
             }
@@ -879,13 +908,11 @@ impl Pane for WorkersPane {
             .collect()
     }
 
+    /// Every open reads again: `HEAD`, the working tree's drift and the Stores all move under
+    /// an open browser.
     fn open(&mut self, item: Option<&str>) {
-        if self.wanted {
-            self.ensure_current();
-        } else {
-            self.wanted = true;
-            self.read();
-        }
+        self.wanted = true;
+        self.read();
         self.selected = item
             .filter(|id| self.entry(id).is_some())
             .map(str::to_owned);
@@ -914,13 +941,14 @@ impl Pane for WorkersPane {
         Ok(())
     }
 
-    /// The prompt's working-tree file below the PROMPT rule when `HEAD` commits one; the
-    /// declaration otherwise.
+    /// The prompt's working-tree file at and below the PROMPT rule, committed or not: that is
+    /// the file the kernel would send. The declaration above it.
     fn file(&self, row: usize) -> Option<PathBuf> {
         let (root, entry) = (self.root.as_ref()?, self.selected_entry()?);
-        Some(match entry.prompt {
-            Some(_) if row >= self.prompt_row => root.join(entry.prompt_path()),
-            _ => root.join(&entry.id),
+        Some(if row >= self.prompt_row {
+            root.join(entry.prompt_path())
+        } else {
+            root.join(&entry.id)
         })
     }
 

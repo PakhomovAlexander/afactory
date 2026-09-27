@@ -23,6 +23,12 @@ Five facts shape the answer:
   compiled graph. The graph gives a node's operator, and the operator its slot, and
   `graph.slots` binds each slot to a Worker by name. An earlier plan's graph is reachable
   through that plan's `compiled_graph_id`.
+- An owned child, such as the Review shard `parent.slice1`, is not a node of the graph. The
+  document's `owned_child_sets` name the invocation of the node that registered it, and
+  `graph.owned_children[that node]` records the operator every child of that node runs.
+- A Review-domain operator runs a reviewer package and a primitive runs a Task Worker package.
+  The two may share a name and are still two Workers, so STATE matches the kind as well as the
+  name.
 - The recorded package artifact carries a name, a version and a digest, but no path. The
   kernel resolves a slot's Worker by name through the committed pin.
 - The kernel's own prompt conventions are fixed. The reviewer adapters send `reviewer.md`, and
@@ -63,7 +69,8 @@ through the Pipelines pane's own helpers (`head`, `git`, `committed`, `differs`,
 - The user scope lists nothing and says that Workers belong to a project.
 
 The pane reads nothing until its folder or one of its entries is first opened. After that, a
-load, `R` and every open read it again. An open also reads again when `HEAD` has moved.
+load, `R` and every open read `HEAD`, the working tree's drift and the Stores again, so a
+reopened Worker shows the Attempts settled since it was last opened.
 
 ### Identity
 
@@ -113,9 +120,10 @@ A Task whose records cannot be read refuses its Store, named with the Task, as i
 
 PROMPT is `reviewer.md` for a reviewer Worker and `instructions.md` for a Task Worker package,
 as `HEAD` commits it, shown as plain scrollable text. A package without that file says so, and
-nothing else is guessed. `gf` below the PROMPT rule opens the prompt's working-tree file; above
-it, `gf` opens the declaration. `gf` on a bar entry opens the prompt when `HEAD` commits one,
-and the declaration otherwise. `y` copies the Worker's name.
+nothing else is guessed. `gf` at or below the PROMPT rule opens the prompt's working-tree
+path, even when `HEAD` commits no prompt; above it, `gf` opens the declaration. `gf` on a bar
+entry opens the prompt when `HEAD` commits one, and the declaration otherwise. `y`, in the pane
+or on a bar entry, copies the Worker's declared name, never the drift marker.
 
 ## Consequences
 

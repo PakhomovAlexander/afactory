@@ -115,7 +115,7 @@ pub(crate) fn hub_with_tasks(root: &Path) -> (PathBuf, PathBuf) {
 }
 
 /// Run the fixture's ticket under `task_id` the way `af task start --execute` runs it.
-fn record_task(root: &Path, repo: &Path, state: &Path, task_id: &str) {
+pub(crate) fn record_task(root: &Path, repo: &Path, state: &Path, task_id: &str) {
     let ticket = std::fs::read(repo.join("ticket.json")).unwrap();
     let mut task: serde_json::Value = serde_json::from_slice(&ticket).unwrap();
     task["task_id"] = serde_json::Value::String(task_id.to_owned());
@@ -144,7 +144,7 @@ pub(crate) fn stable_lines(text: &str) -> Vec<String> {
 
 /// The hub's project scope with the machine layers pinned under `root`, which is also home:
 /// nothing in a render depends on the machine running it.
-fn hub_scope(root: &Path, repo: &Path) -> Scope {
+pub(crate) fn hub_scope(root: &Path, repo: &Path) -> Scope {
     let roots = MachineRoots {
         system: root.join("etc/af"),
         user: root.join("config/af"),
@@ -1037,7 +1037,18 @@ fn the_workers_pane_golden_at_100x30_and_its_state_is_af_task_shows() {
     assert_eq!(host.sent, b"\x1b]52;c;Zml4dHVyZS9ldmFsdWF0b3I=\x07");
     let declaration = repo.join(".af/task-packages/fixture/evaluator/worker.toml");
     assert_eq!(app.pane().file(app.main.cursor), Some(declaration.clone()));
-    assert_eq!(app.node_file(), Some(declaration));
+    assert_eq!(app.node_file(), Some(declaration.clone()));
+    // A drifted Worker's bar label carries the marker; `y` on the bar copies only its name.
+    let text = std::fs::read_to_string(&declaration).unwrap();
+    std::fs::write(&declaration, format!("{text}# edited\n")).unwrap();
+    press(&mut app, &mut host, b"\t\r");
+    let bar = app.frame(100, 30).text();
+    assert!(bar.contains("fixture/evaluator *"), "{bar}");
+    host.sent.clear();
+    press(&mut app, &mut host, b"y");
+    assert_eq!(host.sent, b"\x1b]52;c;Zml4dHVyZS9ldmFsdWF0b3I=\x07");
+    std::fs::write(&declaration, text).unwrap();
+    press(&mut app, &mut host, b"\r\t");
     // At the 80x24 minimum the bar hides and the pane starts at the first column.
     let small = app.frame(80, 24).text();
     assert!(small.starts_with("WORKER  fixture/evaluator\n"), "{small}");
