@@ -65,10 +65,12 @@ Self-management therefore never sends the child to another release partway throu
 
 The terminal is handed over in this order:
 
-1. `Host::release` leaves the alternate screen, shows the cursor and restores cooked mode
-   without `ISIG`: until the child's group owns the foreground, `<C-c>` is a byte, not a signal
-   to the browser's group. An editor, which runs in the browser's own group, asks for the
-   signals back with `Host::cooked`.
+1. `Host::release` leaves the alternate screen, shows the cursor, and goes from raw mode
+   straight to cooked mode without `ISIG`, in one `tcsetattr`: until the child's group owns the
+   foreground, `<C-c>` is a byte, not a signal to the browser's group. An editor, which runs in
+   the browser's own group, gets the signals with `Host::signals(true)` while it runs and loses
+   them before the browser re-enters. A release that fails re-enters the screen before the
+   failure is reported.
 2. `Host::run` spawns the child with inherited stdin, stdout and stderr, in a new process group.
    It gives that group the terminal's foreground with `tcsetpgrp`, then sends the group
    `SIGCONT`. Only then does it turn `ISIG` on, with `SIGTTOU` blocked because the browser is
@@ -81,8 +83,11 @@ The terminal is handed over in this order:
    only a child still running is killed as one.
 3. The browser waits with `waitpid(WUNTRACED)`. A child stopped by `<C-z>` is continued at once,
    because the browser has no job control and nothing else would resume it.
-4. When the child ends, the browser takes the foreground back with `SIGTTOU` blocked for that
-   call.
+4. When the child ends, the browser turns `ISIG` off and only then takes the foreground back,
+   both with `SIGTTOU` blocked. `Host::pause` reads Enter in raw mode and returns to cooked mode
+   without `ISIG`, and `Host::reenter` goes raw. So from the release to the re-entry the browser
+   never owns the foreground while `ISIG` is on; every change of mode is one `tcsetattr`, not a
+   pass through the saved mode, which is restored only when the browser closes.
 5. `Host::pause` prints one line on the released screen, `af LINE: exit N -- Enter returns to
    the browser`. For a child a signal ended, the line says `killed by SIGINT` and starts on a
    fresh line. The browser discards any unread input, then reads the terminal in raw mode until

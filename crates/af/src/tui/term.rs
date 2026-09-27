@@ -70,19 +70,31 @@ impl Session {
         self.send(ENTER)
     }
 
-    fn leave(&mut self) {
+    /// Leave the browser's screen and cook the terminal in one step: from raw mode straight to
+    /// cooked, with or without the keys that raise signals, never through a moment of cooked
+    /// mode with signals the browser did not ask for.
+    fn leave(&mut self, signals: bool) {
         if !self.active {
             return;
         }
         self.active = false;
         let _ = self.tty.write_all(LEAVE);
         let _ = self.tty.flush();
-        let _ = termios::tcsetattr(&self.tty, OptionalActions::Now, &self.saved);
+        let _ = termios::tcsetattr(&self.tty, OptionalActions::Now, &self.cooked(signals));
         *lock() = None;
     }
 
+    /// The saved cooked mode, with or without the keys that raise signals.
+    fn cooked(&self, signals: bool) -> Termios {
+        let mut cooked = self.saved.clone();
+        if !signals {
+            cooked.local_modes.remove(termios::LocalModes::ISIG);
+        }
+        cooked
+    }
+
     pub(crate) fn close(mut self) {
-        self.leave();
+        self.leave(true);
     }
 
     /// Columns and rows; 80x24 when the terminal will not say.
@@ -132,27 +144,23 @@ impl Session {
 }
 
 impl Session {
-    /// The saved cooked mode with or without the keys that raise signals.
+    /// Cook the released terminal with or without the keys that raise signals.
     fn cook(&self, signals: bool) -> Result<(), String> {
-        let mut cooked = self.saved.clone();
-        if !signals {
-            cooked.local_modes.remove(termios::LocalModes::ISIG);
-        }
-        termios::tcsetattr(&self.tty, OptionalActions::Now, &cooked)
+        termios::tcsetattr(&self.tty, OptionalActions::Now, &self.cooked(signals))
             .map_err(|error| format!("restoring the terminal: {error}"))
     }
 }
 
 impl Host for Session {
     fn release(&mut self) -> Result<(), String> {
-        self.leave();
         // `<C-c>` is a byte, not a signal to the browser's group, until `run` hands the
-        // foreground to the command or `cooked` asks for signals.
-        self.cook(false)
+        // foreground to the command or `signals` asks for them.
+        self.leave(false);
+        Ok(())
     }
 
-    fn cooked(&mut self) -> Result<(), String> {
-        self.cook(true)
+    fn signals(&mut self, on: bool) -> Result<(), String> {
+        self.cook(on)
     }
 
     fn reenter(&mut self) -> Result<(), String> {
@@ -215,7 +223,13 @@ impl Host for Session {
         // `wait_for` reaped the process; the handle only names it.
         drop(spawned);
         if let Some(group) = browser {
+            // Signals off before the browser owns the foreground again, so no key raises one
+            // in the browser between here and its raw session.
+            let quiet = from_the_background(|| self.cook(false))
+                .map_err(|error| format!("restoring the terminal: {error}"))
+                .and_then(|quiet| quiet);
             self.take_foreground(group)?;
+            quiet?;
         }
         exit
     }
@@ -241,7 +255,8 @@ impl Host for Session {
                 Err(error) => break Err(format!("reading the terminal: {error}")),
             }
         };
-        let _ = termios::tcsetattr(&self.tty, OptionalActions::Now, &self.saved);
+        // Back to the released mode, signals still off: `reenter` goes raw next.
+        let _ = termios::tcsetattr(&self.tty, OptionalActions::Now, &self.cooked(false));
         *lock() = None;
         outcome
     }
@@ -255,7 +270,7 @@ impl Host for Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        self.leave();
+        self.leave(true);
     }
 }
 

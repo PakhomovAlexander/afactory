@@ -237,6 +237,8 @@ struct Recorder {
     exit: Option<Exit>,
     /// A child that cannot be spawned, and why.
     unspawnable: Option<String>,
+    /// A release that fails, and why.
+    unreleasable: Option<String>,
     child: Option<Box<dyn FnMut()>>,
 }
 
@@ -244,6 +246,15 @@ impl Host for Recorder {
     fn release(&mut self) -> Result<(), String> {
         self.released += 1;
         self.events.push("release".to_owned());
+        match &self.unreleasable {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
+    }
+
+    fn signals(&mut self, on: bool) -> Result<(), String> {
+        self.events
+            .push(format!("signals {}", if on { "on" } else { "off" }));
         Ok(())
     }
 
@@ -1305,6 +1316,40 @@ fn a_user_scope_task_is_neither_prefilled_nor_completed() {
         );
     }
     assert!(app.panes.tasks.task_ids().is_empty());
+}
+
+/// A release that fails may have left the screen half released: the browser takes it back
+/// before it reports the failure, and runs nothing.
+#[test]
+fn a_failed_release_reenters_before_it_is_reported() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder {
+        unreleasable: Some("restoring the terminal: Input/output error".to_owned()),
+        ..Recorder::default()
+    };
+    press(&mut app, &mut host, b":task list\r");
+    assert_eq!(host.events, ["release", "reenter"]);
+    assert!(host.runs.is_empty());
+    let (message, error) = app.message.clone().unwrap();
+    assert!(error, "{message}");
+    assert_eq!(
+        message,
+        "af task list: restoring the terminal: Input/output error"
+    );
+}
+
+/// An editor runs in the browser's own process group: the released terminal raises signals only
+/// while it runs, and stops before the browser re-enters.
+#[test]
+fn an_editor_gets_signals_only_while_it_runs() {
+    let mut host = Recorder::default();
+    let outcome = handed_off(&mut host, || Ok(()));
+    assert!(outcome.is_ok());
+    assert_eq!(
+        host.events,
+        ["release", "signals on", "signals off", "reenter"]
+    );
 }
 
 /// `<Tab>` completes subcommand names at every level from the clap definition itself.

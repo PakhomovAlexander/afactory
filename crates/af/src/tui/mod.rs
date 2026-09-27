@@ -91,9 +91,10 @@ pub(crate) trait Host {
     /// signals: until a handed-off command's process group owns the foreground, `<C-c>` would
     /// signal the browser's group, so `run` enables them only once it does.
     fn release(&mut self) -> Result<(), String>;
-    /// Let the released terminal's keys raise signals again, for a child that runs in the
-    /// browser's own process group (an editor).
-    fn cooked(&mut self) -> Result<(), String> {
+    /// Let the released terminal's keys raise signals, or stop them again: on for a child that
+    /// runs in the browser's own process group (an editor) while it runs, off before the
+    /// browser re-enters.
+    fn signals(&mut self, _on: bool) -> Result<(), String> {
         Ok(())
     }
     fn reenter(&mut self) -> Result<(), String>;
@@ -1091,6 +1092,11 @@ impl App {
             env: vec![(name.to_owned(), value)],
         };
         if let Err(error) = host.release() {
+            // The screen may be half released: take it back before saying so.
+            let error = match host.reenter() {
+                Ok(()) => error,
+                Err(again) => format!("{error}; the screen could not be restored: {again}"),
+            };
             self.say_error(format!("af {line}: {error}"));
             return;
         }
@@ -1465,8 +1471,8 @@ fn handed_off(
     child: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     host.release()?;
-    host.cooked()?;
-    let outcome = child();
+    let outcome = host.signals(true).and_then(|()| child());
+    let _ = host.signals(false);
     host.reenter()?;
     outcome
 }
