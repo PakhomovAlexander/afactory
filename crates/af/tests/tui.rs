@@ -287,6 +287,17 @@ impl Browser {
 
     /// The browser on a terminal of `rows` x `columns`.
     fn launch_sized(cwd: &Path, home: &Path, rows: usize, columns: usize) -> Browser {
+        Browser::launch_with(cwd, home, rows, columns, &[])
+    }
+
+    /// A browser whose environment also carries `extra`.
+    fn launch_with(
+        cwd: &Path,
+        home: &Path,
+        rows: usize,
+        columns: usize,
+        extra: &[(&str, &str)],
+    ) -> Browser {
         let size = PtySize {
             rows: rows as u16,
             cols: columns as u16,
@@ -298,6 +309,9 @@ impl Browser {
         command.env_clear();
         command.cwd(cwd);
         for (name, value) in environment(home) {
+            command.env(name, value);
+        }
+        for (name, value) in extra {
             command.env(name, value);
         }
         let child = pair.slave.spawn_command(command).unwrap();
@@ -1030,6 +1044,38 @@ fn keys_read_with_a_command_line_are_not_replayed_after_it() {
     browser.wait_for("the bar moved", |screen| {
         screen.lines()[ROWS - 1].starts_with("NORMAL  providers/")
     });
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// An editor runs in its own process group, as a command does: `<C-c>` ends the editor, and the
+/// browser comes back and says so, where it once died with it.
+#[test]
+fn ctrl_c_in_an_editor_stops_the_editor_not_the_browser() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub(&root);
+    // An "editor" that waits: `sh -c 'sleep 30' editor FILE`.
+    let editor = "/bin/sh -c 'sleep 30' editor";
+    let mut browser = Browser::launch_with(&repo, &home, ROWS, COLS, &[("EDITOR", editor)]);
+    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
+    browser.wait_for("project settings", ready);
+    // The bar's first pipeline, and `gf` on it.
+    browser.keys(b"]]]]]]j");
+    browser.wait_for("a pipeline selected", |screen| {
+        screen.lines()[ROWS - 1].starts_with("NORMAL  pipelines/")
+    });
+    browser.keys(b"gf");
+    browser.wait_for("the released screen", |screen| {
+        !screen.text().contains("SETTINGS")
+    });
+    std::thread::sleep(Duration::from_secs(1));
+    browser.keys(b"\x03");
+    let back = |screen: &Screen| {
+        let last = &screen.lines()[ROWS - 1];
+        last.starts_with("NORMAL  pipelines/") && last.contains("killed by SIGINT")
+    };
+    browser.wait_for("the browser again, naming the editor's end", back);
     browser.keys(b":q\r");
     assert_eq!(browser.exit_code(), 0);
 }

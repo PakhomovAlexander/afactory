@@ -88,15 +88,10 @@ Tab completes commands, and a Task ID from the Tasks pane.";
 /// writing one control sequence.
 pub(crate) trait Host {
     /// Leave the browser's screen and cook the terminal, but keep its keys from raising
-    /// signals: until a handed-off command's process group owns the foreground, `<C-c>` would
-    /// signal the browser's group, so `run` enables them only once it does.
+    /// signals: until a handed-off child's process group owns the foreground, `<C-c>` would
+    /// signal the browser's group, so `run` enables them only once it does. A failure means
+    /// the terminal did not leave, and nothing may run on it.
     fn release(&mut self) -> Result<(), String>;
-    /// Let the released terminal's keys raise signals, or stop them again: on for a child that
-    /// runs in the browser's own process group (an editor) while it runs, off before the
-    /// browser re-enters.
-    fn signals(&mut self, _on: bool) -> Result<(), String> {
-        Ok(())
-    }
     fn reenter(&mut self) -> Result<(), String>;
     fn send(&mut self, bytes: &[u8]) -> Result<(), String>;
     /// Run a command on the released terminal, which the command owns until it ends.
@@ -311,6 +306,8 @@ pub(crate) struct App {
     bar_top: usize,
     size: (usize, usize),
     quit: bool,
+    /// `$EDITOR` as the browser started with it: what `gf` and `:e` run.
+    editor: Option<String>,
     /// The terminal was handed to a child since the event loop last looked: keys it read
     /// before are dropped.
     handed: bool,
@@ -340,6 +337,7 @@ impl App {
             bar_top: 0,
             size: (BAR_MIN_WIDTH, MIN_HEIGHT),
             quit: false,
+            editor: std::env::var("EDITOR").ok(),
             handed: false,
             exe: std::env::current_exe().map_err(|error| format!("the af executable: {error}")),
         };
@@ -998,7 +996,7 @@ impl App {
             }
             Effect::OpenEditor(path) => {
                 self.handed = true;
-                let outcome = handed_off(host, || crate::config::open_in_editor(&path));
+                let outcome = self.edit(host, &path);
                 let shown = self.scope.display(&path);
                 self.finish(outcome, format!("edited {shown}"));
             }
@@ -1061,7 +1059,8 @@ impl App {
         match handoff(parsed.command) {
             Handoff::Edit(layer, repo) => {
                 self.handed = true;
-                let outcome = handed_off(host, || crate::config::edit(layer, repo.as_deref()));
+                let outcome = crate::config::edit_target(layer, repo.as_deref())
+                    .and_then(|path| self.edit(host, &path));
                 self.finish(outcome, "configuration edited".to_owned());
             }
             Handoff::Help(topic) => {
@@ -1069,6 +1068,33 @@ impl App {
                 self.main = View::default();
             }
             Handoff::Other => self.hand_off(words, host),
+        }
+    }
+
+    /// Run `$EDITOR` on `path` with the terminal handed to it, as a command is: in its own
+    /// process group, which owns the foreground, so `<C-c>` reaches the editor, never the
+    /// browser. There is no Enter wait: the editor's own screen is what the user left.
+    fn edit(&mut self, host: &mut dyn Host, path: &Path) -> Result<(), String> {
+        let (program, args) = crate::config::editor_words(self.editor.as_deref(), path)?;
+        let child = HandOff {
+            program: PathBuf::from(&program),
+            args,
+            dir: self.scope.root.clone(),
+            env: Vec::new(),
+        };
+        if let Err(error) = host.release() {
+            return Err(match host.reenter() {
+                Ok(()) => error,
+                Err(again) => format!("{error}; the screen could not be restored: {again}"),
+            });
+        }
+        let ran = host.run(&child);
+        let reentered = host.reenter();
+        match (ran, reentered) {
+            (Err(error), _) => Err(format!("running {program}: {error}")),
+            (Ok(_), Err(error)) => Err(error),
+            (Ok(Exit::Code(0)), Ok(())) => Ok(()),
+            (Ok(exit), Ok(())) => Err(format!("{program} {}", exit.describe())),
         }
     }
 
@@ -1439,8 +1465,13 @@ fn takes_task_id(path: &[&str]) -> bool {
     let mut words = rest.iter();
     while let Some(word) = words.next() {
         let argument = if let Some(long) = word.strip_prefix("--") {
-            if long.contains('=') {
-                continue;
+            if let Some((name, _)) = long.split_once('=') {
+                // `--name=value`: a declared option that takes a value, its value attached.
+                let declared = command.get_arguments().find(|a| a.get_long() == Some(name));
+                if declared.is_some_and(|a| a.get_action().takes_values()) {
+                    continue;
+                }
+                return false;
             }
             command.get_arguments().find(|a| a.get_long() == Some(long))
         } else if let Some(short) = word.strip_prefix('-')
@@ -1462,19 +1493,6 @@ fn takes_task_id(path: &[&str]) -> bool {
         }
     }
     true
-}
-
-/// Hand the terminal to a child, and take it back whatever the child did. The child runs in the
-/// browser's own process group, so the terminal is cooked in full, signals included.
-fn handed_off(
-    host: &mut dyn Host,
-    child: impl FnOnce() -> Result<(), String>,
-) -> Result<(), String> {
-    host.release()?;
-    let outcome = host.signals(true).and_then(|()| child());
-    let _ = host.signals(false);
-    host.reenter()?;
-    outcome
 }
 
 /// Whether `id` is an entry of `items` or of a group among them.

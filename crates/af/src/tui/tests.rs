@@ -252,12 +252,6 @@ impl Host for Recorder {
         }
     }
 
-    fn signals(&mut self, on: bool) -> Result<(), String> {
-        self.events
-            .push(format!("signals {}", if on { "on" } else { "off" }));
-        Ok(())
-    }
-
     fn reenter(&mut self) -> Result<(), String> {
         self.events.push("reenter".to_owned());
         Ok(())
@@ -1339,17 +1333,39 @@ fn a_failed_release_reenters_before_it_is_reported() {
     );
 }
 
-/// An editor runs in the browser's own process group: the released terminal raises signals only
-/// while it runs, and stops before the browser re-enters.
+/// An editor is handed the terminal as a command is, through `Host::run` in its own process
+/// group, so `<C-c>` reaches the editor, never the browser; there is no Enter wait after it.
 #[test]
-fn an_editor_gets_signals_only_while_it_runs() {
+fn an_editor_runs_in_its_own_group_like_a_command() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    app.editor = Some("vim -n".to_owned());
     let mut host = Recorder::default();
-    let outcome = handed_off(&mut host, || Ok(()));
-    assert!(outcome.is_ok());
+    press(&mut app, &mut host, b"]]]]]]jgf");
+    let file = root.join("hub/.af/pipelines/review.toml");
+    assert_eq!(host.runs.len(), 1);
+    assert_eq!(host.runs[0].program, PathBuf::from("vim"));
     assert_eq!(
-        host.events,
-        ["release", "signals on", "signals off", "reenter"]
+        host.runs[0].args,
+        ["-n".to_owned(), file.display().to_string()]
     );
+    assert_eq!(host.events.len(), 3, "{:?}", host.events);
+    assert_eq!(host.events[0], "release");
+    assert!(host.events[1].starts_with("run -n "));
+    assert_eq!(host.events[2], "reenter");
+    // An editor that fails says so, and the browser is back all the same.
+    host.exit = Some(Exit::Code(1));
+    press(&mut app, &mut host, b"gf");
+    assert_eq!(host.events.last().map(String::as_str), Some("reenter"));
+    let (message, error) = app.message.clone().unwrap();
+    assert!(error && message.contains("vim exit 1"), "{message}");
+    // No `$EDITOR`: nothing is released, and the fix is named.
+    app.editor = None;
+    let before = host.events.len();
+    press(&mut app, &mut host, b"gf");
+    assert_eq!(host.events.len(), before);
+    let (message, _) = app.message.clone().unwrap();
+    assert!(message.contains("EDITOR is not set"), "{message}");
 }
 
 /// `<Tab>` completes subcommand names at every level from the clap definition itself.
@@ -1488,6 +1504,7 @@ fn the_tasks_pane_prefills_run_and_deliver_and_completes_task_ids() {
     for typed in [
         "task show --json pagination-u",
         "task show --repo . pagination-u",
+        "task show --repo=. pagination-u",
     ] {
         press(&mut app, &mut host, b"\x1b");
         press(&mut app, &mut host, format!(":{typed}\t").as_bytes());
@@ -1498,6 +1515,8 @@ fn the_tasks_pane_prefills_run_and_deliver_and_completes_task_ids() {
     for typed in [
         "task show --repo pagination-u",
         "task show pagination-cli pagination-u",
+        "task show --not-a-real-option=value pagination-u",
+        "task show --json=yes pagination-u",
     ] {
         press(&mut app, &mut host, b"\x1b");
         press(&mut app, &mut host, format!(":{typed}\t").as_bytes());

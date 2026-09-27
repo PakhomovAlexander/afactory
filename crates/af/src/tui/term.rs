@@ -73,15 +73,22 @@ impl Session {
     /// Leave the browser's screen and cook the terminal in one step: from raw mode straight to
     /// cooked, with or without the keys that raise signals, never through a moment of cooked
     /// mode with signals the browser did not ask for.
-    fn leave(&mut self, signals: bool) {
+    ///
+    /// A failure is returned, so a hand-off never starts on a terminal that did not leave; the
+    /// session is inactive only once the mode changed, so `enter` can take the screen back.
+    fn leave(&mut self, signals: bool) -> Result<(), String> {
         if !self.active {
-            return;
+            return Ok(());
         }
+        let tty = &mut self.tty;
+        tty.write_all(LEAVE)
+            .and_then(|()| tty.flush())
+            .map_err(|error| format!("leaving the browser's screen: {error}"))?;
+        termios::tcsetattr(&self.tty, OptionalActions::Now, &self.cooked(signals))
+            .map_err(|error| format!("restoring the terminal: {error}"))?;
         self.active = false;
-        let _ = self.tty.write_all(LEAVE);
-        let _ = self.tty.flush();
-        let _ = termios::tcsetattr(&self.tty, OptionalActions::Now, &self.cooked(signals));
         *lock() = None;
+        Ok(())
     }
 
     /// The saved cooked mode, with or without the keys that raise signals.
@@ -93,8 +100,9 @@ impl Session {
         cooked
     }
 
+    /// Closing is best effort: there is nothing left to hand the terminal to.
     pub(crate) fn close(mut self) {
-        self.leave(true);
+        let _ = self.leave(true);
     }
 
     /// Columns and rows; 80x24 when the terminal will not say.
@@ -155,12 +163,7 @@ impl Host for Session {
     fn release(&mut self) -> Result<(), String> {
         // `<C-c>` is a byte, not a signal to the browser's group, until `run` hands the
         // foreground to the command or `signals` asks for them.
-        self.leave(false);
-        Ok(())
-    }
-
-    fn signals(&mut self, on: bool) -> Result<(), String> {
-        self.cook(on)
+        self.leave(false)
     }
 
     fn reenter(&mut self) -> Result<(), String> {
@@ -270,7 +273,7 @@ impl Host for Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        self.leave(true);
+        let _ = self.leave(true);
     }
 }
 
@@ -367,5 +370,36 @@ mod tests {
             .join()
             .unwrap();
         assert!(!elsewhere);
+    }
+
+    /// A terminal whose modes cannot be changed: the release fails and says why, and the
+    /// session stays active, so re-entering takes the screen back.
+    #[test]
+    fn a_release_the_terminal_refuses_is_an_error() {
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize::default())
+            .unwrap();
+        let name = pair.master.tty_name().unwrap();
+        let slave = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(name)
+            .unwrap();
+        let saved = termios::tcgetattr(&slave).unwrap();
+        // `/dev/null` takes the leave sequence but is no terminal: `tcsetattr` fails.
+        let tty = OpenOptions::new().write(true).open("/dev/null").unwrap();
+        let mut session = Session {
+            tty,
+            saved,
+            active: true,
+            dirty: false,
+        };
+        let error = session.release().unwrap_err();
+        assert!(error.starts_with("restoring the terminal: "), "{error}");
+        assert!(
+            session.active,
+            "a failed release leaves the session to re-enter"
+        );
+        session.active = false;
     }
 }

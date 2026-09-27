@@ -67,10 +67,10 @@ The terminal is handed over in this order:
 
 1. `Host::release` leaves the alternate screen, shows the cursor, and goes from raw mode
    straight to cooked mode without `ISIG`, in one `tcsetattr`: until the child's group owns the
-   foreground, `<C-c>` is a byte, not a signal to the browser's group. An editor, which runs in
-   the browser's own group, gets the signals with `Host::signals(true)` while it runs and loses
-   them before the browser re-enters. A release that fails re-enters the screen before the
-   failure is reported.
+   foreground, `<C-c>` is a byte, not a signal to the browser's group. A release that fails
+   (the leave sequence cannot be written, or the terminal refuses the mode) is an error, and
+   the browser re-enters the screen before it reports it; nothing runs on a terminal that did
+   not leave. Closing the browser restores the saved mode best effort.
 2. `Host::run` spawns the child with inherited stdin, stdout and stderr, in a new process group.
    It gives that group the terminal's foreground with `tcsetpgrp`, then sends the group
    `SIGCONT`. Only then does it turn `ISIG` on, with `SIGTTOU` blocked because the browser is
@@ -99,6 +99,14 @@ The terminal is handed over in this order:
 A child that cannot be spawned is an error on the status line. The terminal is re-entered
 without the wait. The process-group calls are `rustix::termios` and `nix` calls that are
 already dependencies of `af`, with no `unsafe` code.
+
+### Editors
+
+`gf` and `:e` hand the terminal to `$EDITOR` the same way: `Host::run`, the editor in its own
+process group owning the foreground, so `<C-c>` in the editor reaches the editor and never the
+browser. `$EDITOR` is read once when the browser starts. There is no Enter wait, since the
+editor's own screen is what the user left, and an editor that exits non-zero or is killed is an
+error on the status line. `af config edit` from the shell runs the editor as before.
 
 ### What is read again
 
