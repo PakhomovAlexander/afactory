@@ -573,6 +573,11 @@ pub(crate) fn paths(repo: Option<&Path>) -> Result<(), String> {
 }
 
 pub(crate) fn edit(layer: LayerArg, repo: Option<&Path>) -> Result<(), String> {
+    open_in_editor(&edit_target(layer, repo)?)
+}
+
+/// The file `af config edit` opens for one layer, created with `version = 1` when absent.
+pub(crate) fn edit_target(layer: LayerArg, repo: Option<&Path>) -> Result<PathBuf, String> {
     let path = layer_path(layer, repo)?;
     if !path.exists() {
         if let Some(parent) = path.parent() {
@@ -582,7 +587,7 @@ pub(crate) fn edit(layer: LayerArg, repo: Option<&Path>) -> Result<(), String> {
         std::fs::write(&path, "version = 1\n")
             .map_err(|error| format!("creating {}: {error}", path.display()))?;
     }
-    open_in_editor(&path)
+    Ok(path)
 }
 
 /// The file one layer lives in. The user layer is machine-owned and named without reading
@@ -623,19 +628,30 @@ pub(crate) fn layer_path(layer: LayerArg, repo: Option<&Path>) -> Result<PathBuf
     })
 }
 
-/// Run `$EDITOR` on one file and wait for it. `af config edit` and the browser's `gf` share it.
-pub(crate) fn open_in_editor(path: &Path) -> Result<(), String> {
-    let editor = std::env::var("EDITOR")
-        .ok()
+/// The program and arguments `$EDITOR` (the value `editor`) runs to edit `path`. `af config
+/// edit` and the browser's `gf` and `:e` share it.
+pub(crate) fn editor_words(
+    editor: Option<&str>,
+    path: &Path,
+) -> Result<(String, Vec<String>), String> {
+    let editor = editor
         .filter(|value| !value.trim().is_empty())
         .ok_or("EDITOR is not set — fix: export EDITOR=vim, or open the file yourself")?;
-    let words = shell_words::split(&editor).map_err(|error| format!("EDITOR: {error}"))?;
-    let (program, args) = words
-        .split_first()
-        .ok_or("EDITOR is empty — fix: export EDITOR=vim")?;
-    let status = std::process::Command::new(program)
-        .args(args)
-        .arg(path)
+    let mut words = shell_words::split(editor).map_err(|error| format!("EDITOR: {error}"))?;
+    if words.is_empty() {
+        return Err("EDITOR is empty — fix: export EDITOR=vim".to_owned());
+    }
+    let program = words.remove(0);
+    words.push(path.display().to_string());
+    Ok((program, words))
+}
+
+/// Run `$EDITOR` on one file and wait for it.
+pub(crate) fn open_in_editor(path: &Path) -> Result<(), String> {
+    let editor = std::env::var("EDITOR").ok();
+    let (program, args) = editor_words(editor.as_deref(), path)?;
+    let status = std::process::Command::new(&program)
+        .args(&args)
         .status()
         .map_err(|error| format!("running {program}: {error}"))?;
     if !status.success() {

@@ -145,6 +145,15 @@ impl Pane for ProvidersPane {
         Ok(())
     }
 
+    /// A command may have set up or removed a Provider: discover again, never probing, since a
+    /// probe may be charged and only `R` asks for one. A fixed inventory stays as it is.
+    fn reread(&mut self, _scope: &Scope) -> Result<(), String> {
+        if self.discover {
+            self.start(UsageProbe::Skip);
+        }
+        Ok(())
+    }
+
     fn poll(&mut self) -> bool {
         let Some(job) = self.job.as_ref() else {
             return false;

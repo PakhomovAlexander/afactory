@@ -545,6 +545,8 @@ struct Summary {
     outcome: Option<String>,
     chargeable: Option<String>,
     acceptance: Option<String>,
+    /// The Task's current plan, which `r` confirms.
+    plan_id: Option<String>,
     started: Option<u64>,
     progress: Progress,
 }
@@ -569,6 +571,7 @@ fn summary_of(document: &Value, stages: &[Stage]) -> Summary {
             _ => None,
         },
         acceptance: document["result"]["acceptance"].as_str().map(str::to_owned),
+        plan_id: document["plan_id"].as_str().map(str::to_owned),
         started: span_of(document).map(|(first, _)| first),
         progress: Progress::of(stages),
     }
@@ -605,6 +608,46 @@ impl Listed {
             Err(_) => "?%".to_owned(),
         }
     }
+}
+
+/// The `:` line `r` or `D` prefills for a Task, or why `D` refuses it; `None` for another key.
+/// `r` confirms the plan the pane shows. `D` stops after `--confirm`: delivery asks for the Task
+/// id again as its explicit confirmation (ADR-0031), so the user types it (ADR-0123).
+pub(crate) fn prefill(
+    key: Key,
+    task_id: &str,
+    plan_id: Option<&str>,
+    state: State,
+) -> Option<Result<String, String>> {
+    let id = shell_words::quote(task_id);
+    let line = match (key, state) {
+        (Key::Char('r'), _) => match plan_id {
+            Some(plan) => {
+                let plan = shell_words::quote(plan);
+                Ok(format!("task run {id} --confirm-plan {plan}"))
+            }
+            None => Err(format!("Task {task_id} records no plan to confirm")),
+        },
+        (Key::Char('D'), State::Done) => {
+            let branch = shell_words::quote(&format!("af/{task_id}")).into_owned();
+            let worktree = shell_words::quote(&format!("../{task_id}")).into_owned();
+            Ok(format!(
+                "task deliver {id} --branch {branch} --worktree {worktree} --confirm "
+            ))
+        }
+        (Key::Char('D'), unverified) => {
+            let why = match unverified {
+                State::Running => "is still running",
+                State::Awaiting => "is awaiting approval",
+                State::Done | State::Failed => "finished without satisfying its acceptance",
+            };
+            Err(format!(
+                "only a verified Task can be delivered: {task_id} {why}"
+            ))
+        }
+        _ => return None,
+    };
+    Some(line)
 }
 
 /// One Task state directory, the repository group the user scope lists it under, and what
@@ -1047,6 +1090,58 @@ impl TasksPane {
         self.task(id).map(|(_, task)| task.task_id.clone())
     }
 
+    /// `r` or `D` on the bar's Task `id`: the line to prefill, or why not; `None` when `id`
+    /// is no Task or the key is neither.
+    pub(crate) fn bar_verb(&self, id: &str, key: Key) -> Option<Result<String, String>> {
+        let (_, task) = self.task(id)?;
+        let summary = task.summary.as_ref().ok();
+        let plan = summary.and_then(|summary| summary.plan_id.as_deref());
+        self.verb(key, &task.task_id, plan, task.state())
+    }
+
+    /// `r` or `D` for a Task this pane lists. The user scope lists every repository's Stores,
+    /// but a handed-off command runs from the home directory and names a Task only by its id,
+    /// and the pane knows its repository only by the opaque state-directory name: no line it
+    /// could prefill would reach that Task, so it says where to press the key instead.
+    fn verb(
+        &self,
+        key: Key,
+        task_id: &str,
+        plan: Option<&str>,
+        state: State,
+    ) -> Option<Result<String, String>> {
+        // Asked first: whatever the Task's plan or state, from here no line reaches it.
+        if self.user_scope()
+            && let Key::Char(pressed @ ('r' | 'D')) = key
+        {
+            return Some(Err(format!(
+                "{task_id} is listed from the user scope, which cannot name its repository: \
+                 :cd into that repository and press {pressed} there"
+            )));
+        }
+        prefill(key, task_id, plan, state)
+    }
+
+    /// The user scope lists Stores by repository; a project scope has one, its own.
+    fn user_scope(&self) -> bool {
+        self.stores.iter().any(|store| store.repo.is_some())
+    }
+
+    /// Every Task id this scope lists that a handed-off command can resolve, once each and
+    /// sorted: what the `:` line completes a Task ID argument from. That is the project
+    /// scope's own Store; a user-scope Task lives in a Store the command would not read.
+    pub(crate) fn task_ids(&self) -> Vec<String> {
+        let mut ids = Vec::new();
+        for store in self.stores.iter().filter(|store| store.repo.is_none()) {
+            for task in store.tasks.iter().flatten() {
+                ids.push(task.task_id.clone());
+            }
+        }
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
     /// Live reads started so far.
     #[cfg(test)]
     pub(crate) fn reads(&self) -> usize {
@@ -1367,6 +1462,13 @@ impl Pane for TasksPane {
                 Some(pipeline) => Ok(Some(Effect::OpenPipeline(pipeline.to_owned()))),
                 None => Err(format!("Task {} records no plan", detail.task_id)),
             },
+            Key::Char('r' | 'D') => {
+                let plan = detail.document["plan_id"].as_str();
+                match self.verb(key, &detail.task_id, plan, detail.state()) {
+                    Some(line) => line.map(|line| Some(Effect::Prefill(line))),
+                    None => Ok(None),
+                }
+            }
             _ => Ok(None),
         }
     }
@@ -1374,7 +1476,9 @@ impl Pane for TasksPane {
     fn legend(&self) -> &'static str {
         match (&self.artifact, &self.detail) {
             (Some(_), _) => "j/k scroll  y yank Task id  q/Esc back to the Task",
-            (None, Some(Ok(_))) => "Enter artifact  p pipeline  y yank id  R re-read  Tab bar",
+            (None, Some(Ok(_))) => {
+                "r run  D deliver  Enter artifact  p pipeline  y yank id  R re-read  Tab bar"
+            }
             _ => "j/k move  R re-read  Tab bar  :cmd  q quit",
         }
     }
