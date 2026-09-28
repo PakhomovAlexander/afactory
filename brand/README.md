@@ -109,8 +109,11 @@ on ink uses paper letters, never white, except in the source file for white grou
 tinted worker in a UI (a Worker row that takes the row's state colour). The 101px PNGs in
 `worker/source/` are the designer's exports; the 202px PNGs beside the SVGs are renders.
 
-The worker is the unit of decoration. A page may show one worker as a spot illustration, three
-as a row (always pink, green, blue, in that order, as in the wordmark), or none. It is never
+**The pink worker is the mascot.** When one worker stands for afactory (a favicon, an avatar,
+a cover, a spot illustration beside the wordmark) it is the pink one, and it stands to the
+left of the wordmark, never to its right. Green and blue appear only inside the wordmark, in a
+row of three, or as a state tint in a UI. A page may show the mascot once, three workers as a
+row (always pink, green, blue, in that order, as in the wordmark), or none. It is never
 animated except for a state change (idle to running to done), never given limbs, a mouth or a
 speech bubble, and never drawn in a fourth colour except grey in print and currentColor in a
 UI that tints it by state.
