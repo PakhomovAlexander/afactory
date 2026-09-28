@@ -80,8 +80,8 @@ digest = "sha256:c1e50092fe4c30d552120e6465f98e1d9f6c84d7131012add711ea1c48e99c3
 path = ".af/task-packages/kernel/evaluator"
 
 [packages."kernel/uix"]
-version = "1.3.0"
-digest = "sha256:da7484eba6b902b694d5aee66f0ec29e3b5f811d6ca115f9a3702586e17ded45"
+version = "1.4.0"
+digest = "sha256:3ac542410f555e78428864ac0dfdf20061b42a1e1f023bb6291c2212123aee65"
 path = ".af/task-packages/kernel/uix"
 
 [packages."kernel/latency"]

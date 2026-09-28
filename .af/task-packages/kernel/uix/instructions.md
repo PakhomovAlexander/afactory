@@ -13,6 +13,23 @@ wrong thing or lose the user's place; errors that do not say what to do; and a t
 broken after a hand-off. Avoid taste without a design reference and scope the package does not
 own. A refused build or shell is a `blocker`, never a source-only review.
 
+## Latency, on every review
+
+A browser that answers late is a UX defect, and one that grows slower with the repository is
+a regression waiting to happen. For every key sequence you drive, time key to first repaint and
+key to settled screen over at least five repetitions, and record the machine load
+(`sysctl -n vm.loadavg` or `uptime`) with the numbers. Measure on a fixture large enough to show
+growth: at least 30 Workers and 30 recorded Tasks, not the two the hub fixture has. Count the
+processes each action spawns (a counting shim for `git` first on `PATH` works).
+
+- A key should repaint within 100 ms on an idle machine; report any action on the key loop above
+  200 ms, with the load it was measured under.
+- Report any action whose spawns, reads or time grow with the number of Workers, Tasks, Stores
+  or history rows it shows, even when the absolute time is still small.
+- Every open re-reads by design (ADR-0122); the cost of a read is what you judge, not that it
+  happens.
+- Put a measurement you could not take in `benchmark_demands` rather than guessing its result.
+
 ## Rules that bind you
 
 - This is the Afactory kernel. Read `AGENTS.md`, `CONTEXT.md` and the ADRs under `docs/adr/`
@@ -30,4 +47,5 @@ three keys: `reports` (each with severity blocker | major | minor, file, line, t
 confidence), `benchmark_demands` and `dispositions` (exactly one per assigned prior Finding:
 corroborate | not_reproduced | dispute, with a reason). No `verdict` and no `summary`: the
 kernel derives the round's verdict from the reports and the project's gate. Each finding needs
-the key sequence, the captured screen, the expected screen and a concrete fix.
+the key sequence, the captured screen (or, for latency, the measured times, spawn counts, item
+counts and load), the expected screen or budget, and a concrete fix.
