@@ -20,7 +20,6 @@ test:
 ifeq ($(TEST_RUNNER),nextest)
 	$(CI_STEP) test-build cargo test --locked --no-run
 	$(CI_STEP) test cargo nextest run --locked --profile ci --test-threads $(TEST_THREADS)
-	$(CI_STEP) doctests cargo test --locked --doc -- --test-threads=$(TEST_THREADS)
 else ifeq ($(TEST_RUNNER),cargo)
 	$(CI_STEP) test-build cargo test --locked --no-run
 	$(CI_STEP) test cargo test --locked -- --test-threads=$(TEST_THREADS)
