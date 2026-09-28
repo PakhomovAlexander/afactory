@@ -17,6 +17,7 @@ allow_targeted_repairs = false
 bugs = "required"
 correctness = "required"
 uix = "required"
+latency = "required"
 
 [packages."warm/implementer"]
 version = "1.2.0"
@@ -79,13 +80,18 @@ digest = "sha256:c1e50092fe4c30d552120e6465f98e1d9f6c84d7131012add711ea1c48e99c3
 path = ".af/task-packages/kernel/evaluator"
 
 [packages."kernel/uix"]
-version = "1.2.0"
-digest = "sha256:2ed15b94bdbb3a3c5b04e9edd8e137fd116a678c574eadba8da7b7b255edd257"
+version = "1.3.0"
+digest = "sha256:da7484eba6b902b694d5aee66f0ec29e3b5f811d6ca115f9a3702586e17ded45"
 path = ".af/task-packages/kernel/uix"
 
+[packages."kernel/latency"]
+version = "1.0.0"
+digest = "sha256:0add1b49c61a20454224feb153ced6aae6b99a3e3ba3f8458fb993b85d805169"
+path = ".af/task-packages/kernel/latency"
+
 [packages."kernel/review-light"]
-version = "1.2.0"
-digest = "sha256:c6bed1e2d5d1f493278c8559fff8a851d66b403dabce5f0aba2c74b98f53ec47"
+version = "1.3.0"
+digest = "sha256:a8b1568884297abf0bf17ee5fca2dbd50c265116a9e0646a0785218509e6d1bc"
 path = ".af/task-packages/kernel/review-light"
 
 [packages."kernel/implementation-reviewed"]

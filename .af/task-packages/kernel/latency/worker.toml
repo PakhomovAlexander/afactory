@@ -1,6 +1,6 @@
 schema = "af.worker/1"
-name = "kernel/uix"
-version = "1.3.0"
+name = "kernel/latency"
+version = "1.0.0"
 
 [signature]
 effects = ["read-source", "execute-checks"]
