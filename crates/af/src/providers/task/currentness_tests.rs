@@ -71,7 +71,9 @@ fn identity_rechecks_cancel_an_inflight_status_process() {
         let flag = AtomicBool::new(false);
         let (result, pid) = std::thread::scope(|scope| {
             let observer = scope.spawn(|| {
-                let deadline = Instant::now() + Duration::from_secs(3);
+                // Generous for a loaded machine: the flag below ends the probe as soon as the
+                // status process is seen, so a fast machine never waits this long.
+                let deadline = Instant::now() + Duration::from_secs(20);
                 let pid = loop {
                     if let Ok(text) = std::fs::read_to_string(directory.path().join("ready"))
                         && let Ok(pid) = text.parse::<i32>()
@@ -94,7 +96,8 @@ fn identity_rechecks_cancel_an_inflight_status_process() {
                 &spec,
                 std::ffi::OsStr::new("/usr/bin:/bin"),
                 &flag,
-                Some(Instant::now() + Duration::from_secs(4)),
+                // Past the observer's window, so cancellation, not the deadline, ends it.
+                Some(Instant::now() + Duration::from_secs(30)),
             );
             (result, observer.join().unwrap())
         });
