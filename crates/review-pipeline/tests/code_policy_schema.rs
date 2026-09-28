@@ -152,7 +152,7 @@ fn measures_and_objectives_round_trip_and_refuse_alike() {
             measured(
                 json!({"write": write(16, true, json!([]))}),
                 Some(objective(
-                    json!({"metric": "elapsed_ms", "min_improvement_ratio": 0.10}),
+                    json!({"metric": "elapsed_ms", "min_improvement_ratio": "0.1"}),
                 )),
                 Some(json!({"build_cache": ["cargo_target"]})),
             ),
@@ -230,6 +230,12 @@ fn measures_and_objectives_round_trip_and_refuse_alike() {
         measured(
             json!({"write": write(3, false, bytes.clone())}),
             Some(objective(json!({"min_improvement_ratio": "0.10"}))),
+            None,
+        ),
+        // A float is rounded by the parser before the kernel sees it: refused, not captured.
+        measured(
+            json!({"write": write(3, false, bytes.clone())}),
+            Some(objective(json!({"min_improvement_ratio": 0.10}))),
             None,
         ),
         measured(

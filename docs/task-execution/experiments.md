@@ -33,7 +33,7 @@ unit = "bytes"           # ms, bytes, count or ratio
 measure = "write"
 metric = "bytes_written" # or the built-in elapsed_ms
 direction = "lower"      # or higher
-min_improvement_ratio = 0.10
+min_improvement_ratio = "0.1"
 min_repetitions = 3      # default 3
 ```
 
@@ -53,7 +53,10 @@ measure. The refusal names the node and the numbers, before any Attempt.
 - With `warm = true`, `CARGO_TARGET_DIR` is the Warm Check Cache directory for the resolved
   toolchain key, under the same lock, byte bound and monitor as a check. Any other declared warm
   kind or Cache Snapshot binds exactly as it does for a check, and the kernel's rustup home is
-  passed on under `[warm]`.
+  passed on under `[warm]`. When the key is busy or its directory was discarded, the repetition
+  runs against a private cold target instead, and its run record says so: `cache.warm` is what
+  the repetition had, `cache.bytes` what the directory held, `cache.reason` why it ran cold. `af
+  task show` prints `warm`, `cold (busy)` or `warm 2 of 3` after the median.
 - After the command the Snapshot's Manifest is verified again. A changed or added entry fails
   the measurement with `source_mutated` and the message a mutated check produces.
 

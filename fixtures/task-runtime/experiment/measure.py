@@ -3,6 +3,8 @@
 # last stdout line. mode.txt selects a misbehaviour the kernel must record.
 import json
 import os
+import sys
+import time
 
 mode = open('mode.txt').read().strip()
 size = int(open('size.txt').read().strip())
@@ -24,6 +26,11 @@ with open(target, 'wb') as out:
     out.write(b'x' * size)
 written = os.path.getsize(target)
 print('wrote', written, 'bytes')
+if mode == 'sleep':
+    # Past any wall_ms a test declares, with output already written: the kernel must record a
+    # timeout and keep what was printed.
+    sys.stdout.flush()
+    time.sleep(60)
 if mode == 'exit':
     raise SystemExit(3)
 if mode == 'mutate':

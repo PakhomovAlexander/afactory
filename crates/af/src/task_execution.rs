@@ -2357,7 +2357,7 @@ fn measurement_lines(cas: &Cas, state: &TaskProjection) -> Result<Vec<String>, S
                         "median elapsed {} ms over {} repetitions{}",
                         elapsed.median,
                         elapsed.n,
-                        if measurement.warm { ", warm" } else { "" }
+                        cache_condition(&measurement)
                     ),
                     (None, None) => "passed".into(),
                 };
@@ -2395,6 +2395,33 @@ fn measurement_lines(cas: &Cas, state: &TaskProjection) -> Result<Vec<String>, S
         }
     }
     Ok(lines)
+}
+
+/// The cache condition a warm measure's repetitions actually ran under: `, warm` when every one
+/// had the Warm Check Cache, `, cold (<reason>)` when none did, `, warm N of M` when they differ.
+/// A measure that did not ask for the cache adds nothing.
+fn cache_condition(measurement: &review_core::task::measurement::MeasurementV1) -> String {
+    if !measurement.warm {
+        return String::new();
+    }
+    let total = measurement.runs.len();
+    let warm = measurement
+        .runs
+        .iter()
+        .filter(|run| run.cache.as_ref().is_some_and(|cache| cache.warm))
+        .count();
+    if warm == total {
+        ", warm".into()
+    } else if warm == 0 {
+        let reason = measurement
+            .runs
+            .iter()
+            .find_map(|run| run.cache.as_ref().and_then(|cache| cache.reason.clone()))
+            .unwrap_or_else(|| "unbound".into());
+        format!(", cold ({reason})")
+    } else {
+        format!(", warm {warm} of {total}")
+    }
 }
 
 /// One line per warm check (ADR-0123), named by its evidence group's check binding: its outcome,

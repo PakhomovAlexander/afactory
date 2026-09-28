@@ -6,9 +6,15 @@
 //! comparison is the pure fold of `review_core::task::measurement` over two such artifacts.
 
 use super::*;
+use review_check::CheckEnding;
 use review_core::task::measurement::{
-    MeasurementFailureReasonV1, MeasurementFailureV1, MeasurementRunV1, parse_report, summarize,
+    MeasurementCacheV1, MeasurementFailureReasonV1, MeasurementFailureV1, MeasurementRunV1,
+    parse_report, summarize,
 };
+
+/// The warm kind a measure's `CARGO_TARGET_DIR` comes from; its observation names what the
+/// repetition actually got.
+const CARGO_TARGET: &str = "cargo_target";
 
 /// The message a changed or added source entry fails a measurement with: the one a mutated
 /// check produces.
@@ -204,7 +210,7 @@ impl CodeTaskDomain {
                     exit_code: None,
                     stdout_id: None,
                     stderr_id: None,
-                    cache_bytes: None,
+                    cache: None,
                     metrics: BTreeMap::new(),
                 },
                 MeasurementFailureReasonV1::Deadline,
@@ -258,13 +264,36 @@ impl CodeTaskDomain {
             // measured result: the Attempt fails, exactly as the check it mirrors does not run.
             return Err(refusal);
         }
-        let cache_bytes = prepared.as_ref().map(|prepared| {
+        // What the warm layer actually gave this repetition's cargo target: the kind's
+        // observation says whether the warm directory was bound, its bytes and, when the
+        // repetition ran cold instead, why — a busy key, a discarded directory, an unresolved
+        // toolchain. The policy's `warm` is what was asked; this is what was had.
+        let cache = prepared.as_ref().and_then(|prepared| {
             prepared
                 .observations
                 .iter()
-                .filter(|observation| observation.eligible)
-                .map(|observation| observation.bytes_available)
-                .sum::<u64>()
+                .find(|observation| {
+                    observation.kind == CARGO_TARGET
+                        || observation
+                            .kind
+                            .strip_prefix(CARGO_TARGET)
+                            .is_some_and(|rest| rest.starts_with(':'))
+                })
+                .map(|observation| MeasurementCacheV1 {
+                    warm: observation.eligible,
+                    bytes: if observation.eligible {
+                        observation.bytes_available
+                    } else {
+                        0
+                    },
+                    reason: (!observation.eligible).then(|| {
+                        observation
+                            .kind
+                            .split_once(':')
+                            .map_or("cold", |(_, reason)| reason)
+                            .to_string()
+                    }),
+                })
         });
         if toolchain_id.is_none() {
             *toolchain_id = prepared.as_ref().and_then(|prepared| {
@@ -313,6 +342,7 @@ impl CodeTaskDomain {
             session.finish(prepared.key_lock, prepared.directories, exceeded.clone())?;
         }
         super::super::control::check(cancellation)?;
+        let ending = execution.ending;
         let result = execution.result;
         let run = MeasurementRunV1 {
             started_unix_ms: execution.started_unix_ms,
@@ -320,7 +350,7 @@ impl CodeTaskDomain {
             exit_code: result.exit_code,
             stdout_id: result.stdout.clone(),
             stderr_id: result.stderr.clone(),
-            cache_bytes,
+            cache,
             metrics: BTreeMap::new(),
         };
         let sealed = sandbox.seal().map_err(|e| e.to_string())?;
@@ -342,32 +372,8 @@ impl CodeTaskDomain {
                 format!("the kernel ended the command: {reason}"),
             ));
         }
-        let timed_out = result.status == CheckStatus::NotRun
-            && result.exit_code.is_none()
-            && result.stdout.is_none()
-            && result
-                .reason
-                .as_deref()
-                .is_some_and(|reason| reason.starts_with("no result within"));
-        if timed_out {
-            return Ok(if timeout_ms < definition.wall_ms {
-                Repetition::Failed(
-                    run,
-                    MeasurementFailureReasonV1::Deadline,
-                    format!(
-                        "the measure Attempt's deadline cut the repetition after {timeout_ms} ms"
-                    ),
-                )
-            } else {
-                Repetition::Failed(
-                    run,
-                    MeasurementFailureReasonV1::Timeout,
-                    format!(
-                        "the repetition exceeded its wall_ms of {} ms",
-                        definition.wall_ms
-                    ),
-                )
-            });
+        if let Some((reason, detail)) = timeout_failure(ending, timeout_ms, definition.wall_ms) {
+            return Ok(Repetition::Failed(run, reason, detail));
         }
         if result.status != CheckStatus::Passed {
             let detail = match (result.exit_code, &result.reason) {
@@ -506,5 +512,52 @@ impl CodeTaskDomain {
                 snapshot_id: candidate_port.snapshot_id,
             },
         )]))
+    }
+}
+
+/// The failure a repetition records when the kernel ended its command at a time bound: the
+/// Attempt deadline when it was the tighter bound, else the repetition's own `wall_ms`. The
+/// supervisor reports the bound typed, so a command that printed before it was ended — its
+/// output is kept — is still a timeout, never an exit.
+fn timeout_failure(
+    ending: CheckEnding,
+    timeout_ms: u64,
+    wall_ms: u64,
+) -> Option<(MeasurementFailureReasonV1, String)> {
+    match ending {
+        CheckEnding::TimedOut if timeout_ms < wall_ms => Some((
+            MeasurementFailureReasonV1::Deadline,
+            format!("the measure Attempt's deadline cut the repetition after {timeout_ms} ms"),
+        )),
+        CheckEnding::TimedOut => Some((
+            MeasurementFailureReasonV1::Timeout,
+            format!("the repetition exceeded its wall_ms of {wall_ms} ms"),
+        )),
+        CheckEnding::Exited | CheckEnding::Cancelled | CheckEnding::NotStarted => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_time_bound_is_named_by_whichever_was_tighter() {
+        let (reason, detail) = timeout_failure(CheckEnding::TimedOut, 20_000, 20_000).unwrap();
+        assert_eq!(reason, MeasurementFailureReasonV1::Timeout);
+        assert_eq!(detail, "the repetition exceeded its wall_ms of 20000 ms");
+        let (reason, detail) = timeout_failure(CheckEnding::TimedOut, 1_500, 20_000).unwrap();
+        assert_eq!(reason, MeasurementFailureReasonV1::Deadline);
+        assert_eq!(
+            detail,
+            "the measure Attempt's deadline cut the repetition after 1500 ms"
+        );
+        for ending in [
+            CheckEnding::Exited,
+            CheckEnding::Cancelled,
+            CheckEnding::NotStarted,
+        ] {
+            assert!(timeout_failure(ending, 1_500, 20_000).is_none());
+        }
     }
 }

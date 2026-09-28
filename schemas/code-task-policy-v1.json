@@ -292,7 +292,7 @@
               "pattern": "^(0(\\.[0-9]*[1-9])?|1)$"
             },
             {
-              "type": "number",
+              "type": "integer",
               "minimum": 0,
               "maximum": 1
             }

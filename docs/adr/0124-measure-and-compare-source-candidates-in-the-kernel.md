@@ -46,7 +46,8 @@ therefore has no evidence an independent evaluator could hold it to.
    and `ratio`. `elapsed_ms` is the built-in metric; a declared metric may not reuse its key.
    `warm = true` requires `[warm] build_cache` to declare `cargo_target`. An objective names one
    `measure`, one of its metrics, a `direction` (`lower` or `higher`), `min_improvement_ratio`
-   (0 to 1 inclusive, captured as canonical decimal text; a policy file may write `0.10`) and
+   (0 to 1 inclusive, written as canonical decimal text such as `"0.1"` or as the integer 0 or 1;
+   a TOML float is refused, because the parser rounds it before the kernel can capture it) and
    `min_repetitions` (1 to 16, default 3). A policy without the tables is captured byte-identical
    to before.
 2. The installed `measure { measures }` operator takes one `source: af/SourceTree@1` and emits
@@ -80,8 +81,9 @@ therefore has no evidence an independent evaluator could hold it to.
 6. `af/Measurement@1` records the plan, policy and Snapshot, the measure, the content identity of
    the resolved command, the Warm Check Cache toolchain key when one was resolved, `warm`, the
    declared repetitions, wall and metrics, and one run per repetition: start time, elapsed
-   milliseconds, exit code, stdout and stderr digests, the cache bytes the warm layer held before
-   it, and the parsed metrics. Every value is the kernel's observation or the command's own
+   milliseconds, exit code, stdout and stderr digests, the cargo target it actually ran against
+   when the measure asked for the Warm Check Cache — warm or cold, its bytes, and the reason when
+   it ran cold — and the parsed metrics. Every value is the kernel's observation or the command's own
    report admitted under the declared keys and units.
 7. The installed `compare { objective }` operator takes `baseline` and `candidate`, each one
    `af/Measurement@1` straight from a measure node, and emits one
@@ -117,6 +119,25 @@ therefore has no evidence an independent evaluator could hold it to.
     `--format json` is unchanged. `af task show` prints each Measurement's median elapsed time,
     or the repetition and reason it failed at, and each comparison's conclusion. `af catalog
     init --profile experiment` emits the `builtin/experiment` starter.
+
+## After the first verification
+
+Verification of the package (Task `research-r2-verify-2`) changed three rules above, and the text
+now reads as amended:
+
+- **A time bound is classified from the supervisor's typed ending, never from its message.** The
+  cancellable supervisor a Task runs under keeps a timed-out command's output and reports the
+  timeout typed; the runner now carries that ending beside the recorded result, and a repetition
+  the kernel ended records `timeout` (its own wall) or `deadline` (the Attempt's), with what it
+  printed kept, instead of `exit`.
+- **A run records the cache condition it had, not the one the policy asked for.** A `warm = true`
+  measure whose key is busy or whose directory was discarded runs cold against a private target;
+  its run says `cache.warm = false`, `cache.bytes = 0` and why, and `af task show` prints `cold
+  (busy)` or `warm 2 of 3` after the median. The measurement's `warm` stays the request.
+- **`min_improvement_ratio` is text or the integer 0 or 1; a float is refused.** A TOML or JSON
+  float has been rounded to a binary fraction by the parser before the kernel sees it, so a
+  threshold that is compared exactly cannot be captured from it: `0.10000000000000001` would
+  have been captured as `0.1` and passed an improvement of exactly one tenth.
 
 ## Consequences
 

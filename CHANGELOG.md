@@ -19,13 +19,16 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 - Measure and compare (ADR-0124, package R2 of `docs/design/research-pipelines.md`). A code
   policy may declare `[measures.<name>]` — a command, 1 to 16 `repetitions`, `warm`, `wall_ms`
   per repetition and `metrics` of `{ key, unit }` in `ms`, `bytes`, `count` or `ratio` — and
-  `[objectives.<name>]` — a measure, a metric, `lower` or `higher`, `min_improvement_ratio` and
-  `min_repetitions`. The installed `measure` operator runs a measure against a fresh read-only
-  Snapshot per repetition with a private `HOME`, `TMPDIR`, `XDG_CACHE_HOME` and, unless
-  `warm = true` binds the Warm Check Cache, `CARGO_TARGET_DIR`. It re-verifies the source
+  `[objectives.<name>]` — a measure, a metric, `lower` or `higher`, `min_improvement_ratio`
+  (decimal text such as `"0.1"` or the integer 0 or 1; a float is refused because the parser has
+  rounded it) and `min_repetitions`. The installed `measure` operator runs a measure against a
+  fresh read-only Snapshot per repetition with a private `HOME`, `TMPDIR`, `XDG_CACHE_HOME` and,
+  unless `warm = true` binds the Warm Check Cache, `CARGO_TARGET_DIR`. It re-verifies the source
   after every repetition and records `af/Measurement@1`: every run's elapsed time, exit status,
-  output digests and the metrics the command reported on an `af.measure-report/1` last line
-  with the declared keys and units. A failure (`exit`, `timeout`, `deadline`,
+  output digests, the cache condition it actually had (warm or cold, bytes, and why when cold)
+  and the metrics the command reported on an `af.measure-report/1` last line with the declared
+  keys and units. A repetition the kernel ends at a time bound is recorded from the supervisor's
+  typed ending as `timeout` or `deadline`, with what it printed kept. A failure (`exit`, `timeout`, `deadline`,
   `malformed_report`, `unit_mismatch`, `source_mutated`) stops the measurement and leaves no
   summary. The installed `compare` operator folds two Measurements into
   `af/MeasurementComparison@1` in exact decimal arithmetic: medians with an exact even-sample

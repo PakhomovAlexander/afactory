@@ -46,5 +46,5 @@ unit = "bytes"
 measure = "write"
 metric = "bytes_written"
 direction = "lower"
-min_improvement_ratio = 0.10
+min_improvement_ratio = "0.1"
 min_repetitions = 3

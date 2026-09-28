@@ -73,6 +73,23 @@ pub struct CheckExecution {
     pub result: CheckResult,
     pub started_unix_ms: u64,
     pub elapsed_ms: u64,
+    /// How the process ended, typed, for a caller that names the bound itself; never recorded.
+    pub ending: CheckEnding,
+}
+
+/// How a check's process ended, kept beside the recorded result for callers that classify the
+/// end themselves — a measured repetition names the time bound that ended it — and never
+/// serialized: the recorded result carries the human-readable reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckEnding {
+    /// The process exited on its own, whatever its status.
+    Exited,
+    /// The kernel ended it at the runner's timeout.
+    TimedOut,
+    /// The kernel ended it because the Attempt was cancelled.
+    Cancelled,
+    /// It never ran: refused before execution, cancelled before starting, or could not start.
+    NotStarted,
 }
 
 impl CheckResult {
@@ -169,10 +186,15 @@ impl<'a> CheckRunner<'a> {
     /// Run one check. Never panics and never propagates a spawn failure as an error: a check
     /// that could not start is a *result*, because losing it would be the same as passing it.
     pub fn run(&self, definition: &CheckDefinition) -> CheckResult {
+        self.run_traced(definition).0
+    }
+
+    /// [`Self::run`], with how the process ended beside the recorded result.
+    pub fn run_traced(&self, definition: &CheckDefinition) -> (CheckResult, CheckEnding) {
         let base = base_result(definition);
         let argv = match resolved_args(definition, &base) {
             Ok(argv) => argv,
-            Err(result) => return *result,
+            Err(result) => return (*result, CheckEnding::NotStarted),
         };
 
         let mut cmd = std::process::Command::new(&definition.command.program);
@@ -191,48 +213,59 @@ impl<'a> CheckRunner<'a> {
                 reason,
                 stdout,
                 stderr,
+                ending,
             } => {
-                return CheckResult {
-                    reason: Some(reason),
-                    stdout: self.cas.put(&stdout).ok(),
-                    stderr: self.cas.put(&stderr).ok(),
-                    ..base
-                };
+                return (
+                    CheckResult {
+                        reason: Some(reason),
+                        stdout: self.cas.put(&stdout).ok(),
+                        stderr: self.cas.put(&stderr).ok(),
+                        ..base
+                    },
+                    ending,
+                );
             }
             RunResult::TimedOut => {
-                return CheckResult {
-                    reason: Some(format!(
-                        "no result within {}s; the check was killed",
-                        self.timeout.as_secs()
-                    )),
-                    ..base
-                };
+                return (
+                    CheckResult {
+                        reason: Some(format!(
+                            "no result within {}s; the check was killed",
+                            self.timeout.as_secs()
+                        )),
+                        ..base
+                    },
+                    CheckEnding::TimedOut,
+                );
             }
             RunResult::CouldNotStart(error) => {
-                return CheckResult {
-                    reason: Some(format!(
-                        "could not start `{}`: {error}",
-                        definition.command.program
-                    )),
-                    ..base
-                };
+                return (
+                    CheckResult {
+                        reason: Some(format!(
+                            "could not start `{}`: {error}",
+                            definition.command.program
+                        )),
+                        ..base
+                    },
+                    CheckEnding::NotStarted,
+                );
             }
         };
 
-        self.finish(base, output, stderr_held)
+        (self.finish(base, output, stderr_held), CheckEnding::Exited)
     }
 
     /// Execute through the normal shared runner and retain the actual AF-observed host interval.
     pub fn run_observed(&self, definition: &CheckDefinition) -> CheckExecution {
         let started = SystemTime::now();
         let timer = Instant::now();
-        let result = self.run(definition);
+        let (result, ending) = self.run_traced(definition);
         CheckExecution {
             result,
             started_unix_ms: started
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |duration| duration.as_millis() as u64),
             elapsed_ms: timer.elapsed().as_millis() as u64,
+            ending,
         }
     }
 
@@ -291,12 +324,20 @@ impl<'a> CheckRunner<'a> {
         let started = SystemTime::now();
         let timer = Instant::now();
         let result = self.run_with(definition, execute);
+        // A provider reports no typed ending: a result without an exit code never ran as far
+        // as this runner can tell, and everything else exited.
+        let ending = if result.status == CheckStatus::NotRun && result.exit_code.is_none() {
+            CheckEnding::NotStarted
+        } else {
+            CheckEnding::Exited
+        };
         CheckExecution {
             result,
             started_unix_ms: started
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |duration| duration.as_millis() as u64),
             elapsed_ms: timer.elapsed().as_millis() as u64,
+            ending,
         }
     }
 
@@ -413,6 +454,7 @@ enum RunResult {
         reason: String,
         stdout: Vec<u8>,
         stderr: Vec<u8>,
+        ending: CheckEnding,
     },
     Completed {
         output: std::process::Output,
@@ -445,6 +487,12 @@ impl CheckRunner<'_> {
                     stderr_held: captured.stderr_held,
                 },
                 Err(error) => RunResult::Interrupted {
+                    ending: match &error {
+                        SupervisedError::TimedOut { .. } => CheckEnding::TimedOut,
+                        SupervisedError::Cancelled => CheckEnding::Cancelled,
+                        SupervisedError::Spawn(_) => CheckEnding::NotStarted,
+                        _ => CheckEnding::Exited,
+                    },
                     reason: error.to_string(),
                     stdout: captured.stdout,
                     stderr: captured.stderr,

@@ -71,5 +71,5 @@ unit = "bytes"
 measure = "release_build"
 metric = "elapsed_ms"
 direction = "lower"
-min_improvement_ratio = 0.10
+min_improvement_ratio = "0.1"
 min_repetitions = 3

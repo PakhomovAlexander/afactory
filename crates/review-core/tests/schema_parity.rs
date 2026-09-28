@@ -3849,7 +3849,11 @@ fn measurements_and_comparisons_match_their_schemas_in_both_directions() {
         exit_code: Some(0),
         stdout_id: Some(id('1')),
         stderr_id: Some(id('2')),
-        cache_bytes: Some(4096),
+        cache: Some(MeasurementCacheV1 {
+            warm: true,
+            bytes: 4096,
+            reason: None,
+        }),
         metrics: std::collections::BTreeMap::from([(
             "bytes_written".to_string(),
             MetricValueV1 {

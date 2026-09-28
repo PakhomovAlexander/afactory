@@ -764,6 +764,17 @@ fn stub_toolchain(bin: &Path) {
     }
 }
 
+/// Toolchain proxies that fail every probe: the warm layer resolves no key and runs cold.
+fn broken_toolchain(bin: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(bin).unwrap();
+    for program in ["rustc", "cargo"] {
+        let path = bin.join(program);
+        std::fs::write(&path, "#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
 #[test]
 fn a_warm_measure_builds_into_the_warm_check_cache_and_records_its_key_and_bytes() {
     let (path, text) = policy("\nwarm = false\n", "\nwarm = true\n");
@@ -779,16 +790,22 @@ fn a_warm_measure_builds_into_the_warm_check_cache_and_records_its_key_and_bytes
     assert!(baseline.warm);
     assert!(baseline.toolchain_id.is_some());
     // The first repetition built into an empty directory; every later one found its product.
-    let bytes: Vec<_> = baseline.runs.iter().map(|run| run.cache_bytes).collect();
-    assert_eq!(bytes, [Some(0), Some(4096), Some(4096)]);
+    let had: Vec<_> = baseline
+        .runs
+        .iter()
+        .map(|run| run.cache.as_ref().map(|cache| (cache.warm, cache.bytes)))
+        .collect();
+    assert_eq!(
+        had,
+        [Some((true, 0)), Some((true, 4096)), Some((true, 4096))]
+    );
     let candidate = measurement(&cas, &outcome, "candidate");
     assert_eq!(candidate.toolchain_id, baseline.toolchain_id);
-    assert!(
-        candidate
-            .runs
-            .iter()
-            .all(|run| run.cache_bytes == Some(4096))
-    );
+    assert!(candidate.runs.iter().all(|run| {
+        run.cache
+            .as_ref()
+            .is_some_and(|cache| cache.warm && cache.bytes == 4096 && cache.reason.is_none())
+    }));
     // The build product lives in the machine-local cache, never in a Snapshot.
     let cache = fixture.root.join("cache/af/task-build-cache");
     let mut found = false;
@@ -803,6 +820,70 @@ fn a_warm_measure_builds_into_the_warm_check_cache_and_records_its_key_and_bytes
         .get_json(snapshot["manifest_id"].as_str().unwrap())
         .unwrap();
     assert!(!manifest.to_string().contains("build.bin"));
+
+    // The same measure where the kernel cannot resolve a toolchain — its proxies fail every
+    // probe — runs every repetition cold against a private target, and the Measurement says so:
+    // the policy asked for warm, each run records what it had and why, and `af task show`
+    // prints it.
+    let (path, text) = policy("\nwarm = false\n", "\nwarm = true\n");
+    let text = format!("{text}\n[warm]\nbuild_cache = [\"cargo_target\"]\n");
+    let mut cold = self::fixture(&[(path, text)]);
+    let broken = cold.root.join("bin");
+    broken_toolchain(&broken);
+    cold.bin = Some(broken);
+    let outcome = start(&cold, "warm-unresolved", json!({"size.txt": "80\n"}), 0);
+    let cold_cas = self::cas(&cold);
+    let unresolved = measurement(&cold_cas, &outcome, "baseline");
+    assert!(unresolved.warm, "what the policy asked for");
+    assert!(unresolved.toolchain_id.is_none());
+    let mut reasons = std::collections::BTreeSet::new();
+    for run in &unresolved.runs {
+        let had = run
+            .cache
+            .as_ref()
+            .expect("a warm measure records its cache");
+        assert!(!had.warm);
+        assert_eq!(had.bytes, 0);
+        reasons.insert(had.reason.clone().expect("a cold run says why"));
+    }
+    assert_eq!(reasons.len(), 1, "{reasons:?}");
+    let reason = reasons.into_iter().next().unwrap();
+    let (code, stdout, _) = af(
+        &cold,
+        &[
+            "task",
+            "show",
+            "warm-unresolved",
+            "--state",
+            cold.state.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(stdout.contains(&format!(", cold ({reason})")), "{stdout}");
+}
+
+#[test]
+fn a_repetition_past_its_wall_is_a_timeout_that_keeps_what_it_printed() {
+    let (path, text) = policy("wall_ms = 20000", "wall_ms = 1000");
+    let fixture = fixture(&[(path, text), ("mode.txt", "sleep\n".into())]);
+    let outcome = start(&fixture, "sleeps", json!({"size.txt": "80\n"}), 4);
+    let cas = cas(&fixture);
+    let baseline = measurement(&cas, &outcome, "baseline");
+    assert_eq!(serde_json::to_value(baseline.outcome).unwrap(), "failed");
+    let failure = baseline.failure.as_ref().unwrap();
+    assert_eq!(failure.reason.as_str(), "timeout");
+    assert_eq!(
+        failure.detail,
+        "the repetition exceeded its wall_ms of 1000 ms"
+    );
+    assert_eq!(failure.repetition, 1);
+    assert_eq!(baseline.runs.len(), 1);
+    assert!(baseline.runs[0].exit_code.is_none());
+    assert!(
+        baseline.runs[0].stdout_id.is_some(),
+        "what the command printed before the kernel ended it is kept"
+    );
+    assert!(baseline.summary.is_empty());
 }
 
 /// Install the staged `kernel/experiment` packages and the `release_build` policy tables of

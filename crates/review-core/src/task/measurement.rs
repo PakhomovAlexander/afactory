@@ -87,29 +87,6 @@ impl MeasureDecimal {
         })
     }
 
-    /// A value read from a policy number (a TOML float such as `0.10`): its shortest decimal
-    /// spelling, which is the value the author wrote. A non-finite or negative value is refused.
-    pub fn from_f64(value: f64) -> Result<Self, String> {
-        if !value.is_finite() || value < 0.0 {
-            return Err(format!("{value} is not a finite non-negative decimal"));
-        }
-        // `Display` for f64 prints the shortest text that reads back as the same value, never
-        // in exponent notation.
-        let text = format!("{value}");
-        let text = match text.split_once('.') {
-            Some((whole, fraction)) => {
-                let fraction = fraction.trim_end_matches('0');
-                if fraction.is_empty() {
-                    whole.to_string()
-                } else {
-                    format!("{whole}.{fraction}")
-                }
-            }
-            None => text,
-        };
-        Self::parse(&text)
-    }
-
     pub fn is_zero(&self) -> bool {
         self.mantissa.is_zero()
     }
@@ -558,9 +535,10 @@ pub enum ObjectiveDirectionV1 {
     Higher,
 }
 
-/// The minimum improvement ratio of an objective. A policy file may write it as a number
-/// (`0.10`), which is read as its shortest decimal spelling; the captured form is always the
-/// canonical decimal text.
+/// The minimum improvement ratio of an objective: canonical decimal text (`"0.1"`) or the
+/// integer 0 or 1. A TOML or JSON float is refused, because the parser has rounded it to a
+/// binary fraction before the kernel sees it, and a threshold that is compared exactly cannot
+/// be captured from an approximation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct ImprovementRatio(pub MeasureDecimal);
@@ -577,7 +555,10 @@ impl<'de> Deserialize<'de> for ImprovementRatio {
         let value = match Written::deserialize(deserializer)? {
             Written::Text(text) => MeasureDecimal::parse(&text),
             Written::Integer(value) => Ok(MeasureDecimal::from_u64(value)),
-            Written::Number(value) => MeasureDecimal::from_f64(value),
+            Written::Number(value) => Err(format!(
+                "min_improvement_ratio {value} is a float, which the parser has already rounded; \
+                 write it as decimal text, for example \"0.1\""
+            )),
         }
         .map_err(serde::de::Error::custom)?;
         Ok(Self(value))
@@ -697,16 +678,34 @@ pub struct MeasurementRunV1 {
         deserialize_with = "super::present_option"
     )]
     pub stderr_id: Option<String>,
-    /// Bytes the Warm Check Cache held for this repetition before it ran; absent when no warm
-    /// directory was bound.
+    /// The cargo target this repetition actually ran against when the measure asked for the
+    /// Warm Check Cache; absent for `warm = false`.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "super::present_option"
     )]
-    pub cache_bytes: Option<u64>,
+    pub cache: Option<MeasurementCacheV1>,
     /// The declared metrics parsed from the report line; empty for a failed repetition.
     pub metrics: BTreeMap<String, MetricValueV1>,
+}
+
+/// What the Warm Check Cache gave one repetition. `warm` is the condition the command ran
+/// under, not the one the policy asked for: a busy key or a discarded directory runs the
+/// repetition against a private cold target, and `reason` says why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeasurementCacheV1 {
+    pub warm: bool,
+    /// Bytes the bound directory held before the repetition; 0 for a cold target.
+    pub bytes: u64,
+    /// Why the repetition ran cold although the measure asked for the cache; absent when warm.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -736,6 +735,7 @@ pub struct MeasurementV1 {
         deserialize_with = "super::present_option"
     )]
     pub toolchain_id: Option<String>,
+    /// Whether the measure asked for the Warm Check Cache; each run records what it had.
     pub warm: bool,
     pub repetitions: u32,
     pub wall_ms: u64,
@@ -791,8 +791,17 @@ impl MeasurementV1 {
             require(
                 super::safe_number(run.started_unix_ms)
                     && super::safe_number(run.elapsed_ms)
-                    && run.cache_bytes.is_none_or(super::safe_number),
+                    && run
+                        .cache
+                        .as_ref()
+                        .is_none_or(|cache| super::safe_number(cache.bytes)),
                 "Measurement run numbers exceed the canonical JSON bound",
+            )?;
+            require(
+                run.cache.as_ref().is_none_or(|cache| {
+                    cache.warm != cache.reason.as_ref().is_some_and(|r| !r.is_empty())
+                }),
+                "Measurement run cache names a reason exactly when it ran cold",
             )?;
         }
         match (self.outcome, &self.failure) {
@@ -1354,9 +1363,6 @@ mod tests {
         assert_eq!(d("1000").significant_digits(), 4);
         assert_eq!(d("0.00012").significant_digits(), 2);
         assert!(d("2") > d("1.99999"));
-        assert_eq!(MeasureDecimal::from_f64(0.10).unwrap(), d("0.1"));
-        assert_eq!(MeasureDecimal::from_f64(1.0).unwrap(), d("1"));
-        assert!(MeasureDecimal::from_f64(-0.5).is_err());
     }
 
     #[test]
@@ -1478,7 +1484,7 @@ mod tests {
             exit_code: Some(0),
             stdout_id: Some(id.clone()),
             stderr_id: Some(id),
-            cache_bytes: None,
+            cache: None,
             metrics: metrics
                 .iter()
                 .map(|(k, v)| {
@@ -1781,7 +1787,7 @@ mod tests {
                 .is_err()
         );
         let parsed: MeasureObjectiveV1 = serde_json::from_value(serde_json::json!({
-            "measure": "write", "metric": "a", "direction": "lower", "min_improvement_ratio": 0.10
+            "measure": "write", "metric": "a", "direction": "lower", "min_improvement_ratio": "0.1"
         }))
         .unwrap();
         assert_eq!(parsed.min_repetitions, DEFAULT_MIN_REPETITIONS);
@@ -1789,5 +1795,18 @@ mod tests {
             serde_json::to_value(&parsed).unwrap()["min_improvement_ratio"],
             "0.1"
         );
+        // A float has been rounded by the parser before the kernel sees it: refused, naming the
+        // spelling to use instead. The integers 0 and 1 are exact and accepted.
+        let refused = serde_json::from_value::<MeasureObjectiveV1>(serde_json::json!({
+            "measure": "write", "metric": "a", "direction": "lower", "min_improvement_ratio": 0.10
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(refused.contains("write it as decimal text"), "{refused}");
+        let one: MeasureObjectiveV1 = serde_json::from_value(serde_json::json!({
+            "measure": "write", "metric": "a", "direction": "lower", "min_improvement_ratio": 1
+        }))
+        .unwrap();
+        assert_eq!(one.min_improvement_ratio.0, MeasureDecimal::from_u64(1));
     }
 }

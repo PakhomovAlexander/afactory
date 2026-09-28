@@ -239,8 +239,10 @@ Deliverables:
    (at most 3,600,000), and `metrics`: a list of `{ key, unit }` with `unit` one of `ms`,
    `bytes`, `count`, `ratio`; `elapsed_ms` is the built-in metric, always recorded, and a
    declared metric may not reuse its key. An objective names one `measure`, one `metric`, a
-   `direction` (`lower` or `higher`), `min_improvement_ratio` (0 to 1 inclusive) and
-   `min_repetitions` (1 to 16, default 3). The plan compiler refuses a plan whose
+   `direction` (`lower` or `higher`), `min_improvement_ratio` (0 to 1 inclusive, written as
+   canonical decimal text such as `"0.1"` or as the integer 0 or 1; a TOML float is refused
+   because the parser rounds it before the kernel can capture it) and `min_repetitions` (1 to
+   16, default 3). The plan compiler refuses a plan whose
    `measure` nodes' summed `repetitions × wall_ms` exceeds the captured `check_wall_ms` (a
    measure Attempt owns no checks), and it refuses a `measure` whose name the captured policy
    lacks or a `compare` whose two inputs name different measures.
@@ -258,8 +260,9 @@ Deliverables:
    measurement is never silently partial.
 3. A new artifact `af/Measurement@1`: the Snapshot ID, the measure name, the resolved command
    identity, the R1 `toolchain_id` and `warm`, one record per repetition — started time,
-   `elapsed_ms`, exit status, stdout and stderr digests, the cache bytes the warm layer held
-   before it, the metrics parsed from the command's last stdout line when it is an `af.measure-report/1` JSON object
+   `elapsed_ms`, exit status, stdout and stderr digests, the cargo target it actually ran
+   against when the measure asked for the warm cache (warm or cold, its bytes, and the reason
+   when it ran cold), the metrics parsed from the command's last stdout line when it is an `af.measure-report/1` JSON object
    `{"schema":"af.measure-report/1","metrics":{"<key>":{"value":"<decimal>","unit":"<unit>"}}}`,
    whose keys must equal the declared set and whose units must equal the declared units — and
    per metric `median`, `min`, `max` and `n`. Values are finite, non-negative decimals with at
@@ -760,3 +763,20 @@ from this section's wording were accepted and the section amended: the `below_th
 conclusion, the ratio as an exact fraction, cache bytes per repetition, the child Pipeline that
 gates the evaluator on two receipts, one node at a time, and a bound-ended repetition recorded
 as `exit`.
+
+Verification Task `research-r2-verify-1` on ff88a5d failed at its gate (2,151 tokens) before any
+reviewer ran: two TUI unit tests panicked with an event-store clock conflict inside the af
+binary's test run, and both pass in a local `make check` of the same tree. That flake is recorded
+in the repository's release notes as a gate-only failure and the Task was simply re-planned as
+`research-r2-verify-2` on the same commit, which passed its gate warm (`kernel` 13.1 min) and
+ended `changes_requested` (354,097 tokens): both reviewers (GPT-6 Sol) found that a repetition the
+kernel ended at its wall was recorded as `exit`, because the cancellable supervisor the Task runs
+under reports a timeout with a different shape than the predicate expected; the correctness
+reviewer found that a `warm = true` measure whose key was busy still recorded `warm: true`; and the
+evaluator failed the package on one criterion — `min_improvement_ratio` deserialized a TOML float
+through f64 and captured its rounded spelling, so `0.10000000000000001` became `0.1` and an
+improvement of exactly one tenth would have passed. All three were fixed by hand with tests: the
+runner now carries a typed ending beside its result and the operator classifies the bound from it;
+each run records the cache condition it actually had and `af task show` prints it; the ratio is
+decimal text or the integer 0 or 1, and every policy in the repository writes `"0.1"`. ADR-0124
+records the three amendments.
