@@ -1559,16 +1559,36 @@ fn first_line(text: &str) -> String {
 /// `:help` rows: the key reference, a topic as `af help TOPIC` prints it, or a command's long
 /// help as `af help COMMAND...` prints it.
 fn help_rows(words: &[String]) -> Vec<Row> {
-    let text = match words {
-        [] => KEYS.to_owned(),
-        [word] if crate::topics::find(word).is_some() => topic_help(word),
-        path => command_help(path),
+    let (mut rows, text) = match words {
+        [] => (banner_rows(), KEYS.to_owned()),
+        [word] if crate::topics::find(word).is_some() => (Vec::new(), topic_help(word)),
+        path => (Vec::new(), command_help(path)),
     };
-    let mut rows = Vec::new();
     for line in text.lines() {
         rows.push(Row::plain(typographic(line)));
     }
     rows
+}
+
+/// The pixel worker beside the name and the tagline (`brand/ascii.txt`), above the key
+/// reference. Printable ASCII, 42 columns, so it fits the main pane at the 80-column minimum.
+fn banner_rows() -> Vec<Row> {
+    const WORKER: [&str; 6] = [
+        "     ###    ",
+        "  ######### ",
+        "  #  ###  # ",
+        "  #  ###  # ",
+        "  ######### ",
+        " ###########",
+    ];
+    let name = format!("af {}", env!("CARGO_PKG_VERSION"));
+    let beside = ["", name.as_str(), "agent pipelines made fast", "", "", ""];
+    WORKER
+        .iter()
+        .zip(beside)
+        .map(|(left, right)| Row::plain(format!("{left}     {right}").trim_end()))
+        .chain(std::iter::once(Row::blank()))
+        .collect()
 }
 
 fn topic_help(word: &str) -> String {

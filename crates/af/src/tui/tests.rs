@@ -1597,3 +1597,31 @@ fn the_tasks_pane_prefills_run_and_deliver_and_completes_task_ids() {
         );
     }
 }
+
+#[test]
+fn bare_help_opens_with_the_worker_and_the_tagline() {
+    let text: Vec<String> = help_rows(&[]).iter().map(Row::text).collect();
+    assert_eq!(text[0], "     ###");
+    assert!(
+        text[1].ends_with(&format!("af {}", env!("CARGO_PKG_VERSION"))),
+        "{}",
+        text[1]
+    );
+    assert!(
+        text[2].ends_with("agent pipelines made fast"),
+        "{}",
+        text[2]
+    );
+    assert_eq!(text[5], " ###########");
+    assert_eq!(text[6], "");
+    assert!(text[7].starts_with("KEYS"), "{}", text[7]);
+    assert!(
+        text[..7].iter().all(|row| row.len() <= 52),
+        "the banner fits the pane at 80 columns"
+    );
+    let topic: Vec<String> = help_rows(&["layers".to_owned()])
+        .iter()
+        .map(Row::text)
+        .collect();
+    assert!(topic[0].starts_with("af help layers -- "), "{}", topic[0]);
+}
