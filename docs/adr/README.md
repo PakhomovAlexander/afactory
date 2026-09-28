@@ -213,3 +213,5 @@ future readers need.
   bound](0122-show-committed-workers-and-their-recorded-attempts.md)
 - [0123 — Hand the terminal to `af` commands typed in the
   browser](0123-hand-the-terminal-to-af-commands-typed-in-the-browser.md)
+- [0124 — Run tests in parallel processes and link them
+  once](0124-run-tests-in-parallel-processes-and-link-them-once.md)
