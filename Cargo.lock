@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "af"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "clap",
  "clap_complete",
@@ -737,9 +737,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6a806f80c1f5560431009ce5ec29b59d38f950e0cd7db5f1b8925e6d8104e21"
+checksum = "71160ed5f6dbe36a2d6be79f4ca03ee09a99d2866f340faed49458913449aefa"
 dependencies = [
  "ahash",
  "bytecount",
@@ -765,18 +765,18 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb862addfa7782108933abcf842fe25334523a9df5b89ea4d9620e3dd7b42181"
+checksum = "48d2120d8466ffcdc1b3be4b88ff0e9191bf5b6b09b1b1af1eef9aff8f465ea3"
 dependencies = [
  "regex-syntax",
 ]
 
 [[package]]
 name = "jsonschema-value"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a05cd404c5ff6e2731dbbf7e290a27417750acfb59e329560a1d0af384c93fb0"
+checksum = "3fbfa40a42415369d940b3848f3ce08099f1f1ac04d73e8580f4d652617c4f44"
 dependencies = [
  "ahash",
  "bytecount",
@@ -1194,9 +1194,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.56.0"
+version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3b4a92fac7e28c27de3ad26df2ecb9e652f227b258e845af034052e5b22c96c"
+checksum = "b06f6798be4fed305e74df8b1fb90cf59c6b8cc17aa3febeb1830c0c6b627b3e"
 dependencies = [
  "ahash",
  "fluent-uri",
@@ -1252,7 +1252,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "review-attempt"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "review-core",
  "serde",
@@ -1261,7 +1261,7 @@ dependencies = [
 
 [[package]]
 name = "review-check"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "jsonschema",
  "review-core",
@@ -1274,7 +1274,7 @@ dependencies = [
 
 [[package]]
 name = "review-config"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "jsonschema",
  "review-attempt",
@@ -1293,7 +1293,7 @@ dependencies = [
 
 [[package]]
 name = "review-core"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "base64",
  "jsonschema",
@@ -1306,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "review-graph"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "review-attempt",
  "review-core",
@@ -1316,14 +1316,14 @@ dependencies = [
 
 [[package]]
 name = "review-parallel"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "rayon",
 ]
 
 [[package]]
 name = "review-pipeline"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "jsonschema",
  "review-attempt",
@@ -1348,14 +1348,14 @@ dependencies = [
 
 [[package]]
 name = "review-process"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "nix 0.31.3",
 ]
 
 [[package]]
 name = "review-runner"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "jsonschema",
  "review-core",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "review-runner-claude"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "jsonschema",
  "nix 0.31.3",
@@ -1382,7 +1382,7 @@ dependencies = [
 
 [[package]]
 name = "review-runner-codex"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "review-config",
  "review-core",
@@ -1395,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "review-sandbox"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "exacl",
  "nix 0.31.3",
@@ -1414,7 +1414,7 @@ dependencies = [
 
 [[package]]
 name = "review-source-git"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "jsonschema",
  "nix 0.31.3",
@@ -1432,7 +1432,7 @@ dependencies = [
 
 [[package]]
 name = "review-source-task"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "review-core",
  "review-process",
@@ -1445,7 +1445,7 @@ dependencies = [
 
 [[package]]
 name = "review-store"
-version = "0.9.0-rc.7"
+version = "0.9.0-rc.8"
 dependencies = [
  "nix 0.31.3",
  "reflink-copy",

@@ -387,10 +387,15 @@ impl ReleaseSource for GhSource {
             .output()
             .map_err(|error| format!("running gh: {error}"))?;
         if !output.status.success() {
-            return Err(format!(
-                "gh release download {tag} {asset}: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = stderr.trim();
+            if stderr.contains("release not found") {
+                return Err(format!(
+                    "release {tag} does not exist at {} — fix: `af self update --check` (add --rc for pre-releases) names the newest",
+                    self.describe()
+                ));
+            }
+            return Err(format!("gh release download {tag} {asset}: {stderr}"));
         }
         let path = dir.join(asset);
         if !path.is_file() {
@@ -951,6 +956,16 @@ fn pinned_everywhere(paths: &Paths) -> BTreeSet<String> {
     versions
 }
 
+/// The variable a child of this `af` carries so that it runs as this binary, never dispatched
+/// to another version: the browser's command-line hand-off (ADR-0123). A browser that was
+/// itself dispatched passes on the version it was dispatched from.
+pub(crate) fn undispatched_child() -> (&'static str, String) {
+    let from = std::env::var(DISPATCHED_ENV)
+        .ok()
+        .filter(|from| !from.is_empty());
+    (DISPATCHED_ENV, from.unwrap_or_else(|| VERSION.to_owned()))
+}
+
 /// Exec the version this project pins, when it is not the one running. Installs it on demand.
 /// Returns only when the running binary should continue.
 pub(crate) fn maybe_dispatch(argv: &[String]) {
@@ -1392,14 +1407,19 @@ pub(crate) fn update(check: bool, version: Option<String>, rc: bool) -> Result<(
     let target = match version {
         Some(version) => Version::parse(version.trim_start_matches('v'))
             .map_err(|error| format!("--version {version}: {error}"))?,
-        None => newest(&src.tags(channel == Channel::Rc)?, channel)
-            .ok_or_else(|| format!("no release found at {}", src.describe()))?,
+        None => {
+            let latest = newest(&src.tags(channel == Channel::Rc)?, channel)
+                .ok_or_else(|| format!("no release found at {}", src.describe()))?;
+            // Only a release the source actually listed is "latest". An explicit
+            // `--version` is a request, not a discovery: recording it here made
+            // `af self status` report a version that may not exist.
+            let mut cache = read_cache(&paths);
+            record_check(&mut cache, &latest);
+            let _ = write_cache(&paths, &cache);
+            latest
+        }
     };
     let running = Version::parse(VERSION).map_err(|error| error.to_string())?;
-    let mut cache = read_cache(&paths);
-    cache.checked_at_epoch = epoch_now();
-    cache.latest = Some(target.to_string());
-    let _ = write_cache(&paths, &cache);
     if check {
         if target > running {
             println!("af {target} is available (running {VERSION})");
@@ -1412,11 +1432,24 @@ pub(crate) fn update(check: bool, version: Option<String>, rc: bool) -> Result<(
     require_self_managed(&target)?;
     require_receipt(&paths)?;
     if installed(&paths, &target).is_none() {
-        install(&paths, &policy, &target, None).map_err(|error| error.to_string())?;
+        install(&paths, &policy, &target, None)
+            .map_err(|error| update_failed(&error.to_string(), &target))?;
     }
     set_default(&paths, &target)?;
     println!("af {target} is now the default ({})", paths.bin.display());
     Ok(())
+}
+
+/// Note a completed release check in the cache: when it ran and what it found.
+fn record_check(cache: &mut CheckCache, latest: &Version) {
+    cache.checked_at_epoch = epoch_now();
+    cache.latest = Some(latest.to_string());
+}
+
+/// A failed install leaves the default untouched; say so, because the progress line that
+/// preceded the error announced an installation.
+fn update_failed(error: &str, target: &str) -> String {
+    format!("{error}\naf {target} was not installed — af {VERSION} remains the default")
 }
 
 pub(crate) fn rollback() -> Result<(), String> {
@@ -1724,6 +1757,22 @@ mod tests {
     fn iso_renders_known_instants() {
         assert_eq!(iso(0), "1970-01-01T00:00:00Z");
         assert_eq!(iso(1_756_857_600), "2025-09-03T00:00:00Z");
+    }
+
+    #[test]
+    fn record_check_stores_the_discovered_release() {
+        let mut cache = CheckCache::default();
+        record_check(&mut cache, &Version::parse("0.9.0-rc.8").unwrap());
+        assert_eq!(cache.latest.as_deref(), Some("0.9.0-rc.8"));
+        assert!(cache.checked_at_epoch > 0);
+    }
+
+    #[test]
+    fn update_failure_names_the_surviving_default() {
+        let text = update_failed("release v9.9.9 does not exist", "9.9.9");
+        assert!(text.starts_with("release v9.9.9 does not exist\n"));
+        assert!(text.contains("af 9.9.9 was not installed"));
+        assert!(text.contains(&format!("af {VERSION} remains the default")));
     }
 
     #[test]

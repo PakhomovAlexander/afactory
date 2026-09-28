@@ -30,7 +30,7 @@ toml_edit = "0.25.15"
 review-runner-claude = { path = "../review-runner-claude" }
 review-runner-codex = { path = "../review-runner-codex" }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
-jsonschema = { version = "0.56.0", default-features = false }
+jsonschema = { version = "0.57.0", default-features = false }
 
 [lints]
 workspace = true

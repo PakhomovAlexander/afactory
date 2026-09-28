@@ -31,6 +31,10 @@ fn copy_tree(source: &Path, destination: &Path) {
             copy_tree(&entry.path(), &target);
         } else {
             std::fs::copy(entry.path(), &target).unwrap();
+            // The source may be a read-only materialized tree (the kernel's own check run);
+            // the copy is a fixture the tests edit.
+            let permissions = std::os::unix::fs::PermissionsExt::from_mode(0o644);
+            std::fs::set_permissions(&target, permissions).unwrap();
         }
     }
 }
@@ -136,14 +140,19 @@ fn stable_lines(text: &str) -> Vec<String> {
     lines
 }
 
-/// The screen the browser painted. Only what it writes is interpreted: cursor position and
-/// erase; graphic rendition and private modes are ignored.
+/// The screen the browser painted. Only what it writes is interpreted: cursor position, erase,
+/// the alternate screen, autowrap, and a line feed that scrolls at the bottom; graphic rendition
+/// and other private modes are ignored. A command the browser hands the terminal to writes on
+/// the main screen, as it would on a real terminal.
 struct Screen {
     cells: Vec<Vec<char>>,
     rows: usize,
     columns: usize,
     row: usize,
     column: usize,
+    wrap: bool,
+    /// The main screen and its cursor while the alternate screen shows.
+    main: Option<(Vec<Vec<char>>, usize, usize)>,
 }
 
 impl Screen {
@@ -154,6 +163,8 @@ impl Screen {
             columns,
             row: 0,
             column: 0,
+            wrap: true,
+            main: None,
         };
         let mut index = 0;
         while index < bytes.len() {
@@ -162,8 +173,12 @@ impl Screen {
             match byte {
                 0x1b => index = screen.escape(bytes, index),
                 b'\r' => screen.column = 0,
-                b'\n' => screen.row = (screen.row + 1).min(screen.rows - 1),
+                b'\n' => screen.line_feed(),
                 0x20..=0x7e => {
+                    if screen.column >= screen.columns && screen.wrap {
+                        screen.column = 0;
+                        screen.line_feed();
+                    }
                     if screen.row < screen.rows && screen.column < screen.columns {
                         screen.cells[screen.row][screen.column] = char::from(byte);
                     }
@@ -173,6 +188,34 @@ impl Screen {
             }
         }
         screen
+    }
+
+    fn line_feed(&mut self) {
+        if self.row + 1 < self.rows {
+            self.row += 1;
+        } else {
+            self.cells.remove(0);
+            self.cells.push(vec![' '; self.columns]);
+        }
+    }
+
+    /// `CSI ? 1049 h` and `l`: the alternate screen, entered cleared and left for the main one
+    /// as it was; `CSI ? 7 h` and `l`: autowrap.
+    fn private_mode(&mut self, parameters: &str, set: bool) {
+        match (parameters, set) {
+            ("?7", _) => self.wrap = set,
+            ("?1049", true) => {
+                let blank = vec![vec![' '; self.columns]; self.rows];
+                let main = std::mem::replace(&mut self.cells, blank);
+                self.main = Some((main, self.row, self.column));
+            }
+            ("?1049", false) => {
+                if let Some((main, row, column)) = self.main.take() {
+                    (self.cells, self.row, self.column) = (main, row, column);
+                }
+            }
+            _ => {}
+        }
     }
 
     /// One escape sequence after its `ESC`; returns the index after it.
@@ -198,6 +241,7 @@ impl Screen {
                     b'J' if parameters == "2" => {
                         self.cells = vec![vec![' '; self.columns]; self.rows];
                     }
+                    b'h' | b'l' => self.private_mode(&parameters, *last == b'h'),
                     _ => {}
                 }
                 end + 1
@@ -246,6 +290,17 @@ impl Browser {
 
     /// The browser on a terminal of `rows` x `columns`.
     fn launch_sized(cwd: &Path, home: &Path, rows: usize, columns: usize) -> Browser {
+        Browser::launch_with(cwd, home, rows, columns, &[])
+    }
+
+    /// A browser whose environment also carries `extra`.
+    fn launch_with(
+        cwd: &Path,
+        home: &Path,
+        rows: usize,
+        columns: usize,
+        extra: &[(&str, &str)],
+    ) -> Browser {
         let size = PtySize {
             rows: rows as u16,
             cols: columns as u16,
@@ -257,6 +312,9 @@ impl Browser {
         command.env_clear();
         command.cwd(cwd);
         for (name, value) in environment(home) {
+            command.env(name, value);
+        }
+        for (name, value) in extra {
             command.env(name, value);
         }
         let child = pair.slave.spawn_command(command).unwrap();
@@ -808,4 +866,239 @@ fn the_workers_pane_shows_the_attempts_af_task_show_json_records() {
         browser.keys(b":q\r");
         assert_eq!(browser.exit_code(), 0);
     }
+}
+
+/// The line the released screen shows after a handed-off command ends.
+fn exit_line(line: &str, ended: &str) -> String {
+    format!("af {line}: {ended} -- Enter returns to the browser")
+}
+
+/// Type `:LINE` in the browser and wait for the released screen's exit line; return the screen
+/// and the row the exit line is on.
+fn hand_off(browser: &mut Browser, line: &str, ended: &str) -> (Screen, usize) {
+    browser.keys(format!(":{line}\r").as_bytes());
+    let shown = exit_line(line, ended);
+    let ended = |screen: &Screen| screen.lines().contains(&shown);
+    let screen = browser.wait_for("the exit line", ended);
+    let at = screen.lines().iter().position(|row| *row == shown).unwrap();
+    (screen, at)
+}
+
+/// Enter on the released screen: the browser again, at 100x30, its status line naming the
+/// command's exit.
+fn back_in_the_browser(browser: &mut Browser, status: &str) -> Screen {
+    browser.keys(b"\r");
+    let back = |screen: &Screen| {
+        let lines = screen.lines();
+        lines[ROWS - 1].starts_with("NORMAL  hub") && lines[ROWS - 1].ends_with(status)
+    };
+    let screen = browser.wait_for("the browser again", back);
+    let text = screen.text();
+    assert!(text.contains("SETTINGS  project: hub"), "{text}");
+    assert!(
+        bar_rows(&screen).contains(&"  v tasks/".to_owned()),
+        "{text}"
+    );
+    screen
+}
+
+/// `:task show ID` in bare `af` prints on the released screen exactly what `af task show ID`
+/// prints from the shell, then the exit line; Enter is the browser again.
+#[test]
+fn a_command_line_hands_the_terminal_to_af_task_show_and_enter_returns() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub_with_a_task(&root, &home);
+    let shown = af(&repo, &home, &["task", "show", "pagination-cli"]);
+    assert!(shown.status.success());
+    let expected = String::from_utf8(shown.stdout).unwrap();
+    let expected: Vec<&str> = expected.lines().collect();
+    assert!(!expected.is_empty());
+    let mut browser = Browser::launch(&repo, &home);
+    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
+    browser.wait_for("project settings", ready);
+    let line = "task show pagination-cli";
+    let (screen, at) = hand_off(&mut browser, line, "exit 0");
+    let lines = screen.lines();
+    assert!(at >= expected.len(), "{}", screen.text());
+    assert_eq!(
+        lines[at - expected.len()..at],
+        expected,
+        "{}",
+        screen.text()
+    );
+    // Nothing of the browser's frame is left on the released screen.
+    assert!(!screen.text().contains("SETTINGS"), "{}", screen.text());
+    back_in_the_browser(&mut browser, &format!("af {line}: exit 0"));
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// A command that fails shows its own error and its non-zero exit, and the browser stays.
+#[test]
+fn a_failing_command_line_shows_its_non_zero_exit() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub(&root);
+    let failed = af(&repo, &home, &["task", "show", "nothing-here"]);
+    let code = failed.status.code().unwrap();
+    assert_ne!(code, 0);
+    let error = String::from_utf8(failed.stderr).unwrap();
+    let mut browser = Browser::launch(&repo, &home);
+    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
+    browser.wait_for("project settings", ready);
+    let line = "task show nothing-here";
+    let ended = format!("exit {code}");
+    let (screen, at) = hand_off(&mut browser, line, &ended);
+    let lines = screen.lines();
+    let expected: Vec<&str> = error.lines().collect();
+    assert_eq!(
+        lines[at - expected.len()..at],
+        expected,
+        "{}",
+        screen.text()
+    );
+    back_in_the_browser(&mut browser, &format!("af {line}: {ended}"));
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// The handed-off command owns the terminal's foreground: `<C-c>` ends it, and the browser,
+/// which the signal never reaches, comes back on Enter.
+#[test]
+fn ctrl_c_stops_the_handed_off_command_not_the_browser() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub(&root);
+    // The command Worker sleeps, so `af task start --execute` is still running at `<C-c>`.
+    let implementer = repo.join(".af/task-packages/fixture/implementer");
+    std::fs::write(
+        implementer.join("worker.py"),
+        "import time\ntime.sleep(30)\n",
+    )
+    .unwrap();
+    let digest = review_config::lock::package_digest("fixture/implementer", &implementer);
+    let catalog = repo.join(".af/task-catalog.toml");
+    let mut value: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&catalog).unwrap()).unwrap();
+    value["packages"]["fixture/implementer"]["digest"] = toml::Value::String(digest.unwrap());
+    std::fs::write(&catalog, toml::to_string(&value).unwrap()).unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "a Worker that sleeps"]);
+    let ticket = root.join("ticket.json");
+    std::fs::copy(repo.join("ticket.json"), &ticket).unwrap();
+    let mut browser = Browser::launch(&repo, &home);
+    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
+    browser.wait_for("project settings", ready);
+    // The command runs in the repository's toplevel, so the ticket beside it is `../`.
+    let line = "task start --file ../ticket.json --execute".to_owned();
+    browser.keys(format!(":{line}\r").as_bytes());
+    let released = |screen: &Screen| !screen.text().contains("SETTINGS");
+    browser.wait_for("the released screen", released);
+    std::thread::sleep(Duration::from_secs(2));
+    browser.keys(b"\x03");
+    let shown = exit_line(&line, "killed by SIGINT");
+    let ended = |screen: &Screen| screen.lines().contains(&shown);
+    browser.wait_for("the exit line", ended);
+    back_in_the_browser(&mut browser, &format!("af {line}: killed by SIGINT"));
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// A command that ends at once shows its own exit, every time. The hand-off also covers the
+/// race where such a command ends before its process group takes the terminal's foreground
+/// (the group is gone, and its exit is reported, not a failed hand-off); `af` starts too
+/// slowly for this test to reach that race on demand, so this guards the ordinary path.
+#[test]
+fn a_command_that_ends_at_once_still_shows_its_exit() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub(&root);
+    let mut browser = Browser::launch(&repo, &home);
+    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
+    browser.wait_for("project settings", ready);
+    let line = "--version";
+    for _ in 0..8 {
+        hand_off(&mut browser, line, "exit 0");
+        back_in_the_browser(&mut browser, &format!("af {line}: exit 0"));
+    }
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// Keys that arrive in the same read as a command line were typed before the command ran:
+/// they are dropped, never replayed in the browser the user returns to. Here the `q` after
+/// `:task list` would otherwise quit the browser.
+#[test]
+fn keys_read_with_a_command_line_are_not_replayed_after_it() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub(&root);
+    let mut browser = Browser::launch(&repo, &home);
+    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
+    browser.wait_for("project settings", ready);
+    let line = "task list";
+    browser.keys(format!(":{line}\rq").as_bytes());
+    let shown = exit_line(line, "exit 0");
+    browser.wait_for("the exit line", |screen| screen.lines().contains(&shown));
+    back_in_the_browser(&mut browser, &format!("af {line}: exit 0"));
+    // Still running: a key now is the browser's.
+    browser.keys(b"]]");
+    browser.wait_for("the bar moved", |screen| {
+        screen.lines()[ROWS - 1].starts_with("NORMAL  providers/")
+    });
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// An editor runs in its own process group, as a command does: `<C-c>` ends the editor, and the
+/// browser comes back and says so, where it once died with it.
+#[test]
+fn ctrl_c_in_an_editor_stops_the_editor_not_the_browser() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub(&root);
+    // An "editor" that waits: `sh -c 'sleep 30' editor FILE`.
+    let editor = "/bin/sh -c 'sleep 30' editor";
+    let mut browser = Browser::launch_with(&repo, &home, ROWS, COLS, &[("EDITOR", editor)]);
+    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
+    browser.wait_for("project settings", ready);
+    // The bar's first pipeline, and `gf` on it.
+    browser.keys(b"]]]]]]j");
+    browser.wait_for("a pipeline selected", |screen| {
+        screen.lines()[ROWS - 1].starts_with("NORMAL  pipelines/")
+    });
+    browser.keys(b"gf");
+    browser.wait_for("the released screen", |screen| {
+        !screen.text().contains("SETTINGS")
+    });
+    std::thread::sleep(Duration::from_secs(1));
+    browser.keys(b"\x03");
+    let back = |screen: &Screen| {
+        let last = &screen.lines()[ROWS - 1];
+        last.starts_with("NORMAL  pipelines/") && last.contains("killed by SIGINT")
+    };
+    browser.wait_for("the browser again, naming the editor's end", back);
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// Whatever a command's output left the cursor on, the exit line starts a line of its own, and
+/// a command that ended its output with a newline gets no blank line before it.
+#[test]
+fn the_exit_line_starts_its_own_line() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let repo = hub(&root);
+    let mut browser = Browser::launch(&repo, &home);
+    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
+    browser.wait_for("project settings", ready);
+    // `af --version` ends its output with a newline: the exit line follows it directly.
+    let line = "--version";
+    let (screen, at) = hand_off(&mut browser, line, "exit 0");
+    let lines = screen.lines();
+    assert!(lines[at - 1].starts_with("af "), "{lines:#?}");
+    back_in_the_browser(&mut browser, &format!("af {line}: exit 0"));
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
 }

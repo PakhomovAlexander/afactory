@@ -211,13 +211,15 @@ future readers need.
   documents](0121-show-recorded-tasks-in-the-browser.md)
 - [0122 — Show committed Workers and the Attempts their recorded plans
   bound](0122-show-committed-workers-and-their-recorded-attempts.md)
-- [0123 — Warm Task checks through a toolchain-keyed, bounded, machine-local
+- [0123 — Hand the terminal to `af` commands typed in the
+  browser](0123-hand-the-terminal-to-af-commands-typed-in-the-browser.md)
+- [0124 — Warm Task checks through a toolchain-keyed, bounded, machine-local
   cache](0124-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)
-- [0124 — Measure and compare source candidates in the
+- [0125 — Measure and compare source candidates in the
   kernel](0125-measure-and-compare-source-candidates-in-the-kernel.md)
-- [0125 — Accept reports bound to an exact source
+- [0126 — Accept reports bound to an exact source
   Snapshot](0126-accept-reports-bound-to-an-exact-source-snapshot.md)
-- [0126 — Bind any declared root port to recorded Task
+- [0127 — Bind any declared root port to recorded Task
   outputs](0127-bind-any-declared-root-port-to-recorded-task-outputs.md)
-- [0127 — Collect finished Tasks behind a tombstone and a reachability
+- [0128 — Collect finished Tasks behind a tombstone and a reachability
   sweep](0128-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)

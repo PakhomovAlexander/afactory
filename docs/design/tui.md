@@ -69,7 +69,10 @@ Three regions, fixed for the whole session:
   breadcrumb shrinks to the mode word, then goes, before the right-hand text is cut. `:` opens a one-line command prompt in the same row; `/` a search prompt.
 
 Glyphs are printable ASCII only (`v`/`>` for folds, `+--`/`'--` for tree branches, `#`/`.` for
-bars). This keeps the existing `terminal_data_is_printable_ascii` test meaningful and matches the
+bars). Colour follows `brand/README.md`: the terminal's own foreground and ground everywhere,
+reverse video for the cursor row, and the brand's blue under the status line and pink for errors
+only where `COLORTERM` says the terminal takes truecolor; the 16-colour red stands in otherwise
+and `NO_COLOR` leaves attributes only. This keeps the existing `terminal_data_is_printable_ascii` test meaningful and matches the
 CLI's own tree output.
 
 Minimum size 80x24; below it the screen shows one line naming the minimum.
@@ -99,18 +102,32 @@ few pane-local verbs, listed in its section and in the status line.
 | `?` on the status line focus, `:help` | key help overlay |
 | `q` `:q` `ZZ` | quit; `<C-c>` cancels a prompt or a running probe first |
 
-**Command line (`:`)** — a small fixed vocabulary, completed with `<Tab>`:
+**Command line (`:`)** — the browser's own verbs, and any `af` command line:
 
 ```
-:q                       :help [topic]            :e user|project|local
-:task run ID [--confirm-plan PLAN]   :task show ID   :provider setup ID --kind claude|codex
+:q                       :help [topic]            :e user|directory|project|local
 :cd DIR                  :scope user|project
+:task run ID --confirm-plan PLAN   :task show ID   :provider setup ID --kind claude|codex   ...
 ```
 
 Commands are parsed with the same clap definition as the CLI (`Af::try_parse_from(["af", …])`),
-so the TUI can never grow a second grammar. A command that would spawn Workers releases the
-terminal exactly as the review TUI's `r` does today, runs the ordinary code path, and waits for
-Enter before re-entering.
+so the TUI can never grow a second grammar. `:q`, `:cd`, `:scope`, `:e` and `:help` belong to the
+browser. A line without a subcommand (`:--repo DIR`) would open a second browser and is refused
+on the status line. Any other line runs as a child of the running `af` executable, with exactly
+the parsed words as its arguments (ADR-0123). The child runs in the scope's root (the repository
+toplevel, or `~`) and inherits the browser's environment. It carries `AF_DISPATCHED_FROM`, so
+self-management never sends it to another release partway through a session.
+
+The browser releases the terminal first. The child's process group then owns the terminal's
+foreground, so `<C-c>` stops the child and never the browser. When the child ends, the released
+screen shows one line, `af LINE: exit N -- Enter returns to the browser` (or the signal that
+ended it), and waits for Enter. Then the browser re-enters and reads again the scope, the
+settings and the Tasks, Workers and Providers panes (Providers without the charged probe). It
+keeps what is opened and the bar's selection. The status line says `af LINE: exit N`.
+
+`<Tab>` completes subcommand names at every level from `Af::command()` itself, alongside the
+browser's verbs. A Task ID argument completes from the Task IDs the Tasks pane lists for this
+scope. Several matches are listed on the status line.
 
 **Prompts**: `INSERT`-like line editing with `<C-a>`/`<C-e>`/`<C-w>`/`<C-u>`, `Esc` cancels.
 
@@ -245,8 +262,12 @@ state, attempt counts and charged tokens, `TaskRuntimeSpanV1` for the TIME row. 
 re-reads the Store every second while it is selected; nothing is polled otherwise.
 
 Pane-local verbs: `Enter` on a HISTORY row opens that artifact as pretty JSON; `p` jumps to the
-Task's pipeline in the Pipelines pane; `:task run ID` and `:task deliver …` release the terminal
-as described in §4.
+Task's pipeline in the Pipelines pane. `r` on a Task, on the bar or in its opened pane, fills the
+`:` line with `task run ID --confirm-plan PLAN`, where PLAN is the Task's current recorded plan.
+`D` on a verified Task fills it with `task deliver ID --branch af/ID --worktree ../ID --confirm`
+and a space, and leaves the Task ID for the user to type, which keeps delivery's explicit confirmation. `D` on
+a Task that is not verified says why on the status line. Neither verb submits the line. Enter
+runs it, handing the terminal over as described in §4.
 
 ## 6. Architecture
 
@@ -340,7 +361,18 @@ Tests: keymap sequences, tree folding and search, and one golden render per pane
      are read from its args, the way the kernel reads them.
    - `gf` on a bar entry opens the prompt when `HEAD` commits one, and the declaration
      otherwise.
-5. Command line and the run/deliver hand-off; `gf`; yank.
+5. Command line and the run/deliver hand-off; `gf`; yank. **Delivered** (package M5,
+   ADR-0123). `gf` and `y` had already shipped with packages M1-M4. Deviations from §4 and §5.5:
+   - Every handed-off command releases the terminal and waits for Enter, not only one that
+     spawns Workers. `:e` and a typed `config edit` still edit in-process, and `:help` shows
+     help in the main pane.
+   - A Task ID completes after every `task` verb whose first positional argument clap names
+     `task_id`, not only after `run`, `show`, `explain` and `deliver`.
+   - The bar's legend is unchanged, since every golden paints it. `r` and `D` are listed in the
+     opened Task's legend and in `:help`.
+   - A child stopped by `<C-z>` is continued, because the browser has no job control.
+   - A reload of the scope keeps the home directory, the Provider registry and the Task state
+     root. They come from the process environment, which a child cannot change.
 
 ## 7a. Review
 
