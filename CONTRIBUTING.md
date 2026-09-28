@@ -54,7 +54,11 @@ fail loudly there, never skip.
 
 - Unit tests live next to the code; integration tests live in `crates/<crate>/tests/`, one
   file per subject (`capture.rs`, `crash_replay.rs`, `container_probes.rs`, …), with shared
-  helpers under `tests/support/` or `tests/common/`.
+  helpers under `tests/support/` or `tests/common/`. In the larger crates the subject files
+  sit under `tests/it/` and `tests/it/main.rs` lists them as modules, so the crate links its
+  test dependencies once instead of once per file
+  ([ADR-0124](docs/adr/0124-run-tests-in-parallel-processes-and-link-them-once.md)); a new
+  subject there is a new file plus one `mod` line.
 - A test that reproduces a bug goes in first and fails; the fix follows in the same PR.
 
 ## Design changes and ADRs

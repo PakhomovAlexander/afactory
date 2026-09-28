@@ -37,6 +37,14 @@ jobs:
         id: cargo-cache
       - name: Install the pinned test runner
         run: bash scripts/install-nextest.sh
+      - name: Link with lld
+        # The test executables link far faster with lld than with GNU ld; macOS keeps Apple's
+        # linker. The flag is scoped to this target so it never reaches a release build, which
+        # links its static Linux targets through zig.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y --no-install-recommends lld
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
       - name: Check
         env:
           AF_CI_METRICS: ${{ runner.temp }}/check-metrics.jsonl
@@ -75,6 +83,10 @@ jobs:
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: ./.github/actions/cargo-cache
         id: cargo-cache
+      - name: Link with lld
+        run: |
+          sudo apt-get install -y --no-install-recommends lld
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
       - name: Verify container runtime
         run: docker info
       - name: Run live container probes
