@@ -960,4 +960,8 @@ the kernel refused the reply because a set's entries "must be sorted and unique"
 citations were unique but not sorted. The author slot held one Attempt, so nothing retried. Two
 changes follow: the kernel admits a set a Worker spells in any order, recording it sorted, and
 the report author gets a second Attempt with the refusal as feedback. The report ran again as
-`research-sdlc-report-3`.
+`research-sdlc-report-3` on 76ef3c1 (183,042 tokens): the draft was admitted and sealed, and the
+check failed on one rule only — `source_locations` — because the coordinator's sources file gave
+every entry an `af:task/…` location, which the Document rules do not accept (`repo:` paths and
+`https://` only). The sources file was regenerated with `repo:` locations and the report ran once
+more as `research-sdlc-report-4`.
