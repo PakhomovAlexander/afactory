@@ -492,9 +492,19 @@ Deliverables:
 6. One ADR (options rejected: deleting a Task's events; a reference count kept in the CAS;
    `af review gc` semantics of removing whole directories), a `CHANGELOG.md` entry, and a
    paragraph in `docs/tasks.md`.
+7. The warm cache's two bounds (added after R2, whose implementation Attempt the single bound
+   ended 61 s into its gate for growth the candidate did not cause): `[warm] max_bytes` stays the
+   eviction bound — a directory above it is removed *after* the check, whose result stands, and
+   before the next one — and a new `[warm] hard_max_bytes` (default twice `max_bytes`, at most
+   the declared value) is the only bound that ends a running check, with the same
+   `WARM_CACHE_BOUND_EXCEEDED` reason. `TaskCacheObservationV1` records which bound acted. The
+   pre-check and post-check rules of ADR-0123 are otherwise unchanged, and ADR-0123 is amended.
 
 Acceptance:
 
+- A check that grows its directory past `max_bytes` but not `hard_max_bytes` passes on its own
+  result and finds the directory removed before the next check; one that passes
+  `hard_max_bytes` is ended and fails, as today.
 - After `gc --apply`, every retained Task's `show --json` document is byte-identical to before.
 - The Store's byte total drops by exactly the previewed amount on the fixture.
 - No command other than `gc --apply` ever removes a CAS object.
@@ -838,3 +848,14 @@ Task re-verified once more. A reviewer reply the kernel refuses for its shape is
 loss in this campaign (Terra's malformed JSON in R1 was the first); the kernel could hand a shape
 refusal back to the same Attempt as feedback instead of spending a fresh one, which is recorded
 as a follow-up.
+
+Verification Task `research-r3-verify-4` on af18c14 (304,910 tokens; gate warm, `kernel` 12.6 min)
+ended **`verified`**: the evaluator passed the package on every acceptance criterion. Both
+reviewers still reported three majors, all in the optional-sources rule added by hand after the
+first review, and all fixed by hand after the verdict with tests, not re-verified: the empty set
+the seal records was not among the check receipt's references, so a report over an unbound port
+could never admit its verifier; the same path lacked an end-to-end test through admission and
+acceptance; and a verifier could omit its `sources` input while its checks had judged captured
+text. R3 closes here. Three verification Tasks that ran cost 654,671 tokens against 1,067,770 for the one
+implementation Task; the first was a gate failure of a kernel test the review itself had made
+stale, the second a reviewer reply the kernel refused for its shape.

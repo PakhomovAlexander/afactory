@@ -122,6 +122,18 @@ reads as amended:
   at most 640 KiB, checked on the file's bytes before it is parsed; the design's 4 MiB could not
   reach a Worker through the 1 MiB request.
 
+## After the second verification
+
+The package was verified (Task `research-r3-verify-4`); the three findings its reviewers still
+reported, all in the optional-sources rule, were fixed after the verdict with tests and are not
+re-verified:
+
+- **The empty set the seal records is a dependency of the document and the check receipt**, so a
+  receipt over an unbound port carries its sources in its references and admits its verifier.
+- **A verifier reads exactly the sources its checks judged.** Only the recorded empty set may go
+  unbound at the verifier; a Pipeline that seals against captured sources and omits them from
+  the verifier is refused at admission.
+
 ## Consequences
 
 - A report's acceptance says which tree it is about. Every receipt names the source Snapshot,

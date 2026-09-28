@@ -805,10 +805,22 @@ impl ReportTaskDomain {
         if checks.outcome != ReceiptOutcomeV1::Passed {
             return Err("Report verifier cannot run before its exact checks pass".into());
         }
-        if input.inputs.contains_key("sources")
-            && checks.sources_id != input_id(input, "sources", REPORT_SOURCES_V1, None)?
-        {
-            return Err("Report verifier reads other sources than its checks judged".into());
+        // The verifier reads exactly the sources its checks judged. Only the recorded empty
+        // set may go unbound: a verifier that never saw captured source text cannot judge a
+        // report written from it.
+        let judged: ReportSourcesV1 = read(cas, &checks.sources_id, REPORT_SOURCES_V1, None)?;
+        match input.inputs.get("sources") {
+            Some(_) => {
+                if checks.sources_id != input_id(input, "sources", REPORT_SOURCES_V1, None)? {
+                    return Err("Report verifier reads other sources than its checks judged".into());
+                }
+            }
+            None if !judged.sources.is_empty() => {
+                return Err(
+                    "Report verifier receives no sources although its checks judged some".into(),
+                );
+            }
+            None => {}
         }
         input_id(input, "requirements", "af/Requirements@1", None)?;
         Ok(checks)
@@ -960,8 +972,9 @@ impl ReportTaskDomain {
         .map_err(|e| e.to_string())
     }
 
-    /// Store one kernel output bound to the source Snapshot. It retains every input and the
-    /// Snapshot's Manifest, so the record names exactly the tree it was made from.
+    /// Store one kernel output bound to the source Snapshot. It retains every input, the
+    /// Snapshot's Manifest and `also` — the sources the seal recorded when the port was unbound,
+    /// which no input names — so the record names exactly what it was made from.
     fn put(
         &self,
         cas: &Cas,
@@ -969,12 +982,14 @@ impl ReportTaskDomain {
         attempt: Option<&PreparedTaskAttempt>,
         ty: &str,
         value: &impl Serialize,
+        also: &[String],
     ) -> Result<ArtifactInputV1, String> {
         let (snapshot, manifest_id, _) = self.source(cas, input)?;
         let mut refs: BTreeSet<String> = input
             .inputs
             .values()
             .flat_map(|p| p.artifact_ids.iter().cloned())
+            .chain(also.iter().cloned())
             .collect();
         refs.insert(manifest_id);
         let id = cas
@@ -1018,12 +1033,18 @@ impl TaskOperatorHost for ReportTaskDomain {
             return super::control::refused(error);
         }
         let outputs = (|| match self.operator(input)? {
-            TaskOperatorV1::ReportSeal {} => Ok(BTreeMap::from([(
-                "document".into(),
-                self.put(cas, input, None, DOCUMENT_V1, &self.sealed(cas, input)?)?,
-            )])),
+            TaskOperatorV1::ReportSeal {} => {
+                let document = self.sealed(cas, input)?;
+                let sources = [document.sources_id.clone()];
+                Ok(BTreeMap::from([(
+                    "document".into(),
+                    self.put(cas, input, None, DOCUMENT_V1, &document, &sources)?,
+                )]))
+            }
             TaskOperatorV1::ReportCheck {} => {
                 let attempt = attempt.ok_or("Report checks need a durably started Attempt")?;
+                let receipt = self.checks(cas, input)?;
+                let sources = [receipt.sources_id.clone()];
                 Ok(BTreeMap::from([(
                     "result".into(),
                     self.put(
@@ -1031,7 +1052,8 @@ impl TaskOperatorHost for ReportTaskDomain {
                         input,
                         Some(attempt),
                         REPORT_CHECK_RECEIPT_V1,
-                        &self.checks(cas, input)?,
+                        &receipt,
+                        &sources,
                     )?,
                 )]))
             }
@@ -1045,6 +1067,7 @@ impl TaskOperatorHost for ReportTaskDomain {
                         None,
                         REPORT_VERIFICATION_V1,
                         &self.verification(cas, input)?,
+                        &[],
                     )?,
                 ),
             ])),

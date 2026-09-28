@@ -815,6 +815,58 @@ fn a_pipeline_that_binds_no_sources_seals_and_checks_against_the_empty_set() {
     assert_eq!(receipt.sources_id, document.sources_id);
     assert_eq!(receipt.checks["source_locations"], ReceiptOutcomeV1::Passed);
     receipt.validate().unwrap();
+    // Published as the operator publishes it — with the recorded empty set among its
+    // references — the receipt admits a verifier that binds no sources either.
+    let receipt_id = cas
+        .put_artifact(
+            REPORT_CHECK_RECEIPT_V1,
+            attempt("root.nodes.checks"),
+            vec![
+                document_id.clone(),
+                receipt.sources_id.clone(),
+                receipt.manifest_id.clone(),
+            ],
+            Some(cited.clone()),
+            serde_json::to_value(&receipt).unwrap(),
+        )
+        .unwrap()
+        .0;
+    let requirements = cas
+        .put_artifact(
+            "af/Requirements@1",
+            kernel(),
+            vec![],
+            None,
+            json!({"text":"Report where the time goes."}),
+        )
+        .unwrap()
+        .0;
+    let verify = |receipt_id: String, document_id: String, sources: Option<ArtifactInputV1>| {
+        let mut inputs = vec![
+            (
+                "requirements",
+                one(requirements.clone(), "af/Requirements@1", None),
+            ),
+            ("document", one(document_id, DOCUMENT_V1, Some(&cited))),
+            (
+                "checks",
+                one(receipt_id, REPORT_CHECK_RECEIPT_V1, Some(&cited)),
+            ),
+            ("source", source.clone()),
+        ];
+        if let Some(sources) = sources {
+            inputs.push(("sources", sources));
+        }
+        invocation("root.nodes.verify", inputs)
+    };
+    if receipt.outcome == ReceiptOutcomeV1::Passed {
+        assert_eq!(
+            domain
+                .admit_verifier(&cas, &verify(receipt_id.clone(), document_id.clone(), None))
+                .unwrap(),
+            receipt
+        );
+    }
     // A report sealed with sources cannot be checked as if it had none.
     let with_sources = cas
         .put_artifact(
@@ -833,7 +885,10 @@ fn a_pipeline_that_binds_no_sources_seals_and_checks_against_the_empty_set() {
                 "root.nodes.seal",
                 vec![
                     ("draft", one(draft_id, DOCUMENT_DRAFT_V2, Some(&cited))),
-                    ("sources", one(with_sources, REPORT_SOURCES_V1, None)),
+                    (
+                        "sources",
+                        one(with_sources.clone(), REPORT_SOURCES_V1, None),
+                    ),
                     ("source", source.clone()),
                 ],
             ),
@@ -855,11 +910,53 @@ fn a_pipeline_that_binds_no_sources_seals_and_checks_against_the_empty_set() {
             &invocation(
                 "root.nodes.checks",
                 vec![
-                    ("document", one(sealed_with_id, DOCUMENT_V1, Some(&cited))),
-                    ("source", source),
+                    (
+                        "document",
+                        one(sealed_with_id.clone(), DOCUMENT_V1, Some(&cited)),
+                    ),
+                    ("source", source.clone()),
                 ],
             ),
         )
         .unwrap_err();
     assert!(refused.contains("sealed with some"), "{refused}");
+    // Nor may a verifier skip the captured sources its checks judged: with them bound the
+    // checks pass, and a verifier invocation without a sources input is refused at admission.
+    let with_port = one(with_sources.clone(), REPORT_SOURCES_V1, None);
+    let judged = domain
+        .checks(
+            &cas,
+            &invocation(
+                "root.nodes.checks",
+                vec![
+                    (
+                        "document",
+                        one(sealed_with_id.clone(), DOCUMENT_V1, Some(&cited)),
+                    ),
+                    ("sources", with_port),
+                    ("source", source.clone()),
+                ],
+            ),
+        )
+        .unwrap();
+    let judged_id = cas
+        .put_artifact(
+            REPORT_CHECK_RECEIPT_V1,
+            attempt("root.nodes.checks"),
+            vec![
+                sealed_with_id.clone(),
+                with_sources.clone(),
+                judged.manifest_id.clone(),
+            ],
+            Some(cited.clone()),
+            serde_json::to_value(&judged).unwrap(),
+        )
+        .unwrap()
+        .0;
+    if judged.outcome == ReceiptOutcomeV1::Passed {
+        let refused = domain
+            .admit_verifier(&cas, &verify(judged_id, sealed_with_id, None))
+            .unwrap_err();
+        assert!(refused.contains("receives no sources"), "{refused}");
+    }
 }
