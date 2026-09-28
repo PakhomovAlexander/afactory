@@ -965,3 +965,67 @@ check failed on one rule only — `source_locations` — because the coordinator
 every entry an `af:task/…` location, which the Document rules do not accept (`repo:` paths and
 `https://` only). The sources file was regenerated with `repo:` locations and the report ran once
 more as `research-sdlc-report-4`.
+
+`research-sdlc-report-4` on c48f5fe (313,554 tokens; 5 Attempts) sealed its draft and passed every
+check; the verifier (GPT-6 Sol) confirmed the aggregates — 28,946,211 ms of kernel check spans and
+523,842 ms of markdownlint across the cited Tasks, and the release comparison's 63,176 to 49,144
+ms — and refused the report on two claims: a 176 ms materialization figure attributed to a kernel
+check although the source records it for markdownlint (the smallest recorded warm kernel value is
+188 ms), and `.af/code-policy.toml` cited at line 2 for `check_wall_ms` where that line is a
+comment and the value sits on line 3. A negative verdict stays unsatisfied by design; the report
+ran a last time as `research-sdlc-report-5` with those two findings in its requirements, the way
+a human would hand a reviewer's notes back to an author.
+
+`research-sdlc-report-5` on c48f5fe (312,551 tokens; 5 Attempts) ended **`verified`**: every check
+passed and the verifier (GPT-6 Sol) confirmed the report's aggregates — 38 kernel check spans
+summing to 28,946,211 ms and 38 markdownlint spans to 523,842 ms across the cited Tasks — the two
+corrected claims, the release-build medians and both regressions, and the recommendation. The
+report is committed as [`research-sdlc-report.md`](research-sdlc-report.md). Its findings: time
+goes to the kernel check and within it to test execution, not compilation (a warm check is 0.86
+of a cold one on the pinned Snapshot; the test step is 672–679 s of a roughly 12-minute warm
+check); cache preparation is sub-second to under two seconds while a failed toolchain probe or an
+over-bound directory costs a cold check; the warm `cargo_target` directory grows by about 422 MB
+per warm check even on an unchanged Snapshot and by up to 1.4 GB on a changed one, until the
+eviction bound forces a cold check; the release build is off the gate path and its experiment
+traded size for time; and tokens go to models, not to checks — 11.7M over the cited Tasks, with
+925,952 lost to three reviewer replies refused for their shape. Its recommendation: make the
+gate's test execution the next research Task, with a `gate_test` measure and objective installed
+by a human and an experiment confined to the test runner and its concurrency; then remove prior
+revisions' artifacts from the warm directory rather than raise a bound; then hand a reply-shape
+refusal back to the same Attempt; and leave `lto = "off"` to a human.
+
+### Campaign closure
+
+Six packages, one delivered tree (`agent/research-pipeline`), forty-nine Tasks in one Store. The
+table gives each package's implementation and verification spend as the Task Store charged it;
+the design review (238k tokens, a Review Campaign, not a Task) and the paired benchmark Tasks
+(command Workers, zero tokens) sit outside it.
+
+| Package | Implementation Tasks | Verification Tasks | Verdict | Post-verdict hand fixes |
+|---|---|---|---|---|
+| R1 warm checks | 3,067,453 (incl. 1,508,251 charged to an interrupted Attempt) | 2,452,496 over 8 | verified (verify-6, verify-8) | 3 |
+| R2 measure and compare | 753,016 | 686,566 over 3 | verified (verify-3) | 2 |
+| R3 report Tasks | 1,067,770 | 654,671 over 3 that ran | verified (verify-4) | 3 |
+| R4 bind any root port | 733,989 | 514,541 over 2 | verified (verify-2) | 1 |
+| R5 store hygiene, two bounds | 970,580 | 308,199 over 1 | verified (verify-1) | 3 |
+| R6 release build | 127,062 over 2 runs | — | verified (comparison passed, 22.2 percent) | — |
+| R6 SDLC report | 1,038,006 over 4 charged runs | — | verified (run 5) | — |
+
+The Store charged 12,374,349 tokens over 50 Tasks; with the design review, the campaign cost
+about 12.6M tokens and ran from 2026-09-27 to 2026-09-29.
+
+What the campaign says about af as a product for research pipelines, in the order the evidence
+ranks it:
+
+1. Verification cost as much as implementation and every round found new in-boundary items;
+   a Task-level cap on review rounds, backed by an ADR statement of the threat model, is the
+   first thing to add.
+2. Five Tasks ended without a verdict on the work because a reviewer's reply was refused for its
+   shape or an Attempt was interrupted; returning a shape refusal to the same Attempt as feedback
+   would have saved about 1.6M tokens.
+3. Packages that add Pipelines need a human install of `.af/`, and three of them shipped attempt
+   bounds that held only with command stand-ins; a feasibility check with the declared model
+   Workers and an `af catalog install` step close both gaps.
+4. The gate is test execution: the warm cache recovered the compilation it could (a median of
+   111 s of a 14 min gate), and the cache grows on every gate, so the next experiment is the
+   test step, as the report recommends.
