@@ -1321,6 +1321,7 @@ impl super::host::TaskEnvironment for OptimizationEnvironment {
                 lookup_ms,
                 materialization_ms,
                 evicted_bytes: None,
+                evicted_reason: None,
             }],
         };
         evidence.validate()?;

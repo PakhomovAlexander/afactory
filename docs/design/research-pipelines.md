@@ -627,15 +627,16 @@ gate's directories were reused (`cargo_target` 8.2 GB, `cargo_home` 109 MB, both
 The span is the `kernel` check's recorded `Check` span, which runs `scripts/verify.sh` →
 `make check`.
 
-| Pair | Cold `kernel` span | Warm `kernel` span | Ratio | Load (1 min) cold / warm |
-|---|---:|---:|---:|---|
-| 1 | 13.8 min | 11.9 min | 0.86 | 16.1 / 3.7 |
-| 2 | 13.9 min | 12.0 min | 0.86 | 4.3 / 9.8 |
-| 3 | 13.8 min | 11.9 min | 0.87 | 4.8 / 4.0 |
-| 4 | 13.8 min | 12.0 min | 0.87 | 3.8 / 2.9 |
-| 5 | 13.8 min | 12.0 min | 0.87 | 3.6 / 4.1 |
+| Pair | Cold `kernel` span | Warm `kernel` span | Ratio | Cold / warm `markdownlint` span | Load (1 min) cold / warm |
+|---|---:|---:|---:|---:|---|
+| 1 | 13.8 min | 11.9 min | 0.86 | 15.6 s / 15.8 s | 16.1 / 3.7 |
+| 2 | 13.9 min | 12.0 min | 0.86 | 15.8 s / 15.8 s | 4.3 / 9.8 |
+| 3 | 13.8 min | 11.9 min | 0.87 | 15.9 s / 16.4 s | 4.8 / 4.0 |
+| 4 | 13.8 min | 12.0 min | 0.87 | 16.4 s / 15.9 s | 3.8 / 2.9 |
+| 5 | 13.8 min | 12.0 min | 0.87 | 15.3 s / 16.2 s | 3.6 / 4.1 |
 
-Median ratio 0.87, spread 0.86–0.87; cold spans 13.8–13.9 min, warm 11.9–12.0 min. The
+Median ratio 0.87, spread 0.86–0.87; cold spans 13.8–13.9 min, warm 11.9–12.0 min; the
+`markdownlint` check, which builds nothing, is 15–18 s in both states. The
 `make check` steps explain the shape: cold `lint` 41–47 s and `test-build` 49–52 s become warm
 20 s and 13–15 s, while `test` runs 728–732 s cold and 672–679 s warm, and `fmt` and
 `release-resolution` are 1 s and 5 s in both. A warm check removes almost all compilation, about
@@ -644,3 +645,15 @@ two minutes of fourteen; the other twelve are the test suite executing under
 verification Task pay them — but the check time this campaign set out to research is test
 execution, not compilation, and that is the first hard fact for R6's report. The earlier 15–16
 minute gates included the toolchain download the rustup binding removed.
+
+Verification Task `research-r1-verify-2` on 6dc2c56 (301,446 tokens; its own gate ran warm in
+12.0 min) ended `changes_requested` with one blocker and four more defects, all fixed by hand: a
+check could rename the toolchain key's parent and plant a link in its place, and `remove_dir_all`
+through the saved path would have followed it out of the cache, so every operation below the key
+now goes through the key directory's open descriptor and never a path, with a parent-swap test;
+the pre-check bound summed only the kinds the current policy declared, so a key another policy
+left over the bound was never evicted and an eviction removed only the held kinds, so the bound is
+now measured over the whole key before and after every check and an eviction empties the key of
+every kind, with a cross-policy test; `af task show` called every eviction a bound violation, so an
+observation now carries `evicted_reason` beside `evicted_bytes`; and the record above gained the
+`markdownlint` spans the evaluator asked for.

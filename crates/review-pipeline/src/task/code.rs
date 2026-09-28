@@ -461,11 +461,20 @@ impl CodeTaskDomain {
             let (mut result, timing) = if started {
                 let execution = match (
                     session.as_ref(),
-                    prepared.as_ref().map(|p| p.directories.as_slice()),
+                    prepared.as_ref().and_then(|p| {
+                        p.key_lock
+                            .as_ref()
+                            .map(|key| (key, p.directories.as_slice()))
+                    }),
                 ) {
-                    (Some(session), Some(directories)) if !directories.is_empty() => {
-                        let (execution, over) =
-                            session.run_monitored(runner, definition, directories, cancellation);
+                    (Some(session), Some((key, directories))) if !directories.is_empty() => {
+                        let (execution, over) = session.run_monitored(
+                            runner,
+                            definition,
+                            key,
+                            directories,
+                            cancellation,
+                        );
                         exceeded = over;
                         execution
                     }
@@ -508,19 +517,19 @@ impl CodeTaskDomain {
                             session.not_started(cas, observations, DEADLINE_EXHAUSTED)?;
                     }
                 } else {
-                    let reason = match &exceeded {
+                    let (reason, why) = match &exceeded {
                         Some(Excess::Suspect(detail)) => {
                             eprintln!(
                                 "warm check cache diagnostic: suspect after the check: {detail}"
                             );
-                            WARM_CACHE_SUSPECT
+                            (WARM_CACHE_SUSPECT, "suspect")
                         }
-                        _ => WARM_CACHE_BOUND_EXCEEDED,
+                        _ => (WARM_CACHE_BOUND_EXCEEDED, "bound_exceeded"),
                     };
-                    let key_lock = prepared.key_lock;
-                    let evicted = session.finish(prepared.directories, exceeded)?;
-                    // The key stays locked until every directory of this check is removed.
-                    drop(key_lock);
+                    // Every kind below the key goes, held by this check or left by another; the
+                    // key stays locked until the last one is removed.
+                    let evicted =
+                        session.finish(prepared.key_lock, prepared.directories, exceeded)?;
                     if !evicted.is_empty() {
                         // Above the bound or suspect once the check ended, however fast it was:
                         // the check fails, and each kind's eviction lands on the same record
@@ -530,13 +539,19 @@ impl CodeTaskDomain {
                         result.reason = Some(reason.into());
                     }
                     for (kind, bytes) in evicted {
-                        let target = observations
+                        // A kind this check never declared has no observation to carry the
+                        // eviction; its removal is the key's business and is logged only.
+                        let Some(target) = observations
                             .iter_mut()
-                            .find(|observation| {
-                                observation.eligible && observation.kind == kind.as_str()
-                            })
-                            .ok_or("Warm check evicted a directory it never observed")?;
+                            .find(|observation| observation.eligible && observation.kind == kind)
+                        else {
+                            eprintln!(
+                                "warm check cache diagnostic: removed undeclared `{kind}` ({bytes} bytes)"
+                            );
+                            continue;
+                        };
                         target.evicted_bytes = Some(bytes);
+                        target.evicted_reason = Some(why.into());
                     }
                 }
             }

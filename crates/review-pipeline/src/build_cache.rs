@@ -384,6 +384,7 @@ impl ReviewDomainState<'_> {
                 lookup_ms,
                 materialization_ms,
                 evicted_bytes: None,
+                evicted_reason: None,
             },
         })
     }

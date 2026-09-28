@@ -1016,21 +1016,45 @@ fn a_discarded_suspect_directory_is_a_cold_check_never_its_old_bytes() {
         let task_id = format!("suspect-{label}");
         let outcome = start(&fixture, &task_id, 0);
         let observed = observations(&outcome);
-        assert_eq!(observed[0]["kind"], "cargo_target", "{label}");
-        assert_eq!(observed[0]["eligible"], true, "{label}");
-        assert_eq!(
-            observed[0]["bytes_available"], 0,
-            "{label}: recreated, so a cold check"
-        );
         let shown = show(&fixture, &task_id);
-        assert!(
-            shown.contains("cargo_target cold empty"),
-            "{label}: {shown}"
-        );
+        if label == "unreadable" {
+            // What the kernel cannot count it cannot bound: the whole key is uninspectable
+            // before the check, so every kind is evicted and the check runs cold with that
+            // reason, never with the directory's old bytes.
+            assert_eq!(
+                observed[0]["kind"], "cargo_target:bound_exceeded",
+                "{label}"
+            );
+            assert_eq!(observed[0]["eligible"], false, "{label}");
+            assert!(
+                shown.contains("cargo_target cold bound_exceeded"),
+                "{label}: {shown}"
+            );
+        } else {
+            assert_eq!(observed[0]["kind"], "cargo_target", "{label}");
+            assert_eq!(observed[0]["eligible"], true, "{label}");
+            assert_eq!(
+                observed[0]["bytes_available"], 0,
+                "{label}: recreated, so a cold check"
+            );
+            assert!(
+                shown.contains("cargo_target cold empty"),
+                "{label}: {shown}"
+            );
+        }
         assert!(!shown.contains("cargo_target warm"), "{label}: {shown}");
-        let metadata = std::fs::symlink_metadata(&directory).unwrap();
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o700, "{label}");
         assert!(!directory.join("link").exists() && !directory.join("hidden").exists());
+        if label == "unreadable" {
+            // Evicted with the whole key: the check built cold in its private runtime
+            // directory, so nothing sits at the kind's name until the next warm check.
+            assert!(
+                std::fs::symlink_metadata(&directory).is_err(),
+                "{label}: evicted"
+            );
+        } else {
+            let metadata = std::fs::symlink_metadata(&directory).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o700, "{label}");
+        }
     }
 }
 

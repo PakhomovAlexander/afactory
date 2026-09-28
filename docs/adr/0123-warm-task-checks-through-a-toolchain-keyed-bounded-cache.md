@@ -220,3 +220,17 @@ Three rules were added when the follow-up Task's reviewers read the amendment:
 - **A swapped root is uninspectable.** A warm root that is a link or a file once the check ended
   cannot be counted; it is above every bound, the check fails through the bound path, and the
   entry is removed.
+
+### After the second verification
+
+- **Descriptors, not paths.** Every operation below the toolchain key goes through the key
+  directory's open descriptor — `mkdirat`, `openat(O_NOFOLLOW)`, `fstatat(AT_SYMLINK_NOFOLLOW)`,
+  `unlinkat` — never through a path. A check that renames the key's parent and plants a link in
+  its place changes nothing the kernel resolves; cleanup removes what the kernel held, and only
+  that.
+- **The whole key, before and after.** Under the key lock the bound is measured over every entry
+  below the key, held by this check or left by another policy's; a key over its bound or
+  uninspectable is emptied of every kind before this check binds anything, and after a check that
+  ended over the bound or suspect every kind below the key is removed, not only the ones it held.
+- **The cause travels with the eviction.** An observation's `evicted_bytes` comes with
+  `evicted_reason`, `bound_exceeded` or `suspect`, and `af task show` prints that reason.

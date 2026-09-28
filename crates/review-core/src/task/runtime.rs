@@ -69,6 +69,14 @@ pub struct TaskCacheObservationV1 {
         deserialize_with = "present_option"
     )]
     pub evicted_bytes: Option<u64>,
+    /// Why the eviction happened: `bound_exceeded` or `suspect`. Present exactly when
+    /// `evicted_bytes` is.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    pub evicted_reason: Option<String>,
 }
 
 impl TaskCacheObservationV1 {
@@ -83,7 +91,12 @@ impl TaskCacheObservationV1 {
                 && self.materialization_ms <= crate::json::SAFE_INTEGER_MAX as u64
                 && self
                     .evicted_bytes
-                    .is_none_or(|bytes| bytes <= crate::json::SAFE_INTEGER_MAX as u64),
+                    .is_none_or(|bytes| bytes <= crate::json::SAFE_INTEGER_MAX as u64)
+                && self.evicted_bytes.is_some() == self.evicted_reason.is_some()
+                && self
+                    .evicted_reason
+                    .as_deref()
+                    .is_none_or(|reason| matches!(reason, "bound_exceeded" | "suspect")),
             "Task cache evidence requires bounded identity and measurements",
         )
     }

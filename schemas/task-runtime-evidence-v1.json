@@ -233,7 +233,21 @@
         },
         "evicted_bytes": {
           "$ref": "#/$defs/safe"
+        },
+        "evicted_reason": {
+          "enum": [
+            "bound_exceeded",
+            "suspect"
+          ]
         }
+      },
+      "dependentRequired": {
+        "evicted_bytes": [
+          "evicted_reason"
+        ],
+        "evicted_reason": [
+          "evicted_bytes"
+        ]
       }
     }
   }

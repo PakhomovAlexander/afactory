@@ -751,6 +751,7 @@ fn task_runtime_cache_observations_name_at_most_one_reason() {
             lookup_ms: 1,
             materialization_ms: 0,
             evicted_bytes: None,
+            evicted_reason: None,
         }],
     };
     for kind in [
@@ -806,6 +807,7 @@ fn a_warm_evidence_group_names_its_check_whether_or_not_it_started() {
         lookup_ms: 0,
         materialization_ms: 0,
         evicted_bytes: None,
+        evicted_reason: None,
     };
     let span = |label: &str, kind| TaskRuntimeSpanV1 {
         span_id: digest('e'),

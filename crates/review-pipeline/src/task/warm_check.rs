@@ -25,8 +25,8 @@ use review_core::task::present_option;
 use review_core::task::runtime::{TaskCacheObservationV1, TaskRuntimeRustupHomeV1};
 use review_sandbox::{
     CacheError, CacheErrorKind, CacheKind, CacheSource, Ensured, TaskBuildCacheKeyLock,
-    TaskBuildCacheLock, WarmDirectory, default_task_build_cache_root, directory_bytes,
-    lock_task_build_cache, lock_task_build_cache_key, materialize_cache_into_runtime,
+    TaskBuildCacheLock, WarmDirectory, default_task_build_cache_root, lock_task_build_cache_key,
+    materialize_cache_into_runtime,
 };
 use review_source_git::Manifest;
 use review_store::Cas;
@@ -394,6 +394,8 @@ pub(crate) struct Observation {
     /// Bytes removed after the check when the directory ended above its bound; one
     /// observation per kind carries both the availability before and the eviction after.
     pub(crate) evicted_bytes: Option<u64>,
+    /// `bound_exceeded` or `suspect`, present exactly when `evicted_bytes` is.
+    pub(crate) evicted_reason: Option<String>,
 }
 
 impl Observation {
@@ -414,7 +416,8 @@ impl Observation {
                 self.bytes_available,
                 self.lookup_ms,
                 self.materialization_ms,
-                self.evicted_bytes
+                self.evicted_bytes,
+                self.evicted_reason
             ]))
             .map_err(|e| e.to_string())?;
         let observation = TaskCacheObservationV1 {
@@ -427,6 +430,7 @@ impl Observation {
             lookup_ms: self.lookup_ms,
             materialization_ms: self.materialization_ms,
             evicted_bytes: self.evicted_bytes,
+            evicted_reason: self.evicted_reason,
         };
         observation.validate()?;
         Ok(observation)
@@ -448,16 +452,6 @@ pub(crate) struct PreparedCheck {
     /// A declared Cache Snapshot that could not be materialized: the check does not run, exactly
     /// as a Gate does not dispatch its command.
     pub(crate) refusal: Option<String>,
-}
-
-/// One held directory between validation and measurement.
-struct Held {
-    kind: WarmBuildCacheKind,
-    directory: WarmDirectory,
-    toolchain: String,
-    started: Instant,
-    lookup_ms: u64,
-    materialization_ms: u64,
 }
 
 /// The warm layer of one check Attempt. The toolchain is resolved once, before the first check.
@@ -509,22 +503,29 @@ impl<'a> WarmSession<'a> {
             refusal: None,
         };
         let mut settled = BTreeMap::new();
-        let mut held = Vec::new();
-        // Locks are taken in one fixed kind order, so two checks never hold one kind each while
-        // waiting for the other's.
         let mut kinds = self.policy.build_cache.clone();
         kinds.sort();
-        for kind in kinds {
-            let label = kind.as_str();
+        let active: Vec<WarmBuildCacheKind> = kinds
+            .iter()
+            .copied()
+            .filter(|kind| !self.policy.supersedes(*kind))
+            .collect();
+        for kind in kinds.iter().filter(|kind| self.policy.supersedes(**kind)) {
+            let resolved = self.toolchain.clone().and_then(Result::ok);
+            settled.insert(
+                *kind,
+                self.ineligible(
+                    cas,
+                    kind.as_str(),
+                    "superseded",
+                    resolved.as_deref(),
+                    0,
+                    Instant::now(),
+                )?,
+            );
+        }
+        if !active.is_empty() {
             let started = Instant::now();
-            if self.policy.supersedes(kind) {
-                let resolved = self.toolchain.clone().and_then(Result::ok);
-                settled.insert(
-                    kind,
-                    self.ineligible(cas, label, "superseded", resolved.as_deref(), 0, started)?,
-                );
-                continue;
-            }
             let toolchain = self
                 .toolchain
                 .get_or_insert_with(|| {
@@ -537,163 +538,221 @@ impl<'a> WarmSession<'a> {
                     )
                 })
                 .clone();
-            let toolchain = match toolchain {
-                Ok(id) => id,
+            match toolchain {
                 Err(detail) => {
                     eprintln!("warm check cache diagnostic: {detail}");
-                    settled.insert(
-                        kind,
-                        self.ineligible(cas, label, "toolchain_unresolved", None, 0, started)?,
-                    );
-                    continue;
-                }
-            };
-            let root = self
-                .host
-                .root
-                .clone()
-                .map_or_else(default_task_build_cache_root, Ok);
-            if prepared.key_lock.is_none() {
-                // The whole toolchain key first: a check holds every kind's bound together, so
-                // two checks declaring different kinds cannot each fill the shared bound.
-                match root.clone().and_then(|root| {
-                    lock_task_build_cache_key(
-                        &root,
-                        &self.project,
-                        &hex(&toolchain),
-                        self.host.lock_wait.min(left()),
-                    )
-                }) {
-                    Ok(Some(lock)) => prepared.key_lock = Some(lock),
-                    Ok(None) => {
+                    for kind in &active {
                         settled.insert(
-                            kind,
-                            self.ineligible(cas, label, "busy", Some(&toolchain), 0, started)?,
-                        );
-                        continue;
-                    }
-                    Err(detail) => {
-                        eprintln!("warm check cache diagnostic: {detail}");
-                        settled.insert(
-                            kind,
+                            *kind,
                             self.ineligible(
                                 cas,
-                                label,
-                                "unavailable",
-                                Some(&toolchain),
+                                kind.as_str(),
+                                "toolchain_unresolved",
+                                None,
                                 0,
                                 started,
                             )?,
                         );
-                        continue;
+                    }
+                }
+                Ok(toolchain) => {
+                    // The whole toolchain key first: a check holds every kind's bound together,
+                    // so two checks declaring different kinds cannot each fill the shared bound,
+                    // and a kind another check left over the bound is evicted before this one
+                    // binds anything.
+                    let key = self
+                        .host
+                        .root
+                        .clone()
+                        .map_or_else(default_task_build_cache_root, Ok)
+                        .and_then(|root| {
+                            lock_task_build_cache_key(
+                                &root,
+                                &self.project,
+                                &hex(&toolchain),
+                                self.host.lock_wait.min(left()),
+                            )
+                        });
+                    match key {
+                        Ok(None) => {
+                            for kind in &active {
+                                settled.insert(
+                                    *kind,
+                                    self.ineligible(
+                                        cas,
+                                        kind.as_str(),
+                                        "busy",
+                                        Some(&toolchain),
+                                        0,
+                                        started,
+                                    )?,
+                                );
+                            }
+                        }
+                        Err(detail) => {
+                            eprintln!("warm check cache diagnostic: {detail}");
+                            for kind in &active {
+                                settled.insert(
+                                    *kind,
+                                    self.ineligible(
+                                        cas,
+                                        kind.as_str(),
+                                        "unavailable",
+                                        Some(&toolchain),
+                                        0,
+                                        started,
+                                    )?,
+                                );
+                            }
+                        }
+                        Ok(Some(key)) => {
+                            let over = match key.bytes() {
+                                Ok(bytes) => bytes > self.policy.max_bytes(),
+                                Err(uninspectable) => {
+                                    eprintln!("warm check cache diagnostic: {uninspectable}");
+                                    true
+                                }
+                            };
+                            if over {
+                                // Over the bound, or uninspectable, before the check: every kind
+                                // below the key is removed, never trimmed, and this check runs
+                                // cold in its private runtime directory.
+                                let removed = key.remove_kinds()?;
+                                for kind in &active {
+                                    let bytes = removed
+                                        .iter()
+                                        .find(|(name, _)| name == kind.as_str())
+                                        .map_or(0, |(_, bytes)| *bytes);
+                                    settled.insert(
+                                        *kind,
+                                        self.ineligible(
+                                            cas,
+                                            kind.as_str(),
+                                            "bound_exceeded",
+                                            Some(&toolchain),
+                                            bytes,
+                                            started,
+                                        )?,
+                                    );
+                                }
+                            } else {
+                                for kind in &active {
+                                    let label = kind.as_str();
+                                    let started = Instant::now();
+                                    let directory = match key
+                                        .lock_kind(label, self.host.lock_wait.min(left()))
+                                    {
+                                        Ok(TaskBuildCacheLock::Held(directory)) => {
+                                            directory.forbidding(kind.forbidden())
+                                        }
+                                        Ok(TaskBuildCacheLock::Busy) => {
+                                            settled.insert(
+                                                *kind,
+                                                self.ineligible(
+                                                    cas,
+                                                    label,
+                                                    "busy",
+                                                    Some(&toolchain),
+                                                    0,
+                                                    started,
+                                                )?,
+                                            );
+                                            continue;
+                                        }
+                                        Err(detail) => {
+                                            eprintln!("warm check cache diagnostic: {detail}");
+                                            settled.insert(
+                                                *kind,
+                                                self.ineligible(
+                                                    cas,
+                                                    label,
+                                                    "unavailable",
+                                                    Some(&toolchain),
+                                                    0,
+                                                    started,
+                                                )?,
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    let lookup_ms = started.elapsed().as_millis() as u64;
+                                    let materializing = Instant::now();
+                                    match directory.ensure() {
+                                        Ok(Ensured::Discarded(reason)) => {
+                                            // Removed and recreated empty: whatever it held is
+                                            // gone, so the measurement below finds a cold
+                                            // directory, never the discarded one's bytes.
+                                            eprintln!(
+                                                "warm check cache diagnostic: `{label}` discarded: {reason}"
+                                            );
+                                        }
+                                        Ok(Ensured::Reused | Ensured::Created) => {}
+                                        Err(detail) => {
+                                            eprintln!("warm check cache diagnostic: {detail}");
+                                            settled.insert(
+                                                *kind,
+                                                self.ineligible(
+                                                    cas,
+                                                    label,
+                                                    "unavailable",
+                                                    Some(&toolchain),
+                                                    0,
+                                                    started,
+                                                )?,
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                    // Measured only after validation.
+                                    let bytes = match directory.bytes() {
+                                        Ok(bytes) => bytes,
+                                        Err(uninspectable) => {
+                                            eprintln!(
+                                                "warm check cache diagnostic: {uninspectable}"
+                                            );
+                                            directory.remove()?;
+                                            settled.insert(
+                                                *kind,
+                                                self.ineligible(
+                                                    cas,
+                                                    label,
+                                                    "bound_exceeded",
+                                                    Some(&toolchain),
+                                                    uninspectable.counted,
+                                                    started,
+                                                )?,
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    settled.insert(
+                                        *kind,
+                                        Observation {
+                                            kind: label.into(),
+                                            eligible: true,
+                                            source_digest: self.identity(
+                                                cas,
+                                                label,
+                                                Some(&toolchain),
+                                                None,
+                                            )?,
+                                            toolchain_id: Some(toolchain.clone()),
+                                            bytes_available: bytes,
+                                            lookup_ms,
+                                            materialization_ms: materializing.elapsed().as_millis()
+                                                as u64,
+                                            evicted_bytes: None,
+                                            evicted_reason: None,
+                                        },
+                                    );
+                                    prepared.directories.push((*kind, directory));
+                                }
+                            }
+                            prepared.key_lock = Some(key);
+                        }
                     }
                 }
             }
-            let lock = root.and_then(|root| {
-                lock_task_build_cache(
-                    &root,
-                    &self.project,
-                    &hex(&toolchain),
-                    label,
-                    self.host.lock_wait.min(left()),
-                )
-            });
-            let directory = match lock {
-                Ok(TaskBuildCacheLock::Held(directory)) => directory.forbidding(kind.forbidden()),
-                Ok(TaskBuildCacheLock::Busy) => {
-                    settled.insert(
-                        kind,
-                        self.ineligible(cas, label, "busy", Some(&toolchain), 0, started)?,
-                    );
-                    continue;
-                }
-                Err(detail) => {
-                    eprintln!("warm check cache diagnostic: {detail}");
-                    settled.insert(
-                        kind,
-                        self.ineligible(cas, label, "unavailable", Some(&toolchain), 0, started)?,
-                    );
-                    continue;
-                }
-            };
-            let lookup_ms = started.elapsed().as_millis() as u64;
-            let materializing = Instant::now();
-            match directory.ensure() {
-                Ok(Ensured::Discarded(reason)) => {
-                    // Removed and recreated empty: whatever it held is gone, so the measurement
-                    // below finds a cold directory, never the discarded one's bytes.
-                    eprintln!("warm check cache diagnostic: `{label}` discarded: {reason}");
-                }
-                Ok(Ensured::Reused | Ensured::Created) => {}
-                Err(detail) => {
-                    eprintln!("warm check cache diagnostic: {detail}");
-                    settled.insert(
-                        kind,
-                        self.ineligible(cas, label, "unavailable", Some(&toolchain), 0, started)?,
-                    );
-                    continue;
-                }
-            }
-            held.push(Held {
-                kind,
-                directory,
-                toolchain,
-                started,
-                lookup_ms,
-                materialization_ms: materializing.elapsed().as_millis() as u64,
-            });
-        }
-        // Measured only after validation. The kinds of one toolchain key share the bound; one
-        // that cannot be fully counted is above it.
-        let mut measured = Vec::with_capacity(held.len());
-        let mut over = false;
-        let mut total = 0_u64;
-        for held in held {
-            let bytes = match held.directory.bytes() {
-                Ok(bytes) => bytes,
-                Err(uninspectable) => {
-                    eprintln!("warm check cache diagnostic: {uninspectable}");
-                    over = true;
-                    uninspectable.counted
-                }
-            };
-            total = total.saturating_add(bytes);
-            measured.push((held, bytes));
-        }
-        over |= total > self.policy.max_bytes();
-        for (held, bytes) in measured {
-            let label = held.kind.as_str();
-            if over {
-                // Over the bound before the check: removed, never trimmed, and this check runs
-                // cold for every kind in its private runtime directory.
-                held.directory.remove()?;
-                settled.insert(
-                    held.kind,
-                    self.ineligible(
-                        cas,
-                        label,
-                        "bound_exceeded",
-                        Some(&held.toolchain),
-                        bytes,
-                        held.started,
-                    )?,
-                );
-                continue;
-            }
-            settled.insert(
-                held.kind,
-                Observation {
-                    kind: label.into(),
-                    eligible: true,
-                    source_digest: self.identity(cas, label, Some(&held.toolchain), None)?,
-                    toolchain_id: Some(held.toolchain),
-                    bytes_available: bytes,
-                    lookup_ms: held.lookup_ms,
-                    materialization_ms: held.materialization_ms,
-                    evicted_bytes: None,
-                },
-            );
-            prepared.directories.push((held.kind, held.directory));
         }
         for kind in &self.policy.build_cache {
             prepared.observations.push(
@@ -742,6 +801,7 @@ impl<'a> WarmSession<'a> {
                         lookup_ms: snapshot.lookup_ms,
                         materialization_ms: snapshot.materialization_ms,
                         evicted_bytes: None,
+                        evicted_reason: None,
                     });
                 }
                 Err(error) => {
@@ -845,6 +905,7 @@ impl<'a> WarmSession<'a> {
         &self,
         runner: CheckRunner<'_>,
         definition: &CheckDefinition,
+        key: &TaskBuildCacheKeyLock,
         directories: &[(WarmBuildCacheKind, WarmDirectory)],
         cancellation: Option<&AtomicBool>,
     ) -> (CheckExecution, Option<Excess>) {
@@ -861,7 +922,7 @@ impl<'a> WarmSession<'a> {
                     }
                     if sampled.elapsed() >= SAMPLE_INTERVAL {
                         sampled = Instant::now();
-                        if let Some(bytes) = over_bound(directories, max) {
+                        if let Some(bytes) = over_bound(key, directories, max) {
                             *exceeded.lock().expect("warm bound monitor") = Some(bytes);
                             stop.store(true, Ordering::Release);
                             return;
@@ -881,7 +942,7 @@ impl<'a> WarmSession<'a> {
         // directory the check used is judged as `ensure` would judge it before the next check
         // — a credential written into a Cargo home, a link, a swapped root, all make it suspect.
         let excess = sampled
-            .or_else(|| over_bound(directories, max))
+            .or_else(|| over_bound(key, directories, max))
             .map(Excess::Bound)
             .or_else(|| {
                 directories.iter().find_map(|(kind, directory)| {
@@ -893,29 +954,28 @@ impl<'a> WarmSession<'a> {
         (execution, excess)
     }
 
-    /// After the check: when [`Self::run_monitored`] found the directories above the shared
-    /// bound, during the check or once it ended, they are all removed while their locks are
-    /// still held, so the next check runs cold. Each kind's removed bytes are returned for the
-    /// caller to record on that kind's one observation as `evicted_bytes`; an empty list means
-    /// nothing was over the bound.
+    /// After the check: when [`Self::run_monitored`] found the key above the shared bound or a
+    /// used directory suspect, every kind directory below the key — held by this check or left
+    /// by another — is removed while the key lock is still held, so the next check runs cold.
+    /// Each kind's removed bytes are returned for the caller to record on that kind's one
+    /// observation as `evicted_bytes`; an empty list means nothing was removed. The key lock
+    /// and the kind locks are released when this returns.
     pub(crate) fn finish(
         &self,
+        key: Option<TaskBuildCacheKeyLock>,
         directories: Vec<(WarmBuildCacheKind, WarmDirectory)>,
         excess: Option<Excess>,
-    ) -> Result<Vec<(WarmBuildCacheKind, u64)>, String> {
+    ) -> Result<Vec<(String, u64)>, String> {
+        let Some(key) = key else {
+            return Ok(Vec::new());
+        };
         if excess.is_none() {
             return Ok(Vec::new());
         }
-        let mut evicted = Vec::with_capacity(directories.len());
-        for (kind, directory) in directories {
-            let bytes = directory
-                .bytes()
-                .unwrap_or_else(|uninspectable| uninspectable.counted);
-            directory.remove()?;
-            drop(directory);
-            evicted.push((kind, bytes));
-        }
-        Ok(evicted)
+        let removed = key.remove_kinds()?;
+        drop(directories);
+        drop(key);
+        Ok(removed)
     }
 
     fn ineligible(
@@ -936,6 +996,7 @@ impl<'a> WarmSession<'a> {
             lookup_ms: started.elapsed().as_millis() as u64,
             materialization_ms: 0,
             evicted_bytes: None,
+            evicted_reason: None,
         })
     }
 
@@ -961,23 +1022,19 @@ impl<'a> WarmSession<'a> {
 
 /// The directories' combined bytes when they are above `max`, or when any of them cannot be
 /// fully counted: what the kernel cannot see it cannot bound.
-/// Whether the toolchain key the directories belong to is above `max`. The whole key directory
-/// is counted — every kind under it, held by this check or not — because the bound is shared
-/// by the key, and each held root must still be a real directory: a root swapped for a link or
-/// a file is uninspectable, and an uninspectable key is above every bound.
-fn over_bound(directories: &[(WarmBuildCacheKind, WarmDirectory)], max: u64) -> Option<u64> {
-    let (_, first) = directories.first()?;
-    let mut uninspectable = false;
-    for (_, directory) in directories {
-        match std::fs::symlink_metadata(directory.path()) {
-            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
-            Ok(_) => uninspectable = true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => uninspectable = true,
-        }
-    }
-    let key = first.path().parent().unwrap_or_else(|| first.path());
-    let total = match directory_bytes(key) {
+/// Whether the toolchain key is above `max`. The whole key directory is counted — every kind
+/// under it, held by this check or not — because the bound is shared by the key, and each held
+/// root must still be a real directory: a root swapped for a link or a file is uninspectable, and
+/// an uninspectable key is above every bound.
+fn over_bound(
+    key: &TaskBuildCacheKeyLock,
+    directories: &[(WarmBuildCacheKind, WarmDirectory)],
+    max: u64,
+) -> Option<u64> {
+    let mut uninspectable = directories
+        .iter()
+        .any(|(_, directory)| !directory.is_directory());
+    let total = match key.bytes() {
         Ok(bytes) => bytes,
         Err(error) => {
             uninspectable = true;
@@ -1304,11 +1361,12 @@ mod tests {
         std::fs::write(directory.1.path().join("out"), [7_u8; 64]).unwrap();
         let path = directory.1.path().to_path_buf();
         assert!(
-            session.finish(vec![directory], None).unwrap().is_empty(),
+            session
+                .finish(key_lock, vec![directory], None)
+                .unwrap()
+                .is_empty(),
             "under the bound the directory is kept"
         );
-        // The key stays locked until the check's removal step has ended; release it here.
-        drop(key_lock);
 
         let tight = warm(Some(1));
         let mut session = WarmSession::new(&host, &tight, "repo", declaration(b"x"));
@@ -1347,15 +1405,25 @@ mod tests {
             ),
         );
         let started = Instant::now();
-        let (execution, exceeded) =
-            session.run_monitored(runner, &check, &prepared.directories, None);
+        let (execution, exceeded) = session.run_monitored(
+            runner,
+            &check,
+            prepared
+                .key_lock
+                .as_ref()
+                .expect("a prepared check holds its key"),
+            &prepared.directories,
+            None,
+        );
         assert!(started.elapsed() < Duration::from_secs(50), "ended early");
         assert_eq!(exceeded, Some(Excess::Bound(8192)));
         assert_ne!(execution.result.status, review_check::CheckStatus::Passed);
-        let removed = session.finish(prepared.directories, exceeded).unwrap();
+        let removed = session
+            .finish(prepared.key_lock, prepared.directories, exceeded)
+            .unwrap();
         assert_eq!(
             removed,
-            [(WarmBuildCacheKind::CargoTarget, 8192)],
+            [("cargo_target".to_string(), 8192)],
             "the evicted bytes land on the kind's one observation"
         );
         assert!(!path.exists(), "removed before the lock was released");
@@ -1478,7 +1546,16 @@ mod tests {
                 ],
             ),
         );
-        session.run_monitored(runner, &check, &prepared.directories, None)
+        session.run_monitored(
+            runner,
+            &check,
+            prepared
+                .key_lock
+                .as_ref()
+                .expect("a prepared check holds its key"),
+            &prepared.directories,
+            None,
+        )
     }
 
     #[test]
@@ -1511,8 +1588,10 @@ mod tests {
             "measured once it ended"
         );
         assert_eq!(
-            session.finish(prepared.directories, exceeded).unwrap(),
-            [(WarmBuildCacheKind::CargoTarget, 8192)]
+            session
+                .finish(prepared.key_lock, prepared.directories, exceeded)
+                .unwrap(),
+            [("cargo_target".to_string(), 8192)]
         );
         assert!(!path.exists());
     }
@@ -1545,7 +1624,9 @@ mod tests {
             exceeded.is_some(),
             "an uninspectable directory is never under its bound"
         );
-        let evicted = session.finish(prepared.directories, exceeded).unwrap();
+        let evicted = session
+            .finish(prepared.key_lock, prepared.directories, exceeded)
+            .unwrap();
         assert_eq!(evicted.len(), 1);
         assert!(
             !path.exists(),
@@ -1560,12 +1641,17 @@ mod tests {
         let policy = warm(None);
         let populate = |session: &mut WarmSession<'_>| {
             let prepared = prepare(&fixture, session);
-            let (kind, directory) = prepared.directories.into_iter().next().unwrap();
+            let PreparedCheck {
+                directories,
+                key_lock,
+                ..
+            } = prepared;
+            let (kind, directory) = directories.into_iter().next().unwrap();
             std::fs::write(directory.path().join("build.bin"), [1_u8; 512]).unwrap();
             let path = directory.path().to_path_buf();
             assert!(
                 session
-                    .finish(vec![(kind, directory)], None)
+                    .finish(key_lock, vec![(kind, directory)], None)
                     .unwrap()
                     .is_empty()
             );
@@ -1654,11 +1740,10 @@ mod tests {
         let home = home.to_path_buf();
         assert!(
             session
-                .finish(prepared.directories, None)
+                .finish(prepared.key_lock, prepared.directories, None)
                 .unwrap()
                 .is_empty()
         );
-        drop(prepared.key_lock);
 
         let again = prepare(&fixture, &mut session);
         assert_eq!(again.observations[1].kind, "cargo_home");
@@ -1916,7 +2001,9 @@ mod tests {
             Some(Excess::Suspect(reason)) => assert!(reason.contains("cargo_home"), "{reason}"),
             other => panic!("a credential is suspect, got {other:?}"),
         }
-        let evicted = session.finish(prepared.directories, excess).unwrap();
+        let evicted = session
+            .finish(prepared.key_lock, prepared.directories, excess)
+            .unwrap();
         assert_eq!(evicted.len(), 2, "every directory of the key goes");
         for path in paths {
             assert!(!path.exists(), "{} removed under the lock", path.display());
@@ -1947,7 +2034,9 @@ mod tests {
             matches!(excess, Some(Excess::Bound(_))),
             "a link root cannot be counted: {excess:?}"
         );
-        session.finish(prepared.directories, excess).unwrap();
+        session
+            .finish(prepared.key_lock, prepared.directories, excess)
+            .unwrap();
         assert!(
             std::fs::symlink_metadata(&path).is_err(),
             "the link at the root is removed under the lock"
@@ -1977,5 +2066,33 @@ mod tests {
         let free = prepare(&fixture, &mut third);
         assert_eq!(free.directories.len(), 1, "released with the first check");
         assert_eq!(free.observations[0].kind, "cargo_home");
+    }
+
+    #[test]
+    fn a_kind_another_policy_left_over_the_bound_is_evicted_before_the_next_check_binds() {
+        let fixture = fixture();
+        let host = host(&fixture, None);
+        let home_only = only_home(None);
+        let mut first = WarmSession::new(&host, &home_only, "repo", declaration(b"x"));
+        let prepared = prepare(&fixture, &mut first);
+        let home = prepared.directories[0].1.path().to_path_buf();
+        std::fs::write(home.join("registry"), [0_u8; 4096]).unwrap();
+        assert!(
+            first
+                .finish(prepared.key_lock, prepared.directories, None)
+                .unwrap()
+                .is_empty()
+        );
+
+        let tight_target = warm(Some(1024));
+        let mut second = WarmSession::new(&host, &tight_target, "repo", declaration(b"x"));
+        let prepared = prepare(&fixture, &mut second);
+        assert!(
+            prepared.directories.is_empty(),
+            "the key was over its shared bound before this check bound anything"
+        );
+        assert_eq!(prepared.observations[0].kind, "cargo_target:bound_exceeded");
+        assert!(!home.exists(), "the other policy's kind went with the key");
+        assert!(prepared.key_lock.is_some());
     }
 }
