@@ -137,6 +137,16 @@ pub(super) fn environment(
         Ok(Box::new(DataTaskEnvironment {
             policy: policy.isolation(),
         }))
+    } else if let Some(id) = &authority.report_policy_id {
+        // A report Worker reads the exact source Snapshot; an author with `execute-checks`
+        // gets the clone ADR-0118 gives a reviewer. No warm layer or cache reaches it.
+        let policy: ReportTaskPolicy =
+            serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        policy.validate()?;
+        Ok(Box::new(SnapshotTaskEnvironment {
+            policy: policy.isolation(),
+        }))
     } else {
         let policy: CodeTaskPolicy = serde_json::from_value(
             cas.get_json(authority.code_policy_id()?)

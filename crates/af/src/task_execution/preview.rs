@@ -109,7 +109,9 @@ fn compact_visible(node: &CompiledNode) -> bool {
                     | TaskOperatorV1::ReviewReduce {}
                     | TaskOperatorV1::ReviewAccept {}
                     | TaskOperatorV1::DocumentSeal {}
-                    | TaskOperatorV1::DocumentAccept {},
+                    | TaskOperatorV1::DocumentAccept {}
+                    | TaskOperatorV1::ReportSeal {}
+                    | TaskOperatorV1::ReportAccept {},
                 ..
             }
     )

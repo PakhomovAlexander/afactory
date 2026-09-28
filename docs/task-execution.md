@@ -62,6 +62,11 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   arithmetic. Neither invokes a Provider, and an evaluator gated on a comparison cannot change
   it ([ADR-0124](adr/0124-measure-and-compare-source-candidates-in-the-kernel.md),
   [experiments](task-execution/experiments.md)).
+- A report is accepted by an independent verifier, not by its author, and every report receipt
+  names the source Snapshot its repository citations were resolved against. A report Task
+  allows no `write-source`, has no `snapshot` output and is never delivered; `af task output`
+  is its only exit ([ADR-0125](adr/0125-accept-reports-bound-to-an-exact-source-snapshot.md),
+  [report Tasks](task-execution/report.md)).
 
 ## Worker effects: what `execute-checks` grants a reviewer
 
@@ -73,8 +78,9 @@ the native adapter picks its tool and sandbox flags from it. The two cannot disa
 
 | Declared effects | Access | Sandbox | Claude tools | Codex `-s` |
 |---|---|---|---|---|
-| `read-source`, or `execute-checks` on a Worker without the `review` role | `ReadOnly` | read-only materialization | `Read,Glob,Grep` | `read-only` |
+| `read-source`, or `execute-checks` on a Worker with neither the `review` role nor the `author` role and `read-source` | `ReadOnly` | read-only materialization | `Read,Glob,Grep` | `read-only` |
 | `execute-checks` on a Worker with `roles` containing `review` (no `write-source`) | `ExecuteChecks` | ephemeral-write clone, nothing sealed back | `Read,Glob,Grep,Bash` | `workspace-write` |
+| `read-source` and `execute-checks` on a Worker with `roles` containing `author` (no `write-source`) | `ExecuteChecks` | ephemeral-write clone, nothing sealed back ([ADR-0125](adr/0125-accept-reports-bound-to-an-exact-source-snapshot.md)) | `Read,Glob,Grep,Bash` | `workspace-write` |
 | `write-source` with a kernel-captured `candidate` port | `WriteSource` | ephemeral-write clone, captured as the candidate | `Read,Glob,Grep,Edit,Write` | `workspace-write` |
 | `write-source` and `execute-checks` with a kernel-captured `candidate` port | `WriteSourceWithShell` | ephemeral-write clone, captured as the candidate minus shell scratch ([ADR-0120](adr/0120-give-a-source-writing-worker-a-shell.md)) | `Read,Glob,Grep,Edit,Write,Bash` | `workspace-write` |
 
@@ -99,8 +105,10 @@ What it never grants:
 - Edit tools, MCP servers, a permission mode or any other flag. Package runner arguments stay
   limited to one model and one effort, so no package, local binding or `.af/` policy can name a
   tool that the declared effects do not derive.
-- Any shell for a Worker without the `review` role that does not also write source. It keeps its
-  read-only source. A source-writing Worker that declares `execute-checks` gets a shell too; its
+- Any shell for a Worker without the `review` role that does not also write source, except a
+  report author that declares `read-source` and `execute-checks`: it gets the review Worker's
+  clone and message ([ADR-0125](adr/0125-accept-reports-bound-to-an-exact-source-snapshot.md)).
+  Every other such Worker keeps its read-only source. A source-writing Worker that declares `execute-checks` gets a shell too; its
   candidate excludes anything added under a new top-level name or as a new top-level dotfile
   ([ADR-0120](adr/0120-give-a-source-writing-worker-a-shell.md)).
 - More time or tokens. The Attempt's wall clock and token reservation apply unchanged. With this

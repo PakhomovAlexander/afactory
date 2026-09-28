@@ -139,6 +139,10 @@ fn expected_port(
     let artifact_type = match port {
         "source" => SOURCE_TREE_V1,
         "history" => history,
+        // A report reads its own sources artifact; a Document's sources never bind to it.
+        "sources" if profile == TaskKindProfile::Report => {
+            review_core::task::report_task::REPORT_SOURCES_V1
+        }
         "sources" => DOCUMENT_SOURCES_V1,
         other if NOT_BINDABLE.contains(&other) => {
             let bindable = BINDABLE.join(", ");

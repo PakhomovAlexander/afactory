@@ -308,6 +308,7 @@ pub(super) fn files() -> Result<BTreeMap<String, Vec<u8>>, String> {
         provider_admission: None,
         code_policy: Some(".af/code-policy.toml".into()),
         document_policy: None,
+        report_policy: None,
         selection: BTreeMap::new(),
         no_match: review_config::task::selection::NoMatchPolicy::Refuse,
         planner: None,
@@ -339,6 +340,7 @@ pub(super) fn files() -> Result<BTreeMap<String, Vec<u8>>, String> {
                 .clone(),
         ),
         document_sources: None,
+        report_sources: None,
         optimization_history: None,
         pipeline: Some(PipelineChoiceV1 {
             name: "builtin/experiment".into(),

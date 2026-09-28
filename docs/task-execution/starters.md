@@ -21,7 +21,9 @@ the command tutorial's local prerequisites. `--profile software` omits the docum
 `--profile document` emits just the document tutorial. `--profile experiment` emits the
 `builtin/experiment` tutorial on its own: a code policy with the measure `write` and the
 objective `smaller`, and a Task that the kernel measures, compares and evaluates
-([experiments](experiments.md)).
+([experiments](experiments.md)). `--profile report` emits the `builtin/report` tutorial on its
+own: a report policy, an author that reads the committed tree and cites its files, and an
+independent verifier on the same Snapshot ([report Tasks](report.md)).
 
 ```text
                       shared catalog committed to Git

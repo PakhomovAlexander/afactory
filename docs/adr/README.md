@@ -215,3 +215,5 @@ future readers need.
   cache](0123-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)
 - [0124 — Measure and compare source candidates in the
   kernel](0124-measure-and-compare-source-candidates-in-the-kernel.md)
+- [0125 — Accept reports bound to an exact source
+  Snapshot](0125-accept-reports-bound-to-an-exact-source-snapshot.md)

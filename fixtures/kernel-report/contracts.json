@@ -1,0 +1,292 @@
+{
+  "schema": "af.catalog-contract-fixtures/1",
+  "pipelines": {
+    "kernel/report": {
+      "contract": {
+        "inputs": {
+          "comparison": {
+            "artifact_type": "af/MeasurementComparison@1",
+            "cardinality": "one",
+            "optional": true,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "measurements": {
+            "artifact_type": "af/Measurement@1",
+            "cardinality": "many",
+            "optional": true,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "source": {
+            "artifact_type": "af/SourceTree@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "sources": {
+            "artifact_type": "af/ReportSources@1",
+            "cardinality": "one",
+            "optional": true,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "report": {
+            "artifact_type": "af/Document@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          },
+          "verification": {
+            "artifact_type": "af/ReportVerification@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": [
+              "verified"
+            ]
+          }
+        }
+      },
+      "accepts": {
+        "kinds": [
+          "report"
+        ],
+        "required_facts": {}
+      },
+      "coverage": {
+        "verified": {
+          "kind": "node",
+          "node": "accept",
+          "port": "result"
+        }
+      },
+      "max_attempts": 3,
+      "max_parallel": 1
+    }
+  },
+  "workers": {
+    "kernel/analyst": {
+      "contract": {
+        "inputs": {
+          "comparison": {
+            "artifact_type": "af/MeasurementComparison@1",
+            "cardinality": "one",
+            "optional": true,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "measurements": {
+            "artifact_type": "af/Measurement@1",
+            "cardinality": "many",
+            "optional": true,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "source": {
+            "artifact_type": "af/SourceTree@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "sources": {
+            "artifact_type": "af/ReportSources@1",
+            "cardinality": "one",
+            "optional": true,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "draft": {
+            "artifact_type": "af/DocumentDraft@2",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          }
+        }
+      },
+      "effects": [
+        "execute-checks",
+        "read-source"
+      ],
+      "evidence": {},
+      "retains": {
+        "draft": [
+          "comparison",
+          "measurements",
+          "requirements",
+          "source",
+          "sources"
+        ]
+      },
+      "roles": [
+        "author"
+      ],
+      "worker_input_type": "af/ReportInput@1",
+      "worker_output_type": "af/DocumentDraft@2",
+      "attempt": {
+        "tokens": 1500000,
+        "wall_ms": 10800000
+      }
+    },
+    "kernel/report-verifier": {
+      "contract": {
+        "inputs": {
+          "checks": {
+            "artifact_type": "af/ReportCheckReceipt@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          },
+          "comparison": {
+            "artifact_type": "af/MeasurementComparison@1",
+            "cardinality": "one",
+            "optional": true,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "document": {
+            "artifact_type": "af/Document@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          },
+          "measurements": {
+            "artifact_type": "af/Measurement@1",
+            "cardinality": "many",
+            "optional": true,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "source": {
+            "artifact_type": "af/SourceTree@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "sources": {
+            "artifact_type": "af/ReportSources@1",
+            "cardinality": "one",
+            "optional": true,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "result": {
+            "artifact_type": "af/ReportEvaluation@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          }
+        }
+      },
+      "effects": [
+        "read-source"
+      ],
+      "evidence": {},
+      "retains": {
+        "result": [
+          "checks",
+          "comparison",
+          "document",
+          "measurements",
+          "requirements",
+          "source",
+          "sources"
+        ]
+      },
+      "roles": [
+        "verify"
+      ],
+      "worker_input_type": "af/ReportVerificationInput@1",
+      "worker_output_type": "af/ReportEvaluation@1",
+      "outcome_port": "result",
+      "attempt": {
+        "tokens": 400000,
+        "wall_ms": 1800000
+      }
+    }
+  },
+  "kinds": {}
+}

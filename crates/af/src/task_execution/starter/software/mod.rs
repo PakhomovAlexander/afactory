@@ -1111,6 +1111,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
         provider_admission: None,
         code_policy: Some(".af/code-policy.toml".into()),
         document_policy: None,
+        report_policy: None,
         selection: BTreeMap::new(),
         no_match: review_config::task::selection::NoMatchPolicy::Refuse,
         planner: developers.as_ref().map(|_| {
@@ -1190,6 +1191,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
                 "preserve_input": true
             }).as_object().unwrap().clone()),
             document_sources: None,
+            report_sources: None,
             optimization_history: None,
             pipeline: Some(PipelineChoiceV1 {
                 name: format!("builtin/{name}"),

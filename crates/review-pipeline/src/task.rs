@@ -17,6 +17,7 @@ pub mod provider;
 mod provider_admissions;
 pub use provider_admissions::TaskProviderAdmissionReport;
 mod report;
+pub mod report_task;
 pub mod review;
 pub mod source;
 pub mod warm_check;

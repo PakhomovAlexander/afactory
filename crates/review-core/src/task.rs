@@ -21,6 +21,7 @@ pub mod planning;
 pub mod provider;
 pub mod repair;
 pub mod report;
+pub mod report_task;
 pub mod review;
 pub mod review_context;
 pub mod review_handoff;

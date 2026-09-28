@@ -1,4 +1,5 @@
 schema = "af.task-catalog/2"
+report_policy = ".af/report-policy.toml"
 # Campaign catalog for the kernel's own campaigns. warm/* served the Worker warm layers plan;
 # kernel/* is the generic family later plans use. Every package of a plan runs through one
 # implementation-reviewed Pipeline with the same four native Workers. Provider labels here
@@ -135,6 +136,21 @@ version = "1.0.0"
 digest = "sha256:1938157d9fe082bf0a191b8f6235999355d56fecbcd453d0e6fcbdcc6e31fb79"
 path = ".af/task-packages/kernel/experiment-trial"
 
+[packages."kernel/report"]
+version = "1.0.0"
+digest = "sha256:bdcd622b4b41b1f9e23477df8af0349b9e5a233608cd0fb2a2b17582b4d68af9"
+path = ".af/task-packages/kernel/report"
+
+[packages."kernel/analyst"]
+version = "1.0.0"
+digest = "sha256:a070cf7d8b77cc2f743c4e5f54e31f738dcded348a231b8498e9bf5e9d8292c2"
+path = ".af/task-packages/kernel/analyst"
+
+[packages."kernel/report-verifier"]
+version = "1.0.0"
+digest = "sha256:04ae783a4512c72ec8ed710cd64fc0eb8880b07db3467f30645593c0344d2b6e"
+path = ".af/task-packages/kernel/report-verifier"
+
 [independence]
 command_workers_by_package = true
 distinct_principals = true
@@ -151,6 +167,8 @@ distinct_models = false
 "kernel/bugs" = "codex-main"
 "kernel/evaluator" = "codex-main"
 "kernel/experiment-evaluator" = "codex-main"
+"kernel/analyst" = "claude-main"
+"kernel/report-verifier" = "codex-main"
 
 [provider_admission]
 tokens = 32768

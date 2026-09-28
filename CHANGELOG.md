@@ -16,6 +16,33 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
+- Report Tasks (ADR-0125, package R3 of `docs/design/research-pipelines.md`). The built-in kind
+  `report` selects a new installed profile: an author reads the source Snapshot, the kernel
+  renders its draft and resolves its repository citations against that exact Manifest, and an
+  independent verifier on the same Snapshot accepts the report. Its captured policy is
+  `af.report-task-policy/1`, named by `report_policy` in `.af/task-catalog.toml` (a newly
+  declared `.af/report-policy.toml`). A Task file's `report_sources` captures
+  `af/ReportSources@1` — the `af.document-sources/1` shape with zero to 256 entries, 256 KiB each
+  and 512 KiB in total in a file of at most 640 KiB, the empty set when absent; the `sources`
+  port is optional, and a Pipeline that binds nothing there seals against the empty set. An
+  execute-checks Worker may add beside the source, never under a name the source holds. `af/DocumentDraft@2` adds
+  `repository_citations` of `{ path, line? }`, spelled exactly as the Manifest spells them and
+  rendered as `path` or `path:line`. The installed `report_seal`, `report_check` and
+  `report_accept` operators record `af/ReportCheckReceipt@1` (with each failed citation's
+  reason: `absent`, `directory`, `symlink`, `binary`, `line_out_of_range`),
+  `af/ReportEvaluation@1` and `af/ReportVerification@1`, every one naming the source Snapshot;
+  a verifier whose checks judged another Snapshot is refused at admission. An author whose
+  effects are `read-source` and `execute-checks` gets ADR-0118's shell in a clone that seals
+  nothing back. A report Task allows no `write-source`, has no `snapshot` output and is refused
+  by `af task deliver` with a message naming `af task output --port report`; `af task show`
+  prints the report's title, the verifier's outcome and the cited Snapshot. `af catalog init
+  --profile report` emits the credential-free `builtin/report` starter, and this repository's
+  `kernel/report` Pipeline with `kernel/analyst` and `kernel/report-verifier` is staged in
+  `fixtures/kernel-report/` for installation into `.af/`. New schemas: `report-sources-v1.json`,
+  `document-draft-v2.json`, `report-check-receipt-v1.json`, `report-evaluation-v1.json`,
+  `report-verification-v1.json` and `report-task-policy-v1.json`; the catalog, Task-file,
+  Task-kind and operator schemas gain the new fields, profile and operators. Document and
+  implement Tasks are unchanged.
 - Measure and compare (ADR-0124, package R2 of `docs/design/research-pipelines.md`). A code
   policy may declare `[measures.<name>]` — a command, 1 to 16 `repetitions`, `warm`, `wall_ms`
   per repetition and `metrics` of `{ key, unit }` in `ms`, `bytes`, `count` or `ratio` — and

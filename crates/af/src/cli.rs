@@ -855,7 +855,7 @@ pub(crate) enum RunnerArg {
 pub(crate) enum CatalogCommand {
     /// Create supported Task and Worker starters in an absent directory
     Init {
-        #[arg(long, default_value="document", value_parser=["document", "software", "planning", "all", "experiment"])]
+        #[arg(long, default_value="document", value_parser=["document", "software", "planning", "all", "experiment", "report"])]
         profile: String,
         /// Existing minisign public key assigned to developer owner; enables the Planner
         #[arg(long)]

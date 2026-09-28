@@ -574,10 +574,16 @@ fn adapter_flags_derive_from_the_captured_effects_alone() {
     assert_eq!(reviewer, WorkerAccess::ExecuteChecks);
     assert_eq!(task_tools(reviewer), "Read,Glob,Grep,Bash");
     assert_eq!(task_sandbox_mode(reviewer), "workspace-write");
-    // The same declaration without the review role, and a reviewer declaring only
+    // A report author that reads source gets the same shell and clone (ADR-0125).
+    let author = worker_access(&bare_signature("read-source execute-checks", "author"));
+    assert_eq!(author, WorkerAccess::ExecuteChecks);
+    assert_eq!(task_tools(author), "Read,Glob,Grep,Bash");
+    assert_eq!(task_sandbox_mode(author), "workspace-write");
+    // The same declaration under any other non-writing role, and a reviewer declaring only
     // `read-source`, keep `Read,Glob,Grep` and a read-only sandbox.
     for (effects, roles) in [
-        ("read-source execute-checks", "author"),
+        ("read-source execute-checks", "implement"),
+        ("read-source execute-checks", "evaluate"),
         ("read-source", "review"),
     ] {
         let access = worker_access(&bare_signature(effects, roles));

@@ -236,6 +236,15 @@ pub fn render_document(
 ) -> Result<String, String> {
     draft.validate()?;
     sources.validate()?;
+    render_validated(draft, |name| sources.sources.get(name))
+}
+
+/// The Markdown of an already validated draft whose named citations resolve through `source`.
+/// The report renderer appends to exactly these bytes, so both profiles escape alike.
+pub(crate) fn render_validated<'a>(
+    draft: &DocumentDraftV1,
+    source: impl Fn(&str) -> Option<&'a DocumentSourceV1>,
+) -> Result<String, String> {
     let mut rendered = format!("# {}\n", markdown_text(&draft.title));
     for section in &draft.sections {
         rendered.push_str(&format!(
@@ -248,10 +257,8 @@ pub fn render_document(
         rendered.push_str("\n## Sources\n");
     }
     for citation in &draft.citations {
-        let source = sources
-            .sources
-            .get(citation)
-            .ok_or("Document cites a source outside its captured input")?;
+        let source =
+            source(citation).ok_or("Document cites a source outside its captured input")?;
         if safe_source_location(&source.uri) && source.uri.starts_with("https://") {
             rendered.push_str(&format!(
                 "\n- [{}](<{}>) — revision {}\n",

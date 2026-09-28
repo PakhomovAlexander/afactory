@@ -8,6 +8,7 @@ use review_core::task::document::*;
 use review_core::task::pipeline::*;
 use review_graph::task::{OperatorAttemptCost, OperatorSignature};
 mod experiment;
+mod report;
 mod software;
 
 const GOAL: &str = "Publish release notes from the captured changes.";
@@ -381,6 +382,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
         provider_admission: None,
         code_policy: None,
         document_policy: Some(".af/document-policy.toml".into()),
+        report_policy: None,
         selection: BTreeMap::new(),
         no_match: review_config::task::selection::NoMatchPolicy::Refuse,
         developers: None,
@@ -416,6 +418,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
         kind: "release-note".into(),
         goal: GOAL.into(),
         document_sources: Some("sources.json".into()),
+        report_sources: None,
         optimization_history: None,
         pipeline: Some(PipelineChoiceV1 {
             name: pipeline.name,
@@ -542,6 +545,12 @@ pub(crate) fn init(
                 "Use software, planning or all to configure a Planner developer key".into(),
             );
         }
+        "report" if key.is_none() => report::files()?,
+        "report" => {
+            return Err(
+                "Use software, planning or all to configure a Planner developer key".into(),
+            );
+        }
         _ => return Err("Unknown starter profile".into()),
     };
     catalog::publish_absent(&target, &files)?;
@@ -549,6 +558,7 @@ pub(crate) fn init(
         "document" => "document.json",
         "planning" => "planning.json",
         "experiment" => "experiment.json",
+        "report" => "report.json",
         _ => "implementation-reviewed.json",
     };
     if json {

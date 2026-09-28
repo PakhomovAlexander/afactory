@@ -1,0 +1,245 @@
+# A report on this repository: the analyst reads the source Snapshot and may run commands
+# in a clone that seals nothing back; the kernel renders the draft and resolves its
+# repository citations against the exact Manifest; the independent verifier reads the same
+# Snapshot and runs only after those checks pass (ADR-0125).
+schema = "af.pipeline/1"
+name = "kernel/report"
+version = "1.0.0"
+max_attempts = 3
+max_parallel = 1
+
+[contract.inputs.comparison]
+artifact_type = "af/MeasurementComparison@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[contract.inputs.comparison.affinity]
+kind = "unbound"
+
+[contract.inputs.measurements]
+artifact_type = "af/Measurement@1"
+cardinality = "many"
+optional = true
+covers = []
+
+[contract.inputs.measurements.affinity]
+kind = "unbound"
+
+[contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.inputs.source.affinity]
+kind = "unbound"
+
+[contract.inputs.sources]
+artifact_type = "af/ReportSources@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[contract.inputs.sources.affinity]
+kind = "unbound"
+
+[contract.outputs.report]
+artifact_type = "af/Document@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[contract.outputs.report.affinity]
+kind = "same_as"
+input = "source"
+
+[contract.outputs.verification]
+artifact_type = "af/ReportVerification@1"
+cardinality = "one"
+optional = false
+covers = ["verified"]
+
+[contract.outputs.verification.affinity]
+kind = "same_as"
+input = "source"
+
+[accepts]
+kinds = ["report"]
+
+[accepts.required_facts]
+
+[slots.author]
+worker = "kernel/analyst"
+role = "author"
+input_type = "af/ReportInput@1"
+output_type = "af/DocumentDraft@2"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = true
+independent_from = []
+
+[slots.verifier]
+worker = "kernel/report-verifier"
+role = "verify"
+input_type = "af/ReportVerificationInput@1"
+output_type = "af/ReportEvaluation@1"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = true
+independent_from = ["author"]
+
+[[nodes]]
+id = "author"
+
+[nodes.operator]
+op = "worker"
+slot = "author"
+
+[nodes.inputs.comparison]
+kind = "input"
+port = "comparison"
+
+[nodes.inputs.measurements]
+kind = "input"
+port = "measurements"
+
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[nodes.inputs.sources]
+kind = "input"
+port = "sources"
+
+[[nodes]]
+id = "seal"
+
+[nodes.operator]
+op = "report_seal"
+
+[nodes.inputs.draft]
+kind = "node"
+node = "author"
+port = "draft"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[nodes.inputs.sources]
+kind = "input"
+port = "sources"
+
+[[nodes]]
+id = "checks"
+
+[nodes.operator]
+op = "report_check"
+
+[nodes.inputs.document]
+kind = "node"
+node = "seal"
+port = "document"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[nodes.inputs.sources]
+kind = "input"
+port = "sources"
+
+[[nodes]]
+id = "verify"
+
+[nodes.operator]
+op = "verify"
+slot = "verifier"
+
+[nodes.inputs.checks]
+kind = "node"
+node = "checks"
+port = "result"
+
+[nodes.inputs.comparison]
+kind = "input"
+port = "comparison"
+
+[nodes.inputs.document]
+kind = "node"
+node = "seal"
+port = "document"
+
+[nodes.inputs.measurements]
+kind = "input"
+port = "measurements"
+
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[nodes.inputs.sources]
+kind = "input"
+port = "sources"
+
+[nodes.when]
+node = "checks"
+outcome = "passed"
+
+[[nodes]]
+id = "accept"
+
+[nodes.operator]
+op = "report_accept"
+
+[nodes.inputs.checks]
+kind = "node"
+node = "checks"
+port = "result"
+
+[nodes.inputs.document]
+kind = "node"
+node = "seal"
+port = "document"
+
+[nodes.inputs.evaluation]
+kind = "node"
+node = "verify"
+port = "result"
+
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[outputs.report]
+kind = "node"
+node = "accept"
+port = "document"
+
+[outputs.verification]
+kind = "node"
+node = "accept"
+port = "result"
+
+[coverage.verified]
+kind = "node"
+node = "accept"
+port = "result"

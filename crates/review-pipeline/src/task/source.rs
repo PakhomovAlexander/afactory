@@ -28,8 +28,9 @@ pub struct SnapshotTaskEnvironment {
 
 /// The sandbox access a Worker's captured signature derives. The source environment's mode and
 /// the model adapter's tools both come from this one function, so they cannot disagree, and no
-/// package, runner argument or `.af/` policy can name a tool outside it. Only a review Worker
-/// turns `execute-checks` into a shell; any other Worker keeps its read-only source.
+/// package, runner argument or `.af/` policy can name a tool outside it. A review Worker turns
+/// `execute-checks` into a shell (ADR-0118), and so does a report author that reads source and
+/// never writes it (ADR-0125); any other non-writing Worker keeps its read-only source.
 pub fn worker_access(signature: &OperatorSignature) -> WorkerAccess {
     if signature.effects.contains("write-source") {
         if signature.effects.contains("execute-checks") {
@@ -37,7 +38,10 @@ pub fn worker_access(signature: &OperatorSignature) -> WorkerAccess {
         } else {
             WorkerAccess::WriteSource
         }
-    } else if signature.effects.contains("execute-checks") && signature.roles.contains("review") {
+    } else if signature.effects.contains("execute-checks")
+        && (signature.roles.contains("review")
+            || (signature.roles.contains("author") && signature.effects.contains("read-source")))
+    {
         WorkerAccess::ExecuteChecks
     } else {
         WorkerAccess::ReadOnly
@@ -116,17 +120,21 @@ fn shell_scratch(access: WorkerAccess, owned: &BTreeSet<String>, path: &str) -> 
 }
 
 /// Every path by which a Worker without a candidate port changed its declared source, sorted.
-/// A read-only Worker may change nothing at all. An execute-checks reviewer may add anything:
-/// build output, its own harness, and the dotfiles the tools it runs write into `HOME`, which
-/// is the sandbox root (`.claude.json`, say). The clone is discarded, so an added byte never
-/// reaches a candidate, a Proposal or a delivered tree; what the declared source guarantees is
-/// that every materialized entry is still there and byte-identical, and that is what is checked.
+/// A read-only Worker may change nothing at all. An execute-checks Worker may add beside the
+/// source: build output, its own harness, and the dotfiles the tools it runs write into `HOME`,
+/// which is the sandbox root (`.claude.json`, say) — anything under a top-level name the source
+/// did not hold. An addition under a name the source holds (`src/extra.rs`) is an edit of the
+/// declared source, whatever the clone's fate: the source tree is the same set of entries, not
+/// only the same bytes. The clone is discarded, so an added byte never reaches a candidate, a
+/// Proposal or a delivered tree.
 fn source_edits(access: WorkerAccess, sealed: &SealedSandbox) -> Vec<String> {
-    let added = if access == WorkerAccess::ExecuteChecks {
-        &[][..]
-    } else {
-        &sealed.mutations.added[..]
-    };
+    let owned = owned_top_levels(sealed);
+    let added: Vec<&String> = sealed
+        .mutations
+        .added
+        .iter()
+        .filter(|path| access != WorkerAccess::ExecuteChecks || owned.contains(top_level(path)))
+        .collect();
     let mut changed: Vec<String> = sealed
         .mutations
         .modified
@@ -518,14 +526,18 @@ mod tests {
     }
 
     #[test]
-    fn only_a_review_worker_turns_execute_checks_into_a_shell() {
+    fn only_a_review_worker_or_a_reading_author_turns_execute_checks_into_a_shell() {
         use WorkerAccess::{ExecuteChecks, ReadOnly, WriteSource, WriteSourceWithShell};
         for (effects, roles, access) in [
             ("read-source", "review", ReadOnly),
             ("", "review", ReadOnly),
             ("read-source execute-checks", "review", ExecuteChecks),
             ("execute-checks", "author review", ExecuteChecks),
-            ("read-source execute-checks", "author", ReadOnly),
+            // A report author that reads source gets the review Worker's clone (ADR-0125).
+            ("read-source execute-checks", "author", ExecuteChecks),
+            ("execute-checks", "author", ReadOnly),
+            ("read-source", "author", ReadOnly),
+            ("read-source execute-checks", "implement", ReadOnly),
             ("read-source execute-checks", "", ReadOnly),
             ("write-source", "author", WriteSource),
             (
@@ -622,9 +634,11 @@ mod tests {
             std::fs::write(root.join("src/extra.rs"), "pub fn c() {}\n").unwrap();
             std::fs::write(root.join("NOTES.md"), "root file\n").unwrap();
         });
+        // An addition under a name the source holds is an edit of the declared source; one
+        // beside the source (`NOTES.md`, `target/`) is scratch the clone takes with it.
         assert_eq!(
             source_edits(WorkerAccess::ExecuteChecks, &edited),
-            ["lib.rs", "src/main.rs"]
+            ["lib.rs", "src/extra.rs", "src/main.rs"]
         );
         let dotfile = sealed_after(&cas, |root| {
             std::fs::write(root.join(".claude.json"), "{}\n").unwrap();

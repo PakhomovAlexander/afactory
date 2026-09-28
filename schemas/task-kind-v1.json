@@ -31,6 +31,7 @@
         "repair_allowed_implementation",
         "review",
         "document",
+        "report",
         "optimization_analysis",
         "optimization_candidate"
       ]

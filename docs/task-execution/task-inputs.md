@@ -40,7 +40,8 @@ Bindable ports are `source`, `history` and `sources` — the ports the Task-file
 constructs. A binding replaces that construction: a bound `source` captures no Git tree from the
 invoking checkout (so `--uncommitted`, which captures exactly that, is refused together with a
 bound `source`), a bound `history` suppresses the `empty_review_history` root default, and a
-bound `sources` makes `document_sources` unnecessary. `requirements`, `base` and `continuation`
+bound `sources` makes `document_sources` — or, for a report Task, whose `sources` is an
+`af/ReportSources@1`, `report_sources` — unnecessary. `requirements`, `base` and `continuation`
 are not bindable, and any other name is refused by name at plan time.
 
 The referenced Task must be recorded in this Store, finished, and its result must carry the named

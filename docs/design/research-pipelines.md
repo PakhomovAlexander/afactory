@@ -358,7 +358,9 @@ Deliverables:
    `af task deliver` refuses a report Task before any Git mutation with a message naming
    `af task output`.
 2. `af/ReportSources@1`: zero to 256 captured entries of `{ title, uri, revision, text }`, each
-   at most 256 KiB and at most 4 MiB in total, declared in a Task file as `report_sources =
+   at most 256 KiB and at most 512 KiB in total (a report's context must fit the 1 MiB Worker
+   request beside its other inputs), in a file of at most 640 KiB, declared in a Task file as
+   `report_sources =
    "<path>"` in the `af.document-sources/1` file shape the Document profile already reads. The
    Document profile and `af/DocumentSources@1` are unchanged.
 3. `worker_access` grants `ExecuteChecks` — an ephemeral-write clone that seals nothing back and
@@ -394,7 +396,7 @@ Deliverables:
 8. Tests and fixtures: the starter's command author writes a report citing two paths and one
    `path:line`, the verifier accepts it; a citation of an absent path, of a directory, of a
    symlink, of a file with a NUL byte, or of a line past the end fails `report_check`; a report
-   Task without `report_sources` runs with an empty set; a 4 MiB-plus sources file is refused at
+   Task without `report_sources` runs with an empty set; a sources file over its bound is refused at
    capture; a negative verifier verdict stays `unsatisfied`; a verifier bound to a different
    Snapshot is refused at admission; a report Task with `write-source` on its author is refused
    at planning; delivery of a satisfied report Task is refused with the named message; schema
@@ -429,7 +431,12 @@ Deliverables:
    `continuation` stay refused by name for the reasons ADR-0117 gives. `source` keeps its
    re-rooting rules unchanged. Only result outputs bind: an Attempt's `raw_artifact_ids`, runtime
    evidence and other non-output records are not bindable, and a Task file that names one is
-   refused with a message saying so.
+   refused with a message saying so. A `one` port bound from one output keeps that output's
+   Snapshot ID; a `many` port bound from several outputs — `measurements` from an experiment's
+   `baseline` and `candidate`, which measured two Snapshots — carries no Snapshot ID on the
+   port, because `af/ArtifactInputV1` names one, and each artifact keeps its own subject
+   Snapshot in its envelope. A `many` port bound from a single output keeps that output's
+   Snapshot ID. Binding several outputs into a `one` port is refused.
 2. `af/TaskInputBindings@1` records every binding as today; `af task explain` and `af task
    show` display them unchanged.
 3. A three-Task fixture in one Store: the R2 experiment Task; a report Task binding
@@ -442,7 +449,8 @@ Deliverables:
 Acceptance:
 
 - A bound `comparison` and both bound `measurements` reach the report author and verifier as
-  exact artifacts, proven by the fixture's context manifests.
+  exact artifacts, proven by the fixture's context manifests; the `measurements` port carries no
+  Snapshot ID and each Measurement its own.
 - Every refusal is raised before any Worker or Provider admission and names the port and the
   type mismatch.
 - A Task file without `inputs` keeps byte-identical revision, plan and inspection documents.
@@ -506,7 +514,7 @@ the declared objective and the recorded comparison are the result.
    repository, with `comparison` and `measurements` bound to the release-build Task through
    R4, and with `report_sources` holding the `af task show --json` documents of every Task of
    this campaign, exported by the coordinator into the sources file (one entry per Task, each
-   under 256 KiB, the file under 4 MiB). It answers where the cycle's time and disk go, using
+   under 256 KiB, the file under 640 KiB). It answers where the cycle's time and disk go, using
    the recorded check spans and cache observations, and which change this plan should make
    next.
 
@@ -790,3 +798,22 @@ binding was recorded as warm (the run now says `cache.warm = false` with `discar
 the repetitions after it, which find the directory warm again, read `warm 2 of 3` in `af task
 show`). R2 closes here. Its three verification Tasks cost 686,566 tokens against 753,016 for the
 one implementation Task; the first was a gate flake that cost 2,151.
+
+#### R3 — Report Tasks
+
+Implementation Task `research-r3` from 0c72e63 (753 lines of design in scope; 1,067,770 tokens; 7
+Attempts; gate warm, `kernel` 14.2 min) ended `changes_requested`. The implementer (Claude Opus
+5.5) delivered the profile, the three operators, both artifacts' schemas, the staged
+`kernel/report` packages with an idempotent install test, ADR-0125 and the docs, and reported the
+whole workspace green. Both reviewers (GPT-6 Sol) and the evaluator converged on one contract
+defect: the `sources` root port was declared required although this section says optional; the
+Task-file adapter's empty set hid it. The reviewers added three more: an execute-checks author
+could add a file under an existing source directory and still pass the byte-identical seal
+(ADR-0118's rule ignored every addition); a sources file over 4 MiB passed capture because only
+its text was counted; and a valid 4 MiB sources set could never reach a Worker through the 1 MiB
+request. All four were fixed by hand with tests, and the third changed this section: sources are
+bounded at 512 KiB of text in a 640 KiB file, and bounded retrieval of larger sources is recorded
+as a follow-up. The implementer also found that a Worker port carries one Snapshot ID, so R4's
+`measurements` binding of a baseline and a candidate from two Snapshots cannot render as written;
+R4 amends its section before it runs. The staged `.af/` packages were installed by hand as their
+README says.

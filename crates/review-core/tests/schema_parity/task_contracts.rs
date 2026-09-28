@@ -315,6 +315,184 @@ fn document_contracts_keep_source_data_closed_and_never_use_code_snapshots() {
     );
 }
 
+#[test]
+fn report_contracts_name_their_snapshot_and_keep_the_document_shape() {
+    use review_core::task::document::*;
+    use review_core::task::report_task::*;
+    let id = format!("sha256:{}", "1".repeat(64));
+    let snapshot = format!("sha256:{}", "2".repeat(64));
+    // The report sources file is the Document's file shape; it may be empty.
+    let empty = json!({"schema":"af.document-sources/1","sources":{}});
+    assert_valid("report-sources-v1.json", &empty);
+    assert_invalid(
+        "document-sources-v1.json",
+        &empty,
+        "the Document profile still requires a source",
+    );
+    let long = json!({"schema":"af.document-sources/1","sources":{"task":{"title":"Task",
+        "uri":"repo:README.md","revision":"r1","text":"x".repeat(MAX_REPORT_SOURCE_BYTES)}}});
+    assert_valid("report-sources-v1.json", &long);
+    serde_json::from_value::<ReportSourcesV1>(long.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let mut over = long;
+    over["sources"]["task"]["text"] = json!("x".repeat(MAX_REPORT_SOURCE_BYTES + 1));
+    assert_invalid(
+        "report-sources-v1.json",
+        &over,
+        "an entry is at most 256 KiB",
+    );
+    assert!(
+        serde_json::from_value::<ReportSourcesV1>(over)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let mut granted = empty.clone();
+    granted["allowed_effects"] = json!(["write-source"]);
+    assert_invalid(
+        "report-sources-v1.json",
+        &granted,
+        "sources grant no effect",
+    );
+    assert!(serde_json::from_value::<ReportSourcesV1>(granted).is_err());
+
+    let draft = json!({"schema":"af.document-draft/2","title":"Where the time goes",
+        "sections":[{"heading":"Findings","body":"Tests dominate."}],"citations":["r1"],
+        "repository_citations":[{"path":"README.md"},{"path":"src/lib.rs","line":3}]});
+    assert_valid("document-draft-v2.json", &draft);
+    let typed: DocumentDraftV2 = serde_json::from_value(draft.clone()).unwrap();
+    typed.validate().unwrap();
+    assert_eq!(serde_json::to_value(&typed).unwrap(), draft);
+    // Without citations the field is omitted, not an empty list, and both spellings read.
+    let mut bare = draft.clone();
+    bare.as_object_mut().unwrap().remove("repository_citations");
+    assert_valid("document-draft-v2.json", &bare);
+    let typed: DocumentDraftV2 = serde_json::from_value(bare.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&typed).unwrap(), bare);
+    for (bad, why) in [
+        (json!({"path":"README.md","line":0}), "a line is 1-based"),
+        (json!({"path":""}), "a citation names a path"),
+        (json!({"path":"a\nb"}), "a path is one line"),
+        (json!({"path":" README.md"}), "a path is spelled exactly"),
+        (
+            json!({"path":"README.md","column":1}),
+            "a citation is closed",
+        ),
+    ] {
+        let mut invalid = draft.clone();
+        invalid["repository_citations"] = json!([bad]);
+        assert_invalid("document-draft-v2.json", &invalid, why);
+        assert!(
+            serde_json::from_value::<DocumentDraftV2>(invalid)
+                .map_err(|e| e.to_string())
+                .and_then(|draft| draft.validate())
+                .is_err(),
+            "{why}"
+        );
+    }
+    let mut first = draft.clone();
+    first["schema"] = json!("af.document-draft/1");
+    assert_invalid("document-draft-v2.json", &first, "the version is its own");
+    assert_invalid(
+        "document-draft-v1.json",
+        &draft,
+        "the first version never carries repository citations",
+    );
+
+    let receipt = json!({"plan_id":id,"document_id":id,"sources_id":id,"policy_id":id,
+        "source_snapshot_id":snapshot,"manifest_id":id,
+        "checks":{"repository_citations":"failed","size":"passed"},
+        "citation_failures":[{"citation":{"path":"src/lib.rs","line":9},"reason":"line_out_of_range"}],
+        "outcome":"failed"});
+    assert_valid("report-check-receipt-v1.json", &receipt);
+    let typed: ReportCheckReceiptV1 = serde_json::from_value(receipt.clone()).unwrap();
+    typed.validate().unwrap();
+    assert_eq!(serde_json::to_value(&typed).unwrap(), receipt);
+    for field in ["source_snapshot_id", "manifest_id"] {
+        let mut missing = receipt.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert_invalid(
+            "report-check-receipt-v1.json",
+            &missing,
+            "a receipt names the tree it judged",
+        );
+        assert!(serde_json::from_value::<ReportCheckReceiptV1>(missing).is_err());
+    }
+    let mut reason = receipt.clone();
+    reason["citation_failures"][0]["reason"] = json!("unreadable");
+    assert_invalid("report-check-receipt-v1.json", &reason, "closed reasons");
+    assert!(serde_json::from_value::<ReportCheckReceiptV1>(reason).is_err());
+
+    let evaluation = json!({"document_id":id,"sources_id":id,"requirements_id":id,
+        "check_receipt_id":id,"source_snapshot_id":snapshot,"outcome":"passed",
+        "summary":"Cited lines read on the same Snapshot."});
+    assert_valid("report-evaluation-v1.json", &evaluation);
+    serde_json::from_value::<ReportEvaluationV1>(evaluation.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let mut missing = evaluation;
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("source_snapshot_id");
+    assert_invalid(
+        "report-evaluation-v1.json",
+        &missing,
+        "an evaluation names its Snapshot",
+    );
+    assert!(serde_json::from_value::<ReportEvaluationV1>(missing).is_err());
+
+    let invocation = json!({"plan_id":id,"node":"root.nodes.accept","inputs":{}});
+    let verification = json!({"invocation":invocation,"document_id":id,"policy_id":id,
+        "check_receipt_id":id,"evaluation_id":id,"source_snapshot_id":snapshot,"outcome":"passed"});
+    assert_valid("report-verification-v1.json", &verification);
+    let typed: ReportVerificationV1 = serde_json::from_value(verification.clone()).unwrap();
+    typed.validate().unwrap();
+    assert_eq!(serde_json::to_value(&typed).unwrap(), verification);
+    let mut absent = verification.clone();
+    absent.as_object_mut().unwrap().remove("evaluation_id");
+    assert_valid("report-verification-v1.json", &absent);
+    let mut null = verification;
+    null["evaluation_id"] = Value::Null;
+    assert_invalid("report-verification-v1.json", &null, "absent, never null");
+    assert!(serde_json::from_value::<ReportVerificationV1>(null).is_err());
+
+    // The three report operators are closed members of the Pipeline operator schema.
+    for (operator, valid) in [
+        (json!({"op": "report_seal"}), true),
+        (json!({"op": "report_check"}), true),
+        (json!({"op": "report_accept"}), true),
+        (json!({"op": "report_check", "checks": ["size"]}), false),
+    ] {
+        let definition = json!({
+            "schema": "af.pipeline/1", "name": "fixture/report", "version": "1.0.0",
+            "contract": {"inputs": {}, "outputs": {"out": {"artifact_type": "af/Document@1",
+                "cardinality": "one", "optional": false, "affinity": {"kind": "unbound"}, "covers": []}}},
+            "accepts": {"kinds": ["report"], "required_facts": {}},
+            "slots": {},
+            "nodes": [{"id": "n", "operator": operator, "inputs": {}}],
+            "outputs": {"out": {"kind": "node", "node": "n", "port": "document"}},
+            "coverage": {}, "max_attempts": 1, "max_parallel": 1
+        });
+        if valid {
+            assert_valid("pipeline-definition-v1.json", &definition);
+        } else {
+            assert_invalid(
+                "pipeline-definition-v1.json",
+                &definition,
+                "closed operator",
+            );
+        }
+        let rust =
+            serde_json::from_value::<review_core::task::pipeline::PipelineDefinitionV1>(definition)
+                .is_ok_and(|p| p.validate().is_ok());
+        assert_eq!(rust, valid, "{operator}");
+    }
+}
+
 fn fixture(name: &str) -> Value {
     let path = workspace_root()
         .join("fixtures/task-contracts/v1")

@@ -1685,6 +1685,7 @@ impl Compiler<'_> {
                                 | TaskOperatorV1::FixVerify { .. }
                                 | TaskOperatorV1::Check { .. }
                                 | TaskOperatorV1::DocumentCheck {}
+                                | TaskOperatorV1::ReportCheck {}
                                 | TaskOperatorV1::Measure { .. }
                         );
                         if paid && signature.attempt.is_none() {
@@ -1723,6 +1724,7 @@ impl Compiler<'_> {
                                             | TaskOperatorV1::FixVerify { .. }
                                             | TaskOperatorV1::Check { .. }
                                             | TaskOperatorV1::DocumentCheck {}
+                                            | TaskOperatorV1::ReportCheck {}
                                     ) || signature
                                         .evidence
                                         .values()
@@ -1913,6 +1915,9 @@ fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
         TaskOperatorV1::DocumentSeal {} => Ok("document-seal"),
         TaskOperatorV1::DocumentCheck {} => Ok("document-check"),
         TaskOperatorV1::DocumentAccept {} => Ok("document-accept"),
+        TaskOperatorV1::ReportSeal {} => Ok("report-seal"),
+        TaskOperatorV1::ReportCheck {} => Ok("report-check"),
+        TaskOperatorV1::ReportAccept {} => Ok("report-accept"),
         TaskOperatorV1::Seal {} => Ok("seal"),
         TaskOperatorV1::Accept {} => Ok("accept"),
         TaskOperatorV1::Check { .. } => Ok("check"),

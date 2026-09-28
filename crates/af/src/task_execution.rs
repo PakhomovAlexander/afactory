@@ -26,6 +26,7 @@ use review_pipeline::task::optimization::{
     OptimizationCandidateTaskDomain, OptimizationTaskDomain, optimization_signatures,
 };
 use review_pipeline::task::provider::ProviderTaskDomain;
+use review_pipeline::task::report_task::{ReportTaskDomain, ReportTaskPolicy, report_signatures};
 use review_pipeline::task::review::{
     REVIEW_TASK_POLICY_SCHEMA, ReviewTaskDomain, ReviewTaskPolicy, review_signatures,
 };
@@ -99,6 +100,14 @@ struct TaskFile {
         deserialize_with = "present_option"
     )]
     document_sources: Option<String>,
+    /// A report Task's captured sources, in the `af.document-sources/1` file shape. Absent,
+    /// the report reads the empty set (ADR-0125).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    report_sources: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -170,6 +179,12 @@ struct TaskCatalog {
         deserialize_with = "present_option"
     )]
     document_policy: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    report_policy: Option<String>,
     /// Lower numbers win within a strategy; missing entries have equal last priority.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     selection: BTreeMap<String, BTreeMap<String, u32>>,
@@ -260,6 +275,12 @@ struct RunAuthority {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present_option"
     )]
+    report_policy_id: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
     review_policy_id: Option<String>,
     catalog_id: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -340,8 +361,12 @@ pub(crate) fn recorded_input_bindings(
 
 impl RunAuthority {
     fn invocation_policy_id(&self) -> Result<&str, String> {
-        match (&self.code_policy_id, &self.document_policy_id) {
-            (Some(id), None) | (None, Some(id)) => Ok(id),
+        match (
+            &self.code_policy_id,
+            &self.document_policy_id,
+            &self.report_policy_id,
+        ) {
+            (Some(id), None, None) | (None, Some(id), None) | (None, None, Some(id)) => Ok(id),
             _ => Err("Task requires one captured domain policy".into()),
         }
     }
@@ -503,9 +528,16 @@ fn capture_authority(
         catalog.document_policy.as_deref(),
         DocumentTaskPolicy::validate,
     )?;
+    let report_policy_id = domain::capture_policy::<ReportTaskPolicy>(
+        cas,
+        manifest,
+        catalog.report_policy.as_deref(),
+        ReportTaskPolicy::validate,
+    )?;
     let initial_policy = code_policy_id
         .as_ref()
         .or(document_policy_id.as_ref())
+        .or(report_policy_id.as_ref())
         .ok_or("Catalog has no installed domain policy")?;
     let engine_id = engine(cas)?;
     // Package capture does not compile a Task or choose its business acceptance profile.
@@ -611,31 +643,47 @@ fn capture_authority(
         providers.extend(local.definition.providers);
         slot_workers = local.definition.slots;
     }
-    let is_document = catalog
+    let kind_profile = catalog
         .kinds
         .get(task_kind)
         .and_then(|name| capture.task_kind(name))
-        .map_or(task_kind == "document", |kind| {
-            kind.profile == TaskKindProfile::Document
-        });
-    let (code_policy_id, document_policy_id) = if is_document {
+        .map(|kind| kind.profile);
+    let is_document = kind_profile.map_or(task_kind == "document", |profile| {
+        profile == TaskKindProfile::Document
+    });
+    let is_report = kind_profile.map_or(task_kind == "report", |profile| {
+        profile == TaskKindProfile::Report
+    });
+    let (code_policy_id, document_policy_id, report_policy_id) = if is_document {
         (
             None,
             Some(document_policy_id.ok_or("Document Task requires a captured document policy")?),
+            None,
+        )
+    } else if is_report {
+        (
+            None,
+            None,
+            Some(report_policy_id.ok_or(
+                "Report Task requires a captured report policy: name it as report_policy in .af/task-catalog.toml",
+            )?),
         )
     } else {
         (
             Some(code_policy_id.ok_or("Code/Review Task requires a captured code policy")?),
             None,
+            None,
         )
     };
+    let data_only = is_document || is_report;
     let authority = RunAuthority {
         schema: provider_admission::RUN_AUTHORITY_SCHEMA.into(),
         provider_admission,
         engine_id,
         code_policy_id: code_policy_id.clone(),
         document_policy_id,
-        review_policy_id: if is_document {
+        report_policy_id,
+        review_policy_id: if data_only {
             None
         } else {
             catalog
@@ -708,6 +756,14 @@ fn restore_compiler(
             document_signatures(id, &policy)?,
             BTreeMap::from([("verified".into(), "document".into())]),
         )
+    } else if let Some(id) = &authority.report_policy_id {
+        let policy: ReportTaskPolicy =
+            serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        (
+            report_signatures(id, &policy)?,
+            BTreeMap::from([("verified".into(), "report".into())]),
+        )
     } else {
         let id = authority.code_policy_id()?;
         let policy: CodeTaskPolicy =
@@ -747,6 +803,14 @@ fn restore_compiler(
     if authority.document_policy_id.is_some() {
         compiler = compiler.with_authored_artifacts(BTreeSet::from([
             review_core::task::document::DOCUMENT_DRAFT_V1.into(),
+        ]))?;
+    }
+    // A report's author is whoever returns a draft of either version, whatever it declares,
+    // so no Pipeline can make the author its own verifier.
+    if authority.report_policy_id.is_some() {
+        compiler = compiler.with_authored_artifacts(BTreeSet::from([
+            review_core::task::document::DOCUMENT_DRAFT_V1.into(),
+            review_core::task::document::DOCUMENT_DRAFT_V2.into(),
         ]))?;
     }
     for (name, package) in &authority.packages {
@@ -1050,6 +1114,12 @@ fn start_captured(
     if bound_ports.contains_key("sources") && file.document_sources.is_some() {
         return Err("A bound sources port and document_sources claim one input".into());
     }
+    if bound_ports.contains_key("sources") && file.report_sources.is_some() {
+        return Err("A bound sources port and report_sources claim one input".into());
+    }
+    if file.report_sources.is_some() && profile != TaskKindProfile::Report {
+        return Err("report_sources is only valid for a report Task".into());
+    }
     if bound_ports.contains_key("history")
         && (file.optimization_history.is_some() || options.optimization_history.is_some())
     {
@@ -1168,6 +1238,70 @@ fn start_captured(
     };
     if let Some(source_port) = source_port {
         revision.inputs.insert("source".into(), source_port);
+    }
+    if profile == TaskKindProfile::Report {
+        use review_core::task::report_task::*;
+        // A bound `sources` port replaces this construction. Without `report_sources` the
+        // report reads the empty set, so every report names the exact sources it was checked
+        // against.
+        if !bound_ports.contains_key("sources") {
+            let (sources, refs) = match file.report_sources.as_deref() {
+                Some(path) => {
+                    if !review_config::task::shared::safe_relative_path(path) {
+                        return Err("Report source path must be project-relative".into());
+                    }
+                    let bytes = captured_file(&cas, &source.manifest, path)?;
+                    // The file's own bytes first: identities and text together, before parsing.
+                    if bytes.len() > MAX_REPORT_SOURCES_FILE_BYTES {
+                        return Err(format!(
+                            "{path}: report sources file is {} bytes, over its {} KiB bound",
+                            bytes.len(),
+                            MAX_REPORT_SOURCES_FILE_BYTES / 1024
+                        ));
+                    }
+                    let sources: ReportSourcesV1 = parse(Path::new(path), &bytes)?;
+                    sources
+                        .validate()
+                        .map_err(|error| format!("{path}: {error}"))?;
+                    let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
+                    (sources, vec![raw, origin.clone()])
+                }
+                None => (ReportSourcesV1::empty(), vec![origin.clone()]),
+            };
+            let id = cas
+                .put_artifact(
+                    REPORT_SOURCES_V1,
+                    producer(),
+                    refs,
+                    None,
+                    serde_json::to_value(sources).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?
+                .0;
+            revision.inputs.insert(
+                "sources".into(),
+                ArtifactInputV1 {
+                    artifact_ids: vec![id.clone()],
+                    artifact_type: REPORT_SOURCES_V1.into(),
+                    cardinality: PortCardinality::One,
+                    snapshot_id: None,
+                },
+            );
+            revision.provenance.input_artifact_ids.push(id);
+            revision.provenance.input_artifact_ids.sort();
+        }
+        // An author reads the source and may run commands in a clone that seals nothing back;
+        // nothing in a report Task may write source, so `af task deliver` has nothing to place.
+        revision.authority.allowed_effects =
+            BTreeSet::from(["read-source".into(), "execute-checks".into()]);
+        revision.required_outputs = serde_json::from_value(json!({"report":{"artifact_type":review_core::task::document::DOCUMENT_V1,"cardinality":"one"},"verification":{"artifact_type":REPORT_VERIFICATION_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?;
+        revision.acceptance = BTreeMap::from([(
+            "verified".into(),
+            AcceptanceObligationV1 {
+                evidence_type: REPORT_VERIFICATION_V1.into(),
+                verifier_policy: authority.invocation_policy_id()?.into(),
+            },
+        )]);
     }
     if profile == TaskKindProfile::Document {
         use review_core::task::document::*;
@@ -1597,6 +1731,7 @@ fn selected_profile(
             "implement" => TaskKindProfile::Implementation,
             "review" => TaskKindProfile::Review,
             "document" => TaskKindProfile::Document,
+            "report" => TaskKindProfile::Report,
             "optimize" => TaskKindProfile::OptimizationAnalysis,
             _ => return Err("Task requires a configured kind package".into()),
         }
@@ -1807,6 +1942,14 @@ fn captured_domain(
                 .document_policy_id
                 .as_deref()
                 .ok_or("Task lost its document policy")?,
+            graph,
+        )?)),
+        TaskKindProfile::Report => Ok(Box::new(ReportTaskDomain::captured(
+            cas,
+            authority
+                .report_policy_id
+                .as_deref()
+                .ok_or("Task lost its report policy")?,
             graph,
         )?)),
         TaskKindProfile::OptimizationAnalysis => Ok(Box::new(OptimizationTaskDomain::captured(
@@ -2288,6 +2431,9 @@ fn present_with_format(
         for line in measurement_lines(cas, &state)? {
             println!("{line}");
         }
+        for line in report_lines(cas, result.as_ref())? {
+            println!("{line}");
+        }
         if let Some(last) = reports.last().and_then(|r| r["diagnostics"].as_object()) {
             for (node, diagnostic) in last {
                 if let Some(message) = diagnostic["message"].as_str() {
@@ -2395,6 +2541,51 @@ fn measurement_lines(cas: &Cas, state: &TaskProjection) -> Result<Vec<String>, S
         }
     }
     Ok(lines)
+}
+
+/// A report Task's title, its verifier's outcome and the source Snapshot its citations were
+/// checked against (ADR-0125), from the recorded public acceptance receipt. Any other Task, and
+/// a report Task with no result yet, prints nothing.
+fn report_lines(cas: &Cas, result: Option<&TaskResultV1>) -> Result<Vec<String>, String> {
+    use review_core::task::document::{DOCUMENT_V1, DocumentV1};
+    use review_core::task::pipeline::ReceiptOutcomeV1;
+    use review_core::task::report_task::*;
+    let Some(verification) = result.and_then(|result| {
+        result
+            .outputs
+            .get("verification")
+            .filter(|port| port.artifact_type == REPORT_VERIFICATION_V1)
+    }) else {
+        return Ok(Vec::new());
+    };
+    let [id] = verification.artifact_ids.as_slice() else {
+        return Ok(Vec::new());
+    };
+    let name = |outcome: ReceiptOutcomeV1| match outcome {
+        ReceiptOutcomeV1::Passed => "passed",
+        ReceiptOutcomeV1::Failed => "failed",
+        ReceiptOutcomeV1::Inconclusive => "inconclusive",
+    };
+    let receipt: ReportVerificationV1 = artifact(cas, id, REPORT_VERIFICATION_V1)?;
+    let document: DocumentV1 = artifact(cas, &receipt.document_id, DOCUMENT_V1)?;
+    let draft = cas
+        .get_artifact(&document.draft_id)
+        .map_err(|e| e.to_string())?;
+    let title = draft.payload["title"]
+        .as_str()
+        .ok_or("Report draft has no title")?;
+    let verifier = match &receipt.evaluation_id {
+        Some(id) => {
+            let evaluation: ReportEvaluationV1 = artifact(cas, id, REPORT_EVALUATION_V1)?;
+            name(evaluation.outcome).to_owned()
+        }
+        None => format!("not run (report acceptance {})", name(receipt.outcome)),
+    };
+    Ok(vec![
+        format!("report: {}", preview::text(title)),
+        format!("report verifier: {verifier}"),
+        format!("report Snapshot: {}", receipt.source_snapshot_id),
+    ])
 }
 
 /// The cache condition a warm measure's repetitions actually ran under: `, warm` when every one

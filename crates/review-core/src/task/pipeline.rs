@@ -173,6 +173,14 @@ pub enum TaskOperatorV1 {
     DocumentSeal {},
     DocumentCheck {},
     DocumentAccept {},
+    /// The report profile's renderer: the Document renderer over a report draft, bound to the
+    /// exact source Snapshot the draft was written against.
+    ReportSeal {},
+    /// The Document checks plus every repository citation resolved against the source
+    /// Snapshot's exact Manifest; one protected Attempt, never a Provider.
+    ReportCheck {},
+    /// Report acceptance assembly from current checks and the independent evaluation.
+    ReportAccept {},
     /// Deterministic M1 history fold and typed report rendering; never invokes a Provider.
     OptimizationProject {},
     /// Deterministic aggregate development view and installed light-recipe catalog. The output
