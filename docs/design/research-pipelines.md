@@ -668,3 +668,15 @@ check and every declared kind records the cause; and the key's entry listing exe
 ending in `.lock`, so a check could park an oversized `extra.lock` beside its directory forever,
 so only the kernel's exact lock files are exempt, they are truncated on acquisition, and only the
 two known kinds are ever locked. Each has a unit or end-to-end fixture.
+
+Verification Task `research-r1-verify-4` on fd213c3 (338,309 tokens; gate warm, `kernel` 12.4
+min) ended `changes_requested` with three more in-key bypasses, fixed by hand: a policy whose only
+kind was superseded held the key but was not monitored after the check; lock files were exempt by
+name, so a check could unlink the held lock and park an oversized file at its name, or fill a kind
+lock nobody held; and a widened key directory was repaired and reused on the next acquisition. Now
+only the lock inodes this holder opened are exempt, the key is judged before the check is accepted
+and emptied on acquisition when it is not private, and a held key is monitored whether or not a
+kind is bound. Each has a unit and an end-to-end fixture. Four verification rounds and eleven
+hand-fixed defects on the warm cache are themselves a finding for R6: reviewers with a shell hold a
+`trusted_local` cache to an adversarial standard the design words invited, and the standard was
+worth meeting — every bypass they found was real.

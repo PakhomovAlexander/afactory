@@ -18,7 +18,7 @@ use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use nix::dir::Dir;
@@ -38,12 +38,35 @@ const KEY_LOCK: &str = "warm.lock";
 /// check put there, however it is named — is a kind entry to count and remove.
 pub const WARM_KINDS: &[&str] = &["cargo_target", "cargo_home"];
 
-/// Whether `name` is one of the kernel's own lock files below a key.
-fn is_kernel_lock(name: &str) -> bool {
-    name == KEY_LOCK
-        || WARM_KINDS
+/// The lock files this process holds below one key, each by the name it was opened under and
+/// the inode it holds open. Only these inodes are the kernel's: a file a check put at a lock's
+/// name after unlinking it is not, and is counted and removed like anything else.
+#[derive(Debug, Default)]
+struct HeldLocks(Mutex<Vec<(String, u64, u64)>>);
+
+impl HeldLocks {
+    fn register(&self, name: &str, lock: &Flock<File>) -> Result<(), String> {
+        let stat = nix::sys::stat::fstat(&**lock)
+            .map_err(|errno| format!("inspecting a Task build cache lock: {errno}"))?;
+        self.0.lock().expect("held lock registry").push((
+            name.to_string(),
+            inode(&stat).0,
+            inode(&stat).1,
+        ));
+        Ok(())
+    }
+
+    fn holds(&self, stat: &FileStat) -> bool {
+        self.0
+            .lock()
+            .expect("held lock registry")
             .iter()
-            .any(|kind| name.strip_suffix(".lock") == Some(kind))
+            .any(|(_, dev, ino)| (*dev, *ino) == inode(stat))
+    }
+
+    fn names(&self) -> Vec<(String, u64, u64)> {
+        self.0.lock().expect("held lock registry").clone()
+    }
 }
 
 /// How often a waiter retries a held lock. Short against the 60-second bound, long enough not
@@ -111,6 +134,7 @@ pub enum Ensured {
 pub struct TaskBuildCacheKeyLock {
     key: Arc<OwnedFd>,
     path: PathBuf,
+    held: Arc<HeldLocks>,
     _lock: Flock<File>,
 }
 
@@ -123,14 +147,30 @@ pub fn lock_task_build_cache_key(
     toolchain: &str,
     wait: Duration,
 ) -> Result<Option<TaskBuildCacheKeyLock>, String> {
-    let (key, path) = open_key(root, project, toolchain)?;
-    Ok(
-        exclusive_lock_at(&key, KEY_LOCK, wait)?.map(|lock| TaskBuildCacheKeyLock {
-            key,
-            path,
-            _lock: lock,
-        }),
-    )
+    let (key, path, private) = open_key(root, project, toolchain)?;
+    let Some(lock) = exclusive_lock_at(&key, KEY_LOCK, wait)? else {
+        return Ok(None);
+    };
+    let held = Arc::new(HeldLocks::default());
+    held.register(KEY_LOCK, &lock)?;
+    let key = TaskBuildCacheKeyLock {
+        key,
+        path,
+        held,
+        _lock: lock,
+    };
+    if !private {
+        // A key that is no longer a private directory is suspect state, not a mode to fix:
+        // everything below it goes before anything is reused, and only then is it private again.
+        eprintln!(
+            "warm check cache diagnostic: toolchain key {} was not private; emptied before reuse",
+            key.path.display()
+        );
+        key.remove_kinds()?;
+        nix::sys::stat::fchmod(&*key.key, Mode::S_IRWXU)
+            .map_err(|errno| format!("securing a Task build cache directory: {errno}"))?;
+    }
+    Ok(Some(key))
 }
 
 /// Lock `<root>/<project>/<toolchain>/<kind>` for exclusive use without the key lock, waiting
@@ -143,8 +183,8 @@ pub fn lock_task_build_cache(
     kind: &str,
     wait: Duration,
 ) -> Result<TaskBuildCacheLock, String> {
-    let (key, path) = open_key(root, project, toolchain)?;
-    lock_kind_at(key, &path, kind, wait)
+    let (key, path, _) = open_key(root, project, toolchain)?;
+    lock_kind_at(key, &path, kind, wait, &Arc::new(HeldLocks::default()))
 }
 
 impl TaskBuildCacheKeyLock {
@@ -154,7 +194,37 @@ impl TaskBuildCacheKeyLock {
 
     /// Lock one kind below this key, waiting at most `wait`.
     pub fn lock_kind(&self, kind: &str, wait: Duration) -> Result<TaskBuildCacheLock, String> {
-        lock_kind_at(Arc::clone(&self.key), &self.path, kind, wait)
+        lock_kind_at(Arc::clone(&self.key), &self.path, kind, wait, &self.held)
+    }
+
+    /// The reason the key itself must not be trusted right now: it is no longer a private
+    /// directory of this user, or a lock file this process holds was unlinked or replaced at its
+    /// name. `None` when the key is as the kernel left it.
+    pub fn inspect(&self) -> Option<String> {
+        match nix::sys::stat::fstat(&*self.key) {
+            Ok(stat) if stat.st_uid != nix::unistd::geteuid().as_raw() => {
+                return Some("the toolchain key belongs to another user".into());
+            }
+            Ok(stat) if u32::from(stat.st_mode) & 0o777 != 0o700 => {
+                return Some(format!(
+                    "the toolchain key has mode {:o}, not 700",
+                    u32::from(stat.st_mode) & 0o777
+                ));
+            }
+            Ok(_) => {}
+            Err(errno) => {
+                return Some(format!("the toolchain key could not be inspected: {errno}"));
+            }
+        }
+        for (name, dev, ino) in self.held.names() {
+            match nix::sys::stat::fstatat(&*self.key, name.as_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
+                Ok(stat) if inode(&stat) == (dev, ino) => {}
+                Ok(_) => return Some(format!("the lock file `{name}` was replaced")),
+                Err(Errno::ENOENT) => return Some(format!("the lock file `{name}` was removed")),
+                Err(errno) => return Some(format!("the lock file `{name}`: {errno}")),
+            }
+        }
+        None
     }
 
     /// Bytes below the whole key — every kind directory, whoever left it, and the lock files —
@@ -168,14 +238,8 @@ impl TaskBuildCacheKeyLock {
                 self.path.display()
             ),
         })?;
-        let key = self.path.clone();
-        count_skipping(descriptor, &self.path, &|path| {
-            path.parent() == Some(key.as_path())
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(is_kernel_lock)
-        })
+        let held = Arc::clone(&self.held);
+        count_skipping(descriptor, &self.path, &move |_, stat| held.holds(stat))
     }
 
     /// The kind entries currently below the key, by name, sorted: every entry that
@@ -196,16 +260,17 @@ impl TaskBuildCacheKeyLock {
             else {
                 continue;
             };
-            let text = OsStr::from_bytes(name.to_bytes())
-                .to_string_lossy()
-                .into_owned();
-            // The kernel's own lock files stay; everything else below the key — a kind
-            // directory, whatever a check put where a kind was, or any file a check named to
-            // look like a lock — is a kind entry to count and remove.
-            if file_kind(&stat) == SFlag::S_IFREG && is_kernel_lock(&text) {
+            // The lock inodes this process holds stay; everything else below the key — a kind
+            // directory, whatever a check put where a kind was, a file a check named to look
+            // like a lock, a lock file another holder left — is a kind entry to count and remove.
+            if self.held.holds(&stat) {
                 continue;
             }
-            names.push(text);
+            names.push(
+                OsStr::from_bytes(name.to_bytes())
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
         names.sort();
         Ok(names)
@@ -372,7 +437,7 @@ fn open_key(
     root: &Path,
     project: &str,
     toolchain: &str,
-) -> Result<(Arc<OwnedFd>, PathBuf), String> {
+) -> Result<(Arc<OwnedFd>, PathBuf, bool), String> {
     if !is_key(project) || !is_key(toolchain) {
         return Err("Task build cache key is not an opaque identity".into());
     }
@@ -384,9 +449,10 @@ fn open_key(
             .map_err(|error| format!("creating the Task build cache parent: {error}"))?;
     }
     let root_fd = open_root(root)?;
-    let project_fd = open_level(&root_fd, project)?;
-    let key = open_level(&project_fd, toolchain)?;
-    Ok((Arc::new(key), root.join(project).join(toolchain)))
+    let (project_fd, _) = open_level(&root_fd, project, true)?;
+    // The key level is judged, not repaired: a widened key is emptied under its lock first.
+    let (key, private) = open_level(&project_fd, toolchain, false)?;
+    Ok((Arc::new(key), root.join(project).join(toolchain), private))
 }
 
 /// The root level, by path: created private when absent, refused when it is a link or not a
@@ -409,9 +475,10 @@ fn open_root(root: &Path) -> Result<OwnedFd, String> {
 }
 
 /// One level below an open level: created private when absent, opened without following links
-/// (a link or a file where the level should be is refused), owner and mode checked on the open
-/// descriptor.
-fn open_level(parent: &OwnedFd, name: &str) -> Result<OwnedFd, String> {
+/// (a link or a file where the level should be is refused), owner checked on the open
+/// descriptor. With `repair`, a wider mode is set back to `0700`; without it the caller learns
+/// whether the level was private and decides what to discard first.
+fn open_level(parent: &OwnedFd, name: &str, repair: bool) -> Result<(OwnedFd, bool), String> {
     match nix::sys::stat::mkdirat(parent, name, Mode::S_IRWXU) {
         Ok(()) | Err(Errno::EEXIST) => {}
         Err(errno) => return Err(format!("creating a Task build cache directory: {errno}")),
@@ -425,8 +492,17 @@ fn open_level(parent: &OwnedFd, name: &str) -> Result<OwnedFd, String> {
                 errno => format!("opening a Task build cache directory: {errno}"),
             }
         })?;
-    secure_level(&descriptor)?;
-    Ok(descriptor)
+    let stat = nix::sys::stat::fstat(&descriptor)
+        .map_err(|errno| format!("inspecting a Task build cache directory: {errno}"))?;
+    if stat.st_uid != nix::unistd::geteuid().as_raw() {
+        return Err("a Task build cache directory belongs to another user".into());
+    }
+    let private = u32::from(stat.st_mode) & 0o777 == 0o700;
+    if !private && repair {
+        nix::sys::stat::fchmod(&descriptor, Mode::S_IRWXU)
+            .map_err(|errno| format!("securing a Task build cache directory: {errno}"))?;
+    }
+    Ok((descriptor, private))
 }
 
 fn secure_level(descriptor: &OwnedFd) -> Result<(), String> {
@@ -457,18 +533,23 @@ fn lock_kind_at(
     key_path: &Path,
     kind: &str,
     wait: Duration,
+    held: &Arc<HeldLocks>,
 ) -> Result<TaskBuildCacheLock, String> {
     if !is_kind(kind) || !WARM_KINDS.contains(&kind) {
         return Err("Task build cache key is not an opaque identity".into());
     }
-    match exclusive_lock_at(&key, &format!("{kind}.lock"), wait)? {
-        Some(lock) => Ok(TaskBuildCacheLock::Held(WarmDirectory {
-            path: key_path.join(kind),
-            name: kind.to_string(),
-            key,
-            forbidden: &[],
-            _lock: lock,
-        })),
+    let name = format!("{kind}.lock");
+    match exclusive_lock_at(&key, &name, wait)? {
+        Some(lock) => {
+            held.register(&name, &lock)?;
+            Ok(TaskBuildCacheLock::Held(WarmDirectory {
+                path: key_path.join(kind),
+                name: kind.to_string(),
+                key,
+                forbidden: &[],
+                _lock: lock,
+            }))
+        }
         None => Ok(TaskBuildCacheLock::Busy),
     }
 }
@@ -759,18 +840,19 @@ fn open_path(path: &Path) -> Result<Option<OwnedFd>, Uninspectable> {
 }
 
 fn count(descriptor: OwnedFd, display: &Path) -> Result<u64, Uninspectable> {
-    count_skipping(descriptor, display, &|_| false)
+    count_skipping(descriptor, display, &|_, _| false)
 }
 
-/// [`count`], leaving out the entries `skip` names (the kernel's own lock files below a key).
+/// [`count`], leaving out the entries `skip` names (the lock inodes this process holds below a
+/// key).
 fn count_skipping(
     descriptor: OwnedFd,
     display: &Path,
-    skip: &dyn Fn(&Path) -> bool,
+    skip: &dyn Fn(&Path, &FileStat) -> bool,
 ) -> Result<u64, Uninspectable> {
     let mut total = 0_u64;
     walk_from(descriptor, display, &mut |path, stat| {
-        if file_kind(stat) != SFlag::S_IFDIR && !skip(path) {
+        if file_kind(stat) != SFlag::S_IFDIR && !skip(path, stat) {
             total = total.saturating_add(u64::try_from(stat.st_size).unwrap_or(0));
         }
         true
@@ -848,6 +930,17 @@ fn walk_from(
             }
         }
     }
+}
+
+/// The device and inode numbers of a status, in one width on every platform: `st_dev` and
+/// `st_ino` are narrower on some targets and already `u64` on others, so the conversion is
+/// identity on one platform and a widening on another.
+#[allow(clippy::useless_conversion, clippy::unnecessary_cast)]
+fn inode(stat: &FileStat) -> (u64, u64) {
+    (
+        u64::try_from(stat.st_dev).unwrap_or_default(),
+        u64::try_from(stat.st_ino).unwrap_or_default(),
+    )
 }
 
 fn file_kind(stat: &FileStat) -> SFlag {
@@ -1201,7 +1294,11 @@ mod tests {
         let key = lock_task_build_cache_key(&cache, &key('a'), &key('b'), Duration::ZERO)
             .unwrap()
             .unwrap();
-        assert_eq!(key.kinds().unwrap(), ["cargo_home"]);
+        assert_eq!(
+            key.kinds().unwrap(),
+            ["cargo_home", "cargo_home.lock"],
+            "a lock nobody holds is an entry like any other"
+        );
         assert!(
             key.bytes().unwrap() >= 3000,
             "the key counts a kind this holder never locked"
@@ -1218,6 +1315,7 @@ mod tests {
             removed,
             [
                 ("cargo_home".to_string(), 3000),
+                ("cargo_home.lock".to_string(), 0),
                 ("cargo_target".to_string(), 1000)
             ]
         );
@@ -1226,7 +1324,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_a_check_names_like_a_lock_is_counted_and_removed_with_the_key() {
+    fn only_the_lock_inodes_this_holder_opened_are_exempt_from_the_key() {
         let root = tempfile::tempdir().unwrap();
         let cache = root.path().join("af").join(TASK_BUILD_CACHE_DIRECTORY);
         let key = lock_task_build_cache_key(&cache, &key('a'), &key('b'), Duration::ZERO)
@@ -1238,31 +1336,93 @@ mod tests {
             panic!("free kind");
         };
         target.ensure().unwrap();
+        // A file named like a lock, and a kind lock nobody holds, both count and both go.
         std::fs::write(key.path().join("extra.lock"), [0_u8; 4096]).unwrap();
-        std::fs::write(key.path().join("cargo_target.lock"), [0_u8; 2048]).unwrap();
-        assert!(key.bytes().unwrap() >= 4096, "the impostor counts");
-        assert!(
-            key.bytes().unwrap() < 4096 + 2048,
-            "the kernel's own lock files never do"
+        std::fs::write(key.path().join("cargo_home.lock"), [0_u8; 2048]).unwrap();
+        // The held kind lock is empty: acquisition truncated it, and its inode is exempt.
+        assert_eq!(key.bytes().unwrap(), 4096 + 2048);
+        assert_eq!(
+            key.kinds().unwrap(),
+            ["cargo_home.lock", "cargo_target", "extra.lock"]
         );
-        assert_eq!(key.kinds().unwrap(), ["cargo_target", "extra.lock"]);
         let removed = key.remove_kinds().unwrap();
         assert_eq!(
             removed,
             [
+                ("cargo_home.lock".to_string(), 2048),
                 ("cargo_target".to_string(), 0),
                 ("extra.lock".to_string(), 4096)
             ]
         );
-        assert!(!key.path().join("extra.lock").exists());
         assert!(
             key.path().join("cargo_target.lock").exists(),
-            "the kernel's lock stays"
+            "the held lock stays"
         );
         assert!(key.path().join(KEY_LOCK).exists());
         assert!(
             key.lock_kind("extra", Duration::ZERO).is_err(),
             "only the closed kind set is ever locked"
+        );
+        assert_eq!(key.inspect(), None);
+    }
+
+    #[test]
+    fn a_replaced_lock_or_a_widened_key_is_suspect_and_a_widened_key_is_emptied_before_reuse() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("af").join(TASK_BUILD_CACHE_DIRECTORY);
+        let lock = lock_task_build_cache_key(&cache, &key('a'), &key('b'), Duration::ZERO)
+            .unwrap()
+            .unwrap();
+        let TaskBuildCacheLock::Held(target) =
+            lock.lock_kind("cargo_target", Duration::ZERO).unwrap()
+        else {
+            panic!("free kind");
+        };
+        target.ensure().unwrap();
+        std::fs::write(target.path().join("built"), [1_u8; 64]).unwrap();
+        // A check unlinks the held key lock and parks an oversized file at its name.
+        std::fs::remove_file(lock.path().join(KEY_LOCK)).unwrap();
+        std::fs::write(lock.path().join(KEY_LOCK), [0_u8; 8192]).unwrap();
+        assert!(
+            lock.bytes().unwrap() >= 8192,
+            "the impostor is not the held inode"
+        );
+        assert!(
+            lock.inspect()
+                .is_some_and(|reason| reason.contains("replaced")),
+            "the held lock's name no longer holds its inode"
+        );
+        assert!(lock.kinds().unwrap().contains(&KEY_LOCK.to_string()));
+        lock.remove_kinds().unwrap();
+        assert!(
+            !lock.path().join(KEY_LOCK).exists(),
+            "the impostor went with the key"
+        );
+        drop(target);
+        drop(lock);
+
+        // A check widens the key directory; the next holder empties it before reusing it.
+        let key_path = cache.join(key('a')).join(key('b'));
+        std::fs::create_dir_all(key_path.join("cargo_target")).unwrap();
+        std::fs::write(key_path.join("cargo_target").join("stale"), [2_u8; 32]).unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let lock = lock_task_build_cache_key(&cache, &key('a'), &key('b'), Duration::ZERO)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::symlink_metadata(&key_path).unwrap().mode() & 0o777,
+            0o700,
+            "private again"
+        );
+        assert!(
+            !key_path.join("cargo_target").exists(),
+            "emptied, never repaired and reused"
+        );
+        assert_eq!(lock.inspect(), None);
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            lock.inspect().is_some_and(|reason| reason.contains("mode")),
+            "a widening during the check is caught after it"
         );
     }
 }

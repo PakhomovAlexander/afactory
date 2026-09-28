@@ -44,6 +44,16 @@ time.sleep(90)\n";
 const REMOVE_ROOT: &str = "import os, shutil\n\
 shutil.rmtree(os.environ['CARGO_TARGET_DIR'])\n";
 
+/// A check that unlinks the kernel's held key lock and parks an oversized file at its name.
+const REPLACE_LOCK: &str = "import os\n\
+key = os.path.dirname(os.environ['CARGO_TARGET_DIR'])\n\
+os.remove(os.path.join(key, 'warm.lock'))\n\
+open(os.path.join(key, 'warm.lock'), 'wb').write(b'x' * 8192)\n";
+
+/// A check that widens the toolchain key directory and exits successfully.
+const WIDEN_KEY: &str = "import os\n\
+os.chmod(os.path.dirname(os.environ['CARGO_TARGET_DIR']), 0o777)\n";
+
 const TOOLCHAIN: &str = "[toolchain]\nchannel = \"1.88.0\"\n";
 
 struct Fixture {
@@ -667,6 +677,46 @@ fn a_check_that_removes_its_warm_root_fails_as_suspect_with_the_cause_recorded()
         shown.contains("cargo_target cold empty, removed 0 (suspect)"),
         "{shown}"
     );
+}
+
+#[test]
+fn a_check_that_replaces_the_key_lock_with_an_oversized_file_fails_and_the_key_is_emptied() {
+    let fixture = fixture(code_policy(
+        REPLACE_LOCK,
+        120_000,
+        false,
+        Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096"),
+    ));
+    let outcome = start(&fixture, "replace-lock", 3);
+    let cas = cas(&fixture);
+    let result = check_result(&cas, &outcome);
+    assert_eq!(result["status"], "failed");
+    assert_eq!(check_receipt(&cas, &outcome)["outcome"], "failed");
+    assert!(
+        warm_directories(&fixture).is_empty(),
+        "every kind below the key went"
+    );
+    let observed = observations(&outcome);
+    assert_eq!(observed[0]["kind"], "cargo_target");
+    assert!(observed[0]["evicted_reason"].is_string(), "{observed:?}");
+}
+
+#[test]
+fn a_check_that_widens_the_toolchain_key_fails_as_suspect_and_the_key_is_emptied() {
+    let fixture = fixture(code_policy(
+        WIDEN_KEY,
+        120_000,
+        false,
+        Some("build_cache = [\"cargo_target\"]"),
+    ));
+    let outcome = start(&fixture, "widen-key", 3);
+    let cas = cas(&fixture);
+    let result = check_result(&cas, &outcome);
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["reason"], "warm_cache_suspect");
+    assert!(warm_directories(&fixture).is_empty());
+    let shown = show(&fixture, "widen-key");
+    assert!(shown.contains("removed 0 (suspect)"), "{shown}");
 }
 
 #[test]

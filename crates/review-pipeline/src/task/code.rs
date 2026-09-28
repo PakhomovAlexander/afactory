@@ -467,7 +467,10 @@ impl CodeTaskDomain {
                             .map(|key| (key, p.directories.as_slice()))
                     }),
                 ) {
-                    (Some(session), Some((key, directories))) if !directories.is_empty() => {
+                    // Whenever the key is held — even when every declared kind is superseded and
+                    // nothing is bound — the check runs monitored, so the key is measured during
+                    // and after it and judged before the check is accepted.
+                    (Some(session), Some((key, directories))) => {
                         let (execution, over) = session.run_monitored(
                             runner,
                             definition,
@@ -539,16 +542,21 @@ impl CodeTaskDomain {
                         result.status = CheckStatus::Failed;
                         result.exit_code = None;
                         result.reason = Some(reason.into());
-                        for observation in observations.iter_mut().filter(|o| o.eligible) {
+                        let base_of =
+                            |kind: &str| kind.split(':').next().unwrap_or_default().to_string();
+                        for observation in observations.iter_mut().filter(|o| {
+                            review_sandbox::WARM_KINDS.contains(&base_of(&o.kind).as_str())
+                        }) {
+                            let base = base_of(&observation.kind);
                             let bytes = evicted
                                 .iter()
-                                .find(|(kind, _)| *kind == observation.kind)
+                                .find(|(kind, _)| *kind == base)
                                 .map_or(0, |(_, bytes)| *bytes);
                             observation.evicted_bytes = Some(bytes);
                             observation.evicted_reason = Some(why.into());
                         }
                         for (kind, bytes) in &evicted {
-                            if !observations.iter().any(|o| o.eligible && o.kind == *kind) {
+                            if !observations.iter().any(|o| base_of(&o.kind) == *kind) {
                                 // An entry this check never declared has no observation to carry
                                 // its removal; the key's business, logged only.
                                 eprintln!(

@@ -949,6 +949,10 @@ impl<'a> WarmSession<'a> {
             .or_else(|| over_bound(key, directories, max))
             .map(Excess::Bound)
             .or_else(|| {
+                key.inspect()
+                    .map(|reason| Excess::Suspect(format!("toolchain key: {reason}")))
+            })
+            .or_else(|| {
                 directories.iter().find_map(|(kind, directory)| {
                     directory
                         .inspect()
@@ -1535,11 +1539,24 @@ mod tests {
         prepared: &PreparedCheck,
         script: &str,
     ) -> (CheckExecution, Option<Excess>) {
+        run_with(fixture, session, prepared, script, &[])
+    }
+
+    fn run_with(
+        fixture: &Fixture,
+        session: &WarmSession<'_>,
+        prepared: &PreparedCheck,
+        script: &str,
+        extra: &[(&str, String)],
+    ) -> (CheckExecution, Option<Excess>) {
         let runner = prepared.environment.iter().fold(
             CheckRunner::new(&fixture.cas, fixture.workdir.path())
                 .with_timeout(Duration::from_secs(120)),
             |runner, (key, value)| runner.with_env(key.clone(), value.clone()),
         );
+        let runner = extra.iter().fold(runner, |runner, (key, value)| {
+            runner.with_env(*key, value.clone())
+        });
         let check = CheckDefinition::new(
             "grow",
             review_core::Command::new(
@@ -2165,5 +2182,86 @@ mod tests {
             evicted.is_empty(),
             "nothing was left to remove, and the check still fails"
         );
+    }
+
+    #[test]
+    fn a_check_that_replaces_the_held_key_lock_with_an_oversized_file_fails_and_loses_it() {
+        let fixture = fixture();
+        let host = host(&fixture, None);
+        let policy = warm(Some(4096));
+        let mut session = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
+        let prepared = prepare(&fixture, &mut session);
+        let key_path = prepared.key_lock.as_ref().unwrap().path().to_path_buf();
+        let (_, excess) = run(
+            &fixture,
+            &session,
+            &prepared,
+            "k=\"$(dirname \"$CARGO_TARGET_DIR\")\"; rm \"$k/warm.lock\"; head -c 8192 /dev/zero > \"$k/warm.lock\"",
+        );
+        assert!(
+            excess.is_some(),
+            "an impostor at a lock's name counts: {excess:?}"
+        );
+        session
+            .finish(prepared.key_lock, prepared.directories, excess)
+            .unwrap();
+        assert!(
+            !key_path.join("warm.lock").exists(),
+            "the impostor went with the key; the kernel's inode was already unlinked"
+        );
+    }
+
+    #[test]
+    fn a_check_that_widens_the_toolchain_key_is_suspect_after_it_ends() {
+        let fixture = fixture();
+        let host = host(&fixture, None);
+        let policy = warm(None);
+        let mut session = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
+        let prepared = prepare(&fixture, &mut session);
+        let (_, excess) = run(
+            &fixture,
+            &session,
+            &prepared,
+            "chmod 0777 \"$(dirname \"$CARGO_TARGET_DIR\")\"",
+        );
+        assert!(
+            matches!(&excess, Some(Excess::Suspect(reason)) if reason.contains("mode")),
+            "{excess:?}"
+        );
+        let path = prepared.directories[0].1.path().to_path_buf();
+        session
+            .finish(prepared.key_lock, prepared.directories, excess)
+            .unwrap();
+        assert!(!path.exists(), "emptied under the lock");
+    }
+
+    #[test]
+    fn a_superseded_only_policy_is_still_measured_after_the_check() {
+        let fixture = fixture();
+        let with_cache = host(&fixture, Some(cargo_cache(&fixture)));
+        let superseded = CodeWarmPolicy {
+            build_cache: vec![WarmBuildCacheKind::CargoHome],
+            caches: vec![CacheKindSpec::Cargo],
+            max_bytes: Some(4096),
+        };
+        let mut session = WarmSession::new(&with_cache, &superseded, "repo", declaration(b"x"));
+        let prepared = prepare(&fixture, &mut session);
+        assert!(prepared.directories.is_empty());
+        let key_path = prepared.key_lock.as_ref().unwrap().path().to_path_buf();
+        let (_, excess) = run_with(
+            &fixture,
+            &session,
+            &prepared,
+            "head -c 8192 /dev/zero > \"$WARM_KEY/junk\"",
+            &[("WARM_KEY", key_path.display().to_string())],
+        );
+        assert!(
+            matches!(excess, Some(Excess::Bound(bytes)) if bytes >= 8192),
+            "the key is measured although nothing was bound: {excess:?}"
+        );
+        session
+            .finish(prepared.key_lock, prepared.directories, excess)
+            .unwrap();
+        assert!(!key_path.join("junk").exists(), "emptied under the lock");
     }
 }

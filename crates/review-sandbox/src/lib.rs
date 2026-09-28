@@ -48,7 +48,7 @@ pub use cache::{
 pub use container::{Availability, ContainerProvider};
 pub use seal::{MutationSet, SealedSandbox};
 pub use task_build_cache::{
-    Ensured, TaskBuildCacheKeyLock, TaskBuildCacheLock, Uninspectable, WarmDirectory,
+    Ensured, TaskBuildCacheKeyLock, TaskBuildCacheLock, Uninspectable, WARM_KINDS, WarmDirectory,
     default_task_build_cache_root, directory_bytes, lock_task_build_cache,
     lock_task_build_cache_key,
 };

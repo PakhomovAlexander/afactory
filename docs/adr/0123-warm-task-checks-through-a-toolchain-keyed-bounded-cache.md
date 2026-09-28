@@ -250,3 +250,17 @@ Three rules were added when the follow-up Task's reviewers read the amendment:
   whether or not anything was left to remove — a check that deleted its own warm root is suspect
   too — and every declared kind's observation carries the eviction and its cause, with zero bytes
   when nothing was there.
+
+### After the fourth verification
+
+- **Locks are inodes, not names.** Only the lock files this holder opened — by the inode it holds
+  — are exempt from the key's count and eviction. A file a check parks at a lock's name after
+  unlinking it, or a kind lock nobody holds, is counted and removed like any other entry, and a
+  held lock whose name no longer holds its inode makes the key suspect.
+- **The key itself is judged.** Before the check is accepted the key directory must still be a
+  private directory of this user and every held lock must be in place; a widened key is suspect,
+  the check fails and the key is emptied. On acquisition a key that is not private is emptied
+  before it is made private again, never repaired and reused.
+- **Held is monitored.** Whenever a check holds the key — even when every declared kind is
+  superseded and nothing is bound — the key is measured during the check, measured and judged after
+  it, and every declared kind's observation carries an eviction and its cause.

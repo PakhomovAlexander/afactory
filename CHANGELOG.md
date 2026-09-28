@@ -66,7 +66,10 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   two warm kinds are ever locked and only the kernel's own lock files are exempt from the bound
   (they are truncated on acquisition), a policy whose kinds a Cache Snapshot supersedes still holds
   and bounds the key, and a check whose warm directory is suspect once it ended fails even when
-  nothing was left to evict.
+  nothing was left to evict. Only the lock inodes the holder opened are exempt from the key's
+  bound, the key directory itself must stay private and its held locks in place for a check to be
+  accepted (a widened key is emptied before reuse, never repaired), and a check that holds the
+  key is monitored and judged even when every declared kind is superseded.
 - Give a source-writing Worker that declares `execute-checks` a shell (ADR-0120): `worker_access`
   maps `write-source` plus `execute-checks` to `WorkerAccess::WriteSourceWithShell`, the Claude
   adapter grants `Read,Glob,Grep,Edit,Write,Bash` and Codex runs `workspace-write`, and the shell's

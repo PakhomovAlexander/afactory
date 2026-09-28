@@ -2402,10 +2402,19 @@ fn cache_states(caches: &[serde_json::Value]) -> String {
                     }
                     None => state,
                 }
-            } else if first {
-                format!("{base} cold {reason}")
             } else {
-                format!("{base} removed {bytes} ({reason})")
+                let state = if first {
+                    format!("{base} cold {reason}")
+                } else {
+                    format!("{base} removed {bytes} ({reason})")
+                };
+                match cache["evicted_bytes"].as_u64() {
+                    Some(evicted) => {
+                        let why = cache["evicted_reason"].as_str().unwrap_or("bound_exceeded");
+                        format!("{state}, removed {evicted} ({})", preview::text(why))
+                    }
+                    None => state,
+                }
             }
         })
         .collect::<Vec<_>>()
