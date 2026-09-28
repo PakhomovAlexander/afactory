@@ -1,9 +1,6 @@
-name: Cargo cache
-description: Revision-fresh Cargo artifacts; validation always executes after restoration.
+name: Cargo registry cache
+description: The crate registry index and downloaded archives, keyed by Cargo.lock; compiled output is cached per rustc invocation by sccache, never here.
 inputs:
-  kind:
-    description: Build profile and target/tool identity
-    default: check-debug1
   mode:
     description: Restore before compilation or save even after a failed test
     default: restore
@@ -16,14 +13,14 @@ inputs:
 outputs:
   primary-key:
     value: ${{ steps.restore.outputs.cache-primary-key }}
-    description: Exact revision key
+    description: Exact key for this Cargo.lock
   matched-key:
     value: ${{ steps.restore.outputs.cache-matched-key }}
     description: Restored key
 runs:
   using: composite
   steps:
-    - name: Restore Cargo artifacts
+    - name: Restore the crate registry
       id: restore
       if: inputs.mode == 'restore'
       uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -31,12 +28,10 @@ runs:
         path: |
           ~/.cargo/registry/index/
           ~/.cargo/registry/cache/
-          ~/.cargo/registry/src/
           ~/.cargo/git/db/
-          target/
-        key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-rust1.88-${{ inputs.kind }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}-${{ github.sha }}
+        key: cargo-registry-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
         restore-keys: |
-          cargo-v1-${{ runner.os }}-${{ runner.arch }}-rust1.88-${{ inputs.kind }}-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml', 'rust-toolchain.toml', '.cargo/config.toml') }}-
+          cargo-registry-v2-${{ runner.os }}-${{ runner.arch }}-
     - name: Record cache outcome
       if: inputs.mode == 'restore'
       shell: bash
@@ -48,17 +43,15 @@ runs:
         elif [[ "$PRIMARY_KEY" == "$MATCHED_KEY" ]]; then outcome=exact
         else outcome=compatible
         fi
-        echo "Cargo cache: $outcome" >> "$GITHUB_STEP_SUMMARY"
+        echo "Cargo registry cache: $outcome" >> "$GITHUB_STEP_SUMMARY"
         printf '{"schema":"af.ci-cache/1","outcome":"%s","primary_key":"%s","matched_key":"%s"}\n' \
           "$outcome" "$PRIMARY_KEY" "$MATCHED_KEY" > "$RUNNER_TEMP/cache-metrics.json"
-    - name: Save current Cargo artifacts
+    - name: Save the crate registry
       if: always() && !cancelled() && inputs.mode == 'save' && inputs.primary-key != '' && inputs.primary-key != inputs.matched-key
       uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: |
           ~/.cargo/registry/index/
           ~/.cargo/registry/cache/
-          ~/.cargo/registry/src/
           ~/.cargo/git/db/
-          target/
         key: ${{ inputs.primary-key }}
