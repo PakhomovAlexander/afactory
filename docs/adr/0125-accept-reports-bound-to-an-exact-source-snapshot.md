@@ -134,6 +134,18 @@ re-verified:
   unbound at the verifier; a Pipeline that seals against captured sources and omits them from
   the verifier is refused at admission.
 
+## After the first research report
+
+The campaign's own report Task (`research-sdlc-report-2`) lost its only author Attempt to a set
+the author spelled in the order it had used its sources: the draft's `citations` were unique but
+not sorted, and the kernel's typed reply admission refused the reply. Two rules changed:
+
+- **A set a Worker spells in any order is admitted in canonical order.** The runner sorts and
+  deduplicates a draft's `citations` and `repository_citations` before the reply is validated, so
+  the recorded artifact is canonical and the author is judged on what it cited, not on the order.
+- **The report author holds two Attempts** in `kernel/report`, so a reply the kernel refuses for
+  its shape is retried once with the refusal as feedback; the Pipeline's bound is eight.
+
 ## Consequences
 
 - A report's acceptance says which tree it is about. Every receipt names the source Snapshot,

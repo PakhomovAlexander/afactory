@@ -22,7 +22,8 @@ the source fails your Attempt.
 - `title`: one line naming what the report answers.
 - `sections`: plain text, one heading per section; the Task's report policy names the headings
   it requires. Do not write Markdown syntax: the kernel renders and escapes your text.
-- `citations`: the names of the captured sources you relied on.
+- `citations`: the names of the captured sources you relied on, sorted in byte order and
+  unique (the kernel admits a set in any order, but sorted is what it records).
 - `repository_citations`: every file you rely on, as `{ "path": "<path>" }` or
   `{ "path": "<path>", "line": <n> }`, sorted by path and then line. The path is spelled exactly
   as the Snapshot's Manifest spells it, relative to the repository root. The kernel refuses a

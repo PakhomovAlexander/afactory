@@ -16,6 +16,10 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
+- A Worker's draft reply may spell its `citations` and `repository_citations` in any order: the
+  runner admits both sets in canonical order (sorted, unique) before validating the reply, so an
+  author is judged on what it cited rather than on the order it listed it. This repository's
+  `kernel/report` gives its author two Attempts.
 - Store hygiene and the warm cache's two bounds (ADR-0127, package R5 of
   `docs/design/research-pipelines.md`; amends ADR-0123). `af task list --sizes` prints each Task's
   CAS bytes — those only it reaches and those it shares with another Task or Campaign record —

@@ -88,7 +88,7 @@
           "port": "result"
         }
       },
-      "max_attempts": 6,
+      "max_attempts": 8,
       "max_parallel": 1
     }
   },

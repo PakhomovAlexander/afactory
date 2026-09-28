@@ -952,3 +952,12 @@ The report Task ran as `research-sdlc-report-2` with `comparison` and `measureme
 that Task through R4 and `report_sources` at `docs/design/research-tasks.sources.json`, one
 entry per Task of this campaign, built by the coordinator from `af task show` and the runtime
 evidence.
+
+`research-sdlc-report-2` on b86c08b (228,859 tokens; 3 Attempts) ended `incomplete` before its
+seal: the author (Claude Opus 5.5) wrote a complete draft — four sections, 41 repository
+citations sorted as its instructions said, 32 source citations in the order it had used them — and
+the kernel refused the reply because a set's entries "must be sorted and unique": the source
+citations were unique but not sorted. The author slot held one Attempt, so nothing retried. Two
+changes follow: the kernel admits a set a Worker spells in any order, recording it sorted, and
+the report author gets a second Attempt with the refusal as feedback. The report ran again as
+`research-sdlc-report-3`.
