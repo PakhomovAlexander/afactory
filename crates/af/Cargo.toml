@@ -45,7 +45,7 @@ nix = { version = "0.31.3", default-features = false, features = ["fs", "signal"
 portable-pty = { version = "0.9.0", default-features = false }
 
 [dev-dependencies]
-jsonschema = { version = "0.56.0", default-features = false }
+jsonschema = { version = "0.57.0", default-features = false }
 # Provider setup refuses to start an official CLI login unless it owns an interactive terminal.
 # Covering the terminal path therefore needs a real one, not a flag that would weaken the check.
 portable-pty = { version = "0.9.0", default-features = false }
