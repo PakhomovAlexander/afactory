@@ -294,6 +294,20 @@ fn expected_port(
             return Ok((artifact_type, cardinality, false));
         }
     };
+    // The profile fixes what an adapter-owned port carries; the selected Pipeline must still
+    // declare it, and declare it that way, or the binding is refused here by name and with both
+    // types rather than by the compiler's general contract check.
+    let (declared_type, declared_cardinality) = declared.port(port)?;
+    if declared_type != artifact_type || declared_cardinality != PortCardinality::One {
+        return Err(format!(
+            "the selected Pipeline declares the root input {} as {} {}, and this Task's profile \
+             binds {} one to it",
+            shown(port, NAME_SHOWN),
+            shown(&declared_type, NAME_SHOWN),
+            cardinality_name(declared_cardinality),
+            shown(artifact_type, NAME_SHOWN)
+        ));
+    }
     Ok((artifact_type.to_owned(), PortCardinality::One, true))
 }
 
@@ -508,9 +522,11 @@ fn bind_outputs(
             let reason = mismatch(&recorded, want, PortCardinality::Many);
             return Err(refuse(port, &reference, reason));
         }
-        let Some(first) = recorded.artifact_ids.first().cloned() else {
+        if recorded.artifact_ids.is_empty() {
             return Err(refuse(port, &reference, "the reference holds no artifact"));
-        };
+        }
+        // Every artifact the output holds is recorded, one entry each, so the record and the
+        // preview show everything the binding delivers, not only an output's first artifact.
         for id in &recorded.artifact_ids {
             if artifact_ids.contains(id) {
                 let id = shown(id, DIGEST_SHOWN);
@@ -518,16 +534,16 @@ fn bind_outputs(
                 return Err(refuse(port, &reference, reason));
             }
             artifact_ids.push(id.clone());
+            bindings.push(TaskInputBindingV1 {
+                artifact_id: id.clone(),
+                resolved_artifact_id: None,
+                snapshot_id: recorded.snapshot_id.clone(),
+                rerooted_snapshot_id: None,
+                task: Some(task.clone()),
+                also: Vec::new(),
+            });
         }
         snapshot_id = recorded.snapshot_id.clone();
-        bindings.push(TaskInputBindingV1 {
-            artifact_id: first,
-            resolved_artifact_id: None,
-            snapshot_id: recorded.snapshot_id,
-            rerooted_snapshot_id: None,
-            task: Some(task),
-            also: Vec::new(),
-        });
     }
     let mut bindings = bindings.into_iter();
     let mut binding = bindings.next().ok_or("a list names at least one output")?;
@@ -625,13 +641,27 @@ pub(super) fn resolve(
             } else {
                 recorded.snapshot_id.clone()
             };
+            // A `many` output holding several artifacts records every one of them.
+            let also = recorded
+                .artifact_ids
+                .iter()
+                .skip(1)
+                .map(|id| TaskInputBindingV1 {
+                    artifact_id: id.clone(),
+                    resolved_artifact_id: None,
+                    snapshot_id: snapshot_id.clone(),
+                    rerooted_snapshot_id: None,
+                    task: task.clone(),
+                    also: Vec::new(),
+                })
+                .collect();
             let binding = TaskInputBindingV1 {
                 artifact_id,
                 resolved_artifact_id: None,
                 snapshot_id: snapshot_id.clone(),
                 rerooted_snapshot_id: None,
                 task: task.clone(),
-                also: Vec::new(),
+                also,
             };
             let input = ArtifactInputV1 {
                 snapshot_id,

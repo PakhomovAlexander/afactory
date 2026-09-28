@@ -33,7 +33,8 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   Snapshot-less `many` input port; output ports keep the one-Snapshot rule. A port bound without
   naming the Pipeline must be declared alike by every Pipeline accepting the kind, else the Task
   file is asked to name one; a list bound to a `one` port has each reference judged before its
-  shape. This repository's `kernel/analyst` and `kernel/report-verifier` schemas take the
+  shape; a bound `many` output records every artifact it holds; and `source`, `history` and
+  `sources` are checked against the selected Pipeline's declaration at resolution. This repository's `kernel/analyst` and `kernel/report-verifier` schemas take the
   `snapshot_id` a bound Measurement or comparison carries.
   `af/TaskInputBindings@1` records a port's further outputs in an optional `also` list, absent
   for every single-reference binding, and `af task explain` and `af task show` print their

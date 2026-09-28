@@ -875,3 +875,12 @@ not a result output. The implementer also reported the one change it could not m
 installed `kernel/analyst` and `kernel/report-verifier` schemas lacked the `snapshot_id` a bound
 Measurement always carries, so R6's report could not have bound R2's outputs to them; both
 schemas were amended by hand, reinstalled and repinned.
+
+Verification Task `research-r4-verify-1` on 73c244d (256,631 tokens; gate warm, `kernel` 12.5 min)
+ended `incomplete`: the evaluator (GPT-6 Sol) passed the package on every criterion and the bugs
+reviewer left one minor, but the correctness reviewer's reply was refused for its shape on both
+Attempts — the third such loss of the campaign. Its transcript held one minor finding. Both minors
+were fixed by hand: a bound `many` output holding several artifacts recorded only its first, and
+the adapter-owned ports `source`, `history` and `sources` bypassed the selected Pipeline's
+declaration, so a Pipeline lacking the port refused the binding only at compilation and without
+both types. Re-verified once more.

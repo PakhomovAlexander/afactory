@@ -43,6 +43,13 @@ fn report_pipeline() -> DeclaredPorts {
         ),
         ("measurements", MEASUREMENT_V1, PortCardinality::Many),
         ("requirements", "af/Requirements@1", PortCardinality::One),
+        ("source", SOURCE_TREE_V1, PortCardinality::One),
+        (
+            "sources",
+            review_core::task::report_task::REPORT_SOURCES_V1,
+            PortCardinality::One,
+        ),
+        ("history", REVIEW_HISTORY_V1, PortCardinality::One),
     ];
     DeclaredPorts {
         named: Some("fixture/report".into()),
@@ -762,5 +769,70 @@ fn a_task_file_without_an_inputs_table_keeps_its_bytes() {
         value["inputs"] = invalid.clone();
         let read = serde_json::from_value::<super::super::TaskFile>(value);
         assert!(read.is_err(), "{invalid} was admitted");
+    }
+}
+
+/// `source`, `history` and `sources` keep their profile types, but the selected Pipeline must
+/// declare them that way: an absent or differently declared port refuses the binding by name
+/// and with both types at resolution, not at compilation.
+#[test]
+fn adapter_owned_ports_are_checked_against_the_selected_pipeline() {
+    let mut fixture = fixture();
+    fixture.declared.ports.remove("source");
+    let error = fixture
+        .bind(table("source", task_ref("prior", "snapshot")))
+        .unwrap_err();
+    assert!(error.contains("source <- task prior/snapshot"), "{error}");
+    assert!(
+        error.contains(
+            "not a bindable root input port: the selected Pipeline fixture/report does not declare it"
+        ),
+        "{error}"
+    );
+    fixture.declared.ports.insert(
+        "source".into(),
+        (1, vec![(MEASUREMENT_V1.into(), PortCardinality::Many)]),
+    );
+    let error = fixture
+        .bind(table("source", task_ref("prior", "snapshot")))
+        .unwrap_err();
+    assert!(
+        error.contains(
+            "declares the root input source as af/Measurement@1 many, and this Task's profile \
+             binds af/SourceTree@1 one to it"
+        ),
+        "{error}"
+    );
+}
+
+/// A `many` output holding several artifacts is recorded whole — one entry per artifact —
+/// whether it is named once or listed, so the record shows everything the binding delivers.
+#[test]
+fn a_bound_many_output_records_every_artifact_it_holds() {
+    let mut fixture = fixture();
+    let a = fixture.put(MEASUREMENT_V1, json!({"side": "a"}));
+    let b = fixture.put(MEASUREMENT_V1, json!({"side": "b"}));
+    let both = ArtifactInputV1 {
+        artifact_ids: vec![a.clone(), b.clone()],
+        artifact_type: MEASUREMENT_V1.into(),
+        cardinality: PortCardinality::Many,
+        snapshot_id: None,
+    };
+    fixture.finish("experiment", ports("measurements", both));
+    for reference in [
+        task_ref("experiment", "measurements"),
+        list(&[("experiment", "measurements")]),
+    ] {
+        let bound = fixture.bind(table("measurements", reference)).unwrap();
+        assert_eq!(
+            bound.ports["measurements"].artifact_ids,
+            [a.clone(), b.clone()]
+        );
+        let record = fixture.record(&bound);
+        let binding = &record.bindings["measurements"];
+        assert_eq!(binding.artifact_id, a);
+        assert_eq!(binding.also.len(), 1);
+        assert_eq!(binding.also[0].artifact_id, b);
+        assert_eq!(binding.also[0].task.as_ref().unwrap().port, "measurements");
     }
 }
