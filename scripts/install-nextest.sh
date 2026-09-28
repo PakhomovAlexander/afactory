@@ -19,7 +19,8 @@ curl --fail --location --retry 3 \
 (cd "$stage" && printf '%s  %s\n' "$digest" "$archive" | shasum -a 256 -c -)
 # Keep the installed tool outside the Cargo dependency/build cache.
 mkdir -p "$stage/bin"
-tar -xzf "$stage/$archive" -C "$stage/bin" ./cargo-nextest
+# The member is named `cargo-nextest`; GNU tar does not match `./cargo-nextest` against it.
+tar -xzf "$stage/$archive" -C "$stage/bin" cargo-nextest
 install_dir="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/af-ci-tools"
 mkdir -p "$install_dir"
 install "$stage/bin/cargo-nextest" "$install_dir/cargo-nextest"
