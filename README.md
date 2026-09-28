@@ -1,8 +1,11 @@
-# Afactory
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="brand/banner/banner-dark.svg">
+  <img alt="afactory: agent pipelines made fast" src="brand/banner/banner-light.svg" width="100%">
+</picture>
 
-[![CI](https://github.com/PakhomovAlexander/afactory/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/PakhomovAlexander/afactory/actions/workflows/release.yml)
-[![Latest release](https://img.shields.io/github/v/release/PakhomovAlexander/afactory)](https://github.com/PakhomovAlexander/afactory/releases/latest)
-[![Licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/PakhomovAlexander/afactory/release.yml?branch=main&style=flat-square&labelColor=0F0F0F&color=36EEA8&label=CI)](https://github.com/PakhomovAlexander/afactory/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/PakhomovAlexander/afactory?style=flat-square&labelColor=0F0F0F&color=5195F5&label=release)](https://github.com/PakhomovAlexander/afactory/releases/latest)
+[![Licence](https://img.shields.io/badge/licence-Apache--2.0-EE366A?style=flat-square&labelColor=0F0F0F)](LICENSE)
 
 `af` is a multi-agent coding factory for Git repositories. Its first capability is a deterministic
 Review Kernel: `af review` runs a sandboxed, budgeted pipeline of model and command reviewers

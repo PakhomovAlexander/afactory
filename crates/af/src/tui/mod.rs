@@ -167,7 +167,7 @@ pub(crate) fn launch(repo: Option<&Path>) -> Result<i32, String> {
 /// The event loop: paint what changed, read keys for at most a tenth of a second, collect
 /// background work, again.
 fn run(app: &mut App, session: &mut term::Session) -> Result<(), String> {
-    let color = std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty());
+    let palette = paint::Palette::from_env();
     let mut shown = Vec::new();
     let mut size = (0, 0);
     let mut buffer = [0_u8; 512];
@@ -180,7 +180,7 @@ fn run(app: &mut App, session: &mut term::Session) -> Result<(), String> {
             session.send(b"\x1b[2J")?;
         }
         let frame = app.frame(size.0, size.1);
-        session.paint(&frame, &mut shown, color)?;
+        session.paint(&frame, &mut shown, palette)?;
         if app.quit {
             return Ok(());
         }

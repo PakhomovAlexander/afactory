@@ -27,6 +27,7 @@ and `--help` on every namespace and command.
 | [`security/containment-probes.md`](security/containment-probes.md) | What a hostile check is contained by, which probes prove it, and which containment probes are still open. |
 | [`values.md`](values.md) | The eight engineering values in priority order and the three product values, each with the tests that decide whether a change honours it. Binding. |
 | [`design/`](design/README.md) | The two designs still in flight: [warm layers](design/worker-warm-layers.md) with its [package plan](design/worker-warm-layers-plan.md), and the [self-optimizer](design/self-optimizer.md). Direction, not shipped behaviour; where a note and an ADR disagree, the ADR wins. |
+| [`../brand/`](../brand/README.md) | The design system: the logo files and every asset derived from them, the colour, type and spacing tokens, and the rules for the website, the TUI and GitHub. `brand/gen.py` regenerates the assets. |
 | [`adr/`](adr/README.md) | The binding decisions, one per file, with the options that were rejected and why. The index in `adr/README.md` lists every one. |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | What each release changed and whether committed `.af/` policy keeps working, needs `af onboard --refresh-lock`, or needs a documented hand edit. |
 

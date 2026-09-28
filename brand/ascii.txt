@@ -1,0 +1,24 @@
+afactory in printable ASCII, for terminals (the TUI paints only 0x20..0x7e).
+
+The worker, 11 x 6:
+
+     ###
+  #########
+  #  ###  #
+  #  ###  #
+  #########
+ ###########
+
+The wordmark, 5 rows, block capitals (never a figlet face):
+
+ ####  ##### ####  ####  ##### ####  ####  #   #
+ #  #  #     #  #  #       #   #  #  #  #  #   #
+ ####  ####  ####  #       #   #  #  ####   ###
+ #  #  #     #  #  #       #   #  #  # #     #
+ #  #  #     #  #  ####    #   ####  #  #    #
+
+`af` alone, 3 rows, for a status line or a version banner:
+
+ ####  ####
+ #  #  ##
+ #  #  #

@@ -69,7 +69,10 @@ Three regions, fixed for the whole session:
   breadcrumb shrinks to the mode word, then goes, before the right-hand text is cut. `:` opens a one-line command prompt in the same row; `/` a search prompt.
 
 Glyphs are printable ASCII only (`v`/`>` for folds, `+--`/`'--` for tree branches, `#`/`.` for
-bars). This keeps the existing `terminal_data_is_printable_ascii` test meaningful and matches the
+bars). Colour follows `brand/README.md`: the terminal's own foreground and ground everywhere,
+reverse video for the cursor row, and the brand's blue under the status line and pink for errors
+only where `COLORTERM` says the terminal takes truecolor; the 16-colour red stands in otherwise
+and `NO_COLOR` leaves attributes only. This keeps the existing `terminal_data_is_printable_ascii` test meaningful and matches the
 CLI's own tree output.
 
 Minimum size 80x24; below it the screen shows one line naming the minimum.

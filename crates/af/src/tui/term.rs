@@ -137,9 +137,9 @@ impl Session {
         &mut self,
         frame: &Frame,
         shown: &mut Vec<String>,
-        color: bool,
+        palette: paint::Palette,
     ) -> Result<(), String> {
-        paint::paint(frame, shown, &mut self.tty, color)
+        paint::paint(frame, shown, &mut self.tty, palette)
             .map_err(|error| format!("writing the terminal: {error}"))
     }
 }
