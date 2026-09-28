@@ -35,6 +35,37 @@ const STAGE: usize = 18;
 const MAIN: usize = 72;
 /// The bar id of a Store that cannot be read.
 const UNREADABLE: &str = "!unreadable";
+/// The bar id of the Stores an earlier af release wrote, listed as one entry.
+const EARLIER: &str = "!earlier";
+
+/// `text` in rows of at most `width` columns, each starting with `indent`: split at the last
+/// space that fits, or mid-word for a word (a path) longer than a row.
+fn bounded(text: &str, width: usize, indent: &str) -> Vec<String> {
+    let room = width.saturating_sub(indent.chars().count()).max(1);
+    let mut rows = Vec::new();
+    let mut rest: Vec<char> = text.chars().collect();
+    while rest.len() > room {
+        let cut = rest[..=room]
+            .iter()
+            .rposition(|c| *c == ' ')
+            .filter(|at| *at > 0)
+            .unwrap_or(room);
+        let line: String = rest[..cut].iter().collect();
+        rows.push(format!("{indent}{}", line.trim_end()));
+        rest.drain(..cut);
+        while rest.first() == Some(&' ') {
+            rest.remove(0);
+        }
+    }
+    rows.push(format!("{indent}{}", rest.iter().collect::<String>()));
+    rows
+}
+
+/// Whether this release refused the Store because an earlier (pre-GA) af release wrote it:
+/// such Stores are listed together, once, rather than as one error each.
+fn earlier(store: &Store) -> bool {
+    store.older && store.tasks.is_err()
+}
 
 /// Where a Task is: its phase, and for a finished Task the acceptance its result records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -658,6 +689,9 @@ struct Store {
     shown: String,
     repo: Option<String>,
     tasks: Result<Vec<Listed>, String>,
+    /// The event log refused itself as another release's: set where the Store is read, from
+    /// that read's own error, never from text a path could carry.
+    older: bool,
 }
 
 /// An existing directory with entries but no `events.sqlite` holds something the running
@@ -692,9 +726,16 @@ pub(crate) fn not_a_store(dir: &Path) -> Option<String> {
 }
 
 fn read_store(dir: &Path, shown: &str, repo: Option<String>, cache: &mut Cache) -> Store {
-    let tasks = match not_a_store(dir) {
-        Some(refusal) => Err(refusal),
-        None => task_execution::list_common(dir),
+    let (tasks, older) = match not_a_store(dir) {
+        Some(refusal) => (Err(refusal), false),
+        None => {
+            let listed = task_execution::list_common(dir);
+            let older = matches!(
+                &listed,
+                Err(error) if error.contains(review_core::event::ANOTHER_RELEASE)
+            );
+            (listed, older)
+        }
     };
     let tasks = tasks.and_then(|entries| {
         let mut tasks = Vec::new();
@@ -738,6 +779,7 @@ fn read_store(dir: &Path, shown: &str, repo: Option<String>, cache: &mut Cache) 
         shown: shown.to_owned(),
         repo,
         tasks,
+        older,
     }
 }
 
@@ -960,6 +1002,7 @@ fn read(targets: &[Target], opened: Option<(PathBuf, String)>, mut cache: Cache)
 fn refuse(stores: &mut [Store], dir: &Path, task_id: &str, error: &str) {
     for store in stores.iter_mut().filter(|store| store.dir == dir) {
         store.tasks = Err(format!("Task {task_id}: {error}"));
+        store.older = false;
     }
 }
 
@@ -1260,12 +1303,45 @@ impl TasksPane {
         } else if self.stores.is_empty() {
             rows.push(Row::plain("No Task state is recorded here yet."));
         }
-        for store in &self.stores {
+        let earlier_stores: Vec<&Store> = self.stores.iter().filter(|s| earlier(s)).collect();
+        if let Some(first) = earlier_stores.first() {
+            let count = earlier_stores.len();
+            let parent = first
+                .shown
+                .rsplit_once('/')
+                .map_or(first.shown.as_str(), |(parent, _)| parent);
+            let (stores, were) = if count == 1 {
+                ("Task Store", "was")
+            } else {
+                ("Task Stores", "were")
+            };
+            // Short lines: the main pane is 72 columns beside the bar.
+            rows.push(Row::painted(
+                format!("{count} {stores} {were} written by an earlier af release, in"),
+                Paint::Muted,
+            ));
+            for line in bounded(parent, MAIN, "  ") {
+                rows.push(Row::painted(line, Paint::Muted));
+            }
+            rows.push(Row::painted(
+                "af does not read pre-GA state (ADR-0113); move or remove them.",
+                Paint::Muted,
+            ));
+            rows.push(Row::blank());
+        }
+        for store in self.stores.iter().filter(|s| !earlier(s)) {
             let dir = &store.shown;
             match &store.tasks {
                 Err(error) => {
-                    let refusal = format!("{dir}: this Store cannot be read: {error}");
-                    rows.push(Row::painted(refusal, Paint::Error));
+                    // The location, then the cause on rows of its own: a long state path must
+                    // never push the cause out of the pane.
+                    for line in bounded(&format!("{dir}:"), MAIN, "") {
+                        rows.push(Row::painted(line, Paint::Error));
+                    }
+                    let cause = format!("this Store cannot be read: {error}");
+                    for line in bounded(&cause, MAIN, "  ") {
+                        rows.push(Row::painted(line, Paint::Error));
+                    }
                 }
                 Ok(tasks) if tasks.is_empty() => {
                     rows.push(Row::plain(format!("{dir}: no Tasks")));
@@ -1373,7 +1449,8 @@ impl Pane for TasksPane {
 
     fn items(&self) -> Vec<Item> {
         let mut items = Vec::new();
-        for store in &self.stores {
+        let count = self.stores.iter().filter(|store| earlier(store)).count();
+        for store in self.stores.iter().filter(|store| !earlier(store)) {
             match &store.repo {
                 None => items.extend(store_items(store, 2)),
                 Some(repo) => {
@@ -1387,6 +1464,15 @@ impl Pane for TasksPane {
                     });
                 }
             }
+        }
+        if count > 0 {
+            let stores = if count == 1 { "Store" } else { "Stores" };
+            items.push(Item {
+                id: EARLIER.to_owned(),
+                label: format!("! {count} old {stores}"),
+                muted: true,
+                children: None,
+            });
         }
         items
     }

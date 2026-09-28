@@ -790,22 +790,22 @@ fn a_store_this_binary_cannot_read_is_an_error_row_naming_it() {
     press(&mut app, &mut host, b"]]]]]]]]\r");
     let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
     let shown = state.strip_prefix(&root).unwrap().display();
-    let refusal = format!("~/{shown}: this Store cannot be read: ");
-    let row = rows.iter().find(|row| row.starts_with(&refusal));
+    // The Store's location, then its cause on a row of its own.
+    let at = rows.iter().position(|row| *row == format!("~/{shown}:"));
+    let at = at.unwrap_or_else(|| panic!("{rows:#?}"));
+    let cause = "  this Store cannot be read: ";
     assert!(
-        row.is_some_and(|row| row.len() > refusal.len()),
+        rows[at + 1].starts_with(cause) && rows[at + 1].len() > cause.len(),
         "{rows:#?}"
     );
     let bar = app.frame(100, 30).text();
     assert!(bar.contains("      ! Store unreadable"), "{bar}");
     // The row opens the same refusal, never an empty list.
     press(&mut app, &mut host, b"j\r");
-    assert_eq!(app.breadcrumb(), "tasks/!unreadable");
+    // The breadcrumb names the entry as the bar does, never by its internal id.
+    assert_eq!(app.breadcrumb(), "tasks/! Store unreadable");
     let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
-    assert!(
-        rows.iter().any(|row| row.starts_with(&refusal)),
-        "{rows:#?}"
-    );
+    assert!(rows.iter().any(|row| row.starts_with(cause)), "{rows:#?}");
 }
 
 #[test]
@@ -1599,4 +1599,32 @@ fn the_tasks_pane_prefills_run_and_deliver_and_completes_task_ids() {
             "{message}"
         );
     }
+}
+
+#[test]
+fn bare_help_opens_with_the_worker_and_the_tagline() {
+    let text: Vec<String> = help_rows(&[]).iter().map(Row::text).collect();
+    assert_eq!(text[0], "     ###");
+    assert!(
+        text[1].ends_with(&format!("af {}", env!("CARGO_PKG_VERSION"))),
+        "{}",
+        text[1]
+    );
+    assert!(
+        text[2].ends_with("agent pipelines made fast"),
+        "{}",
+        text[2]
+    );
+    assert_eq!(text[5], " ###########");
+    assert_eq!(text[6], "");
+    assert!(text[7].starts_with("KEYS"), "{}", text[7]);
+    assert!(
+        text[..7].iter().all(|row| row.len() <= 52),
+        "the banner fits the pane at 80 columns"
+    );
+    let topic: Vec<String> = help_rows(&["layers".to_owned()])
+        .iter()
+        .map(Row::text)
+        .collect();
+    assert!(topic[0].starts_with("af help layers -- "), "{}", topic[0]);
 }

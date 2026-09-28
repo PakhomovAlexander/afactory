@@ -477,9 +477,16 @@ impl App {
         match row.kind {
             NodeKind::Root => self.scope.name(),
             NodeKind::Folder(tab) => format!("{}/", tab.name()),
-            // A Task row's label is its fitted progress; its id is the path to it.
+            // A Task row's label is its fitted progress; its id is the path to it. An entry the
+            // pane makes up (an unreadable Store, the old Stores) has an internal id: its label
+            // names it.
             NodeKind::Item(Tab::Tasks) | NodeKind::Group(Tab::Tasks) => {
-                format!("{}/{}", Tab::Tasks.name(), row.id)
+                let path = match row.id.rsplit_once('/') {
+                    Some((dir, last)) if last.starts_with('!') => format!("{dir}/{}", row.label),
+                    None if row.id.starts_with('!') => row.label.clone(),
+                    _ => row.id.clone(),
+                };
+                format!("{}/{path}", Tab::Tasks.name())
             }
             NodeKind::Group(tab) | NodeKind::Item(tab) => {
                 format!("{}/{}", tab.name(), row.label)
@@ -1559,16 +1566,36 @@ fn first_line(text: &str) -> String {
 /// `:help` rows: the key reference, a topic as `af help TOPIC` prints it, or a command's long
 /// help as `af help COMMAND...` prints it.
 fn help_rows(words: &[String]) -> Vec<Row> {
-    let text = match words {
-        [] => KEYS.to_owned(),
-        [word] if crate::topics::find(word).is_some() => topic_help(word),
-        path => command_help(path),
+    let (mut rows, text) = match words {
+        [] => (banner_rows(), KEYS.to_owned()),
+        [word] if crate::topics::find(word).is_some() => (Vec::new(), topic_help(word)),
+        path => (Vec::new(), command_help(path)),
     };
-    let mut rows = Vec::new();
     for line in text.lines() {
         rows.push(Row::plain(typographic(line)));
     }
     rows
+}
+
+/// The pixel worker beside the name and the tagline (`brand/ascii.txt`), above the key
+/// reference. Printable ASCII, 42 columns, so it fits the main pane at the 80-column minimum.
+fn banner_rows() -> Vec<Row> {
+    const WORKER: [&str; 6] = [
+        "     ###    ",
+        "  ######### ",
+        "  #  ###  # ",
+        "  #  ###  # ",
+        "  ######### ",
+        " ###########",
+    ];
+    let name = format!("af {}", env!("CARGO_PKG_VERSION"));
+    let beside = ["", name.as_str(), "agent pipelines made fast", "", "", ""];
+    WORKER
+        .iter()
+        .zip(beside)
+        .map(|(left, right)| Row::plain(format!("{left}     {right}").trim_end()))
+        .chain(std::iter::once(Row::blank()))
+        .collect()
 }
 
 fn topic_help(word: &str) -> String {

@@ -16,6 +16,25 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
+### Changes
+
+- The design system: `brand/` keeps the designer's wordmark (AFACTORY with three workers) and
+  derives every asset from it with `brand/gen.py`; `brand/tokens.css` and `tokens.json` carry
+  the palette, type, spacing and radii; `brand/README.md` is the brand book. The README opens
+  with the banner; the tagline is "agent pipelines made fast". The browser paints its status
+  line ink on the brand's blue and its errors pink where `COLORTERM` says the terminal takes
+  truecolor, and as before otherwise (#127).
+- The browser's bare `?` help opens with the pixel worker, the version and the tagline above
+  the key reference.
+- The browser's Workers pane opens in a tenth of a second instead of most of one: it reads every
+  committed declaration, prompt and lock with one `git cat-file --batch` and checks their drift
+  with one `git diff --literal-pathspecs --name-only`, side by side, where it spawned about four
+  git processes per Worker on every open (0.79s to 0.06-0.13s for 14 Workers on a loaded
+  machine). A file name with `*` or `[` is now compared literally.
+- The Tasks pane lists the Task Stores an earlier (pre-GA) af release wrote as one bar entry,
+  `! N old Stores`, and one note saying where they are and that af does not read pre-GA state
+  (ADR-0113), instead of an error row each. A Store refused for any other reason still shows its
+  own error. `review_core::event::ANOTHER_RELEASE` is the phrase both sides share.
 - A Worker's draft reply may spell its `citations` and `repository_citations` in any order: the
   runner admits both sets in canonical order (sorted, unique) before validating the reply, so an
   author is judged on what it cited rather than on the order it listed it. This repository's

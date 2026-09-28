@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value as Json;
 use toml::Value;
 
-use super::pipelines::{committed, declared, differs, git, head, pinned_paths};
+use super::pipelines::{blobs, declared, differing, head, listed, pinned_paths};
 use super::tasks::{self, Cache, Invoked, Target};
 use super::{Pane, Row};
 use crate::task_execution;
@@ -166,29 +166,37 @@ impl Entry {
     }
 }
 
-/// The declaration and prompt files whose working-tree copy differs from `commit`. `git diff`
-/// ignores an untracked file, so a prompt `commit` lacks differs when the working tree has
-/// one, a link included. A comparison git cannot make counts as a difference.
-fn drift(
-    root: &Path,
-    commit: &str,
-    declaration: &str,
-    prompt: &str,
-    prompt_committed: bool,
-) -> Vec<String> {
-    let mut drifted = Vec::new();
-    if differs(root, commit, declaration) {
-        drifted.push(declaration.to_owned());
+/// For each shown Worker (its declaration, its prompt, and whether `commit` holds that prompt),
+/// the files whose working-tree copy differs from `commit`, from one `git diff` for them all.
+/// `git diff` ignores an untracked file, so a prompt `commit` lacks differs when the working
+/// tree has one, a link included. A comparison git cannot make counts as a difference.
+fn drift(root: &Path, commit: &str, shown: &[(&str, &str, bool)]) -> Vec<Vec<String>> {
+    let mut tracked = Vec::new();
+    for (declaration, prompt, committed) in shown {
+        tracked.push(*declaration);
+        if *committed {
+            tracked.push(*prompt);
+        }
     }
-    let prompt_drifts = if prompt_committed {
-        differs(root, commit, prompt)
-    } else {
-        std::fs::symlink_metadata(root.join(prompt)).is_ok()
-    };
-    if prompt_drifts {
-        drifted.push(prompt.to_owned());
-    }
-    drifted
+    let differ = differing(root, commit, &tracked);
+    shown
+        .iter()
+        .map(|(declaration, prompt, committed)| {
+            let mut drifted = Vec::new();
+            if differ.contains(*declaration) {
+                drifted.push((*declaration).to_owned());
+            }
+            let prompt_drifts = if *committed {
+                differ.contains(*prompt)
+            } else {
+                std::fs::symlink_metadata(root.join(prompt)).is_ok()
+            };
+            if prompt_drifts {
+                drifted.push((*prompt).to_owned());
+            }
+            drifted
+        })
+        .collect()
 }
 
 /// What one read of `HEAD` found.
@@ -210,60 +218,90 @@ fn discover(root: &Path) -> Result<Discovery, String> {
     if commit.is_empty() {
         return Ok(found);
     }
-    let listing = git(root, &["ls-tree", "-r", "-z", "--name-only", &commit, "--"])?;
-    let mut paths = BTreeSet::new();
-    for path in listing.split(|byte| *byte == 0) {
-        if let Ok(path) = std::str::from_utf8(path)
-            && !path.is_empty()
-        {
-            paths.insert(path.to_owned());
-        }
-    }
-    let lock = |file: &str| -> Result<Value, String> {
-        if paths.contains(file) {
-            Ok(declared(&committed(root, &commit, file)?))
-        } else {
-            Ok(Value::Table(toml::map::Map::new()))
-        }
-    };
-    let catalog = pins(Kind::Task, &lock(CATALOG)?);
-    let reviewers = pins(Kind::Reviewer, &lock(LOCK)?);
+    // Every Worker source, the locks and the prompts live under `.af/`: nothing else is listed.
+    let objects = listed(root, &commit, ".af")?;
+    let paths: BTreeSet<String> = objects.keys().cloned().collect();
+    // Every declaration, in bar order, with the prompt the kernel would send beside it.
+    let mut declared_at = Vec::new();
     for (source, kind) in SOURCES {
         for id in paths
             .iter()
             .filter(|path| source_of(path) == Some((source, kind)))
         {
-            let declaration = committed(root, &commit, id)?;
-            let value = declared(&declaration);
             let directory = id.rsplit_once('/').map_or("", |(dir, _)| dir).to_owned();
-            let name = value.get("name").and_then(Value::as_str).map(str::to_owned);
-            let fallback = directory.strip_prefix(source).unwrap_or(&directory);
             let prompt_path = format!("{directory}/{}", kind.prompt());
-            // The prompt is shown as text, whatever its bytes: a stray byte is not a refusal.
-            let prompt = if paths.contains(&prompt_path) {
-                let bytes = git(root, &["show", &format!("{commit}:{prompt_path}")])?;
-                Some(String::from_utf8_lossy(&bytes).into_owned())
-            } else {
-                None
-            };
-            let drifted = drift(root, &commit, id, &prompt_path, prompt.is_some());
-            let pins = match kind {
-                Kind::Reviewer => &reviewers,
-                Kind::Task => &catalog,
-            };
-            found.entries.push(Entry {
-                id: id.clone(),
-                source,
-                kind,
-                label: name.clone().unwrap_or_else(|| fallback.to_owned()),
-                pin: pin_of(pins, name.as_deref(), &directory),
-                name,
-                directory,
-                declaration,
-                prompt,
-                drifted,
-            });
+            declared_at.push((source, kind, id.clone(), directory, prompt_path));
         }
+    }
+    // One read of every committed file the pane shows, and one drift check of them all: an
+    // open reads again each time, so it must not cost a git process per Worker.
+    let mut wanted: Vec<&str> = vec![CATALOG, LOCK];
+    for (_, _, id, _, prompt_path) in &declared_at {
+        wanted.push(id);
+        wanted.push(prompt_path);
+    }
+    let wanted: Vec<&str> = wanted
+        .into_iter()
+        .filter_map(|path| objects.get(path).map(String::as_str))
+        .collect();
+    let shown: Vec<(&str, &str, bool)> = declared_at
+        .iter()
+        .map(|(_, _, id, _, prompt)| (id.as_str(), prompt.as_str(), paths.contains(prompt)))
+        .collect();
+    // The read and the drift check are independent processes: run them side by side.
+    let (blobs, drifts) = std::thread::scope(|scope| {
+        let drifts = scope.spawn(|| drift(root, &commit, &shown));
+        let blobs = blobs(root, &wanted);
+        (blobs, drifts.join())
+    });
+    // By path, as the rest of discovery asks.
+    let read = blobs?;
+    let blobs: BTreeMap<&str, &Vec<u8>> = objects
+        .iter()
+        .filter_map(|(path, object)| read.get(object).map(|bytes| (path.as_str(), bytes)))
+        .collect();
+    let mut drifts = drifts
+        .map_err(|_| "checking the working tree panicked")?
+        .into_iter();
+    let text = |path: &str| -> Result<Option<String>, String> {
+        match blobs.get(path) {
+            Some(bytes) => String::from_utf8((*bytes).clone())
+                .map(Some)
+                .map_err(|error| format!("{path}: {error}")),
+            None => Ok(None),
+        }
+    };
+    let lock = |file: &str| -> Result<Value, String> {
+        let committed = text(file)?;
+        Ok(committed.map_or(Value::Table(toml::map::Map::new()), |text| declared(&text)))
+    };
+    let catalog = pins(Kind::Task, &lock(CATALOG)?);
+    let reviewers = pins(Kind::Reviewer, &lock(LOCK)?);
+    for (source, kind, id, directory, prompt_path) in declared_at {
+        let declaration = text(&id)?.ok_or_else(|| format!("{id}: not a file at HEAD"))?;
+        let value = declared(&declaration);
+        let name = value.get("name").and_then(Value::as_str).map(str::to_owned);
+        let fallback = directory.strip_prefix(source).unwrap_or(&directory);
+        // The prompt is shown as text, whatever its bytes: a stray byte is not a refusal.
+        let prompt = blobs
+            .get(prompt_path.as_str())
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+        let pins = match kind {
+            Kind::Reviewer => &reviewers,
+            Kind::Task => &catalog,
+        };
+        found.entries.push(Entry {
+            id,
+            source,
+            kind,
+            label: name.clone().unwrap_or_else(|| fallback.to_owned()),
+            pin: pin_of(pins, name.as_deref(), &directory),
+            name,
+            directory,
+            declaration,
+            prompt,
+            drifted: drifts.next().unwrap_or_default(),
+        });
     }
     Ok(found)
 }
@@ -624,10 +662,18 @@ impl WorkersPane {
             }
             Err(error) => {
                 // The kept entries still show the working tree's drift from their commit.
-                for entry in &mut self.entries {
-                    let prompt = entry.prompt_path();
-                    let committed = entry.prompt.is_some();
-                    entry.drifted = drift(&root, &self.commit, &entry.id, &prompt, committed);
+                let prompts: Vec<String> = self.entries.iter().map(Entry::prompt_path).collect();
+                let shown: Vec<(&str, &str, bool)> = self
+                    .entries
+                    .iter()
+                    .zip(&prompts)
+                    .map(|(entry, prompt)| {
+                        (entry.id.as_str(), prompt.as_str(), entry.prompt.is_some())
+                    })
+                    .collect();
+                let drifts = drift(&root, &self.commit, &shown);
+                for (entry, drifted) in self.entries.iter_mut().zip(drifts) {
+                    entry.drifted = drifted;
                 }
                 self.error = Some(error);
             }
