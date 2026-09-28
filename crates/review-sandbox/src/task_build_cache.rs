@@ -33,6 +33,19 @@ pub const TASK_BUILD_CACHE_DIRECTORY: &str = "task-build-cache";
 /// The lock file of the whole toolchain key, beside the kind directories.
 const KEY_LOCK: &str = "warm.lock";
 
+/// The closed set of warm kinds a key may hold. Only these names are ever locked as kinds, and
+/// only their lock files and the key's are the kernel's: anything else below a key — whatever a
+/// check put there, however it is named — is a kind entry to count and remove.
+pub const WARM_KINDS: &[&str] = &["cargo_target", "cargo_home"];
+
+/// Whether `name` is one of the kernel's own lock files below a key.
+fn is_kernel_lock(name: &str) -> bool {
+    name == KEY_LOCK
+        || WARM_KINDS
+            .iter()
+            .any(|kind| name.strip_suffix(".lock") == Some(kind))
+}
+
 /// How often a waiter retries a held lock. Short against the 60-second bound, long enough not
 /// to spin.
 const LOCK_RETRY: Duration = Duration::from_millis(100);
@@ -155,7 +168,14 @@ impl TaskBuildCacheKeyLock {
                 self.path.display()
             ),
         })?;
-        count(descriptor, &self.path)
+        let key = self.path.clone();
+        count_skipping(descriptor, &self.path, &|path| {
+            path.parent() == Some(key.as_path())
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(is_kernel_lock)
+        })
     }
 
     /// The kind entries currently below the key, by name, sorted: every entry that
@@ -179,9 +199,10 @@ impl TaskBuildCacheKeyLock {
             let text = OsStr::from_bytes(name.to_bytes())
                 .to_string_lossy()
                 .into_owned();
-            // The key's own lock files stay; everything else below the key — a kind directory,
-            // or whatever a check put where a kind was — is a kind entry to count and remove.
-            if file_kind(&stat) == SFlag::S_IFREG && text.ends_with(".lock") {
+            // The kernel's own lock files stay; everything else below the key — a kind
+            // directory, whatever a check put where a kind was, or any file a check named to
+            // look like a lock — is a kind entry to count and remove.
+            if file_kind(&stat) == SFlag::S_IFREG && is_kernel_lock(&text) {
                 continue;
             }
             names.push(text);
@@ -195,11 +216,22 @@ impl TaskBuildCacheKeyLock {
     pub fn remove_kinds(&self) -> Result<Vec<(String, u64)>, String> {
         let mut removed = Vec::new();
         for name in self.kinds()? {
-            let bytes = match count_child(&self.key, &name, &self.path.join(&name)) {
-                Ok(bytes) => bytes,
-                Err(uninspectable) => uninspectable.counted,
+            let display = self.path.join(&name);
+            let bytes = match nix::sys::stat::fstatat(
+                &*self.key,
+                name.as_str(),
+                AtFlags::AT_SYMLINK_NOFOLLOW,
+            ) {
+                Ok(stat) if file_kind(&stat) == SFlag::S_IFDIR => {
+                    match count_child(&self.key, &name, &display) {
+                        Ok(bytes) => bytes,
+                        Err(uninspectable) => uninspectable.counted,
+                    }
+                }
+                Ok(stat) => u64::try_from(stat.st_size).unwrap_or(0),
+                Err(_) => 0,
             };
-            remove_at(&self.key, &name, &self.path.join(&name))?;
+            remove_at(&self.key, &name, &display)?;
             removed.push((name, bytes));
         }
         Ok(removed)
@@ -223,11 +255,13 @@ impl WarmDirectory {
         self
     }
 
-    /// Whether a real directory, not a link or a file, sits at the kind's name right now.
-    pub fn is_directory(&self) -> bool {
+    /// Whether something other than a real directory — a link, a file — sits at the kind's name
+    /// right now. An absent name is not swapped: there is nothing there to count, and the
+    /// inspection after the check reports it as gone.
+    pub fn is_swapped(&self) -> bool {
         matches!(
             nix::sys::stat::fstatat(&*self.key, self.name.as_str(), AtFlags::AT_SYMLINK_NOFOLLOW),
-            Ok(stat) if file_kind(&stat) == SFlag::S_IFDIR
+            Ok(stat) if file_kind(&stat) != SFlag::S_IFDIR
         )
     }
 
@@ -424,7 +458,7 @@ fn lock_kind_at(
     kind: &str,
     wait: Duration,
 ) -> Result<TaskBuildCacheLock, String> {
-    if !is_kind(kind) {
+    if !is_kind(kind) || !WARM_KINDS.contains(&kind) {
         return Err("Task build cache key is not an opaque identity".into());
     }
     match exclusive_lock_at(&key, &format!("{kind}.lock"), wait)? {
@@ -457,7 +491,12 @@ fn exclusive_lock_at(
     let started = Instant::now();
     loop {
         match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
-            Ok(lock) => return Ok(Some(lock)),
+            Ok(lock) => {
+                // The kernel's lock files carry no payload: whatever a check wrote into one
+                // while it could is dropped here, so it never counts toward the key's bound.
+                let _ = nix::unistd::ftruncate(&*lock, 0);
+                return Ok(Some(lock));
+            }
             Err((returned, Errno::EWOULDBLOCK)) => {
                 if started.elapsed() >= wait {
                     return Ok(None);
@@ -720,9 +759,18 @@ fn open_path(path: &Path) -> Result<Option<OwnedFd>, Uninspectable> {
 }
 
 fn count(descriptor: OwnedFd, display: &Path) -> Result<u64, Uninspectable> {
+    count_skipping(descriptor, display, &|_| false)
+}
+
+/// [`count`], leaving out the entries `skip` names (the kernel's own lock files below a key).
+fn count_skipping(
+    descriptor: OwnedFd,
+    display: &Path,
+    skip: &dyn Fn(&Path) -> bool,
+) -> Result<u64, Uninspectable> {
     let mut total = 0_u64;
-    walk_from(descriptor, display, &mut |_, stat| {
-        if file_kind(stat) != SFlag::S_IFDIR {
+    walk_from(descriptor, display, &mut |path, stat| {
+        if file_kind(stat) != SFlag::S_IFDIR && !skip(path) {
             total = total.saturating_add(u64::try_from(stat.st_size).unwrap_or(0));
         }
         true
@@ -1175,5 +1223,46 @@ mod tests {
         );
         assert_eq!(key.kinds().unwrap(), Vec::<String>::new());
         assert_eq!(target.bytes(), Ok(0));
+    }
+
+    #[test]
+    fn a_file_a_check_names_like_a_lock_is_counted_and_removed_with_the_key() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("af").join(TASK_BUILD_CACHE_DIRECTORY);
+        let key = lock_task_build_cache_key(&cache, &key('a'), &key('b'), Duration::ZERO)
+            .unwrap()
+            .unwrap();
+        let TaskBuildCacheLock::Held(target) =
+            key.lock_kind("cargo_target", Duration::ZERO).unwrap()
+        else {
+            panic!("free kind");
+        };
+        target.ensure().unwrap();
+        std::fs::write(key.path().join("extra.lock"), [0_u8; 4096]).unwrap();
+        std::fs::write(key.path().join("cargo_target.lock"), [0_u8; 2048]).unwrap();
+        assert!(key.bytes().unwrap() >= 4096, "the impostor counts");
+        assert!(
+            key.bytes().unwrap() < 4096 + 2048,
+            "the kernel's own lock files never do"
+        );
+        assert_eq!(key.kinds().unwrap(), ["cargo_target", "extra.lock"]);
+        let removed = key.remove_kinds().unwrap();
+        assert_eq!(
+            removed,
+            [
+                ("cargo_target".to_string(), 0),
+                ("extra.lock".to_string(), 4096)
+            ]
+        );
+        assert!(!key.path().join("extra.lock").exists());
+        assert!(
+            key.path().join("cargo_target.lock").exists(),
+            "the kernel's lock stays"
+        );
+        assert!(key.path().join(KEY_LOCK).exists());
+        assert!(
+            key.lock_kind("extra", Duration::ZERO).is_err(),
+            "only the closed kind set is ever locked"
+        );
     }
 }

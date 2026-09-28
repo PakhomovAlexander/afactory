@@ -62,7 +62,11 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   toolchain key goes through the key directory's descriptor, never a path, so a check that swaps
   the key's parent for a link cannot redirect cleanup; the shared bound is measured over the whole
   key before and after every check and an eviction removes every kind below it; and an
-  observation's `evicted_bytes` carries its `evicted_reason`, which `af task show` prints.
+  observation's `evicted_bytes` carries its `evicted_reason`, which `af task show` prints. Only the
+  two warm kinds are ever locked and only the kernel's own lock files are exempt from the bound
+  (they are truncated on acquisition), a policy whose kinds a Cache Snapshot supersedes still holds
+  and bounds the key, and a check whose warm directory is suspect once it ended fails even when
+  nothing was left to evict.
 - Give a source-writing Worker that declares `execute-checks` a shell (ADR-0120): `worker_access`
   maps `write-source` plus `execute-checks` to `WorkerAccess::WriteSourceWithShell`, the Claude
   adapter grants `Read,Glob,Grep,Edit,Write,Bash` and Codex runs `workspace-write`, and the shell's

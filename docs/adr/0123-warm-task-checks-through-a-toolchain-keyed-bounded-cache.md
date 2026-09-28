@@ -234,3 +234,19 @@ Three rules were added when the follow-up Task's reviewers read the amendment:
   ended over the bound or suspect every kind below the key is removed, not only the ones it held.
 - **The cause travels with the eviction.** An observation's `evicted_bytes` comes with
   `evicted_reason`, `bound_exceeded` or `suspect`, and `af task show` prints that reason.
+
+### After the third verification
+
+- **A closed kind set, and only the kernel's locks are exempt.** Only `cargo_target` and
+  `cargo_home` are ever locked as kinds; below a key, only `warm.lock` and those two kinds' lock
+  files are the kernel's, and they are truncated on every acquisition so a check cannot park bytes
+  in them. Every other entry below the key — a kind directory, a link a check planted where a kind
+  was, a file a check named to look like a lock — is counted against the bound and removed with the
+  key.
+- **A superseded kind still shares the key.** A policy whose every kind a Cache Snapshot supersedes
+  still resolves the toolchain, takes the key lock, measures the key and empties an over-bound one;
+  its observations carry the resolved toolchain like every other kind's.
+- **Any excess fails the check.** A check whose used directory is suspect once it ended fails
+  whether or not anything was left to remove — a check that deleted its own warm root is suspect
+  too — and every declared kind's observation carries the eviction and its cause, with zero bytes
+  when nothing was there.

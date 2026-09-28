@@ -528,30 +528,34 @@ impl CodeTaskDomain {
                     };
                     // Every kind below the key goes, held by this check or left by another; the
                     // key stays locked until the last one is removed.
+                    let excess = exceeded.is_some();
                     let evicted =
                         session.finish(prepared.key_lock, prepared.directories, exceeded)?;
-                    if !evicted.is_empty() {
-                        // Above the bound or suspect once the check ended, however fast it was:
-                        // the check fails, and each kind's eviction lands on the same record
-                        // that measured its directory before the check.
+                    if excess {
+                        // Above the bound or suspect once the check ended, however fast it was
+                        // and whether or not anything was left to remove — a check that deleted
+                        // its own warm root is suspect too: the check fails, and each declared
+                        // kind's eviction lands on the record that measured it before the check.
                         result.status = CheckStatus::Failed;
                         result.exit_code = None;
                         result.reason = Some(reason.into());
-                    }
-                    for (kind, bytes) in evicted {
-                        // A kind this check never declared has no observation to carry the
-                        // eviction; its removal is the key's business and is logged only.
-                        let Some(target) = observations
-                            .iter_mut()
-                            .find(|observation| observation.eligible && observation.kind == kind)
-                        else {
-                            eprintln!(
-                                "warm check cache diagnostic: removed undeclared `{kind}` ({bytes} bytes)"
-                            );
-                            continue;
-                        };
-                        target.evicted_bytes = Some(bytes);
-                        target.evicted_reason = Some(why.into());
+                        for observation in observations.iter_mut().filter(|o| o.eligible) {
+                            let bytes = evicted
+                                .iter()
+                                .find(|(kind, _)| *kind == observation.kind)
+                                .map_or(0, |(_, bytes)| *bytes);
+                            observation.evicted_bytes = Some(bytes);
+                            observation.evicted_reason = Some(why.into());
+                        }
+                        for (kind, bytes) in &evicted {
+                            if !observations.iter().any(|o| o.eligible && o.kind == *kind) {
+                                // An entry this check never declared has no observation to carry
+                                // its removal; the key's business, logged only.
+                                eprintln!(
+                                    "warm check cache diagnostic: removed undeclared `{kind}` ({bytes} bytes)"
+                                );
+                            }
+                        }
                     }
                 }
             }

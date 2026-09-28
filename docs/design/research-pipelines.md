@@ -657,3 +657,14 @@ now measured over the whole key before and after every check and an eviction emp
 every kind, with a cross-policy test; `af task show` called every eviction a bound violation, so an
 observation now carries `evicted_reason` beside `evicted_bytes`; and the record above gained the
 `markdownlint` spans the evaluator asked for.
+
+Verification Task `research-r1-verify-3` on 37b9ea8 (305,432 tokens; gate warm, `kernel`
+13.5 min under load) ended `changes_requested` with four defects, again all real and all fixed by
+hand: a policy whose only kind a Cache Snapshot superseded skipped the key lock and the whole-key
+bound, and its observation lost the toolchain identity, so every declared kind now resolves the
+toolchain and holds the key; a check that deleted its own warm root and exited successfully was
+detected as suspect but still passed because nothing was left to evict, so any excess now fails the
+check and every declared kind records the cause; and the key's entry listing exempted every file
+ending in `.lock`, so a check could park an oversized `extra.lock` beside its directory forever,
+so only the kernel's exact lock files are exempt, they are truncated on acquisition, and only the
+two known kinds are ever locked. Each has a unit or end-to-end fixture.

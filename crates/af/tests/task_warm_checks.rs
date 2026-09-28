@@ -40,6 +40,10 @@ os.makedirs(target, exist_ok=True)\n\
 open(os.path.join(target, 'big.bin'), 'wb').write(b'x' * 8192)\n\
 time.sleep(90)\n";
 
+/// A check that deletes its own warm directory and exits successfully.
+const REMOVE_ROOT: &str = "import os, shutil\n\
+shutil.rmtree(os.environ['CARGO_TARGET_DIR'])\n";
+
 const TOOLCHAIN: &str = "[toolchain]\nchannel = \"1.88.0\"\n";
 
 struct Fixture {
@@ -630,6 +634,37 @@ fn a_check_that_writes_past_the_bound_is_ended_failed_and_its_directory_removed(
     let shown = show(&fixture, "bound-grow");
     assert!(
         shown.contains("cargo_target cold empty, removed 8192 (bound_exceeded)"),
+        "{shown}"
+    );
+}
+
+#[test]
+fn a_check_that_removes_its_warm_root_fails_as_suspect_with_the_cause_recorded() {
+    let fixture = fixture(code_policy(
+        REMOVE_ROOT,
+        120_000,
+        false,
+        Some("build_cache = [\"cargo_target\"]"),
+    ));
+    let outcome = start(&fixture, "remove-root", 3);
+    let cas = cas(&fixture);
+    let result = check_result(&cas, &outcome);
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["reason"], "warm_cache_suspect");
+    assert_eq!(check_receipt(&cas, &outcome)["outcome"], "failed");
+    let observed = observations(&outcome);
+    assert_eq!(observed.len(), 1);
+    assert_eq!(observed[0]["kind"], "cargo_target");
+    assert_eq!(
+        observed[0]["evicted_bytes"], 0,
+        "nothing was left to remove"
+    );
+    assert_eq!(observed[0]["evicted_reason"], "suspect");
+    assert!(warm_directories(&fixture).is_empty());
+    let shown = show(&fixture, "remove-root");
+    assert!(shown.contains("check pagination: failed in "), "{shown}");
+    assert!(
+        shown.contains("cargo_target cold empty, removed 0 (suspect)"),
         "{shown}"
     );
 }
