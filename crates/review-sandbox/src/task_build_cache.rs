@@ -268,8 +268,10 @@ impl TaskBuildCacheKeyLock {
     }
 
     /// Bytes below the whole key — every kind directory, whoever left it, and the lock files —
-    /// counted without following links. A key the count cannot fully inspect is
-    /// `Uninspectable`, never smaller.
+    /// counted without following links. This holder's own locks are left out only while they
+    /// are the empty, singly linked files the kernel made; one a check grew or linked counts
+    /// like anything else, so growing it cannot slip past the bound while the check runs. A key
+    /// the count cannot fully inspect is `Uninspectable`, never smaller.
     pub fn bytes(&self) -> Result<u64, Uninspectable> {
         let descriptor = nix::unistd::dup(&*self.key).map_err(|errno| Uninspectable {
             counted: 0,
@@ -286,6 +288,8 @@ impl TaskBuildCacheKeyLock {
                     .file_name()
                     .and_then(|name| CString::new(name.as_bytes()).ok())
                     .is_some_and(|name| held.holds_entry(&name, stat))
+                && stat.st_size == 0
+                && stat.st_nlink == 1
         })
     }
 
@@ -886,45 +890,14 @@ fn remove_at(parent: &OwnedFd, name: &str, display: &Path) -> Result<(), String>
             display.display()
         )
     };
-    let stat = match nix::sys::stat::fstatat(parent, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
-        Ok(stat) => stat,
-        Err(Errno::ENOENT) => return Ok(()),
-        Err(errno) => return Err(failed(errno)),
-    };
-    if file_kind(&stat) == SFlag::S_IFDIR {
-        // A check may have left a directory it made unreadable; the kernel owns the tree and
-        // makes it its own again, without following a link, before looking inside.
-        nix::sys::stat::fchmodat(parent, name, Mode::S_IRWXU, FchmodatFlags::NoFollowSymlink)
-            .map_err(failed)?;
-        let descriptor =
-            nix::fcntl::openat(parent, name, directory_flags(), Mode::empty()).map_err(failed)?;
-        let names = entry_names(descriptor, display)?;
-        let descriptor =
-            nix::fcntl::openat(parent, name, directory_flags(), Mode::empty()).map_err(failed)?;
-        for child in names {
-            let child_name = OsStr::from_bytes(child.as_bytes());
-            remove_at(
-                &descriptor,
-                &child_name.to_string_lossy(),
-                &display.join(child_name),
-            )
-            .or_else(|detail| {
-                // Names that are not UTF-8 go through the C string directly.
-                remove_c(&descriptor, &child, &display.join(child_name)).map_err(|_| detail)
-            })?;
-        }
-        drop(descriptor);
-        match nix::unistd::unlinkat(parent, name, UnlinkatFlags::RemoveDir) {
-            Ok(()) | Err(Errno::ENOENT) => {}
-            Err(errno) => return Err(failed(errno)),
-        }
-    } else {
-        match nix::unistd::unlinkat(parent, name, UnlinkatFlags::NoRemoveDir) {
-            Ok(()) | Err(Errno::ENOENT) => {}
-            Err(errno) => return Err(failed(errno)),
-        }
-    }
-    match nix::sys::stat::fstatat(parent, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+    let exact = CString::new(name).map_err(|_| {
+        format!(
+            "removing the Task build cache {}: the name holds a NUL byte",
+            display.display()
+        )
+    })?;
+    remove_c(parent, &exact, display)?;
+    match nix::sys::stat::fstatat(parent, exact.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
         Err(Errno::ENOENT) => Ok(()),
         Ok(_) => Err(format!(
             "Task build cache removal left {} behind",
@@ -934,7 +907,9 @@ fn remove_at(parent: &OwnedFd, name: &str, display: &Path) -> Result<(), String>
     }
 }
 
-/// [`remove_at`] for an entry whose name is not UTF-8.
+/// Remove the entry `name` below `parent` by its exact bytes, never by a spelling of them: a
+/// directory is made the kernel's own again, emptied child by child and unlinked; a link or a
+/// file is unlinked as such. Absence is success.
 fn remove_c(parent: &OwnedFd, name: &CStr, display: &Path) -> Result<(), String> {
     let failed = |errno: Errno| {
         format!(
@@ -1874,5 +1849,48 @@ mod tests {
                 .is_file()
         );
         assert_eq!(lock.inspect(), None);
+    }
+
+    #[test]
+    fn a_held_lock_a_check_grew_counts_toward_the_keys_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("af").join(TASK_BUILD_CACHE_DIRECTORY);
+        let lock = lock_task_build_cache_key(&cache, &key('a'), &key('b'), Duration::ZERO)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            lock.bytes().unwrap(),
+            0,
+            "the kernel's own empty lock is not counted"
+        );
+        std::fs::write(lock.path.join(KEY_LOCK), [7_u8; 8192]).unwrap();
+        assert!(
+            lock.bytes().unwrap() >= 8192,
+            "a lock a check grew is counted while the check runs, not only judged after it"
+        );
+        assert!(lock.inspect().is_some());
+    }
+
+    #[test]
+    fn removal_addresses_every_child_by_its_exact_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("key");
+        let subject = parent.join("cargo_target");
+        std::fs::create_dir_all(&subject).unwrap();
+        std::fs::write(
+            subject.join("\u{FFFD}"),
+            b"the replacement character, spelled out",
+        )
+        .unwrap();
+        if std::fs::write(subject.join(OsStr::from_bytes(b"\xff")), b"raw").is_err() {
+            eprintln!("this filesystem refuses names that are not UTF-8; nothing collides here");
+            return;
+        }
+        let descriptor = OwnedFd::from(std::fs::File::open(&parent).unwrap());
+        remove_at(&descriptor, "cargo_target", &subject).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&subject).is_err(),
+            "both the raw name and the one its lossy spelling collides with are gone"
+        );
     }
 }

@@ -715,3 +715,18 @@ judging it again, and a link an interrupted check left at a lock's name made `op
 fail before the recovery path ran. The lock's name is now cleaned before it is opened and the inode
 judged again after the wait. The `bugs` package moves to GPT-6 Sol at high for the rest of the
 campaign; Terra's replies were the only reviewer failures the kernel saw.
+
+Verification Task `research-r1-verify-8` on 1048a12 (265,270 tokens; gate warm, `kernel` 12.9 min,
+`cargo_target` 12.0 GiB, `cargo_home` 104 MiB) ended **`verified`**: the evaluator (GPT-6 Sol)
+passed the package against every acceptance criterion. The two reviewers, both GPT-6 Sol now,
+still reported four findings, none of which changed the verdict. Three were fixed by hand on top
+of the verified commit, each with a unit test, and are not re-verified by af: a held lock a check
+grew was exempt from the running bound (it counts now); `remove_at` spelled a child's name lossily
+and could remove the wrong one of two colliding entries (removal is by exact bytes now); and the
+`source_digest` of a directory carried the lookup's outcome (it names the directory alone now).
+The fourth — a check that unlinks the lock it holds and plants another entry at its name lets the
+next check recover onto a fresh inode while the first still runs — is recorded in ADR-0123 as
+outside these rules: it is the check acting against the cache it was trusted with. R1 closes here.
+Eight verification Tasks cost 2.45M tokens against 1.56M for the two implementation Tasks that
+count; the verification loop, not the implementation, is what this package's evidence says to
+bound next.

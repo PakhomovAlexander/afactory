@@ -302,6 +302,19 @@ Three rules were added when the follow-up Task's reviewers read the amendment:
   inode sound before waiting on another holder judges it again — on the open descriptor and at
   the name — once it holds the lock, before anything is written through it.
 
+### After the eighth verification
+
+- **A held lock is exempt from the bound only while it is the empty file the kernel made.** One a
+  check grows or links counts like anything else, so the running bound catches it, not only the
+  judgement after the check.
+- **Removal addresses every entry by its exact bytes**, never by a lossy spelling: a name that is
+  not UTF-8 and the name its spelling collides with are two entries, and both go.
+- **A directory's identity is its project, toolchain and kind alone**, never the lookup's outcome:
+  a warm, a busy and a discarded observation of one directory join on one `source_digest`.
+- **Recorded, not fixed:** a check that unlinks the lock it holds and plants another entry at the
+  name lets the next check recover onto a fresh inode while the first still runs. That is the
+  check acting against the cache it was trusted with, which is where these rules stop (below).
+
 ### Where these rules stop
 
 `trusted_local` is not security isolation, and this cache does not claim to make it one. A

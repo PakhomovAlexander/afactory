@@ -739,7 +739,6 @@ impl<'a> WarmSession<'a> {
                                             cas,
                                             label,
                                             Some(&toolchain),
-                                            None,
                                         )?,
                                         toolchain_id: Some(toolchain.clone()),
                                         bytes_available: bytes,
@@ -890,7 +889,6 @@ impl<'a> WarmSession<'a> {
                         cas,
                         &observation.kind,
                         observation.toolchain_id.as_deref(),
-                        Some(reason),
                     )?,
                     ..observation
                 })
@@ -1002,7 +1000,7 @@ impl<'a> WarmSession<'a> {
         Ok(Observation {
             kind: format!("{kind}:{reason}"),
             eligible: false,
-            source_digest: self.identity(cas, kind, toolchain_id, Some(reason))?,
+            source_digest: self.identity(cas, kind, toolchain_id)?,
             toolchain_id: toolchain_id.map(String::from),
             bytes_available: bytes,
             lookup_ms: started.elapsed().as_millis() as u64,
@@ -1013,20 +1011,19 @@ impl<'a> WarmSession<'a> {
     }
 
     /// The path-free identity of the directory an observation is about: the project key, the
-    /// toolchain and the kind, never a host path.
+    /// toolchain and the kind, never a host path and never the lookup's outcome, so the
+    /// observations of one directory join on it whether the check found it warm, busy or gone.
     fn identity(
         &self,
         cas: &Cas,
         kind: &str,
         toolchain_id: Option<&str>,
-        reason: Option<&str>,
     ) -> Result<String, String> {
         cas.put_json(&json!({
             "schema": "af.task-build-cache/1",
             "project": self.project,
             "toolchain_id": toolchain_id,
             "kind": kind,
-            "reason": reason,
         }))
         .map_err(|e| e.to_string())
     }
@@ -1346,6 +1343,10 @@ mod tests {
         assert_eq!(
             busy.observations[0].toolchain_id,
             held.observations[0].toolchain_id
+        );
+        assert_eq!(
+            busy.observations[0].source_digest, held.observations[0].source_digest,
+            "one directory has one identity whether the check found it warm or busy"
         );
         assert_eq!(
             target(&busy),
