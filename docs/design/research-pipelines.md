@@ -617,3 +617,30 @@ fixture path in at compile time — `env!("CARGO_MANIFEST_DIR")` without the run
 `AF_WORKSPACE_ROOT` fallback `scripts/verify.sh` exports for exactly this — looks for a destroyed
 directory: two tests in `review-config` failed the first warm gate (8.9 min, versus 14.0 cold,
 before failing). Nine such paths were made run-time and a test now refuses any new one.
+
+**Paired benchmark** (Demand 1). Five cold/warm pairs of this repository's checks on one pinned
+Snapshot (commit d7ba8d8, toolchain key
+`d7e5ef8d…`, rustc 1.88.0) through the credential-free `kernel/gate-bench` Pipeline, one Task
+per gate, run one at a time on a MacBook on AC power, 2026-09-28 01:00–03:12 local. Cold means the
+whole `task-build-cache` directory was removed before the gate; warm means the previous cold
+gate's directories were reused (`cargo_target` 8.2 GB, `cargo_home` 109 MB, both `eligible`).
+The span is the `kernel` check's recorded `Check` span, which runs `scripts/verify.sh` →
+`make check`.
+
+| Pair | Cold `kernel` span | Warm `kernel` span | Ratio | Load (1 min) cold / warm |
+|---|---:|---:|---:|---|
+| 1 | 13.8 min | 11.9 min | 0.86 | 16.1 / 3.7 |
+| 2 | 13.9 min | 12.0 min | 0.86 | 4.3 / 9.8 |
+| 3 | 13.8 min | 11.9 min | 0.87 | 4.8 / 4.0 |
+| 4 | 13.8 min | 12.0 min | 0.87 | 3.8 / 2.9 |
+| 5 | 13.8 min | 12.0 min | 0.87 | 3.6 / 4.1 |
+
+Median ratio 0.87, spread 0.86–0.87; cold spans 13.8–13.9 min, warm 11.9–12.0 min. The
+`make check` steps explain the shape: cold `lint` 41–47 s and `test-build` 49–52 s become warm
+20 s and 13–15 s, while `test` runs 728–732 s cold and 672–679 s warm, and `fmt` and
+`release-resolution` are 1 s and 5 s in both. A warm check removes almost all compilation, about
+two minutes of fourteen; the other twelve are the test suite executing under
+`--test-threads=4`. Warm checks are therefore worth having — every package's gates and every
+verification Task pay them — but the check time this campaign set out to research is test
+execution, not compilation, and that is the first hard fact for R6's report. The earlier 15–16
+minute gates included the toolchain download the rustup binding removed.
