@@ -477,9 +477,16 @@ impl App {
         match row.kind {
             NodeKind::Root => self.scope.name(),
             NodeKind::Folder(tab) => format!("{}/", tab.name()),
-            // A Task row's label is its fitted progress; its id is the path to it.
+            // A Task row's label is its fitted progress; its id is the path to it. An entry the
+            // pane makes up (an unreadable Store, the old Stores) has an internal id: its label
+            // names it.
             NodeKind::Item(Tab::Tasks) | NodeKind::Group(Tab::Tasks) => {
-                format!("{}/{}", Tab::Tasks.name(), row.id)
+                let path = match row.id.rsplit_once('/') {
+                    Some((dir, last)) if last.starts_with('!') => format!("{dir}/{}", row.label),
+                    None if row.id.starts_with('!') => row.label.clone(),
+                    _ => row.id.clone(),
+                };
+                format!("{}/{path}", Tab::Tasks.name())
             }
             NodeKind::Group(tab) | NodeKind::Item(tab) => {
                 format!("{}/{}", tab.name(), row.label)

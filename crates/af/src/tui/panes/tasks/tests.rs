@@ -1045,3 +1045,138 @@ fn r_prefills_the_run_of_the_shown_plan_and_d_only_a_verified_tasks_delivery() {
     assert_eq!(words[4], "af/a b");
     assert_eq!(prefill(Key::Char('x'), "t-1", None, State::Done), None);
 }
+
+#[test]
+fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
+    let old = format!(
+        "event store: unknown review-kernel event type: TaskTransition@1; {}; start a new \
+         Campaign or Task",
+        review_core::event::ANOTHER_RELEASE
+    );
+    let store = |name: &str, tasks: Result<Vec<Listed>, String>| Store {
+        dir: PathBuf::from(format!("/home/me/.local/state/af/task/local/{name}")),
+        shown: format!("~/.local/state/af/task/local/{name}"),
+        repo: Some(name.to_owned()),
+        older: matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE)),
+        tasks,
+    };
+    let mut pane = TasksPane {
+        title: "TASKS  user".to_owned(),
+        stores: vec![
+            store("0000000000000001", Err(old.clone())),
+            store("0000000000000002", Err("permission denied".to_owned())),
+            store("0000000000000003", Err(old.clone())),
+            store("0000000000000004", Ok(Vec::new())),
+        ],
+        ..TasksPane::default()
+    };
+    // The bar: one entry for both old Stores, after the others; each other Store as before.
+    let labels: Vec<String> = pane.items().into_iter().map(|item| item.label).collect();
+    assert_eq!(
+        labels,
+        [
+            "0000000000000002/ (0)",
+            "0000000000000004/ (0)",
+            "! 2 old Stores",
+        ]
+    );
+    // The folder: one line for them, and the other refusal still named with its cause.
+    pane.rebuild();
+    let rows: Vec<String> = pane.rows.iter().map(Row::text).collect();
+    assert_eq!(
+        rows[2..5],
+        [
+            "2 Task Stores were written by an earlier af release, in",
+            "  ~/.local/state/af/task/local",
+            "af does not read pre-GA state (ADR-0113); move or remove them.",
+        ]
+    );
+    assert!(rows[2..5].iter().all(|row| row.len() <= 72), "{rows:#?}");
+    let at = rows
+        .iter()
+        .position(|row| row == "~/.local/state/af/task/local/0000000000000002:")
+        .unwrap_or_else(|| panic!("{rows:#?}"));
+    assert_eq!(
+        rows[at + 1],
+        "  this Store cannot be read: permission denied"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("TaskTransition")),
+        "{rows:#?}"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.contains("earlier af release"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_long_state_path_keeps_every_row_within_the_pane() {
+    let root = format!(
+        "/private/var/folders/{}/state/af/task/local",
+        "x".repeat(60)
+    );
+    let store = |name: &str, tasks: Result<Vec<Listed>, String>| Store {
+        dir: PathBuf::from(format!("{root}/{name}")),
+        shown: format!("{root}/{name}"),
+        repo: Some(name.to_owned()),
+        older: matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE)),
+        tasks,
+    };
+    let old = format!(
+        "unknown event type; {}",
+        review_core::event::ANOTHER_RELEASE
+    );
+    let mut pane = TasksPane {
+        title: "TASKS  user".to_owned(),
+        stores: vec![
+            store("0000000000000001", Err(old)),
+            store("0000000000000002", Err("file is not a database".to_owned())),
+        ],
+        ..TasksPane::default()
+    };
+    pane.rebuild();
+    let rows: Vec<String> = pane.rows.iter().map(Row::text).collect();
+    assert!(
+        rows.iter().all(|row| row.chars().count() <= MAIN),
+        "{rows:#?}"
+    );
+    // The whole location is there, across rows, and the other refusal's cause is on its own.
+    let location: String = rows[3..].iter().map(|row| row.trim()).collect();
+    assert!(location.contains("state/af/task/local"), "{rows:#?}");
+    assert!(
+        rows.iter()
+            .any(|row| row == "  this Store cannot be read: file is not a database"),
+        "{rows:#?}"
+    );
+}
+
+#[test]
+fn bounded_rows_split_at_spaces_and_inside_long_words() {
+    assert_eq!(bounded("short", 10, "  "), ["  short"]);
+    assert_eq!(bounded("one two three", 9, ""), ["one two", "three"]);
+    assert_eq!(bounded("abcdefghij", 4, ""), ["abcd", "efgh", "ij"]);
+    assert_eq!(bounded("ab cdefgh", 6, "- "), ["- ab", "- cdef", "- gh"]);
+}
+
+/// Only the event log's own refusal marks a Store as another release's: a Store refused before
+/// it is read, whose path happens to hold the same words, keeps its own cause.
+#[test]
+fn a_path_holding_the_marker_is_not_an_old_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join(review_core::event::ANOTHER_RELEASE);
+    std::os::unix::fs::symlink(temp.path().join("gone"), &dir).unwrap();
+    let store = read_store(
+        &dir,
+        "shown",
+        Some("repo".to_owned()),
+        &mut Cache::default(),
+    );
+    let Err(why) = &store.tasks else {
+        panic!("a link to nothing is refused");
+    };
+    assert!(why.contains("link to nothing"), "{why}");
+    assert!(!earlier(&store));
+}
