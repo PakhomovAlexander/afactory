@@ -835,4 +835,22 @@ fn a_bound_many_output_records_every_artifact_it_holds() {
         assert_eq!(binding.also[0].artifact_id, b);
         assert_eq!(binding.also[0].task.as_ref().unwrap().port, "measurements");
     }
+    // An output wider than the Task file's sixteen references still binds whole: the record's
+    // bound is on artifacts, the list's on references.
+    let wide: Vec<String> = (0..17)
+        .map(|n| fixture.put(MEASUREMENT_V1, json!({"n": n})))
+        .collect();
+    let many = ArtifactInputV1 {
+        artifact_ids: wide.clone(),
+        artifact_type: MEASUREMENT_V1.into(),
+        cardinality: PortCardinality::Many,
+        snapshot_id: None,
+    };
+    fixture.finish("wide", ports("measurements", many));
+    let bound = fixture
+        .bind(table("measurements", task_ref("wide", "measurements")))
+        .unwrap();
+    assert_eq!(bound.ports["measurements"].artifact_ids, wide);
+    let record = fixture.record(&bound);
+    assert_eq!(record.bindings["measurements"].also.len(), 16);
 }

@@ -884,3 +884,12 @@ were fixed by hand: a bound `many` output holding several artifacts recorded onl
 the adapter-owned ports `source`, `history` and `sources` bypassed the selected Pipeline's
 declaration, so a Pipeline lacking the port refused the binding only at compilation and without
 both types. Re-verified once more.
+
+Verification Task `research-r4-verify-2` on a3acfcd (257,910 tokens; gate warm, `kernel` 15.9 min)
+ended **`verified`**: the evaluator passed the package on every criterion. Both reviewers reported
+the same major, in the hand fix that records every artifact: the record's bound of sixteen was
+the Task file's bound on references, so a `many` output holding seventeen artifacts could not be
+bound at all. Fixed by hand after the verdict, with a test, not re-verified: the record is bounded
+at 1,024 artifacts per port and the list keeps its sixteen references. R4 closes here. Two
+verification Tasks cost 514,541 tokens against 733,989 for the one implementation Task; the first
+lost its correctness reviewer to a reply the kernel refused for its shape.

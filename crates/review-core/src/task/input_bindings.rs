@@ -106,8 +106,12 @@ where
     Ok(list)
 }
 
-/// The most recorded outputs one port may be bound from.
+/// The most recorded outputs one port may be bound from: the Task file's list of references.
 pub const MAX_BOUND_OUTPUTS: usize = 16;
+/// The most artifacts one port may be bound with, across every referenced output: a recorded
+/// `many` output holds any number of artifacts, and the record keeps every one of them, so the
+/// bound here is on the record, not on the references.
+pub const MAX_BOUND_ARTIFACTS: usize = 1024;
 
 impl TaskInputBindingV1 {
     pub fn validate(&self) -> Result<(), String> {
@@ -135,7 +139,7 @@ impl TaskInputBindingV1 {
             self.task.is_some()
                 && self.resolved_artifact_id.is_none()
                 && self.rerooted_snapshot_id.is_none()
-                && self.also.len() < MAX_BOUND_OUTPUTS,
+                && self.also.len() < MAX_BOUND_ARTIFACTS,
             "A port bound from several outputs names each by Task and re-roots none",
         )?;
         for further in &self.also {
@@ -318,7 +322,7 @@ mod tests {
         assert!(invalid(&|b| b.also[0].also.push(output('c', "x"))));
         assert!(invalid(&|b| b.also[0].artifact_id = "baseline".into()));
         assert!(invalid(&|b| {
-            b.also = (0..MAX_BOUND_OUTPUTS).map(|_| output('c', "x")).collect();
+            b.also = (0..MAX_BOUND_ARTIFACTS).map(|_| output('c', "x")).collect();
         }));
     }
 

@@ -185,7 +185,9 @@ The package's review (Task `research-r4`) changed two rules, and the text above 
   resolves each reference, so a name that is not a result output, or an output of another type,
   is refused for that reason rather than only for the list's cardinality.
 - **A bound `many` output records every artifact it holds**, one entry each, so the binding
-  record, its references and `af task explain --tree` show everything the binding delivers.
+  record, its references and `af task explain --tree` show everything the binding delivers. The
+  record is bounded at 1,024 artifacts per port; the Task file's list keeps its sixteen
+  references, which is a bound on references, not on the artifacts an output holds.
 - **Adapter-owned ports are checked against the selected Pipeline too.** `source`, `history` and
   `sources` keep their profile types, but a Pipeline that does not declare the port, or declares
   it differently, refuses the binding by name with both types at resolution, not at compilation.
