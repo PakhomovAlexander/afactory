@@ -85,7 +85,8 @@ struct TaskFile {
     )]
     requirements: Option<serde_json::Map<String, serde_json::Value>>,
     /// Root input ports bound to a recorded Task's output or to an exact artifact in the same
-    /// Store, instead of being constructed by this adapter (ADR-0117). Absent by default, and
+    /// Store, instead of being constructed by this adapter (ADR-0117), or — for any other root
+    /// input the selected Pipeline declares — to one or several recorded outputs (ADR-0126). Absent by default, and
     /// absent on round-trip, so a Task file written before this decision keeps its exact
     /// revision, plan and `--json` documents.
     #[serde(
@@ -1102,10 +1103,17 @@ fn start_captured(
     // Resolved once, here, from the `--state` Store alone, before any Worker is dispatched or
     // any Provider admitted. A bound port replaces this adapter's construction of it and
     // nothing else changes (ADR-0117).
+    let declared = file.inputs.as_ref().map(|_| {
+        let named = file.pipeline.as_ref().map(|choice| choice.name.as_str());
+        input_bindings::DeclaredPorts::of(compiler.pipelines(), &file.kind, named)
+    });
     let bound = file
         .inputs
         .as_ref()
-        .map(|references| input_bindings::resolve(&cas, &store, profile, references))
+        .zip(declared.as_ref())
+        .map(|(references, declared)| {
+            input_bindings::resolve(&cas, &store, profile, declared, references)
+        })
         .transpose()?;
     let bound_ports = bound
         .as_ref()
@@ -2407,9 +2415,14 @@ fn present_with_format(
         if let Some(id) = &state.plan_id {
             println!("Plan {id}");
         }
-        // One line per bound port, through the same sanitizer the preview uses: a referenced
-        // Task ID is untrusted display data wherever it is printed.
-        for (port, binding) in bindings.iter().flat_map(|record| &record.bindings) {
+        // One line per bound output, through the same sanitizer the preview uses: a referenced
+        // Task ID is untrusted display data wherever it is printed. A port bound from several
+        // outputs prints one line per output (ADR-0126).
+        let bound = bindings.iter().flat_map(|record| &record.bindings);
+        let bound = bound.flat_map(|(port, binding)| {
+            preview::bound_outputs(binding).map(move |output| (port, output))
+        });
+        for (port, binding) in bound {
             match &binding.task {
                 Some(task) => println!(
                     "bound {} <- task {}/{} ({})",

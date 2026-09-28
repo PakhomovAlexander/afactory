@@ -217,3 +217,5 @@ future readers need.
   kernel](0124-measure-and-compare-source-candidates-in-the-kernel.md)
 - [0125 — Accept reports bound to an exact source
   Snapshot](0125-accept-reports-bound-to-an-exact-source-snapshot.md)
+- [0126 — Bind any declared root port to recorded Task
+  outputs](0126-bind-any-declared-root-port-to-recorded-task-outputs.md)

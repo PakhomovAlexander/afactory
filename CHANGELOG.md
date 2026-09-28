@@ -16,6 +16,31 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
+- Bind any declared root port (ADR-0126, package R4 of `docs/design/research-pipelines.md`;
+  amends ADR-0117). A Task file's `inputs` table may bind any root input the selected Pipeline
+  declares — the one the Task file names, or else every captured Pipeline accepting its kind,
+  alike — to a recorded, finished Task's result output whose artifacts verify in the CAS and
+  whose type and cardinality equal the port's exactly; `requirements`, `base` and `continuation`
+  stay refused by name, and `source`, `history` and `sources` keep ADR-0117's rules. Only result
+  outputs bind: naming an Attempt's raw artifacts, runtime evidence or any other record is
+  refused with a message saying so, and an exact `{ "artifact" }` reference binds only
+  ADR-0117's three ports. A list of one to sixteen `{ "task", "port" }` references binds a `many`
+  port in order, so `measurements` can take an experiment's `baseline` and `candidate`; a `one`
+  port keeps its output's Snapshot ID, a `many` port bound from several outputs names none while
+  each artifact keeps its own, and a list into a `one` port is refused. Every refusal names the
+  port and both types before any Worker or Provider admission. The Store, the executor (for a
+  `many` port the consuming contract declares `unbound`) and the Worker renderer accept such a
+  Snapshot-less `many` input port; output ports keep the one-Snapshot rule. A port bound without
+  naming the Pipeline must be declared alike by every Pipeline accepting the kind, else the Task
+  file is asked to name one; a list bound to a `one` port has each reference judged before its
+  shape. This repository's `kernel/analyst` and `kernel/report-verifier` schemas take the
+  `snapshot_id` a bound Measurement or comparison carries.
+  `af/TaskInputBindings@1` records a port's further outputs in an optional `also` list, absent
+  for every single-reference binding, and `af task explain` and `af task show` print their
+  existing binding rows once per output. `task-file-v1.json` gains the list form and
+  `task-input-bindings-v1.json` the `also` list. The `builtin/report` starter's Worker schemas
+  admit a `snapshot_id` on `comparison` and `measurements` values. A Task file without `inputs`
+  is unchanged.
 - Report Tasks (ADR-0125, package R3 of `docs/design/research-pipelines.md`). The built-in kind
   `report` selects a new installed profile: an author reads the source Snapshot, the kernel
   renders its draft and resolves its repository citations against that exact Manifest, and an

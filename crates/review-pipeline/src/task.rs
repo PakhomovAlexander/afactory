@@ -387,9 +387,15 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         let resolved = self.resolve_node(&node.id)?;
         let mut typed = BTreeMap::new();
         for port in &node.inputs {
-            if !resolved.definition.contract.inputs.contains_key(&port.name) {
+            let Some(declared) = resolved.definition.contract.inputs.get(&port.name) else {
                 continue; // Scheduler guards are control authority, not declared Worker data.
-            }
+            };
+            // A `many` port the operator declares `unbound` may gather artifacts of different
+            // Snapshots — a Task-file binding of several recorded outputs (ADR-0126). It then
+            // names no Snapshot and each artifact keeps its own in its envelope; every other
+            // port still spans exactly one.
+            let spans = port.cardinality == review_core::PortCardinality::Many
+                && declared.affinity == review_core::task::pipeline::PortAffinityV1::Unbound {};
             let values = inputs.get(&port.name).map(Vec::as_slice).unwrap_or(&[]);
             if values.is_empty() {
                 if port.optional {
@@ -399,6 +405,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
                 }
             }
             let mut snapshot = None;
+            let mut several = false;
             for (index, id) in values.iter().enumerate() {
                 let value = envelope(self.cas, id)?;
                 if value.artifact_type != port.artifact_type {
@@ -407,8 +414,14 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
                 if index == 0 {
                     snapshot = value.subject_snapshot_id;
                 } else if snapshot != value.subject_snapshot_id {
-                    return Err("One Task port spans different Snapshots".into());
+                    if !spans {
+                        return Err("One Task port spans different Snapshots".into());
+                    }
+                    several = true;
                 }
+            }
+            if several {
+                snapshot = None;
             }
             let value = ArtifactInputV1 {
                 artifact_ids: values.to_vec(),

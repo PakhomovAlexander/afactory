@@ -859,3 +859,19 @@ acceptance; and a verifier could omit its `sources` input while its checks had j
 text. R3 closes here. Three verification Tasks that ran cost 654,671 tokens against 1,067,770 for the one
 implementation Task; the first was a gate failure of a kernel test the review itself had made
 stale, the second a reviewer reply the kernel refused for its shape.
+
+#### R4 — Bind any declared root port
+
+Implementation Task `research-r4` from de3bf63 (733,989 tokens; 7 Attempts; gate warm, `kernel`
+14.6 min) ended `changes_requested` with the evaluator passing every criterion: the implementer
+(Claude Opus 5.5) delivered the widened binding rule with its refusals, the list form for `many`
+ports, the two-Snapshot exception, ADR-0126 amending ADR-0117, and the three-Task chain fixture
+that runs an experiment and then a report bound to its comparison and both Measurements to
+`verified` in one Store. The reviewers (GPT-6 Sol) left one major and one minor, both fixed by
+hand: a port bound without naming the Pipeline was accepted when only some Pipelines accepting the
+kind declared it, so selection would have let the binding choose the Pipeline; and a list bound to
+a `one` port was refused for its shape before its references were judged, hiding that a name was
+not a result output. The implementer also reported the one change it could not make: the
+installed `kernel/analyst` and `kernel/report-verifier` schemas lacked the `snapshot_id` a bound
+Measurement always carries, so R6's report could not have bound R2's outputs to them; both
+schemas were amended by hand, reinstalled and repinned.

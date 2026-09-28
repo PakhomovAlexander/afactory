@@ -37,7 +37,10 @@ fn root_inputs() -> Ports {
 }
 
 /// A command Worker's input schema: one item per `one` port, up to the reply bound per `many`
-/// port, a Snapshot ID on every Snapshot-bound value, and only the required ports required.
+/// port, a Snapshot ID on every Snapshot-bound value, and only the required ports required. A
+/// bound Measurement or Comparison names the Snapshot it measured even on an unbound port, and
+/// a port bound from several Measurements shows each one's own (ADR-0126), so those values may
+/// carry the member; it is never required of them.
 fn input_schema(ports: &Ports) -> Value {
     let properties: BTreeMap<_, _> = ports
         .iter()
@@ -60,6 +63,11 @@ fn input_schema(ports: &Ports) -> Value {
                     .as_array_mut()
                     .expect("required list")
                     .push(json!("snapshot_id"));
+            } else if [MEASUREMENT_V1, MEASUREMENT_COMPARISON_V1]
+                .contains(&port.artifact_type.as_str())
+            {
+                item["properties"]["snapshot_id"] =
+                    json!({"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"});
             }
             let most = if port.cardinality == PortCardinality::Many {
                 1024

@@ -12,7 +12,7 @@ use review_core::task::plan::{
 use review_core::task::{
     self, TaskAcceptanceV1, TaskPhaseV1, TaskResultV1, TaskRevisionV1, TaskWaitingReasonV1,
 };
-use review_core::{ArtifactEnvelope, EventType, RunEvent};
+use review_core::{ArtifactEnvelope, EventType, PortCardinality, RunEvent};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
@@ -503,10 +503,34 @@ fn validate_input_refs(
     input: &task::ArtifactInputV1,
     refs: &mut BTreeSet<String>,
 ) -> Result<(), StoreError> {
+    validate_port_refs(cas, input, refs, false)
+}
+
+/// An input port of a Task revision, plan or invocation. Beside every rule an output port
+/// keeps, a `many` input that names no Snapshot claims none for its artifacts: that is how a
+/// port bound from several recorded outputs of different Snapshots is recorded (ADR-0126),
+/// and each artifact keeps its own subject Snapshot in its envelope. Outputs never do this.
+pub(super) fn validate_bound_input_refs(
+    cas: &Cas,
+    input: &task::ArtifactInputV1,
+    refs: &mut BTreeSet<String>,
+) -> Result<(), StoreError> {
+    let unclaimed = input.cardinality == PortCardinality::Many && input.snapshot_id.is_none();
+    validate_port_refs(cas, input, refs, unclaimed)
+}
+
+/// Every artifact of a port names the port's Snapshot, or none when the port names none —
+/// unless the port is `unclaimed`, whose artifacts each keep their own.
+fn validate_port_refs(
+    cas: &Cas,
+    input: &task::ArtifactInputV1,
+    refs: &mut BTreeSet<String>,
+    unclaimed: bool,
+) -> Result<(), StoreError> {
     input.validate().map_err(conflict)?;
     for id in &input.artifact_ids {
         let value = envelope(cas, id, &input.artifact_type)?;
-        if value.subject_snapshot_id != input.snapshot_id {
+        if !unclaimed && value.subject_snapshot_id != input.snapshot_id {
             return Err(conflict(
                 "Task port Snapshot identity contradicts its artifact envelope",
             ));
@@ -531,7 +555,7 @@ fn revision_references(
     refs.extend(value.previous_revision_id);
     refs.extend(value.acceptance.values().map(|o| o.verifier_policy.clone()));
     for input in value.inputs.values() {
-        validate_input_refs(cas, input, refs)?;
+        validate_bound_input_refs(cas, input, refs)?;
     }
     Ok(())
 }
@@ -745,7 +769,7 @@ fn references(
                 ]);
             }
             for input in value.inputs.values() {
-                validate_input_refs(cas, input, &mut refs)?;
+                validate_bound_input_refs(cas, input, &mut refs)?;
             }
         }
         TaskChangeV1::PlanDecided { decision_id, .. } => {

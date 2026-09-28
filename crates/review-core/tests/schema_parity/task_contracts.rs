@@ -107,6 +107,7 @@ fn task_input_bindings_record_provenance_and_close_every_form() {
                     snapshot_id: None,
                     rerooted_snapshot_id: None,
                     task: None,
+                    also: Vec::new(),
                 },
             ),
             (
@@ -124,6 +125,7 @@ fn task_input_bindings_record_provenance_and_close_every_form() {
                         acceptance: TaskAcceptanceV1::Unsatisfied,
                         domain_conclusion: "changes_requested".into(),
                     }),
+                    also: Vec::new(),
                 },
             ),
         ]),
@@ -158,6 +160,81 @@ fn task_input_bindings_record_provenance_and_close_every_form() {
             .validate()
             .is_err()
     );
+
+    // A `many` port bound from several outputs (ADR-0126): every further output names its Task
+    // and its own Snapshot, and none is re-rooted or nested.
+    let referenced = |port: &str| ReferencedTaskV1 {
+        task_id: "experiment".into(),
+        task_revision_id: id('1'),
+        result_id: id('2'),
+        port: port.into(),
+        acceptance: TaskAcceptanceV1::Satisfied,
+        domain_conclusion: "verified".into(),
+    };
+    let output = |byte: char, snapshot: char, port: &str| TaskInputBindingV1 {
+        artifact_id: id(byte),
+        resolved_artifact_id: None,
+        snapshot_id: Some(id(snapshot)),
+        rerooted_snapshot_id: None,
+        task: Some(referenced(port)),
+        also: Vec::new(),
+    };
+    let mut measurements = output('3', '4', "baseline");
+    measurements.also.push(output('5', '6', "candidate"));
+    let several = TaskInputBindingsV1 {
+        schema: "af.task-input-bindings/1".into(),
+        bindings: std::collections::BTreeMap::from([("measurements".into(), measurements)]),
+    };
+    several.validate().unwrap();
+    let several = serde_json::to_value(&several).unwrap();
+    assert_valid("task-input-bindings-v1.json", &several);
+    for (pointer, member, why) in [
+        (
+            "/bindings/measurements/also/0",
+            "rerooted_snapshot_id",
+            "a further output is never re-rooted",
+        ),
+        (
+            "/bindings/measurements/also/0",
+            "also",
+            "a further output is never nested",
+        ),
+        (
+            "/bindings/measurements",
+            "resolved_artifact_id",
+            "a port bound from several outputs republishes none",
+        ),
+    ] {
+        let mut invalid = several.clone();
+        invalid.pointer_mut(pointer).unwrap()[member] = match member {
+            "also" => json!([several["bindings"]["measurements"]["also"][0]]),
+            _ => json!(id('7')),
+        };
+        assert_invalid("task-input-bindings-v1.json", &invalid, why);
+        let decoded = serde_json::from_value::<TaskInputBindingsV1>(invalid);
+        let refused = decoded.map_or(true, |record| record.validate().is_err());
+        assert!(refused, "{why}");
+    }
+    let mut anonymous = several.clone();
+    anonymous["bindings"]["measurements"]["also"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("task");
+    assert_invalid(
+        "task-input-bindings-v1.json",
+        &anonymous,
+        "every further output names the Task it came from",
+    );
+    let decoded: TaskInputBindingsV1 = serde_json::from_value(anonymous).unwrap();
+    assert!(decoded.validate().is_err());
+    let mut empty = several;
+    empty["bindings"]["measurements"]["also"] = json!([]);
+    assert_invalid(
+        "task-input-bindings-v1.json",
+        &empty,
+        "a single-reference binding has one spelling",
+    );
+    assert!(serde_json::from_value::<TaskInputBindingsV1>(empty).is_err());
 
     let mut orphaned = value;
     orphaned["bindings"]["history"]["rerooted_snapshot_id"] = json!(id('f'));

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-input-bindings:1",
   "title": "TaskInputBindings af/TaskInputBindings@1",
-  "$comment": "The durable record of a Task file's `inputs` table, referenced from TaskRevisionV1.provenance.input_artifact_ids and written only when the Task file carried one. Provenance and display data: the referenced Task's acceptance and domain conclusion cross no Task boundary as authority (ADR-0117). Only a re-rooted `source` carries resolved_artifact_id and rerooted_snapshot_id.",
+  "$comment": "The durable record of a Task file's `inputs` table, referenced from TaskRevisionV1.provenance.input_artifact_ids and written only when the Task file carried one. Provenance and display data: the referenced Task's acceptance and domain conclusion cross no Task boundary as authority (ADR-0117). Only a re-rooted `source` carries resolved_artifact_id and rerooted_snapshot_id. A `many` port bound from several recorded outputs (ADR-0126) keeps its first reference in the binding and every further one, in Task-file order, in `also`; a port bound from one reference carries no `also`.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -47,13 +47,65 @@
         },
         "task": {
           "$ref": "#/$defs/referencedTask"
+        },
+        "also": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 15,
+          "items": {
+            "$ref": "#/$defs/furtherOutput"
+          }
         }
       },
       "dependentRequired": {
         "rerooted_snapshot_id": [
           "snapshot_id",
           "resolved_artifact_id"
+        ],
+        "also": [
+          "task"
         ]
+      },
+      "if": {
+        "required": [
+          "also"
+        ]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "resolved_artifact_id"
+              ]
+            },
+            {
+              "required": [
+                "rerooted_snapshot_id"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "furtherOutput": {
+      "$comment": "One further recorded Task output bound into the same `many` port: its first artifact, the Snapshot the output recorded, and the Task it came from. Never re-rooted, never nested.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "task"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "snapshot_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "task": {
+          "$ref": "#/$defs/referencedTask"
+        }
       }
     },
     "referencedTask": {

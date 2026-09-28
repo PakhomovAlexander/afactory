@@ -3,6 +3,7 @@
 //! something a test has to observe.
 
 use super::*;
+use review_core::task::measurement::{MEASUREMENT_COMPARISON_V1, MEASUREMENT_V1};
 use review_core::task::{TaskAcceptanceV1, TaskExecutionV1};
 use review_source_git::task::{capture_snapshot, derive_source_tree, source_tree};
 use review_source_git::{Entry, EntryKind, Manifest};
@@ -28,6 +29,30 @@ struct Fixture {
     _directory: tempfile::TempDir,
     cas: Cas,
     tasks: Recorded,
+    declared: DeclaredPorts,
+}
+
+/// The root ports a report Pipeline named in the Task file declares beside the ones this
+/// adapter constructs, and one that no binding may supply whatever a Pipeline says.
+fn report_pipeline() -> DeclaredPorts {
+    let ports = [
+        (
+            "comparison",
+            MEASUREMENT_COMPARISON_V1,
+            PortCardinality::One,
+        ),
+        ("measurements", MEASUREMENT_V1, PortCardinality::Many),
+        ("requirements", "af/Requirements@1", PortCardinality::One),
+    ];
+    DeclaredPorts {
+        named: Some("fixture/report".into()),
+        kind: "report".into(),
+        consulted: 1,
+        ports: ports
+            .into_iter()
+            .map(|(port, ty, many)| (port.to_owned(), (1, vec![(ty.to_owned(), many)])))
+            .collect(),
+    }
 }
 
 fn fixture() -> Fixture {
@@ -37,6 +62,7 @@ fn fixture() -> Fixture {
         _directory: directory,
         cas,
         tasks: Recorded::default(),
+        declared: report_pipeline(),
     }
 }
 
@@ -84,7 +110,7 @@ impl Fixture {
     }
 
     fn with(&self, profile: TaskKindProfile, table: Refs) -> Result<BoundInputs, String> {
-        resolve(&self.cas, &self.tasks, profile, &table)
+        resolve(&self.cas, &self.tasks, profile, &self.declared, &table)
     }
 
     fn bind(&self, table: Refs) -> Result<BoundInputs, String> {
@@ -132,19 +158,60 @@ fn ports(port: &str, input: ArtifactInputV1) -> Ports {
 }
 
 #[test]
-fn only_the_ports_this_adapter_constructs_are_bindable() {
-    let fixture = fixture();
+fn requirements_base_and_continuation_stay_refused_and_an_undeclared_port_names_its_pipeline() {
+    let mut fixture = fixture();
+    // `requirements` is refused by name even where the selected Pipeline declares it.
+    assert!(fixture.declared.ports.contains_key("requirements"));
     for port in NOT_BINDABLE {
         let reference = task_ref("prior", "x");
         let error = fixture.bind(table(port, reference)).unwrap_err();
         let named = format!("{port} <- task prior/x");
         assert!(error.contains(&named), "{error}");
-        assert!(error.contains("is not bindable"), "{error}");
+        assert!(error.contains("is not bindable: "), "{error}");
     }
     let reference = task_ref("prior", "snapshot");
     let error = fixture.bind(table("candidate", reference)).unwrap_err();
     assert!(error.contains("candidate <- task prior"), "{error}");
-    assert!(error.contains("source, history, sources"), "{error}");
+    assert!(
+        error.contains("not a bindable root input port: the selected Pipeline fixture/report does not declare it"),
+        "{error}"
+    );
+
+    // Without a named Pipeline, every captured Pipeline accepting the kind is consulted: none
+    // declaring the port, and two declaring it differently, are both refused by name.
+    fixture.declared.named = None;
+    let reference = task_ref("prior", "snapshot");
+    let error = fixture.bind(table("candidate", reference)).unwrap_err();
+    let none = "no captured Pipeline accepting kind report declares it";
+    assert!(error.contains(none), "{error}");
+    let ports = fixture.declared.ports.get_mut("comparison").unwrap();
+    ports.1.push((MEASUREMENT_V1.into(), PortCardinality::One));
+    let reference = task_ref("prior", "comparison");
+    let error = fixture.bind(table("comparison", reference)).unwrap_err();
+    assert!(
+        error.contains("comparison <- task prior/comparison"),
+        "{error}"
+    );
+    assert!(
+        error.contains("with different types; name the Pipeline"),
+        "{error}"
+    );
+    // Two accepting Pipelines of which only one declares the port: the binding must not be
+    // what chooses between them, so it is refused until the Task file names one.
+    fixture
+        .declared
+        .ports
+        .get_mut("comparison")
+        .unwrap()
+        .1
+        .pop();
+    fixture.declared.consulted = 2;
+    let reference = task_ref("prior", "comparison");
+    let error = fixture.bind(table("comparison", reference)).unwrap_err();
+    assert!(
+        error.contains("do not all declare the root input comparison; name the Pipeline"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -174,6 +241,240 @@ fn an_absent_port_lists_the_ports_the_result_does_carry() {
     assert!(error.contains("history <- task prior/ledger"), "{error}");
     assert!(error.contains("no output port ledger"), "{error}");
     assert!(error.contains("it carries history"), "{error}");
+}
+
+/// Only a result's `outputs` bind. An Attempt's raw artifacts and runtime evidence are records
+/// a Task keeps beside its result, never ports of it, so naming one is refused with a message
+/// that says so — and an exact artifact ID, which could name either, binds no declared port.
+#[test]
+fn only_result_outputs_bind_and_an_exact_artifact_binds_no_declared_port() {
+    let mut fixture = fixture();
+    let comparison = fixture.put(MEASUREMENT_COMPARISON_V1, json!({"n": 1}));
+    let carried = one(MEASUREMENT_COMPARISON_V1, &comparison);
+    fixture.finish("experiment", ports("comparison", carried));
+    for record in ["raw_artifact_ids", "runtime_evidence"] {
+        let reference = task_ref("experiment", record);
+        let error = fixture.bind(table("comparison", reference)).unwrap_err();
+        let named = format!("comparison <- task experiment/{record}");
+        assert!(error.contains(&named), "{error}");
+        let why = "only result outputs bind, never an Attempt's raw artifacts, runtime evidence";
+        assert!(error.contains(why), "{error}");
+        assert!(error.contains("it carries comparison"), "{error}");
+    }
+    let error = fixture
+        .bind(table("comparison", exact_ref(&comparison)))
+        .unwrap_err();
+    assert!(error.contains("comparison <- artifact sha256:"), "{error}");
+    assert!(
+        error.contains("only a recorded Task's result output binds"),
+        "{error}"
+    );
+}
+
+/// A declared `one` port bound from one output keeps that output's Snapshot ID, the record
+/// names it too, and a type or cardinality that differs from the declaration names both.
+#[test]
+fn a_declared_one_port_keeps_its_outputs_snapshot_and_refuses_another_type() {
+    let mut fixture = fixture();
+    let comparison = fixture.put(MEASUREMENT_COMPARISON_V1, json!({"n": 1}));
+    let snapshot = format!("sha256:{}", "5".repeat(64));
+    let carried = ArtifactInputV1 {
+        snapshot_id: Some(snapshot.clone()),
+        ..one(MEASUREMENT_COMPARISON_V1, &comparison)
+    };
+    let measurement = fixture.put(MEASUREMENT_V1, json!({"n": 2}));
+    let mut outputs = ports("comparison", carried.clone());
+    outputs.insert("baseline".into(), one(MEASUREMENT_V1, &measurement));
+    fixture.finish("experiment", outputs);
+
+    let reference = task_ref("experiment", "comparison");
+    let bound = fixture.bind(table("comparison", reference)).unwrap();
+    assert_eq!(
+        bound.ports["comparison"], carried,
+        "verbatim, Snapshot and all"
+    );
+    let record = fixture.record(&bound);
+    let binding = &record.bindings["comparison"];
+    assert_eq!(binding.artifact_id, comparison);
+    assert_eq!(binding.snapshot_id.as_deref(), Some(snapshot.as_str()));
+    assert!(binding.also.is_empty());
+    assert_eq!(binding.task.as_ref().unwrap().port, "comparison");
+
+    let reference = task_ref("experiment", "baseline");
+    let error = fixture.bind(table("comparison", reference)).unwrap_err();
+    assert!(
+        error.contains("comparison <- task experiment/baseline"),
+        "{error}"
+    );
+    let both = "the reference is af/Measurement@1 one and this port takes \
+                af/MeasurementComparison@1 one";
+    assert!(error.contains(both), "{error}");
+
+    // One `one` output into a `many` port is a cardinality mismatch in the single form; the
+    // list form is how one output joins a `many` port.
+    let reference = task_ref("experiment", "baseline");
+    let error = fixture.bind(table("measurements", reference)).unwrap_err();
+    assert!(error.contains("af/Measurement@1 one and this port takes af/Measurement@1 many"));
+    assert!(
+        error.contains("a list of outputs gathers one output"),
+        "{error}"
+    );
+}
+
+fn list(refs: &[(&str, &str)]) -> TaskInputRefV1 {
+    let refs = refs.iter().map(|(task, port)| TaskOutputRefV1 {
+        task: (*task).into(),
+        port: (*port).into(),
+    });
+    TaskInputRefV1::Outputs(refs.collect())
+}
+
+/// An experiment's two Measurements, one per Snapshot it measured.
+fn measured(fixture: &mut Fixture) -> (String, String) {
+    let baseline = fixture.put(MEASUREMENT_V1, json!({"side": "baseline"}));
+    let candidate = fixture.put(MEASUREMENT_V1, json!({"side": "candidate"}));
+    let on = |id: &str, byte: char| ArtifactInputV1 {
+        snapshot_id: Some(format!("sha256:{}", byte.to_string().repeat(64))),
+        ..one(MEASUREMENT_V1, id)
+    };
+    let mut outputs = ports("baseline", on(&baseline, '6'));
+    outputs.insert("candidate".into(), on(&candidate, '7'));
+    let comparison = fixture.put(MEASUREMENT_COMPARISON_V1, json!({"n": 1}));
+    outputs.insert(
+        "comparison".into(),
+        one(MEASUREMENT_COMPARISON_V1, &comparison),
+    );
+    fixture.finish("experiment", outputs);
+    (baseline, candidate)
+}
+
+/// `measurements` from an experiment's `baseline` and `candidate`: two Snapshots, so the port
+/// names none and the record keeps each output with its own.
+#[test]
+fn a_many_port_bound_from_several_outputs_carries_no_snapshot() {
+    let mut fixture = fixture();
+    let (baseline, candidate) = measured(&mut fixture);
+    let both = list(&[("experiment", "baseline"), ("experiment", "candidate")]);
+    let bound = fixture.bind(table("measurements", both)).unwrap();
+    let port = &bound.ports["measurements"];
+    assert_eq!(port.artifact_ids, [baseline.clone(), candidate.clone()]);
+    assert_eq!(port.artifact_type, MEASUREMENT_V1);
+    assert_eq!(port.cardinality, PortCardinality::Many);
+    assert_eq!(
+        port.snapshot_id, None,
+        "a port names one Snapshot and they measured two"
+    );
+    let record = fixture.record(&bound);
+    let binding = &record.bindings["measurements"];
+    assert_eq!(binding.artifact_id, baseline);
+    assert_eq!(binding.task.as_ref().unwrap().port, "baseline");
+    let snapshot = |byte: char| Some(format!("sha256:{}", byte.to_string().repeat(64)));
+    assert_eq!(binding.snapshot_id, snapshot('6'));
+    let [further] = binding.also.as_slice() else {
+        panic!("one further output: {binding:?}");
+    };
+    assert_eq!(further.artifact_id, candidate);
+    assert_eq!(further.snapshot_id, snapshot('7'));
+    assert_eq!(further.task.as_ref().unwrap().port, "candidate");
+    // The record references every artifact it names.
+    let envelope = fixture.cas.get_artifact(&bound.record_id).unwrap();
+    assert!(
+        envelope.input_artifacts.contains(&baseline)
+            && envelope.input_artifacts.contains(&candidate)
+    );
+
+    // A single listed output keeps its Snapshot ID, like any one-output binding.
+    let alone = list(&[("experiment", "candidate")]);
+    let bound = fixture.bind(table("measurements", alone)).unwrap();
+    let port = &bound.ports["measurements"];
+    assert_eq!(port.artifact_ids, [candidate]);
+    assert_eq!(port.cardinality, PortCardinality::Many);
+    assert_eq!(port.snapshot_id, snapshot('7'));
+    assert!(
+        fixture.record(&bound).bindings["measurements"]
+            .also
+            .is_empty()
+    );
+}
+
+#[test]
+fn several_outputs_never_bind_a_one_port_and_every_listed_output_is_typed_and_distinct() {
+    let mut fixture = fixture();
+    measured(&mut fixture);
+    // A list of the right type into a one port is refused for its shape; a list whose members
+    // are of another type is refused for that first, naming both types.
+    let error = fixture
+        .bind(table("comparison", list(&[("experiment", "comparison")])))
+        .unwrap_err();
+    assert!(error.contains("comparison <- task experiment/"), "{error}");
+    let why = "a list of outputs binds only a many port, and this port takes \
+               af/MeasurementComparison@1 one";
+    assert!(error.contains(why), "{error}");
+    let error = fixture
+        .bind(table(
+            "comparison",
+            list(&[("experiment", "baseline"), ("experiment", "candidate")]),
+        ))
+        .unwrap_err();
+    assert!(
+        error.contains(
+            "the reference is af/Measurement@1 one and this port takes af/MeasurementComparison@1 one"
+        ),
+        "{error}"
+    );
+    // `source`, `history` and `sources` are `one` ports, so no list binds them either; a
+    // listed output of another type is refused for its type first.
+    let error = fixture
+        .bind(table("source", list(&[("experiment", "baseline")])))
+        .unwrap_err();
+    assert!(
+        error.contains("source <- task experiment/baseline"),
+        "{error}"
+    );
+    assert!(
+        error.contains("this port takes af/SourceTree@1 one"),
+        "{error}"
+    );
+    // A listed name that is not a result output, or an output of another type, is refused for
+    // that before the list's shape is: the Task file hears what it named.
+    let error = fixture
+        .bind(table(
+            "comparison",
+            list(&[("experiment", "raw_artifact_ids")]),
+        ))
+        .unwrap_err();
+    assert!(error.contains("no output port raw_artifact_ids"), "{error}");
+    assert!(!error.contains("binds only a many port"), "{error}");
+    let error = fixture
+        .bind(table("comparison", list(&[("experiment", "baseline")])))
+        .unwrap_err();
+    assert!(
+        error.contains("the reference is af/Measurement@1 one and this port takes"),
+        "{error}"
+    );
+
+    let mixed = list(&[("experiment", "baseline"), ("experiment", "comparison")]);
+    let error = fixture.bind(table("measurements", mixed)).unwrap_err();
+    assert!(
+        error.contains("measurements <- task experiment/comparison"),
+        "{error}"
+    );
+    let why = "the reference is af/MeasurementComparison@1 one and this port takes \
+               af/Measurement@1 many";
+    assert!(error.contains(why), "{error}");
+
+    let twice = list(&[("experiment", "baseline"), ("experiment", "baseline")]);
+    let error = fixture.bind(table("measurements", twice)).unwrap_err();
+    assert!(error.contains("name artifact sha256:"), "{error}");
+    assert!(error.contains("twice"), "{error}");
+
+    let absent = list(&[("experiment", "baseline"), ("gone", "candidate")]);
+    let error = fixture.bind(table("measurements", absent)).unwrap_err();
+    assert!(
+        error.contains("measurements <- task gone/candidate"),
+        "{error}"
+    );
+    assert!(error.contains("no such Task is recorded"), "{error}");
 }
 
 #[test]
@@ -431,10 +732,30 @@ fn a_task_file_without_an_inputs_table_keeps_its_bytes() {
     assert_eq!(declared["history"], task_ref("prior", "history"));
     assert_eq!(serde_json::to_value(&file).unwrap(), bound);
 
+    // The list form gathers recorded outputs into one `many` port, in order.
+    let mut listed = bound.clone();
+    listed["inputs"] = json!({"measurements":[{"task":"prior","port":"baseline"},
+        {"task":"prior","port":"candidate"}]});
+    let read = serde_json::from_value::<super::super::TaskFile>(listed.clone());
+    let file = read.unwrap();
+    let declared = &file.inputs.as_ref().unwrap()["measurements"];
+    let want = list(&[("prior", "baseline"), ("prior", "candidate")]);
+    assert_eq!(declared, &want);
+    assert_eq!(serde_json::to_value(&file).unwrap(), listed);
+
+    let many = (0..17).map(|_| json!({"task":"prior","port":"baseline"}));
     let closed = [
         json!({"history":{"task":"prior"}}),
         json!({"history":{"task":"prior","port":"history","store":"x"}}),
         json!({"history":{"artifact":"sha256:x","task":"prior"}}),
+        // A two-string array is not a Task reference spelled as a sequence.
+        json!({"history":["prior","history"]}),
+        json!({"measurements":[]}),
+        json!({"measurements": many.collect::<Vec<_>>()}),
+        json!({"measurements":[{"artifact":format!("sha256:{}", "a".repeat(64))}]}),
+        json!({"measurements":[{"task":"prior","port":"baseline","store":"x"}]}),
+        json!({"measurements":[[{"task":"prior","port":"baseline"}]]}),
+        json!({"history":"prior/history"}),
     ];
     for invalid in closed {
         let mut value = bound.clone();
