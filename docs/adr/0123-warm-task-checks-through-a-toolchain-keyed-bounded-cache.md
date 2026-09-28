@@ -294,6 +294,14 @@ Three rules were added when the follow-up Task's reviewers read the amendment:
 - **Suspicion outranks the count.** When a check ended over the bound and suspect, the recorded
   cause is `suspect`.
 
+### After the seventh verification
+
+- **A lock's name is cleaned before it is opened, and the inode is judged again after the wait.**
+  A link or a directory an interrupted check left at a lock's name is removed by name before
+  `openat`, so recovery never stalls on `O_NOFOLLOW` refusing it; and a waiter that judged the
+  inode sound before waiting on another holder judges it again — on the open descriptor and at
+  the name — once it holds the lock, before anything is written through it.
+
 ### Where these rules stop
 
 `trusted_local` is not security isolation, and this cache does not claim to make it one. A

@@ -741,6 +741,31 @@ fn exclusive_lock_validated(
     wait: Duration,
     retry: bool,
 ) -> Result<Option<Flock<File>>, String> {
+    // Whatever sits at the lock's name that is not a plain file — a link an interrupted check
+    // left, a directory — is removed by name before the name is opened, so recovery never stalls
+    // on `O_NOFOLLOW` refusing it and never writes through it.
+    match nix::sys::stat::fstatat(directory, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(stat) if file_kind(&stat) == SFlag::S_IFREG => {}
+        Ok(stat) if file_kind(&stat) == SFlag::S_IFDIR => {
+            eprintln!(
+                "warm check cache diagnostic: lock `{name}` was a directory; removed before use"
+            );
+            remove_at(directory, name, Path::new(name))?;
+        }
+        Ok(_) => {
+            eprintln!(
+                "warm check cache diagnostic: lock `{name}` was not a plain file; removed before use"
+            );
+            match nix::unistd::unlinkat(directory, name, UnlinkatFlags::NoRemoveDir) {
+                Ok(()) | Err(Errno::ENOENT) => {}
+                Err(errno) => {
+                    return Err(format!("removing a suspect Task build cache lock: {errno}"));
+                }
+            }
+        }
+        Err(Errno::ENOENT) => {}
+        Err(errno) => return Err(format!("inspecting the Task build cache lock: {errno}")),
+    }
     let descriptor = nix::fcntl::openat(
         directory,
         name,
@@ -775,10 +800,40 @@ fn exclusive_lock_validated(
     loop {
         match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
             Ok(lock) => {
+                // The judgement above may be stale by now: a waiter that validated the inode
+                // and then waited on another holder's lock can find the inode linked elsewhere
+                // by the time it acquires. It is judged again, on the open descriptor and at
+                // the name, before anything is written through it.
+                let held = nix::sys::stat::fstat(&*lock)
+                    .map_err(|errno| format!("inspecting the Task build cache lock: {errno}"))?;
+                let at_name =
+                    nix::sys::stat::fstatat(directory, name, AtFlags::AT_SYMLINK_NOFOLLOW);
+                let still_sound = matches!(at_name, Ok(at_name) if inode(&at_name) == inode(&held))
+                    && file_kind(&held) == SFlag::S_IFREG
+                    && held.st_nlink == 1
+                    && held.st_uid == nix::unistd::geteuid().as_raw();
+                if !still_sound {
+                    drop(lock);
+                    if !retry {
+                        return Err("the Task build cache lock changed while it was awaited".into());
+                    }
+                    eprintln!(
+                        "warm check cache diagnostic: lock `{name}` changed while awaited; replaced without writing through it"
+                    );
+                    match nix::unistd::unlinkat(directory, name, UnlinkatFlags::NoRemoveDir) {
+                        Ok(()) | Err(Errno::ENOENT) => {}
+                        Err(errno) => {
+                            return Err(format!(
+                                "removing a suspect Task build cache lock: {errno}"
+                            ));
+                        }
+                    }
+                    return exclusive_lock_validated(directory, name, wait, false);
+                }
                 // The kernel's lock files carry no payload: whatever a check wrote into one
                 // while it could is dropped here, so it never counts toward the key's bound.
-                // The inode was judged this holder's own plain file before this write.
-                let _ = nix::unistd::ftruncate(&*lock, 0);
+                nix::unistd::ftruncate(&*lock, 0)
+                    .map_err(|errno| format!("emptying the Task build cache lock: {errno}"))?;
                 return Ok(Some(lock));
             }
             Err((returned, Errno::EWOULDBLOCK)) => {
@@ -1780,5 +1835,44 @@ mod tests {
             lock.inspect()
                 .is_some_and(|reason| reason.contains("removed"))
         );
+    }
+
+    #[test]
+    fn a_link_or_a_directory_at_a_lock_name_is_replaced_and_the_key_recovers() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("af").join(TASK_BUILD_CACHE_DIRECTORY);
+        let key_path = cache.join(key('a')).join(key('b'));
+        std::fs::create_dir_all(&key_path).unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let outside = root.path().join("outside");
+        std::fs::write(&outside, [3_u8; 64]).unwrap();
+        std::os::unix::fs::symlink(&outside, key_path.join(KEY_LOCK)).unwrap();
+        std::fs::create_dir(key_path.join("cargo_target.lock")).unwrap();
+        std::fs::write(key_path.join("cargo_target.lock").join("junk"), b"x").unwrap();
+        let lock = lock_task_build_cache_key(&cache, &key('a'), &key('b'), Duration::ZERO)
+            .unwrap()
+            .expect("a link at the lock's name is replaced, not followed and not fatal");
+        assert_eq!(
+            std::fs::read(&outside).unwrap(),
+            vec![3_u8; 64],
+            "never written through"
+        );
+        assert!(
+            !std::fs::symlink_metadata(key_path.join(KEY_LOCK))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let TaskBuildCacheLock::Held(_target) =
+            lock.lock_kind("cargo_target", Duration::ZERO).unwrap()
+        else {
+            panic!("a directory at a kind lock's name is removed and replaced");
+        };
+        assert!(
+            std::fs::metadata(key_path.join("cargo_target.lock"))
+                .unwrap()
+                .is_file()
+        );
+        assert_eq!(lock.inspect(), None);
     }
 }

@@ -705,3 +705,13 @@ states where these rules stop: `trusted_local` is not isolation, and the cache i
 evidence, not a defence against a check acting on the host. Six verification rounds and fifteen
 hand-fixed defects on one package is the price of a shell-bearing reviewer holding the design's
 words to their letter; it is also the strongest evidence this campaign has that the pipeline works.
+
+Verification Task `research-r1-verify-7` on 334ee7a (321,723 tokens; gate warm, `kernel`
+12.6 min) ended `incomplete`: the `bugs` reviewer (GPT-5.6 Terra) returned malformed JSON on both
+of its Attempts — its third malformed reply in this campaign — so the Round could not close. The
+`correctness` reviewer (GPT-6 Sol) added two acquisition defects, fixed by hand: a waiter that
+validated the lock's inode and then waited on another holder truncated it after acquiring without
+judging it again, and a link an interrupted check left at a lock's name made `openat(O_NOFOLLOW)`
+fail before the recovery path ran. The lock's name is now cleaned before it is opened and the inode
+judged again after the wait. The `bugs` package moves to GPT-6 Sol at high for the rest of the
+campaign; Terra's replies were the only reviewer failures the kernel saw.

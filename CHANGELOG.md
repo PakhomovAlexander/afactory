@@ -78,7 +78,9 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   and recreated is displaced and suspect, eviction empties or drops the held locks and reports
   success only when nothing but sound empty locks remains, and suspicion outranks the byte count
   in the recorded cause. ADR-0123 states where these rules stop: `trusted_local` is not
-  isolation, and the cache is honest as evidence, not a defence against a check acting on the host.
+  isolation, and the cache is honest as evidence, not a defence against a check acting on the host. A link or a
+  directory at a lock's name is removed before the name is opened, and a waiter judges the inode
+  again after acquiring the lock, before truncating it.
 - Give a source-writing Worker that declares `execute-checks` a shell (ADR-0120): `worker_access`
   maps `write-source` plus `execute-checks` to `WorkerAccess::WriteSourceWithShell`, the Claude
   adapter grants `Read,Glob,Grep,Edit,Write,Bash` and Codex runs `workspace-write`, and the shell's
