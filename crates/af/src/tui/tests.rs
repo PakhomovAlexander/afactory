@@ -787,22 +787,22 @@ fn a_store_this_binary_cannot_read_is_an_error_row_naming_it() {
     press(&mut app, &mut host, b"]]]]]]]]\r");
     let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
     let shown = state.strip_prefix(&root).unwrap().display();
-    let refusal = format!("~/{shown}: this Store cannot be read: ");
-    let row = rows.iter().find(|row| row.starts_with(&refusal));
+    // The Store's location, then its cause on a row of its own.
+    let at = rows.iter().position(|row| *row == format!("~/{shown}:"));
+    let at = at.unwrap_or_else(|| panic!("{rows:#?}"));
+    let cause = "  this Store cannot be read: ";
     assert!(
-        row.is_some_and(|row| row.len() > refusal.len()),
+        rows[at + 1].starts_with(cause) && rows[at + 1].len() > cause.len(),
         "{rows:#?}"
     );
     let bar = app.frame(100, 30).text();
     assert!(bar.contains("      ! Store unreadable"), "{bar}");
     // The row opens the same refusal, never an empty list.
     press(&mut app, &mut host, b"j\r");
-    assert_eq!(app.breadcrumb(), "tasks/!unreadable");
+    // The breadcrumb names the entry as the bar does, never by its internal id.
+    assert_eq!(app.breadcrumb(), "tasks/! Store unreadable");
     let rows: Vec<String> = app.main_rows().iter().map(Row::text).collect();
-    assert!(
-        rows.iter().any(|row| row.starts_with(&refusal)),
-        "{rows:#?}"
-    );
+    assert!(rows.iter().any(|row| row.starts_with(cause)), "{rows:#?}");
 }
 
 #[test]

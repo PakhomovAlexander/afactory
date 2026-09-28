@@ -7,7 +7,8 @@
 //! authority, into a scratch Store that is discarded, on a thread the event loop polls. No
 //! Store is written, nothing is admitted and no Worker runs.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -635,6 +636,122 @@ pub(crate) fn committed(root: &Path, commit: &str, path: &str) -> Result<String,
 /// saying the working tree is not what is shown.
 pub(crate) fn differs(root: &Path, commit: &str, path: &str) -> bool {
     git(root, &["diff", "--quiet", commit, "--", path]).is_err()
+}
+
+/// Every blob `commit` holds under `under`, by path, with its object id, from one
+/// `git ls-tree -r -z`: NUL-separated, so a path may hold any byte, a newline included.
+pub(crate) fn listed(
+    root: &Path,
+    commit: &str,
+    under: &str,
+) -> Result<BTreeMap<String, String>, String> {
+    let listing = git(root, &["ls-tree", "-r", "-z", commit, "--", under])?;
+    let mut found = BTreeMap::new();
+    for entry in listing.split(|byte| *byte == 0) {
+        // `<mode> SP <type> SP <object> TAB <path>`
+        let Some(tab) = entry.iter().position(|byte| *byte == b'\t') else {
+            continue;
+        };
+        let (meta, path) = (&entry[..tab], &entry[tab + 1..]);
+        let meta = String::from_utf8_lossy(meta);
+        let mut fields = meta.split(' ');
+        let (_, kind, object) = (fields.next(), fields.next(), fields.next());
+        if let (Some("blob"), Some(object), Ok(path)) = (kind, object, std::str::from_utf8(path)) {
+            found.insert(path.to_owned(), object.to_owned());
+        }
+    }
+    Ok(found)
+}
+
+/// The bytes of every blob in `objects` (object ids, as `listed` gives them), read by one
+/// `git cat-file --batch`: one process however many files, where `committed` spawns one per
+/// file. Asking by object id keeps path bytes out of the request stream.
+pub(crate) fn blobs(root: &Path, objects: &[&str]) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let mut found = BTreeMap::new();
+    if objects.is_empty() {
+        return Ok(found);
+    }
+    let mut child = git_command(root, &["cat-file", "--batch"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("running git: {error}"))?;
+    let mut requests = Vec::new();
+    for object in objects {
+        if !object.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!("not an object id: {object}"));
+        }
+        requests.extend_from_slice(format!("{object}\n").as_bytes());
+    }
+    // Written from another thread, so a large answer never blocks on a full request pipe.
+    let mut stdin = child.stdin.take().ok_or("git cat-file has no stdin")?;
+    let writer = std::thread::spawn(move || stdin.write_all(&requests));
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("running git: {error}"))?;
+    let written = writer
+        .join()
+        .map_err(|_| "writing to git cat-file panicked")?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+    written.map_err(|error| format!("writing to git cat-file: {error}"))?;
+    let mut rest = output.stdout.as_slice();
+    for object in objects {
+        let end = rest
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or("git cat-file answered short")?;
+        let header = String::from_utf8_lossy(&rest[..end]).into_owned();
+        rest = &rest[end + 1..];
+        // Every id came from the commit's own tree: one the object store cannot give back is
+        // a failed read, never a file the commit lacks.
+        if header.ends_with(" missing") {
+            return Err(format!("git cannot read committed object {object}"));
+        }
+        let size: usize = header
+            .rsplit(' ')
+            .next()
+            .and_then(|size| size.parse().ok())
+            .ok_or_else(|| format!("git cat-file: {header}"))?;
+        if rest.len() < size + 1 {
+            return Err("git cat-file answered short".to_owned());
+        }
+        if header.split(' ').nth(1) != Some("blob") {
+            return Err(format!("committed object {object} is not a file: {header}"));
+        }
+        found.insert((*object).to_owned(), rest[..size].to_vec());
+        rest = &rest[size + 1..];
+    }
+    Ok(found)
+}
+
+/// Which of `paths` differ between the working tree and `commit` in bytes, mode or existence,
+/// as git judges it, by one `git diff`. A git that cannot answer marks every path, as
+/// `differs` would each.
+pub(crate) fn differing(root: &Path, commit: &str, paths: &[&str]) -> BTreeSet<String> {
+    if paths.is_empty() {
+        return BTreeSet::new();
+    }
+    // Paths, not patterns: a `*` or `[` in a file name matches only itself.
+    let mut args = vec![
+        "--literal-pathspecs",
+        "diff",
+        "--name-only",
+        "-z",
+        commit,
+        "--",
+    ];
+    args.extend_from_slice(paths);
+    match git(root, &args) {
+        Ok(listing) => listing
+            .split(|byte| *byte == 0)
+            .filter(|name| !name.is_empty())
+            .map(|name| String::from_utf8_lossy(name).into_owned())
+            .collect(),
+        Err(_) => paths.iter().map(|path| (*path).to_owned()).collect(),
+    }
 }
 
 /// One git command against exactly this repository: the environment is cleared, so an inherited
