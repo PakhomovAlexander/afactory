@@ -941,25 +941,44 @@ pub(super) fn list(options: InspectOptions, sizes: bool) -> Result<(), String> {
     let mut tasks = super::task_execution::list_common(&state)?;
     let store = if sizes {
         // Each uncollected Task's CAS bytes, from the same walk `af task gc` sweeps by
-        // (ADR-0127). A collected Task reaches nothing.
-        let (store, footprints) = super::task_execution::list_sizes(&state)?;
-        for task in &mut tasks {
-            if task.get("collected").is_some() {
-                // A collected Task reaches no object: its row says so in numbers, in both
-                // formats, rather than leaving the column empty.
-                task["sizes"] = serde_json::json!({
-                    "exclusive_objects": 0, "exclusive_bytes": 0,
-                    "shared_objects": 0, "shared_bytes": 0,
-                });
-                continue;
+        // (ADR-0127). A collected Task reaches nothing. The rows and the walk are two reads: a
+        // Task `gc --apply` collects between them has a row and no footprint, so both are read
+        // again once, and the second pass lists it from its tombstone.
+        let mut store = None;
+        for attempt in 0..2 {
+            let (totals, footprints) = super::task_execution::list_sizes(&state)?;
+            let mut missing = None;
+            for task in &mut tasks {
+                if task.get("collected").is_some() {
+                    // A collected Task reaches no object: its row says so in numbers, in both
+                    // formats, rather than leaving the column empty.
+                    task["sizes"] = serde_json::json!({
+                        "exclusive_objects": 0, "exclusive_bytes": 0,
+                        "shared_objects": 0, "shared_bytes": 0,
+                    });
+                    continue;
+                }
+                let id = task["task_id"].as_str().unwrap_or_default().to_owned();
+                match footprints.get(&id) {
+                    Some(footprint) => task["sizes"] = footprint.clone(),
+                    None => {
+                        missing = Some(id);
+                        break;
+                    }
+                }
             }
-            let id = task["task_id"].as_str().unwrap_or_default().to_owned();
-            task["sizes"] = footprints
-                .get(&id)
-                .cloned()
-                .ok_or_else(|| format!("Task `{id}` has no recorded size"))?;
+            match missing {
+                None => {
+                    store = Some(totals);
+                    break;
+                }
+                Some(_) if attempt == 0 => {
+                    tasks = super::task_execution::list_common(&state)?;
+                }
+                Some(id) => return Err(format!("Task `{id}` has no recorded size")),
+            }
         }
-        Some(store)
+        store
     } else {
         None
     };

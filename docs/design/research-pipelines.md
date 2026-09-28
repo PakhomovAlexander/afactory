@@ -909,3 +909,14 @@ Task's row carried no numbers under `--sizes`. The implementer also named the on
 not make: with `max_bytes` at 32 GiB the new `hard_max_bytes` defaulted to the same value and the
 two bounds coincided, so this repository's `.af/code-policy.toml` now declares 16 GiB as the
 eviction bound and 32 GiB as the ceiling.
+
+Verification Task `research-r5-verify-1` on be72228 (308,199 tokens; gate cold, `kernel` 14.4
+min: the new eviction bound removed the 16.1 GB cache before the check, as the two-bound rule
+says it should) ended **`verified`**: the evaluator passed the package on every criterion. The
+reviewers still reported three interleavings of a reader with `gc --apply` — a Task listed twice
+when tombstoned between the projection and the tombstone read, `list --sizes` failing when a Task
+was collected between its two reads, and a listing failing when the sweep removed a revision the
+projection was about to read — reconciled by hand after the verdict and not re-verified: the
+tombstone wins over a projected row, the sizes listing reads again once, and a revision the sweep
+removed is a collected Task. R5 closes here. One verification Task cost 308,199 tokens against
+970,580 for the one implementation Task.

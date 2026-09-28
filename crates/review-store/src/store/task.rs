@@ -1295,7 +1295,12 @@ impl EventStore {
             let TaskChangeV1::Opened { revision_id, .. } = transition.change else {
                 return Err(conflict("Task stream does not begin with Opened"));
             };
-            let task = revision(cas, &revision_id)?;
+            // A revision the sweep removed between the tombstone check and this read belongs
+            // to a Task collected meanwhile: skipped here, listed from its tombstone.
+            let task = match revision(cas, &revision_id) {
+                Err(StoreError::Artifact(_)) if self.run_tombstone(&run_id)?.is_some() => continue,
+                other => other?,
+            };
             if task_run_id(&task.task_id)? != run_id {
                 return Err(conflict("Task stream identity differs from its revision"));
             }

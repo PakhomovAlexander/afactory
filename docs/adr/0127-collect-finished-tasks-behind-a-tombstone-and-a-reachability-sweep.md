@@ -144,6 +144,19 @@ The package's review (Task `research-r5`) changed four rules, and the text above
 - **A collected Task's row under `--sizes` carries a zero footprint** in both formats, rather
   than no numbers.
 
+## After the verification
+
+The package was verified (Task `research-r5-verify-1`); the three interleavings its reviewers
+still reported were reconciled after the verdict and are not re-verified. A reader never holds a
+lease against the sweep; it tolerates the sweep instead:
+
+- A listing whose projection lost a Task's revision to the sweep skips that Task and lists it
+  from its tombstone; a Task tombstoned after its projection is listed once, from the tombstone.
+- `list --sizes` reads its rows and its footprints twice when a row has no footprint, so a Task
+  collected between the two reads is listed from its tombstone with a zero footprint.
+- Scheduled interleaving fixtures for these paths are a follow-up; the reconciliations are
+  pinned by the existing collection tests and reviewed by hand.
+
 ## Consequences
 
 An operator can see where a Store's bytes are and reclaim them without losing a Task's record:

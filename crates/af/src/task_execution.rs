@@ -2252,6 +2252,17 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
         .iter()
         .map(collection::list_entry)
         .collect::<Vec<_>>();
+    // A Task collected after its projection above appears in both reads: the tombstone wins,
+    // so no Task is listed twice or in two states.
+    let tombstoned: BTreeSet<&str> = collected
+        .iter()
+        .filter_map(|entry| entry["task_id"].as_str())
+        .collect();
+    entries.retain(|entry| {
+        entry["task_id"]
+            .as_str()
+            .is_none_or(|id| !tombstoned.contains(id))
+    });
     // Collected Tasks keep their place in label order, with their retained summary.
     entries.extend(collected);
     entries.sort_by(|left, right| left["task_id"].as_str().cmp(&right["task_id"].as_str()));
