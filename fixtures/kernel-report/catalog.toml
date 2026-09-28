@@ -6,7 +6,7 @@ path = "fixtures/kernel-report/task-packages/kernel/analyst"
 version = "1.0.0"
 
 [packages."kernel/report"]
-digest = "sha256:bdcd622b4b41b1f9e23477df8af0349b9e5a233608cd0fb2a2b17582b4d68af9"
+digest = "sha256:1a1df4186e3a94107d7ebb94feb488a790ea47061633e43c05a6f79396fe2424"
 path = "fixtures/kernel-report/task-packages/kernel/report"
 version = "1.0.0"
 

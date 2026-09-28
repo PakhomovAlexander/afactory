@@ -115,8 +115,10 @@ impl WorkerModelAdapter for Uix {
         std::fs::write(harness.join("screen-100x30.txt"), "PROVIDERS\n").unwrap();
         let edited = match self.case {
             "edit" => Some(("lib.rs", "pub fn changed() {}\n")),
-            // Added anywhere, root dotfile included: the clone is discarded, never a source edit.
-            "add" => Some(("src/extra.rs", "pub fn extra() {}\n")),
+            // Added beside the source — a new top-level file, a root dotfile — the clone is
+            // discarded, never a source edit; added under a name the source holds, it is one.
+            "add" => Some(("NOTES.md", "notes\n")),
+            "inside" => Some(("src/extra.rs", "pub fn extra() {}\n")),
             "dotfile" => Some((".claude.json", "{}\n")),
             _ => None,
         };
@@ -623,7 +625,12 @@ fn execute_checks_reviewer_builds_in_an_ephemeral_clone_and_its_source_seals_unc
 
 #[test]
 fn a_source_edit_by_an_execute_checks_reviewer_fails_its_attempt_naming_the_paths() {
-    for (case, path) in [("edit", "lib.rs"), ("delete", "lib.rs")] {
+    // An addition under a top-level name the source holds is an edit of the declared source.
+    for (case, path) in [
+        ("edit", "lib.rs"),
+        ("delete", "lib.rs"),
+        ("inside", "src/extra.rs"),
+    ] {
         let outcome = run(case);
         assert_eq!(outcome.calls, 1, "{case}");
         assert_eq!(

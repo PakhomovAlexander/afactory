@@ -5,7 +5,9 @@
 schema = "af.pipeline/1"
 name = "kernel/report"
 version = "1.0.0"
-max_attempts = 3
+# Two model Workers each admit a Provider before their Attempt: the author, its admission, the
+# verifier, its admission, and room for one retry of either.
+max_attempts = 6
 max_parallel = 1
 
 [contract.inputs.comparison]

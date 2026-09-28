@@ -817,3 +817,12 @@ as a follow-up. The implementer also found that a Worker port carries one Snapsh
 `measurements` binding of a baseline and a candidate from two Snapshots cannot render as written;
 R4 amends its section before it runs. The staged `.af/` packages were installed by hand as their
 README says.
+
+Verification Task `research-r3-verify-1` on 62aee50 failed at its gate (2,163 tokens; `kernel`
+14.2 min): the tightened source-edit rule broke an R1-era kernel test whose fixture reviewer
+added `src/extra.rs` and expected acceptance — the very behaviour the review had called a defect.
+The fixture now adds beside the source, and an addition under an owned directory is a refused
+case. Planning this repository's own report Task with the installed packages was infeasible:
+`kernel/report` declared `max_attempts = 3`, which cannot hold an author, a verifier and their two
+Provider admissions; the repository test passed because its command stand-ins admit no Provider.
+The bound is 6, as `kernel/experiment`'s. Both fixed before the second verification.
