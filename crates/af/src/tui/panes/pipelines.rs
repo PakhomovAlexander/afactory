@@ -7,7 +7,8 @@
 //! authority, into a scratch Store that is discarded, on a thread the event loop polls. No
 //! Store is written, nothing is admitted and no Worker runs.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -635,6 +636,95 @@ pub(crate) fn committed(root: &Path, commit: &str, path: &str) -> Result<String,
 /// saying the working tree is not what is shown.
 pub(crate) fn differs(root: &Path, commit: &str, path: &str) -> bool {
     git(root, &["diff", "--quiet", commit, "--", path]).is_err()
+}
+
+/// Every file of `paths` that `commit` holds, read by one `git cat-file --batch`: one process
+/// however many files, where `committed` spawns one per file. A path the commit does not hold
+/// is absent from the map.
+pub(crate) fn committed_all(
+    root: &Path,
+    commit: &str,
+    paths: &[&str],
+) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let mut found = BTreeMap::new();
+    if paths.is_empty() {
+        return Ok(found);
+    }
+    let mut child = git_command(root, &["cat-file", "--batch"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("running git: {error}"))?;
+    let mut requests = Vec::new();
+    for path in paths {
+        requests.extend_from_slice(format!("{commit}:{path}\n").as_bytes());
+    }
+    // Written from another thread, so a large answer never blocks on a full request pipe.
+    let mut stdin = child.stdin.take().ok_or("git cat-file has no stdin")?;
+    let writer = std::thread::spawn(move || stdin.write_all(&requests));
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("running git: {error}"))?;
+    let written = writer
+        .join()
+        .map_err(|_| "writing to git cat-file panicked")?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+    written.map_err(|error| format!("writing to git cat-file: {error}"))?;
+    let mut rest = output.stdout.as_slice();
+    for path in paths {
+        let end = rest
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or("git cat-file answered short")?;
+        let header = String::from_utf8_lossy(&rest[..end]).into_owned();
+        rest = &rest[end + 1..];
+        if header.ends_with(" missing") || header.ends_with(" ambiguous") {
+            continue;
+        }
+        let size: usize = header
+            .rsplit(' ')
+            .next()
+            .and_then(|size| size.parse().ok())
+            .ok_or_else(|| format!("git cat-file: {header}"))?;
+        if rest.len() < size + 1 {
+            return Err("git cat-file answered short".to_owned());
+        }
+        if header.split(' ').nth(1) == Some("blob") {
+            found.insert((*path).to_owned(), rest[..size].to_vec());
+        }
+        rest = &rest[size + 1..];
+    }
+    Ok(found)
+}
+
+/// Which of `paths` differ between the working tree and `commit` in bytes, mode or existence,
+/// as git judges it, by one `git diff`. A git that cannot answer marks every path, as
+/// `differs` would each.
+pub(crate) fn differing(root: &Path, commit: &str, paths: &[&str]) -> BTreeSet<String> {
+    if paths.is_empty() {
+        return BTreeSet::new();
+    }
+    // Paths, not patterns: a `*` or `[` in a file name matches only itself.
+    let mut args = vec![
+        "--literal-pathspecs",
+        "diff",
+        "--name-only",
+        "-z",
+        commit,
+        "--",
+    ];
+    args.extend_from_slice(paths);
+    match git(root, &args) {
+        Ok(listing) => listing
+            .split(|byte| *byte == 0)
+            .filter(|name| !name.is_empty())
+            .map(|name| String::from_utf8_lossy(name).into_owned())
+            .collect(),
+        Err(_) => paths.iter().map(|path| (*path).to_owned()).collect(),
+    }
 }
 
 /// One git command against exactly this repository: the environment is cleared, so an inherited

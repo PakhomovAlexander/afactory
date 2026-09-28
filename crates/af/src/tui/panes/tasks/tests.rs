@@ -1045,3 +1045,66 @@ fn r_prefills_the_run_of_the_shown_plan_and_d_only_a_verified_tasks_delivery() {
     assert_eq!(words[4], "af/a b");
     assert_eq!(prefill(Key::Char('x'), "t-1", None, State::Done), None);
 }
+
+#[test]
+fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
+    let old = format!(
+        "event store: unknown review-kernel event type: TaskTransition@1; {}; start a new \
+         Campaign or Task",
+        review_core::event::ANOTHER_RELEASE
+    );
+    let store = |name: &str, tasks: Result<Vec<Listed>, String>| Store {
+        dir: PathBuf::from(format!("/home/me/.local/state/af/task/local/{name}")),
+        shown: format!("~/.local/state/af/task/local/{name}"),
+        repo: Some(name.to_owned()),
+        tasks,
+    };
+    let mut pane = TasksPane {
+        title: "TASKS  user".to_owned(),
+        stores: vec![
+            store("0000000000000001", Err(old.clone())),
+            store("0000000000000002", Err("permission denied".to_owned())),
+            store("0000000000000003", Err(old.clone())),
+            store("0000000000000004", Ok(Vec::new())),
+        ],
+        ..TasksPane::default()
+    };
+    // The bar: one entry for both old Stores, after the others; each other Store as before.
+    let labels: Vec<String> = pane.items().into_iter().map(|item| item.label).collect();
+    assert_eq!(
+        labels,
+        [
+            "0000000000000002/ (0)",
+            "0000000000000004/ (0)",
+            "! 2 old Stores",
+        ]
+    );
+    // The folder: one line for them, and the other refusal still named with its cause.
+    pane.rebuild();
+    let rows: Vec<String> = pane.rows.iter().map(Row::text).collect();
+    assert_eq!(
+        rows[2..5],
+        [
+            "2 Task Stores were written by an earlier af release, in",
+            "  ~/.local/state/af/task/local",
+            "af does not read pre-GA state (ADR-0113); move or remove them.",
+        ]
+    );
+    assert!(rows[2..5].iter().all(|row| row.len() <= 72), "{rows:#?}");
+    assert!(
+        rows.iter().any(|row| row
+            == "~/.local/state/af/task/local/0000000000000002: this Store cannot be read: \
+                permission denied"),
+        "{rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("TaskTransition")),
+        "{rows:#?}"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.contains("earlier af release"))
+            .count(),
+        1
+    );
+}

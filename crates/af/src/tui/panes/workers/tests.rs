@@ -1074,3 +1074,38 @@ fn a_task_worker_may_sit_at_its_source_root() {
         "{rows:#?}"
     );
 }
+
+#[test]
+fn one_git_process_reads_every_committed_file_and_one_checks_their_drift() {
+    use super::super::pipelines::{committed_all, differing};
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(root, "a.toml", "a = 1\n");
+    write(root, "dir/b.md", "bee\n");
+    // A name a pathspec would take as a glob matching `a.toml` too.
+    write(root, "star*.toml", "star\n");
+    commit_all(root, "files");
+    let head = head(root).unwrap();
+    let read = committed_all(root, &head, &["a.toml", "missing.toml", "dir/b.md", "dir"]).unwrap();
+    // Files as committed; a path the commit lacks, and a tree, are simply absent.
+    assert_eq!(read.len(), 2, "{:?}", read.keys());
+    assert_eq!(read["a.toml"], b"a = 1\n");
+    assert_eq!(read["dir/b.md"], b"bee\n");
+    assert!(committed_all(root, &head, &[]).unwrap().is_empty());
+    write(root, "star*.toml", "changed\n");
+    std::fs::remove_file(root.join("dir/b.md")).unwrap();
+    let differ = differing(root, &head, &["a.toml", "dir/b.md", "star*.toml"]);
+    let differ: Vec<&str> = differ.iter().map(String::as_str).collect();
+    assert_eq!(
+        differ,
+        ["dir/b.md", "star*.toml"],
+        "a literal name, never a glob"
+    );
+    // A git that cannot answer marks every path.
+    let all = differing(
+        root,
+        "0123456789abcdef0123456789abcdef01234567",
+        &["a.toml"],
+    );
+    assert!(all.contains("a.toml"));
+}

@@ -35,6 +35,14 @@ const STAGE: usize = 18;
 const MAIN: usize = 72;
 /// The bar id of a Store that cannot be read.
 const UNREADABLE: &str = "!unreadable";
+/// The bar id of the Stores an earlier af release wrote, listed as one entry.
+const EARLIER: &str = "!earlier";
+
+/// Whether this release refused the Store because an earlier (pre-GA) af release wrote it:
+/// such Stores are listed together, once, rather than as one error each.
+fn earlier(store: &Store) -> bool {
+    matches!(&store.tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE))
+}
 
 /// Where a Task is: its phase, and for a finished Task the acceptance its result records.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -1255,7 +1263,31 @@ impl TasksPane {
         } else if self.stores.is_empty() {
             rows.push(Row::plain("No Task state is recorded here yet."));
         }
-        for store in &self.stores {
+        let earlier_stores: Vec<&Store> = self.stores.iter().filter(|s| earlier(s)).collect();
+        if let Some(first) = earlier_stores.first() {
+            let count = earlier_stores.len();
+            let parent = first
+                .shown
+                .rsplit_once('/')
+                .map_or(first.shown.as_str(), |(parent, _)| parent);
+            let (stores, were) = if count == 1 {
+                ("Task Store", "was")
+            } else {
+                ("Task Stores", "were")
+            };
+            // Short lines: the main pane is 72 columns beside the bar.
+            rows.push(Row::painted(
+                format!("{count} {stores} {were} written by an earlier af release, in"),
+                Paint::Muted,
+            ));
+            rows.push(Row::painted(format!("  {parent}"), Paint::Muted));
+            rows.push(Row::painted(
+                "af does not read pre-GA state (ADR-0113); move or remove them.",
+                Paint::Muted,
+            ));
+            rows.push(Row::blank());
+        }
+        for store in self.stores.iter().filter(|s| !earlier(s)) {
             let dir = &store.shown;
             match &store.tasks {
                 Err(error) => {
@@ -1368,7 +1400,8 @@ impl Pane for TasksPane {
 
     fn items(&self) -> Vec<Item> {
         let mut items = Vec::new();
-        for store in &self.stores {
+        let count = self.stores.iter().filter(|store| earlier(store)).count();
+        for store in self.stores.iter().filter(|store| !earlier(store)) {
             match &store.repo {
                 None => items.extend(store_items(store, 2)),
                 Some(repo) => {
@@ -1382,6 +1415,15 @@ impl Pane for TasksPane {
                     });
                 }
             }
+        }
+        if count > 0 {
+            let stores = if count == 1 { "Store" } else { "Stores" };
+            items.push(Item {
+                id: EARLIER.to_owned(),
+                label: format!("! {count} old {stores}"),
+                muted: true,
+                children: None,
+            });
         }
         items
     }
