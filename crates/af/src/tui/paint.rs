@@ -1,9 +1,43 @@
 //! Painting: a frame is a grid of printable ASCII cells, each with one entry of the `Paint`
 //! palette. Tests compare `Frame::text`; the terminal gets only the rows that changed.
 
+use std::ffi::OsStr;
 use std::io::Write;
 
-/// The whole palette. Colour is used for errors only, and `NO_COLOR` turns it off.
+/// How much colour the terminal takes. Text keeps the terminal's own foreground and ground
+/// in every case; the brand's colours (brand/README.md) appear only where the frame paints
+/// both, so they read on a light or a dark terminal alike.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Palette {
+    /// `NO_COLOR`: attributes only.
+    Mono,
+    /// The terminal's own 16 colours: its red stands in for the brand's pink.
+    Ansi,
+    /// `COLORTERM=truecolor`: the brand's values.
+    True,
+}
+
+impl Palette {
+    pub(crate) fn from_env() -> Palette {
+        Palette::detect(
+            std::env::var_os("NO_COLOR").as_deref(),
+            std::env::var_os("COLORTERM").as_deref(),
+        )
+    }
+
+    /// `NO_COLOR` set and non-empty wins; then `COLORTERM` names truecolor.
+    pub(crate) fn detect(no_color: Option<&OsStr>, colorterm: Option<&OsStr>) -> Palette {
+        if no_color.is_some_and(|value| !value.is_empty()) {
+            return Palette::Mono;
+        }
+        match colorterm.and_then(OsStr::to_str) {
+            Some("truecolor") | Some("24bit") => Palette::True,
+            _ => Palette::Ansi,
+        }
+    }
+}
+
+/// The whole palette. Colour is used for the status line and for errors only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Paint {
     Plain,
@@ -13,20 +47,24 @@ pub(crate) enum Paint {
     Cursor,
     /// The cursor row of the region without focus.
     Marked,
+    /// The status line: ink on the brand's blue where the terminal takes it, else reverse.
     Status,
     Error,
 }
 
 impl Paint {
-    fn sgr(self, color: bool) -> &'static str {
-        match self {
-            Paint::Plain => "\x1b[0m",
-            Paint::Muted => "\x1b[0;2m",
-            Paint::Title => "\x1b[0;1m",
-            Paint::Cursor | Paint::Status => "\x1b[0;7m",
-            Paint::Marked => "\x1b[0;4m",
-            Paint::Error if color => "\x1b[0;1;31m",
-            Paint::Error => "\x1b[0;1m",
+    fn sgr(self, palette: Palette) -> &'static str {
+        match (self, palette) {
+            (Paint::Plain, _) => "\x1b[0m",
+            (Paint::Muted, _) => "\x1b[0;2m",
+            (Paint::Title, _) => "\x1b[0;1m",
+            (Paint::Cursor, _) => "\x1b[0;7m",
+            (Paint::Marked, _) => "\x1b[0;4m",
+            (Paint::Status, Palette::True) => "\x1b[0;38;2;15;15;15;48;2;81;149;245m",
+            (Paint::Status, _) => "\x1b[0;7m",
+            (Paint::Error, Palette::Mono) => "\x1b[0;1m",
+            (Paint::Error, Palette::Ansi) => "\x1b[0;1;31m",
+            (Paint::Error, Palette::True) => "\x1b[0;1;38;2;238;54;106m",
         }
     }
 }
@@ -132,17 +170,17 @@ impl Frame {
         text
     }
 
-    fn encode(&self, row: usize, color: bool) -> String {
+    fn encode(&self, row: usize, palette: Palette) -> String {
         let mut encoded = String::new();
         let mut current = None;
         for (byte, paint) in &self.cells[row] {
             if current != Some(*paint) {
-                encoded.push_str(paint.sgr(color));
+                encoded.push_str(paint.sgr(palette));
                 current = Some(*paint);
             }
             encoded.push(char::from(*byte));
         }
-        encoded.push_str(Paint::Plain.sgr(color));
+        encoded.push_str(Paint::Plain.sgr(palette));
         encoded
     }
 }
@@ -153,12 +191,12 @@ pub(crate) fn paint(
     frame: &Frame,
     shown: &mut Vec<String>,
     out: &mut impl Write,
-    color: bool,
+    palette: Palette,
 ) -> std::io::Result<()> {
     shown.resize(frame.cells.len(), String::new());
     let mut bytes = Vec::new();
     for (row, previous) in shown.iter_mut().enumerate() {
-        let encoded = frame.encode(row, color);
+        let encoded = frame.encode(row, palette);
         if *previous != encoded {
             write!(bytes, "\x1b[{};1H{encoded}", row + 1)?;
             *previous = encoded;
@@ -194,7 +232,7 @@ mod tests {
         assert_eq!(frame.text(), "  abcdef\nefghij\n");
         let mut shown = Vec::new();
         let mut out = Vec::new();
-        paint(&frame, &mut shown, &mut out, false).unwrap();
+        paint(&frame, &mut shown, &mut out, Palette::Mono).unwrap();
         let written = String::from_utf8(out).unwrap();
         let first = "\x1b[1;1H\x1b[0m  \x1b[0;1mabc\x1b[0mdef";
         let second = "\x1b[2;1H\x1b[0mefghij\x1b[0;7m      \x1b[0m";
@@ -202,7 +240,42 @@ mod tests {
         assert!(written.contains(second), "{written:?}");
         // Nothing changed, so nothing is written again.
         let mut again = Vec::new();
-        paint(&frame, &mut shown, &mut again, false).unwrap();
+        paint(&frame, &mut shown, &mut again, Palette::Mono).unwrap();
         assert!(again.is_empty());
+    }
+
+    #[test]
+    fn palette_follows_no_color_then_colorterm() {
+        let os = |value: &str| Some(OsStr::new(value)).map(|s| s.to_owned());
+        let detect = |no_color: Option<std::ffi::OsString>,
+                      colorterm: Option<std::ffi::OsString>| {
+            Palette::detect(no_color.as_deref(), colorterm.as_deref())
+        };
+        assert_eq!(detect(os("1"), os("truecolor")), Palette::Mono);
+        assert_eq!(detect(os(""), os("truecolor")), Palette::True);
+        assert_eq!(detect(None, os("24bit")), Palette::True);
+        assert_eq!(detect(None, os("yes")), Palette::Ansi);
+        assert_eq!(detect(None, None), Palette::Ansi);
+    }
+
+    #[test]
+    fn brand_colours_paint_only_the_status_line_and_errors() {
+        let mut frame = Frame::new(8, 1);
+        let spans = [
+            Span::new("ab", Paint::Status),
+            Span::new("cd", Paint::Error),
+        ];
+        frame.paint_spans(0, 0, 8, &spans, Paint::Title);
+        assert_eq!(
+            frame.encode(0, Palette::True),
+            "\x1b[0;38;2;15;15;15;48;2;81;149;245mab\x1b[0;1;38;2;238;54;106mcd\x1b[0;1m    \x1b[0m"
+        );
+        assert_eq!(
+            frame.encode(0, Palette::Ansi),
+            "\x1b[0;7mab\x1b[0;1;31mcd\x1b[0;1m    \x1b[0m"
+        );
+        let mono = frame.encode(0, Palette::Mono);
+        assert_eq!(mono, "\x1b[0;7mab\x1b[0;1mcd\x1b[0;1m    \x1b[0m");
+        assert!(!mono.contains(";3") && !mono.contains(";4"), "{mono:?}");
     }
 }
