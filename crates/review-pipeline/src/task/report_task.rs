@@ -883,17 +883,26 @@ impl ReportTaskDomain {
                 {
                     return Err("Report evidence does not judge the actual public report".into());
                 }
-                let (document, _, _) = self.document(cas, &receipt.document_id, &source)?;
-                let sources = task
-                    .inputs
-                    .get("sources")
-                    .ok_or("Report Task lost its captured sources")?;
+                let (document, _, sealed_sources) =
+                    self.document(cas, &receipt.document_id, &source)?;
                 let requirements = task
                     .inputs
                     .get("requirements")
                     .ok_or("Report Task lost its requirements")?;
-                if sources.artifact_ids != [document.sources_id] {
-                    return Err("Report acceptance used other Task sources".into());
+                // A Task that captured sources is accepted only against exactly those; one whose
+                // Pipeline binds nothing there (the port is optional) only against the empty set
+                // the seal recorded.
+                match task.inputs.get("sources") {
+                    Some(sources) if sources.artifact_ids != [document.sources_id.clone()] => {
+                        return Err("Report acceptance used other Task sources".into());
+                    }
+                    Some(_) => {}
+                    None if !sealed_sources.sources.is_empty() => {
+                        return Err(
+                            "Report acceptance names sources the Task never captured".into()
+                        );
+                    }
+                    None => {}
                 }
                 if let Some(evaluation) = &receipt.evaluation_id {
                     let evaluation = self.evaluation(cas, &receipt.invocation, evaluation)?;

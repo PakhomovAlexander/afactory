@@ -826,3 +826,15 @@ case. Planning this repository's own report Task with the installed packages was
 `kernel/report` declared `max_attempts = 3`, which cannot hold an author, a verifier and their two
 Provider admissions; the repository test passed because its command stand-ins admit no Provider.
 The bound is 6, as `kernel/experiment`'s. Both fixed before the second verification.
+
+Verification Task `research-r3-verify-2` on 201d498 (347,598 tokens; gate warm, `kernel` 12.9 min)
+ended `incomplete`: the evaluator (GPT-6 Sol) passed the package on every criterion and the
+correctness reviewer raised no claim, but the `bugs` reviewer's reply put its findings on a
+`result` port of the wrong shape twice, and the kernel refused both Attempts as an undeclared
+port. Its transcript still held one real finding: acceptance required a captured `sources` input
+and would have refused any report whose Pipeline bound nothing to the optional port. Fixed by
+hand — acceptance accepts such a report only against the empty set the seal recorded — and the
+Task re-verified once more. A reviewer reply the kernel refuses for its shape is the second such
+loss in this campaign (Terra's malformed JSON in R1 was the first); the kernel could hand a shape
+refusal back to the same Attempt as feedback instead of spending a fresh one, which is recorded
+as a follow-up.

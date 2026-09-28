@@ -111,7 +111,9 @@ reads as amended:
   report against the empty set, which the seal records as an artifact it names in the document,
   and the check requires that named set to be empty. The Task-file adapter still captures an
   empty set when `report_sources` is absent, so a report planned from a Task file always names
-  its exact sources.
+  its exact sources. Acceptance follows the same rule: a Task that captured sources is accepted
+  only against exactly those, one that bound nothing only against the empty set the seal
+  recorded.
 - **An execute-checks Worker may add beside the source, never inside it.** An addition under a
   top-level name the source Manifest holds fails the Attempt as an edit of the declared source;
   build output, a harness and `HOME` dotfiles under new top-level names are scratch the clone
