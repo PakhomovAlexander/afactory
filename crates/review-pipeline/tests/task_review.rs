@@ -59,32 +59,67 @@ fn node(id: &str, operator: TaskOperatorV1, inputs: BTreeMap<String, ValueRefV1>
     }
 }
 
+// One test per case so the runner can schedule the cases side by side: a single test that
+// looped over them held one thread for the whole sequence (ADR-0124).
+
 #[test]
-fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger() {
-    for case in [
-        "clean",
-        "finding",
-        "demand",
-        "missing_reviewer",
-        "unavailable",
-    ] {
-        run_case(case);
-    }
+fn a_clean_review_task_passes_without_a_partial_ledger() {
+    run_case("clean");
 }
 
 #[test]
-fn review_scopes_dispositions_preserves_actual_producers_and_reads_large_patch() {
-    for case in [
-        "valid",
-        "missing",
-        "duplicate",
-        "unassigned",
-        "large",
-        "mutated",
-        "collision",
-    ] {
-        run_case(case);
-    }
+fn a_finding_keeps_the_review_task_at_changes_requested() {
+    run_case("finding");
+}
+
+#[test]
+fn a_demand_keeps_the_review_task_at_changes_requested() {
+    run_case("demand");
+}
+
+#[test]
+fn a_missing_reviewer_leaves_the_review_task_incomplete() {
+    run_case("missing_reviewer");
+}
+
+#[test]
+fn an_unavailable_reviewer_leaves_the_review_task_incomplete() {
+    run_case("unavailable");
+}
+
+#[test]
+fn review_scopes_dispositions_preserves_actual_producers_for_valid_dispositions() {
+    run_case("valid");
+}
+
+#[test]
+fn review_scopes_dispositions_refuses_a_missing_disposition() {
+    run_case("missing");
+}
+
+#[test]
+fn review_scopes_dispositions_refuses_a_duplicate_disposition() {
+    run_case("duplicate");
+}
+
+#[test]
+fn review_scopes_dispositions_refuses_an_unassigned_disposition() {
+    run_case("unassigned");
+}
+
+#[test]
+fn review_scopes_dispositions_reads_a_large_patch() {
+    run_case("large");
+}
+
+#[test]
+fn review_scopes_dispositions_refuses_a_mutated_finding() {
+    run_case("mutated");
+}
+
+#[test]
+fn review_scopes_dispositions_refuses_a_colliding_finding() {
+    run_case("collision");
 }
 
 #[test]

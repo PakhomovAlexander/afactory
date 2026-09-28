@@ -534,151 +534,163 @@ fn captured_task_kind_packages_keep_business_names_and_domain_acceptance() {
     }
 }
 
-#[test]
-fn embedded_review_never_accepts_findings_missing_reviewers_or_failed_checks() {
-    for case in [
-        "finding",
-        "missing",
-        "failed_checks",
-        "missing_coverage",
-        "stale_checks",
-    ] {
-        let directory = tempfile::tempdir().unwrap();
-        let (repo, state) = fixture_named(directory.path(), "embedded-review");
-        let packages = repo.join(".af/task-packages/fixture");
-        match case {
-            "finding" => {
-                let reply = serde_json::json!({"schema":"af.worker-reply/1","outputs":{"result":[{"reports":[{"severity":"major","file":"pagination.py","line":1,"title":"Missing validation","body":"Offset must reject negative values","fix":"Validate offset","confidence":0.9}],"benchmark_demands":[],"dispositions":[]}]}});
-                std::fs::write(
-                    packages.join("correctness/worker.py"),
-                    format!(
-                        "import json,sys\njson.load(sys.stdin)\nprint({:?})\n",
-                        reply.to_string()
-                    ),
-                )
-                .unwrap();
-            }
-            "missing" => std::fs::write(
-                packages.join("bugs/worker.py"),
-                "raise Exception('review unavailable')\n",
+fn embedded_review_never_accepts(case: &str) {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, state) = fixture_named(directory.path(), "embedded-review");
+    let packages = repo.join(".af/task-packages/fixture");
+    match case {
+        "finding" => {
+            let reply = serde_json::json!({"schema":"af.worker-reply/1","outputs":{"result":[{"reports":[{"severity":"major","file":"pagination.py","line":1,"title":"Missing validation","body":"Offset must reject negative values","fix":"Validate offset","confidence":0.9}],"benchmark_demands":[],"dispositions":[]}]}});
+            std::fs::write(
+                packages.join("correctness/worker.py"),
+                format!(
+                    "import json,sys\njson.load(sys.stdin)\nprint({:?})\n",
+                    reply.to_string()
+                ),
             )
-            .unwrap(),
-            "failed_checks" => {
-                let path = packages.join("implementer/worker.py");
-                let source = std::fs::read_to_string(&path)
-                    .unwrap()
-                    .replace("items[offset:offset+limit]", "items[:1]");
-                std::fs::write(path, source).unwrap();
-            }
-            "missing_coverage" => {
-                let path = packages.join("review/pipeline.toml");
-                let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
-                    review_config::task::parse_task_pipeline(
-                        &std::fs::read_to_string(&path).unwrap(),
-                    )
-                    .unwrap();
-                pipeline.coverage.clear();
-                pipeline
-                    .contract
-                    .outputs
-                    .get_mut("review")
-                    .unwrap()
-                    .covers
-                    .clear();
-                std::fs::write(path, toml::to_string(&pipeline).unwrap()).unwrap();
-            }
-            "stale_checks" => {
-                let path = packages.join("implementation/pipeline.toml");
-                let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
-                    review_config::task::parse_task_pipeline(
-                        &std::fs::read_to_string(&path).unwrap(),
-                    )
-                    .unwrap();
-                pipeline.nodes.push(serde_json::from_value(serde_json::json!({"id":"old_checks","operator":{"op":"check","checks":["pagination"]},"inputs":{"source":{"kind":"input","port":"source"}}})).unwrap());
-                pipeline
-                    .nodes
-                    .iter_mut()
-                    .find(|node| node.id == "accept")
-                    .unwrap()
-                    .inputs
-                    .insert(
-                        "checks".into(),
-                        serde_json::from_value(
-                            serde_json::json!({"kind":"node","node":"old_checks","port":"result"}),
-                        )
-                        .unwrap(),
-                    );
-                std::fs::write(path, toml::to_string(&pipeline).unwrap()).unwrap();
-            }
-            _ => unreachable!(),
-        }
-        let catalog_path = repo.join(".af/task-catalog.toml");
-        let mut catalog: toml::Value =
-            toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
-        for name in [
-            "bugs",
-            "correctness",
-            "review",
-            "implementation",
-            "implementer",
-        ] {
-            let name_key = format!("fixture/{name}");
-            catalog["packages"][&name_key]["digest"] = toml::Value::String(
-                review_config::lock::package_digest(&name_key, &packages.join(name)).unwrap(),
-            );
-        }
-        std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
-        for args in [["add", "-A"], ["commit", "-qm"]] {
-            let mut command = Command::new("git");
-            command.current_dir(&repo).args(args);
-            if args[0] == "commit" {
-                command.arg(case);
-            }
-            assert!(command.status().unwrap().success());
-        }
-        let output = Command::new(env!("CARGO_BIN_EXE_af"))
-            .current_dir(&repo)
-            .args([
-                "task",
-                "start",
-                "--execute",
-                "--file",
-                "ticket.json",
-                "--json",
-                "--state",
-            ])
-            .arg(&state)
-            .output()
             .unwrap();
-        let code = if matches!(case, "missing_coverage" | "stale_checks") {
-            1
-        } else if case == "missing" {
-            4
-        } else {
-            3
-        };
-        assert_eq!(
-            output.status.code(),
-            Some(code),
-            "{case}: {}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        if code != 1 {
-            let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_ne!(result["result"]["acceptance"], "satisfied", "{case}");
-            assert!(
-                result["result"]["missing_obligations"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&Value::String("verified".into()))
-            );
-            assert_eq!(
-                result["attempts"],
-                if case == "failed_checks" { 2 } else { 5 }
-            );
         }
+        "missing" => std::fs::write(
+            packages.join("bugs/worker.py"),
+            "raise Exception('review unavailable')\n",
+        )
+        .unwrap(),
+        "failed_checks" => {
+            let path = packages.join("implementer/worker.py");
+            let source = std::fs::read_to_string(&path)
+                .unwrap()
+                .replace("items[offset:offset+limit]", "items[:1]");
+            std::fs::write(path, source).unwrap();
+        }
+        "missing_coverage" => {
+            let path = packages.join("review/pipeline.toml");
+            let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
+                review_config::task::parse_task_pipeline(&std::fs::read_to_string(&path).unwrap())
+                    .unwrap();
+            pipeline.coverage.clear();
+            pipeline
+                .contract
+                .outputs
+                .get_mut("review")
+                .unwrap()
+                .covers
+                .clear();
+            std::fs::write(path, toml::to_string(&pipeline).unwrap()).unwrap();
+        }
+        "stale_checks" => {
+            let path = packages.join("implementation/pipeline.toml");
+            let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
+                review_config::task::parse_task_pipeline(&std::fs::read_to_string(&path).unwrap())
+                    .unwrap();
+            pipeline.nodes.push(serde_json::from_value(serde_json::json!({"id":"old_checks","operator":{"op":"check","checks":["pagination"]},"inputs":{"source":{"kind":"input","port":"source"}}})).unwrap());
+            pipeline
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == "accept")
+                .unwrap()
+                .inputs
+                .insert(
+                    "checks".into(),
+                    serde_json::from_value(
+                        serde_json::json!({"kind":"node","node":"old_checks","port":"result"}),
+                    )
+                    .unwrap(),
+                );
+            std::fs::write(path, toml::to_string(&pipeline).unwrap()).unwrap();
+        }
+        _ => unreachable!(),
     }
+    let catalog_path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    for name in [
+        "bugs",
+        "correctness",
+        "review",
+        "implementation",
+        "implementer",
+    ] {
+        let name_key = format!("fixture/{name}");
+        catalog["packages"][&name_key]["digest"] = toml::Value::String(
+            review_config::lock::package_digest(&name_key, &packages.join(name)).unwrap(),
+        );
+    }
+    std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+    for args in [["add", "-A"], ["commit", "-qm"]] {
+        let mut command = Command::new("git");
+        command.current_dir(&repo).args(args);
+        if args[0] == "commit" {
+            command.arg(case);
+        }
+        assert!(command.status().unwrap().success());
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(&repo)
+        .args([
+            "task",
+            "start",
+            "--execute",
+            "--file",
+            "ticket.json",
+            "--json",
+            "--state",
+        ])
+        .arg(&state)
+        .output()
+        .unwrap();
+    let code = if matches!(case, "missing_coverage" | "stale_checks") {
+        1
+    } else if case == "missing" {
+        4
+    } else {
+        3
+    };
+    assert_eq!(
+        output.status.code(),
+        Some(code),
+        "{case}: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if code != 1 {
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_ne!(result["result"]["acceptance"], "satisfied", "{case}");
+        assert!(
+            result["result"]["missing_obligations"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String("verified".into()))
+        );
+        assert_eq!(
+            result["attempts"],
+            if case == "failed_checks" { 2 } else { 5 }
+        );
+    }
+}
+
+#[test]
+fn embedded_review_never_accepts_a_finding() {
+    embedded_review_never_accepts("finding");
+}
+
+#[test]
+fn embedded_review_never_accepts_a_missing_reviewer() {
+    embedded_review_never_accepts("missing");
+}
+
+#[test]
+fn embedded_review_never_accepts_failed_checks() {
+    embedded_review_never_accepts("failed_checks");
+}
+
+#[test]
+fn embedded_review_never_accepts_missing_coverage() {
+    embedded_review_never_accepts("missing_coverage");
+}
+
+#[test]
+fn embedded_review_never_accepts_stale_checks() {
+    embedded_review_never_accepts("stale_checks");
 }
 
 #[test]

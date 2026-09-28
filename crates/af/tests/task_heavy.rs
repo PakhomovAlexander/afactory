@@ -254,30 +254,47 @@ fn full_s2_review_retains_original_round_and_consumes_independent_fix_receipts()
     review_memo::refuses_changed_history(&state, &rounds[1]["invocation"], &rounds[0]);
 }
 
+fn heavy_review_cannot_erase_claims(case: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, state) = task_cli::fixture_named(dir.path(), "bounded-repair");
+    configure(&repo, case);
+    let (code, result) = run(
+        &repo,
+        &state,
+        &["task", "start", "--execute", "--file", "ticket.json"],
+    );
+    assert_eq!(code, 3, "{case}: {result:#}");
+    assert_eq!(
+        result["result"]["acceptance"], "unsatisfied",
+        "{case}: {result:#}"
+    );
+    assert_eq!(result["attempts"], 11, "{case}: {result:#}");
+    assert_eq!(result["review_rounds"][0]["round"], 1);
+    assert_eq!(
+        result["review_rounds"][1]["conclusion"],
+        "convergence_exhausted"
+    );
+    let (code, replay) = run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
+    assert_eq!(code, 3);
+    assert_eq!(replay, result);
+}
+
 #[test]
-fn heavy_review_cannot_erase_negative_missing_stale_or_rediscovered_claims() {
-    for case in ["negative", "missing", "stale", "rediscovered"] {
-        let dir = tempfile::tempdir().unwrap();
-        let (repo, state) = task_cli::fixture_named(dir.path(), "bounded-repair");
-        configure(&repo, case);
-        let (code, result) = run(
-            &repo,
-            &state,
-            &["task", "start", "--execute", "--file", "ticket.json"],
-        );
-        assert_eq!(code, 3, "{case}: {result:#}");
-        assert_eq!(
-            result["result"]["acceptance"], "unsatisfied",
-            "{case}: {result:#}"
-        );
-        assert_eq!(result["attempts"], 11, "{case}: {result:#}");
-        assert_eq!(result["review_rounds"][0]["round"], 1);
-        assert_eq!(
-            result["review_rounds"][1]["conclusion"],
-            "convergence_exhausted"
-        );
-        let (code, replay) = run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
-        assert_eq!(code, 3);
-        assert_eq!(replay, result);
-    }
+fn heavy_review_cannot_erase_negative_claims() {
+    heavy_review_cannot_erase_claims("negative");
+}
+
+#[test]
+fn heavy_review_cannot_erase_missing_claims() {
+    heavy_review_cannot_erase_claims("missing");
+}
+
+#[test]
+fn heavy_review_cannot_erase_stale_claims() {
+    heavy_review_cannot_erase_claims("stale");
+}
+
+#[test]
+fn heavy_review_cannot_erase_rediscovered_claims() {
+    heavy_review_cannot_erase_claims("rediscovered");
 }

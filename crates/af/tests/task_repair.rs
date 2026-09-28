@@ -130,74 +130,93 @@ fn commit_fixture(repo: &Path) {
     }
 }
 
+fn repair_is_rejected(case: &str) {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, state) = task_cli::fixture_named(directory.path(), "bounded-repair");
+    let path = repo.join(".af/task-packages/fixture/fix-verifier/worker.py");
+    let original = std::fs::read_to_string(&path).unwrap();
+    let replacement = match case {
+        "negative" => original.replace("'positive' if fixed else 'negative'", "'negative'"),
+        "missing" => "raise Exception('fix verifier unavailable')\n".into(),
+        "stale_view" => original.replace("v['current_view_id']", "c['previous_snapshot_id']"),
+        "stale_subject" => original.replace(
+            "c['continuation']['current_subject_id']",
+            "c['continuation']['previous_subject_id']",
+        ),
+        "missing_claim" => original.replace("print(json.dumps", "claims={}\nprint(json.dumps"),
+        "failed_checks" => {
+            let repair = repo.join(".af/task-packages/fixture/repairer/worker.py");
+            std::fs::write(
+                &repair,
+                std::fs::read_to_string(&repair)
+                    .unwrap()
+                    .replace("items[offset:offset+limit]", "items[:1]"),
+            )
+            .unwrap();
+            original
+        }
+        _ => unreachable!(),
+    };
+    std::fs::write(path, replacement).unwrap();
+    commit_fixture(&repo);
+    let (code, value) = run(
+        &repo,
+        &state,
+        &["task", "start", "--execute", "--file", "ticket.json"],
+    );
+    let expected = if matches!(case, "negative" | "failed_checks") {
+        3
+    } else {
+        4
+    };
+    assert_eq!(code, expected, "{case}: {value:#}");
+    assert_ne!(value["result"]["acceptance"], "satisfied", "{case}");
+    assert_eq!(
+        value["attempts"],
+        if case == "failed_checks" { 6 } else { 8 },
+        "{case}"
+    );
+    assert_eq!(
+        value["review_rounds"].as_array().unwrap().len(),
+        1,
+        "{case}"
+    );
+    let (replay_code, replayed) = run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
+    assert_eq!(replay_code, code, "{case}");
+    assert_eq!(
+        replayed, value,
+        "{case}: spent repair allowance cannot be reopened"
+    );
+}
+
 #[test]
-fn repair_rejects_missing_stale_and_negative_receipts_and_current_check_failures() {
-    for case in [
-        "negative",
-        "missing",
-        "stale_view",
-        "stale_subject",
-        "missing_claim",
-        "failed_checks",
-    ] {
-        let directory = tempfile::tempdir().unwrap();
-        let (repo, state) = task_cli::fixture_named(directory.path(), "bounded-repair");
-        let path = repo.join(".af/task-packages/fixture/fix-verifier/worker.py");
-        let original = std::fs::read_to_string(&path).unwrap();
-        let replacement = match case {
-            "negative" => original.replace("'positive' if fixed else 'negative'", "'negative'"),
-            "missing" => "raise Exception('fix verifier unavailable')\n".into(),
-            "stale_view" => original.replace("v['current_view_id']", "c['previous_snapshot_id']"),
-            "stale_subject" => original.replace(
-                "c['continuation']['current_subject_id']",
-                "c['continuation']['previous_subject_id']",
-            ),
-            "missing_claim" => original.replace("print(json.dumps", "claims={}\nprint(json.dumps"),
-            "failed_checks" => {
-                let repair = repo.join(".af/task-packages/fixture/repairer/worker.py");
-                std::fs::write(
-                    &repair,
-                    std::fs::read_to_string(&repair)
-                        .unwrap()
-                        .replace("items[offset:offset+limit]", "items[:1]"),
-                )
-                .unwrap();
-                original
-            }
-            _ => unreachable!(),
-        };
-        std::fs::write(path, replacement).unwrap();
-        commit_fixture(&repo);
-        let (code, value) = run(
-            &repo,
-            &state,
-            &["task", "start", "--execute", "--file", "ticket.json"],
-        );
-        let expected = if matches!(case, "negative" | "failed_checks") {
-            3
-        } else {
-            4
-        };
-        assert_eq!(code, expected, "{case}: {value:#}");
-        assert_ne!(value["result"]["acceptance"], "satisfied", "{case}");
-        assert_eq!(
-            value["attempts"],
-            if case == "failed_checks" { 6 } else { 8 },
-            "{case}"
-        );
-        assert_eq!(
-            value["review_rounds"].as_array().unwrap().len(),
-            1,
-            "{case}"
-        );
-        let (replay_code, replayed) =
-            run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
-        assert_eq!(replay_code, code, "{case}");
-        assert_eq!(
-            replayed, value,
-            "{case}: spent repair allowance cannot be reopened"
-        );
-    }
+fn repair_rejects_a_negative_receipt() {
+    repair_is_rejected("negative");
+}
+
+#[test]
+fn repair_rejects_a_missing_receipt() {
+    repair_is_rejected("missing");
+}
+
+#[test]
+fn repair_rejects_a_stale_view_receipt() {
+    repair_is_rejected("stale_view");
+}
+
+#[test]
+fn repair_rejects_a_stale_subject_receipt() {
+    repair_is_rejected("stale_subject");
+}
+
+#[test]
+fn repair_rejects_a_receipt_without_claims() {
+    repair_is_rejected("missing_claim");
+}
+
+#[test]
+fn repair_rejects_current_check_failures() {
+    repair_is_rejected("failed_checks");
 }
 
 #[test]
