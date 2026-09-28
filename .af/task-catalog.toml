@@ -123,7 +123,7 @@ verification = "warm/verification-kind"
 
 [packages."kernel/experiment"]
 version = "1.0.0"
-digest = "sha256:b75fa47fc860ba30e47efdcb3665e71310a6d94b9de557cb1a526be5180f50e4"
+digest = "sha256:07ba05a2949e579055f85a3a959da3db64ef80ab266bdc6c05a5d74f6764f447"
 path = ".af/task-packages/kernel/experiment"
 
 [packages."kernel/experiment-evaluator"]

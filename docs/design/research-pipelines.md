@@ -522,11 +522,12 @@ the declared objective and the recorded comparison are the result.
    retained; the exact medians, the comparison rule and any `inconclusive` are the outcome.
 2. **Cycle time and disk.** A report Task on `kernel/report` whose author reads this
    repository, with `comparison` and `measurements` bound to the release-build Task through
-   R4, and with `report_sources` holding the `af task show --json` documents of every Task of
-   this campaign, exported by the coordinator into the sources file (one entry per Task, each
-   under 256 KiB, the file under 640 KiB). It answers where the cycle's time and disk go, using
-   the recorded check spans and cache observations, and which change this plan should make
-   next.
+   R4, and with `report_sources` holding one entry per Task of this campaign, exported by the
+   coordinator into the sources file: the Task's `af task show` text and a compact JSON of its
+   result, spend, check spans and cache observations (each entry under 256 KiB, the file under
+   640 KiB; the full `show --json` documents run to hundreds of kilobytes each and cannot fit).
+   It answers where the cycle's time and disk go, using the recorded check spans and cache
+   observations, and which change this plan should make next.
 
 If either Task fails, the failure and its evidence are the result; no number is invented.
 
@@ -920,3 +921,18 @@ projection was about to read — reconciled by hand after the verdict and not re
 tombstone wins over a projected row, the sizes listing reads again once, and a revision the sweep
 removed is a collected Task. R5 closes here. One verification Task cost 308,199 tokens against
 970,580 for the one implementation Task.
+
+#### R6 — First research Tasks
+
+The release-build experiment ran first as `research-release-build-2` on 06a6b71 (51,841 tokens).
+Its baseline measured three cold release builds at a median of 63,586 ms (target directory 529 MB,
+binary 44.8 MB). The implementer (Claude Opus 5.5) tried seven options one at a time — codegen
+units, LTO off, both, `strip`, `opt-level = 2`, a lower optimization level for SQLite's C code, and
+feature flags — and adopted one: `lto = "off"` in the root release profile, which it measured at
+about 18–20 percent less wall time and 30 percent less CPU, for a binary 18.7 percent larger. The
+gate passed (cold, 13.7 min). The candidate measurement then never ran: `kernel/experiment`
+declared `max_attempts = 6`, which held with the fixture's command stand-ins but not with two
+model Workers and their Provider admissions, so the Attempt accounting refused the candidate
+measure to protect the still-required evaluator — the same declaration trap `kernel/report`
+showed in R3. The Task ended `incomplete` with the baseline as its only measurement; the bound is
+10 now, repinned, and the experiment ran again as `research-release-build-3`.

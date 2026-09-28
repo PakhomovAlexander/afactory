@@ -3,7 +3,10 @@
 schema = "af.pipeline/1"
 name = "kernel/experiment"
 version = "1.0.0"
-max_attempts = 6
+# Two model Workers each admit a Provider before their Attempt: baseline measure, the
+# implementer and its admission, the checks, the candidate measure, the evaluator and its
+# admission, and room for a retry. Six held only with command stand-ins, which admit none.
+max_attempts = 10
 # One node at a time: no measurement shares the machine with other work of this Task.
 max_parallel = 1
 

@@ -91,7 +91,7 @@
           "port": "result"
         }
       },
-      "max_attempts": 6,
+      "max_attempts": 10,
       "max_parallel": 1
     },
     "kernel/experiment-trial": {
