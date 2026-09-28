@@ -277,6 +277,10 @@ impl PartialEq<EventType> for &str {
     }
 }
 
+/// What an event log another af release wrote says when this release reads it: its readers
+/// recognise such a log by this phrase in the refusal.
+pub const ANOTHER_RELEASE: &str = "this log was written by another af release";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownEventType(pub String);
 
@@ -284,8 +288,7 @@ impl std::fmt::Display for UnknownEventType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "unknown review-kernel event type: {}; this log was written by another af release; \
-             start a new Campaign or Task",
+            "unknown review-kernel event type: {}; {ANOTHER_RELEASE}; start a new Campaign or Task",
             self.0
         )
     }
