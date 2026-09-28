@@ -97,9 +97,21 @@ Measured on the developer Mac above, same tree family, one change at a time:
 | longest test that shares the machine | 92.9 s | 43.8 s |
 | cold `cargo test --no-run` | 58 s, 122 executables, 5.7 GB | 46 s, 48 executables, 3.5 GB |
 | doctest step | 22 s, 15 empty groups | none |
+| whole `make check`, warm, default threads | ~690 s | 323 s |
 | flakes in four full runs | – | 0 of 5,903 test executions |
 
-The CI numbers for the same commits are recorded on the pull request that introduced this
+On the four-core CI runner, first run of the new gate with a mostly cold compile cache
+(57% of rustc invocations hit, from the parallel jobs' own compiles):
+
+| CI measurement | before | after |
+|---|---|---|
+| check job wall | 1123 s | 745 s |
+| test step | 755 s | 528 s (4 threads) |
+| test-build | 236 s | 194 s |
+| fmt and clippy | 52 s, in series before the tests | 38 s, in a parallel job |
+| container probes | 92 to 165 s | 49 s |
+
+The warm-cache run and later ones are recorded on the pull request that introduced this
 record; the four-core runner gains most from the linked-once binaries and the compile cache,
 the fourteen-core machine from the scheduler.
 
