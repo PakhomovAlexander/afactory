@@ -1078,7 +1078,7 @@ fn a_fast_check_that_writes_past_the_bound_fails_and_its_directory_is_removed() 
 }
 
 #[test]
-fn an_unreadable_subtree_a_check_leaves_fails_it_through_the_bound() {
+fn an_unreadable_subtree_a_check_leaves_fails_it_as_suspect() {
     if !permissions_bind() {
         return;
     }
@@ -1092,10 +1092,13 @@ fn an_unreadable_subtree_a_check_leaves_fails_it_through_the_bound() {
     let cas = cas(&fixture);
     let result = check_result(&cas, &outcome);
     assert_eq!(result["status"], "failed");
-    assert_eq!(result["reason"], "warm_cache_bound_exceeded");
+    // An unreadable subtree is suspect before it is a byte count: suspicion outranks the bound
+    // in the recorded cause, and the directory goes either way.
+    assert_eq!(result["reason"], "warm_cache_suspect");
     let observed = observations(&outcome);
     assert_eq!(observed[0]["kind"], "cargo_target");
     assert!(observed[0]["evicted_bytes"].is_u64());
+    assert_eq!(observed[0]["evicted_reason"], "suspect");
     assert!(
         warm_directories(&fixture).is_empty(),
         "removed under the lock, unreadable child and all"

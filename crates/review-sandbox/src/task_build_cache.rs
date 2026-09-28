@@ -139,6 +139,11 @@ pub enum Ensured {
 #[derive(Debug)]
 pub struct TaskBuildCacheKeyLock {
     key: Arc<OwnedFd>,
+    /// The project level the key sits in, held open so the key can be checked to still occupy
+    /// its name: a check that renames the key and recreates a directory at its path has moved
+    /// the kernel's directory, not replaced it, and the kernel notices before accepting.
+    project: OwnedFd,
+    toolchain: String,
     path: PathBuf,
     held: Arc<HeldLocks>,
     _lock: Flock<File>,
@@ -153,7 +158,7 @@ pub fn lock_task_build_cache_key(
     toolchain: &str,
     wait: Duration,
 ) -> Result<Option<TaskBuildCacheKeyLock>, String> {
-    let (key, path, private) = open_key(root, project, toolchain)?;
+    let (project_fd, key, path, private) = open_key(root, project, toolchain)?;
     let Some(lock) = exclusive_lock_at(&key, KEY_LOCK, wait)? else {
         return Ok(None);
     };
@@ -161,6 +166,8 @@ pub fn lock_task_build_cache_key(
     held.register(KEY_LOCK, &lock)?;
     let key = TaskBuildCacheKeyLock {
         key,
+        project: project_fd,
+        toolchain: toolchain.to_string(),
         path,
         held,
         _lock: lock,
@@ -189,7 +196,7 @@ pub fn lock_task_build_cache(
     kind: &str,
     wait: Duration,
 ) -> Result<TaskBuildCacheLock, String> {
-    let (key, path, _) = open_key(root, project, toolchain)?;
+    let (_, key, path, _) = open_key(root, project, toolchain)?;
     lock_kind_at(key, &path, kind, wait, &Arc::new(HeldLocks::default()))
 }
 
@@ -207,6 +214,21 @@ impl TaskBuildCacheKeyLock {
     /// directory of this user, or a lock file this process holds was unlinked or replaced at its
     /// name. `None` when the key is as the kernel left it.
     pub fn inspect(&self) -> Option<String> {
+        match nix::sys::stat::fstatat(
+            &self.project,
+            self.toolchain.as_str(),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
+        ) {
+            Ok(at_name) => match nix::sys::stat::fstat(&*self.key) {
+                Ok(held) if inode(&at_name) == inode(&held) => {}
+                Ok(_) => return Some("the toolchain key was displaced from its name".into()),
+                Err(errno) => {
+                    return Some(format!("the toolchain key could not be inspected: {errno}"));
+                }
+            },
+            Err(Errno::ENOENT) => return Some("the toolchain key is gone from its name".into()),
+            Err(errno) => return Some(format!("the toolchain key's name: {errno}")),
+        }
         match nix::sys::stat::fstat(&*self.key) {
             Ok(stat) if stat.st_uid != nix::unistd::geteuid().as_raw() => {
                 return Some("the toolchain key belongs to another user".into());
@@ -365,6 +387,51 @@ impl TaskBuildCacheKeyLock {
                 bytes,
             ));
         }
+        // The held locks: a sound one — one name, this holder's inode — is emptied through a
+        // fresh descriptor to that inode, since any byte in it is a check's; one that was
+        // replaced or linked elsewhere is unlinked at its name, never written through.
+        for (name, dev, ino) in self.held.names() {
+            let shown = name.to_string_lossy().into_owned();
+            let stat = match nix::sys::stat::fstatat(
+                &*self.key,
+                name.as_c_str(),
+                AtFlags::AT_SYMLINK_NOFOLLOW,
+            ) {
+                Ok(stat) => stat,
+                Err(Errno::ENOENT) => continue,
+                Err(errno) => return Err(format!("inspecting the lock `{shown}`: {errno}")),
+            };
+            let sound = inode(&stat) == (dev, ino)
+                && file_kind(&stat) == SFlag::S_IFREG
+                && stat.st_nlink == 1
+                && stat.st_uid == nix::unistd::geteuid().as_raw();
+            if sound {
+                if stat.st_size != 0 {
+                    let descriptor = nix::fcntl::openat(
+                        &*self.key,
+                        name.as_c_str(),
+                        OFlag::O_RDWR | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+                        Mode::empty(),
+                    )
+                    .map_err(|errno| format!("reopening the lock `{shown}`: {errno}"))?;
+                    let reopened = nix::sys::stat::fstat(&descriptor)
+                        .map_err(|errno| format!("inspecting the lock `{shown}`: {errno}"))?;
+                    if inode(&reopened) != (dev, ino) {
+                        return Err(format!("the lock `{shown}` changed under eviction"));
+                    }
+                    nix::unistd::ftruncate(&descriptor, 0)
+                        .map_err(|errno| format!("emptying the lock `{shown}`: {errno}"))?;
+                    removed.push((shown, u64::try_from(stat.st_size).unwrap_or(0)));
+                }
+            } else {
+                match nix::unistd::unlinkat(&*self.key, name.as_c_str(), UnlinkatFlags::NoRemoveDir)
+                {
+                    Ok(()) | Err(Errno::ENOENT) => {}
+                    Err(errno) => return Err(format!("removing the lock `{shown}`: {errno}")),
+                }
+                removed.push((shown, u64::try_from(stat.st_size).unwrap_or(0)));
+            }
+        }
         let left = self.entries()?;
         if !left.is_empty() {
             return Err(format!(
@@ -373,6 +440,26 @@ impl TaskBuildCacheKeyLock {
                 if left.len() == 1 { "y" } else { "ies" },
                 left[0].0.to_string_lossy()
             ));
+        }
+        for (name, dev, ino) in self.held.names() {
+            match nix::sys::stat::fstatat(&*self.key, name.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW)
+            {
+                Err(Errno::ENOENT) => {}
+                Ok(stat)
+                    if inode(&stat) == (dev, ino) && stat.st_nlink == 1 && stat.st_size == 0 => {}
+                Ok(_) => {
+                    return Err(format!(
+                        "eviction left the lock `{}` neither absent nor sound and empty",
+                        name.to_string_lossy()
+                    ));
+                }
+                Err(errno) => {
+                    return Err(format!(
+                        "inspecting the lock `{}`: {errno}",
+                        name.to_string_lossy()
+                    ));
+                }
+            }
         }
         Ok(removed)
     }
@@ -512,7 +599,7 @@ fn open_key(
     root: &Path,
     project: &str,
     toolchain: &str,
-) -> Result<(Arc<OwnedFd>, PathBuf, bool), String> {
+) -> Result<(OwnedFd, Arc<OwnedFd>, PathBuf, bool), String> {
     if !is_key(project) || !is_key(toolchain) {
         return Err("Task build cache key is not an opaque identity".into());
     }
@@ -527,7 +614,12 @@ fn open_key(
     let (project_fd, _) = open_level(&root_fd, project, true)?;
     // The key level is judged, not repaired: a widened key is emptied under its lock first.
     let (key, private) = open_level(&project_fd, toolchain, false)?;
-    Ok((Arc::new(key), root.join(project).join(toolchain), private))
+    Ok((
+        project_fd,
+        Arc::new(key),
+        root.join(project).join(toolchain),
+        private,
+    ))
 }
 
 /// The root level, by path: created private when absent, refused when it is a link or not a
@@ -636,6 +728,19 @@ fn exclusive_lock_at(
     name: &str,
     wait: Duration,
 ) -> Result<Option<Flock<File>>, String> {
+    exclusive_lock_validated(directory, name, wait, true)
+}
+
+/// [`exclusive_lock_at`], refusing to write through an inode that is not a plain, singly linked
+/// lock file of this user at that name: a hard link a check planted at the name would otherwise be
+/// truncated, and its other name may lie anywhere. Such an entry is unlinked at the name and the
+/// acquisition retried once on a fresh file.
+fn exclusive_lock_validated(
+    directory: &OwnedFd,
+    name: &str,
+    wait: Duration,
+    retry: bool,
+) -> Result<Option<Flock<File>>, String> {
     let descriptor = nix::fcntl::openat(
         directory,
         name,
@@ -643,6 +748,28 @@ fn exclusive_lock_at(
         Mode::S_IRUSR | Mode::S_IWUSR,
     )
     .map_err(|errno| format!("opening the Task build cache lock: {errno}"))?;
+    let opened = nix::sys::stat::fstat(&descriptor)
+        .map_err(|errno| format!("inspecting the Task build cache lock: {errno}"))?;
+    let at_name = nix::sys::stat::fstatat(directory, name, AtFlags::AT_SYMLINK_NOFOLLOW)
+        .map_err(|errno| format!("inspecting the Task build cache lock: {errno}"))?;
+    let sound = inode(&opened) == inode(&at_name)
+        && file_kind(&opened) == SFlag::S_IFREG
+        && opened.st_nlink == 1
+        && opened.st_uid == nix::unistd::geteuid().as_raw();
+    if !sound {
+        drop(descriptor);
+        if !retry {
+            return Err("the Task build cache lock is not a plain lock file of this user".into());
+        }
+        eprintln!(
+            "warm check cache diagnostic: lock `{name}` was not a plain lock file; replaced without writing through it"
+        );
+        match nix::unistd::unlinkat(directory, name, UnlinkatFlags::NoRemoveDir) {
+            Ok(()) | Err(Errno::ENOENT) => {}
+            Err(errno) => return Err(format!("removing a suspect Task build cache lock: {errno}")),
+        }
+        return exclusive_lock_validated(directory, name, wait, false);
+    }
     let mut file = File::from(descriptor);
     let started = Instant::now();
     loop {
@@ -650,6 +777,7 @@ fn exclusive_lock_at(
             Ok(lock) => {
                 // The kernel's lock files carry no payload: whatever a check wrote into one
                 // while it could is dropped here, so it never counts toward the key's bound.
+                // The inode was judged this holder's own plain file before this write.
                 let _ = nix::unistd::ftruncate(&*lock, 0);
                 return Ok(Some(lock));
             }
@@ -1527,12 +1655,24 @@ mod tests {
                 .is_some_and(|reason| reason.contains("linked")),
             "a held lock with a second name is suspect"
         );
-        lock.remove_kinds().unwrap();
+        let removed = lock.remove_kinds().unwrap();
         assert!(!target.path().exists());
-        // The alias is gone, so the lock has one name again — but it grew, and that is suspect.
+        // The alias went with the kind directory, so the lock has one name again, and eviction
+        // emptied the bytes the check wrote into it through that alias.
         assert!(
-            lock.inspect().is_some_and(|reason| reason.contains("grew")),
-            "bytes written into a held lock are a check's"
+            removed
+                .iter()
+                .any(|(name, bytes)| name == KEY_LOCK && *bytes == 8192),
+            "{removed:?}"
+        );
+        assert_eq!(
+            std::fs::metadata(lock.path().join(KEY_LOCK)).unwrap().len(),
+            0
+        );
+        assert_eq!(
+            lock.inspect(),
+            None,
+            "one name, one inode, zero bytes again"
         );
     }
 
@@ -1567,6 +1707,78 @@ mod tests {
             std::fs::symlink_metadata(lock.path()).unwrap().mode() & 0o777,
             0o700,
             "writable again for the eviction, and private"
+        );
+    }
+
+    #[test]
+    fn acquisition_never_truncates_a_planted_hard_link_and_a_displaced_key_is_suspect() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("af").join(TASK_BUILD_CACHE_DIRECTORY);
+        let key_path = cache.join(key('a')).join(key('b'));
+        std::fs::create_dir_all(&key_path).unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let precious = root.path().join("precious");
+        std::fs::write(&precious, [7_u8; 4096]).unwrap();
+        // A check left a hard link to a user file where the key lock lives.
+        std::fs::hard_link(&precious, key_path.join(KEY_LOCK)).unwrap();
+        let lock = lock_task_build_cache_key(&cache, &key('a'), &key('b'), Duration::ZERO)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            std::fs::metadata(&precious).unwrap().len(),
+            4096,
+            "the planted inode was never written through"
+        );
+        assert_eq!(
+            std::fs::metadata(&precious).unwrap().nlink(),
+            1,
+            "the planted name is gone"
+        );
+        assert_eq!(
+            lock.inspect(),
+            None,
+            "a fresh plain lock file took its place"
+        );
+        // A check renames the key and recreates a directory at its path while the lock is held.
+        let moved = key_path.with_file_name("moved");
+        std::fs::rename(&key_path, &moved).unwrap();
+        std::fs::create_dir(&key_path).unwrap();
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            lock.inspect()
+                .is_some_and(|reason| reason.contains("displaced")),
+            "the held directory no longer occupies its name"
+        );
+    }
+
+    #[test]
+    fn eviction_empties_a_grown_held_lock_and_drops_a_compromised_one() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("af").join(TASK_BUILD_CACHE_DIRECTORY);
+        let lock = lock_task_build_cache_key(&cache, &key('a'), &key('b'), Duration::ZERO)
+            .unwrap()
+            .unwrap();
+        std::fs::write(lock.path().join(KEY_LOCK), [0_u8; 8192]).unwrap();
+        assert!(lock.inspect().is_some_and(|reason| reason.contains("grew")));
+        let removed = lock.remove_kinds().unwrap();
+        assert_eq!(removed, [(KEY_LOCK.to_string(), 8192)]);
+        assert_eq!(
+            std::fs::metadata(lock.path().join(KEY_LOCK)).unwrap().len(),
+            0
+        );
+        assert_eq!(
+            lock.inspect(),
+            None,
+            "emptied, and the same inode is still held"
+        );
+        // Replaced at its name: unlinked, never written through, and the key reads suspect.
+        std::fs::remove_file(lock.path().join(KEY_LOCK)).unwrap();
+        std::fs::write(lock.path().join(KEY_LOCK), [1_u8; 16]).unwrap();
+        lock.remove_kinds().unwrap();
+        assert!(!lock.path().join(KEY_LOCK).exists());
+        assert!(
+            lock.inspect()
+                .is_some_and(|reason| reason.contains("removed"))
         );
     }
 }

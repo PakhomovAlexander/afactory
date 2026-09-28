@@ -945,19 +945,23 @@ impl<'a> WarmSession<'a> {
         // Once the check ended, however fast: the whole key is measured again, and every
         // directory the check used is judged as `ensure` would judge it before the next check
         // — a credential written into a Cargo home, a link, a swapped root, all make it suspect.
-        let excess = sampled
-            .or_else(|| over_bound(key, directories, max))
-            .map(Excess::Bound)
-            .or_else(|| {
-                key.inspect()
-                    .map(|reason| Excess::Suspect(format!("toolchain key: {reason}")))
-            })
+        // Suspicion first: a replaced, linked or grown lock, a displaced or widened key or a
+        // suspect directory is the cause even when the count is over the bound as well, so the
+        // durable evidence names what happened rather than how many bytes it took.
+        let excess = key
+            .inspect()
+            .map(|reason| Excess::Suspect(format!("toolchain key: {reason}")))
             .or_else(|| {
                 directories.iter().find_map(|(kind, directory)| {
                     directory
                         .inspect()
                         .map(|reason| Excess::Suspect(format!("{}: {reason}", kind.as_str())))
                 })
+            })
+            .or_else(|| {
+                sampled
+                    .or_else(|| over_bound(key, directories, max))
+                    .map(Excess::Bound)
             });
         (execution, excess)
     }
@@ -2052,8 +2056,8 @@ mod tests {
             ),
         );
         assert!(
-            matches!(excess, Some(Excess::Bound(_))),
-            "a link root cannot be counted: {excess:?}"
+            matches!(&excess, Some(Excess::Suspect(reason)) if reason.contains("link")),
+            "a root swapped for a link is suspect before it is a byte count: {excess:?}"
         );
         session
             .finish(prepared.key_lock, prepared.directories, excess)
@@ -2199,8 +2203,8 @@ mod tests {
             "k=\"$(dirname \"$CARGO_TARGET_DIR\")\"; rm \"$k/warm.lock\"; head -c 8192 /dev/zero > \"$k/warm.lock\"",
         );
         assert!(
-            excess.is_some(),
-            "an impostor at a lock's name counts: {excess:?}"
+            matches!(&excess, Some(Excess::Suspect(reason)) if reason.contains("lock")),
+            "a replaced lock is suspect before it is a byte count: {excess:?}"
         );
         session
             .finish(prepared.key_lock, prepared.directories, excess)

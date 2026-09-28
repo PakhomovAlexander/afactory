@@ -690,3 +690,18 @@ lock is now exempt only at its own name with its own inode and must stay one emp
 made writable through its held descriptor before an eviction that addresses entries by exact bytes
 and errors when anything remains, and every declared observation carries the cause. Two unit and
 two end-to-end fixtures pin them.
+
+Verification Task `research-r1-verify-6` on 874944d (360,806 tokens; gate warm, `kernel`
+12.6 min) ended **`verified`**: the independent evaluator passed every R1 requirement, the fixtures,
+the policy declaration, ADR-0123, the changelog and the benchmark record. The two reviewers still
+reported four in-cache findings — one of them a real safety defect this campaign introduced:
+acquisition truncated whatever inode sat at the lock's name, so a hard link a check planted to a
+file outside the cache would have been emptied on the next gate. Fixed by hand before delivery: a
+lock's inode is judged a plain, singly linked file of this user at its name before anything writes
+through it; the project level is held open so a key a check renamed and recreated is displaced and
+suspect; eviction empties or drops the held locks and succeeds only when nothing but sound empty
+locks remains; and suspicion outranks the byte count in the recorded cause. ADR-0123 now also
+states where these rules stop: `trusted_local` is not isolation, and the cache is honest as
+evidence, not a defence against a check acting on the host. Six verification rounds and fifteen
+hand-fixed defects on one package is the price of a shell-bearing reviewer holding the design's
+words to their letter; it is also the strongest evidence this campaign has that the pipeline works.

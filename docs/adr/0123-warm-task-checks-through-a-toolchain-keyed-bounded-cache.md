@@ -278,3 +278,29 @@ Three rules were added when the follow-up Task's reviewers read the amendment:
 - **The cause on every observation.** When a check fails for excess, every declared observation
   of that check — a warm kind, a superseded kind, a Cache Snapshot — carries the eviction and its
   cause, with zero bytes where nothing was below the key for it.
+
+### After the sixth verification
+
+- **A lock is judged before it is written.** Acquisition opens the lock's name without following
+  links and truncates nothing until the inode it opened is a plain, singly linked file of this
+  user that still sits at that name; anything else is unlinked at the name, never written through,
+  and a fresh file takes its place.
+- **The key must stay at its name.** The project level is held open too, and a key that a check
+  renamed and recreated is displaced: suspect, failed, and evicted through the descriptor of the
+  directory the kernel actually held.
+- **Eviction settles the held locks.** A sound held lock with bytes is emptied through a fresh
+  descriptor to the same inode; a replaced or linked one is unlinked at its name; and eviction
+  reports success only when nothing but sound, empty held locks remains.
+- **Suspicion outranks the count.** When a check ended over the bound and suspect, the recorded
+  cause is `suspect`.
+
+### Where these rules stop
+
+`trusted_local` is not security isolation, and this cache does not claim to make it one. A
+check runs as the user; it can rename or delete anything the user owns, including this cache's
+parents and the Store. The rules above make the cache's own directory honest as *evidence*: a
+check cannot make a warm gate report fewer bytes than it holds, cannot leave a credential, a link
+or an unreadable subtree where the next gate would build on it, and cannot have the kernel write
+through an inode it planted. They do not defend against a check that acts on the host outside
+the key, and a review that treats that as a defect of this cache is reviewing the isolation
+policy, not the cache: `require_container = true` refuses `[warm]` for that reason.
