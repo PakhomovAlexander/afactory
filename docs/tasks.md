@@ -166,7 +166,8 @@ A code policy may declare a `[warm]` table
 [warm]
 build_cache = ["cargo_target", "cargo_home"]
 caches = ["cargo"]      # optional: Cache Snapshots from machine policy
-max_bytes = 8589934592  # optional: the default, 8 GiB; at most 32 GiB
+max_bytes = 8589934592  # optional: the eviction bound, 8 GiB by default; at most 32 GiB
+hard_max_bytes = 17179869184  # optional: ends a running check; twice max_bytes by default
 ```
 
 It grants a check directories that survive it. `cargo_target` becomes the check's
@@ -175,7 +176,7 @@ It grants a check directories that survive it. `cargo_target` becomes the check'
 keyed by the repository and by the toolchain the check resolves. That toolchain is the
 Snapshot's `rust-toolchain.toml`, `rustc -vV`, `cargo -vV`, the host triple, and the check's
 `PATH`, `LC_ALL`, `TZ` and `RUSTUP_HOME`. A later check with the same key starts from the
-earlier build. `max_bytes` bounds the kinds of one key together, not each on its own.
+earlier build. Both bounds cover the kinds of one key together, not each on its own.
 
 Under `[warm]` a check and its toolchain probe also receive the kernel's rustup home: its own
 `RUSTUP_HOME`, else `$HOME/.rustup` when that directory exists. They also receive
@@ -197,16 +198,34 @@ special file, another user's entry, a widened mode, a `credentials.toml` in a `c
 any entry the inspection cannot read. A check runs cold and says why when its toolchain cannot
 be resolved, when another check holds its directory for 60 seconds, or when its directories are
 already above `max_bytes`. The directories are measured again when the check ends and before
-its result counts. A check that grew them past the bound fails with
+its result counts
+([ADR-0127](adr/0127-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)).
+Above `max_bytes` only, they are evicted and the check's own result stands; the next check runs
+cold. Only `hard_max_bytes` ends a running check: one that grew them past it fails with
 `warm_cache_bound_exceeded`, however fast it was, and so does one that left anything the
-measurement cannot read. The directories are then removed, never trimmed. This is
-candidate-built state on your machine, not isolation.
+measurement cannot read. The directories are then removed, never trimmed, and the observation
+names the bound that acted. This is candidate-built state on your machine, not isolation.
 
 `af task show` prints one line per warm check, named even when the check never started:
 `check kernel: passed in 812345 ms, cargo_target warm 2147483648, cargo_home warm 409600`, or
 `check kernel: not_run, never started, cargo_target cold deadline_exhausted`. Deleting
 `$XDG_CACHE_HOME/af/task-build-cache` is always safe. A policy without `[warm]` records every
 document exactly as before.
+
+## Reclaim Store space
+
+`af task list --sizes` prints, per Task, the bytes of the stored objects only that Task reaches
+and the bytes it shares with other Tasks or Campaign records, then the Store's total. `af task
+gc --older-than 14 --keep 5` previews which finished Tasks beyond the newest five, idle for 14
+days, it would collect, how many bytes that frees, and why every other Task stays: running,
+unfinished, holding a writer lease or bound by another Task's `inputs`. It writes nothing. With
+`--apply` it writes one tombstone per collected Task and removes every object no remaining Task
+or Campaign record reaches
+([ADR-0127](adr/0127-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)). A
+collected Task keeps its ID, kind, revision, outcome, spend and times: `task list` and `task
+show` print it as `collected <time>`, and `task output` and `task deliver` refuse it. Run it
+between Tasks: `--apply` is refused while any Task's writer lease is live. If it stops midway,
+rerun it; the next run finishes the removal.
 
 ## Troubleshooting
 

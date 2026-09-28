@@ -1120,6 +1120,33 @@ opens a pull request, or contacts a remote.",
     },
     /// List Tasks with outcome and spend
     List {
+        /// Also print each Task's CAS bytes: those only it reaches and those it shares
+        #[arg(long)]
+        sizes: bool,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Collect finished Tasks: preview what would go; collect it only with --apply
+    #[command(
+        long_about = "Preview, and with --apply collect, the finished Tasks beyond the newest \
+--keep whose last event is at least --older-than days old.\n\nA Task that is running, holds a \
+writer lease, or is named by another Task's input bindings is never collected, and the preview \
+says why. Collection appends one tombstone per Task, which keeps its ID, kind, revision, outcome, \
+spend and times, and then removes every CAS object no remaining Task or Campaign record reaches. \
+A collected Task is listed and shown as `collected`; its outputs cannot be written or delivered. \
+Without --apply nothing is written. --apply is refused while any Task's writer lease is live.",
+        after_long_help = "Examples:\n  af task gc --older-than 14 --keep 5\n  af task gc --older-than 14 --keep 5 --apply\n  af task gc --older-than 0 --keep 10 --json"
+    )]
+    Gc {
+        /// Tasks whose last event is at least this many days old
+        #[arg(long, value_name = "DAYS")]
+        older_than: u64,
+        /// Never collect the newest N finished Tasks
+        #[arg(long, value_name = "N")]
+        keep: usize,
+        /// Collect the previewed Tasks (default: preview only)
+        #[arg(long)]
+        apply: bool,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },

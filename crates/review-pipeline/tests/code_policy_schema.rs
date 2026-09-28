@@ -46,6 +46,8 @@ fn accepted_policies_round_trip_through_the_schema() {
         Some(json!({"caches": ["cargo"]})),
         Some(json!({"build_cache": ["cargo_target"], "caches": ["cargo"], "max_bytes": 1})),
         Some(json!({"build_cache": ["cargo_target"], "max_bytes": 34_359_738_368_u64})),
+        Some(json!({"build_cache": ["cargo_target"], "max_bytes": 4096, "hard_max_bytes": 4096})),
+        Some(json!({"build_cache": ["cargo_target"], "hard_max_bytes": 34_359_738_368_u64})),
         Some(json!({"build_cache": ["cargo_home"]})),
         Some(json!({"build_cache": ["cargo_target", "cargo_home"]})),
         Some(json!({"build_cache": ["cargo_home", "cargo_target"], "caches": ["cargo"]})),
@@ -89,12 +91,23 @@ fn refused_warm_shapes_are_refused_by_both() {
         json!({"build_cache": ["cargo_target"], "max_bytes": 0}),
         json!({"build_cache": ["cargo_target"], "max_bytes": 34_359_738_369_u64}),
         json!({"build_cache": ["cargo_target"], "max_bytes": null}),
+        json!({"build_cache": ["cargo_target"], "hard_max_bytes": 0}),
+        json!({"build_cache": ["cargo_target"], "hard_max_bytes": 34_359_738_369_u64}),
+        json!({"build_cache": ["cargo_target"], "hard_max_bytes": null}),
         json!({"build_cache": ["cargo_target"], "path": "/tmp/target"}),
     ] {
         let value = policy(Some(warm.clone()), false);
         assert!(!rust_accepts(&value), "Rust accepted {warm}");
         assert!(!schema.is_valid(&value), "the schema accepted {warm}");
     }
+    // A hard bound below the eviction bound is refused by the typed policy; the schema cannot
+    // compare two fields, so it only bounds each one.
+    let below = policy(
+        Some(json!({"build_cache": ["cargo_target"], "max_bytes": 8192, "hard_max_bytes": 4096})),
+        false,
+    );
+    assert!(!rust_accepts(&below));
+    assert!(schema.is_valid(&below));
     let null = json!({"schema": "af.code-task-policy/1", "checks": {}, "check_wall_ms": 1,
         "require_container": false, "warm": null});
     assert!(!rust_accepts(&null));

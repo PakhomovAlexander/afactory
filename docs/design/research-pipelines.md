@@ -893,3 +893,19 @@ bound at all. Fixed by hand after the verdict, with a test, not re-verified: the
 at 1,024 artifacts per port and the list keeps its sixteen references. R4 closes here. Two
 verification Tasks cost 514,541 tokens against 733,989 for the one implementation Task; the first
 lost its correctness reviewer to a reply the kernel refused for its shape.
+
+#### R5 — Store hygiene and the warm cache's two bounds
+
+Implementation Task `research-r5` from a443f52 (970,580 tokens; 7 Attempts; gate warm, `kernel`
+15.1 min) ended `changes_requested` with the evaluator passing every criterion: the implementer
+(Claude Opus 5.5) delivered `af task list --sizes`, `af task gc` with its tombstone and resumable
+reachability sweep, the collected-Task projection, the two warm bounds with the ADR-0123
+amendment, ADR-0127, the fixtures and the docs, and reported the whole workspace green. The
+reviewers (GPT-6 Sol) left three majors and two minors, all fixed by hand: a reader that lost an
+artifact to a concurrent sweep reported corruption instead of `collected`; a listing read the
+tombstones before projecting the uncollected Tasks, so one collected in between could be omitted; a
+Task could open with a binding to a Task collected after the binding was resolved; and a collected
+Task's row carried no numbers under `--sizes`. The implementer also named the one change it could
+not make: with `max_bytes` at 32 GiB the new `hard_max_bytes` defaulted to the same value and the
+two bounds coincided, so this repository's `.af/code-policy.toml` now declares 16 GiB as the
+eviction bound and 32 GiB as the ceiling.

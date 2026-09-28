@@ -729,6 +729,131 @@ impl Cas {
     pub fn contains(&self, digest: &str) -> bool {
         self.get(digest).is_ok()
     }
+
+    /// Whether an object is filed under `digest`, without reading or verifying it. The event
+    /// store asks this under its write lock, where collection also removes objects, so an
+    /// append can never commit a reference to an object a concurrent sweep removed.
+    pub fn is_filed(&self, digest: &str) -> bool {
+        valid_digest(digest) && fs::symlink_metadata(self.path_for(digest)).is_ok()
+    }
+
+    /// Every object filed in this CAS: its digest, stored length and modification time. Only a
+    /// regular file whose two-level name spells a valid digest is an object; temporary files
+    /// of an in-flight `put` and anything else are not listed.
+    pub fn filed_objects(&self) -> Result<Vec<FiledObject>, CasError> {
+        let mut objects = Vec::new();
+        for prefix in fs::read_dir(self.root.join("objects"))? {
+            let prefix = prefix?;
+            if !prefix.file_type()?.is_dir() {
+                continue;
+            }
+            let Some(head) = prefix.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            for entry in fs::read_dir(prefix.path())? {
+                let entry = entry?;
+                let Some(tail) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                let digest = format!("sha256:{head}{tail}");
+                let metadata = entry.metadata()?;
+                if !valid_digest(&digest) || head.len() != 2 || !metadata.is_file() {
+                    continue;
+                }
+                objects.push(FiledObject {
+                    digest,
+                    len: metadata.len(),
+                    modified: metadata.modified()?,
+                });
+            }
+        }
+        objects.sort_by(|left, right| left.digest.cmp(&right.digest));
+        Ok(objects)
+    }
+
+    /// Every CAS digest spelled anywhere in an object's bytes — an envelope's `content_id` and
+    /// `input_artifacts`, a Manifest's file digests, any identity a payload names. Read in
+    /// bounded chunks; an object that spells none (a source file, a transcript) has no edge.
+    /// Collection walks reachability through this, so a reference is never missed however a
+    /// record nests it; a spelling that is not a reference only keeps an object longer.
+    pub fn spelled_digests(&self, digest: &str) -> Result<Vec<String>, CasError> {
+        if !valid_digest(digest) {
+            return Err(CasError::InvalidDigest(digest.to_string()));
+        }
+        let mut file =
+            fs::File::open(self.path_for(digest)).map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => CasError::NotFound {
+                    digest: digest.to_string(),
+                },
+                _ => CasError::Io(error),
+            })?;
+        let mut found = BTreeSet::new();
+        let mut window: Vec<u8> = Vec::with_capacity(STREAM_BUFFER_BYTES + SPELLED_DIGEST_LEN);
+        let mut chunk = vec![0_u8; STREAM_BUFFER_BYTES];
+        loop {
+            let read = file.read(&mut chunk)?;
+            if read == 0 {
+                break;
+            }
+            window.extend_from_slice(&chunk[..read]);
+            scan_digests(&window, &mut found);
+            // Keep the tail that could still begin a spelling the next chunk completes.
+            let keep = window.len().min(SPELLED_DIGEST_LEN - 1);
+            window.drain(..window.len() - keep);
+        }
+        Ok(found.into_iter().collect())
+    }
+
+    /// Remove one object. Only Task collection calls this (ADR-0127), under the event store's
+    /// exclusive write lock and only for an object no uncollected record reaches; no other
+    /// command removes a CAS object.
+    pub fn remove_unreachable(&self, digest: &str) -> Result<u64, CasError> {
+        if !valid_digest(digest) {
+            return Err(CasError::InvalidDigest(digest.to_string()));
+        }
+        let path = self.path_for(digest);
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.is_file() {
+            return Err(CasError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("CAS object is not a regular file: {digest}"),
+            )));
+        }
+        fs::remove_file(&path)?;
+        self.durable.lock().expect("cas durable").remove(&path);
+        self.pending.lock().expect("cas pending").remove(&path);
+        Ok(metadata.len())
+    }
+}
+
+/// One object [`Cas::filed_objects`] lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FiledObject {
+    pub digest: String,
+    pub len: u64,
+    pub modified: std::time::SystemTime,
+}
+
+/// `sha256:` and 64 lowercase hex digits.
+const SPELLED_DIGEST_LEN: usize = 7 + 64;
+
+pub(crate) fn scan_digests(bytes: &[u8], found: &mut BTreeSet<String>) {
+    let mut from = 0;
+    while let Some(offset) = bytes[from..]
+        .windows(7)
+        .position(|window| window == b"sha256:")
+    {
+        let start = from + offset;
+        let end = start + SPELLED_DIGEST_LEN;
+        if let Some(candidate) = bytes.get(start..end)
+            && candidate[7..]
+                .iter()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+        {
+            found.insert(String::from_utf8_lossy(candidate).into_owned());
+        }
+        from = start + 1;
+    }
 }
 
 fn verify_exact_bytes(
@@ -1334,6 +1459,55 @@ mod tests {
             })
             .collect();
         assert!(strays.is_empty(), "temp files left behind: {strays:?}");
+    }
+
+    #[test]
+    fn every_digest_an_object_spells_is_found_across_chunk_boundaries() {
+        let (_dir, cas) = cas();
+        let first = cas.put(b"first").unwrap();
+        let second = cas.put(b"second").unwrap();
+        // The second spelling straddles the first read's 64 KiB boundary.
+        let mut bytes = vec![b' '; STREAM_BUFFER_BYTES - 30];
+        bytes.extend_from_slice(first.as_bytes());
+        bytes.extend_from_slice(b"\",\"");
+        bytes.extend_from_slice(second.as_bytes());
+        bytes.extend_from_slice(b" sha256:ABC sha256:");
+        bytes.extend_from_slice(&[b'a'; 63]);
+        let holder = cas.put(&bytes).unwrap();
+        let mut expected = vec![first, second];
+        expected.sort();
+        assert_eq!(cas.spelled_digests(&holder).unwrap(), expected);
+        assert!(cas.spelled_digests(&expected[0]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn only_objects_are_filed_and_only_collection_removes_one() {
+        let (dir, cas) = cas();
+        let kept = cas.put(b"kept").unwrap();
+        let gone = cas.put(b"gone").unwrap();
+        let hex = &gone[7..];
+        fs::write(
+            dir.path().join("objects").join(&hex[..2]).join(".tmp-x-1"),
+            b"t",
+        )
+        .unwrap();
+        let listed: Vec<_> = cas
+            .filed_objects()
+            .unwrap()
+            .into_iter()
+            .map(|object| (object.digest, object.len))
+            .collect();
+        let mut expected = vec![(kept.clone(), 4), (gone.clone(), 4)];
+        expected.sort();
+        assert_eq!(listed, expected, "a temporary file is not an object");
+        assert!(cas.is_filed(&gone));
+        assert_eq!(cas.remove_unreachable(&gone).unwrap(), 4);
+        assert!(!cas.is_filed(&gone));
+        assert!(cas.is_filed(&kept));
+        assert!(matches!(
+            cas.remove_unreachable("sha256:nope"),
+            Err(CasError::InvalidDigest(_))
+        ));
     }
 
     fn walk(root: &Path) -> Vec<PathBuf> {

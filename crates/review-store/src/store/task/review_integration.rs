@@ -1205,13 +1205,14 @@ impl EventStore {
                 at,
                 &review_prepared,
             )?;
-            appended.extend(super::super::insert_events(&tx, campaign, chunk, at)?);
+            appended.extend(super::super::insert_events(&tx, cas, campaign, chunk, at)?);
         }
         // The candidate state and every referenced artifact were validated before BEGIN;
         // exact prefixes and authority are rechecked above under the SQLite writer lock.
         let _ = task_prepared;
         appended.extend(super::super::insert_events(
             &tx,
+            cas,
             &run_id,
             &[event],
             first as i64,

@@ -377,11 +377,14 @@ impl CodeTaskDomain {
                 SOURCE_MUTATED.into(),
             ));
         }
-        if let Some(excess) = exceeded {
-            let reason = match excess {
-                super::super::warm_check::Excess::Suspect(_) => WARM_CACHE_SUSPECT,
-                super::super::warm_check::Excess::Bound(_) => WARM_CACHE_BOUND_EXCEEDED,
-            };
+        // Above `max_bytes` only, the directories were evicted and the repetition stands
+        // (ADR-0127); the hard bound and suspicion end it.
+        let ended = match exceeded {
+            Some(super::super::warm_check::Excess::Suspect(_)) => Some(WARM_CACHE_SUSPECT),
+            Some(super::super::warm_check::Excess::Bound(_)) => Some(WARM_CACHE_BOUND_EXCEEDED),
+            Some(super::super::warm_check::Excess::Evict(_)) | None => None,
+        };
+        if let Some(reason) = ended {
             return Ok(Repetition::Failed(
                 run,
                 MeasurementFailureReasonV1::Exit,

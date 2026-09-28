@@ -22,7 +22,7 @@ pub mod store;
 pub mod subject;
 
 pub use canonical::{CanonicalError, artifact_id, canonicalize, content_id, validate_envelope};
-pub use cas::{Cas, CasError, OpenedCasObject};
+pub use cas::{Cas, CasError, FiledObject, OpenedCasObject};
 pub use ingest::{
     CanonicalReduction, CanonicalStage, Ingest, PreparedReviewReduction,
     prepare_canonical_task_review,

@@ -41,7 +41,10 @@ provenance = "literal"
 # budget: 32 GiB against 98 GiB free.
 [warm]
 build_cache = ["cargo_target", "cargo_home"]
-max_bytes = 34359738368
+# Eviction bound: a directory above it is removed after the check, whose result stands (R5).
+max_bytes = 17179869184
+# The only bound that ends a running check: a disk safety, twice the eviction bound.
+hard_max_bytes = 34359738368
 
 # ADR-0124. The release build, cold, three
 # times: each repetition builds into a fresh CARGO_TARGET_DIR inside its runtime directory

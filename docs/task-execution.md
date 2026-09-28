@@ -125,6 +125,7 @@ What it never grants:
 | Task file, catalogs, bindings and developers | [`task-file-v1`](../schemas/task-file-v1.json), [`task-catalog-v2`](../schemas/task-catalog-v2.json), [`shared-task-catalog-v1`](../schemas/shared-task-catalog-v1.json), [`task-developers-v1`](../schemas/task-developers-v1.json) |
 | Inspection and listing | [`task-inspection-v11`](../schemas/task-inspection-v11.json), [`task-list-entry-v2`](../schemas/task-list-entry-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json) |
 | Run diagnostics and delivery | [`task-run-report-v2`](../schemas/task-run-report-v2.json), [`task-diagnostic-v1`](../schemas/task-diagnostic-v1.json), [`task-delivery-record-v1`](../schemas/task-delivery-record-v1.json) |
+| Store hygiene ([ADR-0127](adr/0127-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)) | `crates/review-store/src/store/task/collection.rs`, [`task-collected-v1`](../schemas/task-collected-v1.json), [`task-collected-inspection-v1`](../schemas/task-collected-inspection-v1.json), [`task-gc-v1`](../schemas/task-gc-v1.json) |
 | Review accounting | [`review-report-v4`](../schemas/review-report-v4.json) |
 | Executable credential-free fixtures | `fixtures/task-runtime/` (`pagination`, `review`, `review-v2`, `embedded-review`, `bounded-repair`) |
 

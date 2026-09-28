@@ -175,7 +175,13 @@
           }
         },
         "max_bytes": {
-          "description": "The byte bound shared by every build directory of one toolchain key; 8 GiB when absent.",
+          "description": "The eviction bound shared by every build directory of one toolchain key; 8 GiB when absent. A key above it is removed before a check and after one, whose result stands (ADR-0127).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 34359738368
+        },
+        "hard_max_bytes": {
+          "description": "The only bound that ends a running check, with `warm_cache_bound_exceeded` (ADR-0127): twice `max_bytes` when absent, at most 32 GiB. It may not be below `max_bytes`, which the typed policy checks.",
           "type": "integer",
           "minimum": 1,
           "maximum": 34359738368

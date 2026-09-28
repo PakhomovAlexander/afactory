@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 165] = [
+const SCHEMAS: [&str; 166] = [
     "code-task-policy-v1.json",
     "measurement-v1.json",
     "measurement-comparison-v1.json",
@@ -142,6 +142,7 @@ const SCHEMAS: [&str; 165] = [
     "artifact-envelope-v1.json",
     "task-contracts-v1.json",
     "task-transition-v5.json",
+    "task-collected-v1.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
     "legacy-review-task-policy-v4.json",
@@ -759,6 +760,7 @@ fn task_runtime_cache_observations_name_at_most_one_reason() {
             materialization_ms: 0,
             evicted_bytes: None,
             evicted_reason: None,
+            bound: None,
         }],
     };
     for kind in [
@@ -797,6 +799,110 @@ fn task_runtime_cache_observations_name_at_most_one_reason() {
     }
 }
 
+/// ADR-0127: an observation names which byte bound acted — `max_bytes` for an eviction whose
+/// check's result stood or a pre-check removal, `hard_max_bytes` for a check the bound ended —
+/// and never names one beside a `suspect` eviction or when no bound acted.
+#[test]
+fn task_runtime_cache_observations_name_the_bound_that_acted() {
+    use review_core::task::runtime::{TaskCacheBoundV1, TaskCacheObservationV1};
+    let digest = |fill: char| format!("sha256:{}", fill.to_string().repeat(64));
+    let base = TaskCacheObservationV1 {
+        observation_id: digest('b'),
+        kind: "cargo_target".into(),
+        eligible: true,
+        source_digest: digest('c'),
+        toolchain_id: Some(digest('d')),
+        bytes_available: 4096,
+        lookup_ms: 1,
+        materialization_ms: 0,
+        evicted_bytes: None,
+        evicted_reason: None,
+        bound: None,
+    };
+    let evidence = |cache: TaskCacheObservationV1| {
+        serde_json::to_value(review_core::task::runtime::TaskRuntimeEvidenceV1 {
+            task_id: "warm-check".into(),
+            attempt_id: "A".repeat(26),
+            node: "root.nodes.check".into(),
+            context_id: digest('a'),
+            check: None,
+            spans: vec![],
+            caches: vec![cache],
+        })
+        .unwrap()
+    };
+    let accepted = [
+        TaskCacheObservationV1 {
+            evicted_bytes: Some(6144),
+            evicted_reason: Some("bound_exceeded".into()),
+            bound: Some(TaskCacheBoundV1::MaxBytes),
+            ..base.clone()
+        },
+        TaskCacheObservationV1 {
+            evicted_bytes: Some(8192),
+            evicted_reason: Some("bound_exceeded".into()),
+            bound: Some(TaskCacheBoundV1::HardMaxBytes),
+            ..base.clone()
+        },
+        TaskCacheObservationV1 {
+            kind: "cargo_target:bound_exceeded".into(),
+            eligible: false,
+            bound: Some(TaskCacheBoundV1::MaxBytes),
+            ..base.clone()
+        },
+    ];
+    for observation in accepted {
+        observation.validate().unwrap();
+        let value = evidence(observation);
+        assert_valid("task-runtime-evidence-v1.json", &value);
+    }
+    let value = evidence(accepted_bound(&base));
+    assert_eq!(
+        value["caches"][0]["bound"], "hard_max_bytes",
+        "spelled as the schema names it"
+    );
+    let refused = [
+        (
+            "a bound beside a suspect eviction",
+            TaskCacheObservationV1 {
+                evicted_bytes: Some(0),
+                evicted_reason: Some("suspect".into()),
+                bound: Some(TaskCacheBoundV1::HardMaxBytes),
+                ..base.clone()
+            },
+        ),
+        (
+            "a bound where none acted",
+            TaskCacheObservationV1 {
+                bound: Some(TaskCacheBoundV1::MaxBytes),
+                ..base.clone()
+            },
+        ),
+    ];
+    for (label, observation) in refused {
+        assert!(observation.validate().is_err(), "{label}");
+        assert_invalid(
+            "task-runtime-evidence-v1.json",
+            &evidence(observation),
+            label,
+        );
+    }
+    let mut unknown = evidence(accepted_bound(&base));
+    unknown["caches"][0]["bound"] = json!("soft_max_bytes");
+    assert_invalid("task-runtime-evidence-v1.json", &unknown, "unknown bound");
+}
+
+fn accepted_bound(
+    base: &review_core::task::runtime::TaskCacheObservationV1,
+) -> review_core::task::runtime::TaskCacheObservationV1 {
+    review_core::task::runtime::TaskCacheObservationV1 {
+        evicted_bytes: Some(8192),
+        evicted_reason: Some("bound_exceeded".into()),
+        bound: Some(review_core::task::runtime::TaskCacheBoundV1::HardMaxBytes),
+        ..base.clone()
+    }
+}
+
 #[test]
 fn a_warm_evidence_group_names_its_check_whether_or_not_it_started() {
     use review_core::task::runtime::{
@@ -815,6 +921,7 @@ fn a_warm_evidence_group_names_its_check_whether_or_not_it_started() {
         materialization_ms: 0,
         evicted_bytes: None,
         evicted_reason: None,
+        bound: None,
     };
     let span = |label: &str, kind| TaskRuntimeSpanV1 {
         span_id: digest('e'),
@@ -2335,6 +2442,76 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
         "change":{"kind":"approval_revoked","decision_id":id,"reason":"Revoked by developer"}});
     assert_invalid("task-transition-v5.json", &unproven, "revocation proof");
     assert!(serde_json::from_value::<TaskTransitionV1>(unproven).is_err());
+}
+
+/// ADR-0127: the `task_collected` tombstone carries `af/TaskCollected@1` inline, references no
+/// artifact, and is written at its own collection time; the schema and the typed contract refuse
+/// the same shapes, except the two field comparisons only the typed contract can make.
+#[test]
+fn a_task_tombstone_is_one_closed_transition_referencing_no_artifact() {
+    use review_core::task::collection::{TASK_COLLECTED_V1, TaskCollectedV1};
+    use review_core::task::event::{TaskChangeV1, TaskTransitionV1};
+    let collected = TaskCollectedV1 {
+        schema: TASK_COLLECTED_V1.into(),
+        task_id: "older".into(),
+        kind: "implement".into(),
+        revision_id: format!("sha256:{}", "a".repeat(64)),
+        outcome: "verified".into(),
+        chargeable_tokens: "0".into(),
+        last_event_unix_ms: 90,
+        collected_unix_ms: 100,
+        collected_bytes: 4096,
+    };
+    let transition = TaskTransitionV1 {
+        writer: "af-task-gc".into(),
+        epoch: 3,
+        now_unix_ms: 100,
+        change: TaskChangeV1::TaskCollected {
+            collected: collected.clone(),
+        },
+    };
+    transition.validate().unwrap();
+    assert!(transition.artifact_refs().is_empty(), "references nothing");
+    let value = serde_json::to_value(&transition).unwrap();
+    assert_eq!(value["change"]["kind"], "task_collected");
+    assert_eq!(value["change"]["collected"]["schema"], "af/TaskCollected@1");
+    assert_valid("task-transition-v5.json", &value);
+    assert_valid("task-collected-v1.json", &value["change"]["collected"]);
+    review_core::event::validate_event_payload(EventType::TaskTransitionV5, &value).unwrap();
+    for (field, bad) in [
+        ("schema", json!("af/TaskCollected@2")),
+        ("chargeable_tokens", json!("012")),
+        ("collected_bytes", json!(-1)),
+        ("result_id", json!(format!("sha256:{}", "b".repeat(64)))),
+    ] {
+        let mut forged = value.clone();
+        forged["change"]["collected"][field] = bad;
+        assert_invalid("task-transition-v5.json", &forged, field);
+        assert!(
+            review_core::event::validate_event_payload(EventType::TaskTransitionV5, &forged)
+                .is_err(),
+            "{field}"
+        );
+    }
+    // Comparisons the schema cannot make: collected before its last event, or at another time
+    // than the transition that carries it.
+    for forged in [
+        TaskTransitionV1 {
+            change: TaskChangeV1::TaskCollected {
+                collected: TaskCollectedV1 {
+                    last_event_unix_ms: 101,
+                    ..collected.clone()
+                },
+            },
+            ..transition.clone()
+        },
+        TaskTransitionV1 {
+            now_unix_ms: 101,
+            ..transition.clone()
+        },
+    ] {
+        assert!(forged.validate().is_err());
+    }
 }
 
 #[test]

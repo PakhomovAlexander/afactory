@@ -1,7 +1,9 @@
 # ADR-0123: Warm Task checks through a toolchain-keyed, bounded, machine-local cache
 
 Status: accepted, 2026-09-27; amended the same day by package R1's follow-up (Task
-`research-r1c`, see [Amendment](#amendment-rustup-home-cargo_home-and-fail-closed-bounds)).
+`research-r1c`, see [Amendment](#amendment-rustup-home-cargo_home-and-fail-closed-bounds)), and
+on 2026-09-28 by [ADR-0127](0127-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
+(package R5, see [Two bounds](#amendment-two-bounds)).
 Supersedes in part
 [ADR-0108](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md): the one-Round
 scope of a candidate-built build cache, for Task checks only.
@@ -325,3 +327,24 @@ or an unreadable subtree where the next gate would build on it, and cannot have 
 through an inode it planted. They do not defend against a check that acts on the host outside
 the key, and a review that treats that as a defect of this cache is reviewing the isolation
 policy, not the cache: `require_container = true` refuses `[warm]` for that reason.
+
+## Amendment: two bounds
+
+[ADR-0127](0127-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md) splits the
+one byte bound above in two, because a single bound ended R2's implementation Attempt 61 s into
+its gate for growth the candidate did not cause. Where this record says a check that grew the
+directories past "the bound" fails, read `hard_max_bytes`:
+
+- **`max_bytes` is the eviction bound.** Before a check, a key above it is removed and the check
+  runs cold, unchanged. After a check, a key above it but not above `hard_max_bytes` is removed
+  under the key lock; the check's own result stands, and only the next check finds the
+  directory gone.
+- **`hard_max_bytes` is the only bound that ends a running check**: the monitor samples against
+  it, and the measurement when the check ends fails the check above it, with
+  `warm_cache_bound_exceeded` as before. It defaults to twice `max_bytes`, at most 32 GiB, and a
+  declared value must lie between `max_bytes` and 32 GiB.
+- **The observation says which acted.** `TaskCacheObservationV1.bound` is `max_bytes` for a
+  removal before a check or an eviction whose check's result stood, and `hard_max_bytes` for a
+  check the bound ended; it is absent otherwise and never beside a `suspect` eviction.
+
+Suspicion, an uninspectable key and every other rule above are unchanged.

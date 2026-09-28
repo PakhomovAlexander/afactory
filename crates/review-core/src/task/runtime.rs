@@ -77,6 +77,35 @@ pub struct TaskCacheObservationV1 {
         deserialize_with = "present_option"
     )]
     pub evicted_reason: Option<String>,
+    /// Which byte bound of the Warm Check Cache acted on this directory (ADR-0127, amending
+    /// ADR-0123): `max_bytes` evicted it before or after a check whose result stands, and
+    /// `hard_max_bytes` ended the running check, which failed. Absent when no bound acted, and
+    /// never beside a `suspect` eviction.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    pub bound: Option<TaskCacheBoundV1>,
+}
+
+/// The two byte bounds of a Warm Check Cache toolchain key (ADR-0127).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskCacheBoundV1 {
+    /// The eviction bound: a key above it is removed before the next check, never mid-check.
+    MaxBytes,
+    /// The only bound that ends a running check, with `warm_cache_bound_exceeded`.
+    HardMaxBytes,
+}
+
+impl TaskCacheBoundV1 {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MaxBytes => "max_bytes",
+            Self::HardMaxBytes => "hard_max_bytes",
+        }
+    }
 }
 
 impl TaskCacheObservationV1 {
@@ -96,7 +125,10 @@ impl TaskCacheObservationV1 {
                 && self
                     .evicted_reason
                     .as_deref()
-                    .is_none_or(|reason| matches!(reason, "bound_exceeded" | "suspect")),
+                    .is_none_or(|reason| matches!(reason, "bound_exceeded" | "suspect"))
+                && (self.bound.is_none()
+                    || self.evicted_reason.as_deref() == Some("bound_exceeded")
+                    || self.kind.ends_with(":bound_exceeded")),
             "Task cache evidence requires bounded identity and measurements",
         )
     }

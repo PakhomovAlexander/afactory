@@ -1322,6 +1322,7 @@ impl super::host::TaskEnvironment for OptimizationEnvironment {
                 materialization_ms,
                 evicted_bytes: None,
                 evicted_reason: None,
+                bound: None,
             }],
         };
         evidence.validate()?;

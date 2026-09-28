@@ -22,7 +22,9 @@ use std::time::{Duration, Instant};
 use review_check::{CheckDefinition, CheckExecution, CheckRunner};
 use review_config::CacheKindSpec;
 use review_core::task::present_option;
-use review_core::task::runtime::{TaskCacheObservationV1, TaskRuntimeRustupHomeV1};
+use review_core::task::runtime::{
+    TaskCacheBoundV1, TaskCacheObservationV1, TaskRuntimeRustupHomeV1,
+};
 use review_sandbox::{
     CacheError, CacheErrorKind, CacheKind, CacheSource, Ensured, TaskBuildCacheKeyLock,
     TaskBuildCacheLock, WarmDirectory, default_task_build_cache_root, lock_task_build_cache_key,
@@ -35,9 +37,10 @@ use serde_json::json;
 
 /// `max_bytes` when a policy leaves it out.
 pub const DEFAULT_WARM_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-/// The largest bound a policy may declare.
+/// The largest bound a policy may declare, for `max_bytes` and `hard_max_bytes` alike: the disk
+/// safety ADR-0123 set is not widened by the second bound (ADR-0127).
 pub const MAX_WARM_MAX_BYTES: u64 = 32 * 1024 * 1024 * 1024;
-/// The reason a check that grew its warm directories past the bound fails with.
+/// The reason a check that grew its warm directories past `hard_max_bytes` fails with.
 pub const WARM_CACHE_BOUND_EXCEEDED: &str = "warm_cache_bound_exceeded";
 /// The check result reason when a warm directory the check used is suspect once it ended: a
 /// link, a special file, a forbidden name such as `credentials.toml`, or a root that is no
@@ -47,8 +50,12 @@ pub const WARM_CACHE_SUSPECT: &str = "warm_cache_suspect";
 /// Why a check's warm directories are removed after it ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Excess {
-    /// The key's directories were above the shared bound, or could not be fully counted, during
-    /// the check or once it ended; the bytes are what was counted.
+    /// The key's directories were above `max_bytes` once the check ended but never above
+    /// `hard_max_bytes`: they are evicted before the next check and the check's own result
+    /// stands (ADR-0127). The bytes are what was counted.
+    Evict(u64),
+    /// The key's directories were above `hard_max_bytes`, or could not be fully counted, during
+    /// the check or once it ended; the check fails. The bytes are what was counted.
     Bound(u64),
     /// A directory the check used is suspect once it ended; the reason names what was found.
     Suspect(String),
@@ -110,13 +117,22 @@ pub struct CodeWarmPolicy {
     /// `[gate] caches` are (ADR-0036). `cargo` takes precedence over a `cargo_home` directory.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub caches: Vec<CacheKindSpec>,
-    /// One bound shared by every warm directory of one toolchain key.
+    /// The eviction bound shared by every warm directory of one toolchain key: a key above it is
+    /// removed before a check and after one, whose result stands.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present_option"
     )]
     pub max_bytes: Option<u64>,
+    /// The only bound that ends a running check (ADR-0127): twice `max_bytes` when absent, never
+    /// more than [`MAX_WARM_MAX_BYTES`] and never less than `max_bytes`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    pub hard_max_bytes: Option<u64>,
 }
 
 impl CodeWarmPolicy {
@@ -148,11 +164,26 @@ impl CodeWarmPolicy {
                 "Code policy [warm] max_bytes must be between 1 and {MAX_WARM_MAX_BYTES}"
             ));
         }
+        if let Some(hard) = self.hard_max_bytes
+            && (hard < self.max_bytes() || hard > MAX_WARM_MAX_BYTES)
+        {
+            return Err(format!(
+                "Code policy [warm] hard_max_bytes must be between max_bytes ({}) and {MAX_WARM_MAX_BYTES}",
+                self.max_bytes()
+            ));
+        }
         Ok(())
     }
 
     pub fn max_bytes(&self) -> u64 {
         self.max_bytes.unwrap_or(DEFAULT_WARM_MAX_BYTES)
+    }
+
+    /// The bound that ends a running check: the declared value, else twice `max_bytes`, at most
+    /// [`MAX_WARM_MAX_BYTES`].
+    pub fn hard_max_bytes(&self) -> u64 {
+        self.hard_max_bytes
+            .unwrap_or_else(|| self.max_bytes().saturating_mul(2).min(MAX_WARM_MAX_BYTES))
     }
 
     /// A declared `cargo` Cache Snapshot binds `CARGO_HOME`, so a `cargo_home` directory is
@@ -396,6 +427,8 @@ pub(crate) struct Observation {
     pub(crate) evicted_bytes: Option<u64>,
     /// `bound_exceeded` or `suspect`, present exactly when `evicted_bytes` is.
     pub(crate) evicted_reason: Option<String>,
+    /// Which byte bound acted on the directory, when one did (ADR-0127).
+    pub(crate) bound: Option<TaskCacheBoundV1>,
     /// Why the directory was discarded and recreated empty before this check, when it was: the
     /// check then ran against an empty directory, which is warm again afterwards.
     pub(crate) discarded: Option<String>,
@@ -408,21 +441,25 @@ impl Observation {
         cas: &Cas,
         attempt: [&str; 4],
     ) -> Result<TaskCacheObservationV1, String> {
-        let observation_id = cas
-            .put_json(&json!([
-                attempt,
-                "warm_check",
-                self.kind,
-                self.eligible,
-                self.source_digest,
-                self.toolchain_id,
-                self.bytes_available,
-                self.lookup_ms,
-                self.materialization_ms,
-                self.evicted_bytes,
-                self.evicted_reason
-            ]))
-            .map_err(|e| e.to_string())?;
+        let mut identity = json!([
+            attempt,
+            "warm_check",
+            self.kind,
+            self.eligible,
+            self.source_digest,
+            self.toolchain_id,
+            self.bytes_available,
+            self.lookup_ms,
+            self.materialization_ms,
+            self.evicted_bytes,
+            self.evicted_reason
+        ]);
+        // The bound joins the identity only when one acted, so an observation no bound touched
+        // keeps the identity ADR-0123 gave it.
+        if let (Some(bound), Some(fields)) = (self.bound, identity.as_array_mut()) {
+            fields.push(json!(bound.as_str()));
+        }
+        let observation_id = cas.put_json(&identity).map_err(|e| e.to_string())?;
         let observation = TaskCacheObservationV1 {
             observation_id,
             kind: self.kind,
@@ -434,6 +471,7 @@ impl Observation {
             materialization_ms: self.materialization_ms,
             evicted_bytes: self.evicted_bytes,
             evicted_reason: self.evicted_reason,
+            bound: self.bound,
         };
         observation.validate()?;
         Ok(observation)
@@ -751,6 +789,7 @@ impl<'a> WarmSession<'a> {
                                             as u64,
                                         evicted_bytes: None,
                                         evicted_reason: None,
+                                        bound: None,
                                         discarded,
                                     },
                                 );
@@ -810,6 +849,7 @@ impl<'a> WarmSession<'a> {
                         materialization_ms: snapshot.materialization_ms,
                         evicted_bytes: None,
                         evicted_reason: None,
+                        bound: None,
                         discarded: None,
                     });
                 }
@@ -902,13 +942,14 @@ impl<'a> WarmSession<'a> {
             .collect()
     }
 
-    /// Run one check while a monitor samples its warm directories. Above the shared bound the
+    /// Run one check while a monitor samples its warm directories. Above `hard_max_bytes` the
     /// monitor ends the check's process group through the runner's supervised cancellation.
     /// However fast the check was, the directories are measured again once it has ended and
-    /// before its result is accepted, so a check that wrote past the bound between two samples
-    /// is caught too. A directory the count cannot fully inspect is above the bound. The byte
-    /// count that crossed it is returned so the caller fails the check and removes the
-    /// directories.
+    /// before its result is accepted, so a check that wrote past the hard bound between two
+    /// samples is caught too. A directory the count cannot fully inspect is above every bound.
+    /// The byte count that crossed the hard bound is returned as [`Excess::Bound`] so the caller
+    /// fails the check and removes the directories; a key that ended above `max_bytes` only is
+    /// [`Excess::Evict`]: removed before the next check, while this check's result stands.
     pub(crate) fn run_monitored(
         &self,
         runner: CheckRunner<'_>,
@@ -921,6 +962,7 @@ impl<'a> WarmSession<'a> {
         let done = AtomicBool::new(false);
         let exceeded: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
         let max = self.policy.max_bytes();
+        let hard = self.policy.hard_max_bytes();
         let execution = std::thread::scope(|scope| {
             scope.spawn(|| {
                 let mut sampled = Instant::now();
@@ -930,7 +972,7 @@ impl<'a> WarmSession<'a> {
                     }
                     if sampled.elapsed() >= SAMPLE_INTERVAL {
                         sampled = Instant::now();
-                        if let Some(bytes) = over_bound(key, directories, max) {
+                        if let Some(bytes) = over_bound(key, directories, hard) {
                             *exceeded.lock().expect("warm bound monitor") = Some(bytes);
                             stop.store(true, Ordering::Release);
                             return;
@@ -963,14 +1005,22 @@ impl<'a> WarmSession<'a> {
                 })
             })
             .or_else(|| {
-                sampled
-                    .or_else(|| over_bound(key, directories, max))
-                    .map(Excess::Bound)
+                if let Some(bytes) = sampled {
+                    return Some(Excess::Bound(bytes));
+                }
+                let (bytes, uninspectable) = measure(key, directories);
+                if uninspectable || bytes > hard {
+                    Some(Excess::Bound(bytes))
+                } else if bytes > max {
+                    Some(Excess::Evict(bytes))
+                } else {
+                    None
+                }
             });
         (execution, excess)
     }
 
-    /// After the check: when [`Self::run_monitored`] found the key above the shared bound or a
+    /// After the check: when [`Self::run_monitored`] found the key above either bound or a
     /// used directory suspect, every kind directory below the key — held by this check or left
     /// by another — is removed while the key lock is still held, so the next check runs cold.
     /// Each kind's removed bytes are returned for the caller to record on that kind's one
@@ -1013,6 +1063,9 @@ impl<'a> WarmSession<'a> {
             materialization_ms: 0,
             evicted_bytes: None,
             evicted_reason: None,
+            // Before a check only the eviction bound acts: a key above `max_bytes`, or one the
+            // count cannot fully inspect, is removed and the check runs cold.
+            bound: (reason == "bound_exceeded").then_some(TaskCacheBoundV1::MaxBytes),
             discarded: None,
         })
     }
@@ -1038,15 +1091,23 @@ impl<'a> WarmSession<'a> {
 
 /// The directories' combined bytes when they are above `max`, or when any of them cannot be
 /// fully counted: what the kernel cannot see it cannot bound.
-/// Whether the toolchain key is above `max`. The whole key directory is counted — every kind
-/// under it, held by this check or not — because the bound is shared by the key, and each held
-/// root must still be a real directory: a root swapped for a link or a file is uninspectable, and
-/// an uninspectable key is above every bound.
 fn over_bound(
     key: &TaskBuildCacheKeyLock,
     directories: &[(WarmBuildCacheKind, WarmDirectory)],
     max: u64,
 ) -> Option<u64> {
+    let (total, uninspectable) = measure(key, directories);
+    (uninspectable || total > max).then_some(total)
+}
+
+/// The toolchain key's bytes and whether it could not be fully counted. The whole key directory
+/// is counted — every kind under it, held by this check or not — because the bounds are shared
+/// by the key, and each held root must still be a real directory: a root swapped for a link or a
+/// file is uninspectable, and an uninspectable key is above every bound.
+fn measure(
+    key: &TaskBuildCacheKeyLock,
+    directories: &[(WarmBuildCacheKind, WarmDirectory)],
+) -> (u64, bool) {
     let mut uninspectable = directories
         .iter()
         .any(|(_, directory)| directory.is_swapped());
@@ -1057,7 +1118,7 @@ fn over_bound(
             error.counted
         }
     };
-    (uninspectable || total > max).then_some(total)
+    (total, uninspectable)
 }
 
 #[cfg(test)]
@@ -1270,6 +1331,43 @@ mod tests {
             toml::from_str("build_cache = [\"cargo_target\"]\nmax_bytes = 34359738368").unwrap();
         bound.validate().unwrap();
         assert_eq!(bound.max_bytes(), MAX_WARM_MAX_BYTES);
+        assert_eq!(
+            bound.hard_max_bytes(),
+            MAX_WARM_MAX_BYTES,
+            "twice the bound, at most the hard maximum"
+        );
+    }
+
+    #[test]
+    fn the_hard_bound_defaults_to_twice_the_eviction_bound_and_never_below_it() {
+        let default: CodeWarmPolicy = toml::from_str("build_cache = [\"cargo_target\"]").unwrap();
+        default.validate().unwrap();
+        assert_eq!(default.hard_max_bytes(), 2 * DEFAULT_WARM_MAX_BYTES);
+        let small: CodeWarmPolicy =
+            toml::from_str("build_cache = [\"cargo_target\"]\nmax_bytes = 4096").unwrap();
+        small.validate().unwrap();
+        assert_eq!(small.hard_max_bytes(), 8192);
+        let declared: CodeWarmPolicy = toml::from_str(
+            "build_cache = [\"cargo_target\"]\nmax_bytes = 4096\nhard_max_bytes = 4096",
+        )
+        .unwrap();
+        declared.validate().unwrap();
+        assert_eq!(declared.hard_max_bytes(), 4096);
+        assert_eq!(
+            serde_json::to_value(&declared).unwrap(),
+            json!({"build_cache": ["cargo_target"], "max_bytes": 4096, "hard_max_bytes": 4096}),
+            "captured as declared"
+        );
+        for refused in [
+            "build_cache = [\"cargo_target\"]\nmax_bytes = 4096\nhard_max_bytes = 4095",
+            "build_cache = [\"cargo_target\"]\nhard_max_bytes = 4096",
+            "build_cache = [\"cargo_target\"]\nhard_max_bytes = 34359738369",
+            "build_cache = [\"cargo_target\"]\nmax_bytes = 1\nhard_max_bytes = 0",
+        ] {
+            let policy: CodeWarmPolicy = toml::from_str(refused).unwrap();
+            let error = policy.validate().unwrap_err();
+            assert!(error.contains("hard_max_bytes"), "{refused}: {error}");
+        }
     }
 
     struct Fixture {
@@ -1309,6 +1407,8 @@ mod tests {
             build_cache: vec![WarmBuildCacheKind::CargoTarget],
             caches: vec![],
             max_bytes,
+            // One bound for both, as ADR-0123 had it; the split has its own tests.
+            hard_max_bytes: max_bytes,
         }
     }
 
@@ -1487,6 +1587,7 @@ mod tests {
             build_cache: vec![],
             caches: vec![CacheKindSpec::Cargo],
             max_bytes: None,
+            hard_max_bytes: None,
         };
         let mut session = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
         let prepared = prepare(&fixture, &mut session);
@@ -1589,6 +1690,71 @@ mod tests {
             &prepared.directories,
             None,
         )
+    }
+
+    #[test]
+    fn a_check_above_only_the_eviction_bound_stands_and_its_directory_is_evicted() {
+        let fixture = fixture();
+        let host = host(&fixture, None);
+        let policy = CodeWarmPolicy {
+            hard_max_bytes: Some(65_536),
+            ..warm(Some(4096))
+        };
+        let mut session = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
+        let prepared = prepare(&fixture, &mut session);
+        let path = prepared.directories[0].1.path().to_path_buf();
+        let (execution, exceeded) = run(
+            &fixture,
+            &session,
+            &prepared,
+            "head -c 8192 /dev/zero > \"$CARGO_TARGET_DIR/big\"; sleep 6",
+        );
+        assert_eq!(
+            execution.result.status,
+            review_check::CheckStatus::Passed,
+            "the monitor sampled 8192 bytes, under the hard bound, and let it run"
+        );
+        assert_eq!(exceeded, Some(Excess::Evict(8192)));
+        assert_eq!(
+            session
+                .finish(prepared.key_lock, prepared.directories, exceeded)
+                .unwrap(),
+            [("cargo_target".to_string(), 8192)],
+            "evicted after the check, under the lock"
+        );
+        assert!(!path.exists(), "gone before the next check");
+        let next = prepare(&fixture, &mut session);
+        assert_eq!(next.observations[0].kind, "cargo_target");
+        assert_eq!(
+            next.observations[0].bytes_available, 0,
+            "the next check is cold"
+        );
+        assert_eq!(next.observations[0].bound, None);
+    }
+
+    #[test]
+    fn only_the_hard_bound_ends_a_running_check() {
+        let fixture = fixture();
+        let host = host(&fixture, None);
+        let policy = CodeWarmPolicy {
+            hard_max_bytes: Some(16_384),
+            ..warm(Some(4096))
+        };
+        let mut session = WarmSession::new(&host, &policy, "repo", declaration(b"x"));
+        let prepared = prepare(&fixture, &mut session);
+        let started = Instant::now();
+        let (execution, exceeded) = run(
+            &fixture,
+            &session,
+            &prepared,
+            "head -c 32768 /dev/zero > \"$CARGO_TARGET_DIR/big\"; sleep 60",
+        );
+        assert!(started.elapsed() < Duration::from_secs(50), "ended early");
+        assert_eq!(exceeded, Some(Excess::Bound(32_768)));
+        assert_ne!(execution.result.status, review_check::CheckStatus::Passed);
+        session
+            .finish(prepared.key_lock, prepared.directories, exceeded)
+            .unwrap();
     }
 
     #[test]
@@ -1728,6 +1894,8 @@ mod tests {
             ],
             caches,
             max_bytes,
+            // One bound for both, as ADR-0123 had it; the split has its own tests.
+            hard_max_bytes: max_bytes,
         }
     }
 
@@ -2007,6 +2175,8 @@ mod tests {
             build_cache: vec![WarmBuildCacheKind::CargoHome],
             caches: vec![],
             max_bytes,
+            // One bound for both, as ADR-0123 had it; the split has its own tests.
+            hard_max_bytes: max_bytes,
         }
     }
 
@@ -2150,6 +2320,7 @@ mod tests {
             build_cache: vec![WarmBuildCacheKind::CargoHome],
             caches: vec![CacheKindSpec::Cargo],
             max_bytes: Some(1024),
+            hard_max_bytes: Some(1024),
         };
         let mut second = WarmSession::new(&with_cache, &superseded, "repo", declaration(b"x"));
         let prepared = prepare(&fixture, &mut second);
@@ -2255,6 +2426,7 @@ mod tests {
             build_cache: vec![WarmBuildCacheKind::CargoHome],
             caches: vec![CacheKindSpec::Cargo],
             max_bytes: Some(4096),
+            hard_max_bytes: Some(4096),
         };
         let mut session = WarmSession::new(&with_cache, &superseded, "repo", declaration(b"x"));
         let prepared = prepare(&fixture, &mut session);

@@ -459,6 +459,23 @@
               "pattern": "^sha256:[0-9a-f]{64}$"
             }
           }
+        },
+        {
+          "description": "The tombstone of `af task gc --apply` (ADR-0127): the last event of a Task log, referencing no artifact.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "collected"
+          ],
+          "properties": {
+            "kind": {
+              "const": "task_collected"
+            },
+            "collected": {
+              "$ref": "urn:af:schema:task-collected:1"
+            }
+          }
         }
       ]
     }

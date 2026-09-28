@@ -529,6 +529,10 @@ fn read_store(target: &Target) -> Store {
         let mut cache = Cache::default();
         let mut total: BTreeMap<Worker, Tally> = BTreeMap::new();
         for entry in entries {
+            // A collected Task (ADR-0127) has no recorded Attempts left to tally.
+            if entry.get("collected").is_some() {
+                continue;
+            }
             let task_id = tasks::text(&entry["task_id"])?;
             let counted = task_tally(dir, task_id, &mut cache)
                 .map_err(|error| format!("Task {task_id}: {error}"))?;

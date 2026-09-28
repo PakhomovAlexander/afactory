@@ -696,28 +696,44 @@ impl CodeTaskDomain {
                             session.not_started(cas, observations, DEADLINE_EXHAUSTED)?;
                     }
                 } else {
-                    let (reason, why) = match &exceeded {
+                    // `fails` is the reason the check fails with, when the excess ends it: the
+                    // hard bound or suspicion. Above only `max_bytes` the directories are
+                    // evicted and the check's own result stands (ADR-0127).
+                    let (fails, why, bound) = match &exceeded {
                         Some(Excess::Suspect(detail)) => {
                             eprintln!(
                                 "warm check cache diagnostic: suspect after the check: {detail}"
                             );
-                            (WARM_CACHE_SUSPECT, "suspect")
+                            (Some(WARM_CACHE_SUSPECT), "suspect", None)
                         }
-                        _ => (WARM_CACHE_BOUND_EXCEEDED, "bound_exceeded"),
+                        Some(Excess::Evict(_)) => (
+                            None,
+                            "bound_exceeded",
+                            Some(review_core::task::runtime::TaskCacheBoundV1::MaxBytes),
+                        ),
+                        Some(Excess::Bound(_)) => (
+                            Some(WARM_CACHE_BOUND_EXCEEDED),
+                            "bound_exceeded",
+                            Some(review_core::task::runtime::TaskCacheBoundV1::HardMaxBytes),
+                        ),
+                        None => (None, "bound_exceeded", None),
                     };
                     // Every kind below the key goes, held by this check or left by another; the
                     // key stays locked until the last one is removed.
                     let excess = exceeded.is_some();
                     let evicted =
                         session.finish(prepared.key_lock, prepared.directories, exceeded)?;
-                    if excess {
-                        // Above the bound or suspect once the check ended, however fast it was
-                        // and whether or not anything was left to remove — a check that deleted
-                        // its own warm root is suspect too: the check fails, and each declared
-                        // kind's eviction lands on the record that measured it before the check.
+                    if let Some(reason) = fails {
+                        // Above the hard bound or suspect once the check ended, however fast it
+                        // was and whether or not anything was left to remove — a check that
+                        // deleted its own warm root is suspect too: the check fails.
                         result.status = CheckStatus::Failed;
                         result.exit_code = None;
                         result.reason = Some(reason.into());
+                    }
+                    if excess {
+                        // Each declared kind's eviction lands on the record that measured it
+                        // before the check, with the bound that acted.
                         let base_of =
                             |kind: &str| kind.split(':').next().unwrap_or_default().to_string();
                         // Every declared observation of this check — a warm kind, superseded or
@@ -731,6 +747,7 @@ impl CodeTaskDomain {
                                 .map_or(0, |(_, bytes)| *bytes);
                             observation.evicted_bytes = Some(bytes);
                             observation.evicted_reason = Some(why.into());
+                            observation.bound = bound;
                         }
                         for (kind, bytes) in &evicted {
                             if !observations.iter().any(|o| base_of(&o.kind) == *kind) {

@@ -181,8 +181,11 @@ fn record_round_report(
     )
     .caused_by(&round.round_event_id);
     let first = store.len(&round.campaign_id).unwrap();
+    // The report references no artifact, so no CAS object is checked.
+    let scratch = tempfile::tempdir().unwrap();
+    let cas = Cas::open(scratch.path()).unwrap();
     let tx = store.conn.transaction().unwrap();
-    crate::store::insert_events(&tx, &round.campaign_id, &[event], first as i64).unwrap();
+    crate::store::insert_events(&tx, &cas, &round.campaign_id, &[event], first as i64).unwrap();
     tx.commit().unwrap();
     store.replay(&round.campaign_id).unwrap();
 }
@@ -340,6 +343,7 @@ fn review_round_write_fence_compares_other_campaign_changes_inside_transaction()
         .referencing(references(&f.cas, &transition.change, Some(&state)).unwrap());
     let run = task_run_id(lease.task_id()).unwrap();
     let permit = WritePermit {
+        bound_tasks: vec![],
         run_id: run.clone(),
         first: state.next_sequence,
         payloads: vec![value],

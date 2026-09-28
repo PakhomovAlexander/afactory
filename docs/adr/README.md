@@ -219,3 +219,5 @@ future readers need.
   Snapshot](0125-accept-reports-bound-to-an-exact-source-snapshot.md)
 - [0126 — Bind any declared root port to recorded Task
   outputs](0126-bind-any-declared-root-port-to-recorded-task-outputs.md)
+- [0127 — Collect finished Tasks behind a tombstone and a reachability
+  sweep](0127-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)

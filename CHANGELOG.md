@@ -16,6 +16,34 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
+- Store hygiene and the warm cache's two bounds (ADR-0127, package R5 of
+  `docs/design/research-pipelines.md`; amends ADR-0123). `af task list --sizes` prints each Task's
+  CAS bytes — those only it reaches and those it shares with another Task or Campaign record —
+  and the Store's total; `--json` adds `sizes` to each entry and `store` to the document. `af
+  task gc --older-than DAYS --keep N` previews, writing nothing, which finished Tasks beyond the
+  newest `N` it would collect and why every other Task stays (`running`, `unfinished`,
+  `writer_lease`, `bound_by`, `kept_newest`, `kept_recent`); `--apply` takes the Store's writer
+  lock, is refused while any writer lease is live, appends one `task_collected` transition
+  carrying `af/TaskCollected@1` per Task — referencing no artifact — and then removes every CAS
+  object no uncollected record reaches, by a conservative walk through every digest a record
+  spells. A stopped sweep is finished by the next run. A collected Task's projection stops at
+  its tombstone: `af task list` and `af task show` print `collected <time>` with the retained
+  summary (`af/task-collected-inspection@1` for `show --json`, a `collected` member on
+  `af/task-list-entry@2`), `af task output`, `deliver`, `run` and `explain` refuse it, and replay
+  never calls its removed objects corrupt; the browser lists the Tasks it can open. An append now
+  rechecks, under the writer lock, that every object it references is still filed. `[warm]
+  max_bytes` is now the eviction bound, applied before a check and after one whose result
+  stands, and a new `[warm] hard_max_bytes` (twice `max_bytes` by default, at most 32 GiB) is
+  the only bound that ends a running check with `warm_cache_bound_exceeded`;
+  `TaskCacheObservationV1` records the acting `bound` and `af task show` prints it. New schemas
+  `task-collected-v1.json`, `task-collected-inspection-v1.json` and `task-gc-v1.json`;
+  `task-transition-v5.json`, `task-list-entry-v2.json`, `task-runtime-evidence-v1.json` and
+  `code-task-policy-v1.json` gain the optional members. A Store without a tombstone and a policy
+  without `hard_max_bytes` behave as before, except that such a policy's check now fails only
+  above twice its `max_bytes`. A reader that loses an artifact to a concurrent sweep reports the
+  Task as collected, a listing projects the uncollected Tasks before reading the tombstones, an
+  opening Task re-checks every Task its bindings name under the writer lock, and a collected
+  Task's row under `--sizes` carries a zero footprint.
 - Bind any declared root port (ADR-0126, package R4 of `docs/design/research-pipelines.md`;
   amends ADR-0117). A Task file's `inputs` table may bind any root input the selected Pipeline
   declares — the one the Task file names, or else every captured Pipeline accepting its kind,

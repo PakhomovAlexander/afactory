@@ -605,6 +605,10 @@ fn a_directory_above_its_bound_is_removed_before_the_check_which_runs_cold() {
     assert_eq!(observed[0]["kind"], "cargo_target:bound_exceeded");
     assert_eq!(observed[0]["eligible"], false);
     assert_eq!(observed[0]["bytes_available"], 4096);
+    assert_eq!(
+        observed[0]["bound"], "max_bytes",
+        "before a check only eviction acts"
+    );
     assert!(
         warm_directories(&fixture).is_empty(),
         "removed, and the cold check built in its private runtime directory"
@@ -623,7 +627,7 @@ fn a_check_that_writes_past_the_bound_is_ended_failed_and_its_directory_removed(
         GROW,
         120_000,
         false,
-        Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096"),
+        Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096\nhard_max_bytes = 4096"),
     ));
     let started = std::time::Instant::now();
     let outcome = start(&fixture, "bound-grow", 3);
@@ -647,15 +651,75 @@ fn a_check_that_writes_past_the_bound_is_ended_failed_and_its_directory_removed(
     assert_eq!(observed[0]["eligible"], true);
     assert_eq!(observed[0]["bytes_available"], 0);
     assert_eq!(observed[0]["evicted_bytes"], 8192);
+    assert_eq!(
+        observed[0]["bound"], "hard_max_bytes",
+        "the hard bound ended it"
+    );
     assert!(
         warm_directories(&fixture).is_empty(),
         "the directory is gone"
     );
     let shown = show(&fixture, "bound-grow");
     assert!(
-        shown.contains("cargo_target cold empty, removed 8192 (bound_exceeded)"),
+        shown.contains("cargo_target cold empty, removed 8192 (bound_exceeded hard_max_bytes)"),
         "{shown}"
     );
+}
+
+/// Grows its build directory past a 4096-byte `max_bytes` but under the default hard bound of
+/// twice that, stays long enough for the monitor to sample it, and passes.
+const SOFT_GROW: &str = "import os, time, pagination\n\
+assert pagination.paginate(list(range(7)),2,3) == [2,3,4]\n\
+target = os.environ['CARGO_TARGET_DIR']\n\
+os.makedirs(target, exist_ok=True)\n\
+open(os.path.join(target, 'big.bin'), 'wb').write(b'x' * 6144)\n\
+time.sleep(6)\n";
+
+#[test]
+fn a_check_past_only_the_eviction_bound_passes_and_the_next_check_finds_it_removed() {
+    let policy = |script| {
+        code_policy(
+            script,
+            120_000,
+            false,
+            Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096"),
+        )
+    };
+    let fixture = fixture(policy(SOFT_GROW));
+    let outcome = start(&fixture, "soft-grow", 0);
+    let cas = cas(&fixture);
+    let result = check_result(&cas, &outcome);
+    assert_eq!(result["status"], "passed", "the check's own result stands");
+    assert!(result["reason"].is_null(), "{result}");
+    assert_eq!(check_receipt(&cas, &outcome)["outcome"], "passed");
+    assert_eq!(outcome["result"]["acceptance"], "satisfied");
+    let observed = observations(&outcome);
+    assert_eq!(observed.len(), 1, "{observed:?}");
+    assert_eq!(observed[0]["kind"], "cargo_target");
+    assert_eq!(observed[0]["eligible"], true);
+    assert_eq!(observed[0]["evicted_bytes"], 6144);
+    assert_eq!(observed[0]["evicted_reason"], "bound_exceeded");
+    assert_eq!(observed[0]["bound"], "max_bytes");
+    assert!(
+        warm_directories(&fixture).is_empty(),
+        "evicted after the check"
+    );
+    let shown = show(&fixture, "soft-grow");
+    assert!(
+        shown.contains("cargo_target cold empty, removed 6144 (bound_exceeded max_bytes)"),
+        "{shown}"
+    );
+
+    commit(&fixture, ".af/code-policy.toml", &policy(BUILD));
+    let next = start(&fixture, "after-soft-grow", 0);
+    let observed = observations(&next);
+    assert_eq!(observed[0]["kind"], "cargo_target");
+    assert_eq!(
+        observed[0]["bytes_available"], 0,
+        "the next check found the directory removed and ran cold"
+    );
+    assert!(observed[0].get("bound").is_none(), "{observed:?}");
+    assert_eq!(warm_directories(&fixture).len(), 1, "warm again afterwards");
 }
 
 #[test]
@@ -765,7 +829,7 @@ fn an_oversized_entry_with_a_non_utf8_name_is_counted_and_evicted() {
         ODD_NAME,
         120_000,
         false,
-        Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096"),
+        Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096\nhard_max_bytes = 4096"),
     ));
     let outcome = start(&fixture, "odd-name", 3);
     let cas = cas(&fixture);
@@ -1050,7 +1114,7 @@ fn a_fast_check_that_writes_past_the_bound_fails_and_its_directory_is_removed() 
         FAST_GROW,
         120_000,
         false,
-        Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096"),
+        Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096\nhard_max_bytes = 4096"),
     ));
     let outcome = start(&fixture, "fast-grow", 3);
     let cas = cas(&fixture);
@@ -1072,7 +1136,7 @@ fn a_fast_check_that_writes_past_the_bound_fails_and_its_directory_is_removed() 
     let shown = show(&fixture, "fast-grow");
     assert!(shown.contains("check pagination: failed in "), "{shown}");
     assert!(
-        shown.contains("cargo_target cold empty, removed 8192 (bound_exceeded)"),
+        shown.contains("cargo_target cold empty, removed 8192 (bound_exceeded hard_max_bytes)"),
         "{shown}"
     );
 }

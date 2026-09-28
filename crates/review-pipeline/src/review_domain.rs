@@ -550,6 +550,7 @@ impl<'a> ReviewDomainState<'a> {
                         materialization_ms: snapshot.materialization_ms,
                         evicted_bytes: None,
                         evicted_reason: None,
+                        bound: None,
                     });
                 let receipt = RunCacheSnapshotV5 {
                     node: node_id.to_string(),

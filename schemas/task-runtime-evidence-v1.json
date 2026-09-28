@@ -239,6 +239,13 @@
             "bound_exceeded",
             "suspect"
           ]
+        },
+        "bound": {
+          "description": "Which Warm Check Cache byte bound acted (ADR-0127): `max_bytes` evicted the directory before or after a check whose result stands; `hard_max_bytes` ended the running check. Never beside a `suspect` eviction.",
+          "enum": [
+            "max_bytes",
+            "hard_max_bytes"
+          ]
         }
       },
       "dependentRequired": {
@@ -247,6 +254,32 @@
         ],
         "evicted_reason": [
           "evicted_bytes"
+        ]
+      },
+      "if": {
+        "required": [
+          "bound"
+        ]
+      },
+      "then": {
+        "anyOf": [
+          {
+            "required": [
+              "evicted_reason"
+            ],
+            "properties": {
+              "evicted_reason": {
+                "const": "bound_exceeded"
+              }
+            }
+          },
+          {
+            "properties": {
+              "kind": {
+                "pattern": ":bound_exceeded$"
+              }
+            }
+          }
         ]
       }
     }

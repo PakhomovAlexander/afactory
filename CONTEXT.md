@@ -85,6 +85,13 @@ _Avoid_: **Demand** — a Demand is an obligation to measure a claim; a Comparis
 result, and neither creates nor discharges the other. Nor the evaluator's verdict, which reads a
 Comparison and cannot change it.
 
+**Collected Task**:
+A finished Task whose log ends in the `af/TaskCollected@1` tombstone `af task gc --apply` wrote:
+its events stay, its projection stops at the tombstone, and it keeps only the summary the
+tombstone retains. Its CAS objects are removed unless an uncollected Task or a Campaign record
+still reaches them; its outputs can no longer be written or delivered.
+_Avoid_: "deleted Task" — no event is ever deleted, and the Task ID stays taken.
+
 **Implementation acceptance**:
 The conjunction of independent verification against exact Task Requirements and the configured
 Review or repair guarantee on the final Snapshot. Passing Review cannot cover a missing or

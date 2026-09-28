@@ -1010,3 +1010,25 @@ fn a_stage_named_nodes_keeps_its_name() {
     assert_eq!(stage_name("root.providers.admit0"), "providers.admit0");
     assert_eq!(stage_name("root.inputs"), "inputs");
 }
+
+/// ADR-0127: a collected Task is listed by `af task list` with its tombstone, but the browser
+/// has nothing left to inspect for it; the Store stays readable and shows the other Tasks.
+#[test]
+fn a_collected_task_leaves_the_store_readable_and_is_not_opened() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(temp.path()).unwrap();
+    let (_repo, state) = crate::tui::tests::hub_with_tasks(&root);
+    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let mut store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+    let collected = store.apply_task_collection(&cas, 0, 1, false).unwrap();
+    assert_eq!(collected.tombstoned, ["pagination-cli"]);
+    drop(store);
+
+    let listed = task_execution::list_common(&state).unwrap();
+    assert_eq!(listed.len(), 2, "the collected Task is still listed");
+    let mut cache = Cache::default();
+    let read = read_store(&state, "state", None, &mut cache);
+    let tasks = read.tasks.unwrap();
+    let ids: Vec<&str> = tasks.iter().map(|task| task.task_id.as_str()).collect();
+    assert_eq!(ids, ["pagination-unfinished"]);
+}

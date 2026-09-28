@@ -39,6 +39,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 mod bindings;
 pub(crate) mod catalog;
+pub(crate) mod collection;
 pub(super) mod developer;
 pub(crate) mod domain;
 pub(super) mod export;
@@ -2190,6 +2191,11 @@ pub(super) fn show_if_common(id: &str, state: &Path, json: bool) -> Result<bool,
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let store =
         EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    // A collected Task shows its retained summary; its projection stops at the tombstone.
+    if let Some(collected) = store.collected_task(id).map_err(|e| e.to_string())? {
+        collection::present(&collected, json)?;
+        return Ok(true);
+    }
     if store
         .task_projection(&cas, id)
         .map_err(|e| e.to_string())?
@@ -2226,7 +2232,10 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let store =
         EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
-    store.map_tasks(&cas, |task| {
+    // Uncollected Tasks are projected first and the tombstones read after: a Task that
+    // `gc --apply` collects between the two is skipped by the projection and listed from its
+    // tombstone, so no Task the log retains is ever omitted (ADR-0127).
+    let mut entries = store.map_tasks(&cas, |task| {
         let result: Option<TaskResultV1> = match &task.phase {
             TaskPhaseV1::Finished { result_id } => Some(artifact(&cas, result_id, TASK_RESULT_V1)?),
             _ => None,
@@ -2236,7 +2245,48 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
             "chargeable_tokens":task.execution.as_ref().map_or(0,|e| e.budget.committed_tokens()).to_string(),
             "derived_snapshot_id":result.as_ref().and_then(|r| r.outputs.get("snapshot")).and_then(|o| o.snapshot_id.as_ref()),
             "delivery":delivery_view(&cas, &task)?}))
-    }).map_err(|e| e.to_string())?.into_iter().collect()
+    }).map_err(|e| e.to_string())?.into_iter().collect::<Result<Vec<_>, String>>()?;
+    let collected = store
+        .collected_tasks()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(collection::list_entry)
+        .collect::<Vec<_>>();
+    // Collected Tasks keep their place in label order, with their retained summary.
+    entries.extend(collected);
+    entries.sort_by(|left, right| left["task_id"].as_str().cmp(&right["task_id"].as_str()));
+    Ok(entries)
+}
+
+/// `af task list --sizes`: the Store's totals and each uncollected Task's CAS footprint. The
+/// same reachability walk `af task gc` sweeps by (ADR-0127). Nothing is written.
+pub(super) fn list_sizes(
+    state: &Path,
+) -> Result<(serde_json::Value, BTreeMap<String, serde_json::Value>), String> {
+    if !store_present(state)? {
+        return Ok((
+            json!({"objects":0,"bytes":0,"unreachable_objects":0,"unreachable_bytes":0}),
+            BTreeMap::new(),
+        ));
+    }
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    let inventory = store.store_inventory(&cas).map_err(|e| e.to_string())?;
+    let totals = &inventory.totals;
+    Ok((
+        json!({
+            "objects": totals.objects,
+            "bytes": totals.bytes,
+            "unreachable_objects": totals.unreachable_objects,
+            "unreachable_bytes": totals.unreachable_bytes,
+        }),
+        inventory
+            .tasks
+            .iter()
+            .map(|(task_id, footprint)| (task_id.clone(), collection::footprint(footprint)))
+            .collect(),
+    ))
 }
 
 fn present(
@@ -2680,6 +2730,17 @@ fn check_cache_lines(inspection: &serde_json::Value) -> Vec<String> {
     lines
 }
 
+/// Why a warm directory was removed after its check, and which byte bound acted when one did:
+/// `bound_exceeded max_bytes` for an eviction whose check's result stood, `bound_exceeded
+/// hard_max_bytes` for a check the bound ended (ADR-0127).
+fn eviction(cache: &serde_json::Value) -> String {
+    let why = cache["evicted_reason"].as_str().unwrap_or("bound_exceeded");
+    match cache["bound"].as_str() {
+        Some(bound) => format!("{} {}", preview::text(why), preview::text(bound)),
+        None => preview::text(why),
+    }
+}
+
 fn cache_states(caches: &[serde_json::Value]) -> String {
     let mut seen = BTreeSet::new();
     caches
@@ -2698,10 +2759,7 @@ fn cache_states(caches: &[serde_json::Value]) -> String {
                     format!("{base} cold empty")
                 };
                 match cache["evicted_bytes"].as_u64() {
-                    Some(evicted) => {
-                        let why = cache["evicted_reason"].as_str().unwrap_or("bound_exceeded");
-                        format!("{state}, removed {evicted} ({})", preview::text(why))
-                    }
+                    Some(evicted) => format!("{state}, removed {evicted} ({})", eviction(cache)),
                     None => state,
                 }
             } else {
@@ -2711,10 +2769,7 @@ fn cache_states(caches: &[serde_json::Value]) -> String {
                     format!("{base} removed {bytes} ({reason})")
                 };
                 match cache["evicted_bytes"].as_u64() {
-                    Some(evicted) => {
-                        let why = cache["evicted_reason"].as_str().unwrap_or("bound_exceeded");
-                        format!("{state}, removed {evicted} ({})", preview::text(why))
-                    }
+                    Some(evicted) => format!("{state}, removed {evicted} ({})", eviction(cache)),
                     None => state,
                 }
             }
