@@ -7,6 +7,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use review_check::{CheckDefinition, CheckResult, CheckRunner, CheckStatus};
 use review_core::PortCardinality;
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
+use review_core::task::measurement::{
+    ComparisonObjective, MEASUREMENT_COMPARISON_V1, MEASUREMENT_V1, MeasureDefinitionV1,
+    MeasureObjectiveV1, MeasurementV1, compare_measurements,
+};
 use review_core::task::pipeline::*;
 use review_core::task::plan::ExecutionPlanV1;
 use review_core::task::runtime::{
@@ -36,6 +40,8 @@ use super::warm_check::{
 };
 use super::{TaskOperatorHost, TaskWorkOutput, envelope};
 
+mod measure;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CodeTaskPolicy {
@@ -59,6 +65,13 @@ pub struct CodeTaskPolicy {
         deserialize_with = "review_core::task::present_option"
     )]
     pub warm: Option<CodeWarmPolicy>,
+    /// Declared measured commands (ADR-0124). Absent, the captured policy is byte-identical to
+    /// one written before the table existed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub measures: BTreeMap<String, MeasureDefinitionV1>,
+    /// Declared objectives a `compare` node folds two Measurements under.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub objectives: BTreeMap<String, MeasureObjectiveV1>,
 }
 
 impl CodeTaskPolicy {
@@ -95,6 +108,36 @@ impl CodeTaskPolicy {
                 );
             }
             warm.validate()?;
+        }
+        if self.measures.len() > 32 || self.objectives.len() > 32 {
+            return Err("Code policy declares at most 32 measures and 32 objectives".into());
+        }
+        for (name, measure) in &self.measures {
+            if !is_name(name) {
+                return Err(format!("Code policy measure name {name:?} is invalid"));
+            }
+            measure
+                .validate()
+                .map_err(|error| format!("Code policy measure {name}: {error}"))?;
+            if measure.warm
+                && !self.warm.as_ref().is_some_and(|warm| {
+                    warm.build_cache
+                        .contains(&super::warm_check::WarmBuildCacheKind::CargoTarget)
+                })
+            {
+                return Err(format!(
+                    "Code policy measure {name} declares warm = true, which needs [warm] \
+                     build_cache to declare cargo_target"
+                ));
+            }
+        }
+        for (name, objective) in &self.objectives {
+            if !is_name(name) {
+                return Err(format!("Code policy objective name {name:?} is invalid"));
+            }
+            objective
+                .validate(&self.measures)
+                .map_err(|error| format!("Code policy objective {name}: {error}"))?;
         }
         Ok(())
     }
@@ -219,7 +262,129 @@ pub fn code_signatures(
     for name in policy.checks.keys() {
         signatures.insert(format!("operator/check/{name}"), check.clone());
     }
+    signatures.extend(measure_signatures(policy));
     Ok(signatures)
+}
+
+fn measurement_port(name: &str) -> (String, PipelinePortV1) {
+    (name.into(), port(MEASUREMENT_V1, same("source")))
+}
+
+/// The installed measure and compare operators of a policy that declares measures (ADR-0124).
+/// `operator/measure` carries the one Attempt's wall, the captured `check_wall_ms`, and every
+/// declared measure's output; `operator/measure/<name>` carries that measure's one output and
+/// its repetition budget, which the compiler sums per node. `operator/compare/<objective>`
+/// installs an objective, and `operator/compare/<objective>/<measure>` the one measure it
+/// compares. A policy without measures installs nothing, so its signatures are unchanged.
+fn measure_signatures(policy: &CodeTaskPolicy) -> BTreeMap<String, OperatorSignature> {
+    let mut signatures = BTreeMap::new();
+    if policy.measures.is_empty() {
+        return signatures;
+    }
+    let measure =
+        |outputs: BTreeMap<String, PipelinePortV1>, wall_ms, outcome_port| OperatorSignature {
+            contract: PipelineContractV1 {
+                inputs: BTreeMap::from([(
+                    "source".into(),
+                    port(SOURCE_TREE_V1, PortAffinityV1::Unbound {}),
+                )]),
+                outputs,
+            },
+            effects: BTreeSet::from(["execute-checks".into()]),
+            evidence: BTreeMap::new(),
+            retains: BTreeMap::new(),
+            roles: BTreeSet::new(),
+            worker_input_type: None,
+            worker_output_type: None,
+            outcome_port,
+            attempt: Some(OperatorAttemptCost { tokens: 0, wall_ms }),
+        };
+    signatures.insert(
+        "operator/measure".into(),
+        measure(
+            policy
+                .measures
+                .keys()
+                .map(|name| measurement_port(name))
+                .collect(),
+            policy.check_wall_ms,
+            None,
+        ),
+    );
+    for (name, definition) in &policy.measures {
+        signatures.insert(
+            format!("operator/measure/{name}"),
+            measure(
+                BTreeMap::from([measurement_port(name)]),
+                definition.budget_ms().unwrap_or(u64::MAX),
+                Some(name.clone()),
+            ),
+        );
+    }
+    if policy.objectives.is_empty() {
+        return signatures;
+    }
+    let compare = OperatorSignature {
+        contract: PipelineContractV1 {
+            inputs: BTreeMap::from([
+                (
+                    "baseline".into(),
+                    port(MEASUREMENT_V1, PortAffinityV1::Unbound {}),
+                ),
+                (
+                    "candidate".into(),
+                    port(MEASUREMENT_V1, PortAffinityV1::Unbound {}),
+                ),
+            ]),
+            outputs: BTreeMap::from([(
+                "result".into(),
+                port(MEASUREMENT_COMPARISON_V1, same("candidate")),
+            )]),
+        },
+        effects: BTreeSet::new(),
+        evidence: BTreeMap::new(),
+        retains: BTreeMap::from([(
+            "result".into(),
+            BTreeSet::from(["baseline".into(), "candidate".into()]),
+        )]),
+        roles: BTreeSet::new(),
+        worker_input_type: None,
+        worker_output_type: None,
+        outcome_port: Some("result".into()),
+        attempt: None,
+    };
+    signatures.insert("operator/compare".into(), compare.clone());
+    for (name, objective) in &policy.objectives {
+        signatures.insert(format!("operator/compare/{name}"), compare.clone());
+        signatures.insert(
+            format!("operator/compare/{name}/{}", objective.measure),
+            compare.clone(),
+        );
+    }
+    signatures
+}
+
+/// The contract a compiled measure node must carry: the installed source input and one
+/// Measurement per named measure.
+fn measure_contract(
+    installed: &BTreeMap<String, OperatorSignature>,
+    measures: &BTreeSet<String>,
+) -> Option<PipelineContractV1> {
+    let base = installed.get("operator/measure")?;
+    let mut outputs = BTreeMap::new();
+    for name in measures {
+        outputs.extend(
+            installed
+                .get(&format!("operator/measure/{name}"))?
+                .contract
+                .outputs
+                .clone(),
+        );
+    }
+    Some(PipelineContractV1 {
+        inputs: base.contract.inputs.clone(),
+        outputs,
+    })
 }
 
 pub struct CodeTaskDomain {
@@ -246,11 +411,22 @@ impl CodeTaskDomain {
                     TaskOperatorV1::Seal {}
                         | TaskOperatorV1::Check { .. }
                         | TaskOperatorV1::Accept {}
+                        | TaskOperatorV1::Compare { .. }
                 ) && installed
                     .get(signature)
                     .is_none_or(|s| s.contract != node.contract)
                 {
                     return Err("Compiled code operator changed its installed contract".into());
+                }
+                if let TaskOperatorV1::Compare { objective } = operator
+                    && !policy.objectives.contains_key(objective)
+                {
+                    return Err("Compiled comparison names an objective the policy lacks".into());
+                }
+                if let TaskOperatorV1::Measure { measures } = operator
+                    && measure_contract(&installed, measures).as_ref() != Some(&node.contract)
+                {
+                    return Err("Compiled measure changed its installed contract".into());
                 }
             }
         }
@@ -1161,6 +1337,14 @@ impl TaskOperatorHost for CodeTaskDomain {
                 Ok(BTreeMap::from([("result".into(), receipt)]))
             }
             TaskOperatorV1::Accept {} => self.accept(cas, input),
+            TaskOperatorV1::Measure { measures } => self.measure(
+                cas,
+                input,
+                attempt.ok_or("Measure has no started Attempt")?,
+                measures,
+                cancellation,
+            ),
+            TaskOperatorV1::Compare { objective } => self.compare(cas, input, objective),
             _ => Err("Code operator requires its captured Worker or domain adapter".into()),
         })();
         TaskWorkOutput {
@@ -1266,6 +1450,30 @@ impl TaskDomain for CodeTaskDomain {
                             serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                         value.validate()?;
                     }
+                }
+                Ok(())
+            }
+            TaskOperatorV1::Measure { measures } => {
+                let source = source_input(cas, &input.inputs["source"])?;
+                if !output.outputs.keys().eq(measures.iter()) {
+                    return Err("Measure output names other measures".into());
+                }
+                for (name, value) in &output.outputs {
+                    let [id] = value.artifact_ids.as_slice() else {
+                        return Err("Measure output is not one Measurement".into());
+                    };
+                    let measurement = self.measurement(cas, input, id, Some(name))?;
+                    if measurement.snapshot_id != source
+                        || value.snapshot_id.as_ref() != Some(&source)
+                    {
+                        return Err("Measurement names another Snapshot".into());
+                    }
+                }
+                Ok(())
+            }
+            TaskOperatorV1::Compare { objective } => {
+                if self.compare(cas, input, objective)? != output.outputs {
+                    return Err("Comparison differs from its exact deterministic fold".into());
                 }
                 Ok(())
             }

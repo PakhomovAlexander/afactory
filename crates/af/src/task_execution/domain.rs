@@ -75,9 +75,16 @@ pub(crate) fn write_output(
                     serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                 document.validate()?;
                 document.text.into_bytes()
+            } else if artifact.artifact_type
+                == review_core::task::measurement::MEASUREMENT_COMPARISON_V1
+            {
+                let comparison: review_core::task::measurement::MeasurementComparisonV1 =
+                    serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+                comparison.render_markdown()?.into_bytes()
             } else {
                 return Err(
-                    "Markdown output requires a typed Document or OptimizationReport".into(),
+                    "Markdown output requires a typed Document, OptimizationReport or MeasurementComparison"
+                        .into(),
                 );
             }
         }

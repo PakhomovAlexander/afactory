@@ -127,6 +127,17 @@ fn node_label(id: &str, node: &CompiledNode, plan: &ExecutionPlanV1) -> String {
                     "checks: {}",
                     checks.iter().cloned().collect::<Vec<_>>().join(", ")
                 ),
+                TaskOperatorV1::Measure { measures } => format!(
+                    "measure: {}",
+                    measures
+                        .iter()
+                        .map(|m| text(m))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                TaskOperatorV1::Compare { objective } => {
+                    format!("compare: {}", text(objective))
+                }
                 _ => serde_json::to_value(operator).expect("operator serializes")["op"]
                     .as_str()
                     .unwrap_or("operation")

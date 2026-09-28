@@ -7,6 +7,7 @@ use review_config::task::shared::{CatalogPathBase, SharedTaskCatalog, package_di
 use review_core::task::document::*;
 use review_core::task::pipeline::*;
 use review_graph::task::{OperatorAttemptCost, OperatorSignature};
+mod experiment;
 mod software;
 
 const GOAL: &str = "Publish release notes from the captured changes.";
@@ -535,13 +536,25 @@ pub(crate) fn init(
         }
         "software" | "planning" => software::files(key)?,
         "all" => merge_files(software::files(key)?, document_files()?)?,
+        "experiment" if key.is_none() => experiment::files()?,
+        "experiment" => {
+            return Err(
+                "Use software, planning or all to configure a Planner developer key".into(),
+            );
+        }
         _ => return Err("Unknown starter profile".into()),
     };
     catalog::publish_absent(&target, &files)?;
+    let task = match profile {
+        "document" => "document.json",
+        "planning" => "planning.json",
+        "experiment" => "experiment.json",
+        _ => "implementation-reviewed.json",
+    };
     if json {
         println!(
             "{}",
-            json!({"schema":"af.catalog-init/1","profile":profile,"destination":target,"task":if profile=="document" {"document.json"} else if profile=="planning" {"planning.json"} else {"implementation-reviewed.json"},"attempts":0,"prerequisites":["git","python3"],"authority":"review_and_commit_required"})
+            json!({"schema":"af.catalog-init/1","profile":profile,"destination":target,"task":task,"attempts":0,"prerequisites":["git","python3"],"authority":"review_and_commit_required"})
         );
     } else {
         println!(

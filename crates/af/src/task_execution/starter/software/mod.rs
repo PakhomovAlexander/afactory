@@ -5,17 +5,17 @@ use review_source_git::task::{CANDIDATE_TREE_V1, SOURCE_TREE_V1};
 use serde_json::Value;
 
 const GOAL: &str = "Implement offset/limit pagination with nonnegative integer bounds.";
-type Ports = BTreeMap<String, PipelinePortV1>;
-type Inputs = BTreeMap<String, ValueRefV1>;
+pub(super) type Ports = BTreeMap<String, PipelinePortV1>;
+pub(super) type Inputs = BTreeMap<String, ValueRefV1>;
 
-fn same(ty: &str) -> PipelinePortV1 {
+pub(super) fn same(ty: &str) -> PipelinePortV1 {
     let mut value = port(ty);
     value.affinity = PortAffinityV1::SameAs {
         input: "source".into(),
     };
     value
 }
-fn derived(ty: &str) -> PipelinePortV1 {
+pub(super) fn derived(ty: &str) -> PipelinePortV1 {
     let mut value = port(ty);
     value.affinity = PortAffinityV1::DerivedFrom {
         input: "source".into(),
@@ -32,19 +32,19 @@ fn history() -> PipelinePortV1 {
     value.root_default = Some(RootDefaultV1::EmptyReviewHistory);
     value
 }
-fn ports(values: &[(&str, PipelinePortV1)]) -> Ports {
+pub(super) fn ports(values: &[(&str, PipelinePortV1)]) -> Ports {
     values
         .iter()
         .map(|(name, port)| ((*name).into(), port.clone()))
         .collect()
 }
-fn inputs(values: &[(&str, ValueRefV1)]) -> Inputs {
+pub(super) fn inputs(values: &[(&str, ValueRefV1)]) -> Inputs {
     values
         .iter()
         .map(|(name, value)| ((*name).into(), value.clone()))
         .collect()
 }
-fn node(id: &str, operator: TaskOperatorV1, bound: Inputs) -> TaskNodeV1 {
+pub(super) fn node(id: &str, operator: TaskOperatorV1, bound: Inputs) -> TaskNodeV1 {
     TaskNodeV1 {
         id: id.into(),
         operator,
@@ -52,14 +52,14 @@ fn node(id: &str, operator: TaskOperatorV1, bound: Inputs) -> TaskNodeV1 {
         when: None,
     }
 }
-fn when(mut node: TaskNodeV1, condition: &str, outcome: ReceiptOutcomeV1) -> TaskNodeV1 {
+pub(super) fn when(mut node: TaskNodeV1, condition: &str, outcome: ReceiptOutcomeV1) -> TaskNodeV1 {
     node.when = Some(NodeConditionV1 {
         node: condition.into(),
         outcome,
     });
     node
 }
-fn definition(
+pub(super) fn definition(
     name: &str,
     kind: &str,
     incoming: Ports,
@@ -86,7 +86,7 @@ fn definition(
         max_parallel: 2,
     }
 }
-fn cover(pipeline: &mut PipelineDefinitionV1, obligation: &str, port: &str) {
+pub(super) fn cover(pipeline: &mut PipelineDefinitionV1, obligation: &str, port: &str) {
     pipeline
         .contract
         .outputs
@@ -98,7 +98,7 @@ fn cover(pipeline: &mut PipelineDefinitionV1, obligation: &str, port: &str) {
         .coverage
         .insert(obligation.into(), pipeline.outputs[port].clone());
 }
-fn slot(
+pub(super) fn slot(
     worker: &TaskWorkerManifest,
     role: &str,
     independent: &[&str],
@@ -123,7 +123,7 @@ fn slot(
         independent_from: independent.iter().map(|name| (*name).into()).collect(),
     }
 }
-fn worker_definition(
+pub(super) fn worker_definition(
     name: &str,
     role: &str,
     incoming: Ports,
@@ -801,7 +801,7 @@ fn with_goal_acceptance(
     p
 }
 
-fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
+pub(super) fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
     let mut value: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     let object = value
         .as_object_mut()
@@ -864,7 +864,7 @@ fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
     Ok(value)
 }
 
-fn worker_input_schema(ports: &Ports) -> Value {
+pub(super) fn worker_input_schema(ports: &Ports) -> Value {
     let mut schema = inputs_schema(ports);
     for (name, port) in ports {
         if port.artifact_type == SOURCE_TREE_V1

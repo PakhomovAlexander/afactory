@@ -241,9 +241,9 @@ Deliverables:
    declared metric may not reuse its key. An objective names one `measure`, one `metric`, a
    `direction` (`lower` or `higher`), `min_improvement_ratio` (0 to 1 inclusive) and
    `min_repetitions` (1 to 16, default 3). The plan compiler refuses a plan whose
-   `measure` nodes' summed `repetitions × wall_ms`, plus the summed `wall_ms` of the checks
-   the same Attempt owns, exceeds the captured `check_wall_ms`, and it refuses a `measure`
-   whose name the captured policy lacks or a `compare` whose two inputs name different measures.
+   `measure` nodes' summed `repetitions × wall_ms` exceeds the captured `check_wall_ms` (a
+   measure Attempt owns no checks), and it refuses a `measure` whose name the captured policy
+   lacks or a `compare` whose two inputs name different measures.
 2. Execution. Each repetition runs with the read-only source materialization as its working
    directory and a private runtime directory holding `HOME`, `TMPDIR`, `XDG_CACHE_HOME` and,
    for `warm = false`, `CARGO_TARGET_DIR`; a declared Cache Snapshot binds `CARGO_HOME` as in
@@ -253,12 +253,13 @@ Deliverables:
    then discarded. A repetition that exits non-zero, exceeds its `wall_ms`, is cut by the
    Attempt deadline, or reports a malformed line fails the measurement: no later repetition
    runs, the failed repetition's receipts are retained, and the measurement's outcome is
-   `failed` with the reason (`exit`, `timeout`, `deadline`, `malformed_report`, `unit_mismatch`,
-   `source_mutated`). A measurement is never silently partial.
+   `failed` with the reason (`exit` — which is also what a repetition the warm cache's bound ends
+   records — `timeout`, `deadline`, `malformed_report`, `unit_mismatch`, `source_mutated`). A
+   measurement is never silently partial.
 3. A new artifact `af/Measurement@1`: the Snapshot ID, the measure name, the resolved command
-   identity, the R1 `toolchain_id`, `warm` and the observed cache bytes, one record per
-   repetition — started time, `elapsed_ms`, exit status, stdout and stderr digests, the metrics
-   parsed from the command's last stdout line when it is an `af.measure-report/1` JSON object
+   identity, the R1 `toolchain_id` and `warm`, one record per repetition — started time,
+   `elapsed_ms`, exit status, stdout and stderr digests, the cache bytes the warm layer held
+   before it, the metrics parsed from the command's last stdout line when it is an `af.measure-report/1` JSON object
    `{"schema":"af.measure-report/1","metrics":{"<key>":{"value":"<decimal>","unit":"<unit>"}}}`,
    whose keys must equal the declared set and whose units must equal the declared units — and
    per metric `median`, `min`, `max` and `n`. Values are finite, non-negative decimals with at
@@ -267,15 +268,16 @@ Deliverables:
    of the two middle values.
 4. A new artifact `af/MeasurementComparison@1`: the two Measurement IDs, the objective, and per
    metric the baseline and candidate medians, the signed improvement (`baseline − candidate`
-   for `lower`, `candidate − baseline` for `higher`), the ratio (`improvement / baseline`) and
-   `n` on each side, with a conclusion: `improved` when the improvement is strictly positive
-   and the ratio is at least `min_improvement_ratio`; `regressed` when the improvement is
-   strictly negative; `unchanged` when the improvement is zero, including a zero baseline with a
+   for `lower`, `candidate − baseline` for `higher`), the ratio (`improvement / baseline`, kept as a fraction in lowest terms
+   because it rarely terminates as a decimal, and absent with a zero baseline) and `n` on each
+   side, with a conclusion: `improved` when the improvement is strictly positive and the ratio
+   is at least `min_improvement_ratio`; `below_threshold` when it is strictly positive and the
+   ratio is not, so an insufficient improvement is visible as such; `regressed` when the
+   improvement is strictly negative; `unchanged` when the improvement is zero, including a zero baseline with a
    zero candidate; `inconclusive` when either side has fewer than `min_repetitions`, either
    measurement failed, or the baseline is zero and the candidate is not. The comparison's
-   outcome is `passed` only for `improved` on the objective's metric, `failed` for `regressed`
-   or for `unchanged` and for an improvement below the threshold with sufficient repetitions,
-   and `inconclusive` otherwise. `min_improvement_ratio = 0` therefore still requires a strictly
+   outcome is `passed` only for `improved` on the objective's metric, `failed` for `regressed`,
+   `unchanged` or `below_threshold`, and `inconclusive` otherwise. `min_improvement_ratio = 0` therefore still requires a strictly
    positive improvement. No value is saturated, clamped or rounded.
 5. Two installed operators in the code domain, closed like every other member of
    `TaskOperatorV1`: `measure { measures }` (input `source: af/SourceTree@1`, one
@@ -288,17 +290,24 @@ Deliverables:
    `measure` the source as the baseline; implementer (`write-source`, `execute-checks`) → seal
    → checks → `measure` the candidate → `compare` → independent evaluator (`verify`) whose
    contract declares an additional `comparison` input beside `checks`, `requirements` and
-   `source` → `accept`. The Task kind is `implement` with `verification = "evaluation"`; public
-   outputs are `snapshot`, `verification`, `baseline`, `candidate` and `comparison`. The
-   evaluator is gated on the comparison outcome with `when`, so a `failed` comparison cannot be
-   talked into a `passed` evaluation.
+   `source` → `accept`. Because `when` takes one receipt, the candidate measure, the comparison
+   and the evaluator sit in a child Pipeline called only after the checks pass, and the
+   evaluator inside it is gated with `when` on the comparison passing: a `failed` or
+   `inconclusive` comparison never reaches an evaluator, and the Task ends `incomplete` with the
+   comparison as its public explanation. The Task kind is `implement` with
+   `verification = "evaluation"`; public outputs are `snapshot`, `verification`, `baseline` and,
+   produced only after passed checks, `candidate` and `comparison`. The Pipeline runs one node
+   at a time, so no measurement shares the machine with other work of the same Task.
 7. This repository's `.af/code-policy.toml` declares `[measures.release_build]`: command
    `scripts/measure-release.sh`, `repetitions = 3`, `warm = false`, metrics `target_bytes` and
    `binary_bytes` (both `bytes`); and `[objectives.release_build_time]`: measure
    `release_build`, metric `elapsed_ms`, direction `lower`, `min_improvement_ratio = 0.10`,
    `min_repetitions = 3`. The committed `scripts/measure-release.sh` runs
    `cargo build --release -p af --locked` with the `CARGO_TARGET_DIR` the kernel bound, then
-   prints the report line from that directory's byte total and the `af` binary's size.
+   prints the report line from that directory's byte total and the `af` binary's size. Because a
+   Task Worker may not edit `.af/`, the implementer stages the tables and the `kernel/experiment`
+   packages under `fixtures/kernel-experiment/` with their install steps, a test performs those
+   steps on a copy of `.af/`, and a human installs them into the repository.
 8. `af task output --port comparison --format markdown` renders a comparison as one table;
    `--format json` is unchanged. `af task show` prints each measurement's median elapsed time and
    each comparison's conclusion.
@@ -730,3 +739,24 @@ outside these rules: it is the check acting against the cache it was trusted wit
 Eight verification Tasks cost 2.45M tokens against 1.56M for the two implementation Tasks that
 count; the verification loop, not the implementation, is what this package's evidence says to
 bound next.
+
+#### R2 — Measure and compare
+
+Implementation Task `research-r2` from 318f64b (kernel/implementation-reviewed; 753,016 tokens;
+4 Attempts) ended `changes_requested` without a reviewer reading a line: the implementer (Claude
+Opus 5.5) delivered the whole package and reported `cargo test --workspace` and clippy green, but
+the gate's `kernel` check was ended 61 s in by the warm cache's 16 GiB bound. The `cargo_target`
+directory held 13.5 GB after R1's eight verifications — cargo keeps every earlier revision's
+artifacts — and a candidate that touches review-core added 4.5 GB while compiling; the kernel
+removed 18.0 GB and failed the check, as ADR-0123 says it must. That is the design working as
+written and the wrong outcome for a research pipeline: a bound tuned to the first tree ended an
+implementation Attempt for a reason the candidate did not cause. The bound is raised to 32 GiB
+against 98 GiB free, and bounding the running check separately from evicting an over-bound
+directory after it is recorded as a follow-up for R5. The candidate was materialized from its
+Snapshot by hand; `.af/` cannot be written by a Worker, so the `release_build` measure, the
+`release_build_time` objective and the three `kernel/experiment*` packages the implementer staged
+under `fixtures/kernel-experiment/` were installed by hand as its README says. Six deviations
+from this section's wording were accepted and the section amended: the `below_threshold`
+conclusion, the ratio as an exact fraction, cache bytes per repetition, the child Pipeline that
+gates the evaluator on two receipts, one node at a time, and a bound-ended repetition recorded
+as `exit`.

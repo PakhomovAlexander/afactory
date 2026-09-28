@@ -56,6 +56,12 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   Snapshot or a delivered tree, and `require_container = true` refuses it. Warm or cold is
   runtime evidence only
   ([ADR-0123](adr/0123-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)).
+- The kernel measures; a model never writes a number the kernel did not record. A code policy's
+  `[measures]` are run by the installed `measure` operator against a read-only Snapshot, and
+  `compare` folds two `af/Measurement@1` under a declared `[objectives]` entry in exact decimal
+  arithmetic. Neither invokes a Provider, and an evaluator gated on a comparison cannot change
+  it ([ADR-0124](adr/0124-measure-and-compare-source-candidates-in-the-kernel.md),
+  [experiments](task-execution/experiments.md)).
 
 ## Worker effects: what `execute-checks` grants a reviewer
 
@@ -133,6 +139,7 @@ Start with the Task-file walkthrough, then follow the composition pages in order
 - [Heavy Review](task-execution/heavy-review.md) — carrying repair evidence into a complete second discovery Round.
 - [Issues](task-execution/issues.md) — read-only local/Jira requirement capture and explicit revision refresh.
 - [Documents](task-execution/document.md) — document Tasks with captured sources, content checks and independent acceptance.
+- [Experiments](task-execution/experiments.md) — measured baselines and candidates, the deterministic comparison and the evaluator gated on it.
 - [Run reports](task-execution/run-reports.md) — scheduler diagnostics and domain publication recovery.
 - [Self-optimizer economics](task-execution/self-optimizer.md) — declared history capture, exact project economics, the bounded candidate experiment and the light optimizer path.
 - [Review report inspection](task-execution/review-report-inspection.md) — exact current Task accounting beside immutable report snapshots.

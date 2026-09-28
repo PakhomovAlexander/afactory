@@ -18,7 +18,10 @@ af task run implementation-reviewed --confirm-plan PLAN_ID
 The factory runs no Workers and commits nothing. It creates supported typed definitions, actual
 package pins, contract fixtures, captured policies and runnable Task files. Git and Python 3 are
 the command tutorial's local prerequisites. `--profile software` omits the document definitions;
-`--profile document` emits just the document tutorial.
+`--profile document` emits just the document tutorial. `--profile experiment` emits the
+`builtin/experiment` tutorial on its own: a code policy with the measure `write` and the
+objective `smaller`, and a Task that the kernel measures, compares and evaluates
+([experiments](experiments.md)).
 
 ```text
                       shared catalog committed to Git

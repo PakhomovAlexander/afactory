@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:measurement-comparison:1",
+  "title": "af/MeasurementComparison@1",
+  "description": "The deterministic fold of a baseline and a candidate af/Measurement@1 of one measure under one declared objective (ADR-0124), in exact decimal arithmetic. Per metric: the medians, the signed improvement (baseline − candidate for lower, candidate − baseline for higher), the ratio improvement / baseline in lowest terms, n on each side and a conclusion. The outcome is passed only for improved on the objective's metric, failed for regressed, unchanged or below_threshold, and inconclusive otherwise.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "plan_id",
+    "policy_id",
+    "baseline_id",
+    "candidate_id",
+    "objective",
+    "measure",
+    "metric",
+    "direction",
+    "min_improvement_ratio",
+    "min_repetitions",
+    "metrics",
+    "outcome"
+  ],
+  "properties": {
+    "plan_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "policy_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "baseline_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "candidate_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "objective": {
+      "$ref": "#/$defs/name"
+    },
+    "measure": {
+      "$ref": "#/$defs/name"
+    },
+    "metric": {
+      "$ref": "#/$defs/name"
+    },
+    "direction": {
+      "enum": [
+        "lower",
+        "higher"
+      ]
+    },
+    "min_improvement_ratio": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/decimal"
+        },
+        {
+          "pattern": "^(0(\\.[0-9]*[1-9])?|1)$"
+        }
+      ]
+    },
+    "min_repetitions": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "elapsed_ms"
+      ],
+      "maxProperties": 33,
+      "propertyNames": {
+        "$ref": "#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/metric"
+      }
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive"
+      ]
+    }
+  },
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    },
+    "unit": {
+      "enum": [
+        "ms",
+        "bytes",
+        "count",
+        "ratio"
+      ]
+    },
+    "decimal": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$"
+    },
+    "signed": {
+      "type": "string",
+      "maxLength": 4097,
+      "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]*[1-9])?$",
+      "not": {
+        "const": "-0"
+      }
+    },
+    "ratio": {
+      "description": "improvement / baseline in lowest terms, sign on the numerator.",
+      "type": "string",
+      "maxLength": 8193,
+      "pattern": "^(0/1|-?[1-9][0-9]*/[1-9][0-9]*)$"
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unit",
+        "baseline_n",
+        "candidate_n",
+        "conclusion"
+      ],
+      "properties": {
+        "unit": {
+          "$ref": "#/$defs/unit"
+        },
+        "baseline_median": {
+          "$ref": "#/$defs/decimal"
+        },
+        "candidate_median": {
+          "$ref": "#/$defs/decimal"
+        },
+        "improvement": {
+          "$ref": "#/$defs/signed"
+        },
+        "ratio": {
+          "$ref": "#/$defs/ratio"
+        },
+        "baseline_n": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16
+        },
+        "candidate_n": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16
+        },
+        "conclusion": {
+          "enum": [
+            "improved",
+            "below_threshold",
+            "unchanged",
+            "regressed",
+            "inconclusive"
+          ]
+        }
+      }
+    }
+  }
+}

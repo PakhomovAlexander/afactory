@@ -2261,7 +2261,7 @@ fn present_with_format(
                 |r| r.domain_conclusion.as_str()
             )
         );
-        if let Some(id) = state.plan_id {
+        if let Some(id) = &state.plan_id {
             println!("Plan {id}");
         }
         // One line per bound port, through the same sanitizer the preview uses: a referenced
@@ -2283,6 +2283,9 @@ fn present_with_format(
             }
         }
         for line in check_cache_lines(&value) {
+            println!("{line}");
+        }
+        for line in measurement_lines(cas, &state)? {
             println!("{line}");
         }
         if let Some(last) = reports.last().and_then(|r| r["diagnostics"].as_object()) {
@@ -2324,6 +2327,74 @@ fn present_with_format(
         TaskAcceptanceV1::Unsatisfied => 3,
         TaskAcceptanceV1::Inconclusive => 4,
     }))
+}
+
+/// One line per recorded Measurement and per recorded comparison (ADR-0124), in node order: a
+/// measurement's median elapsed time, or the repetition and reason it failed at, and a
+/// comparison's conclusion on its objective's metric. A Task without either prints nothing.
+fn measurement_lines(cas: &Cas, state: &TaskProjection) -> Result<Vec<String>, String> {
+    use review_core::task::measurement::*;
+    use review_core::task::pipeline::ReceiptOutcomeV1;
+    let mut lines = Vec::new();
+    let Some(execution) = &state.execution else {
+        return Ok(lines);
+    };
+    for (node, (_, output)) in &execution.outputs {
+        for (port, value) in &output.outputs {
+            let [id] = value.artifact_ids.as_slice() else {
+                continue;
+            };
+            if value.artifact_type == MEASUREMENT_V1 {
+                let measurement: MeasurementV1 = artifact(cas, id, MEASUREMENT_V1)?;
+                let detail = match (&measurement.failure, measurement.metric(ELAPSED_MS)) {
+                    (Some(failure), _) => format!(
+                        "failed at repetition {} of {}: {}",
+                        failure.repetition,
+                        measurement.repetitions,
+                        failure.reason.as_str()
+                    ),
+                    (None, Some(elapsed)) => format!(
+                        "median elapsed {} ms over {} repetitions{}",
+                        elapsed.median,
+                        elapsed.n,
+                        if measurement.warm { ", warm" } else { "" }
+                    ),
+                    (None, None) => "passed".into(),
+                };
+                lines.push(format!(
+                    "measurement {} {}: {detail}",
+                    preview::text(node),
+                    preview::text(port)
+                ));
+            } else if value.artifact_type == MEASUREMENT_COMPARISON_V1 {
+                let comparison: MeasurementComparisonV1 =
+                    artifact(cas, id, MEASUREMENT_COMPARISON_V1)?;
+                let row = comparison
+                    .metrics
+                    .get(&comparison.metric)
+                    .ok_or("Comparison lacks its objective's metric")?;
+                lines.push(format!(
+                    "comparison {} {}: {} on {} ({} → {}), {}",
+                    preview::text(node),
+                    preview::text(&comparison.objective),
+                    row.conclusion.as_str(),
+                    preview::text(&comparison.metric),
+                    row.baseline_median
+                        .as_ref()
+                        .map_or_else(|| "—".to_string(), ToString::to_string),
+                    row.candidate_median
+                        .as_ref()
+                        .map_or_else(|| "—".to_string(), ToString::to_string),
+                    match comparison.outcome {
+                        ReceiptOutcomeV1::Passed => "passed",
+                        ReceiptOutcomeV1::Failed => "failed",
+                        ReceiptOutcomeV1::Inconclusive => "inconclusive",
+                    }
+                ));
+            }
+        }
+    }
+    Ok(lines)
 }
 
 /// One line per warm check (ADR-0123), named by its evidence group's check binding: its outcome,

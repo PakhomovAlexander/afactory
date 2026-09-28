@@ -1,0 +1,50 @@
+schema = "af.code-task-policy/1"
+check_wall_ms = 60000
+require_container = false
+
+[checks.sanity]
+name = "sanity"
+required = true
+
+[checks.sanity.command]
+program = "/usr/bin/python3"
+
+[[checks.sanity.command.args]]
+value = "-B"
+provenance = "literal"
+
+[[checks.sanity.command.args]]
+value = "-c"
+provenance = "literal"
+
+[[checks.sanity.command.args]]
+value = "assert int(open('size.txt').read()) >= 0"
+provenance = "literal"
+
+# Write size.txt's number of bytes into the repetition's TMPDIR, three times.
+[measures.write]
+repetitions = 3
+warm = false
+wall_ms = 20000
+
+[measures.write.command]
+program = "/usr/bin/python3"
+
+[[measures.write.command.args]]
+value = "-B"
+provenance = "literal"
+
+[[measures.write.command.args]]
+value = "measure.py"
+provenance = "literal"
+
+[[measures.write.metrics]]
+key = "bytes_written"
+unit = "bytes"
+
+[objectives.smaller]
+measure = "write"
+metric = "bytes_written"
+direction = "lower"
+min_improvement_ratio = 0.10
+min_repetitions = 3

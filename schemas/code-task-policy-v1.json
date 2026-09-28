@@ -2,18 +2,29 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:code-task-policy:1",
   "title": "Code Task policy af.code-task-policy/1",
-  "description": "The captured form of a repository's `.af/code-policy.toml`: the named checks a code Task runs against a read-only Snapshot and, optionally, the Warm Check Cache those checks may use (ADR-0123). A policy without `warm` is captured exactly as before the table existed.",
+  "description": "The captured form of a repository's `.af/code-policy.toml`: the named checks a code Task runs against a read-only Snapshot and, optionally, the Warm Check Cache those checks may use (ADR-0123). A policy without `warm` is captured exactly as before the table existed. Optional `measures` and `objectives` declare the commands the installed `measure` operator runs and the objectives `compare` folds two Measurements under (ADR-0124); a policy without them is captured exactly as before the tables existed.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "checks", "check_wall_ms", "require_container"],
+  "required": [
+    "schema",
+    "checks",
+    "check_wall_ms",
+    "require_container"
+  ],
   "properties": {
-    "schema": {"const": "af.code-task-policy/1"},
+    "schema": {
+      "const": "af.code-task-policy/1"
+    },
     "checks": {
       "type": "object",
       "minProperties": 1,
       "maxProperties": 32,
-      "propertyNames": {"$ref": "#/$defs/name"},
-      "additionalProperties": {"$ref": "#/$defs/check"}
+      "propertyNames": {
+        "$ref": "#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/check"
+      }
     },
     "check_wall_ms": {
       "description": "The whole check Attempt's wall. At most 3600000, or the per-check wall times the number of checks when that is larger.",
@@ -21,37 +32,106 @@
       "minimum": 1,
       "maximum": 115200000
     },
-    "check_process_wall_ms": {"type": "integer", "minimum": 1, "maximum": 3600000},
-    "require_container": {"type": "boolean"},
-    "warm": {"$ref": "#/$defs/warm"}
+    "check_process_wall_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3600000
+    },
+    "require_container": {
+      "type": "boolean"
+    },
+    "warm": {
+      "$ref": "#/$defs/warm"
+    },
+    "measures": {
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "$ref": "#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/measure"
+      }
+    },
+    "objectives": {
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": {
+        "$ref": "#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/objective"
+      }
+    }
   },
-  "if": {"properties": {"require_container": {"const": true}}, "required": ["warm"]},
+  "if": {
+    "properties": {
+      "require_container": {
+        "const": true
+      }
+    },
+    "required": [
+      "warm"
+    ]
+  },
   "then": false,
   "$defs": {
-    "name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    },
     "arg": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["value", "provenance"],
+      "required": [
+        "value",
+        "provenance"
+      ],
       "properties": {
-        "value": {"type": "string"},
-        "provenance": {"enum": ["literal", "untrusted"]}
+        "value": {
+          "type": "string"
+        },
+        "provenance": {
+          "enum": [
+            "literal",
+            "untrusted"
+          ]
+        }
       }
     },
     "check": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "command", "required"],
+      "required": [
+        "name",
+        "command",
+        "required"
+      ],
       "properties": {
-        "name": {"$ref": "#/$defs/name"},
-        "required": {"type": "boolean"},
+        "name": {
+          "$ref": "#/$defs/name"
+        },
+        "required": {
+          "type": "boolean"
+        },
         "command": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["program", "args"],
+          "required": [
+            "program",
+            "args"
+          ],
           "properties": {
-            "program": {"type": "string", "minLength": 1},
-            "args": {"type": "array", "items": {"$ref": "#/$defs/arg"}}
+            "program": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/arg"
+              }
+            }
           }
         }
       }
@@ -60,25 +140,168 @@
       "description": "An explicitly unsafe, machine-local layer only a trusted_local check touches: toolchain-keyed, byte-bounded build directories (`cargo_target` bound as CARGO_TARGET_DIR, `cargo_home` bound as CARGO_HOME) and administrator-approved Cache Snapshots. A declared `cargo` Cache Snapshot supersedes a `cargo_home` directory. Refused together with require_container = true.",
       "type": "object",
       "additionalProperties": false,
-      "anyOf": [{"required": ["build_cache"]}, {"required": ["caches"]}],
+      "anyOf": [
+        {
+          "required": [
+            "build_cache"
+          ]
+        },
+        {
+          "required": [
+            "caches"
+          ]
+        }
+      ],
       "properties": {
         "build_cache": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"enum": ["cargo_target", "cargo_home"]}
+          "items": {
+            "enum": [
+              "cargo_target",
+              "cargo_home"
+            ]
+          }
         },
         "caches": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"enum": ["cargo"]}
+          "items": {
+            "enum": [
+              "cargo"
+            ]
+          }
         },
         "max_bytes": {
           "description": "The byte bound shared by every build directory of one toolchain key; 8 GiB when absent.",
           "type": "integer",
           "minimum": 1,
           "maximum": 34359738368
+        }
+      }
+    },
+    "measure": {
+      "description": "A measured command: repeated `repetitions` times, each bounded by `wall_ms`, against a read-only Snapshot. `warm = true` binds the Warm Check Cache's cargo_target directory as CARGO_TARGET_DIR and needs [warm] build_cache to declare it; `false` binds a fresh directory in the repetition's runtime directory. `elapsed_ms` is always recorded; `metrics` are what the command reports.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "repetitions",
+        "warm",
+        "wall_ms"
+      ],
+      "properties": {
+        "command": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "program",
+            "args"
+          ],
+          "properties": {
+            "program": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/arg"
+              }
+            }
+          }
+        },
+        "repetitions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "warm": {
+          "type": "boolean"
+        },
+        "wall_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600000
+        },
+        "metrics": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "key",
+              "unit"
+            ],
+            "properties": {
+              "key": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/name"
+                  },
+                  {
+                    "not": {
+                      "const": "elapsed_ms"
+                    }
+                  }
+                ]
+              },
+              "unit": {
+                "enum": [
+                  "ms",
+                  "bytes",
+                  "count",
+                  "ratio"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "objective": {
+      "description": "What a comparison concludes against: one measure, one of its metrics, the better direction, the minimum improvement ratio (0 to 1; a strictly positive improvement is always required) and the minimum repetitions on each side (default 3).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "measure",
+        "metric",
+        "direction",
+        "min_improvement_ratio"
+      ],
+      "properties": {
+        "measure": {
+          "$ref": "#/$defs/name"
+        },
+        "metric": {
+          "$ref": "#/$defs/name"
+        },
+        "direction": {
+          "enum": [
+            "lower",
+            "higher"
+          ]
+        },
+        "min_improvement_ratio": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^(0(\\.[0-9]*[1-9])?|1)$"
+            },
+            {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          ]
+        },
+        "min_repetitions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
         }
       }
     }

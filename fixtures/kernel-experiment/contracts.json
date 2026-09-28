@@ -1,0 +1,333 @@
+{
+  "schema": "af.catalog-contract-fixtures/1",
+  "pipelines": {
+    "kernel/experiment": {
+      "contract": {
+        "inputs": {
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "source": {
+            "artifact_type": "af/SourceTree@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "baseline": {
+            "artifact_type": "af/Measurement@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          },
+          "candidate": {
+            "artifact_type": "af/Measurement@1",
+            "cardinality": "one",
+            "optional": true,
+            "affinity": {
+              "kind": "derived_from",
+              "input": "source"
+            },
+            "covers": []
+          },
+          "comparison": {
+            "artifact_type": "af/MeasurementComparison@1",
+            "cardinality": "one",
+            "optional": true,
+            "affinity": {
+              "kind": "derived_from",
+              "input": "source"
+            },
+            "covers": []
+          },
+          "snapshot": {
+            "artifact_type": "af/SourceTree@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "derived_from",
+              "input": "source"
+            },
+            "covers": []
+          },
+          "verification": {
+            "artifact_type": "af/VerificationResult@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "derived_from",
+              "input": "source"
+            },
+            "covers": [
+              "verified"
+            ]
+          }
+        }
+      },
+      "accepts": {
+        "kinds": [
+          "implement"
+        ],
+        "required_facts": {}
+      },
+      "coverage": {
+        "verified": {
+          "kind": "node",
+          "node": "accept",
+          "port": "result"
+        }
+      },
+      "max_attempts": 6,
+      "max_parallel": 1
+    },
+    "kernel/experiment-trial": {
+      "contract": {
+        "inputs": {
+          "baseline": {
+            "artifact_type": "af/Measurement@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "checks": {
+            "artifact_type": "af/TaskCheckReceipt@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          },
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "source": {
+            "artifact_type": "af/SourceTree@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "candidate": {
+            "artifact_type": "af/Measurement@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          },
+          "comparison": {
+            "artifact_type": "af/MeasurementComparison@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          },
+          "evaluation": {
+            "artifact_type": "af/TaskEvaluation@1",
+            "cardinality": "one",
+            "optional": true,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          }
+        }
+      },
+      "accepts": {
+        "kinds": [
+          "implement"
+        ],
+        "required_facts": {}
+      },
+      "coverage": {},
+      "max_attempts": 3,
+      "max_parallel": 1
+    }
+  },
+  "workers": {
+    "kernel/experiment-evaluator": {
+      "contract": {
+        "inputs": {
+          "checks": {
+            "artifact_type": "af/TaskCheckReceipt@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          },
+          "comparison": {
+            "artifact_type": "af/MeasurementComparison@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          },
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "source": {
+            "artifact_type": "af/SourceTree@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "result": {
+            "artifact_type": "af/TaskEvaluation@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          }
+        }
+      },
+      "effects": [
+        "read-source"
+      ],
+      "evidence": {},
+      "retains": {
+        "result": [
+          "checks",
+          "comparison",
+          "requirements",
+          "source"
+        ]
+      },
+      "roles": [
+        "evaluate"
+      ],
+      "worker_input_type": "af/EvaluationInput@1",
+      "worker_output_type": "af/TaskEvaluation@1",
+      "outcome_port": "result",
+      "attempt": {
+        "tokens": 300000,
+        "wall_ms": 1200000
+      }
+    },
+    "kernel/implementer": {
+      "contract": {
+        "inputs": {
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          },
+          "source": {
+            "artifact_type": "af/SourceTree@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "candidate": {
+            "artifact_type": "af/CandidateTree@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          },
+          "report": {
+            "artifact_type": "af/ImplementationReport@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "same_as",
+              "input": "source"
+            },
+            "covers": []
+          }
+        }
+      },
+      "effects": [
+        "execute-checks",
+        "write-source"
+      ],
+      "evidence": {},
+      "retains": {
+        "candidate": [
+          "requirements",
+          "source"
+        ],
+        "report": [
+          "requirements",
+          "source"
+        ]
+      },
+      "roles": [
+        "implement"
+      ],
+      "worker_input_type": "af/ImplementationInput@1",
+      "worker_output_type": "af/ImplementationReport@1",
+      "attempt": {
+        "tokens": 1500000,
+        "wall_ms": 10800000
+      }
+    }
+  },
+  "kinds": {}
+}

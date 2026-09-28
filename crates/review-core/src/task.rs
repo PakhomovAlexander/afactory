@@ -10,6 +10,7 @@ pub mod event;
 pub mod execution;
 pub mod feedback;
 pub mod input_bindings;
+pub mod measurement;
 pub mod optimization;
 pub mod optimization_experiment;
 pub mod optimization_light;

@@ -30,8 +30,10 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 158] = [
+const SCHEMAS: [&str; 160] = [
     "code-task-policy-v1.json",
+    "measurement-v1.json",
+    "measurement-comparison-v1.json",
     "task-input-bindings-v1.json",
     "task-source-origin-v2.json",
     "provider-status-v1.json",
@@ -3831,4 +3833,286 @@ fn task_catalog_review_generation_is_omitted_or_two() {
     let mut retired = value;
     retired["schema"] = json!("af.task-catalog/1");
     assert_invalid(name, &retired, "one catalog schema");
+}
+
+#[test]
+fn measurements_and_comparisons_match_their_schemas_in_both_directions() {
+    use review_core::task::measurement::*;
+    use review_core::task::pipeline::ReceiptOutcomeV1;
+    let id = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+    let d = |text: &str| MeasureDecimal::parse(text).unwrap();
+    let declared =
+        std::collections::BTreeMap::from([("bytes_written".to_string(), MetricUnitV1::Bytes)]);
+    let run = |value: &str| MeasurementRunV1 {
+        started_unix_ms: 1_790_000_000_000,
+        elapsed_ms: 12,
+        exit_code: Some(0),
+        stdout_id: Some(id('1')),
+        stderr_id: Some(id('2')),
+        cache_bytes: Some(4096),
+        metrics: std::collections::BTreeMap::from([(
+            "bytes_written".to_string(),
+            MetricValueV1 {
+                value: d(value),
+                unit: MetricUnitV1::Bytes,
+            },
+        )]),
+    };
+    let runs = vec![run("100"), run("101")];
+    let passed = MeasurementV1 {
+        plan_id: id('a'),
+        policy_id: id('b'),
+        snapshot_id: id('c'),
+        measure: "write".into(),
+        command_id: id('d'),
+        toolchain_id: Some(id('e')),
+        warm: true,
+        repetitions: 2,
+        wall_ms: 1000,
+        metrics: declared.clone(),
+        outcome: ReceiptOutcomeV1::Passed,
+        failure: None,
+        summary: summarize(&declared, &runs).unwrap(),
+        runs,
+    };
+    passed.validate().unwrap();
+    assert_eq!(passed.summary["bytes_written"].median.to_string(), "100.5");
+    let value = serde_json::to_value(&passed).unwrap();
+    assert_valid("measurement-v1.json", &value);
+    let mut failed = passed.clone();
+    failed.outcome = ReceiptOutcomeV1::Failed;
+    failed.failure = Some(MeasurementFailureV1 {
+        repetition: 2,
+        reason: MeasurementFailureReasonV1::UnitMismatch,
+        detail: "metric bytes_written reported unit count".into(),
+    });
+    failed.runs[1].metrics.clear();
+    failed.summary.clear();
+    failed.validate().unwrap();
+    assert_valid(
+        "measurement-v1.json",
+        &serde_json::to_value(&failed).unwrap(),
+    );
+    let refused =
+        |mutate: &dyn Fn(&mut Value), why: &str, schema: &str, rust: &dyn Fn(Value) -> bool| {
+            let mut value =
+                serde_json::to_value(if schema == "passed" { &passed } else { &failed }).unwrap();
+            mutate(&mut value);
+            assert_invalid("measurement-v1.json", &value, why);
+            assert!(!rust(value), "Rust accepted a Measurement ({why})");
+        };
+    let rust = |value: Value| {
+        serde_json::from_value::<MeasurementV1>(value).is_ok_and(|m| m.validate().is_ok())
+    };
+    refused(
+        &|v| v["outcome"] = json!("inconclusive"),
+        "a measurement is passed or failed",
+        "passed",
+        &rust,
+    );
+    refused(
+        &|v| {
+            v["failure"] = json!({"repetition": 1, "reason": "exit", "detail": "x"});
+        },
+        "passed with a failure",
+        "passed",
+        &rust,
+    );
+    refused(
+        &|v| {
+            v.as_object_mut().unwrap().remove("failure");
+        },
+        "failed without a failure",
+        "failed",
+        &rust,
+    );
+    refused(
+        &|v| {
+            v["summary"] =
+                json!({"elapsed_ms": {"unit": "ms", "median": "1", "min": "1", "max": "1", "n": 1}})
+        },
+        "failed with a summary",
+        "failed",
+        &rust,
+    );
+    refused(
+        &|v| v["runs"][0]["metrics"]["bytes_written"]["value"] = json!("1".repeat(39)),
+        "39 significant digits",
+        "passed",
+        &rust,
+    );
+    refused(
+        &|v| v["runs"][0]["metrics"]["bytes_written"]["value"] = json!("1.50"),
+        "non-canonical decimal",
+        "passed",
+        &rust,
+    );
+    refused(
+        &|v| v["runs"][0]["metrics"]["bytes_written"]["unit"] = json!("kb"),
+        "unknown unit",
+        "passed",
+        &rust,
+    );
+    refused(
+        &|v| v["metrics"] = json!({"elapsed_ms": "ms"}),
+        "a declared metric may not reuse elapsed_ms",
+        "passed",
+        &rust,
+    );
+    refused(
+        &|v| v["repetitions"] = json!(17),
+        "more than 16 repetitions",
+        "passed",
+        &rust,
+    );
+    refused(
+        &|v| v["failure"]["reason"] = json!("crashed"),
+        "an unknown failure reason",
+        "failed",
+        &rust,
+    );
+    refused(
+        &|v| v["undeclared"] = json!(true),
+        "an unknown field",
+        "passed",
+        &rust,
+    );
+    // 38 significant digits and a small fraction are both reportable.
+    for text in [
+        "9".repeat(38),
+        format!("1.{}", "2".repeat(36)),
+        "0.000000000000000000000000000000000000000001".into(),
+    ] {
+        let mut value = serde_json::to_value(&passed).unwrap();
+        value["runs"][0]["metrics"]["bytes_written"]["value"] = json!(text);
+        assert!(validator("measurement-v1.json").is_valid(&value), "{text}");
+    }
+
+    let objective = MeasureObjectiveV1 {
+        measure: "write".into(),
+        metric: "bytes_written".into(),
+        direction: ObjectiveDirectionV1::Lower,
+        min_improvement_ratio: ImprovementRatio(d("0.1")),
+        min_repetitions: 2,
+    };
+    let mut smaller = passed.clone();
+    smaller.runs = vec![run("80"), run("90")];
+    smaller.summary = summarize(&declared, &smaller.runs).unwrap();
+    let comparison = compare_measurements(
+        &id('a'),
+        &id('b'),
+        (&id('f'), &passed),
+        (&id('9'), &smaller),
+        ComparisonObjective {
+            name: "smaller",
+            objective: &objective,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        comparison.metrics["bytes_written"]
+            .ratio
+            .as_ref()
+            .unwrap()
+            .to_string(),
+        "31/201"
+    );
+    let value = serde_json::to_value(&comparison).unwrap();
+    assert_valid("measurement-comparison-v1.json", &value);
+    let comparison_rust = |value: Value| {
+        serde_json::from_value::<MeasurementComparisonV1>(value).is_ok_and(|c| c.validate().is_ok())
+    };
+    for (mutate, why) in [
+        (json!({"ratio": "62/402"}), "a ratio not in lowest terms"),
+        (json!({"improvement": "-0"}), "negative zero"),
+        (json!({"conclusion": "better"}), "an unknown conclusion"),
+        (
+            json!({"baseline_median": "100.0"}),
+            "a non-canonical median",
+        ),
+    ] {
+        let mut value = value.clone();
+        for (key, field) in mutate.as_object().unwrap() {
+            value["metrics"]["bytes_written"][key] = field.clone();
+        }
+        if why != "a ratio not in lowest terms" {
+            assert_invalid("measurement-comparison-v1.json", &value, why);
+        }
+        assert!(
+            !comparison_rust(value),
+            "Rust accepted a comparison ({why})"
+        );
+    }
+    for (field, bad, why) in [
+        (
+            "min_improvement_ratio",
+            json!("1.5"),
+            "a threshold above one",
+        ),
+        (
+            "outcome",
+            json!("improved"),
+            "a conclusion is not an outcome",
+        ),
+        ("direction", json!("sideways"), "an unknown direction"),
+        ("min_repetitions", json!(0), "zero repetitions"),
+    ] {
+        let mut value = value.clone();
+        value[field] = bad;
+        assert_invalid("measurement-comparison-v1.json", &value, why);
+        assert!(
+            !comparison_rust(value),
+            "Rust accepted a comparison ({why})"
+        );
+    }
+    let mut value = value.clone();
+    value["metrics"]
+        .as_object_mut()
+        .unwrap()
+        .remove("elapsed_ms");
+    assert_invalid(
+        "measurement-comparison-v1.json",
+        &value,
+        "elapsed_ms is always compared",
+    );
+    assert!(!comparison_rust(value));
+
+    // Both operators are closed members of the Pipeline operator schema.
+    for (operator, valid) in [
+        (json!({"op": "measure", "measures": ["write"]}), true),
+        (json!({"op": "compare", "objective": "smaller"}), true),
+        (json!({"op": "measure", "measures": []}), false),
+        (
+            json!({"op": "measure", "measures": ["write"], "warm": true}),
+            false,
+        ),
+        (json!({"op": "compare"}), false),
+    ] {
+        let parsed =
+            serde_json::from_value::<review_core::task::pipeline::TaskOperatorV1>(operator.clone());
+        let pipeline = |operator: Value| {
+            json!({
+                "schema": "af.pipeline/1", "name": "fixture/p", "version": "1.0.0",
+                "contract": {"inputs": {}, "outputs": {"out": {"artifact_type": "af/Measurement@1",
+                    "cardinality": "one", "optional": false, "affinity": {"kind": "unbound"}, "covers": []}}},
+                "accepts": {"kinds": ["implement"], "required_facts": {}},
+                "slots": {},
+                "nodes": [{"id": "n", "operator": operator, "inputs": {}}],
+                "outputs": {"out": {"kind": "node", "node": "n", "port": "write"}},
+                "coverage": {}, "max_attempts": 1, "max_parallel": 1
+            })
+        };
+        let definition = pipeline(operator.clone());
+        assert_eq!(
+            validator("pipeline-definition-v1.json").is_valid(&definition),
+            valid,
+            "{operator}"
+        );
+        let rust = parsed.is_ok()
+            && serde_json::from_value::<review_core::task::pipeline::PipelineDefinitionV1>(
+                definition,
+            )
+            .is_ok_and(|p| p.validate().is_ok());
+        assert_eq!(rust, valid, "{operator}");
+    }
 }

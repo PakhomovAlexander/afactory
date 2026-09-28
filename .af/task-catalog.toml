@@ -120,6 +120,21 @@ path = ".af/task-packages/kernel/gate-bench"
 [kinds]
 verification = "warm/verification-kind"
 
+[packages."kernel/experiment"]
+version = "1.0.0"
+digest = "sha256:b75fa47fc860ba30e47efdcb3665e71310a6d94b9de557cb1a526be5180f50e4"
+path = ".af/task-packages/kernel/experiment"
+
+[packages."kernel/experiment-evaluator"]
+version = "1.0.0"
+digest = "sha256:c643d704a15e3e3dc225dc02f6006e6ece7bd21428a3c16db98004f33408d025"
+path = ".af/task-packages/kernel/experiment-evaluator"
+
+[packages."kernel/experiment-trial"]
+version = "1.0.0"
+digest = "sha256:1938157d9fe082bf0a191b8f6235999355d56fecbcd453d0e6fcbdcc6e31fb79"
+path = ".af/task-packages/kernel/experiment-trial"
+
 [independence]
 command_workers_by_package = true
 distinct_principals = true
@@ -135,6 +150,7 @@ distinct_models = false
 "kernel/correctness" = "codex-main"
 "kernel/bugs" = "codex-main"
 "kernel/evaluator" = "codex-main"
+"kernel/experiment-evaluator" = "codex-main"
 
 [provider_admission]
 tokens = 32768

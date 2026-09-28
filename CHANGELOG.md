@@ -16,6 +16,32 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
+- Measure and compare (ADR-0124, package R2 of `docs/design/research-pipelines.md`). A code
+  policy may declare `[measures.<name>]` — a command, 1 to 16 `repetitions`, `warm`, `wall_ms`
+  per repetition and `metrics` of `{ key, unit }` in `ms`, `bytes`, `count` or `ratio` — and
+  `[objectives.<name>]` — a measure, a metric, `lower` or `higher`, `min_improvement_ratio` and
+  `min_repetitions`. The installed `measure` operator runs a measure against a fresh read-only
+  Snapshot per repetition with a private `HOME`, `TMPDIR`, `XDG_CACHE_HOME` and, unless
+  `warm = true` binds the Warm Check Cache, `CARGO_TARGET_DIR`. It re-verifies the source
+  after every repetition and records `af/Measurement@1`: every run's elapsed time, exit status,
+  output digests and the metrics the command reported on an `af.measure-report/1` last line
+  with the declared keys and units. A failure (`exit`, `timeout`, `deadline`,
+  `malformed_report`, `unit_mismatch`, `source_mutated`) stops the measurement and leaves no
+  summary. The installed `compare` operator folds two Measurements into
+  `af/MeasurementComparison@1` in exact decimal arithmetic: medians with an exact even-sample
+  mean, signed improvements, ratios in lowest terms, and `improved`, `below_threshold`,
+  `unchanged`, `regressed` or `inconclusive` per metric. It is `passed` only for `improved` on
+  the objective's metric. The plan compiler refuses a measure node whose repetitions exceed
+  `check_wall_ms`, undeclared measures and objectives, and mixed comparisons. `af task output
+  --port comparison --format markdown` renders one table, `af task show` prints medians and
+  conclusions, and `af catalog init --profile experiment` emits the `builtin/experiment`
+  starter, whose evaluator runs only after passed checks and a passed comparison.
+  `scripts/measure-release.sh` and this repository's `release_build` measure,
+  `release_build_time` objective and `kernel/experiment` packages are staged in
+  `fixtures/kernel-experiment/` for installation into `.af/`. New schemas:
+  `measurement-v1.json` and `measurement-comparison-v1.json`; `code-task-policy-v1.json` and the
+  operator schema gain the new tables and operators. A policy without them is captured, planned
+  and shown exactly as before.
 - Warm Task checks bind the kernel's rustup home and keep Cargo's home warm (ADR-0123 amended,
   package R1 of `docs/design/research-pipelines.md`). Under `[warm]` a check and its toolchain
   probe receive `RUSTUP_HOME`, from the kernel's own, else its `HOME`'s `.rustup`, and

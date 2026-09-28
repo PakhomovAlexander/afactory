@@ -1024,6 +1024,126 @@ impl Compiler<'_> {
         Ok(BTreeMap::from([("output".into(), address)]))
     }
 
+    /// A measure node's signature, composed from the installed per-measure signatures of the
+    /// captured code policy: one `Measurement` output per named measure. Its repetitions
+    /// (`repetitions × wall_ms` of every measure) must fit the one measure Attempt, whose wall
+    /// is the captured `check_wall_ms`; a measure Attempt owns no checks.
+    fn measure_signature(
+        &self,
+        qualified: &str,
+        measures: &BTreeSet<String>,
+    ) -> Result<OperatorSignature, String> {
+        let base = self
+            .context
+            .signatures
+            .get("operator/measure")
+            .ok_or("The captured code policy declares no measures")?;
+        let allowance = base
+            .attempt
+            .as_ref()
+            .ok_or("operator/measure has no bounded Attempt cost")?;
+        let mut composed = base.clone();
+        composed.contract.outputs.clear();
+        composed.outcome_port = None;
+        let mut budget = 0u64;
+        for measure in measures {
+            let declared = self
+                .context
+                .signatures
+                .get(&format!("operator/measure/{measure}"))
+                .ok_or_else(|| {
+                    format!("{qualified} names measure {measure}, which the captured code policy does not declare")
+                })?;
+            if declared.contract.inputs != base.contract.inputs
+                || declared.effects != base.effects
+                || declared.contract.outputs.keys().ne([measure])
+            {
+                return Err(format!("Measure {measure} changed its installed contract"));
+            }
+            composed
+                .contract
+                .outputs
+                .extend(declared.contract.outputs.clone());
+            let cost = declared
+                .attempt
+                .as_ref()
+                .ok_or_else(|| format!("Measure {measure} has no bounded repetition budget"))?;
+            budget = budget
+                .checked_add(cost.wall_ms)
+                .ok_or("Measure repetition budget overflow")?;
+        }
+        if budget > allowance.wall_ms {
+            return Err(format!(
+                "{qualified} needs {budget} ms for its repetitions (repetitions × wall_ms), more than the captured check_wall_ms of {} ms",
+                allowance.wall_ms
+            ));
+        }
+        if let [only] = measures.iter().collect::<Vec<_>>()[..] {
+            composed.outcome_port = Some(only.clone());
+        }
+        Ok(composed)
+    }
+
+    /// A comparison folds two Measurements of the one measure its objective names. Both inputs
+    /// must come straight from measure nodes, whose output ports are named by their measure.
+    fn require_comparable(
+        &self,
+        qualified: &str,
+        objective: &str,
+        signature: &OperatorSignature,
+        bound: &BTreeMap<String, Address>,
+    ) -> Result<(), String> {
+        if self
+            .context
+            .signatures
+            .get(&format!("operator/compare/{objective}"))
+            != Some(signature)
+        {
+            return Err(format!(
+                "{qualified} names objective {objective}, which the captured code policy does not declare"
+            ));
+        }
+        let mut measured = BTreeSet::new();
+        for port in ["baseline", "candidate"] {
+            let address = bound
+                .get(port)
+                .ok_or_else(|| format!("{qualified} lacks {port}"))?;
+            let producer = self
+                .graph
+                .nodes
+                .get(&address.node)
+                .ok_or_else(|| format!("Unknown producer {}", address.qualified()))?;
+            if !matches!(
+                producer.operator,
+                CompiledOperator::Primitive {
+                    operator: TaskOperatorV1::Measure { .. },
+                    ..
+                }
+            ) {
+                return Err(format!(
+                    "{qualified} {port} must be a Measurement straight from a measure node"
+                ));
+            }
+            measured.insert(address.port.clone());
+        }
+        let [measure] = measured.iter().collect::<Vec<_>>()[..] else {
+            return Err(format!(
+                "{qualified} compares Measurements of different measures: {}",
+                measured.into_iter().collect::<Vec<_>>().join(" and ")
+            ));
+        };
+        if !self
+            .context
+            .signatures
+            .contains_key(&format!("operator/compare/{objective}/{measure}"))
+        {
+            return Err(format!(
+                "{qualified}: objective {objective} does not compare measure {measure}"
+            ));
+        }
+        Ok(())
+    }
+
     fn available(&self, address: &Address, conditions: &[CompiledCondition]) -> bool {
         self.availability.get(address).is_none_or(|required| {
             required
@@ -1434,11 +1554,20 @@ impl Compiler<'_> {
                             ),
                             other => (format!("operator/{}", operator_name(other)?), other.clone()),
                         };
-                        let signature = self
-                            .context
-                            .signatures
-                            .get(&signature_name)
-                            .ok_or_else(|| format!("Unsupported {signature_name}"))?;
+                        let composed = match &operator {
+                            TaskOperatorV1::Measure { measures } => {
+                                Some(self.measure_signature(&qualified, measures)?)
+                            }
+                            _ => None,
+                        };
+                        let signature = match &composed {
+                            Some(signature) => signature,
+                            None => self
+                                .context
+                                .signatures
+                                .get(&signature_name)
+                                .ok_or_else(|| format!("Unsupported {signature_name}"))?,
+                        };
                         signature.contract.validate()?;
                         if signature.retains.iter().any(|(output, inputs)| {
                             !signature.contract.outputs.contains_key(output)
@@ -1545,6 +1674,9 @@ impl Compiler<'_> {
                         {
                             return Err("Implementation requires a child Pipeline's public reviewed coverage".into());
                         }
+                        if let TaskOperatorV1::Compare { objective } = &operator {
+                            self.require_comparable(&qualified, objective, signature, &bound)?;
+                        }
                         self.require_node_capacity()?;
                         let paid = matches!(
                             operator,
@@ -1553,6 +1685,7 @@ impl Compiler<'_> {
                                 | TaskOperatorV1::FixVerify { .. }
                                 | TaskOperatorV1::Check { .. }
                                 | TaskOperatorV1::DocumentCheck {}
+                                | TaskOperatorV1::Measure { .. }
                         );
                         if paid && signature.attempt.is_none() {
                             return Err(format!("{signature_name} has no bounded Attempt cost"));
@@ -1602,6 +1735,7 @@ impl Compiler<'_> {
                                 },
                             );
                         }
+                        let measures = matches!(operator, TaskOperatorV1::Measure { .. });
                         self.graph.nodes.insert(
                             qualified.clone(),
                             CompiledNode {
@@ -1667,7 +1801,9 @@ impl Compiler<'_> {
                             self.retained.insert(address.clone(), retained);
                             self.availability
                                 .insert(address.clone(), conditions.clone());
-                            if signature.outcome_port.as_ref() == Some(port_name) {
+                            // Every Measurement of a measure node is its own outcome receipt;
+                            // `when` still needs the node to have exactly one.
+                            if signature.outcome_port.as_ref() == Some(port_name) || measures {
                                 self.outcomes.insert(address.clone());
                             }
                             self.evidence.insert(address.clone(), evidence);
@@ -1786,6 +1922,8 @@ fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
         TaskOperatorV1::AttestFixes {} => Ok("attest-fixes"),
         TaskOperatorV1::RepairAccept {} => Ok("repair-accept"),
         TaskOperatorV1::ReviewContinue {} => Ok("review-continue"),
+        TaskOperatorV1::Measure { .. } => Ok("measure"),
+        TaskOperatorV1::Compare { .. } => Ok("compare"),
         _ => Err("Operator requires package expansion".into()),
     }
 }

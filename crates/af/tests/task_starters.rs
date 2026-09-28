@@ -533,3 +533,95 @@ fn reviewed_implementation_preserves_evidence_when_independent_work_fails() {
         );
     }
 }
+
+/// `af catalog init --profile experiment` (ADR-0124): the emitted catalog passes its own
+/// contract fixtures, and its Task measures the source, measures the sealed candidate, compares
+/// the two and is verified by command Workers alone, without a credential or a model.
+#[test]
+fn the_experiment_starter_measures_compares_and_verifies() {
+    let root = tempfile::tempdir().unwrap();
+    let init = run(
+        root.path(),
+        &[
+            "catalog",
+            "init",
+            "--profile",
+            "experiment",
+            "--destination",
+            "project",
+        ],
+        0,
+    );
+    assert_eq!(init["task"], "experiment.json");
+    assert_eq!(init["attempts"], 0);
+    let repo = root.path().join("project");
+    for args in [
+        vec!["init", "-q", "-b", "main"],
+        vec!["config", "user.name", "Fixture"],
+        vec!["config", "user.email", "fixture@example.invalid"],
+    ] {
+        assert!(
+            Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    commit(&repo);
+    let tested = run(&repo, &["catalog", "test", "--source", "."], 0);
+    assert_eq!(tested["contract_fixtures"], "passed");
+    assert_eq!(
+        tested["pipelines"],
+        json!(["builtin/experiment", "builtin/experiment-trial"])
+    );
+    let state = root.path().join("state");
+    let planned = task(
+        &repo,
+        &state,
+        &["task", "plan", "--file", "experiment.json"],
+        0,
+    );
+    assert_eq!(planned["attempts"], 0);
+    let finished = task(
+        &repo,
+        &state,
+        &[
+            "task",
+            "run",
+            "experiment",
+            "--confirm-plan",
+            planned["plan_id"].as_str().unwrap(),
+        ],
+        0,
+    );
+    assert_eq!(finished["result"]["domain_conclusion"], "verified");
+    for port in ["baseline", "candidate", "comparison"] {
+        assert!(finished["result"]["outputs"][port].is_object(), "{port}");
+    }
+    let markdown = root.path().join("comparison.md");
+    task(
+        &repo,
+        &state,
+        &[
+            "task",
+            "output",
+            "experiment",
+            "--port",
+            "comparison",
+            "--format",
+            "markdown",
+            "--output",
+            markdown.to_str().unwrap(),
+        ],
+        0,
+    );
+    let text = std::fs::read_to_string(markdown).unwrap();
+    assert!(
+        text.contains(
+            "| bytes_written (objective) | bytes | 100 | 80 | 20 | 0.2 | 3 / 3 | improved |"
+        ),
+        "{text}"
+    );
+}

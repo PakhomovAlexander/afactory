@@ -213,3 +213,5 @@ future readers need.
   bound](0122-show-committed-workers-and-their-recorded-attempts.md)
 - [0123 — Warm Task checks through a toolchain-keyed, bounded, machine-local
   cache](0123-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)
+- [0124 — Measure and compare source candidates in the
+  kernel](0124-measure-and-compare-source-candidates-in-the-kernel.md)

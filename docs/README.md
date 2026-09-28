@@ -23,6 +23,7 @@ and `--help` on every namespace and command.
 | [`tasks.md`](tasks.md) | How to run implementation Tasks with `af task`: start, inspect, evaluate, and deliver to a new local worktree. |
 | [`task-execution.md`](task-execution.md) | The Task runtime reference: fixed product decisions, contracts, fixtures, and walkthroughs for the common Task execution abstraction. |
 | [`task-execution/task-inputs.md`](task-execution/task-inputs.md) | The Task file's `inputs` table: binding a root input port to a recorded Task's output instead of exporting it to a file, what resolution records, and how a binding is shown. |
+| [`task-execution/experiments.md`](task-execution/experiments.md) | How an experiment Task measures a declared command on the source and on a candidate, compares the two under a declared objective, and gates its evaluator on the result: the `[measures]` and `[objectives]` policy tables, the report line, failure reasons and comparison rules. |
 | [`non-goals.md`](non-goals.md) | What the kernel deliberately does not do, so a missing feature can be told from a refused one. |
 | [`security/containment-probes.md`](security/containment-probes.md) | What a hostile check is contained by, which probes prove it, and which containment probes are still open. |
 | [`values.md`](values.md) | The eight engineering values in priority order and the three product values, each with the tests that decide whether a change honours it. Binding. |

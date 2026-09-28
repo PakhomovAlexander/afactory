@@ -100,3 +100,187 @@ fn refused_warm_shapes_are_refused_by_both() {
     assert!(!rust_accepts(&null));
     assert!(!schema.is_valid(&null));
 }
+
+fn measured(measures: Value, objectives: Option<Value>, warm: Option<Value>) -> Value {
+    let mut value = policy(warm, false);
+    value["measures"] = measures;
+    if let Some(objectives) = objectives {
+        value["objectives"] = objectives;
+    }
+    value
+}
+
+fn write(repetitions: u64, warm: bool, metrics: Value) -> Value {
+    json!({
+        "command": {"program": "python3", "args": [{"value": "measure.py", "provenance": "literal"}]},
+        "repetitions": repetitions,
+        "warm": warm,
+        "wall_ms": 60_000,
+        "metrics": metrics
+    })
+}
+
+/// `[measures]` and `[objectives]` (ADR-0124): every accepted shape is valid against the schema
+/// and captured as declared, a number threshold is captured as its canonical decimal text, and
+/// every shape either side refuses the other refuses too.
+#[test]
+fn measures_and_objectives_round_trip_and_refuse_alike() {
+    let schema = validator();
+    let bytes = json!([{"key": "bytes_written", "unit": "bytes"}]);
+    let objective = |extra: Value| {
+        let mut value = json!({"measure": "write", "metric": "bytes_written", "direction": "lower",
+            "min_improvement_ratio": "0.1", "min_repetitions": 3});
+        for (key, field) in extra.as_object().unwrap() {
+            value[key] = field.clone();
+        }
+        json!({"smaller": value})
+    };
+    for (value, captured_ratio) in [
+        (
+            measured(json!({"write": write(3, false, bytes.clone())}), None, None),
+            None,
+        ),
+        (
+            measured(
+                json!({"write": write(3, false, bytes.clone())}),
+                Some(objective(json!({}))),
+                None,
+            ),
+            Some("0.1"),
+        ),
+        (
+            measured(
+                json!({"write": write(16, true, json!([]))}),
+                Some(objective(
+                    json!({"metric": "elapsed_ms", "min_improvement_ratio": 0.10}),
+                )),
+                Some(json!({"build_cache": ["cargo_target"]})),
+            ),
+            Some("0.1"),
+        ),
+        (
+            measured(
+                json!({"write": write(1, false, bytes.clone())}),
+                Some(objective(
+                    json!({"min_improvement_ratio": 1, "direction": "higher"}),
+                )),
+                None,
+            ),
+            Some("1"),
+        ),
+    ] {
+        assert!(schema.is_valid(&value), "{value}");
+        let parsed: CodeTaskPolicy = serde_json::from_value(value.clone()).unwrap();
+        parsed.validate().unwrap();
+        let written = serde_json::to_value(&parsed).unwrap();
+        assert!(schema.is_valid(&written), "{written}");
+        match captured_ratio {
+            Some(ratio) => assert_eq!(
+                written["objectives"]["smaller"]["min_improvement_ratio"],
+                ratio
+            ),
+            None => assert!(written.get("objectives").is_none()),
+        }
+        // An empty metric list is captured as absent, like every other empty table.
+        let mut declared = value["measures"].clone();
+        if declared["write"]["metrics"] == json!([]) {
+            declared["write"].as_object_mut().unwrap().remove("metrics");
+        }
+        assert_eq!(written["measures"], declared);
+    }
+    let without = policy(None, false);
+    let parsed: CodeTaskPolicy = serde_json::from_value(without.clone()).unwrap();
+    let written = serde_json::to_value(&parsed).unwrap();
+    assert!(written.get("measures").is_none() && written.get("objectives").is_none());
+
+    // Shapes both refuse.
+    for value in [
+        measured(json!({"write": write(0, false, bytes.clone())}), None, None),
+        measured(
+            json!({"write": write(17, false, bytes.clone())}),
+            None,
+            None,
+        ),
+        measured(
+            json!({"write": {"command": {"program": "python3", "args": []},
+            "repetitions": 1, "warm": false, "wall_ms": 3_600_001}}),
+            None,
+            None,
+        ),
+        measured(
+            json!({"write": write(3, false, json!([{"key": "elapsed_ms", "unit": "ms"}]))}),
+            None,
+            None,
+        ),
+        measured(
+            json!({"write": write(3, false, json!([{"key": "b", "unit": "kilobytes"}]))}),
+            None,
+            None,
+        ),
+        measured(
+            json!({"write": write(3, false, json!([{"key": "b", "unit": "bytes", "note": 1}]))}),
+            None,
+            None,
+        ),
+        measured(
+            json!({"write": write(3, false, bytes.clone())}),
+            Some(objective(json!({"min_improvement_ratio": 1.5}))),
+            None,
+        ),
+        measured(
+            json!({"write": write(3, false, bytes.clone())}),
+            Some(objective(json!({"min_improvement_ratio": "0.10"}))),
+            None,
+        ),
+        measured(
+            json!({"write": write(3, false, bytes.clone())}),
+            Some(objective(json!({"min_repetitions": 0}))),
+            None,
+        ),
+        measured(
+            json!({"write": write(3, false, bytes.clone())}),
+            Some(objective(json!({"min_repetitions": 17}))),
+            None,
+        ),
+        measured(
+            json!({"write": write(3, false, bytes.clone())}),
+            Some(objective(json!({"direction": "down"}))),
+            None,
+        ),
+        measured(
+            json!({"write": write(3, false, bytes.clone())}),
+            Some(objective(json!({"extra": true}))),
+            None,
+        ),
+        measured(
+            json!({"bad name": write(3, false, bytes.clone())}),
+            None,
+            None,
+        ),
+    ] {
+        assert!(!rust_accepts(&value), "Rust accepted {value}");
+        assert!(!schema.is_valid(&value), "the schema accepted {value}");
+    }
+    // Cross-table rules only the Rust validator can state: an objective's measure and metric
+    // must be declared, and a warm measure needs the Warm Check Cache's cargo_target.
+    for value in [
+        measured(
+            json!({"write": write(3, false, bytes.clone())}),
+            Some(objective(json!({"measure": "other"}))),
+            None,
+        ),
+        measured(
+            json!({"write": write(3, false, bytes.clone())}),
+            Some(objective(json!({"metric": "other"}))),
+            None,
+        ),
+        measured(json!({"write": write(3, true, bytes.clone())}), None, None),
+        measured(
+            json!({"write": write(3, true, bytes.clone())}),
+            None,
+            Some(json!({"build_cache": ["cargo_home"]})),
+        ),
+    ] {
+        assert!(!rust_accepts(&value), "Rust accepted {value}");
+    }
+}
