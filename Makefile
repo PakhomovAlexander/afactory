@@ -1,8 +1,11 @@
 .PHONY: release-check check fmt lint test release review-kernel-container-probes
 
-# Cargo remains the gate; nextest is an explicit cross-binary benchmark until validated in CI.
-TEST_RUNNER ?= cargo
-TEST_THREADS ?= 4
+# nextest is the gate (ADR-0124): one process per test, scheduled across every test binary.
+# `TEST_RUNNER=cargo` keeps the sequential libtest path for comparison. TEST_THREADS bounds
+# concurrent tests, not compiler jobs: four on a four-core runner, half the cores elsewhere,
+# because these tests spawn real process trees.
+TEST_RUNNER ?= nextest
+TEST_THREADS ?= $(shell python3 -c 'import os; print(max(4, (os.cpu_count() or 4) // 2))')
 CI_STEP = python3 scripts/ci-step.py
 
 check: fmt lint test release-check
@@ -16,13 +19,13 @@ lint:
 test:
 ifeq ($(TEST_RUNNER),nextest)
 	$(CI_STEP) test-build cargo test --locked --no-run
-	$(CI_STEP) test-run cargo nextest run --locked --profile ci
+	$(CI_STEP) test cargo nextest run --locked --profile ci --test-threads $(TEST_THREADS)
 	$(CI_STEP) doctests cargo test --locked --doc -- --test-threads=$(TEST_THREADS)
 else ifeq ($(TEST_RUNNER),cargo)
 	$(CI_STEP) test-build cargo test --locked --no-run
 	$(CI_STEP) test cargo test --locked -- --test-threads=$(TEST_THREADS)
 else
-	$(error TEST_RUNNER must be cargo or nextest)
+	$(error TEST_RUNNER must be nextest or cargo)
 endif
 
 # Open the release PR for VERSION (bump + CHANGELOG section). Merging it is the release: the

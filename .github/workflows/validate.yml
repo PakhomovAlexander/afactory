@@ -32,6 +32,8 @@ jobs:
         id: cargo-cache
         with:
           kind: check-debug1
+      - name: Install the pinned test runner
+        run: bash scripts/install-nextest.sh
       - name: Check
         env:
           AF_CI_METRICS: ${{ runner.temp }}/check-metrics.jsonl

@@ -25,22 +25,21 @@ make check
 ```
 
 That is `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`,
-`cargo test --locked`, and the release-selection check (`scripts/test-release-resolve.py`). CI
-runs exactly this, so a green local run is a green PR. Clippy warnings are errors; fix them
-rather than allowing them. `TEST_THREADS` overrides the four-thread bound; native-provider
-fixtures spawn several processes per test, so the host CPU count is not a suitable bound.
+`cargo nextest run --profile ci` over every test binary, and the release-selection check
+(`scripts/test-release-resolve.py`). CI runs exactly this, so a green local run is a green PR.
+Clippy warnings are errors; fix them rather than allowing them.
 
-`make check TEST_RUNNER=nextest` is an opt-in cross-binary experiment, not the gate. It needs the
-pinned, checksum-verified binary that `scripts/install-nextest.sh` places in a temporary tools
-directory:
+The gate runs one test per process and schedules tests across every test binary at once
+([ADR-0124](docs/adr/0124-run-tests-in-parallel-processes-and-link-them-once.md)).
+`TEST_THREADS` bounds how many run at a time: four on a four-core CI runner, half the cores on
+a developer machine. Native-provider fixtures spawn several processes per test, so the host CPU
+count itself is not a suitable bound. The few tests that assert against a fixed real-time budget
+are listed in `.config/nextest.toml` and run alone; add a test there when its assertion depends
+on wall-clock, never by raising the budget it asserts.
 
-```sh
-scripts/install-nextest.sh
-PATH="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/af-ci-tools:$PATH" make check TEST_RUNNER=nextest
-```
-
-Cargo stays the required runner in CI until a complete comparison passes on Linux and macOS;
-native-provider probe timeouts under cross-binary scheduling currently block promoting it.
+The runner is the pinned, checksum-verified binary that `scripts/install-nextest.sh` installs
+into a temporary tools directory (CI) or `cargo install cargo-nextest --locked` (a developer
+machine). `make check TEST_RUNNER=cargo` keeps the sequential libtest path for comparison.
 
 If you touch `crates/review-sandbox`, also run the live probes:
 
