@@ -131,13 +131,27 @@ now reads as amended:
   the kernel ended records `timeout` (its own wall) or `deadline` (the Attempt's), with what it
   printed kept, instead of `exit`.
 - **A run records the cache condition it had, not the one the policy asked for.** A `warm = true`
-  measure whose key is busy or whose directory was discarded runs cold against a private target;
-  its run says `cache.warm = false`, `cache.bytes = 0` and why, and `af task show` prints `cold
-  (busy)` or `warm 2 of 3` after the median. The measurement's `warm` stays the request.
+  measure whose key is busy or whose toolchain cannot be resolved runs cold against a private
+  target, and one whose directory the kernel discarded before binding runs against the emptied
+  directory; either run says `cache.warm = false`, `cache.bytes = 0` and why, and `af task show`
+  prints `cold (busy)` or `warm 2 of 3` after the median. The measurement's `warm` stays the
+  request.
 - **`min_improvement_ratio` is text or the integer 0 or 1; a float is refused.** A TOML or JSON
   float has been rounded to a binary fraction by the parser before the kernel sees it, so a
   threshold that is compared exactly cannot be captured from it: `0.10000000000000001` would
   have been captured as `0.1` and passed an improvement of exactly one tenth.
+
+## After the second verification
+
+The package was verified (Task `research-r2-verify-3`); the two findings its reviewers still
+reported were fixed after the verdict, with tests, and are not re-verified:
+
+- **A signal leaves no exit code.** The check runner records `-1` for a command a signal ended;
+  a run's `exit_code` is the command's own and absent otherwise, and the failure says a signal
+  ended it.
+- **A discarded directory is recorded as the cold run it was.** The warm layer keeps why it
+  discarded a directory before binding it, and the repetition records `cache.warm = false` with
+  `discarded: <why>`.
 
 ## Consequences
 

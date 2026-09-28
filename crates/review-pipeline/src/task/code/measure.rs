@@ -279,20 +279,36 @@ impl CodeTaskDomain {
                             .strip_prefix(CARGO_TARGET)
                             .is_some_and(|rest| rest.starts_with(':'))
                 })
-                .map(|observation| MeasurementCacheV1 {
-                    warm: observation.eligible,
-                    bytes: if observation.eligible {
-                        observation.bytes_available
-                    } else {
-                        0
-                    },
-                    reason: (!observation.eligible).then(|| {
-                        observation
-                            .kind
-                            .split_once(':')
-                            .map_or("cold", |(_, reason)| reason)
-                            .to_string()
-                    }),
+                .map(|observation| {
+                    // A directory the kernel discarded and recreated before binding held
+                    // nothing for this repetition: cold, with the discard as its reason.
+                    let warm = observation.eligible && observation.discarded.is_none();
+                    MeasurementCacheV1 {
+                        warm,
+                        bytes: if warm { observation.bytes_available } else { 0 },
+                        reason: if observation.eligible {
+                            // The diagnostic names a host path; the record keeps only what
+                            // was found, bounded, never where.
+                            observation.discarded.as_ref().map(|why| {
+                                let what: String = why
+                                    .split(" at ")
+                                    .next()
+                                    .unwrap_or(why)
+                                    .chars()
+                                    .take(120)
+                                    .collect();
+                                format!("discarded: {what}")
+                            })
+                        } else {
+                            Some(
+                                observation
+                                    .kind
+                                    .split_once(':')
+                                    .map_or("cold", |(_, reason)| reason)
+                                    .to_string(),
+                            )
+                        },
+                    }
                 })
         });
         if toolchain_id.is_none() {
@@ -347,7 +363,7 @@ impl CodeTaskDomain {
         let run = MeasurementRunV1 {
             started_unix_ms: execution.started_unix_ms,
             elapsed_ms: execution.elapsed_ms,
-            exit_code: result.exit_code,
+            exit_code: observed_exit_code(ending, result.exit_code),
             stdout_id: result.stdout.clone(),
             stderr_id: result.stderr.clone(),
             cache,
@@ -377,6 +393,7 @@ impl CodeTaskDomain {
         }
         if result.status != CheckStatus::Passed {
             let detail = match (result.exit_code, &result.reason) {
+                _ if ending == CheckEnding::Signaled => "the command was ended by a signal".into(),
                 (_, Some(reason)) => reason.clone(),
                 (Some(code), None) => format!("the command exited {code}"),
                 (None, None) => "the command did not exit".into(),
@@ -533,7 +550,23 @@ fn timeout_failure(
             MeasurementFailureReasonV1::Timeout,
             format!("the repetition exceeded its wall_ms of {wall_ms} ms"),
         )),
-        CheckEnding::Exited | CheckEnding::Cancelled | CheckEnding::NotStarted => None,
+        CheckEnding::Exited
+        | CheckEnding::Signaled
+        | CheckEnding::Cancelled
+        | CheckEnding::NotStarted => None,
+    }
+}
+
+/// The exit code a run records: the command's own, and only when it exited. A command a signal
+/// or the kernel ended produced none; the runner's `-1` for a signal is its sentinel, not an
+/// observation.
+fn observed_exit_code(ending: CheckEnding, code: Option<i32>) -> Option<i32> {
+    match ending {
+        CheckEnding::Exited => code,
+        CheckEnding::Signaled
+        | CheckEnding::TimedOut
+        | CheckEnding::Cancelled
+        | CheckEnding::NotStarted => None,
     }
 }
 
@@ -554,10 +587,18 @@ mod tests {
         );
         for ending in [
             CheckEnding::Exited,
+            CheckEnding::Signaled,
             CheckEnding::Cancelled,
             CheckEnding::NotStarted,
         ] {
             assert!(timeout_failure(ending, 1_500, 20_000).is_none());
         }
+    }
+
+    #[test]
+    fn only_a_command_that_exited_has_an_exit_code() {
+        assert_eq!(observed_exit_code(CheckEnding::Exited, Some(3)), Some(3));
+        assert_eq!(observed_exit_code(CheckEnding::Signaled, Some(-1)), None);
+        assert_eq!(observed_exit_code(CheckEnding::TimedOut, Some(-1)), None);
     }
 }

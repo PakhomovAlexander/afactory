@@ -396,6 +396,9 @@ pub(crate) struct Observation {
     pub(crate) evicted_bytes: Option<u64>,
     /// `bound_exceeded` or `suspect`, present exactly when `evicted_bytes` is.
     pub(crate) evicted_reason: Option<String>,
+    /// Why the directory was discarded and recreated empty before this check, when it was: the
+    /// check then ran against an empty directory, which is warm again afterwards.
+    pub(crate) discarded: Option<String>,
 }
 
 impl Observation {
@@ -684,16 +687,17 @@ impl<'a> WarmSession<'a> {
                                     };
                                 let lookup_ms = started.elapsed().as_millis() as u64;
                                 let materializing = Instant::now();
-                                match directory.ensure() {
+                                let discarded = match directory.ensure() {
                                     Ok(Ensured::Discarded(reason)) => {
                                         // Removed and recreated empty: whatever it held is gone,
                                         // so the measurement below finds a cold directory, never
-                                        // the discarded one's bytes.
+                                        // the discarded one's bytes; the observation keeps why.
                                         eprintln!(
                                             "warm check cache diagnostic: `{label}` discarded: {reason}"
                                         );
+                                        Some(reason)
                                     }
-                                    Ok(Ensured::Reused | Ensured::Created) => {}
+                                    Ok(Ensured::Reused | Ensured::Created) => None,
                                     Err(detail) => {
                                         eprintln!("warm check cache diagnostic: {detail}");
                                         settled.insert(
@@ -709,7 +713,7 @@ impl<'a> WarmSession<'a> {
                                         );
                                         continue;
                                     }
-                                }
+                                };
                                 // Measured only after validation.
                                 let bytes = match directory.bytes() {
                                     Ok(bytes) => bytes,
@@ -747,6 +751,7 @@ impl<'a> WarmSession<'a> {
                                             as u64,
                                         evicted_bytes: None,
                                         evicted_reason: None,
+                                        discarded,
                                     },
                                 );
                                 prepared.directories.push((*kind, directory));
@@ -805,6 +810,7 @@ impl<'a> WarmSession<'a> {
                         materialization_ms: snapshot.materialization_ms,
                         evicted_bytes: None,
                         evicted_reason: None,
+                        discarded: None,
                     });
                 }
                 Err(error) => {
@@ -1007,6 +1013,7 @@ impl<'a> WarmSession<'a> {
             materialization_ms: 0,
             evicted_bytes: None,
             evicted_reason: None,
+            discarded: None,
         })
     }
 

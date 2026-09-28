@@ -28,7 +28,8 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   output digests, the cache condition it actually had (warm or cold, bytes, and why when cold)
   and the metrics the command reported on an `af.measure-report/1` last line with the declared
   keys and units. A repetition the kernel ends at a time bound is recorded from the supervisor's
-  typed ending as `timeout` or `deadline`, with what it printed kept. A failure (`exit`, `timeout`, `deadline`,
+  typed ending as `timeout` or `deadline`, with what it printed kept, and a command a signal
+  ended records no exit code. A failure (`exit`, `timeout`, `deadline`,
   `malformed_report`, `unit_mismatch`, `source_mutated`) stops the measurement and leaves no
   summary. The installed `compare` operator folds two Measurements into
   `af/MeasurementComparison@1` in exact decimal arithmetic: medians with an exact even-sample

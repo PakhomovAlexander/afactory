@@ -3,6 +3,7 @@
 # last stdout line. mode.txt selects a misbehaviour the kernel must record.
 import json
 import os
+import signal
 import sys
 import time
 
@@ -31,6 +32,10 @@ if mode == 'sleep':
     # timeout and keep what was printed.
     sys.stdout.flush()
     time.sleep(60)
+if mode == 'kill':
+    # Ended by a signal after printing: the kernel records no exit code, only what was printed.
+    sys.stdout.flush()
+    os.kill(os.getpid(), signal.SIGKILL)
 if mode == 'exit':
     raise SystemExit(3)
 if mode == 'mutate':

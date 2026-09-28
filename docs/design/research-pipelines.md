@@ -780,3 +780,13 @@ runner now carries a typed ending beside its result and the operator classifies 
 each run records the cache condition it actually had and `af task show` prints it; the ratio is
 decimal text or the integer 0 or 1, and every policy in the repository writes `"0.1"`. ADR-0124
 records the three amendments.
+
+Verification Task `research-r2-verify-3` on afb7fd2 (330,318 tokens; gate warm, `kernel` 13.8 min)
+ended **`verified`**: the evaluator passed the package on every acceptance criterion. The two
+reviewers still reported two majors, both fixed by hand after the verdict with tests and not
+re-verified: a command a signal ended recorded the runner's `-1` sentinel as its exit code (a run's
+exit code is now the command's own or absent), and a warm directory the kernel discarded before
+binding was recorded as warm (the run now says `cache.warm = false` with `discarded: <why>`, and
+the repetitions after it, which find the directory warm again, read `warm 2 of 3` in `af task
+show`). R2 closes here. Its three verification Tasks cost 686,566 tokens against 753,016 for the
+one implementation Task; the first was a gate flake that cost 2,151.

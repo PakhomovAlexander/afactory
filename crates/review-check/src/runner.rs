@@ -84,6 +84,9 @@ pub struct CheckExecution {
 pub enum CheckEnding {
     /// The process exited on its own, whatever its status.
     Exited,
+    /// A signal ended it: no exit code was observed, and the recorded result's `-1` is this
+    /// runner's sentinel for that, not something the command produced.
+    Signaled,
     /// The kernel ended it at the runner's timeout.
     TimedOut,
     /// The kernel ended it because the Attempt was cancelled.
@@ -251,7 +254,12 @@ impl<'a> CheckRunner<'a> {
             }
         };
 
-        (self.finish(base, output, stderr_held), CheckEnding::Exited)
+        let ending = if output.status.code().is_some() {
+            CheckEnding::Exited
+        } else {
+            CheckEnding::Signaled
+        };
+        (self.finish(base, output, stderr_held), ending)
     }
 
     /// Execute through the normal shared runner and retain the actual AF-observed host interval.

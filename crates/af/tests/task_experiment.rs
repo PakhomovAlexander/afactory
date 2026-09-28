@@ -446,6 +446,12 @@ fn a_failed_measurement_is_never_partial_and_is_never_evaluated() {
     for (task, mode, reason, detail) in [
         ("exits", "exit\n", "exit", "the command exited 3"),
         (
+            "killed",
+            "kill\n",
+            "exit",
+            "the command was ended by a signal",
+        ),
+        (
             "counts",
             "count\n",
             "unit_mismatch",
@@ -470,6 +476,12 @@ fn a_failed_measurement_is_never_partial_and_is_never_evaluated() {
         assert_eq!(failure.repetition, 1);
         assert_eq!(candidate.runs.len(), 1);
         assert!(candidate.runs[0].stdout_id.is_some());
+        // An exit code is the command's own; a signal leaves none, never the runner's sentinel.
+        match task {
+            "exits" => assert_eq!(candidate.runs[0].exit_code, Some(3)),
+            "killed" => assert_eq!(candidate.runs[0].exit_code, None),
+            _ => {}
+        }
         assert!(candidate.summary.is_empty());
         let recorded = comparison(&cas, &outcome);
         assert_eq!(
@@ -820,6 +832,53 @@ fn a_warm_measure_builds_into_the_warm_check_cache_and_records_its_key_and_bytes
         .get_json(snapshot["manifest_id"].as_str().unwrap())
         .unwrap();
     assert!(!manifest.to_string().contains("build.bin"));
+
+    // A repetition whose warm directory the kernel discards before binding — a link planted
+    // inside makes it suspect — runs against the emptied directory and records that: cold, with
+    // the discard as its reason; the repetitions after it find the directory warm again.
+    let target = {
+        let mut found = None;
+        for project in std::fs::read_dir(&cache).unwrap().flatten() {
+            for key in std::fs::read_dir(project.path()).unwrap().flatten() {
+                let directory = key.path().join("cargo_target");
+                if directory.is_dir() {
+                    found = Some(directory);
+                }
+            }
+        }
+        found.expect("a warm cargo_target below the cache")
+    };
+    std::os::unix::fs::symlink("/etc/hosts", target.join("link")).unwrap();
+    let outcome = start(&fixture, "warm-discarded", json!({"size.txt": "80\n"}), 0);
+    let discarded = measurement(&cas, &outcome, "baseline");
+    let first = discarded.runs[0].cache.as_ref().unwrap();
+    assert!(!first.warm);
+    assert_eq!(first.bytes, 0);
+    assert!(
+        first
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("discarded: ")),
+        "{:?}",
+        first.reason
+    );
+    assert!(discarded.runs[1..].iter().all(|run| {
+        run.cache
+            .as_ref()
+            .is_some_and(|cache| cache.warm && cache.reason.is_none())
+    }));
+    let (code, stdout, _) = af(
+        &fixture,
+        &[
+            "task",
+            "show",
+            "warm-discarded",
+            "--state",
+            fixture.state.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(stdout.contains(", warm 2 of 3"), "{stdout}");
 
     // The same measure where the kernel cannot resolve a toolchain — its proxies fail every
     // probe — runs every repetition cold against a private target, and the Measurement says so:
