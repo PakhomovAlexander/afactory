@@ -799,7 +799,7 @@ fn task_runtime_cache_observations_name_at_most_one_reason() {
     }
 }
 
-/// ADR-0127: an observation names which byte bound acted — `max_bytes` for an eviction whose
+/// ADR-0128: an observation names which byte bound acted — `max_bytes` for an eviction whose
 /// check's result stood or a pre-check removal, `hard_max_bytes` for a check the bound ended —
 /// and never names one beside a `suspect` eviction or when no bound acted.
 #[test]
@@ -2444,7 +2444,7 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
     assert!(serde_json::from_value::<TaskTransitionV1>(unproven).is_err());
 }
 
-/// ADR-0127: the `task_collected` tombstone carries `af/TaskCollected@1` inline, references no
+/// ADR-0128: the `task_collected` tombstone carries `af/TaskCollected@1` inline, references no
 /// artifact, and is written at its own collection time; the schema and the typed contract refuse
 /// the same shapes, except the two field comparisons only the typed contract can make.
 #[test]

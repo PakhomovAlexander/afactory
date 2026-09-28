@@ -1,4 +1,4 @@
-//! Warm Task checks (ADR-0123). A code policy's `[warm]` table lets a check reuse one
+//! Warm Task checks (ADR-0124). A code policy's `[warm]` table lets a check reuse one
 //! machine-local, toolchain-keyed, byte-bounded build directory; a warm check changes no
 //! Snapshot, candidate, check outcome or delivered tree, and only its runtime observations and
 //! the `af task show` cache line say it was warm. The toolchain is a stubbed `rustc` and `cargo`

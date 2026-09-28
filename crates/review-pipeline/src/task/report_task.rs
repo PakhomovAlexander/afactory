@@ -1,4 +1,4 @@
-//! Report Tasks over the common Task scheduler and ledger (ADR-0125). A report is a Document
+//! Report Tasks over the common Task scheduler and ledger (ADR-0126). A report is a Document
 //! written against one exact source Snapshot: the author reads that Snapshot, the installed
 //! renderer and checks bind every artifact to it, and acceptance requires an independent
 //! verifier bound to the same Snapshot. Nothing here seals a tree or produces a candidate.

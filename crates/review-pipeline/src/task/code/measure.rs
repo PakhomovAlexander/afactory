@@ -1,4 +1,4 @@
-//! The installed `measure` and `compare` operators (ADR-0124). A measure runs one declared
+//! The installed `measure` and `compare` operators (ADR-0125). A measure runs one declared
 //! command of the captured code policy, repetition by repetition, against a fresh read-only
 //! materialization of the exact source Snapshot and a private runtime directory. Everything a
 //! Measurement carries is the kernel's own observation, except the metrics the command prints on
@@ -378,7 +378,7 @@ impl CodeTaskDomain {
             ));
         }
         // Above `max_bytes` only, the directories were evicted and the repetition stands
-        // (ADR-0127); the hard bound and suspicion end it.
+        // (ADR-0128); the hard bound and suspicion end it.
         let ended = match exceeded {
             Some(super::super::warm_check::Excess::Suspect(_)) => Some(WARM_CACHE_SUSPECT),
             Some(super::super::warm_check::Excess::Bound(_)) => Some(WARM_CACHE_BOUND_EXCEEDED),

@@ -3,7 +3,7 @@
 A Task file can bind a root input port to an output of a Task already recorded in the same Store,
 instead of exporting that output to a file and capturing it again. The decision is
 [ADR-0117](../adr/0117-bind-task-inputs-to-recorded-task-outputs.md), widened by
-[ADR-0126](../adr/0126-bind-any-declared-root-port-to-recorded-task-outputs.md) to every root
+[ADR-0127](../adr/0127-bind-any-declared-root-port-to-recorded-task-outputs.md) to every root
 input the selected Pipeline declares; this page is their Task-file reference and a map of where
 they are implemented.
 
@@ -256,7 +256,7 @@ Task-contract ones.
 
 ## Widened by package R4
 
-[ADR-0126](../adr/0126-bind-any-declared-root-port-to-recorded-task-outputs.md) changed no
+[ADR-0127](../adr/0127-bind-any-declared-root-port-to-recorded-task-outputs.md) changed no
 contract beyond one optional member, and every refusal ADR-0117 made stays.
 
 | Crate | What changed |

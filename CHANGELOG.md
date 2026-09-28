@@ -20,8 +20,8 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   runner admits both sets in canonical order (sorted, unique) before validating the reply, so an
   author is judged on what it cited rather than on the order it listed it. This repository's
   `kernel/report` gives its author two Attempts.
-- Store hygiene and the warm cache's two bounds (ADR-0127, package R5 of
-  `docs/design/research-pipelines.md`; amends ADR-0123). `af task list --sizes` prints each Task's
+- Store hygiene and the warm cache's two bounds (ADR-0128, package R5 of
+  `docs/design/research-pipelines.md`; amends ADR-0124). `af task list --sizes` prints each Task's
   CAS bytes — those only it reaches and those it shares with another Task or Campaign record —
   and the Store's total; `--json` adds `sizes` to each entry and `store` to the document. `af
   task gc --older-than DAYS --keep N` previews, writing nothing, which finished Tasks beyond the
@@ -48,7 +48,7 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   Task as collected, a listing projects the uncollected Tasks before reading the tombstones, an
   opening Task re-checks every Task its bindings name under the writer lock, and a collected
   Task's row under `--sizes` carries a zero footprint.
-- Bind any declared root port (ADR-0126, package R4 of `docs/design/research-pipelines.md`;
+- Bind any declared root port (ADR-0127, package R4 of `docs/design/research-pipelines.md`;
   amends ADR-0117). A Task file's `inputs` table may bind any root input the selected Pipeline
   declares — the one the Task file names, or else every captured Pipeline accepting its kind,
   alike — to a recorded, finished Task's result output whose artifacts verify in the CAS and
@@ -74,7 +74,7 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   `task-input-bindings-v1.json` the `also` list. The `builtin/report` starter's Worker schemas
   admit a `snapshot_id` on `comparison` and `measurements` values. A Task file without `inputs`
   is unchanged.
-- Report Tasks (ADR-0125, package R3 of `docs/design/research-pipelines.md`). The built-in kind
+- Report Tasks (ADR-0126, package R3 of `docs/design/research-pipelines.md`). The built-in kind
   `report` selects a new installed profile: an author reads the source Snapshot, the kernel
   renders its draft and resolves its repository citations against that exact Manifest, and an
   independent verifier on the same Snapshot accepts the report. Its captured policy is
@@ -101,7 +101,7 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   `report-verification-v1.json` and `report-task-policy-v1.json`; the catalog, Task-file,
   Task-kind and operator schemas gain the new fields, profile and operators. Document and
   implement Tasks are unchanged.
-- Measure and compare (ADR-0124, package R2 of `docs/design/research-pipelines.md`). A code
+- Measure and compare (ADR-0125, package R2 of `docs/design/research-pipelines.md`). A code
   policy may declare `[measures.<name>]` — a command, 1 to 16 `repetitions`, `warm`, `wall_ms`
   per repetition and `metrics` of `{ key, unit }` in `ms`, `bytes`, `count` or `ratio` — and
   `[objectives.<name>]` — a measure, a metric, `lower` or `higher`, `min_improvement_ratio`
@@ -131,7 +131,7 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   `measurement-v1.json` and `measurement-comparison-v1.json`; `code-task-policy-v1.json` and the
   operator schema gain the new tables and operators. A policy without them is captured, planned
   and shown exactly as before.
-- Warm Task checks bind the kernel's rustup home and keep Cargo's home warm (ADR-0123 amended,
+- Warm Task checks bind the kernel's rustup home and keep Cargo's home warm (ADR-0124 amended,
   package R1 of `docs/design/research-pipelines.md`). Under `[warm]` a check and its toolchain
   probe receive `RUSTUP_HOME`, from the kernel's own, else its `HOME`'s `.rustup`, and
   `RUSTUP_AUTO_INSTALL=0`. A rustup proxy therefore answers from the installed toolchain
@@ -153,7 +153,7 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   document of a Task without `[warm]`, and a fixture proves from the implementer's sandbox
   manifest, the sealed candidate, the derived Snapshot and the delivered tree that no cache
   byte reaches them.
-- Warm Task checks (ADR-0123, `docs/design/research-pipelines.md` package R1). A code policy
+- Warm Task checks (ADR-0124, `docs/design/research-pipelines.md` package R1). A code policy
   may declare `[warm] build_cache = ["cargo_target"]`, `caches = ["cargo"]` and `max_bytes`
   (default 8 GiB, at most 32 GiB). A `trusted_local` Task check then builds into
   `$XDG_CACHE_HOME/af/task-build-cache/<project>/<toolchain>/cargo_target`. The toolchain key
@@ -192,7 +192,7 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   file of this user at its name before acquisition writes through it, a key that a check renamed
   and recreated is displaced and suspect, eviction empties or drops the held locks and reports
   success only when nothing but sound empty locks remains, and suspicion outranks the byte count
-  in the recorded cause. ADR-0123 states where these rules stop: `trusted_local` is not
+  in the recorded cause. ADR-0124 states where these rules stop: `trusted_local` is not
   isolation, and the cache is honest as evidence, not a defence against a check acting on the host. A link or a
   directory at a lock's name is removed before the name is opened, and a waiter judges the inode
   again after acquiring the lock, before truncating it. A held lock a check grows counts toward

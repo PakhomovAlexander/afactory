@@ -1,7 +1,7 @@
 # ADR-0117: Bind a Task input port to a recorded Task's output
 
 Status: accepted, 2026-09-23; amended by
-[ADR-0126](0126-bind-any-declared-root-port-to-recorded-task-outputs.md): any root input the
+[ADR-0127](0127-bind-any-declared-root-port-to-recorded-task-outputs.md): any root input the
 selected Pipeline declares may be bound, not only `source`, `history` and `sources`, and a
 `many` port may be bound from several recorded outputs.
 

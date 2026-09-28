@@ -1,4 +1,4 @@
-//! `af task gc` and `af task list --sizes` (ADR-0127): Store hygiene over the common Task Store.
+//! `af task gc` and `af task list --sizes` (ADR-0128): Store hygiene over the common Task Store.
 //!
 //! The Store owns every rule — reachability, the collection plan, the tombstone and the sweep;
 //! this module resolves the state directory and prints what the Store decided. A preview opens

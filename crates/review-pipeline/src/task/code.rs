@@ -57,7 +57,7 @@ pub struct CodeTaskPolicy {
     )]
     pub check_process_wall_ms: Option<u64>,
     pub require_container: bool,
-    /// The Warm Check Cache (ADR-0123). Absent, every check builds cold and the captured policy
+    /// The Warm Check Cache (ADR-0124). Absent, every check builds cold and the captured policy
     /// is byte-identical to one written before the table existed.
     #[serde(
         default,
@@ -65,7 +65,7 @@ pub struct CodeTaskPolicy {
         deserialize_with = "review_core::task::present_option"
     )]
     pub warm: Option<CodeWarmPolicy>,
-    /// Declared measured commands (ADR-0124). Absent, the captured policy is byte-identical to
+    /// Declared measured commands (ADR-0125). Absent, the captured policy is byte-identical to
     /// one written before the table existed.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub measures: BTreeMap<String, MeasureDefinitionV1>,
@@ -270,7 +270,7 @@ fn measurement_port(name: &str) -> (String, PipelinePortV1) {
     (name.into(), port(MEASUREMENT_V1, same("source")))
 }
 
-/// The installed measure and compare operators of a policy that declares measures (ADR-0124).
+/// The installed measure and compare operators of a policy that declares measures (ADR-0125).
 /// `operator/measure` carries the one Attempt's wall, the captured `check_wall_ms`, and every
 /// declared measure's output; `operator/measure/<name>` carries that measure's one output and
 /// its repetition budget, which the compiler sums per node. `operator/compare/<objective>`
@@ -698,7 +698,7 @@ impl CodeTaskDomain {
                 } else {
                     // `fails` is the reason the check fails with, when the excess ends it: the
                     // hard bound or suspicion. Above only `max_bytes` the directories are
-                    // evicted and the check's own result stands (ADR-0127).
+                    // evicted and the check's own result stands (ADR-0128).
                     let (fails, why, bound) = match &exceeded {
                         Some(Excess::Suspect(detail)) => {
                             eprintln!(

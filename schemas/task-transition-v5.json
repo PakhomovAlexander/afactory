@@ -461,7 +461,7 @@
           }
         },
         {
-          "description": "The tombstone of `af task gc --apply` (ADR-0127): the last event of a Task log, referencing no artifact.",
+          "description": "The tombstone of `af task gc --apply` (ADR-0128): the last event of a Task log, referencing no artifact.",
           "type": "object",
           "additionalProperties": false,
           "required": [

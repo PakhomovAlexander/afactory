@@ -419,7 +419,7 @@ pub(super) struct WritePermit {
     review_round: Option<review_round::ReviewRoundFence>,
     review_prefix: Option<(String, u64)>,
     /// The Tasks an opening Task's bindings name: none may have been collected by the time the
-    /// opening is written, and the check runs under the writer lock collection uses (ADR-0127).
+    /// opening is written, and the check runs under the writer lock collection uses (ADR-0128).
     bound_tasks: Vec<String>,
 }
 
@@ -521,7 +521,7 @@ fn validate_input_refs(
 
 /// An input port of a Task revision, plan or invocation. Beside every rule an output port
 /// keeps, a `many` input that names no Snapshot claims none for its artifacts: that is how a
-/// port bound from several recorded outputs of different Snapshots is recorded (ADR-0126),
+/// port bound from several recorded outputs of different Snapshots is recorded (ADR-0127),
 /// and each artifact keeps its own subject Snapshot in its envelope. Outputs never do this.
 pub(super) fn validate_bound_input_refs(
     cas: &Cas,
@@ -922,7 +922,7 @@ impl TaskProjection {
                 TaskChangeV1::Opened { .. } | TaskChangeV1::LeaseTaken { .. } => {
                     return Err(conflict("Task already exists"));
                 }
-                // A projection stops at the tombstone (ADR-0127); no transition ever applies it.
+                // A projection stops at the tombstone (ADR-0128); no transition ever applies it.
                 TaskChangeV1::TaskCollected { collected } => {
                     return Err(StoreError::Collected {
                         task_id: collected.task_id.clone(),
@@ -1282,7 +1282,7 @@ impl EventStore {
         let mut ids = BTreeSet::new();
         for run_id in self.run_ids()? {
             // A collected Task is listed by `collected_tasks`; its projection stops at the
-            // tombstone and its artifacts may be gone (ADR-0127).
+            // tombstone and its artifacts may be gone (ADR-0128).
             if !run_id.starts_with("task:") || self.run_tombstone(&run_id)?.is_some() {
                 continue;
             }
@@ -1310,7 +1310,7 @@ impl EventStore {
         for id in ids {
             match self.task_projection(cas, &id) {
                 // Collected between the walk above and this projection: it is a tombstone's
-                // now, and `collected_tasks` read after this call lists it (ADR-0127).
+                // now, and `collected_tasks` read after this call lists it (ADR-0128).
                 Err(StoreError::Collected { .. }) => continue,
                 Err(error) => return Err(error),
                 Ok(task) => {
@@ -1330,7 +1330,7 @@ impl EventStore {
         match self.task_projection_uncollected(cas, task_id) {
             // A sweep may have removed this Task's artifacts between the tombstone check and
             // the reads: a Task collected meanwhile is reported as collected, never as corrupt
-            // (ADR-0127). Any other missing artifact stays the error it is.
+            // (ADR-0128). Any other missing artifact stays the error it is.
             Err(StoreError::Artifact(reason)) => match self.task_tombstone(task_id)? {
                 Some(collected) => Err(StoreError::Collected {
                     task_id: collected.task_id,
@@ -1350,7 +1350,7 @@ impl EventStore {
         #[cfg(test)]
         PROJECTION_CALLS.with(|calls| calls.set(calls.get() + 1));
         // A collected Task's projection stops at its tombstone: none of its artifacts is read,
-        // so one a sweep removed is never reported as corruption (ADR-0127).
+        // so one a sweep removed is never reported as corruption (ADR-0128).
         if let Some(collected) = self.task_tombstone(task_id)? {
             return Err(StoreError::Collected {
                 task_id: collected.task_id,

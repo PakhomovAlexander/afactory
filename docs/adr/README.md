@@ -212,12 +212,12 @@ future readers need.
 - [0122 — Show committed Workers and the Attempts their recorded plans
   bound](0122-show-committed-workers-and-their-recorded-attempts.md)
 - [0123 — Warm Task checks through a toolchain-keyed, bounded, machine-local
-  cache](0123-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)
+  cache](0124-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)
 - [0124 — Measure and compare source candidates in the
-  kernel](0124-measure-and-compare-source-candidates-in-the-kernel.md)
+  kernel](0125-measure-and-compare-source-candidates-in-the-kernel.md)
 - [0125 — Accept reports bound to an exact source
-  Snapshot](0125-accept-reports-bound-to-an-exact-source-snapshot.md)
+  Snapshot](0126-accept-reports-bound-to-an-exact-source-snapshot.md)
 - [0126 — Bind any declared root port to recorded Task
-  outputs](0126-bind-any-declared-root-port-to-recorded-task-outputs.md)
+  outputs](0127-bind-any-declared-root-port-to-recorded-task-outputs.md)
 - [0127 — Collect finished Tasks behind a tombstone and a reachability
-  sweep](0127-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
+  sweep](0128-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)

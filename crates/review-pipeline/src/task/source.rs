@@ -30,7 +30,7 @@ pub struct SnapshotTaskEnvironment {
 /// the model adapter's tools both come from this one function, so they cannot disagree, and no
 /// package, runner argument or `.af/` policy can name a tool outside it. A review Worker turns
 /// `execute-checks` into a shell (ADR-0118), and so does a report author that reads source and
-/// never writes it (ADR-0125); any other non-writing Worker keeps its read-only source.
+/// never writes it (ADR-0126); any other non-writing Worker keeps its read-only source.
 pub fn worker_access(signature: &OperatorSignature) -> WorkerAccess {
     if signature.effects.contains("write-source") {
         if signature.effects.contains("execute-checks") {
@@ -533,7 +533,7 @@ mod tests {
             ("", "review", ReadOnly),
             ("read-source execute-checks", "review", ExecuteChecks),
             ("execute-checks", "author review", ExecuteChecks),
-            // A report author that reads source gets the review Worker's clone (ADR-0125).
+            // A report author that reads source gets the review Worker's clone (ADR-0126).
             ("read-source execute-checks", "author", ExecuteChecks),
             ("execute-checks", "author", ReadOnly),
             ("read-source", "author", ReadOnly),

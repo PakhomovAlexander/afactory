@@ -1,4 +1,4 @@
-//! Report Tasks (ADR-0125). The shipped `builtin/report` starter runs a command author that
+//! Report Tasks (ADR-0126). The shipped `builtin/report` starter runs a command author that
 //! reads the committed tree in a clone that seals nothing back and cites two paths and one
 //! `path:line`; the kernel renders the draft, resolves every citation against the exact source
 //! Manifest, and dispatches the independent command verifier only when those checks pass. No

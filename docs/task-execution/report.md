@@ -5,7 +5,7 @@ Snapshot and may run commands in a clone of it; the kernel renders the draft and
 repository citation against the Snapshot's Manifest; an independent verifier reads the same
 Snapshot and judges the report against the Task's requirements. A report is never delivered:
 `af task output` is its only exit. The decision is
-[ADR-0125](../adr/0125-accept-reports-bound-to-an-exact-source-snapshot.md); the Document
+[ADR-0126](../adr/0126-accept-reports-bound-to-an-exact-source-snapshot.md); the Document
 profile it reuses is described in [Document Tasks](document.md).
 
 ```text

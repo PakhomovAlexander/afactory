@@ -51,7 +51,7 @@ impl ReferencedTaskV1 {
 /// for the port — a re-rooted `source`, whose `af/SourceTree@1` envelope must name the
 /// re-rooted Snapshot rather than the derived one it came from.
 ///
-/// A `many` port bound from several recorded outputs (ADR-0126) keeps its first reference here
+/// A `many` port bound from several recorded outputs (ADR-0127) keeps its first reference here
 /// and every further one, in Task-file order, in `also`: each names its own Task output and
 /// the Snapshot that output recorded, and none is re-rooted. `also` is absent for every port
 /// bound from one reference, so such a record is exactly what ADR-0117 wrote.

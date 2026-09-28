@@ -138,7 +138,7 @@ path = ".af/task-packages/kernel/experiment-trial"
 
 [packages."kernel/report"]
 version = "1.0.0"
-digest = "sha256:401133e647dcd81587a2c40c494ff28e5658c7fe6a9bd347464f9bf64ee06dc7"
+digest = "sha256:12de438deb58e47f510b7a7d16d97a3a3cd7da62ac9b73cd064d40d858726c82"
 path = ".af/task-packages/kernel/report"
 
 [packages."kernel/analyst"]

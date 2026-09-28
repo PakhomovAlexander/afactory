@@ -576,7 +576,7 @@ fn adapter_flags_derive_from_the_captured_effects_alone() {
     assert_eq!(reviewer, WorkerAccess::ExecuteChecks);
     assert_eq!(task_tools(reviewer), "Read,Glob,Grep,Bash");
     assert_eq!(task_sandbox_mode(reviewer), "workspace-write");
-    // A report author that reads source gets the same shell and clone (ADR-0125).
+    // A report author that reads source gets the same shell and clone (ADR-0126).
     let author = worker_access(&bare_signature("read-source execute-checks", "author"));
     assert_eq!(author, WorkerAccess::ExecuteChecks);
     assert_eq!(task_tools(author), "Read,Glob,Grep,Bash");

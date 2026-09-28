@@ -2,7 +2,7 @@
 //!
 //! Resolution happens once, at plan time, and reads only the Store named by `--state`
 //! (ADR-0117). Any root input port the selected Pipeline declares may be bound to a recorded
-//! Task's result output, and a `many` port to several of them (ADR-0126). From the resolved `ArtifactInputV1` onwards a binding is indistinguishable from
+//! Task's result output, and a `many` port to several of them (ADR-0127). From the resolved `ArtifactInputV1` onwards a binding is indistinguishable from
 //! a capture: the compiled plan carries exact artifact IDs, so `af task run`, resume, retry and
 //! replay never read the referencing Task file again.
 //!
@@ -42,7 +42,7 @@ pub(super) struct ExactArtifactRefV1 {
 pub(super) enum TaskInputRefV1 {
     Task(TaskOutputRefV1),
     Artifact(ExactArtifactRefV1),
-    /// Several recorded outputs gathered, in this order, into one `many` port (ADR-0126).
+    /// Several recorded outputs gathered, in this order, into one `many` port (ADR-0127).
     Outputs(Vec<TaskOutputRefV1>),
 }
 
@@ -182,7 +182,7 @@ impl DeclaredPorts {
                 Ok((artifact_type.clone(), *cardinality))
             }
             // Some accepting Pipeline lacks it: selection could otherwise pick the one that has
-            // it and let the binding decide the Pipeline, which ADR-0126 refuses.
+            // it and let the binding decide the Pipeline, which ADR-0127 refuses.
             Some((declaring, _)) if *declaring < self.consulted => Err(format!(
                 "the captured Pipelines accepting kind {} do not all declare the root input \
                  {named}; name the Pipeline in the Task file",
@@ -632,7 +632,7 @@ pub(super) fn resolve(
             // `history` and `sources` hold no Snapshot semantics that sealing, ancestry or
             // delivery depend on, so the referenced artifact ID is carried verbatim and the
             // port names no Snapshot, as ADR-0117 decided. Every other declared port keeps the
-            // Snapshot ID its recorded output carried (ADR-0126).
+            // Snapshot ID its recorded output carried (ADR-0127).
             let first = recorded.artifact_ids.first().cloned();
             let reason = "the reference holds no artifact";
             let artifact_id = first.ok_or_else(|| refuse(port, reference, reason))?;

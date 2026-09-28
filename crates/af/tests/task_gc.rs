@@ -1,4 +1,4 @@
-//! ADR-0127 end to end: `af task list --sizes` and `af task gc` over real Tasks in one Store.
+//! ADR-0128 end to end: `af task list --sizes` and `af task gc` over real Tasks in one Store.
 //!
 //! Two finished Tasks, `--keep 1`: the preview writes nothing, `--apply` tombstones the older
 //! one and removes exactly the bytes the preview named, the retained Task's `show --json` is

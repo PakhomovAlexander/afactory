@@ -87,7 +87,7 @@ struct TaskFile {
     requirements: Option<serde_json::Map<String, serde_json::Value>>,
     /// Root input ports bound to a recorded Task's output or to an exact artifact in the same
     /// Store, instead of being constructed by this adapter (ADR-0117), or — for any other root
-    /// input the selected Pipeline declares — to one or several recorded outputs (ADR-0126). Absent by default, and
+    /// input the selected Pipeline declares — to one or several recorded outputs (ADR-0127). Absent by default, and
     /// absent on round-trip, so a Task file written before this decision keeps its exact
     /// revision, plan and `--json` documents.
     #[serde(
@@ -103,7 +103,7 @@ struct TaskFile {
     )]
     document_sources: Option<String>,
     /// A report Task's captured sources, in the `af.document-sources/1` file shape. Absent,
-    /// the report reads the empty set (ADR-0125).
+    /// the report reads the empty set (ADR-0126).
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -2234,7 +2234,7 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
         EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
     // Uncollected Tasks are projected first and the tombstones read after: a Task that
     // `gc --apply` collects between the two is skipped by the projection and listed from its
-    // tombstone, so no Task the log retains is ever omitted (ADR-0127).
+    // tombstone, so no Task the log retains is ever omitted (ADR-0128).
     let mut entries = store.map_tasks(&cas, |task| {
         let result: Option<TaskResultV1> = match &task.phase {
             TaskPhaseV1::Finished { result_id } => Some(artifact(&cas, result_id, TASK_RESULT_V1)?),
@@ -2270,7 +2270,7 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
 }
 
 /// `af task list --sizes`: the Store's totals and each uncollected Task's CAS footprint. The
-/// same reachability walk `af task gc` sweeps by (ADR-0127). Nothing is written.
+/// same reachability walk `af task gc` sweeps by (ADR-0128). Nothing is written.
 pub(super) fn list_sizes(
     state: &Path,
 ) -> Result<(serde_json::Value, BTreeMap<String, serde_json::Value>), String> {
@@ -2478,7 +2478,7 @@ fn present_with_format(
         }
         // One line per bound output, through the same sanitizer the preview uses: a referenced
         // Task ID is untrusted display data wherever it is printed. A port bound from several
-        // outputs prints one line per output (ADR-0126).
+        // outputs prints one line per output (ADR-0127).
         let bound = bindings.iter().flat_map(|record| &record.bindings);
         let bound = bound.flat_map(|(port, binding)| {
             preview::bound_outputs(binding).map(move |output| (port, output))
@@ -2549,7 +2549,7 @@ fn present_with_format(
     }))
 }
 
-/// One line per recorded Measurement and per recorded comparison (ADR-0124), in node order: a
+/// One line per recorded Measurement and per recorded comparison (ADR-0125), in node order: a
 /// measurement's median elapsed time, or the repetition and reason it failed at, and a
 /// comparison's conclusion on its objective's metric. A Task without either prints nothing.
 fn measurement_lines(cas: &Cas, state: &TaskProjection) -> Result<Vec<String>, String> {
@@ -2618,7 +2618,7 @@ fn measurement_lines(cas: &Cas, state: &TaskProjection) -> Result<Vec<String>, S
 }
 
 /// A report Task's title, its verifier's outcome and the source Snapshot its citations were
-/// checked against (ADR-0125), from the recorded public acceptance receipt. Any other Task, and
+/// checked against (ADR-0126), from the recorded public acceptance receipt. Any other Task, and
 /// a report Task with no result yet, prints nothing.
 fn report_lines(cas: &Cas, result: Option<&TaskResultV1>) -> Result<Vec<String>, String> {
     use review_core::task::document::{DOCUMENT_V1, DocumentV1};
@@ -2689,7 +2689,7 @@ fn cache_condition(measurement: &review_core::task::measurement::MeasurementV1) 
     }
 }
 
-/// One line per warm check (ADR-0123), named by its evidence group's check binding: its outcome,
+/// One line per warm check (ADR-0124), named by its evidence group's check binding: its outcome,
 /// its host-observed elapsed time or that it never started, and, per declared kind,
 /// `warm <bytes>` or `cold <reason>`. A check without observations prints nothing, so a Task
 /// whose policy has no `[warm]` reads as before, and no line is ever printed without a name.
@@ -2743,7 +2743,7 @@ fn check_cache_lines(inspection: &serde_json::Value) -> Vec<String> {
 
 /// Why a warm directory was removed after its check, and which byte bound acted when one did:
 /// `bound_exceeded max_bytes` for an eviction whose check's result stood, `bound_exceeded
-/// hard_max_bytes` for a check the bound ended (ADR-0127).
+/// hard_max_bytes` for a check the bound ended (ADR-0128).
 fn eviction(cache: &serde_json::Value) -> String {
     let why = cache["evicted_reason"].as_str().unwrap_or("bound_exceeded");
     match cache["bound"].as_str() {

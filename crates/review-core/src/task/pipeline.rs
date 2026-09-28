@@ -221,7 +221,7 @@ pub enum TaskOperatorV1 {
     },
     Select {},
     /// Kernel measurement of a source Snapshot: one `af/Measurement@1` per named measure of the
-    /// captured code policy, each an outcome receipt. Never invokes a Provider (ADR-0124).
+    /// captured code policy, each an outcome receipt. Never invokes a Provider (ADR-0125).
     Measure {
         #[serde(deserialize_with = "super::unique_set")]
         measures: BTreeSet<String>,

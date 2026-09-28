@@ -1,4 +1,4 @@
-//! The Warm Check Cache's host directory (ADR-0123): one machine-local build directory per
+//! The Warm Check Cache's host directory (ADR-0124): one machine-local build directory per
 //! project, toolchain and kind, below `$XDG_CACHE_HOME/af/task-build-cache`.
 //!
 //! This is explicitly unsafe, candidate-built state, and nothing here pretends otherwise. What

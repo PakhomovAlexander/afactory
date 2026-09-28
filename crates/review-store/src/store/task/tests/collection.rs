@@ -1,4 +1,4 @@
-//! ADR-0127: collection is one versioned transition — a tombstone, then a sweep of every object
+//! ADR-0128: collection is one versioned transition — a tombstone, then a sweep of every object
 //! no uncollected record reaches — and a collected Task's projection stops at the tombstone.
 
 use super::*;

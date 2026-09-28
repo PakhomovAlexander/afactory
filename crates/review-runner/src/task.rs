@@ -238,7 +238,7 @@ impl WorkerContract {
         let mut inputs = BTreeMap::new();
         for (port, input) in &invocation.inputs {
             // A `many` port that names no Snapshot claims none for its values: a port bound
-            // from several recorded outputs of different Snapshots (ADR-0126). Each value keeps
+            // from several recorded outputs of different Snapshots (ADR-0127). Each value keeps
             // and shows its own; every other port's values name the port's one Snapshot.
             let unclaimed = input.cardinality == review_core::PortCardinality::Many
                 && input.snapshot_id.is_none();

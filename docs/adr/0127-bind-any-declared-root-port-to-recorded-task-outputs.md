@@ -1,4 +1,4 @@
-# ADR-0126: Bind any declared root port to recorded Task outputs
+# ADR-0127: Bind any declared root port to recorded Task outputs
 
 Status: accepted, 2026-09-28. Amends
 [ADR-0117](0117-bind-task-inputs-to-recorded-task-outputs.md): which root ports a Task file may
@@ -6,8 +6,8 @@ bind, and how a `many` port is bound from several recorded outputs.
 
 Implements package R4 of [`docs/design/research-pipelines.md`](../design/research-pipelines.md)
 under that plan's §2 ("a bound input carries provenance only"), on top of
-[ADR-0124](0124-measure-and-compare-source-candidates-in-the-kernel.md) (Measurements and
-comparisons) and [ADR-0125](0125-accept-reports-bound-to-an-exact-source-snapshot.md) (the report
+[ADR-0125](0125-measure-and-compare-source-candidates-in-the-kernel.md) (Measurements and
+comparisons) and [ADR-0126](0126-accept-reports-bound-to-an-exact-source-snapshot.md) (the report
 profile's optional `comparison` and `measurements` ports).
 
 ## Context
@@ -29,7 +29,7 @@ Four existing facts constrain the answer:
   (`crates/review-store/src/store/task.rs`, "Task port Snapshot identity contradicts its artifact
   envelope"), the executor refuses a node input that spans two (`crates/review-pipeline/src/task.rs`,
   "One Task port spans different Snapshots"), and the Worker renderer refuses a value whose
-  Snapshot differs from its port's (`crates/review-runner/src/task.rs`). ADR-0125's implementer
+  Snapshot differs from its port's (`crates/review-runner/src/task.rs`). ADR-0126's implementer
   found exactly this and deferred it here.
 - Pipeline selection reads the Task revision, and the revision is built from the resolved
   bindings, so "the selected Pipeline" does not yet exist when a binding resolves.

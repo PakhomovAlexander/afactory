@@ -656,7 +656,7 @@ fn read_store(dir: &Path, shown: &str, repo: Option<String>, cache: &mut Cache) 
     let tasks = tasks.and_then(|entries| {
         let mut tasks = Vec::new();
         for entry in entries {
-            // A collected Task (ADR-0127) has no artifacts left to inspect; `af task list`
+            // A collected Task (ADR-0128) has no artifacts left to inspect; `af task list`
             // and `af task show` report it, the browser shows the Tasks it can open.
             if entry.get("collected").is_some() {
                 continue;

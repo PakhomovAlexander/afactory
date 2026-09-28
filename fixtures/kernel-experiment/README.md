@@ -2,7 +2,7 @@
 
 The experiment Pipeline and the `release_build` measure of package R2 of
 [`docs/design/research-pipelines.md`](../../docs/design/research-pipelines.md)
-([ADR-0124](../../docs/adr/0124-measure-and-compare-source-candidates-in-the-kernel.md)),
+([ADR-0125](../../docs/adr/0125-measure-and-compare-source-candidates-in-the-kernel.md)),
 staged here because a Task Worker may not edit `.af/`. Installing them is a reviewed hand edit:
 
 1. Append `code-policy-measures.toml` to `.af/code-policy.toml`. This changes the code policy's

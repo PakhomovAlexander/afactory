@@ -1,4 +1,4 @@
-//! The experiment starter (ADR-0124), assembled from the same typed contracts as admission: a
+//! The experiment starter (ADR-0125), assembled from the same typed contracts as admission: a
 //! code policy with one measure and one objective, a command implementer that proposes a
 //! candidate, and a command evaluator whose contract reads the kernel's comparison. The kernel
 //! measures the source, measures the sealed candidate after its checks pass, compares the two,

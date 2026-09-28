@@ -1,4 +1,4 @@
-//! ADR-0126 end to end: three Tasks in one Store, chained by artifact identity.
+//! ADR-0127 end to end: three Tasks in one Store, chained by artifact identity.
 //!
 //! One repository carries the shipped `builtin/experiment`, `builtin/report` and
 //! `builtin/release-notes` starters side by side, so their Tasks share one Store. The experiment
@@ -6,7 +6,7 @@
 //! `comparison` to that comparison, `measurements` to both the `baseline` and the `candidate`
 //! Measurements — two Snapshots, so the port names none — and `source` to the candidate tree, and
 //! runs to `verified`. A report Task that binds `sources` to a Document Task's `document` is
-//! refused at plan time, because the types differ, and so is every other binding ADR-0126 refuses.
+//! refused at plan time, because the types differ, and so is every other binding ADR-0127 refuses.
 //! No credential, Provider or model is involved.
 
 use review_store::Cas;
@@ -405,7 +405,7 @@ fn a_report_binds_an_experiments_comparison_measurements_and_tree_and_runs_to_ve
     unrecorded(&chain, "from-notes");
 }
 
-/// Every refusal ADR-0126 adds runs while the revision is still being built, so it names the
+/// Every refusal ADR-0127 adds runs while the revision is still being built, so it names the
 /// port and the reason before any Worker is dispatched or any Provider admitted, and leaves no
 /// Task behind.
 #[test]

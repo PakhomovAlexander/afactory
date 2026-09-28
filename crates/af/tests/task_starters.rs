@@ -534,7 +534,7 @@ fn reviewed_implementation_preserves_evidence_when_independent_work_fails() {
     }
 }
 
-/// `af catalog init --profile experiment` (ADR-0124): the emitted catalog passes its own
+/// `af catalog init --profile experiment` (ADR-0125): the emitted catalog passes its own
 /// contract fixtures, and its Task measures the source, measures the sealed candidate, compares
 /// the two and is verified by command Workers alone, without a credential or a model.
 #[test]

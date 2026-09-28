@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-gc:1",
   "title": "af/task-gc@1",
-  "description": "What `af task gc --json` prints (ADR-0127): every uncollected Task's disposition and CAS footprint, the Tasks already collected, the live writers that refuse `--apply`, and the bytes a sweep after this plan removes. `applied` is null for a preview, which writes nothing, and records the tombstones and the sweep for `--apply`.",
+  "description": "What `af task gc --json` prints (ADR-0128): every uncollected Task's disposition and CAS footprint, the Tasks already collected, the live writers that refuse `--apply`, and the bytes a sweep after this plan removes. `applied` is null for a preview, which writes nothing, and records the tombstones and the sweep for `--apply`.",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -6,7 +6,7 @@ The kernel runs a declared command on the Task's source (the baseline) and on th
 candidate, records each run, and compares the two under a declared objective. An independent
 evaluator reads the comparison and is dispatched only when it passed. A model may propose the
 candidate and may read the comparison; it cannot author either
-([ADR-0124](../adr/0124-measure-and-compare-source-candidates-in-the-kernel.md)).
+([ADR-0125](../adr/0125-measure-and-compare-source-candidates-in-the-kernel.md)).
 
 ## Declaring a measure and an objective
 
@@ -15,7 +15,7 @@ Both live in the committed code policy, `.af/code-policy.toml`:
 ```toml
 [measures.write]
 repetitions = 3          # 1 to 16
-warm = false             # true: build into the Warm Check Cache's cargo_target (ADR-0123)
+warm = false             # true: build into the Warm Check Cache's cargo_target (ADR-0124)
 wall_ms = 20000          # per repetition, at most 3600000
 
 [measures.write.command]

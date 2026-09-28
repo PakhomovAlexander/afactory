@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:measurement-comparison:1",
   "title": "af/MeasurementComparison@1",
-  "description": "The deterministic fold of a baseline and a candidate af/Measurement@1 of one measure under one declared objective (ADR-0124), in exact decimal arithmetic. Per metric: the medians, the signed improvement (baseline − candidate for lower, candidate − baseline for higher), the ratio improvement / baseline in lowest terms, n on each side and a conclusion. The outcome is passed only for improved on the objective's metric, failed for regressed, unchanged or below_threshold, and inconclusive otherwise.",
+  "description": "The deterministic fold of a baseline and a candidate af/Measurement@1 of one measure under one declared objective (ADR-0125), in exact decimal arithmetic. Per metric: the medians, the signed improvement (baseline − candidate for lower, candidate − baseline for higher), the ratio improvement / baseline in lowest terms, n on each side and a conclusion. The outcome is passed only for improved on the objective's metric, failed for regressed, unchanged or below_threshold, and inconclusive otherwise.",
   "type": "object",
   "additionalProperties": false,
   "required": [

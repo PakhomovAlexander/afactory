@@ -301,7 +301,7 @@ fn input_labels<'a>(ports: impl Iterator<Item = &'a String>, bound: &BindingRows
 }
 
 /// Every recorded output one port was bound from, in Task-file order: the binding itself, then
-/// each further output a `many` port gathered (ADR-0126).
+/// each further output a `many` port gathered (ADR-0127).
 pub(super) fn bound_outputs(
     binding: &TaskInputBindingV1,
 ) -> impl Iterator<Item = &TaskInputBindingV1> {
@@ -740,7 +740,7 @@ mod tests {
         assert!(out.lines().any(|row| row.trim() == digest('b')));
     }
 
-    /// A `many` port bound from several outputs (ADR-0126) is annotated with every output on
+    /// A `many` port bound from several outputs (ADR-0127) is annotated with every output on
     /// the `IN` row and gets one `BOUND` group per output, each in the single-output shape.
     #[test]
     fn a_port_bound_from_several_outputs_shows_each_output_in_the_same_shape() {

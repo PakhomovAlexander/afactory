@@ -391,7 +391,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
                 continue; // Scheduler guards are control authority, not declared Worker data.
             };
             // A `many` port the operator declares `unbound` may gather artifacts of different
-            // Snapshots — a Task-file binding of several recorded outputs (ADR-0126). It then
+            // Snapshots — a Task-file binding of several recorded outputs (ADR-0127). It then
             // names no Snapshot and each artifact keeps its own in its envelope; every other
             // port still spans exactly one.
             let spans = port.cardinality == review_core::PortCardinality::Many

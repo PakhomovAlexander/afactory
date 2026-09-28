@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The `release_build` measure (ADR-0124, docs/design/research-pipelines.md package R2). The
+# The `release_build` measure (ADR-0125, docs/design/research-pipelines.md package R2). The
 # kernel runs this against a read-only Snapshot with a private runtime directory and times it;
 # this script builds the release `af` into the CARGO_TARGET_DIR the kernel bound and reports,
 # on its last stdout line, that directory's byte total and the `af` binary's size. Cargo's own

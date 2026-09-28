@@ -1,4 +1,4 @@
-//! Warm Task checks (ADR-0123). A code policy's `[warm]` table lets a Task check reuse
+//! Warm Task checks (ADR-0124). A code policy's `[warm]` table lets a Task check reuse
 //! machine-local build directories across Attempts and Tasks of one project — Cargo's target
 //! directory and Cargo's home — and bind an administrator-approved Cache Snapshot, under
 //! `trusted_local` only.
@@ -38,7 +38,7 @@ use serde_json::json;
 /// `max_bytes` when a policy leaves it out.
 pub const DEFAULT_WARM_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// The largest bound a policy may declare, for `max_bytes` and `hard_max_bytes` alike: the disk
-/// safety ADR-0123 set is not widened by the second bound (ADR-0127).
+/// safety ADR-0124 set is not widened by the second bound (ADR-0128).
 pub const MAX_WARM_MAX_BYTES: u64 = 32 * 1024 * 1024 * 1024;
 /// The reason a check that grew its warm directories past `hard_max_bytes` fails with.
 pub const WARM_CACHE_BOUND_EXCEEDED: &str = "warm_cache_bound_exceeded";
@@ -52,7 +52,7 @@ pub const WARM_CACHE_SUSPECT: &str = "warm_cache_suspect";
 pub(crate) enum Excess {
     /// The key's directories were above `max_bytes` once the check ended but never above
     /// `hard_max_bytes`: they are evicted before the next check and the check's own result
-    /// stands (ADR-0127). The bytes are what was counted.
+    /// stands (ADR-0128). The bytes are what was counted.
     Evict(u64),
     /// The key's directories were above `hard_max_bytes`, or could not be fully counted, during
     /// the check or once it ended; the check fails. The bytes are what was counted.
@@ -125,7 +125,7 @@ pub struct CodeWarmPolicy {
         deserialize_with = "present_option"
     )]
     pub max_bytes: Option<u64>,
-    /// The only bound that ends a running check (ADR-0127): twice `max_bytes` when absent, never
+    /// The only bound that ends a running check (ADR-0128): twice `max_bytes` when absent, never
     /// more than [`MAX_WARM_MAX_BYTES`] and never less than `max_bytes`.
     #[serde(
         default,
@@ -427,7 +427,7 @@ pub(crate) struct Observation {
     pub(crate) evicted_bytes: Option<u64>,
     /// `bound_exceeded` or `suspect`, present exactly when `evicted_bytes` is.
     pub(crate) evicted_reason: Option<String>,
-    /// Which byte bound acted on the directory, when one did (ADR-0127).
+    /// Which byte bound acted on the directory, when one did (ADR-0128).
     pub(crate) bound: Option<TaskCacheBoundV1>,
     /// Why the directory was discarded and recreated empty before this check, when it was: the
     /// check then ran against an empty directory, which is warm again afterwards.
@@ -455,7 +455,7 @@ impl Observation {
             self.evicted_reason
         ]);
         // The bound joins the identity only when one acted, so an observation no bound touched
-        // keeps the identity ADR-0123 gave it.
+        // keeps the identity ADR-0124 gave it.
         if let (Some(bound), Some(fields)) = (self.bound, identity.as_array_mut()) {
             fields.push(json!(bound.as_str()));
         }
@@ -1407,7 +1407,7 @@ mod tests {
             build_cache: vec![WarmBuildCacheKind::CargoTarget],
             caches: vec![],
             max_bytes,
-            // One bound for both, as ADR-0123 had it; the split has its own tests.
+            // One bound for both, as ADR-0124 had it; the split has its own tests.
             hard_max_bytes: max_bytes,
         }
     }
@@ -1894,7 +1894,7 @@ mod tests {
             ],
             caches,
             max_bytes,
-            // One bound for both, as ADR-0123 had it; the split has its own tests.
+            // One bound for both, as ADR-0124 had it; the split has its own tests.
             hard_max_bytes: max_bytes,
         }
     }
@@ -2175,7 +2175,7 @@ mod tests {
             build_cache: vec![WarmBuildCacheKind::CargoHome],
             caches: vec![],
             max_bytes,
-            // One bound for both, as ADR-0123 had it; the split has its own tests.
+            // One bound for both, as ADR-0124 had it; the split has its own tests.
             hard_max_bytes: max_bytes,
         }
     }

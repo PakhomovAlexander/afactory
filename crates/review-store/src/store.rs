@@ -53,7 +53,7 @@ pub enum StoreError {
     Durability(String),
     /// A referenced artifact required for replay was missing or malformed.
     Artifact(String),
-    /// The Task was collected by `af task gc --apply` (ADR-0127): its log ends in a tombstone,
+    /// The Task was collected by `af task gc --apply` (ADR-0128): its log ends in a tombstone,
     /// its projection stops there, and nothing may act on it again.
     Collected {
         task_id: String,
@@ -4658,7 +4658,7 @@ fn insert_events(
     first: i64,
 ) -> Result<Vec<RunEvent>, StoreError> {
     // Every reference was verified before the writer lock was taken. Task collection removes
-    // objects only while it holds this same lock (ADR-0127), so a reference is rechecked here,
+    // objects only while it holds this same lock (ADR-0128), so a reference is rechecked here,
     // where no sweep can run: an object a sweep removed after that verification is refused as
     // dangling, never committed.
     for event in events {

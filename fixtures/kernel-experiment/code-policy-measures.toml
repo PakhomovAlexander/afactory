@@ -1,4 +1,4 @@
-# Append to this repository's `.af/code-policy.toml` (ADR-0124). The release build, cold, three
+# Append to this repository's `.af/code-policy.toml` (ADR-0125). The release build, cold, three
 # times: each repetition builds into a fresh CARGO_TARGET_DIR inside its runtime directory
 # (`warm = false`) while `[warm]`'s `cargo_home` keeps Cargo's registry warm. Three repetitions
 # of 20 minutes fit the 60-minute check_wall_ms of one measure Attempt.

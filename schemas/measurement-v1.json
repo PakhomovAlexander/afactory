@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:measurement:1",
   "title": "af/Measurement@1",
-  "description": "One declared measure of the captured code policy, run by the installed `measure` operator against a read-only Snapshot (ADR-0124). Every value is the kernel's observation, except the metrics the command reported on its last stdout line, admitted only with the declared keys and units. A passed measurement records every repetition and a summary per metric; a failed one ends at the repetition that failed and carries no summary.",
+  "description": "One declared measure of the captured code policy, run by the installed `measure` operator against a read-only Snapshot (ADR-0125). Every value is the kernel's observation, except the metrics the command reported on its last stdout line, admitted only with the declared keys and units. A passed measurement records every repetition and a summary per metric; a failed one ends at the repetition that failed and carries no summary.",
   "type": "object",
   "additionalProperties": false,
   "required": [

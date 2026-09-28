@@ -1,10 +1,10 @@
-# ADR-0124: Measure and compare source candidates in the kernel
+# ADR-0125: Measure and compare source candidates in the kernel
 
 Status: accepted, 2026-09-28.
 
 Implements package R2 of [`docs/design/research-pipelines.md`](../design/research-pipelines.md)
 under that plan's §2 ("the kernel measures; a model never writes a number the kernel did not
-record"), on top of [ADR-0123](0123-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)
+record"), on top of [ADR-0124](0124-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)
 (the Warm Check Cache a warm measure builds into),
 [ADR-0093](0093-derive-code-task-acceptance-from-execution-and-evidence.md) (code acceptance
 from execution and evidence) and [ADR-0002](0002-event-payload-changes-bump-the-type-version.md)

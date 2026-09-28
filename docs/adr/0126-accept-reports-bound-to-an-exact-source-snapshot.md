@@ -1,4 +1,4 @@
-# ADR-0125: Accept reports bound to an exact source Snapshot
+# ADR-0126: Accept reports bound to an exact source Snapshot
 
 Status: accepted, 2026-09-28.
 
@@ -7,7 +7,7 @@ under that plan's §2 ("a report is accepted by an independent verifier, not by 
 its acceptance is bound to the exact source Snapshot it cites"), on top of
 [ADR-0058](0058-verify-document-artifacts-through-the-common-task-runtime.md) (Document Tasks),
 [ADR-0118](0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md) (a shell in a
-clone that seals nothing back), [ADR-0124](0124-measure-and-compare-source-candidates-in-the-kernel.md)
+clone that seals nothing back), [ADR-0125](0125-measure-and-compare-source-candidates-in-the-kernel.md)
 (the Measurements and comparisons a report may read) and
 [ADR-0002](0002-event-payload-changes-bump-the-type-version.md) (new payload shapes are new
 types).

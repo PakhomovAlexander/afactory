@@ -498,7 +498,7 @@ Deliverables:
    before the next one — and a new `[warm] hard_max_bytes` (default twice `max_bytes`, at most
    the declared value) is the only bound that ends a running check, with the same
    `WARM_CACHE_BOUND_EXCEEDED` reason. `TaskCacheObservationV1` records which bound acted. The
-   pre-check and post-check rules of ADR-0123 are otherwise unchanged, and ADR-0123 is amended.
+   pre-check and post-check rules of ADR-0124 are otherwise unchanged, and ADR-0124 is amended.
 
 Acceptance:
 
@@ -586,7 +586,7 @@ Task `research-r1b` (plan `sha256:cdecf975…`, same source): implementer (Claud
 with a shell) completed one Attempt of 431,817 chargeable tokens and sealed every deliverable it
 could reach — the `[warm]` policy table, the toolchain-keyed locked cache directory, the
 three-point byte bound with a sampling monitor, the cache observations and the `af task show`
-line, `scripts/verify.sh`, the fixtures, ADR-0123 and the changelog entry. It reported two
+line, `scripts/verify.sh`, the fixtures, ADR-0124 and the changelog entry. It reported two
 deliverables it could not do: the `[warm]` declaration in this repository's `.af/code-policy.toml`
 (a Worker may not edit `.af/`) and the paired benchmark (it may not run `make check`). The gate
 passed on the first try: `kernel` 15.3 min cold, `markdownlint` 0.3 min. The `bugs` reviewer
@@ -724,14 +724,14 @@ two end-to-end fixtures pin them.
 
 Verification Task `research-r1-verify-6` on 874944d (360,806 tokens; gate warm, `kernel`
 12.6 min) ended **`verified`**: the independent evaluator passed every R1 requirement, the fixtures,
-the policy declaration, ADR-0123, the changelog and the benchmark record. The two reviewers still
+the policy declaration, ADR-0124, the changelog and the benchmark record. The two reviewers still
 reported four in-cache findings — one of them a real safety defect this campaign introduced:
 acquisition truncated whatever inode sat at the lock's name, so a hard link a check planted to a
 file outside the cache would have been emptied on the next gate. Fixed by hand before delivery: a
 lock's inode is judged a plain, singly linked file of this user at its name before anything writes
 through it; the project level is held open so a key a check renamed and recreated is displaced and
 suspect; eviction empties or drops the held locks and succeeds only when nothing but sound empty
-locks remains; and suspicion outranks the byte count in the recorded cause. ADR-0123 now also
+locks remains; and suspicion outranks the byte count in the recorded cause. ADR-0124 now also
 states where these rules stop: `trusted_local` is not isolation, and the cache is honest as
 evidence, not a defence against a check acting on the host. Six verification rounds and fifteen
 hand-fixed defects on one package is the price of a shell-bearing reviewer holding the design's
@@ -756,7 +756,7 @@ grew was exempt from the running bound (it counts now); `remove_at` spelled a ch
 and could remove the wrong one of two colliding entries (removal is by exact bytes now); and the
 `source_digest` of a directory carried the lookup's outcome (it names the directory alone now).
 The fourth — a check that unlinks the lock it holds and plants another entry at its name lets the
-next check recover onto a fresh inode while the first still runs — is recorded in ADR-0123 as
+next check recover onto a fresh inode while the first still runs — is recorded in ADR-0124 as
 outside these rules: it is the check acting against the cache it was trusted with. R1 closes here.
 Eight verification Tasks cost 2.45M tokens against 1.56M for the two implementation Tasks that
 count; the verification loop, not the implementation, is what this package's evidence says to
@@ -770,7 +770,7 @@ Opus 5.5) delivered the whole package and reported `cargo test --workspace` and 
 the gate's `kernel` check was ended 61 s in by the warm cache's 16 GiB bound. The `cargo_target`
 directory held 13.5 GB after R1's eight verifications — cargo keeps every earlier revision's
 artifacts — and a candidate that touches review-core added 4.5 GB while compiling; the kernel
-removed 18.0 GB and failed the check, as ADR-0123 says it must. That is the design working as
+removed 18.0 GB and failed the check, as ADR-0124 says it must. That is the design working as
 written and the wrong outcome for a research pipeline: a bound tuned to the first tree ended an
 implementation Attempt for a reason the candidate did not cause. The bound is raised to 32 GiB
 against 98 GiB free, and bounding the running check separately from evicting an over-bound
@@ -797,7 +797,7 @@ through f64 and captured its rounded spelling, so `0.10000000000000001` became `
 improvement of exactly one tenth would have passed. All three were fixed by hand with tests: the
 runner now carries a typed ending beside its result and the operator classifies the bound from it;
 each run records the cache condition it actually had and `af task show` prints it; the ratio is
-decimal text or the integer 0 or 1, and every policy in the repository writes `"0.1"`. ADR-0124
+decimal text or the integer 0 or 1, and every policy in the repository writes `"0.1"`. ADR-0125
 records the three amendments.
 
 Verification Task `research-r2-verify-3` on afb7fd2 (330,318 tokens; gate warm, `kernel` 13.8 min)
@@ -815,7 +815,7 @@ one implementation Task; the first was a gate flake that cost 2,151.
 Implementation Task `research-r3` from 0c72e63 (753 lines of design in scope; 1,067,770 tokens; 7
 Attempts; gate warm, `kernel` 14.2 min) ended `changes_requested`. The implementer (Claude Opus
 5.5) delivered the profile, the three operators, both artifacts' schemas, the staged
-`kernel/report` packages with an idempotent install test, ADR-0125 and the docs, and reported the
+`kernel/report` packages with an idempotent install test, ADR-0126 and the docs, and reported the
 whole workspace green. Both reviewers (GPT-6 Sol) and the evaluator converged on one contract
 defect: the `sources` root port was declared required although this section says optional; the
 Task-file adapter's empty set hid it. The reviewers added three more: an execute-checks author
@@ -866,7 +866,7 @@ stale, the second a reviewer reply the kernel refused for its shape.
 Implementation Task `research-r4` from de3bf63 (733,989 tokens; 7 Attempts; gate warm, `kernel`
 14.6 min) ended `changes_requested` with the evaluator passing every criterion: the implementer
 (Claude Opus 5.5) delivered the widened binding rule with its refusals, the list form for `many`
-ports, the two-Snapshot exception, ADR-0126 amending ADR-0117, and the three-Task chain fixture
+ports, the two-Snapshot exception, ADR-0127 amending ADR-0117, and the three-Task chain fixture
 that runs an experiment and then a report bound to its comparison and both Measurements to
 `verified` in one Store. The reviewers (GPT-6 Sol) left one major and one minor, both fixed by
 hand: a port bound without naming the Pipeline was accepted when only some Pipelines accepting the
@@ -900,8 +900,8 @@ lost its correctness reviewer to a reply the kernel refused for its shape.
 Implementation Task `research-r5` from a443f52 (970,580 tokens; 7 Attempts; gate warm, `kernel`
 15.1 min) ended `changes_requested` with the evaluator passing every criterion: the implementer
 (Claude Opus 5.5) delivered `af task list --sizes`, `af task gc` with its tombstone and resumable
-reachability sweep, the collected-Task projection, the two warm bounds with the ADR-0123
-amendment, ADR-0127, the fixtures and the docs, and reported the whole workspace green. The
+reachability sweep, the collected-Task projection, the two warm bounds with the ADR-0124
+amendment, ADR-0128, the fixtures and the docs, and reported the whole workspace green. The
 reviewers (GPT-6 Sol) left three majors and two minors, all fixed by hand: a reader that lost an
 artifact to a concurrent sweep reported corruption instead of `collected`; a listing read the
 tombstones before projecting the uncollected Tasks, so one collected in between could be omitted; a

@@ -2,7 +2,7 @@
 
 The report Pipeline and Workers of package R3 of
 [`docs/design/research-pipelines.md`](../../docs/design/research-pipelines.md)
-([ADR-0125](../../docs/adr/0125-accept-reports-bound-to-an-exact-source-snapshot.md)),
+([ADR-0126](../../docs/adr/0126-accept-reports-bound-to-an-exact-source-snapshot.md)),
 staged here because a Task Worker may not edit `.af/`. Installing them is a reviewed hand edit:
 
 1. Copy `report-policy.toml` to `.af/report-policy.toml`, and add

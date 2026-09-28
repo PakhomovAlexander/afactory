@@ -62,11 +62,11 @@
       ]
     },
     "collected": {
-      "description": "Present exactly when the Task was collected by `af task gc --apply` (ADR-0127): its retained tombstone. Such an entry is finished, carries no derived Snapshot or delivery, has a zero footprint under `--sizes`, and its phase names the result its log recorded.",
+      "description": "Present exactly when the Task was collected by `af task gc --apply` (ADR-0128): its retained tombstone. Such an entry is finished, carries no derived Snapshot or delivery, has a zero footprint under `--sizes`, and its phase names the result its log recorded.",
       "$ref": "urn:af:schema:task-collected:1"
     },
     "sizes": {
-      "description": "`af task list --sizes` only (ADR-0127): the CAS objects only this Task reaches, and those it shares with another Task or Campaign record; all zero for a collected Task.",
+      "description": "`af task list --sizes` only (ADR-0128): the CAS objects only this Task reaches, and those it shares with another Task or Campaign record; all zero for a collected Task.",
       "$ref": "#/$defs/footprint"
     }
   },

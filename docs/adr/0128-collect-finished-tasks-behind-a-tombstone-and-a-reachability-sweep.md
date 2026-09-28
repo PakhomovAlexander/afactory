@@ -1,7 +1,7 @@
-# ADR-0127: Collect finished Tasks behind a tombstone and a reachability sweep
+# ADR-0128: Collect finished Tasks behind a tombstone and a reachability sweep
 
 Status: accepted, 2026-09-28. Amends
-[ADR-0123](0123-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md): the Warm Check
+[ADR-0124](0124-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md): the Warm Check
 Cache gets a second, hard byte bound, and only that bound ends a running check.
 
 Implements package R5 of [`docs/design/research-pipelines.md`](../design/research-pipelines.md)
@@ -18,7 +18,7 @@ holds what.
 `af review gc` exists for Review Campaign state: each Campaign has its own directory, so it
 removes whole directories. A Task Store is not like that. All Tasks of a project share one event
 log and one CAS, and objects are shared freely: two Tasks over one commit share every source
-blob, a bound input (ADR-0117, ADR-0126) is another Task's artifact, and a captured Review's
+blob, a bound input (ADR-0117, ADR-0127) is another Task's artifact, and a captured Review's
 Campaign records reach the same Snapshots its Task does.
 
 The CAS's contract is also one-way. Every event may reference only an object already durable
@@ -111,14 +111,14 @@ total drops by exactly that amount when nothing else writes in between.
 
 R2's implementation Attempt was ended 61 seconds into its gate because the warm directory,
 already at 13.5 GB from earlier Tasks, crossed its single 16 GiB bound while the candidate
-compiled: a check failed for growth it did not cause. ADR-0123 is amended:
+compiled: a check failed for growth it did not cause. ADR-0124 is amended:
 
 - `[warm] max_bytes` stays the **eviction bound**. A key above it is removed before a check (the
   check runs cold, as before) and after one, under the key lock — and that check's own result
   stands. Only the next check finds the directory gone.
 - A new `[warm] hard_max_bytes` is the **only bound that ends a running check**, with the same
   `warm_cache_bound_exceeded` reason, during the check or when it ends. It defaults to twice
-  `max_bytes`, at most 32 GiB — the hard maximum ADR-0123 declared, which this does not widen —
+  `max_bytes`, at most 32 GiB — the hard maximum ADR-0124 declared, which this does not widen —
   and a declared value must lie between `max_bytes` and 32 GiB. With `max_bytes` at 32 GiB the
   two bounds coincide.
 - `TaskCacheObservationV1` gains an optional `bound`: `max_bytes` for a removal before a check or
@@ -126,7 +126,7 @@ compiled: a check failed for growth it did not cause. ADR-0123 is amended:
   beside a `suspect` eviction. `af task show` prints it after the eviction's cause, as in
   `removed 6144 (bound_exceeded max_bytes)`.
 
-Suspicion and uninspectable directories keep ADR-0123's rules: they fail the check.
+Suspicion and uninspectable directories keep ADR-0124's rules: they fail the check.
 
 ## After the first verification
 

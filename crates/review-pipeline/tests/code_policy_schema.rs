@@ -1,4 +1,4 @@
-//! `af.code-task-policy/1` and its schema must not drift (ADR-0123). Every policy the Rust
+//! `af.code-task-policy/1` and its schema must not drift (ADR-0124). Every policy the Rust
 //! validator accepts is valid against the schema, and every `[warm]` shape either one refuses
 //! the other refuses too, including `[warm]` together with `require_container = true`.
 
@@ -133,7 +133,7 @@ fn write(repetitions: u64, warm: bool, metrics: Value) -> Value {
     })
 }
 
-/// `[measures]` and `[objectives]` (ADR-0124): every accepted shape is valid against the schema
+/// `[measures]` and `[objectives]` (ADR-0125): every accepted shape is valid against the schema
 /// and captured as declared, a number threshold is captured as its canonical decimal text, and
 /// every shape either side refuses the other refuses too.
 #[test]

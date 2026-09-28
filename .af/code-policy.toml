@@ -46,7 +46,7 @@ max_bytes = 17179869184
 # The only bound that ends a running check: a disk safety, twice the eviction bound.
 hard_max_bytes = 34359738368
 
-# ADR-0124. The release build, cold, three
+# ADR-0125. The release build, cold, three
 # times: each repetition builds into a fresh CARGO_TARGET_DIR inside its runtime directory
 # (`warm = false`) while `[warm]`'s `cargo_home` keeps Cargo's registry warm. Three repetitions
 # of 20 minutes fit the 60-minute check_wall_ms of one measure Attempt.

@@ -1,4 +1,4 @@
-//! Measure and compare (ADR-0124). The experiment fixture measures a Python command that writes
+//! Measure and compare (ADR-0125). The experiment fixture measures a Python command that writes
 //! `size.txt`'s number of bytes into its private `$TMPDIR` and reports `bytes_written`, once on
 //! the source as the baseline and once on the implementer's sealed candidate, compares the two
 //! under the `smaller` objective, and dispatches its evaluator only for a passed comparison. The

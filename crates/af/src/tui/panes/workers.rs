@@ -529,7 +529,7 @@ fn read_store(target: &Target) -> Store {
         let mut cache = Cache::default();
         let mut total: BTreeMap<Worker, Tally> = BTreeMap::new();
         for entry in entries {
-            // A collected Task (ADR-0127) has no recorded Attempts left to tally.
+            // A collected Task (ADR-0128) has no recorded Attempts left to tally.
             if entry.get("collected").is_some() {
                 continue;
             }

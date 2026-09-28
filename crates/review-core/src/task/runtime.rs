@@ -43,7 +43,7 @@ impl TaskRuntimeSpanV1 {
 
 /// Dependency bytes AF prepared for a sandbox. It records availability and host time only,
 /// never a tool or provider cache result. A Warm Check Cache observation that was not eligible
-/// names its reason after the kind, as in `cargo_target:busy` (ADR-0123).
+/// names its reason after the kind, as in `cargo_target:busy` (ADR-0124).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskCacheObservationV1 {
@@ -60,7 +60,7 @@ pub struct TaskCacheObservationV1 {
     pub bytes_available: u64,
     pub lookup_ms: u64,
     pub materialization_ms: u64,
-    /// Bytes a warm layer removed once this check ended above its byte bound (ADR-0123): the
+    /// Bytes a warm layer removed once this check ended above its byte bound (ADR-0124): the
     /// same observation records availability before the check and eviction after it, so one
     /// declared kind yields exactly one observation per check. Absent when nothing was evicted.
     #[serde(
@@ -77,8 +77,8 @@ pub struct TaskCacheObservationV1 {
         deserialize_with = "present_option"
     )]
     pub evicted_reason: Option<String>,
-    /// Which byte bound of the Warm Check Cache acted on this directory (ADR-0127, amending
-    /// ADR-0123): `max_bytes` evicted it before or after a check whose result stands, and
+    /// Which byte bound of the Warm Check Cache acted on this directory (ADR-0128, amending
+    /// ADR-0124): `max_bytes` evicted it before or after a check whose result stands, and
     /// `hard_max_bytes` ended the running check, which failed. Absent when no bound acted, and
     /// never beside a `suspect` eviction.
     #[serde(
@@ -89,7 +89,7 @@ pub struct TaskCacheObservationV1 {
     pub bound: Option<TaskCacheBoundV1>,
 }
 
-/// The two byte bounds of a Warm Check Cache toolchain key (ADR-0127).
+/// The two byte bounds of a Warm Check Cache toolchain key (ADR-0128).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskCacheBoundV1 {
@@ -151,7 +151,7 @@ pub enum TaskRuntimeCheckOutcomeV1 {
     NotRun,
 }
 
-/// Where a warm check's `RUSTUP_HOME` came from (ADR-0123): the kernel's own `RUSTUP_HOME`, the
+/// Where a warm check's `RUSTUP_HOME` came from (ADR-0124): the kernel's own `RUSTUP_HOME`, the
 /// kernel `HOME`'s `.rustup`, or why it was left unset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -164,7 +164,7 @@ pub enum TaskRuntimeRustupHomeV1 {
     UnsetNotInstalled,
 }
 
-/// The check one warm evidence group belongs to (ADR-0123). It names the check and its outcome
+/// The check one warm evidence group belongs to (ADR-0124). It names the check and its outcome
 /// whether or not the check started, so a check skipped before its command ran keeps its name
 /// and its cache observations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

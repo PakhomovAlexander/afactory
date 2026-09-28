@@ -1,8 +1,8 @@
-# ADR-0123: Warm Task checks through a toolchain-keyed, bounded, machine-local cache
+# ADR-0124: Warm Task checks through a toolchain-keyed, bounded, machine-local cache
 
 Status: accepted, 2026-09-27; amended the same day by package R1's follow-up (Task
 `research-r1c`, see [Amendment](#amendment-rustup-home-cargo_home-and-fail-closed-bounds)), and
-on 2026-09-28 by [ADR-0127](0127-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
+on 2026-09-28 by [ADR-0128](0128-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
 (package R5, see [Two bounds](#amendment-two-bounds)).
 Supersedes in part
 [ADR-0108](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md): the one-Round
@@ -330,7 +330,7 @@ policy, not the cache: `require_container = true` refuses `[warm]` for that reas
 
 ## Amendment: two bounds
 
-[ADR-0127](0127-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md) splits the
+[ADR-0128](0128-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md) splits the
 one byte bound above in two, because a single bound ended R2's implementation Attempt 61 s into
 its gate for growth the candidate did not cause. Where this record says a check that grew the
 directories past "the bound" fails, read `hard_max_bytes`:
