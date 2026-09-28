@@ -16,6 +16,19 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
+## [0.9.0-rc.8] - 2026-09-28
+
+### Authority compatibility
+
+Committed `.af/` policy keeps working as is; a source-writing Worker that declares `execute-checks` gets a shell, and only then (ADR-0120).
+
+### Changes
+
+- release: v0.9.0-rc.7 (#118)
+- Give a source-writing Worker that declares execute-checks a shell (ADR-0120) (#119)
+- The af browser's Tasks pane (docs/design/tui.md §5.5) (#120)
+- TUI: the Workers pane (M4) (#123)
+- TUI: hand af commands off from the : line (M5) (#124)
 - Give a source-writing Worker that declares `execute-checks` a shell (ADR-0120): `worker_access`
   maps `write-source` plus `execute-checks` to `WorkerAccess::WriteSourceWithShell`, the Claude
   adapter grants `Read,Glob,Grep,Edit,Write,Bash` and Codex runs `workspace-write`, and the shell's
