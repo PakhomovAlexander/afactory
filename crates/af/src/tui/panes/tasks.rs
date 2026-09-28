@@ -38,6 +38,29 @@ const UNREADABLE: &str = "!unreadable";
 /// The bar id of the Stores an earlier af release wrote, listed as one entry.
 const EARLIER: &str = "!earlier";
 
+/// `text` in rows of at most `width` columns, each starting with `indent`: split at the last
+/// space that fits, or mid-word for a word (a path) longer than a row.
+fn bounded(text: &str, width: usize, indent: &str) -> Vec<String> {
+    let room = width.saturating_sub(indent.chars().count()).max(1);
+    let mut rows = Vec::new();
+    let mut rest: Vec<char> = text.chars().collect();
+    while rest.len() > room {
+        let cut = rest[..=room]
+            .iter()
+            .rposition(|c| *c == ' ')
+            .filter(|at| *at > 0)
+            .unwrap_or(room);
+        let line: String = rest[..cut].iter().collect();
+        rows.push(format!("{indent}{}", line.trim_end()));
+        rest.drain(..cut);
+        while rest.first() == Some(&' ') {
+            rest.remove(0);
+        }
+    }
+    rows.push(format!("{indent}{}", rest.iter().collect::<String>()));
+    rows
+}
+
 /// Whether this release refused the Store because an earlier (pre-GA) af release wrote it:
 /// such Stores are listed together, once, rather than as one error each.
 fn earlier(store: &Store) -> bool {
@@ -1280,7 +1303,9 @@ impl TasksPane {
                 format!("{count} {stores} {were} written by an earlier af release, in"),
                 Paint::Muted,
             ));
-            rows.push(Row::painted(format!("  {parent}"), Paint::Muted));
+            for line in bounded(parent, MAIN, "  ") {
+                rows.push(Row::painted(line, Paint::Muted));
+            }
             rows.push(Row::painted(
                 "af does not read pre-GA state (ADR-0113); move or remove them.",
                 Paint::Muted,
@@ -1291,8 +1316,15 @@ impl TasksPane {
             let dir = &store.shown;
             match &store.tasks {
                 Err(error) => {
-                    let refusal = format!("{dir}: this Store cannot be read: {error}");
-                    rows.push(Row::painted(refusal, Paint::Error));
+                    // The location, then the cause on rows of its own: a long state path must
+                    // never push the cause out of the pane.
+                    for line in bounded(&format!("{dir}:"), MAIN, "") {
+                        rows.push(Row::painted(line, Paint::Error));
+                    }
+                    let cause = format!("this Store cannot be read: {error}");
+                    for line in bounded(&cause, MAIN, "  ") {
+                        rows.push(Row::painted(line, Paint::Error));
+                    }
                 }
                 Ok(tasks) if tasks.is_empty() => {
                     rows.push(Row::plain(format!("{dir}: no Tasks")));

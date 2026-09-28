@@ -1091,11 +1091,13 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
         ]
     );
     assert!(rows[2..5].iter().all(|row| row.len() <= 72), "{rows:#?}");
-    assert!(
-        rows.iter().any(|row| row
-            == "~/.local/state/af/task/local/0000000000000002: this Store cannot be read: \
-                permission denied"),
-        "{rows:#?}"
+    let at = rows
+        .iter()
+        .position(|row| row == "~/.local/state/af/task/local/0000000000000002:")
+        .unwrap_or_else(|| panic!("{rows:#?}"));
+    assert_eq!(
+        rows[at + 1],
+        "  this Store cannot be read: permission denied"
     );
     assert!(
         !rows.iter().any(|row| row.contains("TaskTransition")),
@@ -1107,4 +1109,52 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
             .count(),
         1
     );
+}
+
+#[test]
+fn a_long_state_path_keeps_every_row_within_the_pane() {
+    let root = format!(
+        "/private/var/folders/{}/state/af/task/local",
+        "x".repeat(60)
+    );
+    let store = |name: &str, tasks: Result<Vec<Listed>, String>| Store {
+        dir: PathBuf::from(format!("{root}/{name}")),
+        shown: format!("{root}/{name}"),
+        repo: Some(name.to_owned()),
+        tasks,
+    };
+    let old = format!(
+        "unknown event type; {}",
+        review_core::event::ANOTHER_RELEASE
+    );
+    let mut pane = TasksPane {
+        title: "TASKS  user".to_owned(),
+        stores: vec![
+            store("0000000000000001", Err(old)),
+            store("0000000000000002", Err("file is not a database".to_owned())),
+        ],
+        ..TasksPane::default()
+    };
+    pane.rebuild();
+    let rows: Vec<String> = pane.rows.iter().map(Row::text).collect();
+    assert!(
+        rows.iter().all(|row| row.chars().count() <= MAIN),
+        "{rows:#?}"
+    );
+    // The whole location is there, across rows, and the other refusal's cause is on its own.
+    let location: String = rows[3..].iter().map(|row| row.trim()).collect();
+    assert!(location.contains("state/af/task/local"), "{rows:#?}");
+    assert!(
+        rows.iter()
+            .any(|row| row == "  this Store cannot be read: file is not a database"),
+        "{rows:#?}"
+    );
+}
+
+#[test]
+fn bounded_rows_split_at_spaces_and_inside_long_words() {
+    assert_eq!(bounded("short", 10, "  "), ["  short"]);
+    assert_eq!(bounded("one two three", 9, ""), ["one two", "three"]);
+    assert_eq!(bounded("abcdefghij", 4, ""), ["abcd", "efgh", "ij"]);
+    assert_eq!(bounded("ab cdefgh", 6, "- "), ["- ab", "- cdef", "- gh"]);
 }

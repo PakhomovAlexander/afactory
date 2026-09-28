@@ -638,16 +638,37 @@ pub(crate) fn differs(root: &Path, commit: &str, path: &str) -> bool {
     git(root, &["diff", "--quiet", commit, "--", path]).is_err()
 }
 
-/// Every file of `paths` that `commit` holds, read by one `git cat-file --batch`: one process
-/// however many files, where `committed` spawns one per file. A path the commit does not hold
-/// is absent from the map.
-pub(crate) fn committed_all(
+/// Every blob `commit` holds under `under`, by path, with its object id, from one
+/// `git ls-tree -r -z`: NUL-separated, so a path may hold any byte, a newline included.
+pub(crate) fn listed(
     root: &Path,
     commit: &str,
-    paths: &[&str],
-) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    under: &str,
+) -> Result<BTreeMap<String, String>, String> {
+    let listing = git(root, &["ls-tree", "-r", "-z", commit, "--", under])?;
     let mut found = BTreeMap::new();
-    if paths.is_empty() {
+    for entry in listing.split(|byte| *byte == 0) {
+        // `<mode> SP <type> SP <object> TAB <path>`
+        let Some(tab) = entry.iter().position(|byte| *byte == b'\t') else {
+            continue;
+        };
+        let (meta, path) = (&entry[..tab], &entry[tab + 1..]);
+        let meta = String::from_utf8_lossy(meta);
+        let mut fields = meta.split(' ');
+        let (_, kind, object) = (fields.next(), fields.next(), fields.next());
+        if let (Some("blob"), Some(object), Ok(path)) = (kind, object, std::str::from_utf8(path)) {
+            found.insert(path.to_owned(), object.to_owned());
+        }
+    }
+    Ok(found)
+}
+
+/// The bytes of every blob in `objects` (object ids, as `listed` gives them), read by one
+/// `git cat-file --batch`: one process however many files, where `committed` spawns one per
+/// file. Asking by object id keeps path bytes out of the request stream.
+pub(crate) fn blobs(root: &Path, objects: &[&str]) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let mut found = BTreeMap::new();
+    if objects.is_empty() {
         return Ok(found);
     }
     let mut child = git_command(root, &["cat-file", "--batch"])
@@ -657,8 +678,11 @@ pub(crate) fn committed_all(
         .spawn()
         .map_err(|error| format!("running git: {error}"))?;
     let mut requests = Vec::new();
-    for path in paths {
-        requests.extend_from_slice(format!("{commit}:{path}\n").as_bytes());
+    for object in objects {
+        if !object.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!("not an object id: {object}"));
+        }
+        requests.extend_from_slice(format!("{object}\n").as_bytes());
     }
     // Written from another thread, so a large answer never blocks on a full request pipe.
     let mut stdin = child.stdin.take().ok_or("git cat-file has no stdin")?;
@@ -674,14 +698,14 @@ pub(crate) fn committed_all(
     }
     written.map_err(|error| format!("writing to git cat-file: {error}"))?;
     let mut rest = output.stdout.as_slice();
-    for path in paths {
+    for object in objects {
         let end = rest
             .iter()
             .position(|byte| *byte == b'\n')
             .ok_or("git cat-file answered short")?;
         let header = String::from_utf8_lossy(&rest[..end]).into_owned();
         rest = &rest[end + 1..];
-        if header.ends_with(" missing") || header.ends_with(" ambiguous") {
+        if header.ends_with(" missing") {
             continue;
         }
         let size: usize = header
@@ -693,7 +717,7 @@ pub(crate) fn committed_all(
             return Err("git cat-file answered short".to_owned());
         }
         if header.split(' ').nth(1) == Some("blob") {
-            found.insert((*path).to_owned(), rest[..size].to_vec());
+            found.insert((*object).to_owned(), rest[..size].to_vec());
         }
         rest = &rest[size + 1..];
     }

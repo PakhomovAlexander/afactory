@@ -1,5 +1,6 @@
 use serde_json::json;
 
+use super::super::pipelines::git;
 use super::*;
 use crate::config;
 
@@ -1077,7 +1078,7 @@ fn a_task_worker_may_sit_at_its_source_root() {
 
 #[test]
 fn one_git_process_reads_every_committed_file_and_one_checks_their_drift() {
-    use super::super::pipelines::{committed_all, differing};
+    use super::super::pipelines::{blobs, differing, listed};
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     write(root, "a.toml", "a = 1\n");
@@ -1086,12 +1087,20 @@ fn one_git_process_reads_every_committed_file_and_one_checks_their_drift() {
     write(root, "star*.toml", "star\n");
     commit_all(root, "files");
     let head = head(root).unwrap();
-    let read = committed_all(root, &head, &["a.toml", "missing.toml", "dir/b.md", "dir"]).unwrap();
-    // Files as committed; a path the commit lacks, and a tree, are simply absent.
-    assert_eq!(read.len(), 2, "{:?}", read.keys());
-    assert_eq!(read["a.toml"], b"a = 1\n");
-    assert_eq!(read["dir/b.md"], b"bee\n");
-    assert!(committed_all(root, &head, &[]).unwrap().is_empty());
+    let objects = listed(root, &head, ".").unwrap();
+    let names: Vec<&str> = objects.keys().map(String::as_str).collect();
+    assert_eq!(
+        names,
+        ["a.toml", "dir/b.md", "star*.toml"],
+        "blobs only, no trees"
+    );
+    let ids: Vec<&str> = objects.values().map(String::as_str).collect();
+    let read = blobs(root, &ids).unwrap();
+    assert_eq!(read[&objects["a.toml"]], b"a = 1\n");
+    assert_eq!(read[&objects["dir/b.md"]], b"bee\n");
+    assert!(blobs(root, &[]).unwrap().is_empty());
+    // Only object ids go to git: nothing a caller passes can split the request stream.
+    assert!(blobs(root, &["HEAD:a.toml\nHEAD:dir"]).is_err());
     write(root, "star*.toml", "changed\n");
     std::fs::remove_file(root.join("dir/b.md")).unwrap();
     let differ = differing(root, &head, &["a.toml", "dir/b.md", "star*.toml"]);
@@ -1108,4 +1117,25 @@ fn one_git_process_reads_every_committed_file_and_one_checks_their_drift() {
         &["a.toml"],
     );
     assert!(all.contains("a.toml"));
+}
+
+/// A committed package directory may hold any byte git allows, a newline included: the read
+/// asks for object ids, so such a path lists like any other.
+#[test]
+fn a_worker_whose_directory_name_holds_a_newline_is_listed() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    worker(root, ".af/task-packages/a\nb", "fixture/newline");
+    write(
+        root,
+        ".af/task-packages/a\nb/instructions.md",
+        "Across lines.\n",
+    );
+    worker(root, ".af/task-packages/plain", "fixture/plain");
+    commit_all(root, "a newline in a directory name");
+    let found = discover(root).unwrap();
+    let labels: Vec<&str> = found.entries.iter().map(|e| e.label.as_str()).collect();
+    assert_eq!(labels, ["fixture/newline", "fixture/plain"]);
+    assert_eq!(found.entries[0].prompt.as_deref(), Some("Across lines.\n"));
+    assert!(found.entries.iter().all(|entry| entry.drifted.is_empty()));
 }

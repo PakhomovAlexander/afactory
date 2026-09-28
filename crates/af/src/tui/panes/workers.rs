@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value as Json;
 use toml::Value;
 
-use super::pipelines::{committed_all, declared, differing, git, head, pinned_paths};
+use super::pipelines::{blobs, declared, differing, head, listed, pinned_paths};
 use super::tasks::{self, Cache, Invoked, Target};
 use super::{Pane, Row};
 use crate::task_execution;
@@ -219,18 +219,8 @@ fn discover(root: &Path) -> Result<Discovery, String> {
         return Ok(found);
     }
     // Every Worker source, the locks and the prompts live under `.af/`: nothing else is listed.
-    let listing = git(
-        root,
-        &["ls-tree", "-r", "-z", "--name-only", &commit, "--", ".af"],
-    )?;
-    let mut paths = BTreeSet::new();
-    for path in listing.split(|byte| *byte == 0) {
-        if let Ok(path) = std::str::from_utf8(path)
-            && !path.is_empty()
-        {
-            paths.insert(path.to_owned());
-        }
-    }
+    let objects = listed(root, &commit, ".af")?;
+    let paths: BTreeSet<String> = objects.keys().cloned().collect();
     // Every declaration, in bar order, with the prompt the kernel would send beside it.
     let mut declared_at = Vec::new();
     for (source, kind) in SOURCES {
@@ -250,7 +240,10 @@ fn discover(root: &Path) -> Result<Discovery, String> {
         wanted.push(id);
         wanted.push(prompt_path);
     }
-    wanted.retain(|path| paths.contains(*path));
+    let wanted: Vec<&str> = wanted
+        .into_iter()
+        .filter_map(|path| objects.get(path).map(String::as_str))
+        .collect();
     let shown: Vec<(&str, &str, bool)> = declared_at
         .iter()
         .map(|(_, _, id, _, prompt)| (id.as_str(), prompt.as_str(), paths.contains(prompt)))
@@ -258,16 +251,21 @@ fn discover(root: &Path) -> Result<Discovery, String> {
     // The read and the drift check are independent processes: run them side by side.
     let (blobs, drifts) = std::thread::scope(|scope| {
         let drifts = scope.spawn(|| drift(root, &commit, &shown));
-        let blobs = committed_all(root, &commit, &wanted);
+        let blobs = blobs(root, &wanted);
         (blobs, drifts.join())
     });
-    let blobs = blobs?;
+    // By path, as the rest of discovery asks.
+    let read = blobs?;
+    let blobs: BTreeMap<&str, &Vec<u8>> = objects
+        .iter()
+        .filter_map(|(path, object)| read.get(object).map(|bytes| (path.as_str(), bytes)))
+        .collect();
     let mut drifts = drifts
         .map_err(|_| "checking the working tree panicked")?
         .into_iter();
     let text = |path: &str| -> Result<Option<String>, String> {
         match blobs.get(path) {
-            Some(bytes) => String::from_utf8(bytes.clone())
+            Some(bytes) => String::from_utf8((*bytes).clone())
                 .map(Some)
                 .map_err(|error| format!("{path}: {error}")),
             None => Ok(None),
@@ -286,7 +284,7 @@ fn discover(root: &Path) -> Result<Discovery, String> {
         let fallback = directory.strip_prefix(source).unwrap_or(&directory);
         // The prompt is shown as text, whatever its bytes: a stray byte is not a refusal.
         let prompt = blobs
-            .get(&prompt_path)
+            .get(prompt_path.as_str())
             .map(|bytes| String::from_utf8_lossy(bytes).into_owned());
         let pins = match kind {
             Kind::Reviewer => &reviewers,
