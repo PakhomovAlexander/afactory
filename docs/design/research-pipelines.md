@@ -936,3 +936,19 @@ model Workers and their Provider admissions, so the Attempt accounting refused t
 measure to protect the still-required evaluator — the same declaration trap `kernel/report`
 showed in R3. The Task ended `incomplete` with the baseline as its only measurement; the bound is
 10 now, repinned, and the experiment ran again as `research-release-build-3`.
+
+`research-release-build-3` on beb537c (75,221 tokens; 7 Attempts; gate warm, `kernel` 11.9 min)
+ended **`verified`**. Baseline: three cold release builds, median 63,176 ms, target directory
+528.8 MB, binary 44,843,248 bytes. Candidate (`lto = "off"` in the root release profile): median
+49,144 ms, target directory 547.8 MB, binary 53,219,120 bytes. The comparison on
+`release_build_time` is `improved` by 14,032 ms, ratio 1754/7897 (22.2 percent), past the 10
+percent objective, and `passed`; `binary_bytes` and `target_bytes` `regressed` (+18.7 and +3.6
+percent), which the objective does not weigh. The evaluator (GPT-6 Sol) accepted the candidate on
+the recorded comparison. Whether a 22 percent faster release build is worth an 18.7 percent larger
+binary is a decision for a human, which the kernel did not make: the objective, the exact medians
+and both regressions are the result.
+
+The report Task ran as `research-sdlc-report-2` with `comparison` and `measurements` bound to
+that Task through R4 and `report_sources` at `docs/design/research-tasks.sources.json`, one
+entry per Task of this campaign, built by the coordinator from `af task show` and the runtime
+evidence.
