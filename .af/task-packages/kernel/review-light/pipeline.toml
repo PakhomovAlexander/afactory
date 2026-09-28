@@ -1,8 +1,8 @@
 schema = "af.pipeline/1"
 name = "kernel/review-light"
-version = "1.3.0"
-max_attempts = 10
-max_parallel = 4
+version = "1.2.0"
+max_attempts = 8
+max_parallel = 3
 
 [contract.inputs.base]
 artifact_type = "af/SourceTree@1"
@@ -117,16 +117,6 @@ independent_from = []
 
 [slots.uix]
 worker = "kernel/uix"
-role = "review"
-input_type = "af/ReviewInput@1"
-output_type = "review.kernel/ReviewerResult@2"
-min_attempts = 1
-max_attempts = 2
-allow_local_replacement = true
-independent_from = []
-
-[slots.latency]
-worker = "kernel/latency"
 role = "review"
 input_type = "af/ReviewInput@1"
 output_type = "review.kernel/ReviewerResult@2"
@@ -283,44 +273,6 @@ node = "checks"
 outcome = "passed"
 
 [[nodes]]
-id = "latency"
-
-[nodes.operator]
-op = "verify"
-slot = "latency"
-
-[nodes.inputs.assignment]
-kind = "node"
-node = "bind"
-port = "latency"
-
-[nodes.inputs.checks]
-kind = "node"
-node = "checks"
-port = "result"
-
-[nodes.inputs.history]
-kind = "input"
-port = "history"
-
-[nodes.inputs.requirements]
-kind = "input"
-port = "requirements"
-
-[nodes.inputs.source]
-kind = "input"
-port = "source"
-
-[nodes.inputs.subject]
-kind = "node"
-node = "bind"
-port = "subject"
-
-[nodes.when]
-node = "checks"
-outcome = "passed"
-
-[[nodes]]
 id = "reduce"
 
 [nodes.operator]
@@ -353,11 +305,6 @@ port = "source"
 kind = "node"
 node = "bind"
 port = "subject"
-
-[nodes.inputs.latency]
-kind = "node"
-node = "latency"
-port = "result"
 
 [nodes.inputs.uix]
 kind = "node"

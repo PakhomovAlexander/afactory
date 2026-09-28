@@ -17,7 +17,6 @@ allow_targeted_repairs = false
 bugs = "required"
 correctness = "required"
 uix = "required"
-latency = "required"
 
 [packages."warm/implementer"]
 version = "1.2.0"
@@ -84,14 +83,9 @@ version = "1.4.0"
 digest = "sha256:3ac542410f555e78428864ac0dfdf20061b42a1e1f023bb6291c2212123aee65"
 path = ".af/task-packages/kernel/uix"
 
-[packages."kernel/latency"]
-version = "1.0.0"
-digest = "sha256:0add1b49c61a20454224feb153ced6aae6b99a3e3ba3f8458fb993b85d805169"
-path = ".af/task-packages/kernel/latency"
-
 [packages."kernel/review-light"]
-version = "1.3.0"
-digest = "sha256:a8b1568884297abf0bf17ee5fca2dbd50c265116a9e0646a0785218509e6d1bc"
+version = "1.2.0"
+digest = "sha256:c6bed1e2d5d1f493278c8559fff8a851d66b403dabce5f0aba2c74b98f53ec47"
 path = ".af/task-packages/kernel/review-light"
 
 [packages."kernel/implementation-reviewed"]
