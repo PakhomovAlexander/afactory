@@ -128,7 +128,8 @@ multiples of 16px (16, 32, 48, 64, 128, 512) so the cells stay square; `gen.py` 
 an ink tile with a 3-cell radius (`radius-tile`, 18.75%) for contexts that need an opaque icon:
 app icons, avatars, the web manifest.
 
-The website's header shows the mark at 32px next to the word "afactory" in `text` at 600 weight.
+The website's header shows the mark at 32px beside the wordmark at 28px tall (168px wide, its
+minimum). The name is never typed as a word where the wordmark can stand.
 
 ## Type
 
@@ -172,8 +173,8 @@ its own element so a terminal stays ink in both themes. Its three window dots ar
 workers: pink, blue, green.
 
 The hero inlines `wordmark.svg` at up to 780px wide, then the `hero` sentence, the `lede`, a
-pink primary button and a ghost button, then a `meta` line. The header is the 32px mark and the
-word "afactory". Links are `link`; the eyebrow is `accent-text`; a primary button is `accent`
+pink primary button and a ghost button, then a `meta` line. The header and the footer are the
+32px mark and the wordmark at 28px; the name is never typed. Links are `link`; the eyebrow is `accent-text`; a primary button is `accent`
 with `on-accent` text and lifts to `accent-hover`; a ghost button has a `border` border and
 takes `accent-text` on hover.
 
