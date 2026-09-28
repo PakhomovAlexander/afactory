@@ -64,7 +64,7 @@ fn bounded(text: &str, width: usize, indent: &str) -> Vec<String> {
 /// Whether this release refused the Store because an earlier (pre-GA) af release wrote it:
 /// such Stores are listed together, once, rather than as one error each.
 fn earlier(store: &Store) -> bool {
-    matches!(&store.tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE))
+    store.older && store.tasks.is_err()
 }
 
 /// Where a Task is: its phase, and for a finished Task the acceptance its result records.
@@ -689,6 +689,9 @@ struct Store {
     shown: String,
     repo: Option<String>,
     tasks: Result<Vec<Listed>, String>,
+    /// The event log refused itself as another release's: set where the Store is read, from
+    /// that read's own error, never from text a path could carry.
+    older: bool,
 }
 
 /// An existing directory with entries but no `events.sqlite` holds something the running
@@ -723,9 +726,16 @@ pub(crate) fn not_a_store(dir: &Path) -> Option<String> {
 }
 
 fn read_store(dir: &Path, shown: &str, repo: Option<String>, cache: &mut Cache) -> Store {
-    let tasks = match not_a_store(dir) {
-        Some(refusal) => Err(refusal),
-        None => task_execution::list_common(dir),
+    let (tasks, older) = match not_a_store(dir) {
+        Some(refusal) => (Err(refusal), false),
+        None => {
+            let listed = task_execution::list_common(dir);
+            let older = matches!(
+                &listed,
+                Err(error) if error.contains(review_core::event::ANOTHER_RELEASE)
+            );
+            (listed, older)
+        }
     };
     let tasks = tasks.and_then(|entries| {
         let mut tasks = Vec::new();
@@ -764,6 +774,7 @@ fn read_store(dir: &Path, shown: &str, repo: Option<String>, cache: &mut Cache) 
         shown: shown.to_owned(),
         repo,
         tasks,
+        older,
     }
 }
 
@@ -986,6 +997,7 @@ fn read(targets: &[Target], opened: Option<(PathBuf, String)>, mut cache: Cache)
 fn refuse(stores: &mut [Store], dir: &Path, task_id: &str, error: &str) {
     for store in stores.iter_mut().filter(|store| store.dir == dir) {
         store.tasks = Err(format!("Task {task_id}: {error}"));
+        store.older = false;
     }
 }
 

@@ -1099,6 +1099,12 @@ fn one_git_process_reads_every_committed_file_and_one_checks_their_drift() {
     assert_eq!(read[&objects["a.toml"]], b"a = 1\n");
     assert_eq!(read[&objects["dir/b.md"]], b"bee\n");
     assert!(blobs(root, &[]).unwrap().is_empty());
+    // An id the object store cannot give back, or one naming a tree, is a failed read.
+    let absent = blobs(root, &["0123456789abcdef0123456789abcdef01234567"]).unwrap_err();
+    assert!(absent.contains("cannot read committed object"), "{absent}");
+    let tree = String::from_utf8(git(root, &["rev-parse", "HEAD:dir"]).unwrap()).unwrap();
+    let tree = blobs(root, &[tree.trim()]).unwrap_err();
+    assert!(tree.contains("is not a file"), "{tree}");
     // Only object ids go to git: nothing a caller passes can split the request stream.
     assert!(blobs(root, &["HEAD:a.toml\nHEAD:dir"]).is_err());
     write(root, "star*.toml", "changed\n");

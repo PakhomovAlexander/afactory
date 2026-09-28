@@ -1057,6 +1057,7 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
         dir: PathBuf::from(format!("/home/me/.local/state/af/task/local/{name}")),
         shown: format!("~/.local/state/af/task/local/{name}"),
         repo: Some(name.to_owned()),
+        older: matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE)),
         tasks,
     };
     let mut pane = TasksPane {
@@ -1121,6 +1122,7 @@ fn a_long_state_path_keeps_every_row_within_the_pane() {
         dir: PathBuf::from(format!("{root}/{name}")),
         shown: format!("{root}/{name}"),
         repo: Some(name.to_owned()),
+        older: matches!(&tasks, Err(error) if error.contains(review_core::event::ANOTHER_RELEASE)),
         tasks,
     };
     let old = format!(
@@ -1157,4 +1159,24 @@ fn bounded_rows_split_at_spaces_and_inside_long_words() {
     assert_eq!(bounded("one two three", 9, ""), ["one two", "three"]);
     assert_eq!(bounded("abcdefghij", 4, ""), ["abcd", "efgh", "ij"]);
     assert_eq!(bounded("ab cdefgh", 6, "- "), ["- ab", "- cdef", "- gh"]);
+}
+
+/// Only the event log's own refusal marks a Store as another release's: a Store refused before
+/// it is read, whose path happens to hold the same words, keeps its own cause.
+#[test]
+fn a_path_holding_the_marker_is_not_an_old_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join(review_core::event::ANOTHER_RELEASE);
+    std::os::unix::fs::symlink(temp.path().join("gone"), &dir).unwrap();
+    let store = read_store(
+        &dir,
+        "shown",
+        Some("repo".to_owned()),
+        &mut Cache::default(),
+    );
+    let Err(why) = &store.tasks else {
+        panic!("a link to nothing is refused");
+    };
+    assert!(why.contains("link to nothing"), "{why}");
+    assert!(!earlier(&store));
 }

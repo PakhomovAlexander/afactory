@@ -705,8 +705,10 @@ pub(crate) fn blobs(root: &Path, objects: &[&str]) -> Result<BTreeMap<String, Ve
             .ok_or("git cat-file answered short")?;
         let header = String::from_utf8_lossy(&rest[..end]).into_owned();
         rest = &rest[end + 1..];
+        // Every id came from the commit's own tree: one the object store cannot give back is
+        // a failed read, never a file the commit lacks.
         if header.ends_with(" missing") {
-            continue;
+            return Err(format!("git cannot read committed object {object}"));
         }
         let size: usize = header
             .rsplit(' ')
@@ -716,9 +718,10 @@ pub(crate) fn blobs(root: &Path, objects: &[&str]) -> Result<BTreeMap<String, Ve
         if rest.len() < size + 1 {
             return Err("git cat-file answered short".to_owned());
         }
-        if header.split(' ').nth(1) == Some("blob") {
-            found.insert((*object).to_owned(), rest[..size].to_vec());
+        if header.split(' ').nth(1) != Some("blob") {
+            return Err(format!("committed object {object} is not a file: {header}"));
         }
+        found.insert((*object).to_owned(), rest[..size].to_vec());
         rest = &rest[size + 1..];
     }
     Ok(found)
