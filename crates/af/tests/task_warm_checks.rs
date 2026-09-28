@@ -7,6 +7,7 @@
 //! `RUSTUP_AUTO_INSTALL=0`, so a warm key here proves no toolchain download was needed. A Task
 //! without `[warm]` is compared with the documents a kernel without the warm package recorded.
 
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -53,6 +54,15 @@ open(os.path.join(key, 'warm.lock'), 'wb').write(b'x' * 8192)\n";
 /// A check that widens the toolchain key directory and exits successfully.
 const WIDEN_KEY: &str = "import os\n\
 os.chmod(os.path.dirname(os.environ['CARGO_TARGET_DIR']), 0o777)\n";
+
+/// A check that takes write permission away from the toolchain key and exits successfully.
+const READ_ONLY_KEY: &str = "import os\n\
+os.chmod(os.path.dirname(os.environ['CARGO_TARGET_DIR']), 0o500)\n";
+
+/// A check that parks an oversized file with a non-UTF-8 name directly below the key.
+const ODD_NAME: &str = "import os\n\
+key = os.path.dirname(os.environ['CARGO_TARGET_DIR']).encode()\n\
+open(os.path.join(key, b'\\xff\\xfe-junk'), 'wb').write(b'x' * 8192)\n";
 
 const TOOLCHAIN: &str = "[toolchain]\nchannel = \"1.88.0\"\n";
 
@@ -717,6 +727,52 @@ fn a_check_that_widens_the_toolchain_key_fails_as_suspect_and_the_key_is_emptied
     assert!(warm_directories(&fixture).is_empty());
     let shown = show(&fixture, "widen-key");
     assert!(shown.contains("removed 0 (suspect)"), "{shown}");
+}
+
+#[test]
+fn a_check_that_makes_the_key_read_only_still_fails_and_is_evicted() {
+    let fixture = fixture(code_policy(
+        READ_ONLY_KEY,
+        120_000,
+        false,
+        Some("build_cache = [\"cargo_target\"]"),
+    ));
+    let outcome = start(&fixture, "read-only-key", 3);
+    let cas = cas(&fixture);
+    let result = check_result(&cas, &outcome);
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["reason"], "warm_cache_suspect");
+    assert!(
+        warm_directories(&fixture).is_empty(),
+        "evicted through the held descriptor"
+    );
+}
+
+#[test]
+fn an_oversized_entry_with_a_non_utf8_name_is_counted_and_evicted() {
+    // APFS refuses a name that is not UTF-8, so this fixture can only run where the filesystem
+    // accepts one; the eviction-by-exact-bytes rule it pins matters on those systems.
+    let probe = tempfile::tempdir().unwrap();
+    if std::fs::write(
+        probe.path().join(std::ffi::OsStr::from_bytes(b"\xff\xfe")),
+        b"x",
+    )
+    .is_err()
+    {
+        return;
+    }
+    let fixture = fixture(code_policy(
+        ODD_NAME,
+        120_000,
+        false,
+        Some("build_cache = [\"cargo_target\"]\nmax_bytes = 4096"),
+    ));
+    let outcome = start(&fixture, "odd-name", 3);
+    let cas = cas(&fixture);
+    let result = check_result(&cas, &outcome);
+    assert_eq!(result["status"], "failed");
+    assert_eq!(result["reason"], "warm_cache_bound_exceeded");
+    assert!(warm_directories(&fixture).is_empty());
 }
 
 #[test]

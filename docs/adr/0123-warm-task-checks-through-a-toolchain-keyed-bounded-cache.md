@@ -264,3 +264,17 @@ Three rules were added when the follow-up Task's reviewers read the amendment:
 - **Held is monitored.** Whenever a check holds the key — even when every declared kind is
   superseded and nothing is bound — the key is measured during the check, measured and judged after
   it, and every declared kind's observation carries an eviction and its cause.
+
+### After the fifth verification
+
+- **A held lock is one name, one inode, zero bytes.** Only the top-level entry at a held lock's
+  exact name holding its exact inode is exempt from the key's count and eviction; a hard link to
+  that inode anywhere else is counted like any file, and a held lock that has a second name or has
+  grown makes the key suspect.
+- **Eviction cannot be refused.** The key is made writable through its held descriptor before
+  entries are removed, so a check that took write permission away keeps nothing; entries are
+  addressed by their exact bytes, so a name that is not UTF-8 goes too; and an eviction that leaves
+  any entry but this holder's locks behind is an error, never a reported success.
+- **The cause on every observation.** When a check fails for excess, every declared observation
+  of that check — a warm kind, a superseded kind, a Cache Snapshot — carries the eviction and its
+  cause, with zero bytes where nothing was below the key for it.

@@ -39,32 +39,38 @@ const KEY_LOCK: &str = "warm.lock";
 pub const WARM_KINDS: &[&str] = &["cargo_target", "cargo_home"];
 
 /// The lock files this process holds below one key, each by the name it was opened under and
-/// the inode it holds open. Only these inodes are the kernel's: a file a check put at a lock's
-/// name after unlinking it is not, and is counted and removed like anything else.
+/// the inode it holds open. Only the top-level entry at that exact name holding that exact inode
+/// is the kernel's: a file a check put at a lock's name after unlinking it is not, a hard link
+/// to the lock's inode somewhere else is not, and both are counted and removed like anything
+/// else. A held lock is truncated on acquisition, so any byte it holds later is a check's.
 #[derive(Debug, Default)]
-struct HeldLocks(Mutex<Vec<(String, u64, u64)>>);
+struct HeldLocks(Mutex<Vec<(CString, u64, u64)>>);
 
 impl HeldLocks {
     fn register(&self, name: &str, lock: &Flock<File>) -> Result<(), String> {
         let stat = nix::sys::stat::fstat(&**lock)
             .map_err(|errno| format!("inspecting a Task build cache lock: {errno}"))?;
-        self.0.lock().expect("held lock registry").push((
-            name.to_string(),
-            inode(&stat).0,
-            inode(&stat).1,
-        ));
+        let (dev, ino) = inode(&stat);
+        let name = CString::new(name).map_err(|_| "a lock name holds a NUL byte".to_string())?;
+        self.0
+            .lock()
+            .expect("held lock registry")
+            .push((name, dev, ino));
         Ok(())
     }
 
-    fn holds(&self, stat: &FileStat) -> bool {
+    /// Whether the top-level entry `name` with status `stat` is one of this holder's locks: the
+    /// same name and the same inode, nothing less.
+    fn holds_entry(&self, name: &CStr, stat: &FileStat) -> bool {
+        let identity = inode(stat);
         self.0
             .lock()
             .expect("held lock registry")
             .iter()
-            .any(|(_, dev, ino)| (*dev, *ino) == inode(stat))
+            .any(|(held, dev, ino)| held.as_c_str() == name && (*dev, *ino) == identity)
     }
 
-    fn names(&self) -> Vec<(String, u64, u64)> {
+    fn names(&self) -> Vec<(CString, u64, u64)> {
         self.0.lock().expect("held lock registry").clone()
     }
 }
@@ -217,11 +223,23 @@ impl TaskBuildCacheKeyLock {
             }
         }
         for (name, dev, ino) in self.held.names() {
-            match nix::sys::stat::fstatat(&*self.key, name.as_str(), AtFlags::AT_SYMLINK_NOFOLLOW) {
-                Ok(stat) if inode(&stat) == (dev, ino) => {}
-                Ok(_) => return Some(format!("the lock file `{name}` was replaced")),
-                Err(Errno::ENOENT) => return Some(format!("the lock file `{name}` was removed")),
-                Err(errno) => return Some(format!("the lock file `{name}`: {errno}")),
+            let shown = name.to_string_lossy();
+            match nix::sys::stat::fstatat(&*self.key, name.as_c_str(), AtFlags::AT_SYMLINK_NOFOLLOW)
+            {
+                Ok(stat) if inode(&stat) != (dev, ino) => {
+                    return Some(format!("the lock file `{shown}` was replaced"));
+                }
+                Ok(stat) if stat.st_nlink != 1 => {
+                    return Some(format!("the lock file `{shown}` is linked elsewhere"));
+                }
+                Ok(stat) if stat.st_size != 0 => {
+                    return Some(format!("the lock file `{shown}` grew"));
+                }
+                Ok(_) => {}
+                Err(Errno::ENOENT) => {
+                    return Some(format!("the lock file `{shown}` was removed"));
+                }
+                Err(errno) => return Some(format!("the lock file `{shown}`: {errno}")),
             }
         }
         None
@@ -239,12 +257,37 @@ impl TaskBuildCacheKeyLock {
             ),
         })?;
         let held = Arc::clone(&self.held);
-        count_skipping(descriptor, &self.path, &move |_, stat| held.holds(stat))
+        let key = self.path.clone();
+        count_skipping(descriptor, &self.path, &move |path, stat| {
+            path.parent() == Some(key.as_path())
+                && path
+                    .file_name()
+                    .and_then(|name| CString::new(name.as_bytes()).ok())
+                    .is_some_and(|name| held.holds_entry(&name, stat))
+        })
     }
 
-    /// The kind entries currently below the key, by name, sorted: every entry that
-    /// is not one of the key's lock files, whatever a check made of it.
+    /// The kind entries currently below the key, by name, sorted: every entry that is not one
+    /// of this holder's lock files, whatever a check made of it and however it is named. Names
+    /// that are not UTF-8 are shown lossily here; removal addresses them by their exact bytes.
     pub fn kinds(&self) -> Result<Vec<String>, String> {
+        let mut names: Vec<String> = self
+            .entries()?
+            .into_iter()
+            .map(|(name, _)| {
+                OsStr::from_bytes(name.as_bytes())
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    /// Every top-level entry below the key that is not one of this holder's locks, with its
+    /// no-follow status, by exact name. An entry whose status cannot be read is an error, never
+    /// skipped: what cannot be inspected cannot be left behind either.
+    fn entries(&self) -> Result<Vec<(CString, FileStat)>, String> {
         let descriptor = nix::unistd::dup(&*self.key)
             .map_err(|errno| format!("reopening the toolchain key: {errno}"))?;
         let mut directory = Dir::from_fd(descriptor)
@@ -256,48 +299,80 @@ impl TaskBuildCacheKeyLock {
             if name.to_bytes() == b"." || name.to_bytes() == b".." {
                 continue;
             }
-            let Ok(stat) = nix::sys::stat::fstatat(&*self.key, name, AtFlags::AT_SYMLINK_NOFOLLOW)
-            else {
-                continue;
-            };
-            // The lock inodes this process holds stay; everything else below the key — a kind
-            // directory, whatever a check put where a kind was, a file a check named to look
-            // like a lock, a lock file another holder left — is a kind entry to count and remove.
-            if self.held.holds(&stat) {
-                continue;
-            }
-            names.push(
-                OsStr::from_bytes(name.to_bytes())
-                    .to_string_lossy()
-                    .into_owned(),
-            );
+            names.push(name.to_owned());
         }
-        names.sort();
-        Ok(names)
-    }
-
-    /// Remove every kind directory below the key, whoever left it, and report each one's bytes
-    /// before removal (a lower bound when it could not be fully counted). Lock files stay.
-    pub fn remove_kinds(&self) -> Result<Vec<(String, u64)>, String> {
-        let mut removed = Vec::new();
-        for name in self.kinds()? {
-            let display = self.path.join(&name);
-            let bytes = match nix::sys::stat::fstatat(
+        drop(directory);
+        let mut entries = Vec::new();
+        for name in names {
+            let stat = match nix::sys::stat::fstatat(
                 &*self.key,
-                name.as_str(),
+                name.as_c_str(),
                 AtFlags::AT_SYMLINK_NOFOLLOW,
             ) {
-                Ok(stat) if file_kind(&stat) == SFlag::S_IFDIR => {
-                    match count_child(&self.key, &name, &display) {
+                Ok(stat) => stat,
+                Err(Errno::ENOENT) => continue,
+                Err(errno) => {
+                    return Err(format!(
+                        "inspecting `{}` below the toolchain key: {errno}",
+                        name.to_string_lossy()
+                    ));
+                }
+            };
+            // This holder's locks stay; everything else below the key — a kind directory,
+            // whatever a check put where a kind was, a file a check named to look like a lock, a
+            // lock file another holder left — is an entry to count and remove.
+            if self.held.holds_entry(&name, &stat) {
+                continue;
+            }
+            entries.push((name, stat));
+        }
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(entries)
+    }
+
+    /// Remove every entry below the key that is not one of this holder's locks, whoever left it
+    /// and however it is named, and report each one's bytes before removal (a lower bound when
+    /// it could not be fully counted). The key is made writable through its held descriptor
+    /// first, so a check that took write permission away cannot keep its leavings; afterwards
+    /// nothing but this holder's locks may remain, or the eviction is an error.
+    pub fn remove_kinds(&self) -> Result<Vec<(String, u64)>, String> {
+        nix::sys::stat::fchmod(&*self.key, Mode::S_IRWXU)
+            .map_err(|errno| format!("securing the toolchain key for eviction: {errno}"))?;
+        let mut removed = Vec::new();
+        for (name, stat) in self.entries()? {
+            let display = self.path.join(OsStr::from_bytes(name.as_bytes()));
+            let bytes = if file_kind(&stat) == SFlag::S_IFDIR {
+                match nix::fcntl::openat(
+                    &*self.key,
+                    name.as_c_str(),
+                    directory_flags(),
+                    Mode::empty(),
+                ) {
+                    Ok(descriptor) => match count(descriptor, &display) {
                         Ok(bytes) => bytes,
                         Err(uninspectable) => uninspectable.counted,
-                    }
+                    },
+                    Err(_) => 0,
                 }
-                Ok(stat) => u64::try_from(stat.st_size).unwrap_or(0),
-                Err(_) => 0,
+            } else {
+                u64::try_from(stat.st_size).unwrap_or(0)
             };
-            remove_at(&self.key, &name, &display)?;
-            removed.push((name, bytes));
+            remove_c(&self.key, &name, &display)?;
+            removed.push((
+                OsStr::from_bytes(name.as_bytes())
+                    .to_string_lossy()
+                    .into_owned(),
+                bytes,
+            ));
+        }
+        let left = self.entries()?;
+        if !left.is_empty() {
+            return Err(format!(
+                "eviction left {} entr{} below the toolchain key, first `{}`",
+                left.len(),
+                if left.len() == 1 { "y" } else { "ies" },
+                left[0].0.to_string_lossy()
+            ));
         }
         Ok(removed)
     }
@@ -1423,6 +1498,75 @@ mod tests {
         assert!(
             lock.inspect().is_some_and(|reason| reason.contains("mode")),
             "a widening during the check is caught after it"
+        );
+    }
+
+    #[test]
+    fn a_hard_link_to_a_held_lock_counts_and_a_held_lock_that_grew_or_was_linked_is_suspect() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("af").join(TASK_BUILD_CACHE_DIRECTORY);
+        let lock = lock_task_build_cache_key(&cache, &key('a'), &key('b'), Duration::ZERO)
+            .unwrap()
+            .unwrap();
+        let TaskBuildCacheLock::Held(target) =
+            lock.lock_kind("cargo_target", Duration::ZERO).unwrap()
+        else {
+            panic!("free kind");
+        };
+        target.ensure().unwrap();
+        assert_eq!(lock.inspect(), None);
+        // A check hard-links the held key lock into its target and fills it through the link.
+        std::fs::hard_link(lock.path().join(KEY_LOCK), target.path().join("payload")).unwrap();
+        std::fs::write(target.path().join("payload"), [0_u8; 8192]).unwrap();
+        assert!(
+            lock.bytes().unwrap() >= 8192,
+            "an alias of a held lock elsewhere is counted like any file"
+        );
+        assert!(
+            lock.inspect()
+                .is_some_and(|reason| reason.contains("linked")),
+            "a held lock with a second name is suspect"
+        );
+        lock.remove_kinds().unwrap();
+        assert!(!target.path().exists());
+        // The alias is gone, so the lock has one name again — but it grew, and that is suspect.
+        assert!(
+            lock.inspect().is_some_and(|reason| reason.contains("grew")),
+            "bytes written into a held lock are a check's"
+        );
+    }
+
+    #[test]
+    fn a_read_only_key_and_a_non_utf8_entry_do_not_survive_eviction() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("af").join(TASK_BUILD_CACHE_DIRECTORY);
+        let lock = lock_task_build_cache_key(&cache, &key('a'), &key('b'), Duration::ZERO)
+            .unwrap()
+            .unwrap();
+        // APFS refuses a name that is not UTF-8; there the entry is an ordinary one.
+        let odd = lock.path().join(OsStr::from_bytes(b"\xff\xfe-junk"));
+        let odd = match std::fs::write(&odd, [0_u8; 4096]) {
+            Ok(()) => odd,
+            Err(_) => {
+                let plain = lock.path().join("junk");
+                std::fs::write(&plain, [0_u8; 4096]).unwrap();
+                plain
+            }
+        };
+        std::fs::set_permissions(lock.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(lock.inspect().is_some_and(|reason| reason.contains("mode")));
+        let removed = lock.remove_kinds().unwrap();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].1, 4096);
+        assert!(
+            std::fs::symlink_metadata(&odd).is_err(),
+            "addressed by its exact bytes, not a lossy spelling"
+        );
+        assert_eq!(lock.kinds().unwrap(), Vec::<String>::new());
+        assert_eq!(
+            std::fs::symlink_metadata(lock.path()).unwrap().mode() & 0o777,
+            0o700,
+            "writable again for the eviction, and private"
         );
     }
 }

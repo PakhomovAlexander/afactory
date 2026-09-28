@@ -544,9 +544,10 @@ impl CodeTaskDomain {
                         result.reason = Some(reason.into());
                         let base_of =
                             |kind: &str| kind.split(':').next().unwrap_or_default().to_string();
-                        for observation in observations.iter_mut().filter(|o| {
-                            review_sandbox::WARM_KINDS.contains(&base_of(&o.kind).as_str())
-                        }) {
+                        // Every declared observation of this check — a warm kind, superseded or
+                        // not, and a Cache Snapshot — carries the eviction and its cause; a kind
+                        // that had no entry below the key records zero bytes.
+                        for observation in observations.iter_mut() {
                             let base = base_of(&observation.kind);
                             let bytes = evicted
                                 .iter()

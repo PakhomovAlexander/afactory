@@ -69,7 +69,11 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   nothing was left to evict. Only the lock inodes the holder opened are exempt from the key's
   bound, the key directory itself must stay private and its held locks in place for a check to be
   accepted (a widened key is emptied before reuse, never repaired), and a check that holds the
-  key is monitored and judged even when every declared kind is superseded.
+  key is monitored and judged even when every declared kind is superseded. A held lock is exempt
+  only at its own name with its own inode and must stay a single empty name; the key is made
+  writable through its held descriptor before an eviction, entries are removed by their exact
+  bytes, and an eviction that leaves anything behind is an error; every declared observation of a
+  failed check carries the eviction and its cause.
 - Give a source-writing Worker that declares `execute-checks` a shell (ADR-0120): `worker_access`
   maps `write-source` plus `execute-checks` to `WorkerAccess::WriteSourceWithShell`, the Claude
   adapter grants `Read,Glob,Grep,Edit,Write,Bash` and Codex runs `workspace-write`, and the shell's

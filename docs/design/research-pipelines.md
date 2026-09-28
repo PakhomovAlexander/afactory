@@ -680,3 +680,13 @@ kind is bound. Each has a unit and an end-to-end fixture. Four verification roun
 hand-fixed defects on the warm cache are themselves a finding for R6: reviewers with a shell hold a
 `trusted_local` cache to an adversarial standard the design words invited, and the standard was
 worth meeting — every bypass they found was real.
+
+Verification Task `research-r1-verify-5` on 2771c0a (288,947 tokens; gate warm, `kernel`
+12.5 min) ended `changes_requested` with five more, fixed by hand: a hard link to a held lock's
+inode anywhere in the key escaped the count; bytes written into the held lock itself escaped it; a
+key made read-only by a check defeated its own eviction; an entry with a non-UTF-8 name survived
+eviction under a lossy spelling; and a Cache Snapshot observation missed the eviction cause. A held
+lock is now exempt only at its own name with its own inode and must stay one empty name, the key is
+made writable through its held descriptor before an eviction that addresses entries by exact bytes
+and errors when anything remains, and every declared observation carries the cause. Two unit and
+two end-to-end fixtures pin them.
