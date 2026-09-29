@@ -6,6 +6,8 @@ CHANGELOG.md.
     scripts/changelog-notes.py                 print the notes
     scripts/changelog-notes.py --write SECTION put SECTION and the notes under [Unreleased] in
                                                CHANGELOG.md and remove the fragments
+    scripts/changelog-notes.py --check         fail when [Unreleased] holds anything but the
+                                               pointer to changelog.d/ (run by `make check`)
 
 Pull requests never edit CHANGELOG.md: each adds its own changelog.d/<name>.md, so two open pull
 requests never conflict on the changelog. Only the release pull request writes it.
@@ -68,6 +70,13 @@ def main():
     head, body, released = split(CHANGELOG.read_text())
     if len(sys.argv) == 1:
         print(notes(body))
+        return
+    if sys.argv[1:] == ["--check"]:
+        if body.replace(POINTER, "").strip():
+            sys.exit(
+                "CHANGELOG.md: [Unreleased] must hold only the pointer to changelog.d/. Put the "
+                "entry in a new changelog.d/<topic>.md instead (see changelog.d/README.md)."
+            )
         return
     if len(sys.argv) != 3 or sys.argv[1] != "--write":
         sys.exit(__doc__)
