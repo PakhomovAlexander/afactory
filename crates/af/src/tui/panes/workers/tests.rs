@@ -1145,3 +1145,72 @@ fn a_worker_whose_directory_name_holds_a_newline_is_listed() {
     assert_eq!(found.entries[0].prompt.as_deref(), Some("Across lines.\n"));
     assert!(found.entries.iter().all(|entry| entry.drifted.is_empty()));
 }
+
+/// Opening the pane re-reads everything (ADR-0122), so what a read costs must not grow with
+/// what it lists: the same git processes for 2 Workers as for 30.
+#[test]
+fn a_read_spawns_as_many_git_processes_for_thirty_workers_as_for_two() {
+    let spawns = |count: usize| {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        for n in 0..count {
+            worker(
+                &root,
+                &format!(".af/task-packages/w{n}"),
+                &format!("fixture/w{n}"),
+            );
+            write(
+                &root,
+                &format!(".af/task-packages/w{n}/instructions.md"),
+                "Go.\n",
+            );
+        }
+        commit_all(&root, "workers");
+        let before = super::super::pipelines::spawned::count(&root);
+        let found = discover(&root).unwrap();
+        assert_eq!(found.entries.len(), count);
+        super::super::pipelines::spawned::count(&root) - before
+    };
+    let (few, many) = (spawns(2), spawns(30));
+    assert_eq!(few, many, "git processes for 2 Workers, then for 30");
+    assert!(many <= 6, "{many} git processes for one read");
+}
+
+/// `git diff` trusts the index flags; the pane does not: a `skip-worktree` or
+/// `assume-unchanged` declaration edited in the working tree is still marked, and a flagged
+/// file left alone is not.
+#[test]
+fn an_index_flag_does_not_hide_drift() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    worker(root, ".af/task-packages/skip", "fixture/skip");
+    worker(root, ".af/task-packages/assume", "fixture/assume");
+    worker(root, ".af/task-packages/quiet", "fixture/quiet");
+    commit_all(root, "three workers");
+    let skip = ".af/task-packages/skip/worker.toml";
+    let assume = ".af/task-packages/assume/worker.toml";
+    let quiet = ".af/task-packages/quiet/worker.toml";
+    git(root, &["update-index", "--skip-worktree", skip]).unwrap();
+    git(root, &["update-index", "--assume-unchanged", assume, quiet]).unwrap();
+    for path in [skip, assume] {
+        let text = std::fs::read_to_string(root.join(path)).unwrap();
+        std::fs::write(root.join(path), format!("{text}# edited\n")).unwrap();
+    }
+    let found = discover(root).unwrap();
+    let drifted = |id: &str| {
+        let entry = found.entries.iter().find(|entry| entry.id == id).unwrap();
+        entry.drifted.clone()
+    };
+    assert_eq!(drifted(skip), [skip]);
+    assert_eq!(drifted(assume), [assume]);
+    assert!(drifted(quiet).is_empty());
+    // A flagged file removed from the working tree differs too.
+    std::fs::remove_file(root.join(quiet)).unwrap();
+    let found = discover(root).unwrap();
+    let entry = found
+        .entries
+        .iter()
+        .find(|entry| entry.id == quiet)
+        .unwrap();
+    assert_eq!(entry.drifted, [quiet]);
+}

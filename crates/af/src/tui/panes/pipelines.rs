@@ -21,6 +21,9 @@ use crate::tui::paint::Paint;
 use crate::tui::scope::Scope;
 use crate::tui::tree::Item;
 
+/// The committed catalog that pins Pipeline and Worker packages by name.
+pub(crate) const CATALOG: &str = ".af/task-catalog.toml";
+
 /// The Task ID of every preview; it names no Task in any Store.
 pub(crate) const PREVIEW_TASK_ID: &str = "pipeline-preview";
 
@@ -486,45 +489,71 @@ fn discover(root: &Path) -> Result<Discovery, String> {
     if commit.is_empty() {
         return Ok(found);
     }
-    let listing = git(root, &["ls-tree", "-r", "-z", "--name-only", &commit, "--"])?;
+    // Every pipeline and the catalog live under `.af/`; one listing, one read and one drift
+    // check serve them all, however many there are.
+    let objects = listed(root, &commit, ".af")?;
     let mut reviews = Vec::new();
     let mut packages = Vec::new();
-    let mut catalog = None;
-    for path in listing.split(|byte| *byte == 0) {
-        let Ok(path) = std::str::from_utf8(path) else {
-            continue;
-        };
+    for path in objects.keys() {
         if let Some(rest) = path.strip_prefix(".af/pipelines/")
             && !rest.contains('/')
             && rest.ends_with(".toml")
         {
-            reviews.push(path.to_owned());
+            reviews.push(path.clone());
         } else if path.starts_with(".af/task-packages/") && path.ends_with("/pipeline.toml") {
-            packages.push(path.to_owned());
-        } else if path == ".af/task-catalog.toml" {
-            catalog = Some(path.to_owned());
+            packages.push(path.clone());
         }
     }
-    reviews.sort();
-    packages.sort();
-    let pinned = match catalog {
-        Some(path) => pinned_paths(&declared(&committed(root, &commit, &path)?)),
+    let mut wanted: Vec<&str> = reviews
+        .iter()
+        .chain(&packages)
+        .map(String::as_str)
+        .collect();
+    wanted.push(CATALOG);
+    let ids: Vec<&str> = wanted
+        .iter()
+        .filter_map(|path| objects.get(*path).map(String::as_str))
+        .collect();
+    let shown: Vec<&str> = reviews
+        .iter()
+        .chain(&packages)
+        .map(String::as_str)
+        .collect();
+    let (read, modified) = std::thread::scope(|scope| {
+        let modified = scope.spawn(|| differing(root, &commit, &shown));
+        (blobs(root, &ids), modified.join())
+    });
+    let read = read?;
+    let modified = modified.map_err(|_| "checking the working tree panicked")?;
+    let text = |path: &str| -> Result<Option<String>, String> {
+        let Some(bytes) = objects.get(path).and_then(|id| read.get(id)) else {
+            return Ok(None);
+        };
+        String::from_utf8(bytes.clone())
+            .map(Some)
+            .map_err(|error| format!("{path}: {error}"))
+    };
+    let committed = |path: &str| -> Result<String, String> {
+        text(path)?.ok_or_else(|| format!("{path}: not a file at HEAD"))
+    };
+    let pinned = match text(CATALOG)? {
+        Some(catalog) => pinned_paths(&declared(&catalog)),
         None => BTreeMap::new(),
     };
     for id in reviews {
-        let declaration = committed(root, &commit, &id)?;
+        let declaration = committed(&id)?;
         let stem = Path::new(&id).file_stem().unwrap_or_default();
         found.entries.push(Entry {
             label: stem.to_string_lossy().into_owned(),
             path: root.join(&id),
-            modified: differs(root, &commit, &id),
+            modified: modified.contains(&id),
             declaration,
             id,
             source: Source::Review,
         });
     }
     for id in packages {
-        let declaration = committed(root, &commit, &id)?;
+        let declaration = committed(&id)?;
         let value = declared(&declaration);
         let directory = Path::new(&id).parent().unwrap_or(Path::new(""));
         let fallback = relative(Path::new(".af/task-packages"), directory);
@@ -544,7 +573,7 @@ fn discover(root: &Path) -> Result<Discovery, String> {
         found.entries.push(Entry {
             label,
             path: root.join(&id),
-            modified: differs(root, &commit, &id),
+            modified: modified.contains(&id),
             declaration,
             id,
             source: Source::Package {
@@ -625,19 +654,6 @@ fn contract_rows(value: &Value) -> Vec<Row> {
     rows
 }
 
-/// The text one commit holds at a repository-relative path.
-pub(crate) fn committed(root: &Path, commit: &str, path: &str) -> Result<String, String> {
-    let bytes = git(root, &["show", &format!("{commit}:{path}")])?;
-    String::from_utf8(bytes).map_err(|error| format!("{path}: {error}"))
-}
-
-/// Whether the working-tree file differs from the commit in bytes, mode or existence, as git
-/// judges it. A git that cannot answer counts as a difference: the marker errs on the side of
-/// saying the working tree is not what is shown.
-pub(crate) fn differs(root: &Path, commit: &str, path: &str) -> bool {
-    git(root, &["diff", "--quiet", commit, "--", path]).is_err()
-}
-
 /// Every blob `commit` holds under `under`, by path, with its object id, from one
 /// `git ls-tree -r -z`: NUL-separated, so a path may hold any byte, a newline included.
 pub(crate) fn listed(
@@ -646,6 +662,11 @@ pub(crate) fn listed(
     under: &str,
 ) -> Result<BTreeMap<String, String>, String> {
     let listing = git(root, &["ls-tree", "-r", "-z", commit, "--", under])?;
+    Ok(entries(&listing))
+}
+
+/// The blobs of a `git ls-tree -z` listing, path to object id.
+fn entries(listing: &[u8]) -> BTreeMap<String, String> {
     let mut found = BTreeMap::new();
     for entry in listing.split(|byte| *byte == 0) {
         // `<mode> SP <type> SP <object> TAB <path>`
@@ -660,7 +681,7 @@ pub(crate) fn listed(
             found.insert(path.to_owned(), object.to_owned());
         }
     }
-    Ok(found)
+    found
 }
 
 /// The bytes of every blob in `objects` (object ids, as `listed` gives them), read by one
@@ -744,20 +765,91 @@ pub(crate) fn differing(root: &Path, commit: &str, paths: &[&str]) -> BTreeSet<S
         "--",
     ];
     args.extend_from_slice(paths);
-    match git(root, &args) {
-        Ok(listing) => listing
-            .split(|byte| *byte == 0)
-            .filter(|name| !name.is_empty())
-            .map(|name| String::from_utf8_lossy(name).into_owned())
-            .collect(),
-        Err(_) => paths.iter().map(|path| (*path).to_owned()).collect(),
+    let everything = || paths.iter().map(|path| (*path).to_owned()).collect();
+    let Ok(listing) = git(root, &args) else {
+        return everything();
+    };
+    let mut differ: BTreeSet<String> = nul_separated(&listing);
+    // `git diff` trusts the index flags: a `skip-worktree` or `assume-unchanged` file is never
+    // compared. Such files, and only those, are hashed as the working tree holds them.
+    match flagged_differing(root, commit, paths) {
+        Ok(flagged) => differ.extend(flagged),
+        Err(()) => return everything(),
     }
+    differ
+}
+
+/// The NUL-separated names git printed.
+fn nul_separated(listing: &[u8]) -> BTreeSet<String> {
+    listing
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+        .map(|name| String::from_utf8_lossy(name).into_owned())
+        .collect()
+}
+
+/// Of `paths`, those the index marks `skip-worktree` (`S`) or `assume-unchanged` (a lowercase
+/// tag) whose working-tree copy is not the blob `commit` holds, or is gone. Nothing flagged
+/// costs one `git ls-files`.
+fn flagged_differing(root: &Path, commit: &str, paths: &[&str]) -> Result<Vec<String>, ()> {
+    let mut args = vec!["--literal-pathspecs", "ls-files", "-v", "-z", "--"];
+    args.extend_from_slice(paths);
+    let listing = git(root, &args).map_err(|_| ())?;
+    let mut flagged = Vec::new();
+    for entry in listing.split(|byte| *byte == 0) {
+        let (Some(tag), Some(path)) = (entry.first(), entry.get(2..)) else {
+            continue;
+        };
+        if *tag == b'S' || tag.is_ascii_lowercase() {
+            flagged.push(String::from_utf8_lossy(path).into_owned());
+        }
+    }
+    if flagged.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (mut differ, mut present) = (Vec::new(), Vec::new());
+    for path in flagged {
+        match std::fs::symlink_metadata(root.join(&path)) {
+            Ok(meta) if meta.is_file() => present.push(path),
+            // Gone, or no longer a plain file: not what the commit holds.
+            _ => differ.push(path),
+        }
+    }
+    if present.is_empty() {
+        return Ok(differ);
+    }
+    let names: Vec<&str> = present.iter().map(String::as_str).collect();
+    let committed = listed_paths(root, commit, &names)?;
+    let mut hash = vec!["hash-object", "--"];
+    hash.extend_from_slice(&names);
+    let hashes = git(root, &hash).map_err(|_| ())?;
+    let hashes = String::from_utf8_lossy(&hashes).into_owned();
+    let hashes: Vec<&str> = hashes.lines().collect();
+    if hashes.len() != names.len() {
+        return Err(());
+    }
+    for (path, hashed) in names.iter().zip(hashes) {
+        if committed.get(*path).map(String::as_str) != Some(hashed) {
+            differ.push((*path).to_owned());
+        }
+    }
+    Ok(differ)
+}
+
+/// The blob ids `commit` holds at exactly `paths`.
+fn listed_paths(root: &Path, commit: &str, paths: &[&str]) -> Result<BTreeMap<String, String>, ()> {
+    let mut args = vec!["--literal-pathspecs", "ls-tree", "-z", commit, "--"];
+    args.extend_from_slice(paths);
+    let listing = git(root, &args).map_err(|_| ())?;
+    Ok(entries(&listing))
 }
 
 /// One git command against exactly this repository: the environment is cleared, so an inherited
 /// `GIT_DIR` or `GIT_WORK_TREE` cannot point it at another repository, and only what git needs
 /// to run is passed back in.
 fn git_command(root: &Path, args: &[&str]) -> Command {
+    #[cfg(test)]
+    spawned::note(root);
     let mut command = Command::new("git");
     command
         .current_dir(root)
@@ -830,6 +922,26 @@ mod tests {
 
     fn scope(root: &Path) -> Scope {
         Scope::project(root.to_path_buf(), config::load(Some(root)).unwrap())
+    }
+
+    /// Every open reads again, so the read must cost the same for 2 pipelines as for 30.
+    #[test]
+    fn a_read_spawns_as_many_git_processes_for_thirty_pipelines_as_for_two() {
+        let spawns = |count: usize| {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().to_path_buf();
+            for n in 0..count {
+                package(&root, &format!("p{n}"), &format!("fixture/p{n}"));
+            }
+            commit_all(&root, "pipelines");
+            let before = spawned::count(&root);
+            let found = discover(&root).unwrap();
+            assert_eq!(found.entries.len(), count);
+            spawned::count(&root) - before
+        };
+        let (few, many) = (spawns(2), spawns(30));
+        assert_eq!(few, many, "git processes for 2 pipelines, then for 30");
+        assert!(many <= 6, "{many} git processes for one read");
     }
 
     #[test]
@@ -1125,5 +1237,32 @@ mod tests {
             rows[4],
             "OUT       snapshot: af/SourceTree@1 (one)  optional"
         );
+    }
+}
+
+/// How many git processes the browser started against each repository: tests read it to prove a
+/// read's cost does not grow with what it lists. Each test works in its own repository, so
+/// tests running side by side never count each other.
+#[cfg(test)]
+pub(crate) mod spawned {
+    use std::collections::BTreeMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static SPAWNED: Mutex<BTreeMap<PathBuf, usize>> = Mutex::new(BTreeMap::new());
+
+    pub(super) fn note(root: &Path) {
+        let mut spawned = SPAWNED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *spawned.entry(root.to_path_buf()).or_default() += 1;
+    }
+
+    /// The git processes started against `root` so far.
+    pub(crate) fn count(root: &Path) -> usize {
+        let spawned = SPAWNED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        spawned.get(root).copied().unwrap_or(0)
     }
 }

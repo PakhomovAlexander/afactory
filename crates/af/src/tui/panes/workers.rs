@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value as Json;
 use toml::Value;
 
-use super::pipelines::{blobs, declared, differing, head, listed, pinned_paths};
+use super::pipelines::{CATALOG, blobs, declared, differing, head, listed, pinned_paths};
 use super::tasks::{self, Cache, Invoked, Target};
 use super::{Pane, Row};
 use crate::task_execution;
@@ -30,7 +30,6 @@ use crate::tui::tree::Item;
 
 /// The columns of a section rule: the main pane beside the bar at 100 columns.
 const RULE: usize = 72;
-const CATALOG: &str = ".af/task-catalog.toml";
 const LOCK: &str = ".af/af.lock";
 
 /// What a declaration makes: which lock pins it, and which file the kernel sends as its prompt.
