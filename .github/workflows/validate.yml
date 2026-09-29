@@ -84,7 +84,7 @@ jobs:
           AF_CI_METRICS: ${{ runner.temp }}/check-metrics.jsonl
         # Linux formats and lints in the parallel `lint` job; the release-only macOS leg runs
         # the whole gate.
-        run: make ${{ runner.os == 'macOS' && 'check' || 'test release-check' }}
+        run: make ${{ runner.os == 'macOS' && 'check' || 'preflight-check test release-check' }}
       - name: CLI smoke
         run: python3 scripts/ci-step.py cli-smoke cargo run --locked -p af --bin af -- --version
         env:
