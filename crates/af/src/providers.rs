@@ -41,7 +41,10 @@ const MAX_PROBE_OUTPUT: usize = 64 * 1024;
 const MAX_REGISTRY_BYTES: u64 = 64 * 1024;
 const MAX_CONCURRENT_PROBES: usize = 4;
 const MAX_PROVIDER_LIMITS: usize = 16;
-const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// The Codex status and subscription probes. A loaded machine (a full build, an IDE indexing)
+/// can take seconds just to start `codex`; at 5 seconds the probe refused Tasks and failed
+/// tests on healthy providers, so it allows 15, still well inside Claude's structural 30.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const CLAUDE_STRUCTURAL_TIMEOUT: Duration = Duration::from_secs(30);
 const CLAUDE_USAGE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLAUDE_USAGE_CACHE_TTL: Duration = Duration::from_secs(60);
