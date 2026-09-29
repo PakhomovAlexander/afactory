@@ -233,7 +233,10 @@ impl EventStore {
     /// connection is busy (ADR-0125). It grants nothing by itself: every append through it
     /// passes the same validation and exact sequence fence as the caller's own. A Store with no
     /// database file (in-memory or temporary) has nothing to share and is refused.
-    pub fn reopen(&self) -> Result<Self, StoreError> {
+    ///
+    /// A write through it waits at most `busy_timeout` for another connection's write lock
+    /// before it fails with a busy error, so its caller can still decide before a deadline.
+    pub fn reopen(&self, busy_timeout: std::time::Duration) -> Result<Self, StoreError> {
         let path = self
             .conn
             .path()
@@ -241,6 +244,7 @@ impl EventStore {
             .ok_or_else(|| StoreError::Conflict("Store has no database file to reopen".into()))?;
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         conn.pragma_update(None, "synchronous", "FULL")?;
+        conn.busy_timeout(busy_timeout)?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),

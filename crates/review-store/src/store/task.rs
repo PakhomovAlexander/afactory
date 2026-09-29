@@ -1491,11 +1491,16 @@ impl EventStore {
         } else {
             false
         };
-        let valid_until = if owned_record
+        let valid_until = if let TaskChangeV1::LeaseRenewed { .. } = &transition.change {
+            // Recheck expiry inside the write transaction: a renewal that waited for the
+            // database's write lock must not extend a lease that expired meanwhile (ADR-0125).
+            state.as_ref().map(|state| state.lease_until)
+        } else if owned_record
             || matches!(
                 transition.change,
                 TaskChangeV1::ReviewContinued { .. } | TaskChangeV1::RecordingResumed { .. }
-            ) {
+            )
+        {
             state.as_ref().map(|state| {
                 state.lease_until.min(
                     state

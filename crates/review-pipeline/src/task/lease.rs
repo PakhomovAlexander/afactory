@@ -3,7 +3,8 @@
 //! The heartbeat also holds a second connection to the same Store file (ADR-0125): it observes
 //! the exact writer through it on every tick, and renews through it only once the caller's
 //! connection has stayed held into the lease's last reserve, so no single Store operation can
-//! outlast a live writer's lease.
+//! outlast a live writer's lease. That connection waits a bounded time for the database's write
+//! lock, and the reserve is long enough to wait out a lock a Store operation holds.
 use review_store::{Cas, EventStore, store::task::TaskLease};
 use std::{
     sync::{
@@ -20,11 +21,17 @@ const LEASE_MS: u64 = 15_000;
 /// A due renewal that still cannot take the shared connection with this much lease left renews
 /// through the heartbeat's own connection instead. Until then it keeps waiting, because a
 /// renewal through the own connection can overtake an append the work is about to make.
-const RESERVE_MS: u64 = 2_000;
+const RESERVE_MS: u64 = 4_000;
+/// How long one renewal through the own connection waits for the database's write lock.
+const OWN_BUSY_TIMEOUT: Duration = Duration::from_secs(1);
+/// No renewal through the own connection starts with less lease left than this: one that waits
+/// its whole busy timeout still has time to commit, so the heartbeat decides before expiry.
+const RESERVE_FLOOR_MS: u64 = OWN_BUSY_TIMEOUT.as_millis() as u64 + 500;
 /// How often a due renewal retries the shared connection before its reserve is reached.
 const RETRY: Duration = Duration::from_millis(10);
-/// Reserve renewals that may lose the sequence race to the work's own append before failing.
-const RESERVE_ATTEMPTS: usize = 3;
+/// The first and the longest pause after a renewal through the own connection fails.
+const BACKOFF: Duration = Duration::from_millis(20);
+const MAX_BACKOFF: Duration = Duration::from_millis(200);
 
 struct StopHeartbeat<'a>(&'a (Mutex<bool>, Condvar));
 impl Drop for StopHeartbeat<'_> {
@@ -62,21 +69,20 @@ fn renew_if_due(store: &mut EventStore, cas: &Cas, lease: &TaskLease) -> Result<
     Ok(())
 }
 
-/// Renew through the heartbeat's own connection. An attempt that loses the sequence race to an
-/// append the work committed meanwhile is retried only while a fresh read still shows this
-/// exact writer live; expiry, release or a successor fails at once.
-fn renew_in_reserve(own: &mut EventStore, cas: &Cas, lease: &TaskLease) -> Result<(), String> {
-    let mut attempts = 0;
-    loop {
-        attempts += 1;
-        match own.renew_task_lease(cas, lease, LEASE_MS) {
-            Ok(_) => return Ok(()),
-            Err(error) => {
-                own.task_lease_state(lease).map_err(|e| e.to_string())?;
-                if attempts == RESERVE_ATTEMPTS {
-                    return Err(error.to_string());
-                }
-            }
+/// One renewal through the heartbeat's own connection. When it fails, whether on the write lock
+/// or on the sequence race with an append the work committed meanwhile, a fresh read decides:
+/// expiry, release or a successor fails at once, and otherwise the fresh expiry is returned so
+/// the caller can retry.
+fn renew_through_own(
+    own: &mut EventStore,
+    cas: &Cas,
+    lease: &TaskLease,
+) -> Result<Result<(), (String, u64)>, String> {
+    match own.renew_task_lease(cas, lease, LEASE_MS) {
+        Ok(_) => Ok(Ok(())),
+        Err(error) => {
+            let lease_until = own.task_lease_state(lease).map_err(|e| e.to_string())?;
+            Ok(Err((error.to_string(), lease_until)))
         }
     }
 }
@@ -104,7 +110,7 @@ pub fn with_heartbeat_controlled<T>(
         let _ = renew_if_due(&mut shared, cas, lease);
         // A Store that cannot be reopened, such as one with no database file, keeps the shared
         // connection as its only path, exactly as before ADR-0125.
-        shared.reopen().ok()
+        shared.reopen(OWN_BUSY_TIMEOUT).ok()
     };
     let stopped = (Mutex::new(false), Condvar::new());
     std::thread::scope(|scope| {
@@ -139,7 +145,10 @@ pub fn with_heartbeat_controlled<T>(
                 if lease_until >= now_ms()?.saturating_add(RENEW_BELOW_MS) {
                     continue;
                 }
-                loop {
+                let mut lease_until = lease_until;
+                let mut backoff = BACKOFF;
+                let mut last_error = None;
+                while lease_until < now_ms()?.saturating_add(RENEW_BELOW_MS) {
                     match store.try_lock() {
                         Ok(mut shared) => {
                             renew_if_due(&mut shared, cas, lease)?;
@@ -150,17 +159,36 @@ pub fn with_heartbeat_controlled<T>(
                         }
                         Err(TryLockError::WouldBlock) => {}
                     }
-                    if lease_until <= now_ms()?.saturating_add(RESERVE_MS) {
-                        // The work's connection is still held. The Store validates and fences
-                        // this renewal exactly as the shared connection's, so lost authority
-                        // still mints nothing.
-                        renew_in_reserve(&mut own, cas, lease)?;
-                        break;
+                    let now = now_ms()?;
+                    if lease_until <= now.saturating_add(RESERVE_FLOOR_MS) {
+                        // Too little lease is left for another wait on the write lock to commit
+                        // before expiry: fail while this writer still holds authority.
+                        return Err(last_error.unwrap_or_else(|| {
+                            "Task writer lease could not be renewed before expiry".into()
+                        }));
                     }
-                    if stopped_within(&stopped, RETRY) {
+                    if lease_until > now.saturating_add(RESERVE_MS) {
+                        if stopped_within(&stopped, RETRY) {
+                            failure.0 = None;
+                            return Ok(());
+                        }
+                        continue;
+                    }
+                    // The work's connection is still held. The Store validates and fences this
+                    // renewal exactly as the shared connection's, so lost authority still mints
+                    // nothing.
+                    match renew_through_own(&mut own, cas, lease)? {
+                        Ok(()) => break,
+                        Err((error, fresh)) => {
+                            last_error = Some(error);
+                            lease_until = fresh;
+                        }
+                    }
+                    if stopped_within(&stopped, backoff) {
                         failure.0 = None;
                         return Ok(());
                     }
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
                 }
             }
         });
