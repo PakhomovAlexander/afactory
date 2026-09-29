@@ -2,6 +2,9 @@
 
 **Status:** accepted (2026-09-17). Refines ADR-0045 execution scheduling; preserves its
 tagged-source checks, consumer validation and signed publication requirements. Superseded in
+part by [ADR-0124](0124-run-tests-in-parallel-processes-and-link-them-once.md): nextest is the
+gate, the four-thread bound is per machine, the timing-sensitive tests run alone, and the
+compile cache is keyed by rustc inputs rather than stored as a `target/` directory. Superseded in
 part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the CI-economics report that computed
 wall time apart from summed runner time was dropped before GA. `scripts/ci-step.py` records one
 `af.ci-step/1` per step, whose `tokens` and `billed_runner_minutes` are always null because a
