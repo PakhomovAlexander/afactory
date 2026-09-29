@@ -77,7 +77,7 @@ is deleted with its index entry, and git history keeps it. Links to a deleted AD
 internal record deleted at GA, are rewritten to point at the superseding ADR or to plain text;
 this is the only edit allowed in another accepted ADR's body (ADR-0113 clauses 6 and 8). Look
 at `docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md` for the shape. Reference
-the ADR from the PR and from the CHANGELOG line.
+the ADR from the PR and from its change note.
 
 ## Commit messages
 
@@ -92,8 +92,10 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
 
 - One topic per PR. Split unrelated fixes even when they are small.
 - `make check` passes; say so in the PR template checklist.
-- A user-visible change adds a line under `[Unreleased]` in `CHANGELOG.md`; the release
-  script turns those into the release notes.
+- A user-visible change adds its own note, `changelog.d/<topic>.md` (see
+  [`changelog.d/README.md`](changelog.d/README.md)), and never edits `CHANGELOG.md`: a note per
+  pull request means two open pull requests never conflict on the changelog. The release
+  script collects the notes into the release's section and removes them.
 - A design change links its ADR.
 - Never weaken a contract, a fixture, a gate, a budget, or a sandbox boundary to make a test
   pass. If a test is wrong, say why in the PR; if the boundary is wrong, that is an ADR.

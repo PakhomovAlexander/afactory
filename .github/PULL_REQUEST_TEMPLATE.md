@@ -10,6 +10,6 @@
 
 - [ ] `make check` passes locally (fmt, clippy `-D warnings`, `cargo test --locked`, release check).
 - [ ] `make review-kernel-container-probes` passes, if `crates/review-sandbox` changed (needs Docker).
-- [ ] `CHANGELOG.md` has a line under `[Unreleased]`, if the change is user-visible.
+- [ ] A change note `changelog.d/<topic>.md`, if the change is user-visible (never an edit to `CHANGELOG.md`).
 - [ ] A design change references its ADR: <!-- docs/adr/NNNN-….md, or "not a design change" -->
 - [ ] No contract, fixture, gate, budget, or sandbox boundary was weakened to make a test pass.

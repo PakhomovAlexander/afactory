@@ -186,7 +186,8 @@ workspace-wide. See [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull r
 ## Releasing
 
 `make release VERSION=1.0.0 COMPAT="…"` bumps the workspace version, writes the `CHANGELOG.md`
-section, and opens the release pull request. Merging it tags the commit, runs `make check` on Linux
+section from the merged pull requests and their notes under `changelog.d/`, and opens the release
+pull request. Merging it tags the commit, runs `make check` on Linux
 and macOS, builds every target, signs `SHA256SUMS`, and publishes the release.
 
 ## Security and licence

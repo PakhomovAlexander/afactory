@@ -16,39 +16,8 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
-
-- `make check` runs its tests one process per test across every test binary at once
-  (`cargo nextest run --profile ci`), with `TEST_THREADS` set from the machine's cores; the
-  five tests that assert against a fixed real-time budget run alone and first, listed in
-  `.config/nextest.toml`. The longest tests are split one case per test, the eight largest
-  crates link their integration tests as one binary under `tests/it/`, doctests are off (there
-  are none), and debug information is line tables only. CI compiles through `sccache` keyed
-  by rustc inputs, caches only the crate registry, links with `lld` on Linux, and lints in a
-  job beside the tests
-  ([ADR-0124](docs/adr/0124-run-tests-in-parallel-processes-and-link-them-once.md)). Measured
-  on a 14-core developer machine: the test step 661 s to 289 s, a cold test build 58 s to
-  46 s with 122 to 48 executables and 5.7 GB to 3.5 GB, the doctest step 22 s to none.
-
-### Changes
-
-- The design system: `brand/` keeps the designer's wordmark (AFACTORY with three workers) and
-  derives every asset from it with `brand/gen.py`; `brand/tokens.css` and `tokens.json` carry
-  the palette, type, spacing and radii; `brand/README.md` is the brand book. The README opens
-  with the banner; the tagline is "agent pipelines made fast". The browser paints its status
-  line ink on the brand's blue and its errors pink where `COLORTERM` says the terminal takes
-  truecolor, and as before otherwise (#127).
-- The browser's bare `?` help opens with the pixel worker, the version and the tagline above
-  the key reference.
-- The browser's Workers pane opens in a tenth of a second instead of most of one: it reads every
-  committed declaration, prompt and lock with one `git cat-file --batch` and checks their drift
-  with one `git diff --literal-pathspecs --name-only`, side by side, where it spawned about four
-  git processes per Worker on every open (0.79s to 0.06-0.13s for 14 Workers on a loaded
-  machine). A file name with `*` or `[` is now compared literally.
-- The Tasks pane lists the Task Stores an earlier (pre-GA) af release wrote as one bar entry,
-  `! N old Stores`, and one note saying where they are and that af does not read pre-GA state
-  (ADR-0113), instead of an error row each. A Store refused for any other reason still shows its
-  own error. `review_core::event::ANOTHER_RELEASE` is the phrase both sides share.
-
+Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
+pull request; the release pull request collects them here.
 
 ## [0.9.0-rc.8] - 2026-09-28
 

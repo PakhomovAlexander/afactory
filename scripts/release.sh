@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Open the release PR for version X.Y.Z: bump the workspace version, write the CHANGELOG
-# section from the pull requests merged since the last release, commit on release/vX.Y.Z, push,
-# and open the PR. Merging that PR is the one human act of a release; .github/workflows/release.yml
+# section from the pull requests merged since the last release and the change notes they left
+# under changelog.d/ (which it then removes), commit on release/vX.Y.Z, push, and open the PR. Merging that PR is the one human act of a release; .github/workflows/release.yml
 # tags, checks, builds, signs, and publishes from there (ADR-0045).
 #
 #   scripts/release.sh X.Y.Z --compat "<one line on authority compatibility>" [--dry-run] [--yes]
@@ -90,6 +90,8 @@ $changes
 echo "release: $current -> $version on $repo"
 echo
 echo "$section"
+# The change notes the merged pull requests left in changelog.d/; the release section ends with them.
+scripts/changelog-notes.py
 if [[ "$dry_run" -eq 1 ]]; then
   echo "(dry run: nothing written)"
   exit 0
@@ -113,20 +115,12 @@ EOF
   cargo update --workspace --quiet
 fi
 
-# CHANGELOG.md: the new section goes right under [Unreleased].
-python3 - "$version" "$section" <<'EOF'
-import sys
-version, section = sys.argv[1], sys.argv[2]
-path = "CHANGELOG.md"
-text = open(path).read()
-marker = "## [Unreleased]\n"
-if marker not in text:
-    sys.exit("CHANGELOG.md has no [Unreleased] section")
-head, tail = text.split(marker, 1)
-open(path, "w").write(head + marker + "\n" + section + tail.lstrip("\n"))
-EOF
+# CHANGELOG.md: the new section goes right under [Unreleased], followed by the change notes of
+# changelog.d/ (and anything still written under [Unreleased]); the fragments are removed, so the
+# next release starts from none. Only this pull request ever writes CHANGELOG.md.
+scripts/changelog-notes.py --write "$section"
 
-git add Cargo.toml Cargo.lock CHANGELOG.md
+git add Cargo.toml Cargo.lock CHANGELOG.md changelog.d
 git commit -q -m "release: $tag" -m "$compat"
 git --no-pager show --stat HEAD | head -20
 

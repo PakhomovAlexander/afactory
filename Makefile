@@ -42,3 +42,4 @@ review-kernel-container-probes:
 # Exercise release selection and tag races against disposable local Git remotes.
 release-check:
 	$(CI_STEP) release-resolution python3 scripts/test-release-resolve.py
+	$(CI_STEP) changelog-notes python3 scripts/changelog-notes.py --check
