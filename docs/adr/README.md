@@ -220,3 +220,5 @@ future readers need.
 - [0126 — Keep the captured native executable when its launcher
   moves](0126-keep-the-captured-native-executable-when-its-launcher-moves.md)
 - [0127 — Snapshot pinned Rust before native Task checks](0127-snapshot-pinned-rust-before-native-task-checks.md)
+- [0125 — Renew a live Task writer's lease through its own Store
+  connection](0125-renew-a-live-task-writer-lease-through-its-own-connection.md)

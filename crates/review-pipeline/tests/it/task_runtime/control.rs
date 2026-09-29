@@ -180,6 +180,143 @@ fn heartbeat_detects_a_replaced_writer_even_when_its_new_lease_is_far_from_renew
     assert!(shared.lock().unwrap().task_lease_state(&new).is_ok());
 }
 
+fn unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+// Issue #134: the heartbeat renewed only through the connection the work was holding, so a
+// Store operation longer than the lease's remaining time fenced a live writer. With the
+// production 15 s lease, 10 s threshold and 1 s tick, the work keeps the Store from the start
+// of its section until a second after that lease would have expired.
+#[test]
+fn a_live_writer_keeps_its_lease_while_its_work_holds_the_store_past_the_renewal_margin() {
+    let mut f = Fixture::new(SUCCESS);
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "writer", 15_000)
+        .unwrap();
+    let original = f.store.task_lease_state(&lease).unwrap();
+    let cancellation = AtomicBool::new(false);
+    let shared = review_store::SharedEventStore::new(&mut f.store);
+    let result = review_pipeline::task::lease::with_heartbeat_controlled(
+        &shared,
+        &f.cas,
+        &lease,
+        Some(&cancellation),
+        || {
+            let held = shared.lock().unwrap();
+            while unix_ms() < original + 1_000 {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            drop(held);
+            // The same writer still holds authority and can keep mutating the Task.
+            let mut store = shared.lock().unwrap();
+            let until = store.task_lease_state(&lease).map_err(|e| e.to_string())?;
+            store
+                .renew_task_lease(&f.cas, &lease, 15_000)
+                .map_err(|e| e.to_string())?;
+            Ok(until)
+        },
+    );
+    let until = result.expect("a live writer must not be fenced by its own long Store hold");
+    assert!(
+        until > original,
+        "the heartbeat renewed while the work held the Store"
+    );
+    assert!(!cancellation.load(Ordering::Acquire));
+    assert!(shared.lock().unwrap().task_lease_state(&lease).is_ok());
+}
+
+#[test]
+fn a_successor_fences_the_old_writer_even_while_its_work_holds_the_store() {
+    let mut f = Fixture::new(SUCCESS);
+    let old = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "old", 60_000)
+        .unwrap();
+    f.store.release_task_lease(&f.cas, &old).unwrap();
+    let new = f
+        .store
+        .take_task_lease(&f.cas, &f.task.task_id, "new", 60_000)
+        .unwrap();
+    let run = review_store::store::task::task_run_id(&f.task.task_id).unwrap();
+    let prefix = f.store.len(&run).unwrap();
+    let cancellation = AtomicBool::new(false);
+    let shared = review_store::SharedEventStore::new(&mut f.store);
+    let started = Instant::now();
+    let result = review_pipeline::task::lease::with_heartbeat_controlled(
+        &shared,
+        &f.cas,
+        &old,
+        Some(&cancellation),
+        || {
+            let _held = shared.lock().unwrap();
+            while !cancellation.load(Ordering::Acquire)
+                && started.elapsed() < Duration::from_secs(4)
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(())
+        },
+    );
+    assert!(result.is_err());
+    assert!(cancellation.load(Ordering::Acquire));
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the heartbeat observes the successor without waiting for the held Store"
+    );
+    let store = shared.lock().unwrap();
+    assert_eq!(
+        store.len(&run).unwrap(),
+        prefix,
+        "the old writer appended nothing"
+    );
+    assert!(store.task_lease_state(&new).is_ok());
+}
+
+#[test]
+fn an_expired_lease_is_not_revived_while_its_work_holds_the_store() {
+    let mut f = Fixture::new(SUCCESS);
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "writer", 1)
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(5));
+    let run = review_store::store::task::task_run_id(&f.task.task_id).unwrap();
+    let prefix = f.store.len(&run).unwrap();
+    let cancellation = AtomicBool::new(false);
+    let shared = review_store::SharedEventStore::new(&mut f.store);
+    let started = Instant::now();
+    let result = review_pipeline::task::lease::with_heartbeat_controlled(
+        &shared,
+        &f.cas,
+        &lease,
+        Some(&cancellation),
+        || {
+            let _held = shared.lock().unwrap();
+            while !cancellation.load(Ordering::Acquire)
+                && started.elapsed() < Duration::from_secs(4)
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(())
+        },
+    );
+    assert!(result.is_err());
+    assert!(cancellation.load(Ordering::Acquire));
+    assert!(started.elapsed() < Duration::from_secs(3));
+    let store = shared.lock().unwrap();
+    assert_eq!(
+        store.len(&run).unwrap(),
+        prefix,
+        "no replacement lease was minted"
+    );
+    assert!(store.task_lease_state(&lease).is_err());
+}
+
 #[test]
 fn a_host_that_cannot_honor_an_interruption_refuses_instead_of_ignoring_it() {
     // There is no forwarding default any more: every operator takes the cancellation and owes

@@ -3,7 +3,9 @@
 Date: 2026-09-13
 Status: Accepted (2026-09-23); superseded in part by
 [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the Broker accounting, calls and late receipts.
-GA has no Broker.
+GA has no Broker. Amended by
+[ADR-0125](0125-renew-a-live-task-writer-lease-through-its-own-connection.md): the heartbeat
+observes, and in its last reserve renews, through its own Store connection.
 
 ## Context
 
