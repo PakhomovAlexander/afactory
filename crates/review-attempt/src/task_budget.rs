@@ -117,7 +117,45 @@ impl TaskBudget {
             || minimum.attempts > limits.verification.attempts
             || minimum.wall_ms > limits.verification.wall_ms
         {
-            return Err("Task cannot protect the compiled verifier allocation".into());
+            let exceeded = [
+                (minimum.tokens > limits.verification.tokens, "tokens"),
+                (minimum.attempts > limits.verification.attempts, "attempts"),
+                (minimum.wall_ms > limits.verification.wall_ms, "wall_ms"),
+            ]
+            .into_iter()
+            .filter_map(|(exceeds, resource)| exceeds.then_some(resource))
+            .collect::<Vec<_>>()
+            .join(", ");
+            // These products were checked while computing the minimum above. Only protected
+            // Attempts contribute; optional retries and ordinary Workers are not reserved here.
+            let contributions = allowances
+                .iter()
+                .filter(|(_, allowance)| allowance.verification_attempts > 0)
+                .map(|(name, allowance)| {
+                    let count = u64::from(allowance.verification_attempts);
+                    format!(
+                        "{name}: tokens={}, attempts={}, wall_ms={}",
+                        allowance.tokens_per_attempt * count,
+                        count,
+                        allowance.wall_ms_per_attempt * count,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(format!(
+                "Task cannot protect the compiled verifier allocation: \
+                 required tokens={}, attempts={}, wall_ms={}; \
+                 available verification reserve tokens={}, attempts={}, wall_ms={}; \
+                 exceeded: {exceeded}; protected node contributions: [{contributions}]. \
+                 These are summed declared allowances, not estimated runtime. \
+                 Review the Task verification reserve and pipeline allowances before retrying.",
+                minimum.tokens,
+                minimum.attempts,
+                minimum.wall_ms,
+                limits.verification.tokens,
+                limits.verification.attempts,
+                limits.verification.wall_ms,
+            ));
         }
         Ok(Self {
             tokens: BudgetLedger::default().with_limit(BudgetScope::Run, Budget::of(limits.tokens)),
