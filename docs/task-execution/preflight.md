@@ -93,6 +93,16 @@ the helper also rejects an empty summary supplied in an edited export.
 
 ## Budget explanation
 
+If native planning refuses with `Task cannot protect the compiled verifier allocation`, its
+reason lists required and available verification tokens, Attempts and wall milliseconds,
+identifies the exceeded resources, and lists each protected node's contribution. Provider
+admission is included when protected by the compiled graph. Contributions multiply each
+node's declared allowance by its protected Attempt count; optional retries are excluded.
+These sums are reservation requirements, not predicted elapsed time or actual spend, and
+parallel execution does not discount them. Review the request's reserve against the complete
+allocation before authorizing another run. A rejected selection is not an executable plan
+or a Task inspection for this helper.
+
 The report separates the captured cap, exact cumulative charge, begun Attempts, absolute
 deadline, configured verification reserve and each compiled node's allowance. Provider
 admission, implementer and verifier roles are named separately. Decimal charged tokens are

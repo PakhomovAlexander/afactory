@@ -704,3 +704,74 @@ fn late_exact_total_overflow_keeps_every_scope_and_fails_closed() {
     assert!(ledger.breached());
     assert!(ledger.prepare("review.verify", 3).is_err());
 }
+
+#[test]
+fn infeasible_verifier_reserve_explains_each_resource_and_protected_node() {
+    let allowances = BTreeMap::from([
+        (
+            "implement".into(),
+            NodeAllowance {
+                tokens_per_attempt: 900,
+                wall_ms_per_attempt: 9000,
+                max_attempts: 3,
+                verification_attempts: 0,
+            },
+        ),
+        (
+            "review.verify".into(),
+            NodeAllowance {
+                tokens_per_attempt: 30,
+                wall_ms_per_attempt: 200,
+                max_attempts: 3,
+                verification_attempts: 2,
+            },
+        ),
+        (
+            "admission.codex".into(),
+            NodeAllowance {
+                tokens_per_attempt: 10,
+                wall_ms_per_attempt: 50,
+                max_attempts: 1,
+                verification_attempts: 1,
+            },
+        ),
+    ]);
+    let limits = TaskLimitsV1 {
+        tokens: 1000,
+        max_attempts: 10,
+        deadline_unix_ms: 10000,
+        verification: VerificationReserveV1 {
+            tokens: 70,
+            attempts: 3,
+            wall_ms: 450,
+        },
+    };
+    // Exact fit remains admitted, including provider admission and both protected Attempts.
+    assert!(TaskBudget::new(limits.clone(), allowances.clone()).is_ok());
+    for resource in ["tokens", "attempts", "wall_ms"] {
+        let mut insufficient = limits.clone();
+        match resource {
+            "tokens" => insufficient.verification.tokens -= 1,
+            "attempts" => insufficient.verification.attempts -= 1,
+            "wall_ms" => insufficient.verification.wall_ms -= 1,
+            _ => unreachable!(),
+        }
+        let error = TaskBudget::new(insufficient.clone(), allowances.clone()).unwrap_err();
+        assert!(
+            error.contains("required tokens=70, attempts=3, wall_ms=450"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&format!(
+                "available verification reserve tokens={}, attempts={}, wall_ms={}",
+                insufficient.verification.tokens,
+                insufficient.verification.attempts,
+                insufficient.verification.wall_ms,
+            )),
+            "{error}"
+        );
+        assert!(error.contains(&format!("exceeded: {resource};")), "{error}");
+        assert!(error.contains("[admission.codex: tokens=10, attempts=1, wall_ms=50; review.verify: tokens=60, attempts=2, wall_ms=400]"), "{error}");
+        assert!(!error.contains("implement"), "unprotected Worker: {error}");
+    }
+}
