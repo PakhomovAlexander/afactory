@@ -57,7 +57,9 @@ shared-only path.
 - **Entry.** Before its work runs, a heartbeat section renews a lease that is already under the
   10 s threshold, through the shared connection. No work can hold the Store yet, so this cannot
   race it. A section therefore never starts close to expiry after an unrenewed gap. If the lease
-  cannot be read or renewed here, the first tick fails as before.
+  cannot be read or renewed here, the writer has lost its authority: the section requests
+  cancellation and returns the error without starting its work. It does not wait for the first
+  tick, which work finishing sooner would never reach.
 - **Observation** of the exact writer, epoch and expiry uses the heartbeat's own connection
   every tick. It stays the read-only operation of ADR-0089. The log is WAL, so observation never
   waits for the work's connection or its write lock. A successor or an expiry is seen while a

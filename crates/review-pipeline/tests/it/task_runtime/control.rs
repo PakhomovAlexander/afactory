@@ -180,6 +180,47 @@ fn heartbeat_detects_a_replaced_writer_even_when_its_new_lease_is_far_from_renew
     assert!(shared.lock().unwrap().task_lease_state(&new).is_ok());
 }
 
+/// Lost authority at entry is refused before the work starts, even for work that would finish
+/// before the heartbeat's first tick: nothing is run, cancellation is requested and no lease is
+/// minted (ADR-0089).
+#[test]
+fn a_writer_that_lost_its_lease_before_entry_never_starts_its_work() {
+    let mut f = Fixture::new(SUCCESS);
+    let old = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "old", 60_000)
+        .unwrap();
+    f.store.release_task_lease(&f.cas, &old).unwrap();
+    let new = f
+        .store
+        .take_task_lease(&f.cas, &f.task.task_id, "new", 60_000)
+        .unwrap();
+    let run = review_store::store::task::task_run_id(&f.task.task_id).unwrap();
+    let prefix = f.store.len(&run).unwrap();
+    let cancellation = AtomicBool::new(false);
+    let ran = AtomicBool::new(false);
+    let shared = review_store::SharedEventStore::new(&mut f.store);
+    let result = review_pipeline::task::lease::with_heartbeat_controlled(
+        &shared,
+        &f.cas,
+        &old,
+        Some(&cancellation),
+        || {
+            ran.store(true, Ordering::Release);
+            Ok(())
+        },
+    );
+    assert!(result.is_err(), "lost authority is an error, not a success");
+    assert!(!ran.load(Ordering::Acquire), "the work never started");
+    assert!(cancellation.load(Ordering::Acquire));
+    let store = shared.lock().unwrap();
+    assert_eq!(store.len(&run).unwrap(), prefix, "nothing was appended");
+    assert!(
+        store.task_lease_state(&new).is_ok(),
+        "the successor keeps its lease"
+    );
+}
+
 fn unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

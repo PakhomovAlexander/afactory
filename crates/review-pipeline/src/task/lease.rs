@@ -106,8 +106,14 @@ pub fn with_heartbeat_controlled<T>(
     let own = {
         let mut shared = store.lock().expect("Task Store");
         // Enter with a full lease while no work can hold the Store yet. A lease that cannot be
-        // read or renewed here fails on the first tick, as before, and requests cancellation.
-        let _ = renew_if_due(&mut shared, cas, lease);
+        // read or renewed here is lost authority (ADR-0089): request cancellation and never
+        // start the work, however quickly it would have finished before the first tick.
+        if let Err(error) = renew_if_due(&mut shared, cas, lease) {
+            if let Some(flag) = cancellation {
+                flag.store(true, Ordering::Release);
+            }
+            return Err(error);
+        }
         // A Store that cannot be reopened, such as one with no database file, keeps the shared
         // connection as its only path, exactly as before ADR-0125.
         shared.reopen(OWN_BUSY_TIMEOUT).ok()
