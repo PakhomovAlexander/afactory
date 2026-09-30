@@ -6,18 +6,36 @@ publishes the section as the release notes. The **Authority compatibility** line
 it says whether committed `.af/` policy keeps working as is, needs `af onboard --refresh-lock`,
 or needs a documented hand edit.
 
-This file starts at the first GA release. The pre-GA `0.x` releases are described on their
+This file includes the public alpha and recent release candidates. Earlier releases are described on their
 [GitHub release pages](https://github.com/PakhomovAlexander/afactory/releases), and git history
 keeps their sections. In short: `0.7.0` and `0.7.1` reviewed from a `.review/` directory;
 `0.8.0` moved project authority to `.af/` and made a project pin the `af` release it runs; the
 `0.9.0` release candidates brought the common Task runtime, Task files and the Worker warm
 layers. `0.9.0-rc.5` was tagged but never published — its macOS check leg failed before the
-publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-GA release.
+publish step — so everything it carried shipped in `0.9.0-rc.6`.
 
 ## [Unreleased]
 
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
+
+## [0.9.0] - 2026-09-30
+
+### Authority compatibility
+
+Committed `.af/` policy from v0.9.0-rc.9 keeps working as is. To move a project pin to v0.9.0, run `af onboard --refresh-lock --af 0.9.0`. This is a public alpha: compatibility guarantees begin at 1.0; persisted pre-GA state is unsupported across upgrades.
+
+### Changes
+
+- Publish the tested v0.9.0-rc.9 CLI as the public alpha, available through the standard installer
+  and `af self update`. Includes Task execution, sandboxed Review and the terminal browser.
+- Mark the README as public alpha and document security support for the latest alpha.
+- Add advisory Task preflight for lineage, budgets, and evidence (#142)
+
+- Add an offline advisory orchestration helper, `scripts/task-preflight.py`, for original-source
+  identity, declared admission/Worker allowances and explicit acceptance-evidence mappings.
+  It reads native inspection exports without changing Task authority, budgets or acceptance;
+  ambiguous replay, live reservations and semantic completeness remain explicitly unverified.
 
 ## [0.9.0-rc.9] - 2026-09-29
 

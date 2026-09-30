@@ -14,7 +14,8 @@ against a pinned Snapshot and folds what they return into a findings ledger with
 implementers only ever mutate a sandbox and return typed artifacts; only the kernel integrates;
 publishing to a branch or pull request stays an explicit human action.
 
-**Status:** general availability. Compatibility obligations start at 1.0: from the first 1.0
+**Status:** public alpha (0.9.0). APIs, configuration and persisted state may change before 1.0.
+Compatibility obligations start at 1.0: from the first 1.0
 release on, every change that affects committed `.af/` policy or a persisted artifact type is
 announced in [`CHANGELOG.md`](CHANGELOG.md) under *Authority compatibility*, with the hand edit
 or `af onboard --refresh-lock` it needs. State written by a pre-1.0 release is not read
