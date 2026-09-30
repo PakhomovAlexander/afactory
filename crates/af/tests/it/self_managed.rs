@@ -7,18 +7,25 @@ use std::path::Path;
 use crate::common;
 use common::{AF, Sandbox, Signer, TARGET, VERSION, err, out, write};
 
+// Update fixtures must remain newer than the binary under test as releases advance.
+fn next_release_version() -> String {
+    let current = semver::Version::parse(VERSION).unwrap();
+    semver::Version::new(current.major, current.minor + 1, 0).to_string()
+}
+
 #[test]
 fn self_install_update_rollback_and_remove_against_a_directory_source() {
+    let newer = next_release_version();
     let keys = tempfile::tempdir().unwrap();
     let signer = Signer::new(keys.path());
     let sandbox = Sandbox::new().with_key(&signer);
     sandbox.publish("0.8.1", false);
-    sandbox.publish("0.9.0", false);
+    sandbox.publish(&newer, false);
     sandbox.publish("0.8.5", true);
     // Signed as their release job would sign them; 0.8.5's signature is over the tampered sums,
     // so it is the checksum that has to catch it.
     sandbox.sign("0.8.1", &signer, None);
-    sandbox.sign("0.9.0", &signer, None);
+    sandbox.sign(&newer, &signer, None);
     sandbox.sign("0.8.5", &signer, None);
 
     let install = sandbox
@@ -70,7 +77,7 @@ fn self_install_update_rollback_and_remove_against_a_directory_source() {
         .output()
         .unwrap();
     assert_eq!(check.status.code(), Some(10), "{}", err(&check));
-    assert!(out(&check).contains("0.9.0"), "{}", out(&check));
+    assert!(out(&check).contains(&newer), "{}", out(&check));
 
     let update = sandbox
         .command(&real)
@@ -78,7 +85,7 @@ fn self_install_update_rollback_and_remove_against_a_directory_source() {
         .output()
         .unwrap();
     assert!(update.status.success(), "{}", err(&update));
-    assert_eq!(sandbox.default_target().as_deref(), Some("0.9.0"));
+    assert_eq!(sandbox.default_target().as_deref(), Some(newer.as_str()));
 
     let status: serde_json::Value = serde_json::from_slice(
         &sandbox
@@ -89,10 +96,10 @@ fn self_install_update_rollback_and_remove_against_a_directory_source() {
             .stdout,
     )
     .unwrap();
-    assert_eq!(status["default"], "0.9.0");
+    assert_eq!(status["default"], newer.as_str());
     assert_eq!(
         status["installed"],
-        serde_json::json!(["0.8.1", VERSION, "0.9.0"])
+        serde_json::json!(["0.8.1", VERSION, &newer])
     );
     assert!(status["receipt"].is_object());
     assert_eq!(status["release_key"], "environment");
@@ -118,11 +125,11 @@ fn self_install_update_rollback_and_remove_against_a_directory_source() {
     );
     let remove = sandbox
         .command(&real)
-        .args(["self", "remove", "0.9.0"])
+        .args(["self", "remove", &newer])
         .output()
         .unwrap();
     assert!(remove.status.success(), "{}", err(&remove));
-    assert!(!sandbox.versions().join("0.9.0").exists());
+    assert!(!sandbox.versions().join(&newer).exists());
 }
 
 #[test]
@@ -548,11 +555,12 @@ fn every_release_must_carry_a_valid_signature_when_the_build_has_a_key() {
 
 #[test]
 fn refresh_check_caches_the_latest_and_applies_always() {
+    let newer = next_release_version();
     let keys = tempfile::tempdir().unwrap();
     let signer = Signer::new(keys.path());
     let sandbox = Sandbox::new().with_key(&signer);
-    sandbox.publish("0.9.0", false);
-    sandbox.sign("0.9.0", &signer, None);
+    sandbox.publish(&newer, false);
+    sandbox.sign(&newer, &signer, None);
     let real = sandbox.adopt_real_binary();
     let refresh = sandbox
         .command(&real)
@@ -561,7 +569,7 @@ fn refresh_check_caches_the_latest_and_applies_always() {
         .unwrap();
     assert!(refresh.status.success(), "{}", err(&refresh));
     let cache = std::fs::read_to_string(sandbox.path("cache/af/self/latest.toml")).unwrap();
-    assert!(cache.contains("latest = \"0.9.0\""), "{cache}");
+    assert!(cache.contains(&format!("latest = \"{newer}\"")), "{cache}");
     assert!(sandbox.default_target().is_none(), "notify never installs");
 
     write(
@@ -574,9 +582,12 @@ fn refresh_check_caches_the_latest_and_applies_always() {
         .output()
         .unwrap();
     assert!(always.status.success(), "{}", err(&always));
-    assert_eq!(sandbox.default_target().as_deref(), Some("0.9.0"));
+    assert_eq!(sandbox.default_target().as_deref(), Some(newer.as_str()));
     let cache = std::fs::read_to_string(sandbox.path("cache/af/self/latest.toml")).unwrap();
-    assert!(cache.contains("auto_updated_to = \"0.9.0\""), "{cache}");
+    assert!(
+        cache.contains(&format!("auto_updated_to = \"{newer}\"")),
+        "{cache}"
+    );
 
     // Offline, the check is a no-op and never fails a command.
     let offline = sandbox
