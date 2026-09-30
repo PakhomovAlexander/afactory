@@ -21,6 +21,7 @@ and `--help` on every namespace and command.
 | [`../CONTEXT.md`](../CONTEXT.md) | What a word means. Snapshot, Subject, Base, Campaign, Round, Report, Finding, Attempt, Provider and the rest, each with the nearby term it must not be confused with. Read it before arguing about behaviour. |
 | [`providers.md`](providers.md) | How a machine gets model access: registering a Provider, why an interactive login is opt-in and terminal-only, what `status` checks versus what `doctor` proves, and every `af provider` exit code. |
 | [`tasks.md`](tasks.md) | How to run implementation Tasks with `af task`: start, inspect, evaluate, and deliver to a new local worktree. |
+| [`task-execution/preflight.md`](task-execution/preflight.md) | Offline orchestration checklist for source lineage, declared budgets and evidence ordering; advisory only. |
 | [`task-execution.md`](task-execution.md) | The Task runtime reference: fixed product decisions, contracts, fixtures, and walkthroughs for the common Task execution abstraction. |
 | [`task-execution/task-inputs.md`](task-execution/task-inputs.md) | The Task file's `inputs` table: binding a root input port to a recorded Task's output instead of exporting it to a file, what resolution records, and how a binding is shown. |
 | [`non-goals.md`](non-goals.md) | What the kernel deliberately does not do, so a missing feature can be told from a refused one. |

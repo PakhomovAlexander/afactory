@@ -1,4 +1,4 @@
-.PHONY: release-check check fmt lint test release review-kernel-container-probes
+.PHONY: release-check preflight-check check fmt lint test release review-kernel-container-probes
 
 # nextest is the gate (ADR-0124): one process per test, scheduled across every test binary.
 # `TEST_RUNNER=cargo` keeps the sequential libtest path for comparison. TEST_THREADS bounds
@@ -8,7 +8,7 @@ TEST_RUNNER ?= nextest
 TEST_THREADS ?= $(shell python3 -c 'import os; print(max(4, (os.cpu_count() or 4) // 2))')
 CI_STEP = python3 scripts/ci-step.py
 
-check: fmt lint test release-check
+check: preflight-check fmt lint test release-check
 
 fmt:
 	$(CI_STEP) fmt cargo fmt --all -- --check
@@ -43,3 +43,7 @@ review-kernel-container-probes:
 release-check:
 	$(CI_STEP) release-resolution python3 scripts/test-release-resolve.py
 	$(CI_STEP) changelog-notes python3 scripts/changelog-notes.py --check
+
+# Offline advisory orchestration checks against the native inspection fixture.
+preflight-check:
+	$(CI_STEP) task-preflight python3 scripts/test-task-preflight.py
