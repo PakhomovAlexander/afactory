@@ -52,16 +52,18 @@ input, output and cache-creation tokens are each at most the aggregate's. The At
 the aggregate, and that charge is complete. No usage observation records the difference: the
 retained raw native result holds both summaries.
 
-Cache reads stay informational. Equal bills must still report equal cache reads. A larger
-breakdown may report more cache reads than the top-level summary, never fewer: a top-level
-cache-read count above the breakdown's refuses the output and leaves the charge complete.
+Cache reads stay informational, and are compared only when both summaries report them. Equal
+bills must then report equal cache reads. A larger breakdown may report more cache reads than
+the top-level summary, never fewer: a top-level cache-read count above the breakdown's refuses
+the output and leaves the charge complete.
 
 A top-level billed component above the aggregate remains an unreconciled bill, with the larger
 known charge, the reservation floor and refused output of ADR-0102. Model identity, duplicate,
 malformed and oversized-map rules are unchanged, and apply before a larger breakdown is accepted.
 
-When the Task runtime refuses output because the bill is incomplete, the Attempt's diagnostic
-keeps the reason the Worker had already failed with:
+When the Task runtime refuses output because the bill is incomplete, or because a usage
+observation differs from the returned counters, the Attempt's diagnostic keeps the reason the
+Worker had already failed with:
 `Native billing usage is incomplete: Claude top-level and per-model usage cannot be reconciled`.
 
 ## Consequences

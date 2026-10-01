@@ -180,14 +180,15 @@ fn envelope(cas: &Cas, id: &str) -> Result<ArtifactEnvelope, String> {
     cas.get_artifact(id).map_err(|e| e.to_string())
 }
 
-/// Incomplete native billing refuses the Attempt's output. A reason the Worker already failed
+const INCOMPLETE_BILLING: &str = "Native billing usage is incomplete";
+
+/// A native billing refusal replaces the Attempt's output. A reason the Worker already failed
 /// with, such as the adapter's own usage refusal, stays in the diagnostic behind the refusal.
-fn refuse_incomplete_billing<T>(outputs: &mut Result<T, String>) {
-    const REFUSAL: &str = "Native billing usage is incomplete";
+fn refuse_billing<T>(outputs: &mut Result<T, String>, refusal: &str) {
     let error = match outputs {
-        Err(reason) if reason.starts_with(REFUSAL) => return,
-        Err(reason) => format!("{REFUSAL}: {reason}"),
-        Ok(_) => REFUSAL.into(),
+        Err(reason) if reason.starts_with(refusal) => return,
+        Err(reason) => format!("{refusal}: {reason}"),
+        Ok(_) => refusal.into(),
     };
     *outputs = Err(error);
 }
@@ -680,12 +681,13 @@ impl TaskRuntime<'_, '_> {
                 if let Some(observation) = &observation {
                     observation.validate()?;
                     if observation.reported_usage.as_ref() != usage {
-                        result.outputs = Err(
-                            "Native usage observation differs from the returned counters".into(),
+                        refuse_billing(
+                            &mut result.outputs,
+                            "Native usage observation differs from the returned counters",
                         );
                     }
                     if !observation.charge_complete {
-                        refuse_incomplete_billing(&mut result.outputs);
+                        refuse_billing(&mut result.outputs, INCOMPLETE_BILLING);
                     }
                 }
                 let charge = result
@@ -752,7 +754,7 @@ impl TaskRuntime<'_, '_> {
                 result.charged_tokens = charge;
                 if let Some(observation) = &observation {
                     if !observation.charge_complete {
-                        refuse_incomplete_billing(&mut result.outputs);
+                        refuse_billing(&mut result.outputs, INCOMPLETE_BILLING);
                     }
                     let id = review_store::store::task::execution::usage_observation::capture_task_usage_observation(
                         self.cas, Producer::Attempt { run_id: wall.run_id.clone(), node_id: input.node.clone(), attempt_id: attempt.id().into() },
