@@ -220,7 +220,12 @@ fn interrupt_running_af(
         "observe the Worker and its child before the interrupt"
     );
     let af_pid = nix::unistd::Pid::from_raw(i32::try_from(af.0.as_ref().unwrap().id()).unwrap());
-    for signal in signals {
+    for (n, signal) in signals.iter().enumerate() {
+        // Apart, so a second signal is delivered as a second signal: two standard signals sent
+        // back to back may coalesce into one.
+        if n > 0 {
+            std::thread::sleep(Duration::from_millis(200));
+        }
         nix::sys::signal::kill(af_pid, *signal).unwrap();
     }
     let interrupted = Instant::now();

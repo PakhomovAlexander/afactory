@@ -3,11 +3,23 @@
 //! reap, so a listed id is always reserved by an unreaped leader. A full table only means a
 //! group is not listed: its own cancellation and deadline still stop it.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 const SLOTS: usize = 256;
 
 static LIVE: [AtomicU32; SLOTS] = [const { AtomicU32::new(0) }; SLOTS];
+
+/// Held by an unlisting and across a stop's list-and-kill. A leader is unlisted before it is
+/// reaped, so while a stop holds this, every pid it read is still reserved by an unreaped
+/// leader: a recycled pid can never receive the kill.
+static GUARD: Mutex<()> = Mutex::new(());
+
+fn guard() -> std::sync::MutexGuard<'static, ()> {
+    GUARD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// One leader's entry in a table; [`Registration::release`] empties it.
 pub(crate) struct Registration {
@@ -24,6 +36,8 @@ impl Registration {
     /// Idempotent: only this leader's own entry is cleared.
     pub(crate) fn release(&mut self) {
         if let Some(slot) = self.slot.take() {
+            // Waits for a stop in progress, which may still be signalling this pid's group.
+            let _guard = guard();
             let _ =
                 self.table[slot].compare_exchange(self.pid, 0, Ordering::AcqRel, Ordering::Acquire);
         }
@@ -65,6 +79,9 @@ pub fn live_process_groups() -> Vec<u32> {
 /// Best-effort `SIGKILL` to every supervised process group not yet reaped, for a host that is
 /// about to exit without waiting for its supervisors. An ordinary stop is a cancellation flag.
 pub fn kill_live_process_groups() {
+    // Listing and killing under the guard: no leader can be unlisted, and so reaped, between
+    // the read of its pid and the signal.
+    let _guard = guard();
     for pid in listed(&LIVE) {
         crate::kill_process_group(pid);
     }
@@ -97,6 +114,37 @@ mod tests {
         drop(reused);
         assert!(listed(&TABLE).is_empty());
         assert_eq!(register(&TABLE, 0).slot, None, "no process has pid 0");
+    }
+
+    /// An unlisting, which precedes every reap, waits for a stop that is listing and killing,
+    /// so the stop never signals a pid that was reaped and recycled meanwhile.
+    #[test]
+    fn an_unlisting_waits_for_a_stop_in_progress() {
+        static TABLE: [AtomicU32; 1] = [const { AtomicU32::new(0) }; 1];
+        let mut registration = register(&TABLE, 77);
+        let stop = guard();
+        let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let unlisting = std::thread::spawn({
+            let released = released.clone();
+            move || {
+                registration.release();
+                released.store(true, Ordering::Release);
+            }
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            !released.load(Ordering::Acquire),
+            "the unlisting waited for the stop"
+        );
+        assert_eq!(
+            listed(&TABLE),
+            vec![77],
+            "still listed while the stop holds it"
+        );
+        drop(stop);
+        unlisting.join().unwrap();
+        assert!(released.load(Ordering::Acquire));
+        assert!(listed(&TABLE).is_empty());
     }
 
     #[test]

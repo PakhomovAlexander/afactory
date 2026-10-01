@@ -43,7 +43,9 @@ are not refunded. A resumed run needs one more Attempt within its slot, pipeline
 
 `review-process` lists the leader of every supervised process group from spawn until just before
 its reap. A second signal while stopping kills every listed group with `SIGKILL` and exits at
-once. Unlisting before the reap keeps the id reserved while it is listed. A full list only means
+once. Unlisting before the reap keeps the id reserved while it is listed, and the kill lists and
+signals under one lock that every unlisting also takes, so a pid read for the kill is still
+reserved by an unreaped leader: a recycled pid is never signalled. A full list only means
 a group's own cancellation and deadline remain its stop.
 
 af then ends with the conventional status: 130 for SIGINT and 143 for SIGTERM. It raises the
