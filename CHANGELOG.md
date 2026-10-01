@@ -27,10 +27,6 @@ Current-shape committed .af/ authority needs no edit for these fixes; updating t
 
 ### Changes
 
-- release: v0.9.0-rc.9 (#141)
-- Add advisory Task preflight for lineage, budgets, and evidence (#142)
-- release: v0.9.0 public alpha (#143)
-- Fix self-update fixtures for the public alpha release (#144)
 - Explain Task verification budget rejections (#145)
 - fix: clarify review timeout scope and externalize read-only gate reports (#146)
 - Keep Claude Task Workers running on Claude Code 2.1.285 and across its updates (#147)
