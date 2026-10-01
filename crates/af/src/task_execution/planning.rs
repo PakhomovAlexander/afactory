@@ -324,7 +324,11 @@ fn run_planner(
     let state = {
         let runtime = TaskRuntime::new(store, cas, lease.clone(), &trusted, &host)?
             .with_cancellation(&cancellation);
-        let _report = runtime.execute()?;
+        crate::interrupt::note_task(lease.task_id());
+        let report = crate::interrupt::forwarding(&cancellation, || runtime.execute());
+        // An interrupted planner is not finished as incomplete; it resumes (ADR-0126).
+        crate::interrupt::check()?;
+        let _report = report?;
         let state = runtime.projection()?;
         if matches!(state.phase, TaskPhaseV1::Waiting { .. }) {
             return Ok(());

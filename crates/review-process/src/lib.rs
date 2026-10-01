@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 mod capture;
 mod control;
 mod drain;
+mod live;
 mod spawn;
 
 use capture::run_supervised_inner;
@@ -15,6 +16,7 @@ pub use capture::{
     run_supervised_captured_cancellable_with_policy, run_supervised_captured_with_policy,
 };
 use drain::{collect_after_kill, collect_stderr, drain_async};
+pub use live::{kill_live_process_groups, live_process_groups};
 pub use spawn::spawn;
 
 const STDIN_EXIT_GRACE: Duration = Duration::from_millis(500);
@@ -499,6 +501,8 @@ fn exited_without_reaping(_watch: &ExitWatch) -> Option<bool> {
 pub(crate) struct Leader {
     pid: u32,
     state: std::sync::Mutex<LeaderState>,
+    /// Listed while unreaped, so a host stopping at once can kill the group (ADR-0126).
+    live: std::sync::Mutex<live::Registration>,
 }
 
 enum LeaderState {
@@ -512,9 +516,11 @@ enum LeaderState {
 
 impl Leader {
     pub(crate) fn new(child: std::process::Child) -> std::sync::Arc<Self> {
+        let pid = child.id();
         std::sync::Arc::new(Self {
-            pid: child.id(),
+            pid,
             state: std::sync::Mutex::new(LeaderState::Unreaped(child)),
+            live: std::sync::Mutex::new(live::Registration::new(pid)),
         })
     }
 
@@ -524,6 +530,12 @@ impl Leader {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, LeaderState> {
         self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn live(&self) -> std::sync::MutexGuard<'_, live::Registration> {
+        self.live
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -550,12 +562,14 @@ impl Leader {
                 let LeaderState::Unreaped(child) = &mut *state else {
                     return;
                 };
+                // `try_wait` may reap: unlist first and list again while the child still runs.
+                self.live().release();
                 match child.try_wait() {
                     Ok(Some(status)) => {
                         *state = LeaderState::Reaped(Ok(status));
                         return;
                     }
-                    Ok(None) => {}
+                    Ok(None) => *self.live() = live::Registration::new(self.pid),
                     Err(error) => {
                         *state = LeaderState::Reaped(Err(error));
                         return;
@@ -572,6 +586,8 @@ impl Leader {
     /// observing the exit or killing the group.
     pub(crate) fn reap(&self) -> std::io::Result<ExitStatus> {
         let mut state = self.lock();
+        // Unlisted before the reap that frees the id, never after it.
+        self.live().release();
         match std::mem::replace(&mut *state, LeaderState::Gone) {
             LeaderState::Unreaped(mut child) => child.wait(),
             LeaderState::Reaped(status) => status,

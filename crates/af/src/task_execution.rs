@@ -1831,7 +1831,12 @@ fn execute(
     let cancellation = std::sync::atomic::AtomicBool::new(false);
     let runtime = TaskRuntime::new(store, cas, lease.clone(), authority, host)?
         .with_cancellation(&cancellation);
-    let report = runtime.execute()?;
+    crate::interrupt::note_task(lease.task_id());
+    let report = crate::interrupt::forwarding(&cancellation, || runtime.execute());
+    // Interrupted work is neither assembled nor finished: the lease is released and the Task
+    // stays resumable with `af task run` (ADR-0126).
+    crate::interrupt::check()?;
+    let report = report?;
     let projection = runtime.projection()?;
     if matches!(projection.phase, TaskPhaseV1::Waiting { .. }) {
         return Ok(());

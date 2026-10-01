@@ -33,6 +33,7 @@ mod task_document;
 mod task_file;
 mod task_heavy;
 mod task_input_bindings;
+mod task_interrupt;
 mod task_issues;
 mod task_planning;
 mod task_preview;

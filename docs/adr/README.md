@@ -222,3 +222,5 @@ future readers need.
 - [0127 — Snapshot pinned Rust before native Task checks](0127-snapshot-pinned-rust-before-native-task-checks.md)
 - [0125 — Renew a live Task writer's lease through its own Store
   connection](0125-renew-a-live-task-writer-lease-through-its-own-connection.md)
+- [0126 — Stop Task Workers when af is
+  interrupted](0126-stop-task-workers-when-af-is-interrupted.md)
