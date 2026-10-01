@@ -3,6 +3,7 @@
 use super::*;
 use review_core::task::plan::WorkerExecutionV1;
 use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct TaskProviderIdentity {
@@ -66,6 +67,20 @@ impl TaskProviderIdentity {
         if &self.execution(model, effort)? != execution {
             return Err("Current Provider account differs from the captured Task binding".into());
         }
+        Ok(Box::new(CurrentTaskProviderAdapter {
+            model: model.clone(),
+            effort: effort.clone(),
+            resolve: resolve_program,
+            current: Mutex::new((self.clone(), self.native_adapter(model, effort)?.into())),
+        }))
+    }
+
+    /// The native adapter that runs this identity's executable under its authentication grants.
+    fn native_adapter(
+        &self,
+        model: &str,
+        effort: &str,
+    ) -> Result<Box<dyn WorkerModelAdapter>, String> {
         let program = self
             .program
             .to_str()
@@ -79,13 +94,13 @@ impl TaskProviderIdentity {
         let flags = match self.spec.kind {
             ProviderKind::Claude => vec![
                 "--model".into(),
-                model.clone(),
+                model.into(),
                 "--effort".into(),
-                effort.clone(),
+                effort.into(),
             ],
             ProviderKind::Codex => vec![
                 "--model".into(),
-                model.clone(),
+                model.into(),
                 "-c".into(),
                 format!(
                     "model_reasoning_effort={}",
@@ -97,7 +112,7 @@ impl TaskProviderIdentity {
             program,
             flags.into_iter().map(review_core::Arg::literal).collect(),
         );
-        let inner: Box<dyn WorkerModelAdapter> = match self.spec.kind {
+        Ok(match self.spec.kind {
             ProviderKind::Claude => Box::new(
                 review_runner_claude::task::ClaudeTaskAdapter::new(&command)?.with_auth(
                     Some(auth.into()),
@@ -117,17 +132,12 @@ impl TaskProviderIdentity {
                 review_runner_codex::task::CodexTaskAdapter::new(&command)?
                     .with_codex_home(auth.into()),
             ),
-        };
-        Ok(Box::new(CurrentTaskProviderAdapter {
-            identity: self.clone(),
-            inner,
-        }))
+        })
     }
 
-    /// The executable is the one captured when this process resolved the Provider: every
-    /// invocation runs that absolute path, so it must still be there. What `PATH` resolves to
-    /// now is not compared. A native client that updates itself repoints its launcher at a new
-    /// version file and leaves the captured one in place (ADR-0126).
+    /// The executable is the one this identity names: every invocation runs that absolute path,
+    /// so it must still be there. What `PATH` resolves to now is not compared. A native client
+    /// that updates itself repoints its launcher at a new version file (ADR-0126).
     fn check_current(&self, deadline: Instant, cancelled: &AtomicBool) -> Result<(), String> {
         check_task_probe_control(Some(deadline), cancelled)?;
         let current = configured_spec(&self.spec.id)?;
@@ -192,18 +202,45 @@ fn probe_identity(
 /// the original remaining Attempt wall limit and cancellation. This detects between-node drift;
 /// credentials may still change between the check and the native client's auth consumption.
 struct CurrentTaskProviderAdapter {
-    identity: TaskProviderIdentity,
-    inner: Box<dyn WorkerModelAdapter>,
+    model: String,
+    effort: String,
+    /// How a Provider command is found on `PATH`; a test supplies its own.
+    resolve: fn(&str) -> Option<PathBuf>,
+    /// The identity in use and the native adapter that runs its executable.
+    current: Mutex<(TaskProviderIdentity, Arc<dyn WorkerModelAdapter>)>,
+}
+impl CurrentTaskProviderAdapter {
+    /// The captured executable while it is there. A native client update can remove it; the
+    /// client `PATH` resolves now then takes its place for the rest of the process, and must
+    /// pass the same identity recheck before it receives anything (ADR-0126).
+    fn current_or_installed(&self) -> Option<(TaskProviderIdentity, Arc<dyn WorkerModelAdapter>)> {
+        let mut current = self.current.lock().expect("Task Provider adapter");
+        if !is_executable(&current.0.program) {
+            let mut identity = current.0.clone();
+            identity.program = (self.resolve)(identity.spec.kind.command())?;
+            let native = identity.native_adapter(&self.model, &self.effort).ok()?;
+            *current = (identity, native.into());
+        }
+        Some(current.clone())
+    }
+
+    fn native(&self) -> Arc<dyn WorkerModelAdapter> {
+        self.current
+            .lock()
+            .expect("Task Provider adapter")
+            .1
+            .clone()
+    }
 }
 impl WorkerModelAdapter for CurrentTaskProviderAdapter {
     fn credential_mode(&self) -> review_core::CredentialModeV1 {
-        self.inner.credential_mode()
+        self.native().credential_mode()
     }
     fn provider_kind(&self) -> &'static str {
-        self.inner.provider_kind()
+        self.native().provider_kind()
     }
     fn model_settings(&self) -> Option<(String, String)> {
-        self.inner.model_settings()
+        self.native().model_settings()
     }
     /// Sandbox-local environment (a carried Build Cache location) and the kernel-derived access
     /// are forwarded to the native client exactly as they arrived, and only after the identity
@@ -230,27 +267,26 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
                 "before invocation"
             ))
         };
-        // Named apart from an identity change: the remedy is to run the Task again, which
-        // resolves the installed client.
-        if !is_executable(&self.identity.program) {
+        // Named apart from an identity change: the Provider's client is no longer installed.
+        let Some((identity, native)) = self.current_or_installed() else {
             return refuse(concat!(
-                "Captured Task Provider executable is no longer available; a native client ",
-                "update may have removed it"
+                "Captured Task Provider executable was removed and no installed client ",
+                "replaces it"
             ));
-        }
+        };
         let Some(deadline) = Instant::now().checked_add(timeout) else {
             return refused();
         };
         let local = AtomicBool::new(false);
         let cancelled = cancellation.unwrap_or(&local);
         // Raw status/account output and filesystem diagnostics remain local, never Worker evidence.
-        if self.identity.check_current(deadline, cancelled).is_err() {
+        if identity.check_current(deadline, cancelled).is_err() {
             return refused();
         }
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             return refused();
         };
-        self.inner.invoke(
+        native.invoke(
             cas,
             workdir,
             input,

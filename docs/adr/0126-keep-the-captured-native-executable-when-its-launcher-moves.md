@@ -13,7 +13,9 @@ from the captured path.
 
 Claude Code installs each version as its own file, `~/.local/share/claude/versions/<version>`,
 behind a launcher symlink, `~/.local/bin/claude`. It updates itself without notice by repointing
-the launcher. The captured version file stays where it was.
+the launcher. The captured version file usually stays where it was; the updater may delete old
+version files later. A package manager that upgrades a client, such as Homebrew, removes the old
+versioned path at once.
 
 An update during a Task therefore changed what `PATH` resolved to. The next Claude Worker or
 Provider admission of that Task was refused with `Captured Task Provider identity is no longer
@@ -24,43 +26,59 @@ runs for hours is likely to cross an update.
 The second resolution did not protect what runs: every invocation already used the captured
 absolute path. It only reported that the installation had changed.
 
+A person who leaves their client's updates on must not lose a Task to an update.
+
 ## Considered options
 
-- **Adopt the newly resolved executable.** Rejected: the Task's Provider admission ran on the
-  captured client. Another client in the middle of a Task changes behaviour that no admission
-  covered; 2.1.285 itself changed how usage is reported
+- **Adopt the newly resolved executable as soon as the launcher moves.** Rejected: the Task's
+  Provider admission ran on the captured client. While that client is still there, changing it
+  in the middle of a Task changes behaviour for no need; 2.1.285 itself changed how usage is
+  reported
   ([ADR-0125](0125-charge-a-claude-model-breakdown-that-covers-the-top-level-summary.md)).
+- **Refuse when the captured executable is gone.** Rejected: the Task then fails because of an
+  update, which is the failure this record removes.
 - **Compare only the account when only the version changed.** Rejected: `af` cannot tell a
   version update from any other replacement of the launcher without a rule for each client's
   installation layout.
 - **Require native auto-updates to be off, and say so in the refusal.** Rejected: a Task then
   fails because of another tool's setting, which other sessions on the machine can trigger.
-- **Keep the captured executable for the life of the process, and require only that it is
-  still there (chosen).**
+- **Keep the captured executable while it is there, and move to the installed client when it
+  is gone (chosen).**
 
 ## Decision
 
-The recheck no longer resolves `PATH` again. It requires the captured absolute path to still be
-an executable regular file. Every other comparison of ADR-0090 stays: the configured Provider,
-its authentication directory and selector, the sanitized `PATH` value, `HOME`, `USER`, and the
-principal and authentication method, probed through the captured executable.
+While the captured absolute path is still an executable regular file, every invocation runs
+it, and `PATH` is not resolved again.
 
-A captured executable that is gone refuses before the identity probe, with known-zero usage and
-its own diagnostic: `Captured Task Provider executable is no longer available; a native client
-update may have removed it`. Running the Task again resolves the installed client.
+When the captured file is gone, the process resolves the Provider's command on `PATH` once more
+and uses that executable for the rest of its Workers. The replacement receives private input
+only after it passes the recheck below; in particular it must report the captured principal and
+authentication method.
+
+Every other comparison of ADR-0090 stays, and runs before each private invocation on the
+executable in use: the configured Provider, its authentication directory and selector, the
+sanitized `PATH` value, `HOME`, `USER`, and the principal and authentication method.
+
+When the captured file is gone and `PATH` resolves no client, the invocation refuses before any
+probe, with known-zero usage and its own diagnostic: `Captured Task Provider executable was
+removed and no installed client replaces it`.
 
 A new `af` process still resolves `PATH` when it starts, so a resumed Task runs the client
 installed at that time.
 
 ## Consequences
 
-A Task keeps running across a native client update. All Workers of one `af` process run one
-client version, even after a newer one is installed.
+A Task keeps running across a native client update, whether or not the update removes the old
+version. All Workers of one `af` process run one client version while its file exists; after it
+is removed, the remaining Workers run the installed version. An updated client can behave
+differently from the one the Provider admission ran on, and the account it uses is still proven
+before every invocation.
 
 A different executable placed earlier in the same `PATH` directories during a Task is no longer
-refused; the Task does not run it. A file replaced in place at the captured path is not
-detected, as before: executable identity remains its resolved absolute path, not a content
-digest.
+refused; the Task does not run it while the captured file exists. A file replaced in place at
+the captured path is not detected, as before: executable identity remains its resolved absolute
+path, not a content digest.
 
-A CLI fixture updates its client during Provider admission and checks that both later Workers
-complete on the captured executable. A unit test covers the removed executable.
+Two CLI fixtures update their client during Provider admission, one keeping and one deleting
+the old version file, and check that both later Workers complete on the expected executable.
+Unit tests cover the replacement and the uninstalled client.

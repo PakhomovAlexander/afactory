@@ -113,24 +113,41 @@ fn native_codex_multiturn_usage_survives_common_accounting_and_fresh_inspection(
     native_model_case(true, true);
 }
 
+/// How the fixture client updates itself during Provider admission.
+#[derive(Clone, Copy, PartialEq)]
+enum ClientUpdate {
+    None,
+    /// A new version file behind the repointed launcher; the old file stays.
+    KeepsOldVersion,
+    /// The same, and the old version file is deleted.
+    RemovesOldVersion,
+}
+
 fn native_model_case(wide: bool, codex: bool) {
-    native_model_drift_case(wide, codex, None, false);
+    native_model_drift_case(wide, codex, None, ClientUpdate::None);
 }
 
 #[test]
 fn native_task_account_change_after_admission_refuses_private_worker_context() {
-    native_model_drift_case(false, false, Some(1), false);
+    native_model_drift_case(false, false, Some(1), ClientUpdate::None);
 }
 #[test]
 fn native_task_account_change_between_workers_retains_original_spend() {
-    native_model_drift_case(false, false, Some(2), false);
+    native_model_drift_case(false, false, Some(2), ClientUpdate::None);
 }
 
 /// A native client that updates itself during a Task repoints its launcher at a new version
 /// file. The Task keeps running the executable it captured (ADR-0126).
 #[test]
 fn native_client_update_between_workers_keeps_the_captured_executable() {
-    native_model_drift_case(false, false, None, true);
+    native_model_drift_case(false, false, None, ClientUpdate::KeepsOldVersion);
+}
+
+/// An update that also deletes the captured version file moves the Task's remaining Workers to
+/// the installed client, under the same account (ADR-0126).
+#[test]
+fn native_client_update_that_removes_the_old_version_continues_on_the_installed_client() {
+    native_model_drift_case(false, false, None, ClientUpdate::RemovesOldVersion);
 }
 
 #[test]
@@ -148,7 +165,7 @@ fn native_model_drift_case(
     wide: bool,
     codex: bool,
     switch_after: Option<usize>,
-    client_update: bool,
+    client_update: ClientUpdate,
 ) {
     use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     use std::os::unix::fs::PermissionsExt;
@@ -183,6 +200,7 @@ if os.path.isfile(home+'/update-link') and len(open(home+'/calls').readlines())=
  shutil.copy2(sys.argv[0],new)
  os.symlink(new,link+'.new')
  os.replace(link+'.new',link)
+ if os.path.isfile(home+'/update-removes-old'): os.remove(sys.argv[0])
 if os.path.isfile(home+'/switch-after') and len(open(home+'/calls').readlines())==int(open(home+'/switch-after').read()):
  with open(home+'/account-email','w') as f: f.write('changed@example.test')
 if os.path.isfile(home+'/wide-usage'):
@@ -220,8 +238,11 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     let provider = format!("{kind}-personal");
     // An updating client installs each version as its own file behind a launcher symlink.
     let versions = directory.path().join("versions");
-    let installed = if client_update {
+    let installed = if client_update != ClientUpdate::None {
         std::fs::create_dir_all(&versions).unwrap();
+        if client_update == ClientUpdate::RemovesOldVersion {
+            std::fs::write(home.join("update-removes-old"), b"fixture").unwrap();
+        }
         std::os::unix::fs::symlink(versions.join("1"), bin.join(kind)).unwrap();
         std::fs::write(home.join("update-link"), bin.join(kind).to_str().unwrap()).unwrap();
         versions.join("1")
@@ -449,20 +470,22 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     assert_eq!(result["chargeable_tokens"], "36");
     assert_eq!(result["result"]["domain_conclusion"], "pass");
     assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 3);
-    if client_update {
-        // The update happened during the admission call; both Workers after it still ran, and
-        // on the executable this process captured, not on the one the launcher names now.
-        let captured = std::fs::canonicalize(versions.join("1")).unwrap();
-        assert_eq!(
-            std::fs::canonicalize(bin.join(kind)).unwrap(),
-            std::fs::canonicalize(versions.join("2")).unwrap()
-        );
+    if client_update != ClientUpdate::None {
+        // The update happened during the admission call, and both Workers after it still ran:
+        // on the executable this process captured while that file exists, and on the installed
+        // one when the update deleted it.
+        let updated = std::fs::canonicalize(versions.join("2")).unwrap();
+        assert_eq!(std::fs::canonicalize(bin.join(kind)).unwrap(), updated);
+        let captured = updated.with_file_name("1");
+        let later = if client_update == ClientUpdate::RemovesOldVersion {
+            assert!(!captured.exists());
+            &updated
+        } else {
+            &captured
+        };
         let served = std::fs::read_to_string(home.join("served-by")).unwrap();
-        assert_eq!(served.lines().count(), 3);
-        assert!(
-            served.lines().all(|line| Path::new(line) == captured),
-            "{served}"
-        );
+        let served: Vec<&Path> = served.lines().map(Path::new).collect();
+        assert_eq!(served, [&captured, later, later]);
     }
     assert!(
         run(&["task", "run", "--execute", "review-cli"])

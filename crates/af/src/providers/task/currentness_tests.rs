@@ -144,6 +144,34 @@ impl WorkerModelAdapter for Recording {
     }
 }
 
+/// The wrapper around a recording native adapter, finding its command through `resolve`.
+fn wrapper(
+    spec: ProviderSpec,
+    program: PathBuf,
+    reached: &std::sync::Arc<AtomicBool>,
+    resolve: fn(&str) -> Option<PathBuf>,
+) -> CurrentTaskProviderAdapter {
+    // Fixed grants: a gate may run these tests without USER in its environment.
+    let identity = TaskProviderIdentity {
+        home: spec.auth_dir.clone().map(Into::into),
+        user: Some("fixture".into()),
+        spec,
+        program,
+        principal_id: "sha256:".to_string() + &"0".repeat(64),
+        auth_method: "claude.ai".into(),
+        probe_path: sanitized_path(),
+    };
+    let native = Recording {
+        reached: reached.clone(),
+    };
+    CurrentTaskProviderAdapter {
+        model: "claude-fixture-1".into(),
+        effort: "high".into(),
+        resolve,
+        current: Mutex::new((identity, Arc::new(native))),
+    }
+}
+
 #[test]
 fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_native_client() {
     let directory = tempfile::tempdir().unwrap();
@@ -151,20 +179,7 @@ fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_nativ
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let reached = std::sync::Arc::new(AtomicBool::new(false));
     // A fixture provider is not in the machine-local registry, so the recheck fails.
-    let wrapper = CurrentTaskProviderAdapter {
-        identity: TaskProviderIdentity {
-            spec,
-            program,
-            principal_id: "sha256:".to_string() + &"0".repeat(64),
-            auth_method: "claude.ai".into(),
-            probe_path: sanitized_path(),
-            home: std::env::var_os("HOME"),
-            user: std::env::var_os("USER"),
-        },
-        inner: Box::new(Recording {
-            reached: reached.clone(),
-        }),
-    };
+    let wrapper = wrapper(spec, program, &reached, resolve_program);
     let environment = [(
         "CARGO_TARGET_DIR".to_string(),
         "/sandbox/.af-cache".to_string(),
@@ -190,26 +205,13 @@ fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_nativ
 }
 
 #[test]
-fn a_removed_captured_executable_refuses_by_name_before_any_probe() {
+fn a_removed_executable_with_no_installed_client_refuses_by_name_before_any_probe() {
     let directory = tempfile::tempdir().unwrap();
     let (program, spec) = fixture(ProviderKind::Claude, directory.path(), "exit 0");
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let reached = std::sync::Arc::new(AtomicBool::new(false));
-    let wrapper = CurrentTaskProviderAdapter {
-        identity: TaskProviderIdentity {
-            spec,
-            program: program.clone(),
-            principal_id: "sha256:".to_string() + &"0".repeat(64),
-            auth_method: "claude.ai".into(),
-            probe_path: sanitized_path(),
-            home: std::env::var_os("HOME"),
-            user: std::env::var_os("USER"),
-        },
-        inner: Box::new(Recording {
-            reached: reached.clone(),
-        }),
-    };
-    // A native client update that cleans up old versions removes the captured file.
+    let wrapper = wrapper(spec, program.clone(), &reached, |_| None);
+    // The client was uninstalled: its captured file is gone and `PATH` resolves nothing.
     std::fs::remove_file(&program).unwrap();
     let returned = wrapper.invoke(
         &cas,
@@ -222,9 +224,33 @@ fn a_removed_captured_executable_refuses_by_name_before_any_probe() {
     );
     assert_eq!(
         returned.message.unwrap_err(),
-        "Captured Task Provider executable is no longer available; a native client update may \
-         have removed it"
+        "Captured Task Provider executable was removed and no installed client replaces it"
     );
     assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 0);
     assert!(!reached.load(Ordering::SeqCst));
+}
+
+#[test]
+fn the_installed_client_replaces_a_removed_executable_and_a_present_one_is_kept() {
+    static INSTALLED: OnceLock<PathBuf> = OnceLock::new();
+    let directory = tempfile::tempdir().unwrap();
+    let (program, spec) = fixture(ProviderKind::Claude, directory.path(), "exit 0");
+    let installed = directory.path().join("installed");
+    std::fs::copy(&program, &installed).unwrap();
+    INSTALLED.set(installed.clone()).unwrap();
+    let reached = std::sync::Arc::new(AtomicBool::new(false));
+    let wrapper = wrapper(spec, program.clone(), &reached, |_| {
+        INSTALLED.get().cloned()
+    });
+    // While the captured executable is there, what `PATH` resolves is not consulted.
+    assert_eq!(wrapper.current_or_installed().unwrap().0.program, program);
+    std::fs::remove_file(&program).unwrap();
+    let (identity, _) = wrapper.current_or_installed().unwrap();
+    assert_eq!(identity.program, installed);
+    // The account the replacement must prove is the captured one.
+    assert_eq!(
+        identity.principal_id,
+        "sha256:".to_string() + &"0".repeat(64)
+    );
+    assert_eq!(identity.auth_method, "claude.ai");
 }
