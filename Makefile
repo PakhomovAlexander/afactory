@@ -8,6 +8,8 @@ TEST_RUNNER ?= nextest
 TEST_THREADS ?= $(shell python3 -c 'import os; print(max(4, (os.cpu_count() or 4) // 2))')
 CI_STEP = python3 scripts/ci-step.py
 
+# Run unprivileged: preflight proves a chmod-sealed source rejects writes.
+# Root/CAP_DAC_OVERRIDE bypass that seal and intentionally fail the precondition.
 check: preflight-check fmt lint test release-check
 
 fmt:

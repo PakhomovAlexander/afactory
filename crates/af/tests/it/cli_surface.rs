@@ -98,7 +98,7 @@ fn review_run_timeout_help() -> Vec<String> {
 fn review_run_timeout_is_per_reviewer_attempt_for_campaigns() {
     for flag in review_run_timeout_help() {
         assert!(
-            flag.contains("With --campaign/--pipeline: per reviewer Attempt (default 1800;"),
+            flag.contains("Without --file (default routed run, --campaign or --pipeline): per reviewer Attempt (default 1800;"),
             "{flag}"
         );
         assert!(

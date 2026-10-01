@@ -309,8 +309,9 @@ pub(crate) struct RunArgs {
         help_heading = "Budget"
     )]
     pub(crate) provider_admission_wall_ms: Option<u64>,
-    /// Wall-clock budget in seconds. With --campaign/--pipeline: per reviewer Attempt (default
-    /// 1800; pinned in the Campaign manifest as reviewer_timeout_seconds), not a bound on the
+    /// Wall-clock budget in seconds. Without --file (default routed run, --campaign or --pipeline):
+    /// per reviewer Attempt (default 1800; pinned in the Campaign manifest as
+    /// reviewer_timeout_seconds), not a bound on the
     /// whole run. With --file: a cap on the whole Task, the lower of this flag and the file's
     /// limits.wall_ms
     #[arg(long, value_name = "N", help_heading = "Budget")]

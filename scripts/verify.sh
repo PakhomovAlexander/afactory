@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Run as an unprivileged user (also in containers). The focused preflight fixture
+# must prove chmod-sealed sources reject writes; root/CAP_DAC_OVERRIDE cannot.
+
 # Gates run against a read-only source tree, so reuse build products in a stable
 # external cache; set AF_GATE_TARGET_DIR for isolation or a cold run. The common
 # Task code gate gives each run its own HOME and XDG_CACHE_HOME, so the cache is
