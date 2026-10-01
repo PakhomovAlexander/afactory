@@ -8,6 +8,8 @@ TEST_RUNNER ?= nextest
 TEST_THREADS ?= $(shell python3 -c 'import os; print(max(4, (os.cpu_count() or 4) // 2))')
 CI_STEP = python3 scripts/ci-step.py
 
+# Run unprivileged: preflight proves a chmod-sealed source rejects writes.
+# Root/CAP_DAC_OVERRIDE bypass that seal and intentionally fail the precondition.
 check: preflight-check fmt lint test release-check
 
 fmt:
@@ -19,7 +21,7 @@ lint:
 test:
 ifeq ($(TEST_RUNNER),nextest)
 	$(CI_STEP) test-build cargo test --locked --no-run
-	$(CI_STEP) test cargo nextest run --locked --profile ci --test-threads $(TEST_THREADS)
+	$(CI_STEP) test python3 scripts/nextest-gate.py --locked --profile ci --test-threads $(TEST_THREADS)
 else ifeq ($(TEST_RUNNER),cargo)
 	$(CI_STEP) test-build cargo test --locked --no-run
 	$(CI_STEP) test cargo test --locked -- --test-threads=$(TEST_THREADS)
@@ -47,3 +49,4 @@ release-check:
 # Offline advisory orchestration checks against the native inspection fixture.
 preflight-check:
 	$(CI_STEP) task-preflight python3 scripts/test-task-preflight.py
+	$(CI_STEP) nextest-gate python3 scripts/test-nextest-gate.py
