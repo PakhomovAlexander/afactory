@@ -124,13 +124,16 @@ impl TaskProviderIdentity {
         }))
     }
 
+    /// The executable is the one captured when this process resolved the Provider: every
+    /// invocation runs that absolute path, so it must still be there. What `PATH` resolves to
+    /// now is not compared. A native client that updates itself repoints its launcher at a new
+    /// version file and leaves the captured one in place (ADR-0126).
     fn check_current(&self, deadline: Instant, cancelled: &AtomicBool) -> Result<(), String> {
         check_task_probe_control(Some(deadline), cancelled)?;
         let current = configured_spec(&self.spec.id)?;
         if current.kind != self.spec.kind
             || current.auth_dir != self.spec.auth_dir
             || current.explicit_selector != self.spec.explicit_selector
-            || resolve_program(self.spec.kind.command()).as_ref() != Some(&self.program)
             || !is_executable(&self.program)
             || sanitized_path() != self.probe_path
             || std::env::var_os("HOME") != self.home
@@ -215,16 +218,26 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
-        let refused = || ModelWorkerReturn {
-            message: Err(concat!(
-                "Captured Task Provider identity is no longer current or could not be verified ",
-                "before invocation"
-            )
-            .into()),
+        let refuse = |reason: &str| ModelWorkerReturn {
+            message: Err(reason.into()),
             usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
             usage_observation: None,
             raw_artifact_ids: vec![],
         };
+        let refused = || {
+            refuse(concat!(
+                "Captured Task Provider identity is no longer current or could not be verified ",
+                "before invocation"
+            ))
+        };
+        // Named apart from an identity change: the remedy is to run the Task again, which
+        // resolves the installed client.
+        if !is_executable(&self.identity.program) {
+            return refuse(concat!(
+                "Captured Task Provider executable is no longer available; a native client ",
+                "update may have removed it"
+            ));
+        }
         let Some(deadline) = Instant::now().checked_add(timeout) else {
             return refused();
         };

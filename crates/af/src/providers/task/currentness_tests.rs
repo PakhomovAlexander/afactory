@@ -188,3 +188,43 @@ fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_nativ
         "a failed recheck must not reach the native client"
     );
 }
+
+#[test]
+fn a_removed_captured_executable_refuses_by_name_before_any_probe() {
+    let directory = tempfile::tempdir().unwrap();
+    let (program, spec) = fixture(ProviderKind::Claude, directory.path(), "exit 0");
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let reached = std::sync::Arc::new(AtomicBool::new(false));
+    let wrapper = CurrentTaskProviderAdapter {
+        identity: TaskProviderIdentity {
+            spec,
+            program: program.clone(),
+            principal_id: "sha256:".to_string() + &"0".repeat(64),
+            auth_method: "claude.ai".into(),
+            probe_path: sanitized_path(),
+            home: std::env::var_os("HOME"),
+            user: std::env::var_os("USER"),
+        },
+        inner: Box::new(Recording {
+            reached: reached.clone(),
+        }),
+    };
+    // A native client update that cleans up old versions removes the captured file.
+    std::fs::remove_file(&program).unwrap();
+    let returned = wrapper.invoke(
+        &cas,
+        directory.path(),
+        b"{}".to_vec(),
+        Duration::from_secs(5),
+        review_runner::task::WorkerAccess::ReadOnly,
+        None,
+        &[],
+    );
+    assert_eq!(
+        returned.message.unwrap_err(),
+        "Captured Task Provider executable is no longer available; a native client update may \
+         have removed it"
+    );
+    assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 0);
+    assert!(!reached.load(Ordering::SeqCst));
+}

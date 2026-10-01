@@ -114,16 +114,23 @@ fn native_codex_multiturn_usage_survives_common_accounting_and_fresh_inspection(
 }
 
 fn native_model_case(wide: bool, codex: bool) {
-    native_model_drift_case(wide, codex, None);
+    native_model_drift_case(wide, codex, None, false);
 }
 
 #[test]
 fn native_task_account_change_after_admission_refuses_private_worker_context() {
-    native_model_drift_case(false, false, Some(1));
+    native_model_drift_case(false, false, Some(1), false);
 }
 #[test]
 fn native_task_account_change_between_workers_retains_original_spend() {
-    native_model_drift_case(false, false, Some(2));
+    native_model_drift_case(false, false, Some(2), false);
+}
+
+/// A native client that updates itself during a Task repoints its launcher at a new version
+/// file. The Task keeps running the executable it captured (ADR-0126).
+#[test]
+fn native_client_update_between_workers_keeps_the_captured_executable() {
+    native_model_drift_case(false, false, None, true);
 }
 
 #[test]
@@ -137,7 +144,12 @@ fn native_model_fixture_widens_only_its_total_task_wall() {
     assert_eq!(limits["verification"]["wall_ms"], 60_000);
 }
 
-fn native_model_drift_case(wide: bool, codex: bool, switch_after: Option<usize>) {
+fn native_model_drift_case(
+    wide: bool,
+    codex: bool,
+    switch_after: Option<usize>,
+    client_update: bool,
+) {
     use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
@@ -163,6 +175,14 @@ if sys.argv[1:3]==['auth','status']:
  sys.exit(0)
 request=sys.stdin.read()
 with open(home+'/calls','a') as f: f.write(open(home+'/account-email').read()+'\n')
+with open(home+'/served-by','a') as f: f.write(sys.argv[0]+'\n')
+if os.path.isfile(home+'/update-link') and len(open(home+'/calls').readlines())==1:
+ import shutil
+ link=open(home+'/update-link').read()
+ new=os.path.join(os.path.dirname(sys.argv[0]),'2')
+ shutil.copy2(sys.argv[0],new)
+ os.symlink(new,link+'.new')
+ os.replace(link+'.new',link)
 if os.path.isfile(home+'/switch-after') and len(open(home+'/calls').readlines())==int(open(home+'/switch-after').read()):
  with open(home+'/account-email','w') as f: f.write('changed@example.test')
 if os.path.isfile(home+'/wide-usage'):
@@ -198,8 +218,18 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
 "#;
     let kind = if codex { "codex" } else { "claude" };
     let provider = format!("{kind}-personal");
-    std::fs::write(bin.join(kind), if codex { codex_stub } else { stub }).unwrap();
-    std::fs::set_permissions(bin.join(kind), std::fs::Permissions::from_mode(0o755)).unwrap();
+    // An updating client installs each version as its own file behind a launcher symlink.
+    let versions = directory.path().join("versions");
+    let installed = if client_update {
+        std::fs::create_dir_all(&versions).unwrap();
+        std::os::unix::fs::symlink(versions.join("1"), bin.join(kind)).unwrap();
+        std::fs::write(home.join("update-link"), bin.join(kind).to_str().unwrap()).unwrap();
+        versions.join("1")
+    } else {
+        bin.join(kind)
+    };
+    std::fs::write(&installed, if codex { codex_stub } else { stub }).unwrap();
+    std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
     let registry = home.join("providers.toml");
     std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":1,"providers":[{"id":provider,"kind":kind,"auth_dir":home}]})).unwrap()).unwrap();
     let catalog_path = repo.join(".af/task-catalog.toml");
@@ -258,7 +288,8 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
         );
     }
     let path = std::env::join_paths(
-        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        std::iter::once(bin.clone())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
     )
     .unwrap();
     let run = |args: &[&str]| {
@@ -418,6 +449,21 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     assert_eq!(result["chargeable_tokens"], "36");
     assert_eq!(result["result"]["domain_conclusion"], "pass");
     assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 3);
+    if client_update {
+        // The update happened during the admission call; both Workers after it still ran, and
+        // on the executable this process captured, not on the one the launcher names now.
+        let captured = std::fs::canonicalize(versions.join("1")).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(bin.join(kind)).unwrap(),
+            std::fs::canonicalize(versions.join("2")).unwrap()
+        );
+        let served = std::fs::read_to_string(home.join("served-by")).unwrap();
+        assert_eq!(served.lines().count(), 3);
+        assert!(
+            served.lines().all(|line| Path::new(line) == captured),
+            "{served}"
+        );
+    }
     assert!(
         run(&["task", "run", "--execute", "review-cli"])
             .status

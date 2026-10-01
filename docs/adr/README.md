@@ -217,3 +217,5 @@ future readers need.
   once](0124-run-tests-in-parallel-processes-and-link-them-once.md)
 - [0125 — Charge a Claude model breakdown that covers the top-level
   summary](0125-charge-a-claude-model-breakdown-that-covers-the-top-level-summary.md)
+- [0126 — Keep the captured native executable when its launcher
+  moves](0126-keep-the-captured-native-executable-when-its-launcher-moves.md)

@@ -83,6 +83,12 @@ new charge while preserving earlier admission and spend. Credentials can still c
 the check and their consumption by the native client; this is not an atomic session guarantee.
 See [ADR-0090](../adr/0090-recheck-native-task-provider-identity-before-private-invocation.md).
 
+The executable is the file the `af` process resolved when it started. A native client that
+updates itself during a Task repoints its launcher at a new version file; later Workers keep
+running the captured file, and the next `af` process resolves the new one. If the captured file
+is gone, the invocation refuses with `Captured Task Provider executable is no longer available`.
+See [ADR-0126](../adr/0126-keep-the-captured-native-executable-when-its-launcher-moves.md).
+
 Native Task usage retains exact cumulative components and charge across multiple turns, even
 when their totals exceed u64. Output decoding, timeout, unavailable CAS or a refused final-message
 file cannot erase observed usage. The original Task budget still applies; an overrun never
