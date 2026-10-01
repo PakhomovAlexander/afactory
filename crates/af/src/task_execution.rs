@@ -1783,7 +1783,7 @@ fn captured_domain(
 ) -> Result<Box<dyn TaskDomain>, String> {
     match profile {
         TaskKindProfile::Implementation if authority.review_policy_id.is_none() => Ok(Box::new(
-            CodeTaskDomain::captured(cas, authority.code_policy_id()?, graph)?,
+            domain::code_domain(cas, authority.code_policy_id()?, graph)?,
         )),
         TaskKindProfile::Review
         | TaskKindProfile::Implementation
@@ -1797,6 +1797,9 @@ fn captured_domain(
                     .ok_or("Review Task lost its captured policy")?,
                 graph,
             )?
+            .with_rust_toolchain_mapping(
+                std::env::var_os("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE").map(PathBuf::from),
+            )
             .with_review_task(profile == TaskKindProfile::Review),
         )),
         TaskKindProfile::Document => Ok(Box::new(DocumentTaskDomain::captured(

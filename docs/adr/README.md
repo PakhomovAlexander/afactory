@@ -219,3 +219,4 @@ future readers need.
   summary](0125-charge-a-claude-model-breakdown-that-covers-the-top-level-summary.md)
 - [0126 — Keep the captured native executable when its launcher
   moves](0126-keep-the-captured-native-executable-when-its-launcher-moves.md)
+- [0127 — Snapshot pinned Rust before native Task checks](0127-snapshot-pinned-rust-before-native-task-checks.md)
