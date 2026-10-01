@@ -35,6 +35,7 @@ def main():
         for name in ['verify.sh', 'nextest-gate.py', 'ci-step.py']:
             shutil.copyfile(ROOT / 'scripts' / name, repo / 'scripts' / name)
         shutil.copyfile(ROOT / '.config/nextest.toml', repo / '.config/nextest.toml')
+        shutil.copyfile(ROOT / 'rust-toolchain.toml', repo / 'rust-toolchain.toml')
         # Use the actual Makefile test recipe; other gate stages do not apply to
         # this miniature crate. The production check target is not modified.
         makefile = (ROOT / 'Makefile').read_text()
@@ -51,6 +52,10 @@ def main():
             'assert!(std::env::var_os("AF_STORE_TEST_FAIL").is_none()); }', '']))
         env = {'PATH': os.environ['PATH'], 'LC_ALL': 'C', 'TZ': 'UTC',
                'HOME': str(base / 'home'), 'XDG_CACHE_HOME': str(base / 'cache')}
+        # Keep HOME/cache isolated without hiding the installed pinned toolchain
+        # from rustup proxies. No ambient compiler flags or wrappers are inherited.
+        for name, default in [('RUSTUP_HOME', '.rustup'), ('CARGO_HOME', '.cargo')]:
+            env[name] = os.environ.get(name, str(Path.home() / default))
         Path(env['HOME']).mkdir()
         assert run(['cargo', 'generate-lockfile', '--offline'], repo, env).returncode == 0
         paths = [repo, *repo.rglob('*')]
