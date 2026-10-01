@@ -10,4 +10,6 @@ set -euo pipefail
 cache_home="${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}"
 target_dir="${AF_GATE_TARGET_DIR:-$cache_home/af/gate-target}"
 mkdir -p "$target_dir"
-AF_WORKSPACE_ROOT="$PWD" CARGO_TARGET_DIR="$target_dir" make check
+# nextest store.dir is workspace-relative, independent of CARGO_TARGET_DIR.
+# Preserve the CI profile/JUnit and place only gate reports beside build artifacts.
+AF_WORKSPACE_ROOT="$PWD" CARGO_TARGET_DIR="$target_dir" AF_GATE_NEXTEST_TARGET="$target_dir" make check

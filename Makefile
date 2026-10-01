@@ -19,7 +19,7 @@ lint:
 test:
 ifeq ($(TEST_RUNNER),nextest)
 	$(CI_STEP) test-build cargo test --locked --no-run
-	$(CI_STEP) test cargo nextest run --locked --profile ci --test-threads $(TEST_THREADS)
+	$(CI_STEP) test python3 scripts/nextest-gate.py --locked --profile ci --test-threads $(TEST_THREADS)
 else ifeq ($(TEST_RUNNER),cargo)
 	$(CI_STEP) test-build cargo test --locked --no-run
 	$(CI_STEP) test cargo test --locked -- --test-threads=$(TEST_THREADS)
@@ -47,3 +47,4 @@ release-check:
 # Offline advisory orchestration checks against the native inspection fixture.
 preflight-check:
 	$(CI_STEP) task-preflight python3 scripts/test-task-preflight.py
+	$(CI_STEP) nextest-gate python3 scripts/test-nextest-gate.py
