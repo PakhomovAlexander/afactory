@@ -72,6 +72,57 @@ fn help_topics_and_command_paths() {
     assert!(err(&unknown).contains("topics:"), "{}", err(&unknown));
 }
 
+/// The rendered `af review run` help for `--timeout-secs`, with wrapping collapsed to single spaces.
+fn review_run_timeout_help() -> Vec<String> {
+    [
+        af(&["review", "run", "--help"]),
+        af(&["review", "run", "-h"]),
+        af(&["help", "review", "run"]),
+    ]
+    .iter()
+    .map(|help| {
+        assert!(help.status.success(), "{}", err(help));
+        let text = out(help).split_whitespace().collect::<Vec<_>>().join(" ");
+        let start = text
+            .find("--timeout-secs <N>")
+            .expect("--timeout-secs is documented");
+        let end = text[start..]
+            .find("--git-timeout-secs")
+            .map_or(text.len(), |offset| start + offset);
+        text[start..end].to_owned()
+    })
+    .collect()
+}
+
+#[test]
+fn review_run_timeout_is_per_reviewer_attempt_for_campaigns() {
+    for flag in review_run_timeout_help() {
+        assert!(
+            flag.contains("With --campaign/--pipeline: per reviewer Attempt (default 1800;"),
+            "{flag}"
+        );
+        assert!(
+            flag.contains("pinned in the Campaign manifest as reviewer_timeout_seconds"),
+            "{flag}"
+        );
+        assert!(flag.contains("not a bound on the whole run"), "{flag}");
+        assert!(
+            !flag.contains("Wall-clock budget for the whole run"),
+            "{flag}"
+        );
+    }
+}
+
+#[test]
+fn review_run_timeout_caps_the_whole_task_for_task_files() {
+    for flag in review_run_timeout_help() {
+        assert!(
+            flag.contains("With --file: a cap on the whole Task, the lower of this flag and the file's limits.wall_ms"),
+            "{flag}"
+        );
+    }
+}
+
 #[test]
 fn version_is_a_line_or_a_document() {
     let line = af(&["--version"]);
