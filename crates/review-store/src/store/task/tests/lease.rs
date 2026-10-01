@@ -279,3 +279,42 @@ fn heartbeat_projection_synthetic_history_benchmark() {
         "heartbeat benchmark: events={prefix}, iterations=64, lease_only_us={elapsed}; synthetic single Task, no multi-Round performance claim"
     );
 }
+
+/// The race behind the second half of #134's failures: the work's operation reads the time,
+/// its own heartbeat renews through its second connection a moment later, then the work
+/// appends with the earlier time. The writer is the same and its lease is valid throughout.
+#[test]
+fn a_live_writer_append_timed_before_its_own_renewal_is_not_fenced() {
+    let mut f = Fixture::new(false);
+    let lease = f.open();
+    f.propose(&lease);
+    let before = now().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let mut own = f.store.reopen(std::time::Duration::from_secs(1)).unwrap();
+    own.renew_task_lease(&f.cas, &lease, 100_000_000).unwrap();
+    let result = f.store.task_change(
+        &f.cas,
+        &lease,
+        TaskChangeV1::LeaseRenewed {
+            lease_until_unix_ms: before + 200_000_000,
+        },
+        before,
+    );
+    assert!(result.is_ok(), "{result:?}");
+    // It is recorded at the renewal's time, not before it: the log stays monotonic.
+    let state = f.state();
+    assert!(
+        state.last_time > before,
+        "stamped at the last recorded time"
+    );
+    // Another writer's stale time is still its own: a different epoch is fenced.
+    let stale = TaskLease {
+        epoch: lease.epoch + 1,
+        ..lease.clone()
+    };
+    assert!(
+        f.store
+            .task_change(&f.cas, &stale, TaskChangeV1::Resumed {}, before)
+            .is_err()
+    );
+}

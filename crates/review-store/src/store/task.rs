@@ -779,14 +779,28 @@ impl TaskProjection {
         self.decisions.get(plan_id).map(|d| d.value.decision)
     }
     fn check_lease(&self, transition: &TaskTransitionV1) -> Result<(), StoreError> {
-        if transition.writer != self.writer
-            || transition.epoch != self.epoch
-            || transition.now_unix_ms >= self.lease_until
-            || transition.now_unix_ms < self.last_time
-        {
+        if transition.writer != self.writer || transition.epoch != self.epoch {
+            return Err(conflict("Task writer lease is expired or fenced"));
+        }
+        // The current writer's operation may have read its clock before its own heartbeat
+        // appended a later renewal: that is the same writer, not a clock moving backwards. It
+        // is judged, and stamped (`writer_time`), at the last recorded time (ADR-0125).
+        if self.writer_time(transition) >= self.lease_until {
             return Err(conflict("Task writer lease is expired or fenced"));
         }
         Ok(())
+    }
+
+    /// The time a transition is recorded at: the current writer's own transition is never
+    /// earlier than the last recorded event, which may be that writer's heartbeat renewal made
+    /// through its other connection while this operation was in flight. Another writer's time
+    /// is its own, so a premature takeover is still refused.
+    fn writer_time(&self, transition: &TaskTransitionV1) -> u64 {
+        if transition.writer == self.writer && transition.epoch == self.epoch {
+            transition.now_unix_ms.max(self.last_time)
+        } else {
+            transition.now_unix_ms
+        }
     }
 
     fn apply(
@@ -1475,6 +1489,11 @@ impl EventStore {
         owned_prefix: Option<(u64, Option<(String, u64)>)>,
         state: Option<TaskProjection>,
     ) -> Result<RunEvent, StoreError> {
+        let mut transition = transition;
+        if let Some(state) = &state {
+            // Stamped before it is persisted, so the log stays monotonic and replays unchanged.
+            transition.now_unix_ms = state.writer_time(&transition);
+        }
         let (event_type, value) = review_handoff::encode_transition(&transition)?;
         let first = state.as_ref().map_or(0, |s| s.next_sequence);
         if owned_prefix

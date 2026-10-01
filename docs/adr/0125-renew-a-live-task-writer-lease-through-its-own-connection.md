@@ -99,6 +99,15 @@ about to append, and
 with `Task write lost its sequence/lease comparison`. At 4 s, the reserve is reached only after
 the heartbeat has waited 6 s for the shared connection. The entry renewal keeps each section
 from starting close to it.
+- **The writer's own clock.** With a second connection the heartbeat can append a renewal
+  while one of the work's Store operations is in flight. That operation read its clock when
+  it started, so its transition carried a time earlier than the renewal just recorded, and the
+  Store refused it as a clock moving backwards or as an expired or fenced writer. A live Task
+  died this way at the end of a long Attempt, with its lease valid. The current writer's own
+  transition is therefore recorded at the later of its time and the last recorded time, and
+  its lease is judged at that time. The stamp is applied before the transition is persisted,
+  so the log stays monotonic and replays unchanged. Another writer, or a stale epoch, keeps
+  its own time and is fenced as before.
 
 ## Consequences
 
