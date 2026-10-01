@@ -151,6 +151,16 @@ fn shell_status(status: &std::process::ExitStatus) -> (Option<Signal>, i32) {
     }
 }
 
+/// `af task start --execute`: capture, plan and run in one command.
+const START_EXECUTE: &[&str] = &[
+    "task",
+    "start",
+    "--file",
+    "ticket.json",
+    "--execute",
+    "--json",
+];
+
 /// Start the Task, wait until its Worker and the Worker's child run, send `signals` to af and
 /// return af's output once it exited and no Worker process is left.
 fn interrupt_running_worker(
@@ -159,17 +169,22 @@ fn interrupt_running_worker(
     ready: &Path,
     signals: &[Signal],
 ) -> std::process::Output {
+    interrupt_running_af(repo, state, ready, signals, START_EXECUTE)
+}
+
+/// Run `af ARGS --state STATE`, wait until its Worker and the Worker's child run, send
+/// `signals` to af and return af's output once it exited and no Worker process is left.
+fn interrupt_running_af(
+    repo: &Path,
+    state: &Path,
+    ready: &Path,
+    signals: &[Signal],
+    args: &[&str],
+) -> std::process::Output {
     let mut af = ChildGuard(Some(
         Command::new(env!("CARGO_BIN_EXE_af"))
             .current_dir(repo)
-            .args([
-                "task",
-                "start",
-                "--file",
-                "ticket.json",
-                "--execute",
-                "--json",
-            ])
+            .args(args)
             .arg("--state")
             .arg(state)
             .stdout(Stdio::piped())
@@ -359,4 +374,95 @@ fn a_second_sigint_still_leaves_no_worker_process() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+/// The issue's own command: a Task planned first and then run with `af task run`; SIGINT to
+/// that `af task run` stops the Worker and its child, settles the Attempt as cancelled, exits
+/// as SIGINT (130 in a shell) and leaves the Task resumable.
+#[test]
+fn sigint_to_af_task_run_stops_its_worker_and_the_task_resumes() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, state) = task_cli::fixture_named(directory.path(), "pagination");
+    let ready = directory.path().join("worker-ready");
+    let resume = directory.path().join("worker-resume");
+    long_running_implementer(&repo, &ready, &resume);
+    let planned = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(&repo)
+        .args([
+            "task",
+            "start",
+            "--file",
+            "ticket.json",
+            "--json",
+            "--state",
+        ])
+        .arg(&state)
+        .output()
+        .unwrap();
+    let preview: serde_json::Value = serde_json::from_slice(&planned.stdout).unwrap_or_else(|_| {
+        panic!(
+            "not JSON: {} {}",
+            String::from_utf8_lossy(&planned.stdout),
+            String::from_utf8_lossy(&planned.stderr)
+        )
+    });
+    let plan = preview["plan_id"]
+        .as_str()
+        .expect("the preview names its plan")
+        .to_owned();
+
+    let run = [
+        "task",
+        "run",
+        TASK,
+        "--confirm-plan",
+        plan.as_str(),
+        "--json",
+    ];
+    let out = interrupt_running_af(&repo, &state, &ready, &[Signal::SIGINT], &run);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        shell_status(&out.status),
+        (Some(Signal::SIGINT), 130),
+        "{stderr}"
+    );
+    assert!(stderr.contains("interrupted by SIGINT"), "{stderr}");
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    {
+        let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+        let task = store.task_projection(&cas, TASK).unwrap().unwrap();
+        assert!(!matches!(task.phase, TaskPhaseV1::Finished { .. }));
+        let execution = task.execution.as_ref().unwrap();
+        assert!(execution.pending_attempts().is_empty());
+        let attempts = execution.attempt_accounting();
+        let started: Vec<_> = attempts.iter().filter(|a| a.started).collect();
+        assert_eq!(started.len(), 1, "{attempts:#?}");
+        let Some(TaskAttemptResultV1::Failed { diagnostic_id, .. }) = &started[0].result else {
+            panic!("the interrupted Attempt is settled, not succeeded: {attempts:#?}");
+        };
+        assert!(
+            cas.get_json(diagnostic_id)
+                .unwrap()
+                .to_string()
+                .contains("cancelled"),
+            "the Attempt is recorded as cancelled"
+        );
+    }
+
+    std::fs::write(&resume, b"").unwrap();
+    let resumed = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(&repo)
+        .args(["task", "run", TASK, "--json", "--state"])
+        .arg(&state)
+        .output()
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&resumed.stdout).unwrap_or_else(|_| {
+        panic!(
+            "not JSON: {} {}",
+            String::from_utf8_lossy(&resumed.stdout),
+            String::from_utf8_lossy(&resumed.stderr)
+        )
+    });
+    assert_eq!(resumed.status.code(), Some(0), "{value:#}");
+    assert_eq!(value["result"]["acceptance"], "satisfied", "{value:#}");
 }
