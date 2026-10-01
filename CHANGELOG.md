@@ -19,6 +19,54 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.9.1] - 2026-10-01
+
+### Authority compatibility
+
+Current-shape committed .af/ authority needs no edit for these fixes; updating the installed default does not change project pins. To adopt 0.9.1 deliberately, run af onboard --refresh-lock --af 0.9.1 online and review/commit the authority. Native Rust snapshots require an explicit captured request and operator mapping; absent mappings preserve cold setup. Pre-GA (0.x) Task/Campaign state has no cross-release compatibility guarantee and is not migrated; retain its original release to finish or inspect it.
+
+### Changes
+
+- Explain Task verification budget rejections (#145)
+- fix: clarify review timeout scope and externalize read-only gate reports (#146)
+- Keep Claude Task Workers running on Claude Code 2.1.285 and across its updates (#147)
+- feat(tasks): pinned private Rust snapshots for native checks (#151)
+
+- Infeasible Task verification reserves now report required and available tokens, Attempts and
+  wall milliseconds, identify exceeded resources, and list each protected node's contribution,
+  including Provider admission. These are declared allowances, not estimated runtime; admission
+  rules and configured budgets are unchanged.
+
+- Keep nextest CI JUnit reports outside read-only source trees during `scripts/verify.sh`,
+  alongside the existing external Cargo target. Unique per-run report directories preserve
+  failed-run evidence; temporary store-only tool configuration is removed afterward. Direct
+  `make test` retains its existing report location and all test/profile settings are unchanged.
+- Run `make check` and `scripts/verify.sh` as an unprivileged user, including in containers.
+  The new sealed-source regression requires mode bits to deny writes; root or
+  `CAP_DAC_OVERRIDE` bypasses that seal and fails the explicit precondition rather than
+  silently skipping the regression.
+
+- Correct the `af review run --timeout-secs` help: without `--file` (including the default
+  routed run and explicit `--campaign`/`--pipeline`) it bounds each
+  reviewer Attempt (default 1800 seconds, pinned in the Campaign manifest as
+  `reviewer_timeout_seconds`), not the whole run; with `--file` it caps the whole Task at the
+  lower of the flag and the file's `limits.wall_ms`. Timeout behaviour is unchanged.
+
+- Claude Task Workers no longer fail with `Native billing usage is incomplete` on Claude Code
+  2.1.285, whose final result counts requests in `modelUsage` that its top-level `usage` leaves
+  out. A breakdown that no top-level counter exceeds is charged as the complete bill; a top-level
+  counter above the breakdown is still refused
+  ([ADR-0125](docs/adr/0125-charge-a-claude-model-breakdown-that-covers-the-top-level-summary.md)).
+- An Attempt refused for incomplete billing now names the cause in its diagnostic, for example
+  `Native billing usage is incomplete: Claude top-level and per-model usage cannot be reconciled`.
+- A Claude Code or Codex update in the middle of a Task no longer refuses the Task's next model
+  Worker with `Captured Task Provider identity is no longer current`. The Task keeps running the
+  client executable it captured when it started, and moves to the installed client if the update
+  removed that file; the account is still proven before every invocation
+  ([ADR-0126](docs/adr/0126-keep-the-captured-native-executable-when-its-launcher-moves.md)).
+
+- Native code checks can opt into pinned Rust from an explicit operator mapping; AF verifies and privately copies only that toolchain before dispatch, avoiding repeated rustup downloads in fresh check homes. Host Cargo/Rustup homes are not passed through, inherited Cargo subcommands remain available, and check writes are never promoted. Missing mappings preserve cold setup; invalid mappings fail closed. Trusted-local isolation is unchanged ([ADR-0127](docs/adr/0127-snapshot-pinned-rust-before-native-task-checks.md)).
+
 ## [0.9.0] - 2026-09-30
 
 ### Authority compatibility
