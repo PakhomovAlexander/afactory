@@ -217,3 +217,84 @@ fn explicitly_unused_foreign_models_are_metadata_but_cache_read_activity_is_not(
         "unknown activity is not explicitly zero"
     );
 }
+
+/// The final result of a 57-turn `claude-opus-5-5` session on native 2.1.285: its breakdown
+/// counts one more request than its top-level summary.
+fn uncounted_request() -> Value {
+    json!({"usage":{"input_tokens":88,"output_tokens":60087,"cache_creation_input_tokens":165142,"cache_read_input_tokens":5375264},
+        "modelUsage":{"claude-opus-5-5":{"inputTokens":90,"outputTokens":60095,"cacheCreationInputTokens":166844,"cacheReadInputTokens":5524885,"costUSD":3.641989}}})
+}
+
+#[test]
+fn a_breakdown_no_top_level_component_exceeds_is_the_whole_bill() {
+    let result = account(Some(&uncounted_request()), "claude-opus-5-5");
+    assert!(result.error.is_none());
+    assert!(result.observation.is_none());
+    let usage = result.usage.unwrap();
+    assert_eq!(usage.chargeable_tokens.get(), 227_029);
+    assert_eq!(usage.input_tokens.unwrap().get(), 90);
+    assert_eq!(usage.output_tokens.unwrap().get(), 60_095);
+    assert_eq!(usage.cache_write_tokens.unwrap().get(), 166_844);
+    assert_eq!(usage.cache_read_tokens.unwrap().get(), 5_524_885);
+
+    // The larger bill is charged in full while another model's activity refuses the reply.
+    let mut value = response();
+    value["usage"]["output_tokens"] = json!(9000);
+    let result = account(Some(&value), OPUS);
+    assert_eq!(
+        result.error,
+        Some("Claude model usage reports an unexpected model identity")
+    );
+    assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 242_845);
+    assert!(result.observation.unwrap().charge_complete);
+}
+
+#[test]
+fn a_top_level_component_above_the_breakdown_is_never_a_complete_bill() {
+    for (key, above) in [
+        ("input_tokens", 91),
+        ("output_tokens", 60_096),
+        ("cache_creation_input_tokens", 166_845),
+    ] {
+        let mut value = uncounted_request();
+        value["usage"][key] = json!(above);
+        let result = account(Some(&value), "claude-opus-5-5");
+        assert_eq!(
+            result.error,
+            Some("Claude top-level and per-model usage cannot be reconciled"),
+            "{key}"
+        );
+        assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 227_029);
+        assert!(!result.observation.unwrap().charge_complete, "{key}");
+    }
+    // The whole top-level summary above the breakdown is spend no reported model explains.
+    let mut value = uncounted_request();
+    value["usage"] =
+        json!({"input_tokens":91,"output_tokens":60096,"cache_creation_input_tokens":166845});
+    let result = account(Some(&value), "claude-opus-5-5");
+    assert!(result.error.is_some());
+    assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 227_032);
+    assert!(!result.observation.unwrap().charge_complete);
+}
+
+#[test]
+fn top_level_cache_reads_above_a_covering_breakdown_refuse_without_unknown_billing() {
+    let mut value = uncounted_request();
+    value["usage"]["cache_read_input_tokens"] = json!(5_524_886);
+    let result = account(Some(&value), "claude-opus-5-5");
+    assert_eq!(
+        result.error,
+        Some("Claude top-level and per-model cache-read metadata disagree")
+    );
+    assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 227_029);
+    assert!(result.observation.unwrap().charge_complete);
+
+    // An absent top-level cache-read counter has nothing to disagree with.
+    value["usage"]
+        .as_object_mut()
+        .unwrap()
+        .remove("cache_read_input_tokens");
+    let result = account(Some(&value), "claude-opus-5-5");
+    assert!(result.error.is_none());
+    assert!(result.observation.is_none());
+}

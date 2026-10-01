@@ -1,4 +1,5 @@
-//! Reconcile overlapping native summaries; never add top-level usage to its model breakdown.
+//! Reconcile overlapping native summaries; never add top-level usage to its model breakdown
+//! (ADR-0102, ADR-0125).
 use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
 use review_runner::task::usage::NativeCounter;
 use serde_json::Value;
@@ -48,8 +49,22 @@ impl Counters {
             && (self.input, self.output, self.write) == (other.input, other.output, other.write)
     }
 
+    /// No billed component of `self` exceeds `other`'s: `other` can describe the same requests
+    /// plus more, never fewer.
+    fn within(self, other: Self) -> bool {
+        self.complete
+            && other.complete
+            && self.input <= other.input
+            && self.output <= other.output
+            && self.write <= other.write
+    }
+
     fn read_conflicts(self, other: Self) -> bool {
         matches!((self.read, other.read), (Some(a), Some(b)) if a != b)
+    }
+
+    fn read_exceeds(self, other: Self) -> bool {
+        matches!((self.read, other.read), (Some(a), Some(b)) if a > b)
     }
 
     fn lower_bound(self, other: Self) -> Self {
@@ -212,11 +227,17 @@ pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
     } else {
         scopes.into_iter().find(|scope| top.same_bill(*scope))
     };
-    if matching_scope.is_none() {
+    // Native 2.1.285 counts requests in the breakdown that its top-level summary leaves out.
+    // A breakdown no top-level component exceeds is then the whole bill. A top-level component
+    // above the breakdown is spend no reported model explains, and stays unreconciled.
+    let covered = matching_scope.is_none() && top.within(sum);
+    if matching_scope.is_none() && !covered {
         complete = false;
         refuse("Claude top-level and per-model usage cannot be reconciled");
     }
-    if matching_scope.is_some_and(|scope| top.read_conflicts(scope)) {
+    if matching_scope.is_some_and(|scope| top.read_conflicts(scope))
+        || covered && top.read_exceeds(sum)
+    {
         refuse("Claude top-level and per-model cache-read metadata disagree");
     }
     let model_usage = sum.usage();

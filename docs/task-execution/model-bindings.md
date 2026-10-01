@@ -94,11 +94,15 @@ Malformed native usage preserves known contributions in `TaskUsageObservation@1`
 completeness is separate from optional metadata validity. Incomplete billing refuses business
 output and retains at least the original reservation and known charge floor; a fully reported
 failure retains its exact charge. The sidecar preserves both facts before CAS publication and
-through recovery. Valid native calls retain their previous artifact identities. See
+through recovery. The refusal's diagnostic keeps the reason the Worker failed with, after
+`Native billing usage is incomplete:`. Valid native calls retain their previous artifact
+identities. See
 [ADR-0088](../adr/0088-retain-native-billing-completeness-with-task-usage.md).
 
 Generic Claude Task returns also account for an optional per-model usage breakdown, without
-adding its overlapping top-level summary twice. Malformed or conflicting summaries preserve
+adding its overlapping top-level summary twice. A breakdown that no top-level billed counter
+exceeds is the complete bill: Claude Code 2.1.285 counts requests there that its top-level
+summary leaves out. Malformed summaries, and a top-level counter above the breakdown, preserve
 known charge and refuse output. The adapter requires an explicit `--model`, and that model
 refuses other reported model activity while retaining its usage; an entirely zero foreign entry
 is unused metadata. This is detection after execution, not prevention of internal client
@@ -107,7 +111,8 @@ The adapter disables native nonessential traffic and terminal-title generation t
 environment settings. Static client evidence supports the automatic title path; it does not
 prove suppression of every internal call. Personal authentication grants remain unchanged.
 An absent breakdown retains the plain native usage format. See
-[ADR-0102](../adr/0102-account-for-every-reported-claude-task-model.md).
+[ADR-0102](../adr/0102-account-for-every-reported-claude-task-model.md) and
+[ADR-0125](../adr/0125-charge-a-claude-model-breakdown-that-covers-the-top-level-summary.md).
 
 The native adapter's controlled invocation boundary can stop an owned process group and retain
 cancelled usage through bounded output draining. Unsupported adapters refuse a supplied control.

@@ -215,3 +215,5 @@ future readers need.
   browser](0123-hand-the-terminal-to-af-commands-typed-in-the-browser.md)
 - [0124 — Run tests in parallel processes and link them
   once](0124-run-tests-in-parallel-processes-and-link-them-once.md)
+- [0125 — Charge a Claude model breakdown that covers the top-level
+  summary](0125-charge-a-claude-model-breakdown-that-covers-the-top-level-summary.md)

@@ -236,3 +236,40 @@ fn top_level_and_model_usage_charges_persist_and_reopen_exact() {
         242845
     );
 }
+
+/// Native 2.1.285 counts requests in `modelUsage` that its top-level `usage` leaves out. The
+/// finished reply survives and the larger breakdown is the complete bill.
+#[test]
+fn a_breakdown_above_the_top_level_summary_keeps_the_reply_and_is_charged_in_full() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let native = json!({"type":"result","subtype":"success","is_error":false,"result":"OK",
+        "usage":{"input_tokens":88,"cache_creation_input_tokens":165142,"cache_read_input_tokens":5375264,"output_tokens":60087},
+        "modelUsage":{"claude-opus-5-5":{"inputTokens":90,"outputTokens":60095,"cacheReadInputTokens":5524885,"cacheCreationInputTokens":166844,"costUSD":3.641989}}});
+    let program = temp.path().join("synthetic-claude");
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\ncat >/dev/null\nprintf '%s' '{native}'\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = ClaudeTaskAdapter::new(&Command::new(
+        program.to_str().unwrap(),
+        vec![Arg::literal("--model"), Arg::literal("claude-opus-5-5")],
+    ))
+    .unwrap();
+    let result = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"synthetic public input".to_vec(),
+        Duration::from_secs(5),
+        WorkerAccess::ReadOnly,
+        None,
+        &[],
+    );
+    assert_eq!(result.message.unwrap(), b"OK");
+    assert!(result.usage_observation.is_none());
+    let usage = result.usage.unwrap();
+    assert_eq!(usage.chargeable_tokens.get(), 227_029);
+    assert_eq!(usage.cache_read_tokens.unwrap().get(), 5_524_885);
+}

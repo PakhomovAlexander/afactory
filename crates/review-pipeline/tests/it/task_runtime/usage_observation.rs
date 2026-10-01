@@ -136,6 +136,22 @@ fn incomplete_billing_uses_original_reservation_but_known_failed_calls_keep_exac
                     floor.max(u128::from(row.reservation.tokens))
                 };
                 assert!(failed_rows.iter().all(|row| row.charged_tokens == charge));
+                // The adapter's own reason stays in the diagnostic behind the billing refusal.
+                let Some(review_core::task::execution::TaskAttemptResultV1::Failed {
+                    diagnostic_id,
+                    ..
+                }) = &row.result
+                else {
+                    panic!("a refused Attempt settles with a diagnostic");
+                };
+                assert_eq!(
+                    f.cas.get_json(diagnostic_id).unwrap()["error"],
+                    if complete {
+                        "fixture malformed native protocol"
+                    } else {
+                        "Native billing usage is incomplete: fixture malformed native protocol"
+                    }
+                );
                 let total = charge * expected_failures as u128 + if fail_at == 1 { 7 } else { 0 };
                 assert_eq!(execution.budget.committed_tokens(), total);
                 assert_eq!(
