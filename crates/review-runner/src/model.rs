@@ -1279,6 +1279,8 @@ impl ReviewerAdapter for CommandAdapter {
 /// fails. A failed status never authorizes a business output, including a complete message
 /// printed before a timeout. Raw bytes have already had credential grants redacted.
 pub struct SettledCapture {
+    /// False when the program could not be started at all: it received no input.
+    pub started: bool,
     pub status: Result<std::process::ExitStatus, RunnerError>,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -1368,6 +1370,7 @@ impl ModelRunner {
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> SettledCapture {
         let mut capture = SettledCapture {
+            started: false,
             status: Err(RunnerError::Refused("unresolved command".into())),
             stdout: vec![],
             stderr: vec![],
@@ -1419,6 +1422,7 @@ impl ModelRunner {
                 .stderr
                 .extend_from_slice(b"\nstderr was still held after 5 seconds\n");
         }
+        capture.started = !matches!(output.status, Err(SupervisedError::Spawn(_)));
         capture.status = output.status.map_err(|error| match error {
             SupervisedError::TimedOut { .. } => RunnerError::TimedOut {
                 after_ms: self.timeout.as_millis() as u64,

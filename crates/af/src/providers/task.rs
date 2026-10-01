@@ -2,7 +2,7 @@
 //! later as paid nodes by the common Task runtime. Credentials and raw account data stay local.
 use super::*;
 use review_core::task::plan::WorkerExecutionV1;
-use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
+use review_runner::task::{ModelWorkerReturn, Unstarted, WorkerModelAdapter};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -209,19 +209,30 @@ struct CurrentTaskProviderAdapter {
     /// The identity in use and the native adapter that runs its executable.
     current: Mutex<(TaskProviderIdentity, Arc<dyn WorkerModelAdapter>)>,
 }
+/// An update removes at most a few versions while one Worker waits to start.
+const MAX_EXECUTABLE_REPLACEMENTS: usize = 3;
+
 impl CurrentTaskProviderAdapter {
     /// The captured executable while it is there. A native client update can remove it; the
     /// client `PATH` resolves now then takes its place for the rest of the process, and must
-    /// pass the same identity recheck before it receives anything (ADR-0126).
-    fn current_or_installed(&self) -> Option<(TaskProviderIdentity, Arc<dyn WorkerModelAdapter>)> {
+    /// pass the same identity recheck before it receives anything (ADR-0126). The error is the
+    /// refusal to report.
+    fn current_or_installed(
+        &self,
+    ) -> Result<(TaskProviderIdentity, Arc<dyn WorkerModelAdapter>), &'static str> {
         let mut current = self.current.lock().expect("Task Provider adapter");
         if !is_executable(&current.0.program) {
             let mut identity = current.0.clone();
-            identity.program = (self.resolve)(identity.spec.kind.command())?;
-            let native = identity.native_adapter(&self.model, &self.effort).ok()?;
+            identity.program = (self.resolve)(identity.spec.kind.command()).ok_or(concat!(
+                "Captured Task Provider executable was removed and no installed client ",
+                "replaces it"
+            ))?;
+            let native = identity.native_adapter(&self.model, &self.effort).map_err(
+                |_| "Installed Task Provider client cannot replace the removed executable",
+            )?;
             *current = (identity, native.into());
         }
-        Some(current.clone())
+        Ok(current.clone())
     }
 
     fn native(&self) -> Arc<dyn WorkerModelAdapter> {
@@ -267,34 +278,46 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
                 "before invocation"
             ))
         };
-        // Named apart from an identity change: the Provider's client is no longer installed.
-        let Some((identity, native)) = self.current_or_installed() else {
-            return refuse(concat!(
-                "Captured Task Provider executable was removed and no installed client ",
-                "replaces it"
-            ));
-        };
         let Some(deadline) = Instant::now().checked_add(timeout) else {
             return refused();
         };
         let local = AtomicBool::new(false);
         let cancelled = cancellation.unwrap_or(&local);
-        // Raw status/account output and filesystem diagnostics remain local, never Worker evidence.
-        if identity.check_current(deadline, cancelled).is_err() {
-            return refused();
+        // An update can remove the executable in use while it is rechecked, or between the
+        // recheck and its start. Each time the installed client takes its place and is
+        // rechecked; an executable that could not be started received no input.
+        for _ in 0..=MAX_EXECUTABLE_REPLACEMENTS {
+            // Named apart from an identity change: the Provider's client cannot be run at all.
+            let (identity, native) = match self.current_or_installed() {
+                Ok(current) => current,
+                Err(reason) => return refuse(reason),
+            };
+            // Raw status/account output and filesystem diagnostics remain local, never Worker
+            // evidence.
+            if identity.check_current(deadline, cancelled).is_err() {
+                if !is_executable(&identity.program) {
+                    continue;
+                }
+                return refused();
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return refused();
+            };
+            match native.invoke_started(
+                cas,
+                workdir,
+                input.clone(),
+                remaining,
+                access,
+                cancellation,
+                environment,
+            ) {
+                Ok(returned) => return returned,
+                Err(Unstarted(_)) if !is_executable(&identity.program) => continue,
+                Err(Unstarted(returned)) => return *returned,
+            }
         }
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            return refused();
-        };
-        native.invoke(
-            cas,
-            workdir,
-            input,
-            remaining,
-            access,
-            cancellation,
-            environment,
-        )
+        refused()
     }
 }
 

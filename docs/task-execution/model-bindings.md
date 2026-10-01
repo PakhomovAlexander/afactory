@@ -87,8 +87,9 @@ The executable is the file the `af` process resolved when it started. A native c
 updates itself during a Task repoints its launcher at a new version file; later Workers keep
 running the captured file, and the next `af` process resolves the new one. If the update removed
 the captured file, the remaining Workers run the installed client once it proves the same
-account. Only a client that is no longer installed refuses, with `Captured Task Provider
-executable was removed and no installed client replaces it`.
+account, also when the file vanishes during a Worker's recheck or just before its start. Only a
+client that is no longer installed refuses, with `Captured Task Provider executable was removed
+and no installed client replaces it`.
 See [ADR-0126](../adr/0126-keep-the-captured-native-executable-when-its-launcher-moves.md).
 
 Native Task usage retains exact cumulative components and charge across multiple turns, even

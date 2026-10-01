@@ -1,6 +1,8 @@
 //! Codex framing for generic typed Task Workers, preserving failed and malformed usage.
 use super::*;
-use review_runner::task::{MAX_WORKER_BYTES, ModelWorkerReturn, WorkerAccess, WorkerModelAdapter};
+use review_runner::task::{
+    MAX_WORKER_BYTES, ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter,
+};
 use rustix::fs::{Mode, OFlags, open, openat};
 use std::io::Read;
 
@@ -65,18 +67,41 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         cancellation: Option<&std::sync::atomic::AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
+        self.invoke_started(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+        )
+        .unwrap_or_else(|unstarted| *unstarted.0)
+    }
+    fn invoke_started(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: WorkerAccess,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        environment: &[(String, String)],
+    ) -> Result<ModelWorkerReturn, Unstarted> {
         if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
-            return ModelWorkerReturn {
+            return Ok(ModelWorkerReturn {
                 usage_observation: None,
                 message: Err("Worker invocation was cancelled before starting".into()),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 raw_artifact_ids: vec![],
-            };
+            });
         }
         let staging = match tempfile::tempdir() {
             Ok(directory) => directory,
             Err(error) => {
-                return ModelWorkerReturn::failed(RunnerError::Unavailable(error.to_string()));
+                return Ok(ModelWorkerReturn::failed(RunnerError::Unavailable(
+                    error.to_string(),
+                )));
             }
         };
         let last_message = staging.path().join("last-message");
@@ -89,8 +114,8 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         ) {
             Ok(directory) => directory,
             Err(error) => {
-                return ModelWorkerReturn::failed(RunnerError::Unavailable(format!(
-                    "Cannot hold Codex Worker output directory: {error}"
+                return Ok(ModelWorkerReturn::failed(RunnerError::Unavailable(
+                    format!("Cannot hold Codex Worker output directory: {error}"),
                 )));
             }
         };
@@ -133,12 +158,16 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                 // Keep the historical valid-usage failure diagnostic and artifact identity.
                 format!("Codex Worker failed with {:?}", capture.status)
             });
-            return returned;
+            return if capture.started {
+                Ok(returned)
+            } else {
+                Err(Unstarted(Box::new(returned)))
+            };
         }
         // The `-o` file is the only final message: an absent or empty file is no reply.
         returned.message = read_final_message(&output_directory)
             .and_then(|bytes| bytes.ok_or_else(|| "Codex Worker returned no final message".into()));
-        returned
+        Ok(returned)
     }
 }
 

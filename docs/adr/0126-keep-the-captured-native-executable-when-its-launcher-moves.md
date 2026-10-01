@@ -59,9 +59,18 @@ Every other comparison of ADR-0090 stays, and runs before each private invocatio
 executable in use: the configured Provider, its authentication directory and selector, the
 sanitized `PATH` value, `HOME`, `USER`, and the principal and authentication method.
 
+The executable in use can also disappear while an invocation is being prepared: during its
+identity recheck, or between the recheck and its start. In both cases the invocation moves to
+the installed client and repeats the recheck on it, within the original deadline and at most
+three times. A program that could not be started received no input and spent nothing, so this
+is still the one Attempt, not a repeat of paid work. The native adapters report that case apart
+from every other failure. An executable that is still there and cannot start fails as before.
+
 When the captured file is gone and `PATH` resolves no client, the invocation refuses before any
 probe, with known-zero usage and its own diagnostic: `Captured Task Provider executable was
-removed and no installed client replaces it`.
+removed and no installed client replaces it`. A resolved client that cannot be run under the
+captured grants refuses the same way with `Installed Task Provider client cannot replace the
+removed executable`.
 
 A new `af` process still resolves `PATH` when it starts, so a resumed Task runs the client
 installed at that time.
@@ -79,6 +88,11 @@ refused; the Task does not run it while the captured file exists. A file replace
 the captured path is not detected, as before: executable identity remains its resolved absolute
 path, not a content digest.
 
-Two CLI fixtures update their client during Provider admission, one keeping and one deleting
-the old version file, and check that both later Workers complete on the expected executable.
-Unit tests cover the replacement and the uninstalled client.
+The model adapter contract gains `invoke_started`, which tells a program that could not be
+started apart from every other return. Its default never reports one, so other adapters are
+unchanged, and `invoke` returns what it returned before.
+
+Four CLI fixtures update their client during a Task: during Provider admission, keeping or
+deleting the old version file, and during the next Worker's identity recheck, with that recheck
+answering or failing. Each checks that both later Workers complete, with no failed Attempt, on
+the expected executable. Unit tests cover the replacement and the uninstalled client.

@@ -113,14 +113,20 @@ fn native_codex_multiturn_usage_survives_common_accounting_and_fresh_inspection(
     native_model_case(true, true);
 }
 
-/// How the fixture client updates itself during Provider admission.
+/// How the fixture client updates itself while its Task runs.
 #[derive(Clone, Copy, PartialEq)]
 enum ClientUpdate {
     None,
-    /// A new version file behind the repointed launcher; the old file stays.
+    /// During Provider admission: a new version file behind the repointed launcher; the old
+    /// file stays.
     KeepsOldVersion,
     /// The same, and the old version file is deleted.
     RemovesOldVersion,
+    /// The old version file is deleted while the next Worker's identity recheck runs on it;
+    /// that recheck still answers, and the Worker's own start then finds no file.
+    RemovesOldVersionDuringRecheck,
+    /// The same, and that recheck fails.
+    RemovesOldVersionAndFailsRecheck,
 }
 
 fn native_model_case(wide: bool, codex: bool) {
@@ -148,6 +154,30 @@ fn native_client_update_between_workers_keeps_the_captured_executable() {
 #[test]
 fn native_client_update_that_removes_the_old_version_continues_on_the_installed_client() {
     native_model_drift_case(false, false, None, ClientUpdate::RemovesOldVersion);
+}
+
+/// The captured file can vanish between a Worker's identity recheck and its start. The program
+/// that could not start received nothing, so the same Attempt runs on the installed client.
+#[test]
+fn native_client_removed_between_recheck_and_start_runs_the_same_attempt_on_the_installed_one() {
+    native_model_drift_case(
+        false,
+        false,
+        None,
+        ClientUpdate::RemovesOldVersionDuringRecheck,
+    );
+}
+
+/// The captured file can vanish while it is being rechecked. A recheck that failed on a removed
+/// executable is repeated on the installed client instead of refusing the Worker.
+#[test]
+fn native_client_removed_during_a_failed_recheck_is_rechecked_on_the_installed_one() {
+    native_model_drift_case(
+        false,
+        false,
+        None,
+        ClientUpdate::RemovesOldVersionAndFailsRecheck,
+    );
 }
 
 #[test]
@@ -187,20 +217,27 @@ fn native_model_drift_case(
     let stub = r#"#!/usr/bin/python3
 import os,json,sys
 home=os.environ['CLAUDE_CONFIG_DIR']
-if sys.argv[1:3]==['auth','status']:
- print(json.dumps({'loggedIn':True,'apiProvider':'firstParty','authMethod':'claude.ai','email':open(home+'/account-email').read()}))
- sys.exit(0)
-request=sys.stdin.read()
-with open(home+'/calls','a') as f: f.write(open(home+'/account-email').read()+'\n')
-with open(home+'/served-by','a') as f: f.write(sys.argv[0]+'\n')
-if os.path.isfile(home+'/update-link') and len(open(home+'/calls').readlines())==1:
+def update():
  import shutil
+ try: os.mkdir(home+'/updated')
+ except FileExistsError: return False
  link=open(home+'/update-link').read()
  new=os.path.join(os.path.dirname(sys.argv[0]),'2')
  shutil.copy2(sys.argv[0],new)
  os.symlink(new,link+'.new')
  os.replace(link+'.new',link)
  if os.path.isfile(home+'/update-removes-old'): os.remove(sys.argv[0])
+ return True
+update_at=open(home+'/update-at').read() if os.path.isfile(home+'/update-at') else ''
+admitted=os.path.isfile(home+'/calls') and len(open(home+'/calls').readlines())==1
+if sys.argv[1:3]==['auth','status']:
+ if update_at.startswith('recheck') and admitted and update() and update_at=='recheck-fails': sys.exit(1)
+ print(json.dumps({'loggedIn':True,'apiProvider':'firstParty','authMethod':'claude.ai','email':open(home+'/account-email').read()}))
+ sys.exit(0)
+request=sys.stdin.read()
+with open(home+'/calls','a') as f: f.write(open(home+'/account-email').read()+'\n')
+with open(home+'/served-by','a') as f: f.write(sys.argv[0]+'\n')
+if update_at=='admission' and len(open(home+'/calls').readlines())==1: update()
 if os.path.isfile(home+'/switch-after') and len(open(home+'/calls').readlines())==int(open(home+'/switch-after').read()):
  with open(home+'/account-email','w') as f: f.write('changed@example.test')
 if os.path.isfile(home+'/wide-usage'):
@@ -240,9 +277,15 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     let versions = directory.path().join("versions");
     let installed = if client_update != ClientUpdate::None {
         std::fs::create_dir_all(&versions).unwrap();
-        if client_update == ClientUpdate::RemovesOldVersion {
+        if client_update != ClientUpdate::KeepsOldVersion {
             std::fs::write(home.join("update-removes-old"), b"fixture").unwrap();
         }
+        let update_at = match client_update {
+            ClientUpdate::RemovesOldVersionDuringRecheck => "recheck",
+            ClientUpdate::RemovesOldVersionAndFailsRecheck => "recheck-fails",
+            _ => "admission",
+        };
+        std::fs::write(home.join("update-at"), update_at).unwrap();
         std::os::unix::fs::symlink(versions.join("1"), bin.join(kind)).unwrap();
         std::fs::write(home.join("update-link"), bin.join(kind).to_str().unwrap()).unwrap();
         versions.join("1")
@@ -471,17 +514,17 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     assert_eq!(result["result"]["domain_conclusion"], "pass");
     assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 3);
     if client_update != ClientUpdate::None {
-        // The update happened during the admission call, and both Workers after it still ran:
-        // on the executable this process captured while that file exists, and on the installed
-        // one when the update deleted it.
+        // The update happened after the admission call's start, and both Workers after it
+        // still ran, with no failed Attempt: on the executable this process captured while that
+        // file exists, and on the installed one when the update deleted it.
         let updated = std::fs::canonicalize(versions.join("2")).unwrap();
         assert_eq!(std::fs::canonicalize(bin.join(kind)).unwrap(), updated);
         let captured = updated.with_file_name("1");
-        let later = if client_update == ClientUpdate::RemovesOldVersion {
+        let later = if client_update == ClientUpdate::KeepsOldVersion {
+            &captured
+        } else {
             assert!(!captured.exists());
             &updated
-        } else {
-            &captured
         };
         let served = std::fs::read_to_string(home.join("served-by")).unwrap();
         let served: Vec<&Path> = served.lines().map(Path::new).collect();
