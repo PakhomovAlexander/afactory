@@ -162,6 +162,7 @@ fn run(case: &'static str) -> Outcome {
         )]),
         check_wall_ms: 5000,
         require_container: false,
+        rust_toolchain: None,
     };
     let code_id = cas.put_json(&serde_json::to_value(&code).unwrap()).unwrap();
     let policy = ReviewTaskPolicy {

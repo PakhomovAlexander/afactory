@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Native Rust reuse is prepared by AF before dispatch, not discovered here from host HOME.
+# See docs/task-execution/rust-toolchain.md; absent machine mapping keeps cold setup.
 # Run as an unprivileged user (also in containers). The focused preflight fixture
 # must prove chmod-sealed sources reject writes; root/CAP_DAC_OVERRIDE cannot.
 

@@ -32,3 +32,11 @@ provenance = "literal"
 [[checks.markdownlint.command.args]]
 value = "**/*.md"
 provenance = "literal"
+
+# Optional native seed: absent machine mapping preserves cold rustup setup.
+# Only private copies enter these checks; host Cargo/Rustup homes are never passed through.
+[rust_toolchain]
+version = "1.88.0"
+host = "native"
+components = ["clippy", "rustfmt"]
+checks = ["kernel"]

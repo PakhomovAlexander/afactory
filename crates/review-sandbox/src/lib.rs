@@ -33,6 +33,7 @@ pub mod build_cache;
 pub mod cache;
 pub mod container;
 pub mod seal;
+pub mod toolchain;
 pub mod workspace;
 
 pub use build_cache::{

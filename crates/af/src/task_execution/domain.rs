@@ -3,6 +3,15 @@ use super::*;
 use review_pipeline::task::host::{DataTaskEnvironment, TaskEnvironment};
 use std::io::Write;
 
+pub(super) fn code_domain(
+    cas: &Cas,
+    policy_id: &str,
+    graph: CompiledTask,
+) -> Result<CodeTaskDomain, String> {
+    let mapping = std::env::var_os("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE").map(PathBuf::from);
+    Ok(CodeTaskDomain::captured(cas, policy_id, graph)?.with_rust_toolchain_mapping(mapping))
+}
+
 pub(super) fn capture_policy<T: Serialize + serde::de::DeserializeOwned>(
     cas: &Cas,
     manifest: &Manifest,

@@ -15,6 +15,7 @@ doctest = false
 [dependencies]
 review-attempt = { path = "../review-attempt" }
 review-check = { path = "../review-check" }
+review-process = { path = "../review-process" }
 review-config = { path = "../review-config" }
 review-core = { path = "../review-core" }
 review-graph = { path = "../review-graph" }

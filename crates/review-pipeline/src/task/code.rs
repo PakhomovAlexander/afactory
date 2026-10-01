@@ -2,6 +2,7 @@
 //! to the sealed Snapshot; negative checks produce a result without an evaluator dispatch.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use review_check::{CheckDefinition, CheckResult, CheckRunner, CheckStatus};
@@ -16,6 +17,7 @@ use review_core::task::verification::*;
 use review_core::task::*;
 use review_graph::task::{CompiledOperator, CompiledTask, OperatorAttemptCost, OperatorSignature};
 use review_graph::{NodeOutcome, RunReport};
+use review_sandbox::toolchain::{ToolchainLimits, snapshot_toolchain};
 use review_sandbox::{Mode, Policy, Sandbox};
 use review_source_git::task::{CANDIDATE_TREE_V1, SOURCE_TREE_V1, source_tree};
 use review_store::Cas;
@@ -45,6 +47,295 @@ pub struct CodeTaskPolicy {
     )]
     pub check_process_wall_ms: Option<u64>,
     pub require_container: bool,
+    /// Optional named native checks whose Rust tools come from an explicit machine mapping.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub rust_toolchain: Option<RustToolchainRequest>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RustToolchainRequest {
+    pub version: String,
+    pub host: String,
+    pub components: BTreeSet<String>,
+    pub checks: BTreeSet<String>,
+}
+
+impl RustToolchainRequest {
+    fn validate(&self, checks: &BTreeMap<String, CheckDefinition>) -> Result<(), String> {
+        let version = self.version.split('.').collect::<Vec<_>>();
+        if version.len() != 3
+            || version
+                .iter()
+                .any(|part| part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()))
+            || self.host.is_empty()
+            || self.host.len() > 128
+            || !self
+                .host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            || self
+                .components
+                .iter()
+                .any(|name| !matches!(name.as_str(), "rustfmt" | "clippy"))
+            || self.checks.is_empty()
+            || self.checks.iter().any(|name| !checks.contains_key(name))
+        {
+            return Err("Rust toolchain request needs an exact version, host, supported components and named checks".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MachineToolchainPolicy {
+    version: u32,
+    rust: MachineRustToolchain,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MachineRustToolchain {
+    version: String,
+    host: String,
+    components: BTreeSet<String>,
+    source: PathBuf,
+    expected_digest: String,
+    max_bytes: u64,
+    max_entries: u64,
+    max_copy_bytes: u64,
+}
+
+fn native_host_matches(host: &str) -> bool {
+    let architecture = std::env::consts::ARCH;
+    match std::env::consts::OS {
+        "linux" => {
+            host == format!("{architecture}-unknown-linux-gnu")
+                || host == format!("{architecture}-unknown-linux-musl")
+        }
+        "macos" => host == format!("{architecture}-apple-darwin"),
+        _ => false,
+    }
+}
+
+/// Returns `None` only when the operator made no machine mapping available. A selected,
+/// malformed mapping is an error before the candidate command starts.
+fn machine_toolchain(
+    request: &RustToolchainRequest,
+    mapping_file: Option<&Path>,
+) -> Result<Option<MachineRustToolchain>, String> {
+    let Some(path) = mapping_file else {
+        return Ok(None);
+    };
+    if !path.is_absolute() {
+        return Err("Rust toolchain mapping path must be absolute".into());
+    }
+    let data = review_sandbox::toolchain::read_toolchain_declaration(path, 64 * 1024)?;
+    if data.len() > 64 * 1024 {
+        return Err("Rust toolchain mapping exceeds 64 KiB".into());
+    }
+    let text =
+        std::str::from_utf8(&data).map_err(|e| format!("invalid Rust toolchain mapping: {e}"))?;
+    let policy: MachineToolchainPolicy =
+        toml::from_str(text).map_err(|e| format!("invalid Rust toolchain mapping: {e}"))?;
+    let entry = policy.rust;
+    if policy.version != 1
+        || entry.version != request.version
+        || (request.host != "native" && entry.host != request.host)
+        || (request.host == "native" && !native_host_matches(&entry.host))
+        || entry.components != request.components
+        || !entry.source.is_absolute()
+        || !review_core::is_digest(&entry.expected_digest)
+    {
+        return Err("Rust toolchain mapping disagrees with captured request".into());
+    }
+    ToolchainLimits {
+        max_bytes: entry.max_bytes,
+        max_entries: entry.max_entries,
+        max_copy_bytes: entry.max_copy_bytes,
+    }
+    .validate()?;
+    Ok(Some(entry))
+}
+
+/// Verified identity and check environment; mapped source paths are never exposed.
+#[derive(Debug)]
+pub struct PreparedNativeRustToolchain {
+    pub environment: Vec<(String, String)>,
+    pub content_digest: String,
+    pub resolved_host: String,
+    pub verified_release: String,
+}
+
+/// Exact native preparation entry used by `CodeTaskDomain` after provider admission.
+/// Operator mapping and source paths retain strict no-follow admission.
+pub fn prepare_native_rust_toolchain(
+    candidate: &Path,
+    runtime: &Path,
+    request: &RustToolchainRequest,
+    mapping_file: Option<&Path>,
+) -> Result<Option<PreparedNativeRustToolchain>, String> {
+    let Some(mapping) = machine_toolchain(request, mapping_file)? else {
+        return Ok(None);
+    };
+    let mut resolved = request.clone();
+    resolved.host = mapping.host.clone();
+    let request = &resolved;
+    candidate_toolchain_matches(candidate, request)?;
+    let private = runtime.join("toolchain");
+    snapshot_toolchain(
+        &mapping.source,
+        &private,
+        ToolchainLimits {
+            max_bytes: mapping.max_bytes,
+            max_entries: mapping.max_entries,
+            max_copy_bytes: mapping.max_copy_bytes,
+        },
+        Some(&mapping.expected_digest),
+    )?;
+    verify_private_toolchain(&private, request)?;
+    let cargo_home = runtime.join("cargo");
+    let rustup_home = runtime.join("rustup");
+    std::fs::create_dir(&cargo_home).map_err(|e| e.to_string())?;
+    std::fs::create_dir(&rustup_home).map_err(|e| e.to_string())?;
+    Ok(Some(PreparedNativeRustToolchain {
+        content_digest: mapping.expected_digest,
+        resolved_host: request.host.clone(),
+        verified_release: request.version.clone(),
+        environment: vec![
+            (
+                "PATH".into(),
+                private_toolchain_path(&private, &mapping.source)?,
+            ),
+            ("CARGO_HOME".into(), cargo_home.display().to_string()),
+            ("RUSTUP_HOME".into(), rustup_home.display().to_string()),
+            (
+                "RUSTUP_TOOLCHAIN".into(),
+                format!("{}-{}", request.version, request.host),
+            ),
+        ],
+    }))
+}
+
+fn private_toolchain_path(private: &Path, source: &Path) -> Result<String, String> {
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let paths = std::iter::once(private.join("bin")).chain(
+        std::env::split_paths(&inherited).filter(|path| {
+            path.is_absolute()
+                && !path.starts_with(source)
+                && !path
+                    .components()
+                    .any(|component| component.as_os_str() == ".rustup")
+        }),
+    );
+    std::env::join_paths(paths)
+        .map_err(|e| e.to_string())?
+        .into_string()
+        .map_err(|_| "native toolchain PATH is not UTF-8".into())
+}
+
+fn candidate_toolchain_matches(root: &Path, request: &RustToolchainRequest) -> Result<(), String> {
+    let plain = root.join("rust-toolchain");
+    let structured = root.join("rust-toolchain.toml");
+    if plain.exists() && structured.exists() {
+        return Err("candidate declares two Rust toolchain files".into());
+    }
+    let selected = if structured.exists() {
+        structured
+    } else {
+        plain
+    };
+    if !selected.exists() {
+        return Ok(());
+    }
+    let bytes = review_sandbox::toolchain::read_toolchain_declaration(&selected, 16 * 1024)?;
+    if bytes.len() > 16 * 1024 {
+        return Err("candidate Rust toolchain declaration is too large".into());
+    }
+    let text = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
+    let channel = if selected.extension().is_some() {
+        let value: toml::Value = toml::from_str(text).map_err(|e| e.to_string())?;
+        if let Some(components) = value.get("toolchain").and_then(|t| t.get("components")) {
+            let components = components
+                .as_array()
+                .ok_or("invalid candidate components")?;
+            if components
+                .iter()
+                .any(|c| c.as_str().is_none_or(|c| !request.components.contains(c)))
+            {
+                return Err("candidate requires uncaptured Rust components".into());
+            }
+        }
+        if value
+            .get("toolchain")
+            .and_then(|t| t.get("targets"))
+            .is_some_and(|targets| targets.as_array().is_none_or(|t| !t.is_empty()))
+        {
+            return Err(
+                "additional Rust targets are not supported by native toolchain snapshots".into(),
+            );
+        }
+        value
+            .get("toolchain")
+            .and_then(|table| table.get("channel"))
+            .and_then(toml::Value::as_str)
+            .ok_or("candidate Rust toolchain has no channel")?
+            .to_owned()
+    } else {
+        text.trim().to_owned()
+    };
+    if channel != request.version && channel != format!("{}-{}", request.version, request.host) {
+        return Err("candidate Rust toolchain differs from captured request".into());
+    }
+    Ok(())
+}
+
+fn verify_private_toolchain(root: &Path, request: &RustToolchainRequest) -> Result<(), String> {
+    for name in ["rustc", "cargo"] {
+        if !root.join("bin").join(name).is_file() {
+            return Err(format!("private Rust toolchain lacks {name}"));
+        }
+    }
+    for component in &request.components {
+        let names = if component == "clippy" {
+            ["clippy-driver", "cargo-clippy"]
+        } else {
+            ["rustfmt", "cargo-fmt"]
+        };
+        for name in names {
+            if !root.join("bin").join(name).is_file() {
+                return Err(format!(
+                    "private Rust toolchain lacks {component} executable {name}"
+                ));
+            }
+        }
+    }
+    let mut command = std::process::Command::new(root.join("bin/rustc"));
+    command.arg("--version").arg("--verbose").env_clear();
+    let output = review_process::run_supervised_with_policy(
+        &mut command,
+        None,
+        Duration::from_secs(10),
+        review_process::ExitPolicy::KillProcessGroup,
+    )
+    .map_err(|e| format!("probing private rustc: {e}"))?;
+    let stdout = std::str::from_utf8(&output.stdout).map_err(|e| e.to_string())?;
+    if !output.status.success()
+        || !stdout
+            .lines()
+            .any(|line| line == format!("release: {}", request.version))
+        || !stdout
+            .lines()
+            .any(|line| line == format!("host: {}", request.host))
+    {
+        return Err("private rustc release or host differs from captured request".into());
+    }
+    Ok(())
 }
 
 impl CodeTaskPolicy {
@@ -65,6 +356,9 @@ impl CodeTaskPolicy {
             || !self.checks.values().any(|check| check.required)
             || self.checks.iter().any(|(name, check)| {
                 !is_name(name) || name != &check.name || check.command.resolve().is_err()
+            })
+            || self.rust_toolchain.as_ref().is_some_and(|request| {
+                self.require_container || request.validate(&self.checks).is_err()
             })
         {
             return Err(
@@ -201,6 +495,7 @@ pub struct CodeTaskDomain {
     policy_id: String,
     policy: CodeTaskPolicy,
     graph: CompiledTask,
+    rust_toolchain_mapping: Option<PathBuf>,
 }
 
 impl CodeTaskDomain {
@@ -232,7 +527,14 @@ impl CodeTaskDomain {
             policy_id: policy_id.into(),
             policy,
             graph,
+            rust_toolchain_mapping: None,
         })
+    }
+
+    /// Machine-local coordinator selection, never captured candidate authority.
+    pub fn with_rust_toolchain_mapping(mut self, mapping: Option<PathBuf>) -> Self {
+        self.rust_toolchain_mapping = mapping;
+        self
     }
 
     fn operator(&self, input: &TaskInvocationV1) -> Result<&TaskOperatorV1, String> {
@@ -325,7 +627,7 @@ impl CodeTaskDomain {
                 .policy
                 .check_process_wall_ms
                 .map_or(remaining, |limit| limit.min(remaining));
-            let runner = CheckRunner::new(cas, sandbox.root())
+            let mut runner = CheckRunner::new(cas, sandbox.root())
                 .with_cancellation(cancellation)
                 .with_timeout(Duration::from_millis(remaining))
                 .with_env("HOME", runtime.path().display().to_string())
@@ -337,6 +639,43 @@ impl CodeTaskDomain {
                     "CARGO_TARGET_DIR",
                     runtime.path().join("target").display().to_string(),
                 );
+            let mut toolchain_evidence = None;
+            if let Some(request) = self
+                .policy
+                .rust_toolchain
+                .as_ref()
+                .filter(|request| request.checks.contains(name))
+            {
+                // Only this kernel-owned materialized root is canonicalized. Operator
+                // mapping and seed paths retain their no-follow ancestor admission.
+                let candidate_root = sandbox.root().canonicalize().map_err(|e| e.to_string())?;
+                toolchain_evidence = Some(json!({"schema":"af.native-rust-toolchain/1",
+                    "version":request.version,"requested_host":request.host,
+                    "components":request.components,"materialization":"cold"}));
+                if let Some(prepared) = prepare_native_rust_toolchain(
+                    &candidate_root,
+                    runtime.path(),
+                    request,
+                    self.rust_toolchain_mapping.as_deref(),
+                )? {
+                    toolchain_evidence = Some(json!({"schema":"af.native-rust-toolchain/1",
+                        "content_digest":prepared.content_digest,"version":request.version,
+                        "verified_release":prepared.verified_release,
+                        "requested_host":request.host,"resolved_host":prepared.resolved_host,
+                        "components":request.components,"materialization":"private_copy"}));
+                    for (key, value) in prepared.environment {
+                        runner = runner.with_env(key, value);
+                    }
+                }
+            }
+            // Preparation is charged to the same bounded check Attempt.
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_millis() as u64;
+            let remaining =
+                remaining.min(attempt.reservation().deadline_unix_ms.saturating_sub(now));
+            runner = runner.with_timeout(Duration::from_millis(remaining));
             let (mut result, timing) = if remaining > 0 {
                 let execution = runner.run_observed(definition);
                 (
@@ -377,6 +716,19 @@ impl CodeTaskDomain {
                     started_unix_ms,
                     elapsed_ms,
                 });
+            }
+            if let Some(evidence) = toolchain_evidence {
+                let mut diagnostic = match &result.stderr {
+                    Some(id) => cas.get(id).map_err(|e| e.to_string())?,
+                    None => Vec::new(),
+                };
+                diagnostic.extend_from_slice(
+                    b"
+AF_TOOLCHAIN_SNAPSHOT ",
+                );
+                diagnostic.extend_from_slice(evidence.to_string().as_bytes());
+                diagnostic.push(10);
+                result.stderr = Some(cas.put(&diagnostic).map_err(|e| e.to_string())?);
             }
             let sealed = sandbox.seal().map_err(|e| e.to_string())?;
             if !sealed.unchanged() {
