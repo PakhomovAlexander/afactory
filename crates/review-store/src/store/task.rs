@@ -780,13 +780,22 @@ impl TaskProjection {
     }
     fn check_lease(&self, transition: &TaskTransitionV1) -> Result<(), StoreError> {
         if transition.writer != self.writer || transition.epoch != self.epoch {
-            return Err(conflict("Task writer lease is expired or fenced"));
+            return Err(conflict(format!(
+                "Task writer lease is expired or fenced: writer {} epoch {} is not the current \
+                 writer {} epoch {}",
+                transition.writer, transition.epoch, self.writer, self.epoch
+            )));
         }
         // The current writer's operation may have read its clock before its own heartbeat
         // appended a later renewal: that is the same writer, not a clock moving backwards. It
         // is judged, and stamped (`writer_time`), at the last recorded time (ADR-0125).
-        if self.writer_time(transition) >= self.lease_until {
-            return Err(conflict("Task writer lease is expired or fenced"));
+        let time = self.writer_time(transition);
+        if time >= self.lease_until {
+            return Err(conflict(format!(
+                "Task writer lease is expired or fenced: time {time} is not before the lease's \
+                 expiry {} (last recorded {})",
+                self.lease_until, self.last_time
+            )));
         }
         Ok(())
     }
