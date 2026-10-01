@@ -1,0 +1,83 @@
+name: S0 exact16 four-CPU diagnostic
+on:
+  push:
+    branches: [diagnostic/s0-fourcpu-20261001]
+permissions:
+  contents: read
+env:
+  CARGO_INCREMENTAL: 0
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Verify runner capacity before tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/s0-evidence"
+          {
+            date -u --iso-8601=seconds
+            uname -a
+            cat /etc/os-release
+            printf 'ImageOS=%s ImageVersion=%s\n' "$ImageOS" "$ImageVersion"
+            nproc
+            lscpu
+            free -b
+            cat /proc/meminfo
+            cat /sys/fs/cgroup/cpu.max 2>/dev/null || true
+            cat /sys/fs/cgroup/memory.max 2>/dev/null || true
+            printf 'https://github.com/%s/actions/runs/%s\n' "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } | tee "$RUNNER_TEMP/s0-evidence/host-before.txt"
+          test "$(nproc)" -ge 4
+          awk '/MemTotal/ {exit !($2 >= 8388608)}' /proc/meminfo
+          python3 -c 'import datetime; assert datetime.datetime.now(datetime.timezone.utc) < datetime.datetime.fromisoformat("2026-10-01T08:57:15.915462+00:00")'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Preserve diagnostic harness outside tested checkout
+        run: |
+          cp scripts/diagnostic-s0.py scripts/diagnostic-s0-filter.txt "$RUNNER_TEMP/"
+          git rev-parse HEAD > "$RUNNER_TEMP/s0-evidence/workflow-head.txt"
+      - name: Checkout unchanged original S0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: db11e6e885a1268bc92bb5236f7cc8354f31f491
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
+      - uses: ./.github/actions/cargo-cache
+        id: cargo-cache
+      - name: Install pinned nextest and original CI linker
+        run: |
+          bash scripts/install-nextest.sh
+          sudo apt-get install -y --no-install-recommends lld
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
+      - name: Run exact16 unchanged tests once (diagnostic only)
+        run: python3 "$RUNNER_TEMP/diagnostic-s0.py"
+      - name: Retain final host and cache statistics
+        if: always()
+        shell: bash
+        run: |
+          { date -u --iso-8601=seconds; uptime; free -b; df -h; } > "$RUNNER_TEMP/s0-evidence/host-after.txt"
+          sccache --show-stats > "$RUNNER_TEMP/s0-evidence/sccache-stats.txt" 2>&1 || true
+      - name: Save Cargo registry under original CI policy
+        if: always() && !cancelled()
+        uses: ./.github/actions/cargo-cache
+        with:
+          mode: save
+          primary-key: ${{ steps.cargo-cache.outputs.primary-key }}
+          matched-key: ${{ steps.cargo-cache.outputs.matched-key }}
+      - name: Retain success or failure evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: s0-fourcpu-diagnostic
+          path: |
+            ${{ runner.temp }}/s0-evidence/
+            ${{ runner.temp }}/cache-metrics.json
+            target/nextest/ci/junit.xml
+          if-no-files-found: error
