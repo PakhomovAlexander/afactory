@@ -419,7 +419,7 @@ pub(super) struct WritePermit {
     review_round: Option<review_round::ReviewRoundFence>,
     review_prefix: Option<(String, u64)>,
     /// The Tasks an opening Task's bindings name: none may have been collected by the time the
-    /// opening is written, and the check runs under the writer lock collection uses (ADR-0128).
+    /// opening is written, and the check runs under the writer lock collection uses (ADR-0135).
     bound_tasks: Vec<String>,
 }
 
@@ -521,7 +521,7 @@ fn validate_input_refs(
 
 /// An input port of a Task revision, plan or invocation. Beside every rule an output port
 /// keeps, a `many` input that names no Snapshot claims none for its artifacts: that is how a
-/// port bound from several recorded outputs of different Snapshots is recorded (ADR-0127),
+/// port bound from several recorded outputs of different Snapshots is recorded (ADR-0134),
 /// and each artifact keeps its own subject Snapshot in its envelope. Outputs never do this.
 pub(super) fn validate_bound_input_refs(
     cas: &Cas,
@@ -816,14 +816,37 @@ impl TaskProjection {
         self.decisions.get(plan_id).map(|d| d.value.decision)
     }
     fn check_lease(&self, transition: &TaskTransitionV1) -> Result<(), StoreError> {
-        if transition.writer != self.writer
-            || transition.epoch != self.epoch
-            || transition.now_unix_ms >= self.lease_until
-            || transition.now_unix_ms < self.last_time
-        {
-            return Err(conflict("Task writer lease is expired or fenced"));
+        if transition.writer != self.writer || transition.epoch != self.epoch {
+            return Err(conflict(format!(
+                "Task writer lease is expired or fenced: writer {} epoch {} is not the current \
+                 writer {} epoch {}",
+                transition.writer, transition.epoch, self.writer, self.epoch
+            )));
+        }
+        // The current writer's operation may have read its clock before its own heartbeat
+        // appended a later renewal: that is the same writer, not a clock moving backwards. It
+        // is judged, and stamped (`writer_time`), at the last recorded time (ADR-0128).
+        let time = self.writer_time(transition);
+        if time >= self.lease_until {
+            return Err(conflict(format!(
+                "Task writer lease is expired or fenced: time {time} is not before the lease's \
+                 expiry {} (last recorded {})",
+                self.lease_until, self.last_time
+            )));
         }
         Ok(())
+    }
+
+    /// The time a transition is recorded at: the current writer's own transition is never
+    /// earlier than the last recorded event, which may be that writer's heartbeat renewal made
+    /// through its other connection while this operation was in flight. Another writer's time
+    /// is its own, so a premature takeover is still refused.
+    fn writer_time(&self, transition: &TaskTransitionV1) -> u64 {
+        if transition.writer == self.writer && transition.epoch == self.epoch {
+            transition.now_unix_ms.max(self.last_time)
+        } else {
+            transition.now_unix_ms
+        }
     }
 
     fn apply(
@@ -922,7 +945,7 @@ impl TaskProjection {
                 TaskChangeV1::Opened { .. } | TaskChangeV1::LeaseTaken { .. } => {
                     return Err(conflict("Task already exists"));
                 }
-                // A projection stops at the tombstone (ADR-0128); no transition ever applies it.
+                // A projection stops at the tombstone (ADR-0135); no transition ever applies it.
                 TaskChangeV1::TaskCollected { collected } => {
                     return Err(StoreError::Collected {
                         task_id: collected.task_id.clone(),
@@ -1282,7 +1305,7 @@ impl EventStore {
         let mut ids = BTreeSet::new();
         for run_id in self.run_ids()? {
             // A collected Task is listed by `collected_tasks`; its projection stops at the
-            // tombstone and its artifacts may be gone (ADR-0128).
+            // tombstone and its artifacts may be gone (ADR-0135).
             if !run_id.starts_with("task:") || self.run_tombstone(&run_id)?.is_some() {
                 continue;
             }
@@ -1310,7 +1333,7 @@ impl EventStore {
         for id in ids {
             match self.task_projection(cas, &id) {
                 // Collected between the walk above and this projection: it is a tombstone's
-                // now, and `collected_tasks` read after this call lists it (ADR-0128).
+                // now, and `collected_tasks` read after this call lists it (ADR-0135).
                 Err(StoreError::Collected { .. }) => continue,
                 Err(error) => return Err(error),
                 Ok(task) => {
@@ -1330,7 +1353,7 @@ impl EventStore {
         match self.task_projection_uncollected(cas, task_id) {
             // A sweep may have removed this Task's artifacts between the tombstone check and
             // the reads: a Task collected meanwhile is reported as collected, never as corrupt
-            // (ADR-0128). Any other missing artifact stays the error it is.
+            // (ADR-0135). Any other missing artifact stays the error it is.
             Err(StoreError::Artifact(reason)) => match self.task_tombstone(task_id)? {
                 Some(collected) => Err(StoreError::Collected {
                     task_id: collected.task_id,
@@ -1350,7 +1373,7 @@ impl EventStore {
         #[cfg(test)]
         PROJECTION_CALLS.with(|calls| calls.set(calls.get() + 1));
         // A collected Task's projection stops at its tombstone: none of its artifacts is read,
-        // so one a sweep removed is never reported as corruption (ADR-0128).
+        // so one a sweep removed is never reported as corruption (ADR-0135).
         if let Some(collected) = self.task_tombstone(task_id)? {
             return Err(StoreError::Collected {
                 task_id: collected.task_id,
@@ -1560,6 +1583,11 @@ impl EventStore {
         owned_prefix: Option<(u64, Option<(String, u64)>)>,
         state: Option<TaskProjection>,
     ) -> Result<RunEvent, StoreError> {
+        let mut transition = transition;
+        if let Some(state) = &state {
+            // Stamped before it is persisted, so the log stays monotonic and replays unchanged.
+            transition.now_unix_ms = state.writer_time(&transition);
+        }
         let (event_type, value) = review_handoff::encode_transition(&transition)?;
         let first = state.as_ref().map_or(0, |s| s.next_sequence);
         if owned_prefix
@@ -1576,11 +1604,16 @@ impl EventStore {
         } else {
             false
         };
-        let valid_until = if owned_record
+        let valid_until = if let TaskChangeV1::LeaseRenewed { .. } = &transition.change {
+            // Recheck expiry inside the write transaction: a renewal that waited for the
+            // database's write lock must not extend a lease that expired meanwhile (ADR-0128).
+            state.as_ref().map(|state| state.lease_until)
+        } else if owned_record
             || matches!(
                 transition.change,
                 TaskChangeV1::ReviewContinued { .. } | TaskChangeV1::RecordingResumed { .. }
-            ) {
+            )
+        {
             state.as_ref().map(|state| {
                 state.lease_until.min(
                     state

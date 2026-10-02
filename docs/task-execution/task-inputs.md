@@ -3,7 +3,7 @@
 A Task file can bind a root input port to an output of a Task already recorded in the same Store,
 instead of exporting that output to a file and capturing it again. The decision is
 [ADR-0117](../adr/0117-bind-task-inputs-to-recorded-task-outputs.md), widened by
-[ADR-0127](../adr/0127-bind-any-declared-root-port-to-recorded-task-outputs.md) to every root
+[ADR-0134](../adr/0134-bind-any-declared-root-port-to-recorded-task-outputs.md) to every root
 input the selected Pipeline declares; this page is their Task-file reference and a map of where
 they are implemented.
 
@@ -256,7 +256,7 @@ Task-contract ones.
 
 ## Widened by package R4
 
-[ADR-0127](../adr/0127-bind-any-declared-root-port-to-recorded-task-outputs.md) changed no
+[ADR-0134](../adr/0134-bind-any-declared-root-port-to-recorded-task-outputs.md) changed no
 contract beyond one optional member, and every refusal ADR-0117 made stays.
 
 | Crate | What changed |
@@ -288,7 +288,7 @@ Tests:
   is refused; and the Task-file list form round-trips while every malformed spelling is refused.
 - Unit, `af::task_execution::preview`: a port bound from two outputs annotates `IN` with both
   and gets one `BOUND` group per output.
-- Integration, `crates/af/tests/task_research_chain.rs`: one repository carries the shipped
+- Integration, `crates/af/tests/it/task_research_chain.rs`: one repository carries the shipped
   experiment, report and Document starters, and one Store holds three Tasks. The experiment runs
   to `verified`; a report Task binding `comparison`, `measurements` (from `baseline` and
   `candidate`) and `source` to it plans with the `BOUND` rows, runs to `verified` in three

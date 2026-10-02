@@ -1,4 +1,4 @@
-# The measured command (ADR-0125): write size.txt's number of bytes into $TMPDIR, the
+# The measured command (ADR-0132): write size.txt's number of bytes into $TMPDIR, the
 # repetition's private runtime directory, and report what was written on the last stdout line.
 import json
 import os

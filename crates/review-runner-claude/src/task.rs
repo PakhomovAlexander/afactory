@@ -1,6 +1,6 @@
 //! Claude framing for generic typed Task Workers. No review-result parser or retry loop.
 use super::*;
-use review_runner::task::{ModelWorkerReturn, WorkerAccess, WorkerModelAdapter};
+use review_runner::task::{ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter};
 
 mod model_usage;
 mod structured;
@@ -80,23 +80,44 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         cancellation: Option<&std::sync::atomic::AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
+        self.invoke_started(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+        )
+        .unwrap_or_else(|unstarted| *unstarted.0)
+    }
+    fn invoke_started(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: WorkerAccess,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        environment: &[(String, String)],
+    ) -> Result<ModelWorkerReturn, Unstarted> {
         if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
-            return ModelWorkerReturn {
+            return Ok(ModelWorkerReturn {
                 usage_observation: None,
                 message: Err("Worker invocation was cancelled before starting".into()),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 raw_artifact_ids: vec![],
-            };
+            });
         }
         let output_schema = match structured::output_schema(&input) {
             Ok(schema) => schema,
             Err(error) => {
-                return ModelWorkerReturn {
+                return Ok(ModelWorkerReturn {
                     usage_observation: None,
                     message: Err(error),
                     usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                     raw_artifact_ids: vec![],
-                };
+                });
             }
         };
         // The common Task path installs no session layer (its Attempts record
@@ -152,11 +173,16 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         } else {
             Err(format!("Claude Worker failed with {:?}", capture.status))
         };
-        ModelWorkerReturn {
+        let returned = ModelWorkerReturn {
             usage_observation: accounting.observation,
             message,
             usage: accounting.usage,
             raw_artifact_ids: capture.raw_artifact_ids,
+        };
+        if capture.started {
+            Ok(returned)
+        } else {
+            Err(Unstarted(Box::new(returned)))
         }
     }
 }

@@ -71,7 +71,9 @@ fn identity_rechecks_cancel_an_inflight_status_process() {
         let flag = AtomicBool::new(false);
         let (result, pid) = std::thread::scope(|scope| {
             let observer = scope.spawn(|| {
-                let deadline = Instant::now() + Duration::from_secs(3);
+                // Generous for a loaded machine: the flag below ends the probe as soon as the
+                // status process is seen, so a fast machine never waits this long.
+                let deadline = Instant::now() + Duration::from_secs(20);
                 let pid = loop {
                     if let Ok(text) = std::fs::read_to_string(directory.path().join("ready"))
                         && let Ok(pid) = text.parse::<i32>()
@@ -94,7 +96,8 @@ fn identity_rechecks_cancel_an_inflight_status_process() {
                 &spec,
                 std::ffi::OsStr::new("/usr/bin:/bin"),
                 &flag,
-                Some(Instant::now() + Duration::from_secs(4)),
+                // Past the observer's window, so cancellation, not the deadline, ends it.
+                Some(Instant::now() + Duration::from_secs(30)),
             );
             (result, observer.join().unwrap())
         });
@@ -141,6 +144,34 @@ impl WorkerModelAdapter for Recording {
     }
 }
 
+/// The wrapper around a recording native adapter, finding its command through `resolve`.
+fn wrapper(
+    spec: ProviderSpec,
+    program: PathBuf,
+    reached: &std::sync::Arc<AtomicBool>,
+    resolve: fn(&str) -> Option<PathBuf>,
+) -> CurrentTaskProviderAdapter {
+    // Fixed grants: a gate may run these tests without USER in its environment.
+    let identity = TaskProviderIdentity {
+        home: spec.auth_dir.clone().map(Into::into),
+        user: Some("fixture".into()),
+        spec,
+        program,
+        principal_id: "sha256:".to_string() + &"0".repeat(64),
+        auth_method: "claude.ai".into(),
+        probe_path: sanitized_path(),
+    };
+    let native = Recording {
+        reached: reached.clone(),
+    };
+    CurrentTaskProviderAdapter {
+        model: "claude-fixture-1".into(),
+        effort: "high".into(),
+        resolve,
+        current: Mutex::new((identity, Arc::new(native))),
+    }
+}
+
 #[test]
 fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_native_client() {
     let directory = tempfile::tempdir().unwrap();
@@ -148,20 +179,7 @@ fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_nativ
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let reached = std::sync::Arc::new(AtomicBool::new(false));
     // A fixture provider is not in the machine-local registry, so the recheck fails.
-    let wrapper = CurrentTaskProviderAdapter {
-        identity: TaskProviderIdentity {
-            spec,
-            program,
-            principal_id: "sha256:".to_string() + &"0".repeat(64),
-            auth_method: "claude.ai".into(),
-            probe_path: sanitized_path(),
-            home: std::env::var_os("HOME"),
-            user: std::env::var_os("USER"),
-        },
-        inner: Box::new(Recording {
-            reached: reached.clone(),
-        }),
-    };
+    let wrapper = wrapper(spec, program, &reached, resolve_program);
     let environment = [(
         "CARGO_TARGET_DIR".to_string(),
         "/sandbox/.af-cache".to_string(),
@@ -184,4 +202,145 @@ fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_nativ
         !reached.load(Ordering::SeqCst),
         "a failed recheck must not reach the native client"
     );
+}
+
+#[test]
+fn a_removed_executable_with_no_installed_client_refuses_by_name_before_any_probe() {
+    let directory = tempfile::tempdir().unwrap();
+    let (program, spec) = fixture(ProviderKind::Claude, directory.path(), "exit 0");
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let reached = std::sync::Arc::new(AtomicBool::new(false));
+    let wrapper = wrapper(spec, program.clone(), &reached, |_| None);
+    // The client was uninstalled: its captured file is gone and `PATH` resolves nothing.
+    std::fs::remove_file(&program).unwrap();
+    let returned = wrapper.invoke(
+        &cas,
+        directory.path(),
+        b"{}".to_vec(),
+        Duration::from_secs(5),
+        review_runner::task::WorkerAccess::ReadOnly,
+        None,
+        &[],
+    );
+    assert_eq!(
+        returned.message.unwrap_err(),
+        "Captured Task Provider executable was removed and no installed client replaces it"
+    );
+    assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 0);
+    assert!(!reached.load(Ordering::SeqCst));
+}
+
+#[test]
+fn the_installed_client_replaces_a_removed_executable_and_a_present_one_is_kept() {
+    static INSTALLED: OnceLock<PathBuf> = OnceLock::new();
+    let directory = tempfile::tempdir().unwrap();
+    let (program, spec) = fixture(ProviderKind::Claude, directory.path(), "exit 0");
+    let installed = directory.path().join("installed");
+    std::fs::copy(&program, &installed).unwrap();
+    INSTALLED.set(installed.clone()).unwrap();
+    let reached = std::sync::Arc::new(AtomicBool::new(false));
+    let wrapper = wrapper(spec, program.clone(), &reached, |_| {
+        INSTALLED.get().cloned()
+    });
+    // While the captured executable is there, what `PATH` resolves is not consulted.
+    assert_eq!(wrapper.current_or_installed().unwrap().0.program, program);
+    std::fs::remove_file(&program).unwrap();
+    let (identity, _) = wrapper.current_or_installed().unwrap();
+    assert_eq!(identity.program, installed);
+    // The account the replacement must prove is the captured one.
+    assert_eq!(
+        identity.principal_id,
+        "sha256:".to_string() + &"0".repeat(64)
+    );
+    assert_eq!(identity.auth_method, "claude.ai");
+}
+
+const BROKEN_INSTALL: &str = "printf '%s\\n' 'Error: Missing optional dependency @openai/codex-darwin-arm64. Reinstall Codex: npm install -g @openai/codex@latest' >&2\nexit 1";
+
+fn identity(spec: ProviderSpec, program: PathBuf) -> TaskProviderIdentity {
+    TaskProviderIdentity {
+        spec,
+        program,
+        principal_id: "sha256:".to_string() + &"0".repeat(64),
+        auth_method: "chatgpt".into(),
+        probe_path: std::ffi::OsString::from("/usr/bin:/bin"),
+        home: std::env::var_os("HOME"),
+        user: std::env::var_os("USER"),
+    }
+}
+
+#[test]
+fn a_recheck_whose_cli_cannot_start_is_an_environment_failure_not_an_identity_one() {
+    for kind in [ProviderKind::Claude, ProviderKind::Codex] {
+        let directory = tempfile::tempdir().unwrap();
+        let (program, spec) = fixture(kind, directory.path(), BROKEN_INSTALL);
+        let checked = identity(spec, program.clone()).recheck_identity(
+            Instant::now() + Duration::from_secs(30),
+            &AtomicBool::new(false),
+        );
+        let Err(Recheck::CliCannotStart(failure)) = checked else {
+            panic!("a CLI that cannot start was reported as an identity refusal");
+        };
+        let diagnostic = environment_failure(&failure);
+        assert!(
+            diagnostic.starts_with(
+                "Provider environment failure, not a model or credential failure: provider fixture: Provider installation failure"
+            ),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains(&program.display().to_string()),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains(": Error: Missing optional dependency @openai/codex-darwin-arm64"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.ends_with("; fix: Reinstall Codex: npm install -g @openai/codex@latest"),
+            "{diagnostic}"
+        );
+        let refusal = admission_refusal(&failure);
+        assert!(
+            refusal.starts_with("Task Provider admission refused before any Worker was dispatched: provider fixture: Provider installation failure"),
+            "{refusal}"
+        );
+    }
+}
+
+/// A CLI that answered — another account, or no login — has started, so it is never diagnosed
+/// as an installation failure, even when it knows nothing about `--version`.
+#[test]
+fn a_recheck_that_the_cli_answered_stays_an_identity_refusal() {
+    let codex_other_account = r#"if [ "$1" = app-server ]; then
+  while read -r line; do
+    case "$line" in
+      *'"id":1'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+      *'"id":2'*) printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","email":"other@example.test"}}}' ;;
+    esac
+  done
+  exit 0
+fi
+exit 64"#;
+    let claude_logged_out = r#"if [ "$1" = auth ]; then
+  printf '%s\n' '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}'
+  exit 1
+fi
+exit 64"#;
+    for (kind, body) in [
+        (ProviderKind::Codex, codex_other_account),
+        (ProviderKind::Claude, claude_logged_out),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let (program, spec) = fixture(kind, directory.path(), body);
+        let checked = identity(spec, program).recheck_identity(
+            Instant::now() + Duration::from_secs(30),
+            &AtomicBool::new(false),
+        );
+        assert!(
+            matches!(checked, Err(Recheck::NotCurrent)),
+            "an answering {} CLI was diagnosed as uninstalled",
+            kind.name()
+        );
+    }
 }

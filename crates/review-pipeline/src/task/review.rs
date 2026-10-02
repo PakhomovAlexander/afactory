@@ -337,6 +337,12 @@ impl ReviewTaskDomain {
             code,
         })
     }
+    /// Machine-local selection supplied explicitly by the coordinator before check dispatch.
+    pub fn with_rust_toolchain_mapping(mut self, mapping: Option<std::path::PathBuf>) -> Self {
+        self.code = self.code.with_rust_toolchain_mapping(mapping);
+        self
+    }
+
     /// Chosen by the captured Task-kind profile, never by a Worker response or display name.
     pub fn with_review_task(mut self, review: bool) -> Self {
         self.review_task = review;

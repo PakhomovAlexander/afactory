@@ -1,5 +1,5 @@
 //! Every compile-time `CARGO_MANIFEST_DIR` in this workspace is a fallback behind the run-time
-//! `AF_WORKSPACE_ROOT`. A Task check under `[warm]` (ADR-0124) reuses test binaries compiled in
+//! `AF_WORKSPACE_ROOT`. A Task check under `[warm]` (ADR-0131) reuses test binaries compiled in
 //! an earlier, already-destroyed gate sandbox, so a fixture path baked in at compile time names
 //! a directory that no longer exists; `scripts/verify.sh` exports the root for exactly this.
 use std::path::{Path, PathBuf};

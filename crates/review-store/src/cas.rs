@@ -804,7 +804,7 @@ impl Cas {
         Ok(found.into_iter().collect())
     }
 
-    /// Remove one object. Only Task collection calls this (ADR-0128), under the event store's
+    /// Remove one object. Only Task collection calls this (ADR-0135), under the event store's
     /// exclusive write lock and only for an object no uncollected record reaches; no other
     /// command removes a CAS object.
     pub fn remove_unreachable(&self, digest: &str) -> Result<u64, CasError> {

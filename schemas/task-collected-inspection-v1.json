@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-collected-inspection:1",
   "title": "af/task-collected-inspection@1",
-  "description": "What `af task show --json` prints for a Task `af task gc --apply` collected (ADR-0128), in place of the artifact-backed `af/task-inspection@11`: the Task's ID, the finished phase its log recorded, and its retained tombstone. No artifact is read to produce it.",
+  "description": "What `af task show --json` prints for a Task `af task gc --apply` collected (ADR-0135), in place of the artifact-backed `af/task-inspection@11`: the Task's ID, the finished phase its log recorded, and its retained tombstone. No artifact is read to produce it.",
   "type": "object",
   "additionalProperties": false,
   "required": [

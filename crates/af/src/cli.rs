@@ -100,8 +100,8 @@ that registry and the machine's harness logins without contacting any model. `do
 bounded, charged preflight for the bindings you name.\n\n\
 Results go to stdout (add --json to `status` and `setup` for versioned documents); progress, \
 warnings and diagnostics go to stderr. Exit codes across this namespace: 0 success, 1 \
-unclassified failure, 2 usage error, 3 human action required, 4 Provider CLI missing, 5 \
-registry conflict, 6 authentication failed, 7 optional usage unavailable.",
+unclassified failure, 2 usage error, 3 human action required, 4 Provider CLI missing or \
+cannot start, 5 registry conflict, 6 authentication failed, 7 optional usage unavailable.",
         after_long_help = "Examples:\n  af provider status\n  af provider setup codex-main --kind codex\n  af provider doctor --provider correctness=claude-code"
     )]
     Provider {
@@ -309,7 +309,11 @@ pub(crate) struct RunArgs {
         help_heading = "Budget"
     )]
     pub(crate) provider_admission_wall_ms: Option<u64>,
-    /// Wall-clock budget for the whole run
+    /// Wall-clock budget in seconds. Without --file (default routed run, --campaign or --pipeline):
+    /// per reviewer Attempt (default 1800; pinned in the Campaign manifest as
+    /// reviewer_timeout_seconds), not a bound on the
+    /// whole run. With --file: a cap on the whole Task, the lower of this flag and the file's
+    /// limits.wall_ms
     #[arg(long, value_name = "N", help_heading = "Budget")]
     pub(crate) timeout_secs: Option<u64>,
     /// Wall-clock budget for each git operation
@@ -728,7 +732,10 @@ Fast by default: the registry plus one bounded authentication check per context.
 and quota probes are opt-in behind --usage, and an unavailable usage probe never demotes an \
 authenticated Provider — it exits 7 and says so. End-to-end usability stays with the charged \
 `af provider doctor`.\n\n\
-Exit codes: 0 fine, 7 optional usage unavailable.",
+A Provider whose official CLI is missing, not executable, or exits non-zero on its own version \
+check is reported as an installation failure, with the CLI's own first error line and the fix \
+it suggests on stderr.\n\n\
+Exit codes: 0 fine, 4 a Provider CLI cannot start, 7 optional usage unavailable.",
         after_long_help = "Examples:\n  af provider status\n  af provider status --json\n  af provider status --usage"
     )]
     Status {
@@ -751,8 +758,8 @@ human-action-required result and the exact command to run. With --login, setup s
 official Provider CLI login only when this process owns an interactive terminal on stdin, \
 stdout and stderr, because the OAuth URL and authorization code that login prints are \
 credentials in transit and must never reach a pipe, chat, an agent transcript, or logs.\n\n\
-Exit codes: 0 registered, 3 human action required, 4 Provider CLI missing, 5 registry conflict, \
-6 authentication failed. Re-running setup for the same binding is safe.",
+Exit codes: 0 registered, 3 human action required, 4 Provider CLI missing or cannot start, 5 \
+registry conflict, 6 authentication failed. Re-running setup for the same binding is safe.",
         after_long_help = "Examples:\n  af provider setup codex-main --kind codex\n  af provider setup codex-main --kind codex --json\n  af provider setup claude-work --kind claude --auth-dir /secure/claude-work --login"
     )]
     Setup {

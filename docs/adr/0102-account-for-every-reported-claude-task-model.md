@@ -6,7 +6,9 @@ Status: Accepted (2026-09-23); superseded in part by
 restriction (its default-model compatibility, and any unambiguous entry explaining the top-level
 summary); the Task adapter now requires `--model`. The legacy Review envelope and the old
 provider-smoke accounting left as follow-up work are gone with the pre-Task Review executor and
-the Provider Operation.
+the Provider Operation. Superseded in part by
+[ADR-0125](0125-charge-a-claude-model-breakdown-that-covers-the-top-level-summary.md): the rule
+that the top-level bill must equal the aggregate or the selected model entry.
 
 ## Context
 

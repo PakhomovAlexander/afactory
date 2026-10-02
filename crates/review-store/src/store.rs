@@ -53,7 +53,7 @@ pub enum StoreError {
     Durability(String),
     /// A referenced artifact required for replay was missing or malformed.
     Artifact(String),
-    /// The Task was collected by `af task gc --apply` (ADR-0128): its log ends in a tombstone,
+    /// The Task was collected by `af task gc --apply` (ADR-0135): its log ends in a tombstone,
     /// its projection stops there, and nothing may act on it again.
     Collected {
         task_id: String,
@@ -235,6 +235,30 @@ impl EventStore {
 
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        Ok(Self {
+            conn,
+            task_cache: std::cell::RefCell::new(None),
+            validated_change_sets: std::collections::BTreeMap::new(),
+        })
+    }
+
+    /// Open a second connection to this Store's database file, with the same durability. A
+    /// Task writer's heartbeat uses it to observe and renew its own lease while the caller's
+    /// connection is busy (ADR-0128). It grants nothing by itself: every append through it
+    /// passes the same validation and exact sequence fence as the caller's own. A Store with no
+    /// database file (in-memory or temporary) has nothing to share and is refused.
+    ///
+    /// A write through it waits at most `busy_timeout` for another connection's write lock
+    /// before it fails with a busy error, so its caller can still decide before a deadline.
+    pub fn reopen(&self, busy_timeout: std::time::Duration) -> Result<Self, StoreError> {
+        let path = self
+            .conn
+            .path()
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| StoreError::Conflict("Store has no database file to reopen".into()))?;
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
+        conn.busy_timeout(busy_timeout)?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),
@@ -4658,7 +4682,7 @@ fn insert_events(
     first: i64,
 ) -> Result<Vec<RunEvent>, StoreError> {
     // Every reference was verified before the writer lock was taken. Task collection removes
-    // objects only while it holds this same lock (ADR-0128), so a reference is rechecked here,
+    // objects only while it holds this same lock (ADR-0135), so a reference is rechecked here,
     // where no sweep can run: an object a sweep removed after that verification is refused as
     // dangling, never committed.
     for event in events {

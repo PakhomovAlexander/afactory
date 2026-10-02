@@ -1,4 +1,4 @@
-//! Store hygiene (ADR-0128): per-Task CAS sizes, and collecting finished Tasks.
+//! Store hygiene (ADR-0135): per-Task CAS sizes, and collecting finished Tasks.
 //!
 //! Collection is one versioned transition. Under the Store's exclusive writer lock, and only
 //! when no Task holds a live writer lease, `apply_task_collection` appends one
@@ -199,7 +199,7 @@ fn spelled(text: &str, found: &mut BTreeSet<String>) {
 /// Every Task a bindings record names.
 /// The tombstone a Task's log ends in, read on `connection` — the Store's, or a writer's open
 /// transaction, so an opening Task can refuse a collected binding under the same lock that
-/// collection writes with (ADR-0128).
+/// collection writes with (ADR-0135).
 pub(super) fn tombstone_in(
     connection: &rusqlite::Connection,
     run_id: &str,

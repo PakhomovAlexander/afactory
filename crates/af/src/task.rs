@@ -941,7 +941,7 @@ pub(super) fn list(options: InspectOptions, sizes: bool) -> Result<(), String> {
     let mut tasks = super::task_execution::list_common(&state)?;
     let store = if sizes {
         // Each uncollected Task's CAS bytes, from the same walk `af task gc` sweeps by
-        // (ADR-0128). A collected Task reaches nothing. The rows and the walk are two reads: a
+        // (ADR-0135). A collected Task reaches nothing. The rows and the walk are two reads: a
         // Task `gc --apply` collects between them has a row and no footprint, so both are read
         // again once, and the second pass lists it from its tombstone.
         let mut store = None;

@@ -238,7 +238,7 @@ impl WorkerContract {
         let mut inputs = BTreeMap::new();
         for (port, input) in &invocation.inputs {
             // A `many` port that names no Snapshot claims none for its values: a port bound
-            // from several recorded outputs of different Snapshots (ADR-0127). Each value keeps
+            // from several recorded outputs of different Snapshots (ADR-0134). Each value keeps
             // and shows its own; every other port's values name the port's one Snapshot.
             let unclaimed = input.cardinality == review_core::PortCardinality::Many
                 && input.snapshot_id.is_none();
@@ -404,6 +404,11 @@ pub struct ModelWorkerReturn {
     pub raw_artifact_ids: Vec<String>,
 }
 
+/// The return of a native program that could not be started at all. It received no input and
+/// spent nothing, so a caller that holds another executable for the same Provider may invoke
+/// that one instead.
+pub struct Unstarted(pub Box<ModelWorkerReturn>);
+
 /// The sandbox authority one model Attempt runs with. The host derives it from the Worker's
 /// captured effects alone; each adapter maps it onto its own tool and sandbox flags, so a
 /// package can never name a tool, a permission mode or an MCP server.
@@ -463,6 +468,30 @@ pub trait WorkerModelAdapter: Send + Sync {
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn;
+
+    /// `invoke`, with a program that could not be started told apart from every other return.
+    /// An adapter that spawns a native client overrides this; the default never reports one.
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_started(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        access: WorkerAccess,
+        cancellation: Option<&AtomicBool>,
+        environment: &[(String, String)],
+    ) -> Result<ModelWorkerReturn, Unstarted> {
+        Ok(self.invoke(
+            cas,
+            workdir,
+            input,
+            timeout,
+            access,
+            cancellation,
+            environment,
+        ))
+    }
 }
 
 impl ModelWorkerReturn {

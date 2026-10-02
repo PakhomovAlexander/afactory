@@ -1,4 +1,4 @@
-# The report policy of this repository (ADR-0126): install as `.af/report-policy.toml`.
+# The report policy of this repository (ADR-0133): install as `.af/report-policy.toml`.
 schema = "af.report-task-policy/1"
 max_document_bytes = 262144
 required_sections = ["Findings", "Recommendation"]

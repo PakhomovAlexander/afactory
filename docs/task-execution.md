@@ -55,17 +55,17 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   every check, and is removed rather than repaired. It is never inside a Worker sandbox, a
   Snapshot or a delivered tree, and `require_container = true` refuses it. Warm or cold is
   runtime evidence only
-  ([ADR-0124](adr/0124-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)).
+  ([ADR-0131](adr/0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)).
 - The kernel measures; a model never writes a number the kernel did not record. A code policy's
   `[measures]` are run by the installed `measure` operator against a read-only Snapshot, and
   `compare` folds two `af/Measurement@1` under a declared `[objectives]` entry in exact decimal
   arithmetic. Neither invokes a Provider, and an evaluator gated on a comparison cannot change
-  it ([ADR-0125](adr/0125-measure-and-compare-source-candidates-in-the-kernel.md),
+  it ([ADR-0132](adr/0132-measure-and-compare-source-candidates-in-the-kernel.md),
   [experiments](task-execution/experiments.md)).
 - A report is accepted by an independent verifier, not by its author, and every report receipt
   names the source Snapshot its repository citations were resolved against. A report Task
   allows no `write-source`, has no `snapshot` output and is never delivered; `af task output`
-  is its only exit ([ADR-0126](adr/0126-accept-reports-bound-to-an-exact-source-snapshot.md),
+  is its only exit ([ADR-0133](adr/0133-accept-reports-bound-to-an-exact-source-snapshot.md),
   [report Tasks](task-execution/report.md)).
 
 ## Worker effects: what `execute-checks` grants a reviewer
@@ -80,7 +80,7 @@ the native adapter picks its tool and sandbox flags from it. The two cannot disa
 |---|---|---|---|---|
 | `read-source`, or `execute-checks` on a Worker with neither the `review` role nor the `author` role and `read-source` | `ReadOnly` | read-only materialization | `Read,Glob,Grep` | `read-only` |
 | `execute-checks` on a Worker with `roles` containing `review` (no `write-source`) | `ExecuteChecks` | ephemeral-write clone, nothing sealed back | `Read,Glob,Grep,Bash` | `workspace-write` |
-| `read-source` and `execute-checks` on a Worker with `roles` containing `author` (no `write-source`) | `ExecuteChecks` | ephemeral-write clone, nothing sealed back ([ADR-0126](adr/0126-accept-reports-bound-to-an-exact-source-snapshot.md)) | `Read,Glob,Grep,Bash` | `workspace-write` |
+| `read-source` and `execute-checks` on a Worker with `roles` containing `author` (no `write-source`) | `ExecuteChecks` | ephemeral-write clone, nothing sealed back ([ADR-0133](adr/0133-accept-reports-bound-to-an-exact-source-snapshot.md)) | `Read,Glob,Grep,Bash` | `workspace-write` |
 | `write-source` with a kernel-captured `candidate` port | `WriteSource` | ephemeral-write clone, captured as the candidate | `Read,Glob,Grep,Edit,Write` | `workspace-write` |
 | `write-source` and `execute-checks` with a kernel-captured `candidate` port | `WriteSourceWithShell` | ephemeral-write clone, captured as the candidate minus shell scratch ([ADR-0120](adr/0120-give-a-source-writing-worker-a-shell.md)) | `Read,Glob,Grep,Edit,Write,Bash` | `workspace-write` |
 
@@ -107,7 +107,7 @@ What it never grants:
   tool that the declared effects do not derive.
 - Any shell for a Worker without the `review` role that does not also write source, except a
   report author that declares `read-source` and `execute-checks`: it gets the review Worker's
-  clone and message ([ADR-0126](adr/0126-accept-reports-bound-to-an-exact-source-snapshot.md)).
+  clone and message ([ADR-0133](adr/0133-accept-reports-bound-to-an-exact-source-snapshot.md)).
   Every other such Worker keeps its read-only source. A source-writing Worker that declares `execute-checks` gets a shell too; its
   candidate excludes anything added under a new top-level name or as a new top-level dotfile
   ([ADR-0120](adr/0120-give-a-source-writing-worker-a-shell.md)).
@@ -125,7 +125,7 @@ What it never grants:
 | Task file, catalogs, bindings and developers | [`task-file-v1`](../schemas/task-file-v1.json), [`task-catalog-v2`](../schemas/task-catalog-v2.json), [`shared-task-catalog-v1`](../schemas/shared-task-catalog-v1.json), [`task-developers-v1`](../schemas/task-developers-v1.json) |
 | Inspection and listing | [`task-inspection-v11`](../schemas/task-inspection-v11.json), [`task-list-entry-v2`](../schemas/task-list-entry-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json) |
 | Run diagnostics and delivery | [`task-run-report-v2`](../schemas/task-run-report-v2.json), [`task-diagnostic-v1`](../schemas/task-diagnostic-v1.json), [`task-delivery-record-v1`](../schemas/task-delivery-record-v1.json) |
-| Store hygiene ([ADR-0128](adr/0128-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)) | `crates/review-store/src/store/task/collection.rs`, [`task-collected-v1`](../schemas/task-collected-v1.json), [`task-collected-inspection-v1`](../schemas/task-collected-inspection-v1.json), [`task-gc-v1`](../schemas/task-gc-v1.json) |
+| Store hygiene ([ADR-0135](adr/0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)) | `crates/review-store/src/store/task/collection.rs`, [`task-collected-v1`](../schemas/task-collected-v1.json), [`task-collected-inspection-v1`](../schemas/task-collected-inspection-v1.json), [`task-gc-v1`](../schemas/task-gc-v1.json) |
 | Review accounting | [`review-report-v4`](../schemas/review-report-v4.json) |
 | Executable credential-free fixtures | `fixtures/task-runtime/` (`pagination`, `review`, `review-v2`, `embedded-review`, `bounded-repair`) |
 

@@ -2,7 +2,7 @@
 
 The report Pipeline and Workers of package R3 of
 [`docs/design/research-pipelines.md`](../../docs/design/research-pipelines.md)
-([ADR-0126](../../docs/adr/0126-accept-reports-bound-to-an-exact-source-snapshot.md)),
+([ADR-0133](../../docs/adr/0133-accept-reports-bound-to-an-exact-source-snapshot.md)),
 staged here because a Task Worker may not edit `.af/`. Installing them is a reviewed hand edit:
 
 1. Copy `report-policy.toml` to `.af/report-policy.toml`, and add
@@ -26,6 +26,6 @@ packages, so the staged copies are checked as they are:
 af catalog test --source . --manifest fixtures/kernel-report/catalog.toml --json
 ```
 
-`crates/af/tests/task_report.rs` performs the three steps on a copy of `.af/` — or, where a
+`crates/af/tests/it/task_report.rs` performs the three steps on a copy of `.af/` — or, where a
 human has already taken a step, verifies that what is installed is what is staged — runs that
 command, and plans a `kernel/report` Task with zero Attempts.

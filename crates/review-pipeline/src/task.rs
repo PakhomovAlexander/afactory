@@ -182,6 +182,19 @@ fn envelope(cas: &Cas, id: &str) -> Result<ArtifactEnvelope, String> {
     cas.get_artifact(id).map_err(|e| e.to_string())
 }
 
+const INCOMPLETE_BILLING: &str = "Native billing usage is incomplete";
+
+/// A native billing refusal replaces the Attempt's output. A reason the Worker already failed
+/// with, such as the adapter's own usage refusal, stays in the diagnostic behind the refusal.
+fn refuse_billing<T>(outputs: &mut Result<T, String>, refusal: &str) {
+    let error = match outputs {
+        Err(reason) if reason.starts_with(refusal) => return,
+        Err(reason) => format!("{refusal}: {reason}"),
+        Ok(_) => refusal.into(),
+    };
+    *outputs = Err(error);
+}
+
 fn artifact_map(values: &BTreeMap<String, ArtifactInputV1>) -> ArtifactMap {
     values
         .iter()
@@ -391,7 +404,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
                 continue; // Scheduler guards are control authority, not declared Worker data.
             };
             // A `many` port the operator declares `unbound` may gather artifacts of different
-            // Snapshots — a Task-file binding of several recorded outputs (ADR-0127). It then
+            // Snapshots — a Task-file binding of several recorded outputs (ADR-0134). It then
             // names no Snapshot and each artifact keeps its own in its envelope; every other
             // port still spans exactly one.
             let spans = port.cardinality == review_core::PortCardinality::Many
@@ -683,12 +696,13 @@ impl TaskRuntime<'_, '_> {
                 if let Some(observation) = &observation {
                     observation.validate()?;
                     if observation.reported_usage.as_ref() != usage {
-                        result.outputs = Err(
-                            "Native usage observation differs from the returned counters".into(),
+                        refuse_billing(
+                            &mut result.outputs,
+                            "Native usage observation differs from the returned counters",
                         );
                     }
                     if !observation.charge_complete {
-                        result.outputs = Err("Native billing usage is incomplete".into());
+                        refuse_billing(&mut result.outputs, INCOMPLETE_BILLING);
                     }
                 }
                 let charge = result
@@ -755,7 +769,7 @@ impl TaskRuntime<'_, '_> {
                 result.charged_tokens = charge;
                 if let Some(observation) = &observation {
                     if !observation.charge_complete {
-                        result.outputs = Err("Native billing usage is incomplete".into());
+                        refuse_billing(&mut result.outputs, INCOMPLETE_BILLING);
                     }
                     let id = review_store::store::task::execution::usage_observation::capture_task_usage_observation(
                         self.cas, Producer::Attempt { run_id: wall.run_id.clone(), node_id: input.node.clone(), attempt_id: attempt.id().into() },

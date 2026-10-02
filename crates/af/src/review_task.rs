@@ -517,98 +517,108 @@ fn execute_current(
         })?;
     let shared = review_store::SharedEventStore::new(store);
     let cancellation = std::sync::atomic::AtomicBool::new(false);
-    review_pipeline::task::lease::with_heartbeat_controlled(
-        &shared,
-        cas,
-        lease,
-        Some(&cancellation),
-        || {
-            let host = CampaignReviewTaskHost::new(
-                cas,
-                shared.clone(),
-                &captured.compiler,
-                lease.clone(),
-                model_bindings(&captured.plan, &captured.captured, &captured.workers)?,
-            )?
-            .with_cache_source_resolver(super::caches::resolve_kind);
-            // Only a pinned policy that keeps a Warm Workspace needs the cache root; a cold
-            // pipeline neither validates nor touches the machine's cache configuration.
-            let host = if super::keeps_warm_workspace(&captured.captured.loaded) {
-                host.with_workspace_cache_root(
-                    super::config::cache_home()?.join("af").join("workspaces"),
-                )
-            } else {
-                host
-            };
-            let authority = CapturedTaskAuthority::for_campaign_review(
-                &captured.compiler,
-                &host,
-                &NoTaskDeveloper,
-            );
-            if !closed {
-                let runtime =
-                    TaskRuntime::with_store(shared.clone(), cas, lease.clone(), &authority, &host)?
-                        .with_cancellation(&cancellation);
-                runtime.execute()?;
-            }
-            let conclusion = host.publish_recorded_round_conclusion(cas)?;
-            let mut continuation_required = conclusion.can_continue;
-            if let Some(mut phase) = host.select_recorded_integration(cas)? {
-                if phase.requires_checks() && !phase.finished() {
-                    let runtime = TaskRuntime::with_review_integration(
+    super::interrupt::forwarding(&cancellation, || {
+        review_pipeline::task::lease::with_heartbeat_controlled(
+            &shared,
+            cas,
+            lease,
+            Some(&cancellation),
+            || {
+                let host = CampaignReviewTaskHost::new(
+                    cas,
+                    shared.clone(),
+                    &captured.compiler,
+                    lease.clone(),
+                    model_bindings(&captured.plan, &captured.captured, &captured.workers)?,
+                )?
+                .with_cache_source_resolver(super::caches::resolve_kind);
+                // Only a pinned policy that keeps a Warm Workspace needs the cache root; a cold
+                // pipeline neither validates nor touches the machine's cache configuration.
+                let host = if super::keeps_warm_workspace(&captured.captured.loaded) {
+                    host.with_workspace_cache_root(
+                        super::config::cache_home()?.join("af").join("workspaces"),
+                    )
+                } else {
+                    host
+                };
+                let authority = CapturedTaskAuthority::for_campaign_review(
+                    &captured.compiler,
+                    &host,
+                    &NoTaskDeveloper,
+                );
+                if !closed {
+                    let runtime = TaskRuntime::with_store(
                         shared.clone(),
                         cas,
                         lease.clone(),
                         &authority,
                         &host,
-                        &phase,
                     )?
                     .with_cancellation(&cancellation);
-                    let (report_id, _) = runtime.execute_review_integration(&phase)?;
-                    phase = host.finish_recorded_integration(cas, &phase, &report_id)?;
+                    runtime.execute()?;
                 }
-                continuation_required |= phase.integration_committed_event_id().is_some();
-            }
-            let result = if !continuation_required
-                && !matches!(
-                    conclusion.verdict,
-                    review_pipeline::RunVerdict::Incomplete { .. }
-                ) {
-                let result = host.assemble_recorded_result(cas)?;
-                let mut refs = result.evidence.clone();
-                refs.insert(result.task_revision_id.clone());
-                refs.extend(
-                    result
-                        .outputs
-                        .values()
-                        .flat_map(|port| port.artifact_ids.iter().cloned()),
-                );
-                let id = persist(
-                    cas,
-                    lease.task_id(),
-                    review_core::task::TASK_RESULT_V1,
-                    refs.into_iter().collect(),
-                    &result,
-                )?;
-                shared
-                    .lock()
-                    .expect("Task Store")
-                    .finish_task(cas, lease, &id, &authority)
-                    .map_err(|e| e.to_string())?;
-                Some(result)
-            } else {
-                None
-            };
-            Ok(RoundExecution {
-                report: conclusion.report,
-                ledger: host.ledger(),
-                attempts: host.selected_attempt_evidence()?,
-                verdict: conclusion.verdict,
-                continuation_required,
-                result,
-            })
-        },
-    )
+                // An interrupted Round publishes no conclusion; the Campaign resumes (ADR-0129).
+                super::interrupt::check()?;
+                let conclusion = host.publish_recorded_round_conclusion(cas)?;
+                let mut continuation_required = conclusion.can_continue;
+                if let Some(mut phase) = host.select_recorded_integration(cas)? {
+                    if phase.requires_checks() && !phase.finished() {
+                        let runtime = TaskRuntime::with_review_integration(
+                            shared.clone(),
+                            cas,
+                            lease.clone(),
+                            &authority,
+                            &host,
+                            &phase,
+                        )?
+                        .with_cancellation(&cancellation);
+                        let (report_id, _) = runtime.execute_review_integration(&phase)?;
+                        super::interrupt::check()?;
+                        phase = host.finish_recorded_integration(cas, &phase, &report_id)?;
+                    }
+                    continuation_required |= phase.integration_committed_event_id().is_some();
+                }
+                let result = if !continuation_required
+                    && !matches!(
+                        conclusion.verdict,
+                        review_pipeline::RunVerdict::Incomplete { .. }
+                    ) {
+                    let result = host.assemble_recorded_result(cas)?;
+                    let mut refs = result.evidence.clone();
+                    refs.insert(result.task_revision_id.clone());
+                    refs.extend(
+                        result
+                            .outputs
+                            .values()
+                            .flat_map(|port| port.artifact_ids.iter().cloned()),
+                    );
+                    let id = persist(
+                        cas,
+                        lease.task_id(),
+                        review_core::task::TASK_RESULT_V1,
+                        refs.into_iter().collect(),
+                        &result,
+                    )?;
+                    shared
+                        .lock()
+                        .expect("Task Store")
+                        .finish_task(cas, lease, &id, &authority)
+                        .map_err(|e| e.to_string())?;
+                    Some(result)
+                } else {
+                    None
+                };
+                Ok(RoundExecution {
+                    report: conclusion.report,
+                    ledger: host.ledger(),
+                    attempts: host.selected_attempt_evidence()?,
+                    verdict: conclusion.verdict,
+                    continuation_required,
+                    result,
+                })
+            },
+        )
+    })
 }
 
 #[cfg(test)]

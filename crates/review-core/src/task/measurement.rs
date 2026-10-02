@@ -1,4 +1,4 @@
-//! Kernel-observed measurements and their deterministic comparison (ADR-0125).
+//! Kernel-observed measurements and their deterministic comparison (ADR-0132).
 //!
 //! A measurement is a declared command from the committed code policy, run by the installed
 //! `measure` operator a declared number of times against a read-only Snapshot. Its wall time,

@@ -77,3 +77,5 @@ Exact plan inspection accepts only a plan recorded in the selected Task's histor
 `af/task-plan-inspection@1`, including the original revision, compiled graph, bindings and
 recording event IDs; `current_plan` distinguishes the active plan from an earlier one.
 Inspecting an earlier generated plan leaves the current revision and approval state unchanged.
+
+Native Rust seed setup: [private toolchain snapshots](rust-toolchain.md).

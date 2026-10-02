@@ -2,7 +2,9 @@
 
 Date: 2026-09-13
 Status: Accepted (2026-09-23); acceptance recorded in
-[ADR-0113](0113-ga-reads-only-what-ga-writes.md)
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md); superseded in part by
+[ADR-0126](0126-keep-the-captured-native-executable-when-its-launcher-moves.md): the requirement
+that `PATH` still resolve to the captured executable
 
 ## Context
 

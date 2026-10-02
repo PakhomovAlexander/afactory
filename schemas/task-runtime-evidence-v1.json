@@ -83,7 +83,7 @@
   },
   "$defs": {
     "check": {
-      "description": "The one check a warm evidence group belongs to (ADR-0124), present whether or not the check started, with the check's outcome and where its RUSTUP_HOME came from. A named group always carries one cache observation per declared warm kind.",
+      "description": "The one check a warm evidence group belongs to (ADR-0131), present whether or not the check started, with the check's outcome and where its RUSTUP_HOME came from. A named group always carries one cache observation per declared warm kind.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -241,7 +241,7 @@
           ]
         },
         "bound": {
-          "description": "Which Warm Check Cache byte bound acted (ADR-0128): `max_bytes` evicted the directory before or after a check whose result stands; `hard_max_bytes` ended the running check. Never beside a `suspect` eviction.",
+          "description": "Which Warm Check Cache byte bound acted (ADR-0135): `max_bytes` evicted the directory before or after a check whose result stands; `hard_max_bytes` ended the running check. Never beside a `suspect` eviction.",
           "enum": [
             "max_bytes",
             "hard_max_bytes"

@@ -213,13 +213,26 @@ future readers need.
   bound](0122-show-committed-workers-and-their-recorded-attempts.md)
 - [0123 — Hand the terminal to `af` commands typed in the
   browser](0123-hand-the-terminal-to-af-commands-typed-in-the-browser.md)
-- [0124 — Warm Task checks through a toolchain-keyed, bounded, machine-local
-  cache](0124-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)
-- [0125 — Measure and compare source candidates in the
-  kernel](0125-measure-and-compare-source-candidates-in-the-kernel.md)
-- [0126 — Accept reports bound to an exact source
-  Snapshot](0126-accept-reports-bound-to-an-exact-source-snapshot.md)
-- [0127 — Bind any declared root port to recorded Task
-  outputs](0127-bind-any-declared-root-port-to-recorded-task-outputs.md)
-- [0128 — Collect finished Tasks behind a tombstone and a reachability
-  sweep](0128-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
+- [0124 — Run tests in parallel processes and link them
+  once](0124-run-tests-in-parallel-processes-and-link-them-once.md)
+- [0125 — Charge a Claude model breakdown that covers the top-level
+  summary](0125-charge-a-claude-model-breakdown-that-covers-the-top-level-summary.md)
+- [0126 — Keep the captured native executable when its launcher
+  moves](0126-keep-the-captured-native-executable-when-its-launcher-moves.md)
+- [0127 — Snapshot pinned Rust before native Task checks](0127-snapshot-pinned-rust-before-native-task-checks.md)
+- [0128 — Renew a live Task writer's lease through its own Store
+  connection](0128-renew-a-live-task-writer-lease-through-its-own-connection.md)
+- [0129 — Stop Task Workers when af is
+  interrupted](0129-stop-task-workers-when-af-is-interrupted.md)
+- [0130 — Report a Provider CLI that cannot start as an installation
+  failure](0130-report-a-provider-cli-that-cannot-start.md)
+- [0131 — Warm Task checks through a toolchain-keyed, bounded, machine-local
+  cache](0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)
+- [0132 — Measure and compare source candidates in the
+  kernel](0132-measure-and-compare-source-candidates-in-the-kernel.md)
+- [0133 — Accept reports bound to an exact source
+  Snapshot](0133-accept-reports-bound-to-an-exact-source-snapshot.md)
+- [0134 — Bind any declared root port to recorded Task
+  outputs](0134-bind-any-declared-root-port-to-recorded-task-outputs.md)
+- [0135 — Collect finished Tasks behind a tombstone and a reachability
+  sweep](0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)

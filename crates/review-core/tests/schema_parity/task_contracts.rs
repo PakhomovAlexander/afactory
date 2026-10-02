@@ -161,7 +161,7 @@ fn task_input_bindings_record_provenance_and_close_every_form() {
             .is_err()
     );
 
-    // A `many` port bound from several outputs (ADR-0127): every further output names its Task
+    // A `many` port bound from several outputs (ADR-0134): every further output names its Task
     // and its own Snapshot, and none is re-rooted or nested.
     let referenced = |port: &str| ReferencedTaskV1 {
         task_id: "experiment".into(),

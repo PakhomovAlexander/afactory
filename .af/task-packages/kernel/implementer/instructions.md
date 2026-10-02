@@ -40,8 +40,9 @@ existing patterns and keep `deny_unknown_fields` and existing schema parity test
 2. Tests: unit tests beside the code and an integration fixture proving the package's exit
    evidence. Existing tests keep passing.
 3. One ADR under `docs/adr/` recording the decision, numbered after the latest, linked from
-   `docs/adr/README.md`, plus the one-paragraph change entry in `CHANGELOG.md` under Unreleased,
-   unless the package's deliverables say otherwise.
+   `docs/adr/README.md`, plus the one-paragraph change note as a new file
+   `changelog.d/<package>.md` (never an edit to `CHANGELOG.md`), unless the package's
+   deliverables say otherwise.
 4. No commits, no branches, no files outside the repository, no edits to `.af/`.
 
 ## Reply

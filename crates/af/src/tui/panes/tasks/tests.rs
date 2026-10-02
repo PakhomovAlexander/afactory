@@ -1011,7 +1011,7 @@ fn a_stage_named_nodes_keeps_its_name() {
     assert_eq!(stage_name("root.inputs"), "inputs");
 }
 
-/// ADR-0128: a collected Task is listed by `af task list` with its tombstone, but the browser
+/// ADR-0135: a collected Task is listed by `af task list` with its tombstone, but the browser
 /// has nothing left to inspect for it; the Store stays readable and shows the other Tasks.
 #[test]
 fn a_collected_task_leaves_the_store_readable_and_is_not_opened() {

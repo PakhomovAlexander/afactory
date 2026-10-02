@@ -102,7 +102,7 @@ pub enum TaskChangeV1 {
     DeliveryRecorded {
         record_id: String,
     },
-    /// The tombstone of `af task gc --apply` (ADR-0128): the last event a Task log ever holds.
+    /// The tombstone of `af task gc --apply` (ADR-0135): the last event a Task log ever holds.
     /// It carries the Task's retained summary inline and references no artifact, so every
     /// object only this Task reached becomes unreachable. Its writer is the collector, at an
     /// epoch past the Task's last writer, which fences that writer for good.

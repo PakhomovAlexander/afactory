@@ -867,7 +867,7 @@
               "uniqueItems": true,
               "minItems": 1,
               "maxItems": 16,
-              "$comment": "One af/Measurement@1 output per named measure of the captured code policy (ADR-0125). Canonical ascending order is required by semantic admission."
+              "$comment": "One af/Measurement@1 output per named measure of the captured code policy (ADR-0132). Canonical ascending order is required by semantic admission."
             }
           }
         },

@@ -1,4 +1,4 @@
-//! The report starter (ADR-0126), assembled from the same typed contracts as admission: a
+//! The report starter (ADR-0133), assembled from the same typed contracts as admission: a
 //! report policy, a command author that reads the committed tree in a clone that seals nothing
 //! back, and an independent command verifier that reads the same Snapshot. The kernel renders
 //! the draft, resolves its repository citations against the exact Manifest and accepts the
@@ -39,7 +39,7 @@ fn root_inputs() -> Ports {
 /// A command Worker's input schema: one item per `one` port, up to the reply bound per `many`
 /// port, a Snapshot ID on every Snapshot-bound value, and only the required ports required. A
 /// bound Measurement or Comparison names the Snapshot it measured even on an unbound port, and
-/// a port bound from several Measurements shows each one's own (ADR-0127), so those values may
+/// a port bound from several Measurements shows each one's own (ADR-0134), so those values may
 /// carry the member; it is never required of them.
 fn input_schema(ports: &Ports) -> Value {
     let properties: BTreeMap<_, _> = ports

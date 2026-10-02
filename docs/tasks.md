@@ -160,7 +160,7 @@ preserved target. Operator changes to an unsealed worktree are therefore never d
 ## Warm checks
 
 A code policy may declare a `[warm]` table
-([ADR-0124](adr/0124-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)):
+([ADR-0131](adr/0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)):
 
 ```toml
 [warm]
@@ -199,7 +199,7 @@ any entry the inspection cannot read. A check runs cold and says why when its to
 be resolved, when another check holds its directory for 60 seconds, or when its directories are
 already above `max_bytes`. The directories are measured again when the check ends and before
 its result counts
-([ADR-0128](adr/0128-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)).
+([ADR-0135](adr/0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)).
 Above `max_bytes` only, they are evicted and the check's own result stands; the next check runs
 cold. Only `hard_max_bytes` ends a running check: one that grew them past it fails with
 `warm_cache_bound_exceeded`, however fast it was, and so does one that left anything the
@@ -221,7 +221,7 @@ days, it would collect, how many bytes that frees, and why every other Task stay
 unfinished, holding a writer lease or bound by another Task's `inputs`. It writes nothing. With
 `--apply` it writes one tombstone per collected Task and removes every object no remaining Task
 or Campaign record reaches
-([ADR-0128](adr/0128-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)). A
+([ADR-0135](adr/0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)). A
 collected Task keeps its ID, kind, revision, outcome, spend and times: `task list` and `task
 show` print it as `collected <time>`, and `task output` and `task deliver` refuse it. Run it
 between Tasks: `--apply` is refused while any Task's writer lease is live. If it stops midway,

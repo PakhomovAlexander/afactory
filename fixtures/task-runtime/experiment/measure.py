@@ -1,4 +1,4 @@
-# The measured command of the experiment fixture (ADR-0125): write size.txt's number of bytes
+# The measured command of the experiment fixture (ADR-0132): write size.txt's number of bytes
 # into $TMPDIR, the repetition's private runtime directory, and report what was written on the
 # last stdout line. mode.txt selects a misbehaviour the kernel must record.
 import json

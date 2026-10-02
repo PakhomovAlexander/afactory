@@ -144,6 +144,67 @@ fn status_states_are_stable_and_independent() {
     );
 }
 
+/// A Provider whose official CLI cannot start is its own documented failure kind: unusable, and
+/// exit 4 exactly when one is present, outranking an unanswered usage probe.
+#[test]
+fn status_reports_a_cli_that_cannot_start_under_exit_4() {
+    let mut broken = status();
+    broken["exit_code"] = json!(4);
+    broken["providers"][0]["auth"] = json!("installation_failed");
+    broken["providers"][0]["credential"] = json!("none");
+    broken["providers"][0]["usability"] = json!("unusable");
+    broken["providers"][0]["usage"] = json!({"state": "not_applicable", "windows": []});
+    assert_valid("provider-status-v1.json", &broken);
+
+    let mut with_usage = broken.clone();
+    with_usage["usage_requested"] = json!(true);
+    let mut healthy = status()["providers"][0].clone();
+    healthy["id"] = json!("codex-other");
+    healthy["usage"] = json!({"state": "unavailable", "windows": []});
+    with_usage["providers"]
+        .as_array_mut()
+        .unwrap()
+        .push(healthy);
+    assert_valid("provider-status-v1.json", &with_usage);
+
+    for (path, replacement, why) in [
+        (
+            "/exit_code",
+            json!(0),
+            "an uninstalled CLI reported as success",
+        ),
+        (
+            "/exit_code",
+            json!(7),
+            "an uninstalled CLI hidden behind usage",
+        ),
+        (
+            "/providers/0/usability",
+            json!("unknown"),
+            "a CLI that cannot start is unusable",
+        ),
+    ] {
+        let mut invalid = broken.clone();
+        *invalid.pointer_mut(path).unwrap() = replacement;
+        assert_invalid("provider-status-v1.json", &invalid, why);
+    }
+    let mut unexplained = status();
+    unexplained["exit_code"] = json!(4);
+    assert_invalid(
+        "provider-status-v1.json",
+        &unexplained,
+        "exit 4 without a Provider whose CLI cannot start",
+    );
+    // The CLI's own words are Provider-authored text and never reach the document.
+    let mut leaked = broken.clone();
+    leaked["providers"][0]["cli_error"] = json!("Error: Missing optional dependency");
+    assert_invalid(
+        "provider-status-v1.json",
+        &leaked,
+        "Provider-authored CLI error",
+    );
+}
+
 #[test]
 fn status_never_carries_personal_credential_or_provider_text() {
     for key in [

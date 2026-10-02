@@ -1,7 +1,7 @@
 # A report on this repository: the analyst reads the source Snapshot and may run commands
 # in a clone that seals nothing back; the kernel renders the draft and resolves its
 # repository citations against the exact Manifest; the independent verifier reads the same
-# Snapshot and runs only after those checks pass (ADR-0126).
+# Snapshot and runs only after those checks pass (ADR-0133).
 schema = "af.pipeline/1"
 name = "kernel/report"
 version = "1.0.0"

@@ -234,6 +234,31 @@ fn inflight_usage_survives_reopen_revocation_lower_settlement_and_writer_loss() 
     use review_core::task::execution::TaskAttemptResultV1;
     for recover in [false, true] {
         let mut f = Fixture::new(true).with_execution_graph();
+        // This accounting/reopen scenario is not a one-second latency test: CI spent
+        // 2.479s on a run that expired at currentness. Keep the shared fixture unchanged and
+        // give only this Attempt scheduling room, with its full verification reserve.
+        const ATTEMPT_WALL_MS: u64 = 60_000;
+        let original_limits = f.revision.limits.clone();
+        f.revision.limits.verification.wall_ms = ATTEMPT_WALL_MS;
+        f.revision_id = put(&f.cas, task::TASK_REVISION_V1, &f.revision);
+        f.plan.task_revision_id = f.revision_id.clone();
+        f.plan.limits = f.revision.limits.clone();
+        let mut graph: review_graph::task::CompiledTask =
+            payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
+        let original_allowance = graph.allowances["root.nodes.write"].clone();
+        graph
+            .allowances
+            .get_mut("root.nodes.write")
+            .unwrap()
+            .wall_ms_per_attempt = ATTEMPT_WALL_MS;
+        let mut expected_allowance = original_allowance;
+        expected_allowance.wall_ms_per_attempt = ATTEMPT_WALL_MS;
+        assert_eq!(graph.allowances["root.nodes.write"], expected_allowance);
+        let mut expected_limits = original_limits;
+        expected_limits.verification.wall_ms = ATTEMPT_WALL_MS;
+        assert_eq!(f.plan.limits, expected_limits);
+        f.plan.compiled_graph_id = put(&f.cas, "af/CompiledTask@1", &graph);
+        f.plan_id = put(&f.cas, task::EXECUTION_PLAN_V1, &f.plan);
         let lease = f.open();
         f.propose(&lease);
         f.decide(&lease, PlanDecisionKindV1::Approved);
@@ -255,6 +280,22 @@ fn inflight_usage_survives_reopen_revocation_lower_settlement_and_writer_loss() 
                 &f.authority,
             )
             .unwrap();
+        // Exact-clock assertions retain deadline enforcement without racing host I/O.
+        let deadline = attempt.reservation().deadline_unix_ms;
+        let budget = f.state().execution.unwrap().budget;
+        let mut before_deadline = budget.clone();
+        before_deadline
+            .begin(&attempt.reservation().id, deadline - 1)
+            .unwrap();
+        for time in [deadline, deadline + 1] {
+            assert_eq!(
+                budget
+                    .clone()
+                    .begin(&attempt.reservation().id, time)
+                    .unwrap_err(),
+                "Task reservation is not dispatchable"
+            );
+        }
         let usage_id = f
             .cas
             .put_json(&json!({"provider":"receipt proof"}))
@@ -285,6 +326,11 @@ fn inflight_usage_survives_reopen_revocation_lower_settlement_and_writer_loss() 
         assert_eq!(execution.budget.committed_tokens(), 4);
         assert_eq!(execution.budget.reserved_tokens(), 6);
         assert_eq!(execution.pending_attempts(), vec![attempt.id().to_string()]);
+        let accounting = execution.attempt_accounting();
+        assert!(accounting[0].started);
+        assert!(!accounting[0].released);
+        assert!(accounting[0].result.is_none());
+        assert_eq!(accounting[0].reservation, *attempt.reservation());
         f.store
             .check_task_attempt_current(&f.cas, &lease, &attempt, &f.authority)
             .unwrap();
@@ -294,7 +340,9 @@ fn inflight_usage_survives_reopen_revocation_lower_settlement_and_writer_loss() 
         assert!(
             f.store
                 .check_task_attempt_current(&f.cas, &lease, &attempt, &f.authority)
-                .is_err()
+                .unwrap_err()
+                .to_string()
+                .contains("after a budget overrun")
         );
         // Revocation cannot erase receipt evidence for work that already started.
         f.authority.current = false;

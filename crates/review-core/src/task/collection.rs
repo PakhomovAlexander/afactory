@@ -1,4 +1,4 @@
-//! The tombstone of a collected Task (ADR-0128).
+//! The tombstone of a collected Task (ADR-0135).
 //!
 //! `af task gc --apply` appends one `task_collected` transition to a finished Task's log,
 //! carrying this record inline. It retains the summary `af task list` and `af task show` print

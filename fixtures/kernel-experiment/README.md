@@ -2,7 +2,7 @@
 
 The experiment Pipeline and the `release_build` measure of package R2 of
 [`docs/design/research-pipelines.md`](../../docs/design/research-pipelines.md)
-([ADR-0125](../../docs/adr/0125-measure-and-compare-source-candidates-in-the-kernel.md)),
+([ADR-0132](../../docs/adr/0132-measure-and-compare-source-candidates-in-the-kernel.md)),
 staged here because a Task Worker may not edit `.af/`. Installing them is a reviewed hand edit:
 
 1. Append `code-policy-measures.toml` to `.af/code-policy.toml`. This changes the code policy's
@@ -20,6 +20,6 @@ packages, so the staged copies are checked as they are:
 af catalog test --source . --manifest fixtures/kernel-experiment/catalog.toml --json
 ```
 
-`crates/af/tests/task_experiment.rs` performs the three steps on a copy of `.af/`, runs that
+`crates/af/tests/it/task_experiment.rs` performs the three steps on a copy of `.af/`, runs that
 command, and plans a `kernel/experiment` Task with zero Attempts. The measured command is
 `scripts/measure-release.sh`.

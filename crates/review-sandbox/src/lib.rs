@@ -34,6 +34,7 @@ pub mod cache;
 pub mod container;
 pub mod seal;
 pub mod task_build_cache;
+pub mod toolchain;
 pub mod workspace;
 
 pub use build_cache::{

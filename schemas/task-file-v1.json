@@ -33,7 +33,7 @@
       "minProperties": 1
     },
     "inputs": {
-      "$comment": "Optional root input bindings (ADR-0117, widened by ADR-0127). Absent by default; a Task file written before this decision compiles to the identical revision. Any root input the selected Pipeline declares may be bound except requirements, base and continuation; those and every undeclared name are refused by name at plan time, not here, so the refusal can say which Task and port asked for them. An exact artifact binds only source, history and sources; a list of Task outputs binds only a `many` port.",
+      "$comment": "Optional root input bindings (ADR-0117, widened by ADR-0134). Absent by default; a Task file written before this decision compiles to the identical revision. Any root input the selected Pipeline declares may be bound except requirements, base and continuation; those and every undeclared name are refused by name at plan time, not here, so the refusal can say which Task and port asked for them. An exact artifact binds only source, history and sources; a list of Task outputs binds only a `many` port.",
       "type": "object",
       "minProperties": 1,
       "maxProperties": 16,
@@ -71,7 +71,7 @@
             }
           },
           {
-            "$comment": "Several recorded Task outputs gathered, in this order, into one `many` port (ADR-0127).",
+            "$comment": "Several recorded Task outputs gathered, in this order, into one `many` port (ADR-0134).",
             "type": "array",
             "minItems": 1,
             "maxItems": 16,

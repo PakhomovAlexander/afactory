@@ -346,7 +346,7 @@ fn bound_source_refusal(bound: &review_source_git::task::TaskSourceBoundFromV1) 
 
 pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets, String> {
     // A report Task writes no source: its report is its only exit, whatever its acceptance
-    // (ADR-0126). Said before anything else is read, so no prepared record or Git mutation
+    // (ADR-0133). Said before anything else is read, so no prepared record or Git mutation
     // can follow.
     if is_report_task(task) {
         return Err(format!(

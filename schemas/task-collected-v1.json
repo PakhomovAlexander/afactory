@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-collected:1",
   "title": "af/TaskCollected@1",
-  "description": "The tombstone `af task gc --apply` writes into a finished Task's log (ADR-0128), carried inline by one `task_collected` TaskTransition@5 that references no artifact. It keeps the summary `af task list` and `af task show` print once the Task's artifacts may be gone. `collected_unix_ms` is no earlier than `last_event_unix_ms` and equals the transition's `now_unix_ms`, which the typed contract checks.",
+  "description": "The tombstone `af task gc --apply` writes into a finished Task's log (ADR-0135), carried inline by one `task_collected` TaskTransition@5 that references no artifact. It keeps the summary `af task list` and `af task show` print once the Task's artifacts may be gone. `collected_unix_ms` is no earlier than `last_event_unix_ms` and equals the transition's `now_unix_ms`, which the typed contract checks.",
   "type": "object",
   "additionalProperties": false,
   "required": [
