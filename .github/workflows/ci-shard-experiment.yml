@@ -1,0 +1,262 @@
+# Measurement only. Production validation stays in validate.yml.
+name: CI shard experiment
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/ci-shard-experiment.yml
+      - scripts/ci-shard-experiment.py
+      - docs/ci-optimization.md
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+  AF_EXPERIMENT_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  single:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.AF_EXPERIMENT_HEAD_SHA }}
+          persist-credentials: false
+      - name: Install pinned tools
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+          bash scripts/install-nextest.sh
+          sudo apt-get install -y --no-install-recommends lld
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - uses: ./.github/actions/cargo-cache
+      - name: Record runner and exact head
+        run: |
+          test "$(git rev-parse HEAD)" = "$AF_EXPERIMENT_HEAD_SHA"
+          git rev-parse HEAD > "$RUNNER_TEMP/head-sha.txt"
+          nproc > "$RUNNER_TEMP/runner-cpus.txt"
+          rustc --version > "$RUNNER_TEMP/rustc-version.txt"
+      - name: Compile and run unsharded selection
+        env:
+          AF_CI_METRICS: ${{ runner.temp }}/single-metrics.jsonl
+        run: |
+          python3 scripts/ci-step.py test-build cargo test --locked --no-run
+          python3 scripts/ci-step.py compile-cache python3 scripts/ci-shard-experiment.py cache-stats --arm single --output "$RUNNER_TEMP/single-compile-cache.json"
+          python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --output "$RUNNER_TEMP/full.json"
+          python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --partition count:1/2 --output "$RUNNER_TEMP/first.json"
+          python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --partition count:2/2 --output "$RUNNER_TEMP/second.json"
+          python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py verify --full "$RUNNER_TEMP/full.json" --first "$RUNNER_TEMP/first.json" --second "$RUNNER_TEMP/second.json"
+          python3 scripts/ci-step.py test cargo nextest run --locked --profile ci --test-threads 4 --no-tests fail
+      - name: Retain measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: single
+          path: |
+            ${{ runner.temp }}/single-metrics.jsonl
+            ${{ runner.temp }}/full.json
+            ${{ runner.temp }}/first.json
+            ${{ runner.temp }}/second.json
+            ${{ runner.temp }}/head-sha.txt
+            ${{ runner.temp }}/runner-cpus.txt
+            ${{ runner.temp }}/rustc-version.txt
+            ${{ runner.temp }}/cache-metrics.json
+            ${{ runner.temp }}/single-compile-cache.json
+            target/nextest/ci/junit.xml
+          if-no-files-found: warn
+
+  archive-build:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.AF_EXPERIMENT_HEAD_SHA }}
+          persist-credentials: false
+      - name: Install pinned tools
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+          bash scripts/install-nextest.sh
+          sudo apt-get install -y --no-install-recommends lld
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - uses: ./.github/actions/cargo-cache
+      - name: Record runner and exact head
+        run: |
+          test "$(git rev-parse HEAD)" = "$AF_EXPERIMENT_HEAD_SHA"
+          git rev-parse HEAD > "$RUNNER_TEMP/head-sha.txt"
+          nproc > "$RUNNER_TEMP/runner-cpus.txt"
+          rustc --version > "$RUNNER_TEMP/rustc-version.txt"
+      - name: Build one archive and prove its default partition
+        env:
+          AF_CI_METRICS: ${{ runner.temp }}/archive-build-metrics.jsonl
+        run: |
+          mkdir -p "$RUNNER_TEMP/archive"
+          python3 scripts/ci-step.py archive-build cargo nextest archive --locked --archive-file "$RUNNER_TEMP/archive/tests.tar.zst"
+          python3 scripts/ci-step.py compile-cache python3 scripts/ci-shard-experiment.py cache-stats --arm archive-build --output "$RUNNER_TEMP/archive-build-compile-cache.json"
+          python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --archive "$RUNNER_TEMP/archive/tests.tar.zst" --extract-to "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/archive/full.json"
+          python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --archive "$RUNNER_TEMP/archive/tests.tar.zst" --extract-to "$GITHUB_WORKSPACE" --partition count:1/2 --output "$RUNNER_TEMP/archive/first.json"
+          python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --archive "$RUNNER_TEMP/archive/tests.tar.zst" --extract-to "$GITHUB_WORKSPACE" --partition count:2/2 --output "$RUNNER_TEMP/archive/second.json"
+          python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py verify --full "$RUNNER_TEMP/archive/full.json" --first "$RUNNER_TEMP/archive/first.json" --second "$RUNNER_TEMP/archive/second.json"
+      - name: Share checked archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: checked-archive
+          path: ${{ runner.temp }}/archive/
+          if-no-files-found: error
+      - name: Retain build measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: archive-build-metrics
+          path: |
+            ${{ runner.temp }}/archive-build-metrics.jsonl
+            ${{ runner.temp }}/head-sha.txt
+            ${{ runner.temp }}/runner-cpus.txt
+            ${{ runner.temp }}/rustc-version.txt
+            ${{ runner.temp }}/cache-metrics.json
+            ${{ runner.temp }}/archive-build-compile-cache.json
+          if-no-files-found: warn
+
+  archive-shard:
+    needs: archive-build
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.AF_EXPERIMENT_HEAD_SHA }}
+          persist-credentials: false
+      - name: Install pinned tools
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+          bash scripts/install-nextest.sh
+      - name: Record exact head
+        run: |
+          test "$(git rev-parse HEAD)" = "$AF_EXPERIMENT_HEAD_SHA"
+          git rev-parse HEAD > "$RUNNER_TEMP/head-sha.txt"
+          nproc > "$RUNNER_TEMP/runner-cpus.txt"
+          rustc --version > "$RUNNER_TEMP/rustc-version.txt"
+      - name: Download checked archive
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: checked-archive
+          path: ${{ runner.temp }}/archive
+      - name: Run checked archive shard
+        env:
+          AF_CI_METRICS: ${{ runner.temp }}/archive-shard-metrics.jsonl
+        run: |
+          python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py verify --full "$RUNNER_TEMP/archive/full.json" --first "$RUNNER_TEMP/archive/first.json" --second "$RUNNER_TEMP/archive/second.json"
+          python3 scripts/ci-step.py test cargo nextest run --archive-file "$RUNNER_TEMP/archive/tests.tar.zst" --extract-to "$GITHUB_WORKSPACE" --extract-overwrite --profile ci --test-threads 4 --partition count:${{ matrix.shard }}/2 --no-tests fail
+      - name: Retain shard measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: archive-shard-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/archive-shard-metrics.jsonl
+            ${{ runner.temp }}/head-sha.txt
+            ${{ runner.temp }}/runner-cpus.txt
+            ${{ runner.temp }}/rustc-version.txt
+            target/nextest/ci/junit.xml
+          if-no-files-found: warn
+
+  rebuild-shard:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.AF_EXPERIMENT_HEAD_SHA }}
+          persist-credentials: false
+      - name: Install pinned tools
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+          bash scripts/install-nextest.sh
+          sudo apt-get install -y --no-install-recommends lld
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - uses: ./.github/actions/cargo-cache
+      - name: Record runner and exact head
+        run: |
+          test "$(git rev-parse HEAD)" = "$AF_EXPERIMENT_HEAD_SHA"
+          git rev-parse HEAD > "$RUNNER_TEMP/head-sha.txt"
+          nproc > "$RUNNER_TEMP/runner-cpus.txt"
+          rustc --version > "$RUNNER_TEMP/rustc-version.txt"
+      - name: Build independently and prove default partition
+        env:
+          AF_CI_METRICS: ${{ runner.temp }}/rebuild-shard-metrics.jsonl
+        run: |
+          python3 scripts/ci-step.py test-build cargo test --locked --no-run
+          python3 scripts/ci-step.py compile-cache python3 scripts/ci-shard-experiment.py cache-stats --arm rebuild-shard-${{ matrix.shard }} --output "$RUNNER_TEMP/rebuild-shard-${{ matrix.shard }}-compile-cache.json"
+          python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --output "$RUNNER_TEMP/full.json"
+          python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --partition count:1/2 --output "$RUNNER_TEMP/first.json"
+          python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --partition count:2/2 --output "$RUNNER_TEMP/second.json"
+          python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py verify --full "$RUNNER_TEMP/full.json" --first "$RUNNER_TEMP/first.json" --second "$RUNNER_TEMP/second.json"
+          python3 scripts/ci-step.py test cargo nextest run --locked --profile ci --test-threads 4 --partition count:${{ matrix.shard }}/2 --no-tests fail
+      - name: Retain shard manifest
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rebuild-manifest-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/full.json
+            ${{ runner.temp }}/first.json
+            ${{ runner.temp }}/second.json
+          if-no-files-found: warn
+      - name: Retain shard measurements
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rebuild-shard-${{ matrix.shard }}
+          path: |
+            ${{ runner.temp }}/rebuild-shard-metrics.jsonl
+            ${{ runner.temp }}/head-sha.txt
+            ${{ runner.temp }}/runner-cpus.txt
+            ${{ runner.temp }}/rustc-version.txt
+            ${{ runner.temp }}/cache-metrics.json
+            ${{ runner.temp }}/rebuild-shard-${{ matrix.shard }}-compile-cache.json
+            target/nextest/ci/junit.xml
+          if-no-files-found: warn
+
+  aggregate:
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    needs: [single, archive-build, archive-shard, rebuild-shard]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.AF_EXPERIMENT_HEAD_SHA }}
+          persist-credentials: false
+      - name: Check exact head
+        run: test "$(git rev-parse HEAD)" = "$AF_EXPERIMENT_HEAD_SHA"
+      - name: Download first rebuilt manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rebuild-manifest-1
+          path: ${{ runner.temp }}/first-runner
+      - name: Download second rebuilt manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rebuild-manifest-2
+          path: ${{ runner.temp }}/second-runner
+      - name: Require actual rebuilt shards and every variant
+        run: |
+          python3 scripts/ci-shard-experiment.py verify --full "$RUNNER_TEMP/first-runner/full.json" --first "$RUNNER_TEMP/first-runner/first.json" --second "$RUNNER_TEMP/second-runner/second.json"
+          python3 scripts/ci-shard-experiment.py verify --full "$RUNNER_TEMP/second-runner/full.json" --first "$RUNNER_TEMP/first-runner/first.json" --second "$RUNNER_TEMP/second-runner/second.json"
+          test '${{ needs.single.result }}' = success
+          test '${{ needs.archive-build.result }}' = success
+          test '${{ needs.archive-shard.result }}' = success
+          test '${{ needs.rebuild-shard.result }}' = success
