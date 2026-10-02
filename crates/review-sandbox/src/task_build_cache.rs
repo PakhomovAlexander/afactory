@@ -233,10 +233,10 @@ impl TaskBuildCacheKeyLock {
             Ok(stat) if stat.st_uid != nix::unistd::geteuid().as_raw() => {
                 return Some("the toolchain key belongs to another user".into());
             }
-            Ok(stat) if u32::from(stat.st_mode) & 0o777 != 0o700 => {
+            Ok(stat) if stat.st_mode & 0o777 != 0o700 => {
                 return Some(format!(
                     "the toolchain key has mode {:o}, not 700",
-                    u32::from(stat.st_mode) & 0o777
+                    stat.st_mode & 0o777
                 ));
             }
             Ok(_) => {}
@@ -558,10 +558,10 @@ impl WarmDirectory {
         if stat.st_uid != me {
             return Judged::Suspect("the directory belongs to another user".into());
         }
-        if u32::from(stat.st_mode) & 0o777 != 0o700 {
+        if stat.st_mode & 0o777 != 0o700 {
             return Judged::Suspect(format!(
                 "the directory has mode {:o}, not 700",
-                u32::from(stat.st_mode) & 0o777
+                stat.st_mode & 0o777
             ));
         }
         let child = match open_child(&self.key, &self.name) {
@@ -668,7 +668,7 @@ fn open_level(parent: &OwnedFd, name: &str, repair: bool) -> Result<(OwnedFd, bo
     if stat.st_uid != nix::unistd::geteuid().as_raw() {
         return Err("a Task build cache directory belongs to another user".into());
     }
-    let private = u32::from(stat.st_mode) & 0o777 == 0o700;
+    let private = stat.st_mode & 0o777 == 0o700;
     if !private && repair {
         nix::sys::stat::fchmod(&descriptor, Mode::S_IRWXU)
             .map_err(|errno| format!("securing a Task build cache directory: {errno}"))?;
@@ -682,7 +682,7 @@ fn secure_level(descriptor: &OwnedFd) -> Result<(), String> {
     if stat.st_uid != nix::unistd::geteuid().as_raw() {
         return Err("a Task build cache directory belongs to another user".into());
     }
-    if u32::from(stat.st_mode) & 0o777 != 0o700 {
+    if stat.st_mode & 0o777 != 0o700 {
         nix::sys::stat::fchmod(descriptor, Mode::S_IRWXU)
             .map_err(|errno| format!("securing a Task build cache directory: {errno}"))?;
     }
