@@ -16,6 +16,6 @@ path = "fixtures/kernel-experiment/task-packages/kernel/experiment-trial"
 version = "1.0.0"
 
 [packages."kernel/implementer"]
-digest = "sha256:efec01c69b13f76ec9d2102aead4a0c0a18fda93aa6adc1d00adbf309e9511cf"
+digest = "sha256:cc933a72e607c996e2e159e682e573b2099d6207663df06e239efee3e55e7836"
 path = ".af/task-packages/kernel/implementer"
 version = "1.4.0"
