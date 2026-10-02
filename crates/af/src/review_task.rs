@@ -557,7 +557,7 @@ fn execute_current(
                     .with_cancellation(&cancellation);
                     runtime.execute()?;
                 }
-                // An interrupted Round publishes no conclusion; the Campaign resumes (ADR-0126).
+                // An interrupted Round publishes no conclusion; the Campaign resumes (ADR-0129).
                 super::interrupt::check()?;
                 let conclusion = host.publish_recorded_round_conclusion(cas)?;
                 let mut continuation_required = conclusion.can_continue;

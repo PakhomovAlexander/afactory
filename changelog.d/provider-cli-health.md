@@ -6,4 +6,4 @@
   dispatched or any Attempt is charged. Each report names the Provider ID, the program path, the
   CLI's own first error line and the fix it suggests. A CLI that breaks after admission fails its
   Attempt as a Provider environment failure, not a model or credential failure
-  ([ADR-0127](docs/adr/0127-report-a-provider-cli-that-cannot-start.md)).
+  ([ADR-0130](docs/adr/0130-report-a-provider-cli-that-cannot-start.md)).

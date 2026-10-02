@@ -1,4 +1,4 @@
-# ADR-0125: Renew a live Task writer's lease through its own Store connection
+# ADR-0128: Renew a live Task writer's lease through its own Store connection
 
 **Status:** accepted (2026-09-29), revised (2026-09-30) for the SQLite write lock. Amends
 [ADR-0089](0089-interrupt-task-work-when-its-writer-heartbeat-fails.md): the heartbeat no

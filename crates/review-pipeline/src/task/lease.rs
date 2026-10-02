@@ -1,6 +1,6 @@
 //! One renewable writer lease for execution and bounded preparation. The caller and heartbeat
 //! serialize mutations through the same Store connection whenever the heartbeat can take it.
-//! The heartbeat also holds a second connection to the same Store file (ADR-0125): it observes
+//! The heartbeat also holds a second connection to the same Store file (ADR-0128): it observes
 //! the exact writer through it on every tick, and renews through it only once the caller's
 //! connection has stayed held into the lease's last reserve, so no single Store operation can
 //! outlast a live writer's lease. That connection waits a bounded time for the database's write
@@ -115,7 +115,7 @@ pub fn with_heartbeat_controlled<T>(
             return Err(error);
         }
         // A Store that cannot be reopened, such as one with no database file, keeps the shared
-        // connection as its only path, exactly as before ADR-0125.
+        // connection as its only path, exactly as before ADR-0128.
         shared.reopen(OWN_BUSY_TIMEOUT).ok()
     };
     let stopped = (Mutex::new(false), Condvar::new());

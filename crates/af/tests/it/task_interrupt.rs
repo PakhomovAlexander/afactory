@@ -1,5 +1,5 @@
 //! SIGINT to `af` running a Task stops its Worker process group, records the cancelled
-//! Attempt, exits 130 and leaves the Task resumable (ADR-0126). Command Workers only.
+//! Attempt, exits 130 and leaves the Task resumable (ADR-0129). Command Workers only.
 use crate::task_cli;
 use nix::sys::signal::Signal;
 use review_core::task::TaskPhaseV1;

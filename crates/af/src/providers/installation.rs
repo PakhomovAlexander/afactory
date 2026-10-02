@@ -1,4 +1,4 @@
-//! Whether a Provider's official CLI can start at all (ADR-0127).
+//! Whether a Provider's official CLI can start at all (ADR-0130).
 //!
 //! An npm auto-update can leave `codex` without its platform package, and every invocation then
 //! fails at once with the CLI's own installation error. The status, setup and Task identity

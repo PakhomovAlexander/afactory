@@ -326,7 +326,7 @@ fn run_planner(
             .with_cancellation(&cancellation);
         crate::interrupt::note_task(lease.task_id());
         let report = crate::interrupt::forwarding(&cancellation, || runtime.execute());
-        // An interrupted planner is not finished as incomplete; it resumes (ADR-0126).
+        // An interrupted planner is not finished as incomplete; it resumes (ADR-0129).
         crate::interrupt::check()?;
         let _report = report?;
         let state = runtime.projection()?;

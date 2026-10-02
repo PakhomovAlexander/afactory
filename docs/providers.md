@@ -84,7 +84,7 @@ Error: Missing optional dependency @openai/codex-darwin-arm64. Reinstall Codex: 
 ```
 
 `af` reports this as a **Provider installation failure**, never as a login, credential or model
-problem ([ADR-0127](adr/0127-report-a-provider-cli-that-cannot-start.md)). A CLI cannot start when
+problem ([ADR-0130](adr/0130-report-a-provider-cli-that-cannot-start.md)). A CLI cannot start when
 any of these is true:
 
 - the program is not on PATH;

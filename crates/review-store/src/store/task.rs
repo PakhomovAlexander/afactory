@@ -788,7 +788,7 @@ impl TaskProjection {
         }
         // The current writer's operation may have read its clock before its own heartbeat
         // appended a later renewal: that is the same writer, not a clock moving backwards. It
-        // is judged, and stamped (`writer_time`), at the last recorded time (ADR-0125).
+        // is judged, and stamped (`writer_time`), at the last recorded time (ADR-0128).
         let time = self.writer_time(transition);
         if time >= self.lease_until {
             return Err(conflict(format!(
@@ -1521,7 +1521,7 @@ impl EventStore {
         };
         let valid_until = if let TaskChangeV1::LeaseRenewed { .. } = &transition.change {
             // Recheck expiry inside the write transaction: a renewal that waited for the
-            // database's write lock must not extend a lease that expired meanwhile (ADR-0125).
+            // database's write lock must not extend a lease that expired meanwhile (ADR-0128).
             state.as_ref().map(|state| state.lease_until)
         } else if owned_record
             || matches!(

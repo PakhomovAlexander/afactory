@@ -49,7 +49,7 @@ pub(crate) fn run(
                     )?
                     .with_cancellation(&cancellation);
                     let report = runtime.execute_provider_admissions()?;
-                    // Interrupted admissions are not reported as the doctor's outcome (ADR-0126).
+                    // Interrupted admissions are not reported as the doctor's outcome (ADR-0129).
                     crate::interrupt::check()?;
                     // Read-only hydration leaves the original connection available for renewal.
                     // No transaction is retained across this preparation or eventual output.

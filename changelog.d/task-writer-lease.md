@@ -6,4 +6,4 @@
   commits after its lease expired is now refused inside the write transaction. A successor or an
   expired lease still fences and cancels the old writer, and is now seen without waiting for the
   held Store
-  ([ADR-0125](docs/adr/0125-renew-a-live-task-writer-lease-through-its-own-connection.md)).
+  ([ADR-0128](docs/adr/0128-renew-a-live-task-writer-lease-through-its-own-connection.md)).

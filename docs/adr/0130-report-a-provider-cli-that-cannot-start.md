@@ -1,4 +1,4 @@
-# ADR-0127: Report a Provider CLI that cannot start as an installation failure
+# ADR-0130: Report a Provider CLI that cannot start as an installation failure
 
 **Status:** accepted (2026-10-02). Extends
 [ADR-0112](0112-refuse-agent-mediated-provider-logins.md): `af provider status` gains exit code 4
@@ -47,7 +47,10 @@ would only double the first. A missing or non-executable program needs no proces
 - The identity recheck before each private Worker send separates a CLI that cannot start from
   an identity that changed. The Attempt still fails with zero charge and the existing
   `provider_failure` feedback code. Its diagnostic now reads `Provider environment failure, not a
-  model or credential failure: …`.
+  model or credential failure: …`. A captured executable that was removed is first replaced by
+  the installed client, and refused by name when none is installed
+  ([ADR-0126](0126-keep-the-captured-native-executable-when-its-launcher-moves.md)). The
+  diagnosis applies to the client actually rechecked.
 
 The CLI's error line and suggested fix are Provider-authored text. Each is bounded to one line,
 with terminal escapes and control characters removed. They reach human output, stderr and Attempt

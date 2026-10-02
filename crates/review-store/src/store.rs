@@ -230,7 +230,7 @@ impl EventStore {
 
     /// Open a second connection to this Store's database file, with the same durability. A
     /// Task writer's heartbeat uses it to observe and renew its own lease while the caller's
-    /// connection is busy (ADR-0125). It grants nothing by itself: every append through it
+    /// connection is busy (ADR-0128). It grants nothing by itself: every append through it
     /// passes the same validation and exact sequence fence as the caller's own. A Store with no
     /// database file (in-memory or temporary) has nothing to share and is refused.
     ///

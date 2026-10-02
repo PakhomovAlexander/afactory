@@ -501,7 +501,7 @@ fn exited_without_reaping(_watch: &ExitWatch) -> Option<bool> {
 pub(crate) struct Leader {
     pid: u32,
     state: std::sync::Mutex<LeaderState>,
-    /// Listed while unreaped, so a host stopping at once can kill the group (ADR-0126).
+    /// Listed while unreaped, so a host stopping at once can kill the group (ADR-0129).
     live: std::sync::Mutex<live::Registration>,
 }
 

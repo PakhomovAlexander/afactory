@@ -1,5 +1,5 @@
 //! The process groups this process supervises right now, for a host that must stop at once
-//! (ADR-0126). Every supervised leader holds one slot from its spawn until just before its
+//! (ADR-0129). Every supervised leader holds one slot from its spawn until just before its
 //! reap, so a listed id is always reserved by an unreaped leader. A full table only means a
 //! group is not listed: its own cancellation and deadline still stop it.
 

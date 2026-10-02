@@ -1,4 +1,4 @@
-//! SIGINT and SIGTERM while af runs Task work (ADR-0126). The signals are blocked before any
+//! SIGINT and SIGTERM while af runs Task work (ADR-0129). The signals are blocked before any
 //! thread starts and taken by one watcher thread with `sigwait`, so no handler code runs in
 //! signal context. The first signal records itself and requests the ADR-0089 cancellation of
 //! every execution in progress or started later; supervision then stops and reaps each Worker

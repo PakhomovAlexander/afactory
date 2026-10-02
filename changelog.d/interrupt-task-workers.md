@@ -4,4 +4,4 @@
   (SIGINT) or 143 (SIGTERM). The interrupted Attempt is recorded as a failed, cancelled Attempt
   and keeps its charge. The Task is not finished; stderr says to resume it with
   `af task run TASK_ID`. A second Ctrl-C while stopping kills the remaining Worker groups and
-  exits at once ([ADR-0126](docs/adr/0126-stop-task-workers-when-af-is-interrupted.md)).
+  exits at once ([ADR-0129](docs/adr/0129-stop-task-workers-when-af-is-interrupted.md)).

@@ -134,7 +134,7 @@ work still holds the shared one with 2 s of lease left, so a long Store operatio
 a live writer. See
 [ADR-0087](../adr/0087-control-native-task-invocations-through-the-shared-supervisor.md),
 [ADR-0089](../adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md) and
-[ADR-0125](../adr/0125-renew-a-live-task-writer-lease-through-its-own-connection.md).
+[ADR-0128](../adr/0128-renew-a-live-task-writer-lease-through-its-own-connection.md).
 
 Codex final-message capture reads a bounded regular file through the held private output
 directory. Symlinks, FIFOs and other nonregular files refuse without blocking or falling back

@@ -1,4 +1,4 @@
-# ADR-0126: Stop Task Workers when af is interrupted
+# ADR-0129: Stop Task Workers when af is interrupted
 
 **Status:** accepted (2026-10-01). Amends
 [ADR-0089](0089-interrupt-task-work-when-its-writer-heartbeat-fails.md): the CLI now installs

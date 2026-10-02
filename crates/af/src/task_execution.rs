@@ -1834,7 +1834,7 @@ fn execute(
     crate::interrupt::note_task(lease.task_id());
     let report = crate::interrupt::forwarding(&cancellation, || runtime.execute());
     // Interrupted work is neither assembled nor finished: the lease is released and the Task
-    // stays resumable with `af task run` (ADR-0126).
+    // stays resumable with `af task run` (ADR-0129).
     crate::interrupt::check()?;
     let report = report?;
     let projection = runtime.projection()?;

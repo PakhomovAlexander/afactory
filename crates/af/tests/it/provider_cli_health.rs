@@ -1,4 +1,4 @@
-//! A Provider whose official CLI cannot start (issue #136, ADR-0127).
+//! A Provider whose official CLI cannot start (issue #136, ADR-0130).
 //!
 //! An auto-update once left `codex` without its platform package: every invocation failed at
 //! once with the CLI's own installation error, and af reported nothing that pointed at the CLI.

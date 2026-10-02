@@ -1430,7 +1430,7 @@ fn main() {
 }
 
 /// The commands that run Task Workers through the shared Task host take over SIGINT and SIGTERM
-/// so an interrupt stops those Workers before af exits (ADR-0126).
+/// so an interrupt stops those Workers before af exits (ADR-0129).
 fn runs_task_work(command: &cli::Command) -> bool {
     match command {
         cli::Command::Review(namespace) => {
