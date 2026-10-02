@@ -94,7 +94,11 @@ impl EventStore {
                     writer = Some(owner);
                 }
                 _ if writer.as_ref() != Some(&owner) => {
-                    return Err(conflict("Task writer lease is expired or fenced"));
+                    return Err(conflict(format!(
+                        "Task writer lease is expired or fenced: event {sequence} was written by \
+                         {} epoch {}, not the lease holder",
+                        owner.0, owner.1
+                    )));
                 }
                 _ => {}
             }
@@ -107,11 +111,18 @@ impl EventStore {
             .filter(|_| genesis)
             .ok_or_else(|| conflict("Unknown Task lease"))?;
         let time = now()?;
-        if writer.as_ref() != Some(&(lease.writer.clone(), lease.epoch))
-            || time >= until
-            || time < clock
-        {
-            return Err(conflict("Task writer lease is expired or fenced"));
+        if writer.as_ref() != Some(&(lease.writer.clone(), lease.epoch)) {
+            return Err(conflict(format!(
+                "Task writer lease is expired or fenced: the lease is held by {:?}, not {} \
+                 epoch {}",
+                writer, lease.writer, lease.epoch
+            )));
+        }
+        if time >= until || time < clock {
+            return Err(conflict(format!(
+                "Task writer lease is expired or fenced: observed at {time}, expiry {until}, last \
+                 recorded {clock}"
+            )));
         }
         Ok(until)
     }

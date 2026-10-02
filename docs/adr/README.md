@@ -220,3 +220,9 @@ future readers need.
 - [0126 — Keep the captured native executable when its launcher
   moves](0126-keep-the-captured-native-executable-when-its-launcher-moves.md)
 - [0127 — Snapshot pinned Rust before native Task checks](0127-snapshot-pinned-rust-before-native-task-checks.md)
+- [0128 — Renew a live Task writer's lease through its own Store
+  connection](0128-renew-a-live-task-writer-lease-through-its-own-connection.md)
+- [0129 — Stop Task Workers when af is
+  interrupted](0129-stop-task-workers-when-af-is-interrupted.md)
+- [0130 — Report a Provider CLI that cannot start as an installation
+  failure](0130-report-a-provider-cli-that-cannot-start.md)

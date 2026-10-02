@@ -779,14 +779,37 @@ impl TaskProjection {
         self.decisions.get(plan_id).map(|d| d.value.decision)
     }
     fn check_lease(&self, transition: &TaskTransitionV1) -> Result<(), StoreError> {
-        if transition.writer != self.writer
-            || transition.epoch != self.epoch
-            || transition.now_unix_ms >= self.lease_until
-            || transition.now_unix_ms < self.last_time
-        {
-            return Err(conflict("Task writer lease is expired or fenced"));
+        if transition.writer != self.writer || transition.epoch != self.epoch {
+            return Err(conflict(format!(
+                "Task writer lease is expired or fenced: writer {} epoch {} is not the current \
+                 writer {} epoch {}",
+                transition.writer, transition.epoch, self.writer, self.epoch
+            )));
+        }
+        // The current writer's operation may have read its clock before its own heartbeat
+        // appended a later renewal: that is the same writer, not a clock moving backwards. It
+        // is judged, and stamped (`writer_time`), at the last recorded time (ADR-0128).
+        let time = self.writer_time(transition);
+        if time >= self.lease_until {
+            return Err(conflict(format!(
+                "Task writer lease is expired or fenced: time {time} is not before the lease's \
+                 expiry {} (last recorded {})",
+                self.lease_until, self.last_time
+            )));
         }
         Ok(())
+    }
+
+    /// The time a transition is recorded at: the current writer's own transition is never
+    /// earlier than the last recorded event, which may be that writer's heartbeat renewal made
+    /// through its other connection while this operation was in flight. Another writer's time
+    /// is its own, so a premature takeover is still refused.
+    fn writer_time(&self, transition: &TaskTransitionV1) -> u64 {
+        if transition.writer == self.writer && transition.epoch == self.epoch {
+            transition.now_unix_ms.max(self.last_time)
+        } else {
+            transition.now_unix_ms
+        }
     }
 
     fn apply(
@@ -1475,6 +1498,11 @@ impl EventStore {
         owned_prefix: Option<(u64, Option<(String, u64)>)>,
         state: Option<TaskProjection>,
     ) -> Result<RunEvent, StoreError> {
+        let mut transition = transition;
+        if let Some(state) = &state {
+            // Stamped before it is persisted, so the log stays monotonic and replays unchanged.
+            transition.now_unix_ms = state.writer_time(&transition);
+        }
         let (event_type, value) = review_handoff::encode_transition(&transition)?;
         let first = state.as_ref().map_or(0, |s| s.next_sequence);
         if owned_prefix
@@ -1491,11 +1519,16 @@ impl EventStore {
         } else {
             false
         };
-        let valid_until = if owned_record
+        let valid_until = if let TaskChangeV1::LeaseRenewed { .. } = &transition.change {
+            // Recheck expiry inside the write transaction: a renewal that waited for the
+            // database's write lock must not extend a lease that expired meanwhile (ADR-0128).
+            state.as_ref().map(|state| state.lease_until)
+        } else if owned_record
             || matches!(
                 transition.change,
                 TaskChangeV1::ReviewContinued { .. } | TaskChangeV1::RecordingResumed { .. }
-            ) {
+            )
+        {
             state.as_ref().map(|state| {
                 state.lease_until.min(
                     state

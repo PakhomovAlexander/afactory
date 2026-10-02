@@ -401,3 +401,133 @@ fn catalog_schema(schema: &Value) -> jsonschema::Validator {
         .build(schema)
         .unwrap()
 }
+
+/// Issue #136: a Codex CLI that cannot start — it exits 1 printing its installation error, or it
+/// is missing — is refused at Provider admission with the CLI's own message, before any Attempt
+/// is reserved or charged and before the paid capability protocol runs.
+#[test]
+fn a_provider_cli_that_cannot_start_is_refused_at_admission_before_any_attempt() {
+    const NPM_ERROR: &str = "Error: Missing optional dependency @openai/codex-darwin-arm64. Reinstall Codex: npm install -g @openai/codex@latest";
+    for missing in [false, true] {
+        let mut f = Fixture::new(true, 5712, 49152);
+        let planned = success(f.cli(&["task", "plan", "--file", "document.json"]));
+        let bin = f._root.path().join("bin");
+        let program = std::fs::canonicalize(bin.join("codex")).unwrap();
+        if missing {
+            std::fs::remove_file(&program).unwrap();
+            // No other `codex` may stand in for the removed one; git stays reachable.
+            let git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+                .map(|directory| directory.join("git"))
+                .find(|candidate| candidate.is_file())
+                .unwrap();
+            let shims = f._root.path().join("shims");
+            std::fs::create_dir(&shims).unwrap();
+            std::os::unix::fs::symlink(git, shims.join("git")).unwrap();
+            f.path = std::env::join_paths([bin, shims]).unwrap();
+        } else {
+            std::fs::write(
+                &program,
+                format!("#!/bin/sh\nprintf '%s\\n' '{NPM_ERROR}' >&2\nexit 1\n"),
+            )
+            .unwrap();
+        }
+        let out = f.cli(&["task", "run", "--execute", "release-notes"]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{stdout}\n{stderr}");
+        let refusal = "Task Provider admission refused before any Worker was dispatched: provider codex-personal: Provider installation failure: the codex CLI";
+        assert!(stderr.contains(refusal), "{stderr}");
+        if missing {
+            assert!(stderr.contains("`codex` is not on PATH"), "{stderr}");
+        } else {
+            assert!(
+                stderr.contains(&format!(
+                    "`{}` exited 1 on its own `--version` check before doing any provider work: {NPM_ERROR}; fix: Reinstall Codex: npm install -g @openai/codex@latest",
+                    program.display()
+                )),
+                "{stderr}"
+            );
+        }
+        assert!(!stderr.contains("identity"), "{stderr}");
+        assert!(!f.home.join("calls").exists(), "a Provider protocol ran");
+        let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
+        let store =
+            review_store::EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+        let projection = store
+            .task_projection(&cas, "release-notes")
+            .unwrap()
+            .unwrap();
+        assert_eq!(projection.plan_id.as_deref(), planned["plan_id"].as_str());
+        assert!(
+            projection
+                .execution
+                .is_none_or(|execution| execution.attempt_accounting().is_empty()),
+            "an Attempt was reserved for a Provider whose CLI cannot start"
+        );
+    }
+}
+
+/// Issue #136's incident: the CLI broke after admission (an auto-update). The author Worker's
+/// Attempts fail as a Provider environment failure naming the CLI's own error — not as a model
+/// failure, and not as an identity or credential refusal.
+#[test]
+fn a_cli_that_stops_starting_mid_task_fails_its_attempt_as_an_environment_failure() {
+    let f = Fixture::new(true, 5712, 49152);
+    let program = f._root.path().join("bin/codex");
+    let native = std::fs::read_to_string(&program).unwrap();
+    let native = native
+        .replacen(
+            "home=os.environ['CODEX_HOME']\n",
+            "home=os.environ['CODEX_HOME']\nif os.path.exists(home+'/broken'):\n sys.stderr.write('Error: Missing optional dependency @openai/codex-darwin-arm64. Reinstall Codex: npm install -g @openai/codex@latest\\n'); sys.exit(1)\n",
+            1,
+        )
+        .replacen(
+            "with open(home+'/calls','a') as f: f.write(kind+'\\n')\n",
+            "with open(home+'/calls','a') as f: f.write(kind+'\\n')\nif kind=='admission': open(home+'/broken','w').close()\n",
+            1,
+        );
+    assert!(native.contains("/broken"), "{native}");
+    std::fs::write(&program, native).unwrap();
+    success(f.cli(&["task", "plan", "--file", "document.json"]));
+    let out = f.cli(&["task", "run", "--execute", "release-notes"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(f.home.join("calls")).unwrap(),
+        "admission\n",
+        "the author Worker reached a CLI that cannot start"
+    );
+    let cas = review_store::Cas::open_existing(f.state.join("cas")).unwrap();
+    let store = review_store::EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+    let projection = store
+        .task_projection(&cas, "release-notes")
+        .unwrap()
+        .unwrap();
+    let execution = projection.execution.unwrap();
+    let authors: Vec<_> = execution
+        .attempt_accounting()
+        .into_iter()
+        .filter(|attempt| attempt.reservation.node == "root.nodes.author" && attempt.started)
+        .collect();
+    assert!(!authors.is_empty(), "{stdout}\n{stderr}");
+    for attempt in authors {
+        assert_eq!(attempt.charged_tokens, 0);
+        let Some(review_core::task::execution::TaskAttemptResultV1::Failed {
+            diagnostic_id, ..
+        }) = attempt.result
+        else {
+            panic!("author Attempt did not fail: {:?}", attempt.result);
+        };
+        let diagnostic = cas.get_json(&diagnostic_id).unwrap().to_string();
+        assert!(
+            diagnostic.contains("Provider environment failure, not a model or credential failure: provider codex-personal: Provider installation failure: the codex CLI"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("Error: Missing optional dependency @openai/codex-darwin-arm64"),
+            "{diagnostic}"
+        );
+        assert!(!diagnostic.contains("identity"), "{diagnostic}");
+    }
+}

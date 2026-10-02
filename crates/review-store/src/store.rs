@@ -228,6 +228,30 @@ impl EventStore {
         })
     }
 
+    /// Open a second connection to this Store's database file, with the same durability. A
+    /// Task writer's heartbeat uses it to observe and renew its own lease while the caller's
+    /// connection is busy (ADR-0128). It grants nothing by itself: every append through it
+    /// passes the same validation and exact sequence fence as the caller's own. A Store with no
+    /// database file (in-memory or temporary) has nothing to share and is refused.
+    ///
+    /// A write through it waits at most `busy_timeout` for another connection's write lock
+    /// before it fails with a busy error, so its caller can still decide before a deadline.
+    pub fn reopen(&self, busy_timeout: std::time::Duration) -> Result<Self, StoreError> {
+        let path = self
+            .conn
+            .path()
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| StoreError::Conflict("Store has no database file to reopen".into()))?;
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        conn.pragma_update(None, "synchronous", "FULL")?;
+        conn.busy_timeout(busy_timeout)?;
+        Ok(Self {
+            conn,
+            task_cache: std::cell::RefCell::new(None),
+            validated_change_sets: std::collections::BTreeMap::new(),
+        })
+    }
+
     fn init(conn: Connection) -> Result<Self, StoreError> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         // FULL, not NORMAL: an accepted effect must survive process death, which is the entire

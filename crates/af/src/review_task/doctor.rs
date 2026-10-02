@@ -20,54 +20,59 @@ pub(crate) fn run(
     let cancellation = std::sync::atomic::AtomicBool::new(false);
     let work = {
         let shared = review_store::SharedEventStore::new(&mut *store);
-        review_pipeline::task::lease::with_heartbeat_controlled(
-            &shared,
-            cas,
-            &session.lease,
-            Some(&cancellation),
-            || {
-                let captured = &session.captured;
-                let host = CampaignReviewTaskHost::new(
-                    cas,
-                    shared.clone(),
-                    &captured.compiler,
-                    session.lease.clone(),
-                    model_bindings(&captured.plan, &captured.captured, &captured.workers)?,
-                )?;
-                let authority = CapturedTaskAuthority::for_campaign_review(
-                    &captured.compiler,
-                    &host,
-                    &NoTaskDeveloper,
-                );
-                let runtime = TaskRuntime::with_store(
-                    shared.clone(),
-                    cas,
-                    session.lease.clone(),
-                    &authority,
-                    &host,
-                )?
-                .with_cancellation(&cancellation);
-                let report = runtime.execute_provider_admissions()?;
-                // Read-only hydration leaves the original connection available for renewal.
-                // No transaction is retained across this preparation or eventual output.
-                let reader =
-                    EventStore::open_read_only(options.resolved_state_dir()?.join("events.sqlite"))
-                        .map_err(|e| e.to_string())?;
-                let state = reader
-                    .task_projection(cas, &captured.revision.task_id)
-                    .map_err(|e| e.to_string())?
-                    .ok_or("Review Task disappeared")?;
-                let now = u64::try_from(
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
+        crate::interrupt::forwarding(&cancellation, || {
+            review_pipeline::task::lease::with_heartbeat_controlled(
+                &shared,
+                cas,
+                &session.lease,
+                Some(&cancellation),
+                || {
+                    let captured = &session.captured;
+                    let host = CampaignReviewTaskHost::new(
+                        cas,
+                        shared.clone(),
+                        &captured.compiler,
+                        session.lease.clone(),
+                        model_bindings(&captured.plan, &captured.captured, &captured.workers)?,
+                    )?;
+                    let authority = CapturedTaskAuthority::for_campaign_review(
+                        &captured.compiler,
+                        &host,
+                        &NoTaskDeveloper,
+                    );
+                    let runtime = TaskRuntime::with_store(
+                        shared.clone(),
+                        cas,
+                        session.lease.clone(),
+                        &authority,
+                        &host,
+                    )?
+                    .with_cancellation(&cancellation);
+                    let report = runtime.execute_provider_admissions()?;
+                    // Interrupted admissions are not reported as the doctor's outcome (ADR-0129).
+                    crate::interrupt::check()?;
+                    // Read-only hydration leaves the original connection available for renewal.
+                    // No transaction is retained across this preparation or eventual output.
+                    let reader = EventStore::open_read_only(
+                        options.resolved_state_dir()?.join("events.sqlite"),
+                    )
+                    .map_err(|e| e.to_string())?;
+                    let state = reader
+                        .task_projection(cas, &captured.revision.task_id)
                         .map_err(|e| e.to_string())?
-                        .as_millis(),
-                )
-                .map_err(|_| "Task clock overflow")?;
-                let value = outcome(captured, &state, &report, now)?;
-                PreparedDoctor::new(&value, &report, options.json)
-            },
-        )
+                        .ok_or("Review Task disappeared")?;
+                    let now = u64::try_from(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_err(|e| e.to_string())?
+                            .as_millis(),
+                    )
+                    .map_err(|_| "Task clock overflow")?;
+                    let value = outcome(captured, &state, &report, now)?;
+                    PreparedDoctor::new(&value, &report, options.json)
+                },
+            )
+        })
     };
     lifecycle::release_then_emit(cas, store, &session.lease, work, |prepared| {
         Ok(prepared.emit())

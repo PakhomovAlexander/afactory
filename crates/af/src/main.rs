@@ -36,6 +36,7 @@ mod authority;
 mod caches;
 mod cli;
 mod config;
+mod interrupt;
 mod onboard;
 mod project;
 mod providers;
@@ -1068,6 +1069,13 @@ fn main() {
         selfmgmt::after_command(&argv);
         std::process::exit(code);
     };
+    // Still the only thread: every thread started from here inherits the blocked signals.
+    if runs_task_work(&command)
+        && let Err(error) = interrupt::install()
+    {
+        eprintln!("af: {error}");
+        std::process::exit(1);
+    }
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
         cli::Command::Review(namespace) => ("af review", review_command(namespace)),
         cli::Command::Provider { command } => ("af provider", provider_command(command)),
@@ -1396,6 +1404,9 @@ fn main() {
         ),
         cli::Command::Help { words } => ("af help", help_command(&words)),
     };
+    if let Some(signal) = interrupt::received() {
+        exit_interrupted(&argv, prefix, signal, outcome.err());
+    }
     let code = match outcome {
         Ok(code) => code,
         Err(error) => {
@@ -1416,6 +1427,59 @@ fn main() {
     if code != 0 {
         std::process::exit(code);
     }
+}
+
+/// The commands that run Task Workers through the shared Task host take over SIGINT and SIGTERM
+/// so an interrupt stops those Workers before af exits (ADR-0129).
+fn runs_task_work(command: &cli::Command) -> bool {
+    match command {
+        cli::Command::Review(namespace) => {
+            matches!(namespace.command, None | Some(cli::ReviewCommand::Run(_)))
+        }
+        cli::Command::Provider { command } => matches!(command, cli::ProviderCommand::Doctor(_)),
+        cli::Command::Task { command } => matches!(
+            command,
+            cli::TaskCommand::Start { execute: true, .. } | cli::TaskCommand::Run { .. }
+        ),
+        _ => false,
+    }
+}
+
+/// An interrupted command ends by its signal once its Workers have stopped, so a shell reports
+/// the conventional status (130 for SIGINT, 143 for SIGTERM), and says how to resume. A failure
+/// other than the interrupt itself is still reported first; `--json` carries the same status.
+fn exit_interrupted(
+    argv: &[String],
+    prefix: &str,
+    signal: nix::sys::signal::Signal,
+    error: Option<String>,
+) -> ! {
+    let code = interrupt::exit_code(signal);
+    let resume = match interrupt::noted_task() {
+        Some(id) => format!("resume it with `af task run {id}`"),
+        None => "run the same command again to resume it".into(),
+    };
+    let message = format!(
+        "interrupted by {signal}; its Worker processes were stopped and the Task was not \
+         finished. To continue, {resume}"
+    );
+    if let Some(error) = error {
+        if error != interrupt::INTERRUPTED {
+            eprintln!("{prefix}: {error}");
+        }
+        if argv.iter().skip(1).any(|word| word == "--json") {
+            let document = serde_json::json!({
+                "schema": "af/error@1",
+                "command": prefix,
+                "error": message,
+                "exit_code": code,
+            });
+            println!("{document}");
+        }
+    }
+    eprintln!("{prefix}: {message}");
+    let _ = std::io::stdout().flush();
+    interrupt::exit(signal);
 }
 
 /// Every `af provider` command returns its own documented exit code.

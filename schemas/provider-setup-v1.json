@@ -29,7 +29,7 @@
       ]
     },
     "exit_code": {
-      "$comment": "0 registered; 3 human action required; 4 Provider CLI missing; 5 registry conflict; 6 authentication failed.",
+      "$comment": "0 registered; 3 human action required; 4 Provider CLI missing or cannot start; 5 registry conflict; 6 authentication failed.",
       "enum": [0, 3, 4, 5, 6]
     },
     "login_launched": {

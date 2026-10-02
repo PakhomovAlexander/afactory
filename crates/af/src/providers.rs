@@ -34,7 +34,12 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 
+mod installation;
 pub mod task;
+
+use installation::{
+    CliInstallationFailure, diagnose_cli, locate_cli, probe_gave_up, status_answered,
+};
 
 const MAX_PROVIDERS: usize = 32;
 const MAX_PROBE_OUTPUT: usize = 64 * 1024;
@@ -59,6 +64,7 @@ const MAX_CLAUDE_READER_SLOTS: usize = MAX_CONCURRENT_PROBES + MAX_ORPHANED_CLAU
 // neither is reused here.
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_HUMAN_ACTION_REQUIRED: i32 = 3;
+/// The official CLI is missing, not executable, or exits non-zero on its own version check.
 pub const EXIT_PROVIDER_CLI_MISSING: i32 = 4;
 pub const EXIT_REGISTRY_CONFLICT: i32 = 5;
 pub const EXIT_AUTHENTICATION_FAILED: i32 = 6;
@@ -70,6 +76,9 @@ const LOGIN_SECURITY_WARNING: &str = "\
 warning: the official Provider CLI login prints an OAuth URL and an authorization code.
 warning: both are credentials in transit. Keep them inside this private terminal.
 warning: never relay an OAuth URL or code through chat, an agent transcript, a ticket, or logs.";
+
+/// The status a context gets when its official CLI cannot start; `installation_failed` in JSON.
+const INSTALLATION_FAILED: &str = "installation failed";
 
 static CLAUDE_USAGE_CACHE: OnceLock<Mutex<BTreeMap<ClaudeUsageCacheKey, CachedClaudeUsage>>> =
     OnceLock::new();
@@ -270,7 +279,15 @@ pub fn print_status(json: bool, usage: UsageProbe) -> Result<i32, String> {
         .providers
         .iter()
         .any(|provider| provider.usage == UsageState::Unavailable);
-    let code = if unavailable_usage {
+    let uninstalled: Vec<&ProviderStatus> = inventory
+        .providers
+        .iter()
+        .filter(|provider| provider.status == INSTALLATION_FAILED)
+        .collect();
+    // A CLI that cannot start outranks an unanswered optional usage probe.
+    let code = if !uninstalled.is_empty() {
+        EXIT_PROVIDER_CLI_MISSING
+    } else if unavailable_usage {
         EXIT_USAGE_UNAVAILABLE
     } else {
         EXIT_OK
@@ -282,6 +299,9 @@ pub fn print_status(json: bool, usage: UsageProbe) -> Result<i32, String> {
         println!("{}", status_document(&inventory, usage, code));
     } else {
         print_status_table(&inventory, usage);
+    }
+    for provider in &uninstalled {
+        eprintln!("af provider status: {}", provider.detail);
     }
     if code == EXIT_USAGE_UNAVAILABLE {
         eprintln!(
@@ -425,6 +445,7 @@ fn auth_state_name(status: &str) -> &'static str {
         "authenticated" => "authenticated",
         "not authenticated" => "not_authenticated",
         "unavailable" => "unavailable",
+        INSTALLATION_FAILED => "installation_failed",
         "not probed" => "not_probed",
         _ => "unknown",
     }
@@ -445,7 +466,7 @@ fn credential_name(kind: &str, auth_type: &str) -> &'static str {
 fn usability_name(status: &str) -> &'static str {
     match status {
         "authenticated" => "usable_or_untested",
-        "not authenticated" | "unavailable" => "unusable",
+        "not authenticated" | "unavailable" | INSTALLATION_FAILED => "unusable",
         _ => "unknown",
     }
 }
@@ -496,10 +517,17 @@ pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<i32, String>
 
 /// What `af provider setup` concluded, as one closed vocabulary shared by both output shapes.
 enum SetupOutcome {
-    Registered { preserved: Option<PathBuf> },
+    Registered {
+        preserved: Option<PathBuf>,
+    },
     AlreadyRegistered,
     HumanActionRequired(NextAction),
-    ProviderCliMissing(String),
+    /// `diagnostic` is af-authored and reaches the document; `report` may add the CLI's own
+    /// first error line and suggested fix, and reaches only human output and stderr.
+    ProviderCliMissing {
+        diagnostic: String,
+        report: String,
+    },
     RegistryConflict(String),
     AuthenticationFailed(String),
 }
@@ -517,7 +545,7 @@ impl SetupOutcome {
             Self::Registered { .. } => "registered",
             Self::AlreadyRegistered => "already_registered",
             Self::HumanActionRequired(_) => "human_action_required",
-            Self::ProviderCliMissing(_) => "provider_cli_missing",
+            Self::ProviderCliMissing { .. } => "provider_cli_missing",
             Self::RegistryConflict(_) => "registry_conflict",
             Self::AuthenticationFailed(_) => "authentication_failed",
         }
@@ -527,7 +555,7 @@ impl SetupOutcome {
         match self {
             Self::Registered { .. } | Self::AlreadyRegistered => EXIT_OK,
             Self::HumanActionRequired(_) => EXIT_HUMAN_ACTION_REQUIRED,
-            Self::ProviderCliMissing(_) => EXIT_PROVIDER_CLI_MISSING,
+            Self::ProviderCliMissing { .. } => EXIT_PROVIDER_CLI_MISSING,
             Self::RegistryConflict(_) => EXIT_REGISTRY_CONFLICT,
             Self::AuthenticationFailed(_) => EXIT_AUTHENTICATION_FAILED,
         }
@@ -536,11 +564,25 @@ impl SetupOutcome {
     /// `af`-authored diagnostics only. Provider stdout, OAuth URLs and codes never reach here.
     fn diagnostic(&self) -> Option<&str> {
         match self {
-            Self::ProviderCliMissing(detail)
-            | Self::RegistryConflict(detail)
-            | Self::AuthenticationFailed(detail) => Some(detail),
+            Self::ProviderCliMissing { diagnostic, .. } => Some(diagnostic),
+            Self::RegistryConflict(detail) | Self::AuthenticationFailed(detail) => Some(detail),
             Self::Registered { .. } | Self::AlreadyRegistered => None,
             Self::HumanActionRequired(action) => Some(&action.reason),
+        }
+    }
+
+    /// What a human reads on the terminal and stderr: the diagnostic, or the fuller report.
+    fn report(&self) -> Option<&str> {
+        match self {
+            Self::ProviderCliMissing { report, .. } => Some(report),
+            _ => self.diagnostic(),
+        }
+    }
+
+    fn cli_cannot_start(failure: &CliInstallationFailure) -> Self {
+        Self::ProviderCliMissing {
+            diagnostic: failure.summary(),
+            report: failure.message(),
         }
     }
 }
@@ -605,7 +647,10 @@ pub fn setup(
             kind.name()
         );
         report.auth = "unknown";
-        return Ok(report.emit(&SetupOutcome::ProviderCliMissing(detail)));
+        return Ok(report.emit(&SetupOutcome::ProviderCliMissing {
+            diagnostic: detail.clone(),
+            report: detail,
+        }));
     }
 
     auth_lock.ensure_directory_current(&auth_dir, "auth directory")?;
@@ -661,10 +706,17 @@ pub fn setup(
 }
 
 /// `Ok(false)` means "no login here". `Err` carries the exit code of an already-printed
-/// authentication failure: a probe that could not answer is a classified outcome, not a crash.
+/// classified outcome: a probe that could not answer is an authentication failure, and a CLI
+/// that cannot start at all is a missing Provider CLI, never a failed login.
 fn probe_authentication(spec: &ProviderSpec, report: &SetupReport<'_>) -> Result<bool, i32> {
-    authentication_ready(spec)
-        .map_err(|error| report.emit(&SetupOutcome::AuthenticationFailed(error)))
+    authentication_ready(spec).map_err(|error| match error {
+        AuthenticationProbe::Failed(error) => {
+            report.emit(&SetupOutcome::AuthenticationFailed(error))
+        }
+        AuthenticationProbe::CliCannotStart(failure) => {
+            report.emit(&SetupOutcome::cli_cannot_start(&failure))
+        }
+    })
 }
 
 /// An interactive terminal on stdin, stdout *and* stderr.
@@ -729,7 +781,7 @@ impl SetupReport<'_> {
         if code != EXIT_OK {
             eprintln!(
                 "af provider setup: {} ({})",
-                outcome.diagnostic().unwrap_or_else(|| outcome.name()),
+                outcome.report().unwrap_or_else(|| outcome.name()),
                 outcome.name()
             );
         }
@@ -799,7 +851,7 @@ impl SetupReport<'_> {
                     "never relay the OAuth URL or authorization code it prints through chat, an agent transcript, a ticket, or logs"
                 );
             }
-            SetupOutcome::ProviderCliMissing(detail)
+            SetupOutcome::ProviderCliMissing { report: detail, .. }
             | SetupOutcome::RegistryConflict(detail)
             | SetupOutcome::AuthenticationFailed(detail) => {
                 println!("provider {id} was not registered ({})", outcome.name());
@@ -1497,13 +1549,42 @@ fn inspect_registration(
     Ok(Registration::Absent)
 }
 
-fn authentication_ready(spec: &ProviderSpec) -> Result<bool, String> {
+/// Why setup's authentication probe gave no usable answer.
+enum AuthenticationProbe {
+    Failed(String),
+    CliCannotStart(CliInstallationFailure),
+}
+
+impl From<String> for AuthenticationProbe {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+
+fn authentication_ready(spec: &ProviderSpec) -> Result<bool, AuthenticationProbe> {
     if let Some(auth_dir) = spec.auth_dir.as_deref() {
         validate_private_auth_directory(auth_dir)?;
     }
-    let program = resolve_program(spec.kind.command())
-        .ok_or_else(|| format!("{} is not on PATH", spec.kind.command()))?;
-    let output = run_probe(&program, spec, &sanitized_path(), &AtomicBool::new(false))?;
+    let program = locate_cli(spec).map_err(AuthenticationProbe::CliCannotStart)?;
+    let probe_path = sanitized_path();
+    let cancelled = AtomicBool::new(false);
+    let output = match run_probe(&program, spec, &probe_path, &cancelled) {
+        Ok(output) => output,
+        Err(error) => {
+            if !probe_gave_up(&error)
+                && let Some(failure) = diagnose_cli(&program, spec, &probe_path, &cancelled, None)
+            {
+                return Err(AuthenticationProbe::CliCannotStart(failure));
+            }
+            return Err(error.into());
+        }
+    };
+    if !output.status.success()
+        && !status_answered(spec.kind, &output.stdout)
+        && let Some(failure) = diagnose_cli(&program, spec, &probe_path, &cancelled, None)
+    {
+        return Err(AuthenticationProbe::CliCannotStart(failure));
+    }
     let (status, _, detail) = match spec.kind {
         ProviderKind::Claude => parse_claude_status(output.status.success(), &output.stdout),
         ProviderKind::Codex => parse_codex_status(output.status.success(), &output.stdout),
@@ -1513,13 +1594,15 @@ fn authentication_ready(spec: &ProviderSpec) -> Result<bool, String> {
         "authenticated" => Err(format!(
             "{} authentication status reported a login but exited unsuccessfully",
             spec.kind.name()
-        )),
+        )
+        .into()),
         "not authenticated" => Ok(false),
         _ => Err(if detail.is_empty() {
             format!("{} authentication status is {status}", spec.kind.name())
         } else {
             detail
-        }),
+        }
+        .into()),
     }
 }
 
@@ -3287,14 +3370,29 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool, usage: UsageProbe)
     {
         return unavailable_status(&spec, &error);
     }
-    let Some(program) = resolve_program(spec.kind.command()) else {
-        return unavailable_status(&spec, &format!("{} is not on PATH", spec.kind.command()));
+    let program = match locate_cli(&spec) {
+        Ok(program) => program,
+        Err(failure) => return installation_failed_status(&spec, &failure),
     };
     let probe_path = sanitized_path();
     let output = match run_probe(&program, &spec, &probe_path, cancelled) {
         Ok(output) => output,
-        Err(error) => return unavailable_status(&spec, &error),
+        Err(error) => {
+            if !probe_gave_up(&error)
+                && let Some(failure) = diagnose_cli(&program, &spec, &probe_path, cancelled, None)
+            {
+                return installation_failed_status(&spec, &failure);
+            }
+            return unavailable_status(&spec, &error);
+        }
     };
+    // A CLI that exited without any answer af recognizes may not start at all.
+    if !output.status.success()
+        && !status_answered(spec.kind, &output.stdout)
+        && let Some(failure) = diagnose_cli(&program, &spec, &probe_path, cancelled, None)
+    {
+        return installation_failed_status(&spec, &failure);
+    }
     let (status, auth_type, mut detail) = match spec.kind {
         ProviderKind::Claude => parse_claude_status(output.status.success(), &output.stdout),
         ProviderKind::Codex => parse_codex_status(output.status.success(), &output.stdout),
@@ -3418,6 +3516,18 @@ fn unavailable_status(spec: &ProviderSpec, detail: &str) -> ProviderStatus {
         limits: Vec::new(),
         usage: UsageState::NotApplicable,
         detail: detail.to_string(),
+    }
+}
+
+/// A context whose CLI cannot start: never a claim about its login, and never usable.
+fn installation_failed_status(
+    spec: &ProviderSpec,
+    failure: &CliInstallationFailure,
+) -> ProviderStatus {
+    ProviderStatus {
+        status: INSTALLATION_FAILED.to_string(),
+        detail: failure.message(),
+        ..unavailable_status(spec, "")
     }
 }
 
@@ -3847,6 +3957,28 @@ fn probe_codex_request_before(
     request: &serde_json::Value,
     attempt_deadline: Option<Instant>,
 ) -> Result<serde_json::Value, String> {
+    probe_codex_request_observed(
+        program,
+        spec,
+        probe_path,
+        cancelled,
+        request,
+        attempt_deadline,
+        &mut false,
+    )
+}
+
+/// `answered` is set once the app-server answers initialization: from then on the CLI has
+/// started, whatever the request itself concludes.
+fn probe_codex_request_observed(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    request: &serde_json::Value,
+    attempt_deadline: Option<Instant>,
+    answered: &mut bool,
+) -> Result<serde_json::Value, String> {
     check_task_probe_control(attempt_deadline, cancelled)?;
     let mut command = Command::new(program);
     command.args(["app-server", "--stdio"]);
@@ -3896,6 +4028,7 @@ fn probe_codex_request_before(
             ));
         }
         if !requested_limits && let Some(response) = response_for_id(&captured, 1) {
+            *answered = true;
             if response.get("error").is_some() {
                 break Err("Codex app-server rejected initialization".to_string());
             }

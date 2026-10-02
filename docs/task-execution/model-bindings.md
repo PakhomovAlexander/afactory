@@ -128,9 +128,13 @@ cancelled usage through bounded output draining. Unsupported adapters refuse a s
 Common CLI Task, planning, Review and doctor execution share that control with their writer
 heartbeat. A failed exact-writer lease check interrupts supervised Workers, commands, Gates and
 Integration checks; the runtime retains paid observations and blocks later work and selection.
-This does not install CLI signal handlers or a domain-level Task cancellation command. See
-[ADR-0087](../adr/0087-control-native-task-invocations-through-the-shared-supervisor.md) and
-[ADR-0089](../adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md).
+This does not install CLI signal handlers or a domain-level Task cancellation command. The
+heartbeat observes its lease through its own Store connection, and renews through it when the
+work still holds the shared one with 2 s of lease left, so a long Store operation cannot fence
+a live writer. See
+[ADR-0087](../adr/0087-control-native-task-invocations-through-the-shared-supervisor.md),
+[ADR-0089](../adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md) and
+[ADR-0128](../adr/0128-renew-a-live-task-writer-lease-through-its-own-connection.md).
 
 Codex final-message capture reads a bounded regular file through the held private output
 directory. Symlinks, FIFOs and other nonregular files refuse without blocking or falling back

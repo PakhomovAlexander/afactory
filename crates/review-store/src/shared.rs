@@ -1,5 +1,7 @@
 //! A shared handle to the caller's single Store connection. Task execution, domain receipts
-//! and lease renewal serialize through this handle; cloning it never opens another writer.
+//! and lease renewal serialize through this handle; cloning it never opens another writer. The
+//! lease heartbeat also keeps its own connection, which renews only the same writer's lease once
+//! this handle stays held into the lease's last reserve (ADR-0128).
 
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
