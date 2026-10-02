@@ -157,6 +157,76 @@ branch and worktree. Retry the same explicitly confirmed Task with a new absent 
 worktree; the next attempt releases only Afactory's internal ownership ref and never removes the
 preserved target. Operator changes to an unsealed worktree are therefore never deleted.
 
+## Warm checks
+
+A code policy may declare a `[warm]` table
+([ADR-0131](adr/0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)):
+
+```toml
+[warm]
+build_cache = ["cargo_target", "cargo_home"]
+caches = ["cargo"]      # optional: Cache Snapshots from machine policy
+max_bytes = 8589934592  # optional: the eviction bound, 8 GiB by default; at most 32 GiB
+hard_max_bytes = 17179869184  # optional: ends a running check; twice max_bytes by default
+```
+
+It grants a check directories that survive it. `cargo_target` becomes the check's
+`CARGO_TARGET_DIR` and `cargo_home` its `CARGO_HOME`, Cargo's registry and git caches. Each is
+`$XDG_CACHE_HOME/af/task-build-cache/<project>/<toolchain>/<kind>`, created with mode `0700` and
+keyed by the repository and by the toolchain the check resolves. That toolchain is the
+Snapshot's `rust-toolchain.toml`, `rustc -vV`, `cargo -vV`, the host triple, and the check's
+`PATH`, `LC_ALL`, `TZ` and `RUSTUP_HOME`. A later check with the same key starts from the
+earlier build. Both bounds cover the kinds of one key together, not each on its own.
+
+Under `[warm]` a check and its toolchain probe also receive the kernel's rustup home: its own
+`RUSTUP_HOME`, else `$HOME/.rustup` when that directory exists. They also receive
+`RUSTUP_AUTO_INSTALL=0`. The installed toolchain answers at once, and a toolchain the machine
+lacks is `cold toolchain_unresolved`, never a download into the check's throwaway `HOME`. The
+kernel only passes that path on. It never writes, bounds or removes the rustup home.
+
+A declared `caches` kind gives the check an offline `CARGO_HOME` from the machine's cache
+policy, as a Gate's `[gate] caches` do. That directory is materialized beside the check, never
+into the source. It takes precedence over `cargo_home`: the two are never bound at once, and
+the `cargo_home` kind records `cargo_home:superseded`.
+
+`[warm]` refuses a great deal. It never runs with `require_container = true`: such a policy is
+refused before any Worker starts. No directory ever enters a Worker sandbox, a Snapshot or a
+delivered worktree, and its bytes never change a check's result. Before reuse the whole
+directory is inspected without following links, relative to each parent's descriptor. It is
+removed and recreated empty, so the check runs cold, when it is suspect. Suspect means a link, a
+special file, another user's entry, a widened mode, a `credentials.toml` in a `cargo_home`, or
+any entry the inspection cannot read. A check runs cold and says why when its toolchain cannot
+be resolved, when another check holds its directory for 60 seconds, or when its directories are
+already above `max_bytes`. The directories are measured again when the check ends and before
+its result counts
+([ADR-0135](adr/0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)).
+Above `max_bytes` only, they are evicted and the check's own result stands; the next check runs
+cold. Only `hard_max_bytes` ends a running check: one that grew them past it fails with
+`warm_cache_bound_exceeded`, however fast it was, and so does one that left anything the
+measurement cannot read. The directories are then removed, never trimmed, and the observation
+names the bound that acted. This is candidate-built state on your machine, not isolation.
+
+`af task show` prints one line per warm check, named even when the check never started:
+`check kernel: passed in 812345 ms, cargo_target warm 2147483648, cargo_home warm 409600`, or
+`check kernel: not_run, never started, cargo_target cold deadline_exhausted`. Deleting
+`$XDG_CACHE_HOME/af/task-build-cache` is always safe. A policy without `[warm]` records every
+document exactly as before.
+
+## Reclaim Store space
+
+`af task list --sizes` prints, per Task, the bytes of the stored objects only that Task reaches
+and the bytes it shares with other Tasks or Campaign records, then the Store's total. `af task
+gc --older-than 14 --keep 5` previews which finished Tasks beyond the newest five, idle for 14
+days, it would collect, how many bytes that frees, and why every other Task stays: running,
+unfinished, holding a writer lease or bound by another Task's `inputs`. It writes nothing. With
+`--apply` it writes one tombstone per collected Task and removes every object no remaining Task
+or Campaign record reaches
+([ADR-0135](adr/0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)). A
+collected Task keeps its ID, kind, revision, outcome, spend and times: `task list` and `task
+show` print it as `collected <time>`, and `task output` and `task deliver` refuse it. Run it
+between Tasks: `--apply` is refused while any Task's writer lease is live. If it stops midway,
+rerun it; the next run finishes the removal.
+
 ## Troubleshooting
 
 | Symptom | Meaning and action |

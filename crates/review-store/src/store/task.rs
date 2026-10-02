@@ -12,7 +12,7 @@ use review_core::task::plan::{
 use review_core::task::{
     self, TaskAcceptanceV1, TaskPhaseV1, TaskResultV1, TaskRevisionV1, TaskWaitingReasonV1,
 };
-use review_core::{ArtifactEnvelope, EventType, RunEvent};
+use review_core::{ArtifactEnvelope, EventType, PortCardinality, RunEvent};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
@@ -22,6 +22,7 @@ use crate::{Cas, content_id, validate_envelope};
 #[cfg(test)]
 mod tests;
 
+pub mod collection;
 mod delivery;
 pub use delivery::validate_optimization_delivery;
 pub mod execution;
@@ -417,6 +418,9 @@ pub(super) struct WritePermit {
     valid_until: Option<u64>,
     review_round: Option<review_round::ReviewRoundFence>,
     review_prefix: Option<(String, u64)>,
+    /// The Tasks an opening Task's bindings name: none may have been collected by the time the
+    /// opening is written, and the check runs under the writer lock collection uses (ADR-0135).
+    bound_tasks: Vec<String>,
 }
 
 impl WritePermit {
@@ -454,6 +458,15 @@ impl WritePermit {
         }
         if let Some(round) = &self.review_round {
             round.validate(connection)?;
+        }
+        for task_id in &self.bound_tasks {
+            let run_id = task_run_id(task_id)?;
+            if collection::tombstone_in(connection, &run_id)?.is_some() {
+                return Err(conflict(format!(
+                    "Task input binding names Task `{task_id}`, which was collected after the \
+                     binding was resolved"
+                )));
+            }
         }
         Ok(())
     }
@@ -503,10 +516,34 @@ fn validate_input_refs(
     input: &task::ArtifactInputV1,
     refs: &mut BTreeSet<String>,
 ) -> Result<(), StoreError> {
+    validate_port_refs(cas, input, refs, false)
+}
+
+/// An input port of a Task revision, plan or invocation. Beside every rule an output port
+/// keeps, a `many` input that names no Snapshot claims none for its artifacts: that is how a
+/// port bound from several recorded outputs of different Snapshots is recorded (ADR-0134),
+/// and each artifact keeps its own subject Snapshot in its envelope. Outputs never do this.
+pub(super) fn validate_bound_input_refs(
+    cas: &Cas,
+    input: &task::ArtifactInputV1,
+    refs: &mut BTreeSet<String>,
+) -> Result<(), StoreError> {
+    let unclaimed = input.cardinality == PortCardinality::Many && input.snapshot_id.is_none();
+    validate_port_refs(cas, input, refs, unclaimed)
+}
+
+/// Every artifact of a port names the port's Snapshot, or none when the port names none —
+/// unless the port is `unclaimed`, whose artifacts each keep their own.
+fn validate_port_refs(
+    cas: &Cas,
+    input: &task::ArtifactInputV1,
+    refs: &mut BTreeSet<String>,
+    unclaimed: bool,
+) -> Result<(), StoreError> {
     input.validate().map_err(conflict)?;
     for id in &input.artifact_ids {
         let value = envelope(cas, id, &input.artifact_type)?;
-        if value.subject_snapshot_id != input.snapshot_id {
+        if !unclaimed && value.subject_snapshot_id != input.snapshot_id {
             return Err(conflict(
                 "Task port Snapshot identity contradicts its artifact envelope",
             ));
@@ -531,7 +568,7 @@ fn revision_references(
     refs.extend(value.previous_revision_id);
     refs.extend(value.acceptance.values().map(|o| o.verifier_policy.clone()));
     for input in value.inputs.values() {
-        validate_input_refs(cas, input, refs)?;
+        validate_bound_input_refs(cas, input, refs)?;
     }
     Ok(())
 }
@@ -745,7 +782,7 @@ fn references(
                 ]);
             }
             for input in value.inputs.values() {
-                validate_input_refs(cas, input, &mut refs)?;
+                validate_bound_input_refs(cas, input, &mut refs)?;
             }
         }
         TaskChangeV1::PlanDecided { decision_id, .. } => {
@@ -907,6 +944,13 @@ impl TaskProjection {
                 }
                 TaskChangeV1::Opened { .. } | TaskChangeV1::LeaseTaken { .. } => {
                     return Err(conflict("Task already exists"));
+                }
+                // A projection stops at the tombstone (ADR-0135); no transition ever applies it.
+                TaskChangeV1::TaskCollected { collected } => {
+                    return Err(StoreError::Collected {
+                        task_id: collected.task_id.clone(),
+                        collected_unix_ms: collected.collected_unix_ms,
+                    });
                 }
                 TaskChangeV1::LeaseRenewed {
                     lease_until_unix_ms,
@@ -1260,7 +1304,9 @@ impl EventStore {
     ) -> Result<Vec<T>, StoreError> {
         let mut ids = BTreeSet::new();
         for run_id in self.run_ids()? {
-            if !run_id.starts_with("task:") {
+            // A collected Task is listed by `collected_tasks`; its projection stops at the
+            // tombstone and its artifacts may be gone (ADR-0135).
+            if !run_id.starts_with("task:") || self.run_tombstone(&run_id)?.is_some() {
                 continue;
             }
             let events = self.replay(&run_id)?;
@@ -1272,20 +1318,31 @@ impl EventStore {
             let TaskChangeV1::Opened { revision_id, .. } = transition.change else {
                 return Err(conflict("Task stream does not begin with Opened"));
             };
-            let task = revision(cas, &revision_id)?;
+            // A revision the sweep removed between the tombstone check and this read belongs
+            // to a Task collected meanwhile: skipped here, listed from its tombstone.
+            let task = match revision(cas, &revision_id) {
+                Err(StoreError::Artifact(_)) if self.run_tombstone(&run_id)?.is_some() => continue,
+                other => other?,
+            };
             if task_run_id(&task.task_id)? != run_id {
                 return Err(conflict("Task stream identity differs from its revision"));
             }
             ids.insert(task.task_id);
         }
-        ids.into_iter()
-            .map(|id| {
-                let task = self
-                    .task_projection(cas, &id)?
-                    .ok_or_else(|| conflict("Task disappeared"))?;
-                Ok(map(task))
-            })
-            .collect()
+        let mut mapped = Vec::with_capacity(ids.len());
+        for id in ids {
+            match self.task_projection(cas, &id) {
+                // Collected between the walk above and this projection: it is a tombstone's
+                // now, and `collected_tasks` read after this call lists it (ADR-0135).
+                Err(StoreError::Collected { .. }) => continue,
+                Err(error) => return Err(error),
+                Ok(task) => {
+                    let task = task.ok_or_else(|| conflict("Task disappeared"))?;
+                    mapped.push(map(task));
+                }
+            }
+        }
+        Ok(mapped)
     }
 
     pub fn task_projection(
@@ -1293,8 +1350,36 @@ impl EventStore {
         cas: &Cas,
         task_id: &str,
     ) -> Result<Option<TaskProjection>, StoreError> {
+        match self.task_projection_uncollected(cas, task_id) {
+            // A sweep may have removed this Task's artifacts between the tombstone check and
+            // the reads: a Task collected meanwhile is reported as collected, never as corrupt
+            // (ADR-0135). Any other missing artifact stays the error it is.
+            Err(StoreError::Artifact(reason)) => match self.task_tombstone(task_id)? {
+                Some(collected) => Err(StoreError::Collected {
+                    task_id: collected.task_id,
+                    collected_unix_ms: collected.collected_unix_ms,
+                }),
+                None => Err(StoreError::Artifact(reason)),
+            },
+            other => other,
+        }
+    }
+
+    fn task_projection_uncollected(
+        &self,
+        cas: &Cas,
+        task_id: &str,
+    ) -> Result<Option<TaskProjection>, StoreError> {
         #[cfg(test)]
         PROJECTION_CALLS.with(|calls| calls.set(calls.get() + 1));
+        // A collected Task's projection stops at its tombstone: none of its artifacts is read,
+        // so one a sweep removed is never reported as corruption (ADR-0135).
+        if let Some(collected) = self.task_tombstone(task_id)? {
+            return Err(StoreError::Collected {
+                task_id: collected.task_id,
+                collected_unix_ms: collected.collected_unix_ms,
+            });
+        }
         let mut state = self
             .task_cache
             .borrow()
@@ -1572,6 +1657,16 @@ impl EventStore {
                 return Err(conflict("Invalid Task genesis"));
             }
         }
+        // An opening names the Tasks its bindings resolved against; the permit re-checks them
+        // for tombstones inside the writer transaction.
+        let bound_tasks = match &transition.change {
+            TaskChangeV1::Opened { revision_id, .. } => {
+                Self::bound_tasks_of_revision(cas, &revision(cas, revision_id)?)?
+                    .into_iter()
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
         let permit = WritePermit {
             run_id: run_id.clone(),
             first,
@@ -1580,6 +1675,7 @@ impl EventStore {
             valid_until,
             review_round,
             review_prefix: owned_prefix.and_then(|(_, prefix)| prefix),
+            bound_tasks,
         };
         self.append_batch_inner(&run_id, cas, &[event], Some(&permit), None)?
             .pop()

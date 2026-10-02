@@ -217,6 +217,9 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
             )]),
             check_wall_ms: 5000,
             require_container: false,
+            warm: None,
+            measures: BTreeMap::new(),
+            objectives: BTreeMap::new(),
             rust_toolchain: None,
         };
         let policy_id = cas

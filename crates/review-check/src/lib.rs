@@ -17,5 +17,6 @@ pub mod runner;
 pub use gate::{GateDecision, GateOutcome};
 pub use review_core::exec::{Arg, Command};
 pub use runner::{
-    CheckDefinition, CheckExecution, CheckResult, CheckRunner, CheckStatus, check_event,
+    CheckDefinition, CheckEnding, CheckExecution, CheckResult, CheckRunner, CheckStatus,
+    check_event,
 };

@@ -53,6 +53,12 @@ pub enum StoreError {
     Durability(String),
     /// A referenced artifact required for replay was missing or malformed.
     Artifact(String),
+    /// The Task was collected by `af task gc --apply` (ADR-0135): its log ends in a tombstone,
+    /// its projection stops there, and nothing may act on it again.
+    Collected {
+        task_id: String,
+        collected_unix_ms: u64,
+    },
 }
 
 impl std::fmt::Display for StoreError {
@@ -72,6 +78,14 @@ impl std::fmt::Display for StoreError {
                 write!(f, "a referenced artifact could not be made durable: {what}")
             }
             StoreError::Artifact(what) => write!(f, "event store artifact: {what}"),
+            StoreError::Collected {
+                task_id,
+                collected_unix_ms,
+            } => write!(
+                f,
+                "Task `{task_id}` was collected {}",
+                review_core::task::collection::collected_time(*collected_unix_ms)
+            ),
         }
     }
 }
@@ -411,7 +425,7 @@ impl EventStore {
             }
             validate_campaign_transition(&tx, cas, run_id, events, first, &prepared)?;
         }
-        let appended = insert_events(&tx, run_id, events, first)?;
+        let appended = insert_events(&tx, cas, run_id, events, first)?;
         tx.commit()?;
         Ok(appended)
     }
@@ -4662,10 +4676,26 @@ fn derive_event_id(run_id: &str, sequence: i64) -> String {
 
 fn insert_events(
     tx: &rusqlite::Transaction<'_>,
+    cas: &Cas,
     run_id: &str,
     events: &[NewEvent],
     first: i64,
 ) -> Result<Vec<RunEvent>, StoreError> {
+    // Every reference was verified before the writer lock was taken. Task collection removes
+    // objects only while it holds this same lock (ADR-0135), so a reference is rechecked here,
+    // where no sweep can run: an object a sweep removed after that verification is refused as
+    // dangling, never committed.
+    for event in events {
+        if let Some(digest) = event
+            .artifact_refs
+            .iter()
+            .find(|digest| !cas.is_filed(digest))
+        {
+            return Err(StoreError::DanglingArtifact {
+                digest: digest.clone(),
+            });
+        }
+    }
     let mut appended = Vec::with_capacity(events.len());
     for (offset, event) in events.iter().enumerate() {
         let offset = i64::try_from(offset)

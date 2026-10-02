@@ -571,7 +571,12 @@ mod tests {
     fn validator() -> &'static jsonschema::Validator {
         static VALIDATOR: OnceLock<jsonschema::Validator> = OnceLock::new();
         VALIDATOR.get_or_init(|| {
-            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas");
+            let dir = std::env::var_os("AF_WORKSPACE_ROOT")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+                })
+                .join("schemas");
             let mut registry = jsonschema::Registry::new();
             for name in [
                 "task-contracts-v1.json",

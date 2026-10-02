@@ -176,6 +176,12 @@ pub const LAYOUT: &[Entry] = &[
         "document Task acceptance policy",
     ),
     file(
+        "report-policy.toml",
+        Writer::Human,
+        Versioning::Versioned,
+        "report Task acceptance policy",
+    ),
+    file(
         "task-catalog.toml",
         Writer::Human,
         Versioning::Versioned,

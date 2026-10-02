@@ -1298,6 +1298,7 @@ impl super::host::TaskEnvironment for OptimizationEnvironment {
             attempt_id: attempt.id().into(),
             node: input.node.clone(),
             context_id: attempt.context_id().into(),
+            check: None,
             spans: prepared
                 .snapshot
                 .is_some()
@@ -1319,6 +1320,9 @@ impl super::host::TaskEnvironment for OptimizationEnvironment {
                 bytes_available: prepared.snapshot.as_ref().map_or(0, |value| value.bytes),
                 lookup_ms,
                 materialization_ms,
+                evicted_bytes: None,
+                evicted_reason: None,
+                bound: None,
             }],
         };
         evidence.validate()?;

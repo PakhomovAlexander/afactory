@@ -8,19 +8,20 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const DOCUMENT_SOURCES_V1: &str = "af/DocumentSources@1";
 pub const DOCUMENT_DRAFT_V1: &str = "af/DocumentDraft@1";
+pub const DOCUMENT_DRAFT_V2: &str = "af/DocumentDraft@2";
 pub const DOCUMENT_V1: &str = "af/Document@1";
 pub const DOCUMENT_CHECK_RECEIPT_V1: &str = "af/DocumentCheckReceipt@1";
 pub const DOCUMENT_EVALUATION_V1: &str = "af/DocumentEvaluation@1";
 pub const DOCUMENT_VERIFICATION_V1: &str = "af/DocumentVerification@1";
 
-fn text(value: &str, limit: usize) -> bool {
+pub(super) fn text(value: &str, limit: usize) -> bool {
     !value.trim().is_empty()
         && value.len() <= limit
         && !value
             .chars()
             .any(|c| c.is_control() && !matches!(c, '\n' | '\t'))
 }
-fn line(value: &str, limit: usize) -> bool {
+pub(super) fn line(value: &str, limit: usize) -> bool {
     text(value, limit) && !value.contains(['\n', '\t'])
 }
 
@@ -114,6 +115,80 @@ impl DocumentDraftV1 {
             total <= 262144,
             "Document draft exceeds the total text bound",
         )
+    }
+}
+
+/// One cited repository location: a Manifest entry spelled exactly as
+/// `review_core::encode_path` spells it, and optionally one 1-based line of it. The shape is
+/// checked here; that the entry exists, is a text file and has the line is checked only against
+/// the exact source Manifest of the Task that cites it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryCitationV1 {
+    pub path: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub line: Option<u64>,
+}
+impl RepositoryCitationV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            line(&self.path, 4096)
+                && self.path.trim() == self.path
+                && self
+                    .line
+                    .is_none_or(|line| line >= 1 && super::safe_number(line)),
+            "Repository citation needs one Manifest path and a positive line",
+        )
+    }
+    /// `path` or `path:line`, as the renderer and diagnostics print it.
+    pub fn display(&self) -> String {
+        match self.line {
+            Some(line) => format!("{}:{line}", self.path),
+            None => self.path.clone(),
+        }
+    }
+}
+
+/// `af/DocumentDraft@1` plus repository citations. Only the report profile accepts it; the
+/// Document profile keeps its first version unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentDraftV2 {
+    pub schema: String,
+    pub title: String,
+    pub sections: Vec<DocumentSectionV1>,
+    #[serde(deserialize_with = "super::unique_set")]
+    pub citations: BTreeSet<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeSet::is_empty",
+        deserialize_with = "super::unique_set"
+    )]
+    pub repository_citations: BTreeSet<RepositoryCitationV1>,
+}
+impl DocumentDraftV2 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            self.schema == "af.document-draft/2" && self.repository_citations.len() <= 64,
+            "Document draft 2 requires its schema and at most 64 repository citations",
+        )?;
+        for citation in &self.repository_citations {
+            citation.validate()?;
+        }
+        self.as_first_version().validate()
+    }
+    /// The same title, sections and named citations, as the first version spells them.
+    pub fn as_first_version(&self) -> DocumentDraftV1 {
+        DocumentDraftV1 {
+            schema: "af.document-draft/1".into(),
+            title: self.title.clone(),
+            sections: self.sections.clone(),
+            citations: self.citations.clone(),
+        }
     }
 }
 

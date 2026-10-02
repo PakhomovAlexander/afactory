@@ -345,6 +345,15 @@ fn bound_source_refusal(bound: &review_source_git::task::TaskSourceBoundFromV1) 
 }
 
 pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets, String> {
+    // A report Task writes no source: its report is its only exit, whatever its acceptance
+    // (ADR-0133). Said before anything else is read, so no prepared record or Git mutation
+    // can follow.
+    if is_report_task(task) {
+        return Err(format!(
+            "Task {} is a report Task and has no Snapshot to deliver; write its report with              `af task output {} --port report --format markdown --output FILE`",
+            task.task_id, task.task_id
+        ));
+    }
     let TaskPhaseV1::Finished { result_id } = &task.phase else {
         return Err("Task has no completed outcome".into());
     };
@@ -419,6 +428,16 @@ pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets,
         source_manifest,
         derived_manifest,
     })
+}
+
+/// Whether the recorded revision is a report Task's: it requires the report profile's public
+/// acceptance receipt and no Snapshot.
+fn is_report_task(task: &TaskProjection) -> bool {
+    let outputs = &task.revision.required_outputs;
+    !outputs.contains_key("snapshot")
+        && outputs.get("verification").is_some_and(|port| {
+            port.artifact_type == review_core::task::report_task::REPORT_VERIFICATION_V1
+        })
 }
 
 #[cfg(test)]

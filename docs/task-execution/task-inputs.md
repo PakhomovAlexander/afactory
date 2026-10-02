@@ -2,8 +2,10 @@
 
 A Task file can bind a root input port to an output of a Task already recorded in the same Store,
 instead of exporting that output to a file and capturing it again. The decision is
-[ADR-0117](../adr/0117-bind-task-inputs-to-recorded-task-outputs.md); this page is its
-Task-file reference and a map of where it is implemented.
+[ADR-0117](../adr/0117-bind-task-inputs-to-recorded-task-outputs.md), widened by
+[ADR-0134](../adr/0134-bind-any-declared-root-port-to-recorded-task-outputs.md) to every root
+input the selected Pipeline declares; this page is their Task-file reference and a map of where
+they are implemented.
 
 ## The shape
 
@@ -34,23 +36,50 @@ One optional top-level table, `inputs`, maps a root input port name to a referen
 | Form | Meaning |
 |---|---|
 | `{ "task": "<task_id>", "port": "<output port>" }` | The named output port of a Task recorded in the Store selected by `--state`. Both members required. |
-| `{ "artifact": "sha256:…" }` | One artifact in the same Store, by exact ID; cardinality `one`. |
+| `{ "artifact": "sha256:…" }` | One artifact in the same Store, by exact ID; cardinality `one`. Binds only `source`, `history` and `sources`. |
+| `[ { "task": …, "port": … }, … ]` | One to sixteen recorded outputs gathered, in order, into one `many` port. |
 
-Bindable ports are `source`, `history` and `sources` — the ports the Task-file adapter
-constructs. A binding replaces that construction: a bound `source` captures no Git tree from the
+A report Task reading an experiment binds all three kinds of port:
+
+```json
+"inputs": {
+  "comparison":   { "task": "experiment", "port": "comparison" },
+  "measurements": [ { "task": "experiment", "port": "baseline" },
+                    { "task": "experiment", "port": "candidate" } ],
+  "source":       { "task": "experiment", "port": "snapshot" }
+}
+```
+
+Any root input the selected Pipeline declares is bindable, except `requirements`, `base` and
+`continuation`, which are refused by name. At resolution the selected Pipeline is the one the
+Task file names in `pipeline`; when it names none, every captured Pipeline accepting the Task's
+kind is consulted and must declare the port alike, or the refusal asks for the Pipeline to be
+named. A port none of them declares is refused by name at plan time.
+
+Three ports are the ones the Task-file adapter constructs — `source`, `history` and `sources` —
+and a binding replaces that construction: a bound `source` captures no Git tree from the
 invoking checkout (so `--uncommitted`, which captures exactly that, is refused together with a
 bound `source`), a bound `history` suppresses the `empty_review_history` root default, and a
-bound `sources` makes `document_sources` unnecessary. `requirements`, `base` and `continuation`
-are not bindable, and any other name is refused by name at plan time.
+bound `sources` makes `document_sources` — or, for a report Task, whose `sources` is an
+`af/ReportSources@1`, `report_sources` — unnecessary. Their expected type is this profile's, as
+ADR-0117 fixed it; every other port's is the selected Pipeline's declaration.
 
-The referenced Task must be recorded in this Store, finished, and its result must carry the named
-port. An unverified Task's `snapshot` may be referenced; the reference carries provenance only.
-Type and cardinality are checked against the port twice — once by the adapter against the profile's
-expected artifact type, once by the compiler against the selected Pipeline's contract — both
-before any Worker or Provider admission. Cardinality is exact equality of the recorded and the
-destination cardinality: a `many` output never binds a `one` port, however many artifacts it
-currently holds. A refusal is an ordinary Task-file input error: exit 1
-with the `af/error@1` document under `--json`.
+The referenced Task must be recorded in this Store, finished, its result must carry the named
+port, and every artifact the port names must verify in the CAS. Only result outputs bind: a name
+the result does not carry — `raw_artifact_ids`, `runtime_evidence` or any other record — is
+refused with a message saying so, and an exact artifact ID, which could name either, binds no
+port beyond ADR-0117's three. An unverified Task's `snapshot` may be referenced; the reference
+carries provenance only.
+
+Type and cardinality are checked against the port twice — once by the adapter against the
+profile's type or the declaration above, once by the compiler against the Pipeline actually
+selected — both before any Worker or Provider admission. For a single reference, cardinality is
+exact equality of the recorded and the destination cardinality: a `many` output never binds a
+`one` port, however many artifacts it currently holds, and a `one` output binds a `many` port only
+as a list. A list binds only a `many` port; each listed output must carry the port's type, and
+their artifacts, in order, must be distinct. A refusal is an ordinary Task-file input error that
+names the port, the reference and both types where they differ: exit 1 with the `af/error@1`
+document under `--json`, and no Task is recorded.
 
 ## What resolution records
 
@@ -58,7 +87,17 @@ Resolution happens at plan time, once, and only from the `--state` Store. The co
 exact artifact IDs, so `af task run`, resume, retry and replay never read the referencing Task
 file again, and an edited `inputs` table makes a new revision that invalidates any plan approval.
 
-`history` and `sources` carry the referenced artifact ID verbatim. A bound `source` is admitted
+`history` and `sources` carry the referenced artifact ID verbatim and name no Snapshot. Every
+other declared port carries the referenced artifacts verbatim too: a `one` port — or a `many`
+port bound from one output — keeps that output's Snapshot ID, and a `many` port bound from
+several outputs names **no** Snapshot, because a port names one and an experiment's `baseline`
+and `candidate` measured two. Each artifact keeps its own subject Snapshot in its envelope, and
+a Worker sees each value with its own. The Store accepts such a port only as an input — of a
+revision, a plan, an invocation, or the root inputs receipt that equals them — and the executor
+only where the consuming contract declares it `unbound`; every output port still names the one
+Snapshot its artifacts are about.
+
+A bound `source` is admitted
 before anything is decided about it: the referenced `af/SourceTree@1` envelope's payload, its
 `subject_snapshot_id` and the recorded port must name one Snapshot, whose origin must read and —
 for a root capture, which is the one delivery compares — describe that tree. An envelope naming
@@ -105,19 +144,24 @@ make it. `fixtures/task-runtime/bound-inputs/` is built that way, and says so.
 ## Where a binding is shown
 
 - `af task explain` annotates the `IN` line (`source <- task layout-l3b/snapshot`, or
-  `source <- artifact sha256:…` for an exact-artifact binding); `--tree` adds one `BOUND` row per
-  port with the referenced Task, port, acceptance, domain conclusion and exact artifact ID, or
-  `artifact` and `-` where no Task was named. Every one of those goes through the preview's
+  `source <- artifact sha256:…` for an exact-artifact binding, or `measurements <- task
+  experiment/baseline + task experiment/candidate` for a list); `--tree` adds one `BOUND` row per
+  bound output with the referenced Task, port, acceptance, domain conclusion and exact artifact
+  ID, or `artifact` and `-` where no Task was named. Every one of those goes through the preview's
   sanitizer, which maps any non-ASCII character to `?`, so the "nothing to show" marker is an
   ASCII hyphen.
-- `af task show` prints one `bound <port> <- task <id>/<port> (<acceptance>)` line per Task
-  binding and one `bound <port> <- artifact sha256:…` line per exact-artifact binding, and its
+- `af task show` prints one `bound <port> <- task <id>/<port> (<acceptance>)` line per bound
+  Task output — two for a port bound from two — and one `bound <port> <- artifact sha256:…` line
+  per exact-artifact binding, and its
   `--json` document carries `input_bindings` — present only when there is a binding, inside the
   one `af/task-inspection@11` generation. The self-optimizer's AF history adapter reads it as
   provenance that changes no counter.
 - The durable record is one `af/TaskInputBindings@1` artifact referenced from the revision's
-  `provenance.input_artifact_ids`. `af/TaskRevision@1` is unchanged, so a Task without bindings
-  keeps the revision, plan and `--json` documents it has today.
+  `provenance.input_artifact_ids`, one entry per bound port. A port bound from several outputs
+  keeps the first in its entry and every further one, in order, in an `also` list of
+  `{ artifact_id, snapshot_id?, task }`; `also` is absent for every other binding.
+  `af/TaskRevision@1` is unchanged, so a Task without bindings keeps the revision, plan and
+  `--json` documents it has today.
 
 ## Where it lives
 
@@ -209,3 +253,50 @@ Task-contract ones.
   observed without reaping and the group is killed before the leader is waited for.
 - Compatibility: the existing Task-runtime fixtures and `crates/af/tests/task_public_schemas.rs`
   pass unedited, which is the evidence that a Task file without `inputs` is unaffected.
+
+## Widened by package R4
+
+[ADR-0134](../adr/0134-bind-any-declared-root-port-to-recorded-task-outputs.md) changed no
+contract beyond one optional member, and every refusal ADR-0117 made stays.
+
+| Crate | What changed |
+|---|---|
+| `review-core` | `TaskInputBindingV1` gained `also: Vec<TaskInputBindingV1>` — absent when empty, an explicit empty list refused — whose items name a Task, are never re-rooted and never nested, at most `MAX_BOUND_OUTPUTS - 1` of them. |
+| `af` | `task_execution::input_bindings`: `TaskInputRefV1::Outputs` is the list form, read by JSON shape so no form is parsed from another's spelling; `DeclaredPorts` is the selected Pipeline's root inputs at resolution; `resolve` takes them, binds any declared port from a result output, refuses exact artifacts beyond ADR-0117's ports, and gathers a list into a `many` port. `start_captured` builds `DeclaredPorts` from the captured catalog. `preview` and `af task show` print one row per bound output. The `builtin/report` starter's generated schemas admit a `snapshot_id` on `comparison` and `measurements` values. |
+| `review-store` | `validate_bound_input_refs` judges input ports and the root inputs receipt: a `many` port that names no Snapshot claims none for its artifacts. Output ports keep `validate_input_refs`. |
+| `review-pipeline` | `typed_inputs` lets a `many` input the operator declares `unbound` span Snapshots and then name none. |
+| `review-runner` | The Worker renderer shows each value of such a port with its own Snapshot. |
+
+`schemas/task-file-v1.json` gained the list form and `schemas/task-input-bindings-v1.json` the
+`also` list (`furtherOutput`); the parity test in
+`crates/review-core/tests/schema_parity/task_contracts.rs` covers a port bound from two outputs
+and refuses a re-rooted, nested, anonymous or empty `also`.
+
+Tests:
+
+- Unit, `review-core`: a port bound from several outputs round-trips, writes no `also` for one
+  output, and refuses an anonymous first or further output, a republished or re-rooted one, a
+  nested one, a non-digest one, too many, and an explicit empty list.
+- Unit, `af::task_execution::input_bindings`: `requirements`, `base` and `continuation` stay
+  refused even where declared; an undeclared port names the selected Pipeline, and without one
+  names the kind or asks for the Pipeline when declarations differ; a `raw_artifact_ids` or
+  `runtime_evidence` name and an exact artifact on a declared port are refused with the
+  result-outputs message; a declared `one` port keeps its output's Snapshot and a mismatch names
+  both types; a `one` output into a `many` port points at the list form; two Measurements of two
+  Snapshots bind with no port Snapshot and one further output in the record, one listed output
+  keeps its Snapshot; a list into a `one` port, a mistyped, repeated or unrecorded listed output
+  is refused; and the Task-file list form round-trips while every malformed spelling is refused.
+- Unit, `af::task_execution::preview`: a port bound from two outputs annotates `IN` with both
+  and gets one `BOUND` group per output.
+- Integration, `crates/af/tests/it/task_research_chain.rs`: one repository carries the shipped
+  experiment, report and Document starters, and one Store holds three Tasks. The experiment runs
+  to `verified`; a report Task binding `comparison`, `measurements` (from `baseline` and
+  `candidate`) and `source` to it plans with the `BOUND` rows, runs to `verified` in three
+  command Attempts, records `measurements` with no Snapshot while each Measurement keeps its own,
+  and the author's and the verifier's context manifests name the exact comparison and both
+  Measurements; a report Task binding `sources` to the Document Task's `document` is refused at
+  plan time naming `af/Document@1` and `af/ReportSources@1`, and nothing is recorded. A second
+  test drives every other refusal above through `af task plan`.
+- Compatibility: `task_input_bindings.rs`, `task_report.rs`, `task_experiment.rs`,
+  `task_public_schemas.rs` and the other Task fixtures pass unedited, which is the evidence that
+  a Task file without `inputs`, or with ADR-0117's bindings, is unaffected.

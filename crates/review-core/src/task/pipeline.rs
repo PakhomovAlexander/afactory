@@ -173,6 +173,14 @@ pub enum TaskOperatorV1 {
     DocumentSeal {},
     DocumentCheck {},
     DocumentAccept {},
+    /// The report profile's renderer: the Document renderer over a report draft, bound to the
+    /// exact source Snapshot the draft was written against.
+    ReportSeal {},
+    /// The Document checks plus every repository citation resolved against the source
+    /// Snapshot's exact Manifest; one protected Attempt, never a Provider.
+    ReportCheck {},
+    /// Report acceptance assembly from current checks and the independent evaluation.
+    ReportAccept {},
     /// Deterministic M1 history fold and typed report rendering; never invokes a Provider.
     OptimizationProject {},
     /// Deterministic aggregate development view and installed light-recipe catalog. The output
@@ -212,6 +220,17 @@ pub enum TaskOperatorV1 {
         slot: String,
     },
     Select {},
+    /// Kernel measurement of a source Snapshot: one `af/Measurement@1` per named measure of the
+    /// captured code policy, each an outcome receipt. Never invokes a Provider (ADR-0132).
+    Measure {
+        #[serde(deserialize_with = "super::unique_set")]
+        measures: BTreeSet<String>,
+    },
+    /// Deterministic fold of a baseline and a candidate Measurement under one captured
+    /// objective into an `af/MeasurementComparison@1` outcome receipt.
+    Compare {
+        objective: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,6 +344,16 @@ impl PipelineDefinitionV1 {
                 TaskOperatorV1::Check { checks } => require(
                     !checks.is_empty() && checks.iter().all(|s| is_name(s)),
                     "Check operator needs named trusted checks",
+                )?,
+                TaskOperatorV1::Measure { measures } => require(
+                    !measures.is_empty()
+                        && measures.len() <= 16
+                        && measures.iter().all(|s| is_name(s)),
+                    "Measure operator needs one to 16 named measures",
+                )?,
+                TaskOperatorV1::Compare { objective } => require(
+                    is_name(objective),
+                    "Compare operator needs a named objective",
                 )?,
                 TaskOperatorV1::Call { pipeline, bindings } => {
                     require(

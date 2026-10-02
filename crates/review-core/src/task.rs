@@ -4,12 +4,14 @@
 //! compatibility; the Store establishes identity, authority and legal transitions.
 
 pub mod campaign_review;
+pub mod collection;
 pub mod delivery;
 pub mod document;
 pub mod event;
 pub mod execution;
 pub mod feedback;
 pub mod input_bindings;
+pub mod measurement;
 pub mod optimization;
 pub mod optimization_experiment;
 pub mod optimization_light;
@@ -20,6 +22,7 @@ pub mod planning;
 pub mod provider;
 pub mod repair;
 pub mod report;
+pub mod report_task;
 pub mod review;
 pub mod review_context;
 pub mod review_handoff;

@@ -8,10 +8,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use review_check::{CheckDefinition, CheckResult, CheckRunner, CheckStatus};
 use review_core::PortCardinality;
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
+use review_core::task::measurement::{
+    ComparisonObjective, MEASUREMENT_COMPARISON_V1, MEASUREMENT_V1, MeasureDefinitionV1,
+    MeasureObjectiveV1, MeasurementV1, compare_measurements,
+};
 use review_core::task::pipeline::*;
 use review_core::task::plan::ExecutionPlanV1;
 use review_core::task::runtime::{
-    TASK_RUNTIME_EVIDENCE_V1, TaskRuntimeEvidenceV1, TaskRuntimeSpanKindV1, TaskRuntimeSpanV1,
+    TASK_RUNTIME_EVIDENCE_V1, TaskRuntimeCheckOutcomeV1, TaskRuntimeCheckV1, TaskRuntimeEvidenceV1,
+    TaskRuntimeSpanKindV1, TaskRuntimeSpanV1,
 };
 use review_core::task::verification::*;
 use review_core::task::*;
@@ -30,7 +35,14 @@ use super::host::TaskDomain;
 use super::source::{
     invocation_producer, seal_candidate, source_input, source_snapshot, validate_seal,
 };
+use super::warm_check::{
+    CacheSourceResolver, CodeWarmPolicy, DEADLINE_EXHAUSTED, Excess, PreparedCheck, RustupHome,
+    ToolchainDeclaration, WARM_CACHE_BOUND_EXCEEDED, WARM_CACHE_SUSPECT, WarmCheckHost,
+    WarmSession,
+};
 use super::{TaskOperatorHost, TaskWorkOutput, envelope};
+
+mod measure;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,6 +59,21 @@ pub struct CodeTaskPolicy {
     )]
     pub check_process_wall_ms: Option<u64>,
     pub require_container: bool,
+    /// The Warm Check Cache (ADR-0131). Absent, every check builds cold and the captured policy
+    /// is byte-identical to one written before the table existed.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub warm: Option<CodeWarmPolicy>,
+    /// Declared measured commands (ADR-0132). Absent, the captured policy is byte-identical to
+    /// one written before the table existed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub measures: BTreeMap<String, MeasureDefinitionV1>,
+    /// Declared objectives a `compare` node folds two Measurements under.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub objectives: BTreeMap<String, MeasureObjectiveV1>,
     /// Optional named native checks whose Rust tools come from an explicit machine mapping.
     #[serde(
         default,
@@ -365,6 +392,47 @@ impl CodeTaskPolicy {
                 "Code Task requires bounded named checks and at least one required verifier".into(),
             );
         }
+        if let Some(warm) = &self.warm {
+            if self.require_container {
+                return Err(
+                    "Code policy declares [warm] together with require_container = true: a Warm \
+                     Check Cache is machine-local, candidate-built state that only trusted_local \
+                     checks may use, so a container policy refuses it"
+                        .into(),
+                );
+            }
+            warm.validate()?;
+        }
+        if self.measures.len() > 32 || self.objectives.len() > 32 {
+            return Err("Code policy declares at most 32 measures and 32 objectives".into());
+        }
+        for (name, measure) in &self.measures {
+            if !is_name(name) {
+                return Err(format!("Code policy measure name {name:?} is invalid"));
+            }
+            measure
+                .validate()
+                .map_err(|error| format!("Code policy measure {name}: {error}"))?;
+            if measure.warm
+                && !self.warm.as_ref().is_some_and(|warm| {
+                    warm.build_cache
+                        .contains(&super::warm_check::WarmBuildCacheKind::CargoTarget)
+                })
+            {
+                return Err(format!(
+                    "Code policy measure {name} declares warm = true, which needs [warm] \
+                     build_cache to declare cargo_target"
+                ));
+            }
+        }
+        for (name, objective) in &self.objectives {
+            if !is_name(name) {
+                return Err(format!("Code policy objective name {name:?} is invalid"));
+            }
+            objective
+                .validate(&self.measures)
+                .map_err(|error| format!("Code policy objective {name}: {error}"))?;
+        }
         Ok(())
     }
     pub fn isolation(&self) -> Policy {
@@ -488,13 +556,136 @@ pub fn code_signatures(
     for name in policy.checks.keys() {
         signatures.insert(format!("operator/check/{name}"), check.clone());
     }
+    signatures.extend(measure_signatures(policy));
     Ok(signatures)
+}
+
+fn measurement_port(name: &str) -> (String, PipelinePortV1) {
+    (name.into(), port(MEASUREMENT_V1, same("source")))
+}
+
+/// The installed measure and compare operators of a policy that declares measures (ADR-0132).
+/// `operator/measure` carries the one Attempt's wall, the captured `check_wall_ms`, and every
+/// declared measure's output; `operator/measure/<name>` carries that measure's one output and
+/// its repetition budget, which the compiler sums per node. `operator/compare/<objective>`
+/// installs an objective, and `operator/compare/<objective>/<measure>` the one measure it
+/// compares. A policy without measures installs nothing, so its signatures are unchanged.
+fn measure_signatures(policy: &CodeTaskPolicy) -> BTreeMap<String, OperatorSignature> {
+    let mut signatures = BTreeMap::new();
+    if policy.measures.is_empty() {
+        return signatures;
+    }
+    let measure =
+        |outputs: BTreeMap<String, PipelinePortV1>, wall_ms, outcome_port| OperatorSignature {
+            contract: PipelineContractV1 {
+                inputs: BTreeMap::from([(
+                    "source".into(),
+                    port(SOURCE_TREE_V1, PortAffinityV1::Unbound {}),
+                )]),
+                outputs,
+            },
+            effects: BTreeSet::from(["execute-checks".into()]),
+            evidence: BTreeMap::new(),
+            retains: BTreeMap::new(),
+            roles: BTreeSet::new(),
+            worker_input_type: None,
+            worker_output_type: None,
+            outcome_port,
+            attempt: Some(OperatorAttemptCost { tokens: 0, wall_ms }),
+        };
+    signatures.insert(
+        "operator/measure".into(),
+        measure(
+            policy
+                .measures
+                .keys()
+                .map(|name| measurement_port(name))
+                .collect(),
+            policy.check_wall_ms,
+            None,
+        ),
+    );
+    for (name, definition) in &policy.measures {
+        signatures.insert(
+            format!("operator/measure/{name}"),
+            measure(
+                BTreeMap::from([measurement_port(name)]),
+                definition.budget_ms().unwrap_or(u64::MAX),
+                Some(name.clone()),
+            ),
+        );
+    }
+    if policy.objectives.is_empty() {
+        return signatures;
+    }
+    let compare = OperatorSignature {
+        contract: PipelineContractV1 {
+            inputs: BTreeMap::from([
+                (
+                    "baseline".into(),
+                    port(MEASUREMENT_V1, PortAffinityV1::Unbound {}),
+                ),
+                (
+                    "candidate".into(),
+                    port(MEASUREMENT_V1, PortAffinityV1::Unbound {}),
+                ),
+            ]),
+            outputs: BTreeMap::from([(
+                "result".into(),
+                port(MEASUREMENT_COMPARISON_V1, same("candidate")),
+            )]),
+        },
+        effects: BTreeSet::new(),
+        evidence: BTreeMap::new(),
+        retains: BTreeMap::from([(
+            "result".into(),
+            BTreeSet::from(["baseline".into(), "candidate".into()]),
+        )]),
+        roles: BTreeSet::new(),
+        worker_input_type: None,
+        worker_output_type: None,
+        outcome_port: Some("result".into()),
+        attempt: None,
+    };
+    signatures.insert("operator/compare".into(), compare.clone());
+    for (name, objective) in &policy.objectives {
+        signatures.insert(format!("operator/compare/{name}"), compare.clone());
+        signatures.insert(
+            format!("operator/compare/{name}/{}", objective.measure),
+            compare.clone(),
+        );
+    }
+    signatures
+}
+
+/// The contract a compiled measure node must carry: the installed source input and one
+/// Measurement per named measure.
+fn measure_contract(
+    installed: &BTreeMap<String, OperatorSignature>,
+    measures: &BTreeSet<String>,
+) -> Option<PipelineContractV1> {
+    let base = installed.get("operator/measure")?;
+    let mut outputs = BTreeMap::new();
+    for name in measures {
+        outputs.extend(
+            installed
+                .get(&format!("operator/measure/{name}"))?
+                .contract
+                .outputs
+                .clone(),
+        );
+    }
+    Some(PipelineContractV1 {
+        inputs: base.contract.inputs.clone(),
+        outputs,
+    })
 }
 
 pub struct CodeTaskDomain {
     policy_id: String,
     policy: CodeTaskPolicy,
     graph: CompiledTask,
+    warm: WarmCheckHost,
     rust_toolchain_mapping: Option<PathBuf>,
 }
 
@@ -515,11 +706,22 @@ impl CodeTaskDomain {
                     TaskOperatorV1::Seal {}
                         | TaskOperatorV1::Check { .. }
                         | TaskOperatorV1::Accept {}
+                        | TaskOperatorV1::Compare { .. }
                 ) && installed
                     .get(signature)
                     .is_none_or(|s| s.contract != node.contract)
                 {
                     return Err("Compiled code operator changed its installed contract".into());
+                }
+                if let TaskOperatorV1::Compare { objective } = operator
+                    && !policy.objectives.contains_key(objective)
+                {
+                    return Err("Compiled comparison names an objective the policy lacks".into());
+                }
+                if let TaskOperatorV1::Measure { measures } = operator
+                    && measure_contract(&installed, measures).as_ref() != Some(&node.contract)
+                {
+                    return Err("Compiled measure changed its installed contract".into());
                 }
             }
         }
@@ -527,8 +729,38 @@ impl CodeTaskDomain {
             policy_id: policy_id.into(),
             policy,
             graph,
+            warm: WarmCheckHost::default(),
             rust_toolchain_mapping: None,
         })
+    }
+
+    /// Resolve a `[warm] caches` kind through the machine's cache policy, as a Gate resolves
+    /// `[gate] caches`. Without a resolver a declared Cache Snapshot is unavailable and its check
+    /// does not run.
+    pub fn with_cache_source_resolver<F>(mut self, resolver: F) -> Self
+    where
+        F: Fn(
+                review_sandbox::CacheKind,
+            ) -> Result<review_sandbox::CacheSource, review_sandbox::CacheError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.warm.resolver =
+            Some(std::sync::Arc::new(resolver) as std::sync::Arc<CacheSourceResolver>);
+        self
+    }
+
+    /// Keep warm build directories below `root` instead of `$XDG_CACHE_HOME/af/task-build-cache`.
+    pub fn with_task_build_cache_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.warm.root = Some(root.into());
+        self
+    }
+
+    /// How long a check waits for another holder of its warm directory before it runs cold.
+    pub fn with_task_build_cache_lock_wait(mut self, wait: Duration) -> Self {
+        self.warm.lock_wait = wait;
+        self
     }
 
     /// Machine-local coordinator selection, never captured candidate authority.
@@ -603,11 +835,27 @@ impl CodeTaskDomain {
         attempt: &PreparedTaskAttempt,
         names: &BTreeSet<String>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> Result<(ArtifactInputV1, String), String> {
+    ) -> Result<(ArtifactInputV1, Vec<String>), String> {
         let source = input.inputs.get("source").ok_or("Check needs source")?;
-        let (snapshot_id, _, manifest) = source_snapshot(cas, source)?;
+        let (snapshot_id, snapshot, manifest) = source_snapshot(cas, source)?;
+        let mut session = match &self.policy.warm {
+            Some(warm) => Some(WarmSession::new(
+                &self.warm,
+                warm,
+                review_source_git::task::read_origin(cas, &snapshot.origin_id)?.repository_id(),
+                ToolchainDeclaration::from_manifest(cas, &manifest)?,
+            )),
+            None => None,
+        };
+        // Under [warm] the probe and the check see the kernel's rustup home, so an installed
+        // toolchain answers at once and a missing one fails instead of downloading.
+        let rustup = session.as_ref().map(|_| RustupHome::of_kernel());
         let mut checks = BTreeMap::new();
         let mut spans = Vec::new();
+        // Under [warm] every check, started or not, has one group naming it, holding its span
+        // and its cache observations, so a reader never has to guess which check an
+        // observation belongs to.
+        let mut warm_evidence = Vec::new();
         for name in names {
             let definition = self
                 .policy
@@ -627,18 +875,18 @@ impl CodeTaskDomain {
                 .policy
                 .check_process_wall_ms
                 .map_or(remaining, |limit| limit.min(remaining));
-            let mut runner = CheckRunner::new(cas, sandbox.root())
+            let runner = CheckRunner::new(cas, sandbox.root())
                 .with_cancellation(cancellation)
                 .with_timeout(Duration::from_millis(remaining))
                 .with_env("HOME", runtime.path().display().to_string())
                 .with_env(
                     "XDG_CACHE_HOME",
                     runtime.path().join("cache").display().to_string(),
-                )
-                .with_env(
-                    "CARGO_TARGET_DIR",
-                    runtime.path().join("target").display().to_string(),
                 );
+            let mut runner = rustup
+                .iter()
+                .flat_map(RustupHome::environment)
+                .fold(runner, |runner, (key, value)| runner.with_env(key, value));
             let mut toolchain_evidence = None;
             if let Some(request) = self
                 .policy
@@ -676,8 +924,80 @@ impl CodeTaskDomain {
             let remaining =
                 remaining.min(attempt.reservation().deadline_unix_ms.saturating_sub(now));
             runner = runner.with_timeout(Duration::from_millis(remaining));
-            let (mut result, timing) = if remaining > 0 {
-                let execution = runner.run_observed(definition);
+            let mut prepared = match session.as_mut() {
+                Some(session) if remaining > 0 => Some(session.prepare(
+                    cas,
+                    runner.local_environment(),
+                    sandbox.root(),
+                    runtime.path(),
+                    cancellation,
+                    Duration::from_millis(remaining),
+                )?),
+                // The deadline ran out before this check could prepare: it keeps its name and
+                // one observation per declared kind.
+                Some(session) => Some(PreparedCheck {
+                    key_lock: None,
+                    environment: Vec::new(),
+                    directories: Vec::new(),
+                    observations: session.skipped(cas, DEADLINE_EXHAUSTED)?,
+                    refusal: None,
+                }),
+                None => None,
+            };
+            // Preparation — the toolchain probe, the lock wait, a Cache Snapshot copy — spent
+            // Attempt time. The check runs against what is left now, not what was left before.
+            let prepared_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_millis() as u64;
+            let exhausted_before = remaining == 0;
+            let remaining = attempt
+                .reservation()
+                .deadline_unix_ms
+                .saturating_sub(prepared_at)
+                .min(remaining);
+            let runner = runner.with_timeout(Duration::from_millis(remaining));
+            let exhausted_preparing = prepared.is_some() && !exhausted_before && remaining == 0;
+            let runner = match &prepared {
+                None => runner.with_env(
+                    "CARGO_TARGET_DIR",
+                    runtime.path().join("target").display().to_string(),
+                ),
+                Some(prepared) => prepared
+                    .environment
+                    .iter()
+                    .fold(runner, |runner, (key, value)| {
+                        runner.with_env(key.clone(), value.clone())
+                    }),
+            };
+            let refusal = prepared.as_ref().and_then(|p| p.refusal.clone());
+            let started = remaining > 0 && refusal.is_none();
+            let mut exceeded: Option<Excess> = None;
+            let (mut result, timing) = if started {
+                let execution = match (
+                    session.as_ref(),
+                    prepared.as_ref().and_then(|p| {
+                        p.key_lock
+                            .as_ref()
+                            .map(|key| (key, p.directories.as_slice()))
+                    }),
+                ) {
+                    // Whenever the key is held — even when every declared kind is superseded and
+                    // nothing is bound — the check runs monitored, so the key is measured during
+                    // and after it and judged before the check is accepted.
+                    (Some(session), Some((key, directories))) => {
+                        let (execution, over) = session.run_monitored(
+                            runner,
+                            definition,
+                            key,
+                            directories,
+                            cancellation,
+                        );
+                        exceeded = over;
+                        execution
+                    }
+                    _ => runner.run_observed(definition),
+                };
                 (
                     execution.result,
                     Some((execution.started_unix_ms, execution.elapsed_ms)),
@@ -688,7 +1008,13 @@ impl CodeTaskDomain {
                         name: name.clone(),
                         status: CheckStatus::NotRun,
                         exit_code: None,
-                        reason: Some("Task check deadline expired".into()),
+                        reason: Some(refusal.unwrap_or_else(|| {
+                            if exhausted_preparing {
+                                "Task check deadline expired during warm preparation".into()
+                            } else {
+                                "Task check deadline expired".into()
+                            }
+                        })),
                         program: Some(definition.command.program.clone()),
                         args: definition.command.args.clone(),
                         stdout: None,
@@ -698,24 +1024,81 @@ impl CodeTaskDomain {
                     None,
                 )
             };
-            if let Some((started_unix_ms, elapsed_ms)) = timing {
-                let span_id = cas
-                    .put_json(&json!([
-                        attempt.task_id(),
-                        attempt.id(),
-                        input.node,
-                        name,
-                        started_unix_ms,
-                        elapsed_ms
-                    ]))
-                    .map_err(|e| e.to_string())?;
-                spans.push(TaskRuntimeSpanV1 {
-                    span_id,
-                    kind: TaskRuntimeSpanKindV1::Check,
-                    label: name.clone(),
-                    started_unix_ms,
-                    elapsed_ms,
-                });
+            let mut observations = Vec::new();
+            if let (Some(session), Some(prepared)) = (session.as_ref(), prepared.take()) {
+                observations = prepared.observations;
+                if !started {
+                    // Nothing prepared was used; the locks are released without a removal.
+                    drop(prepared.directories);
+                    if exhausted_preparing {
+                        observations =
+                            session.not_started(cas, observations, DEADLINE_EXHAUSTED)?;
+                    }
+                } else {
+                    // `fails` is the reason the check fails with, when the excess ends it: the
+                    // hard bound or suspicion. Above only `max_bytes` the directories are
+                    // evicted and the check's own result stands (ADR-0135).
+                    let (fails, why, bound) = match &exceeded {
+                        Some(Excess::Suspect(detail)) => {
+                            eprintln!(
+                                "warm check cache diagnostic: suspect after the check: {detail}"
+                            );
+                            (Some(WARM_CACHE_SUSPECT), "suspect", None)
+                        }
+                        Some(Excess::Evict(_)) => (
+                            None,
+                            "bound_exceeded",
+                            Some(review_core::task::runtime::TaskCacheBoundV1::MaxBytes),
+                        ),
+                        Some(Excess::Bound(_)) => (
+                            Some(WARM_CACHE_BOUND_EXCEEDED),
+                            "bound_exceeded",
+                            Some(review_core::task::runtime::TaskCacheBoundV1::HardMaxBytes),
+                        ),
+                        None => (None, "bound_exceeded", None),
+                    };
+                    // Every kind below the key goes, held by this check or left by another; the
+                    // key stays locked until the last one is removed.
+                    let excess = exceeded.is_some();
+                    let evicted =
+                        session.finish(prepared.key_lock, prepared.directories, exceeded)?;
+                    if let Some(reason) = fails {
+                        // Above the hard bound or suspect once the check ended, however fast it
+                        // was and whether or not anything was left to remove — a check that
+                        // deleted its own warm root is suspect too: the check fails.
+                        result.status = CheckStatus::Failed;
+                        result.exit_code = None;
+                        result.reason = Some(reason.into());
+                    }
+                    if excess {
+                        // Each declared kind's eviction lands on the record that measured it
+                        // before the check, with the bound that acted.
+                        let base_of =
+                            |kind: &str| kind.split(':').next().unwrap_or_default().to_string();
+                        // Every declared observation of this check — a warm kind, superseded or
+                        // not, and a Cache Snapshot — carries the eviction and its cause; a kind
+                        // that had no entry below the key records zero bytes.
+                        for observation in observations.iter_mut() {
+                            let base = base_of(&observation.kind);
+                            let bytes = evicted
+                                .iter()
+                                .find(|(kind, _)| *kind == base)
+                                .map_or(0, |(_, bytes)| *bytes);
+                            observation.evicted_bytes = Some(bytes);
+                            observation.evicted_reason = Some(why.into());
+                            observation.bound = bound;
+                        }
+                        for (kind, bytes) in &evicted {
+                            if !observations.iter().any(|o| base_of(&o.kind) == *kind) {
+                                // An entry this check never declared has no observation to carry
+                                // its removal; the key's business, logged only.
+                                eprintln!(
+                                    "warm check cache diagnostic: removed undeclared `{kind}` ({bytes} bytes)"
+                                );
+                            }
+                        }
+                    }
+                }
             }
             if let Some(evidence) = toolchain_evidence {
                 let mut diagnostic = match &result.stderr {
@@ -730,10 +1113,54 @@ AF_TOOLCHAIN_SNAPSHOT ",
                 diagnostic.push(10);
                 result.stderr = Some(cas.put(&diagnostic).map_err(|e| e.to_string())?);
             }
+            let span = match timing {
+                Some((started_unix_ms, elapsed_ms)) => {
+                    let span_id = cas
+                        .put_json(&json!([
+                            attempt.task_id(),
+                            attempt.id(),
+                            input.node,
+                            name,
+                            started_unix_ms,
+                            elapsed_ms
+                        ]))
+                        .map_err(|e| e.to_string())?;
+                    Some(TaskRuntimeSpanV1 {
+                        span_id,
+                        kind: TaskRuntimeSpanKindV1::Check,
+                        label: name.clone(),
+                        started_unix_ms,
+                        elapsed_ms,
+                    })
+                }
+                None => None,
+            };
             let sealed = sandbox.seal().map_err(|e| e.to_string())?;
             if !sealed.unchanged() {
                 result.status = CheckStatus::Failed;
                 result.reason = Some("Check mutated its input Snapshot".into());
+            }
+            match &rustup {
+                Some(rustup) => {
+                    let caches = observations
+                        .into_iter()
+                        .map(|observation| {
+                            observation
+                                .record(cas, [attempt.task_id(), attempt.id(), &input.node, name])
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let check = TaskRuntimeCheckV1 {
+                        name: name.clone(),
+                        outcome: match result.status {
+                            CheckStatus::Passed => TaskRuntimeCheckOutcomeV1::Passed,
+                            CheckStatus::Failed => TaskRuntimeCheckOutcomeV1::Failed,
+                            CheckStatus::NotRun => TaskRuntimeCheckOutcomeV1::NotRun,
+                        },
+                        rustup_home: rustup.source,
+                    };
+                    warm_evidence.push((check, span, caches));
+                }
+                None => spans.extend(span),
             }
             let id = cas
                 .put_json(&serde_json::to_value(result).map_err(|e| e.to_string())?)
@@ -765,27 +1192,48 @@ AF_TOOLCHAIN_SNAPSHOT ",
             )
             .map_err(|e| e.to_string())?
             .0;
-        let evidence = TaskRuntimeEvidenceV1 {
+        let evidence = |check, spans: Vec<TaskRuntimeSpanV1>, caches| TaskRuntimeEvidenceV1 {
             task_id: attempt.task_id().into(),
             attempt_id: attempt.id().into(),
             node: input.node.clone(),
             context_id: attempt.context_id().into(),
+            check,
             spans,
-            caches: vec![],
+            caches,
         };
-        evidence.validate()?;
-        let evidence_id = cas
-            .put_artifact(
-                TASK_RUNTIME_EVIDENCE_V1,
-                invocation_producer(cas, input, Some(attempt))?,
-                std::iter::once(attempt.context_id().to_owned())
-                    .chain(evidence.spans.iter().map(|span| span.span_id.clone()))
-                    .collect(),
-                Some(snapshot_id.clone()),
-                serde_json::to_value(evidence).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?
-            .0;
+        let groups = if session.is_some() {
+            warm_evidence
+                .into_iter()
+                .map(|(check, span, caches)| {
+                    evidence(Some(check), span.into_iter().collect(), caches)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            vec![evidence(None, spans, vec![])]
+        };
+        if groups.is_empty() {
+            evidence(None, vec![], vec![]).validate()?;
+        }
+        let mut evidence_ids = Vec::with_capacity(groups.len());
+        for evidence in groups {
+            evidence.validate()?;
+            let evidence_id = cas
+                .put_artifact(
+                    TASK_RUNTIME_EVIDENCE_V1,
+                    invocation_producer(cas, input, Some(attempt))?,
+                    std::iter::once(attempt.context_id().to_owned())
+                        .chain(evidence.spans.iter().map(|span| span.span_id.clone()))
+                        .chain(evidence.caches.iter().flat_map(|cache| {
+                            [cache.observation_id.clone(), cache.source_digest.clone()]
+                        }))
+                        .collect(),
+                    Some(snapshot_id.clone()),
+                    serde_json::to_value(evidence).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?
+                .0;
+            evidence_ids.push(evidence_id);
+        }
         Ok((
             ArtifactInputV1 {
                 artifact_ids: vec![id],
@@ -793,7 +1241,7 @@ AF_TOOLCHAIN_SNAPSHOT ",
                 cardinality: PortCardinality::One,
                 snapshot_id: Some(snapshot_id),
             },
-            evidence_id,
+            evidence_ids,
         ))
     }
 
@@ -1247,17 +1695,25 @@ impl TaskOperatorHost for CodeTaskDomain {
                 seal_candidate(cas, input)?,
             )])),
             TaskOperatorV1::Check { checks } => {
-                let (receipt, evidence_id) = self.checks(
+                let (receipt, evidence_ids) = self.checks(
                     cas,
                     input,
                     attempt.ok_or("Check has no started Attempt")?,
                     checks,
                     cancellation,
                 )?;
-                raw_artifact_ids.push(evidence_id);
+                raw_artifact_ids.extend(evidence_ids);
                 Ok(BTreeMap::from([("result".into(), receipt)]))
             }
             TaskOperatorV1::Accept {} => self.accept(cas, input),
+            TaskOperatorV1::Measure { measures } => self.measure(
+                cas,
+                input,
+                attempt.ok_or("Measure has no started Attempt")?,
+                measures,
+                cancellation,
+            ),
+            TaskOperatorV1::Compare { objective } => self.compare(cas, input, objective),
             _ => Err("Code operator requires its captured Worker or domain adapter".into()),
         })();
         TaskWorkOutput {
@@ -1363,6 +1819,30 @@ impl TaskDomain for CodeTaskDomain {
                             serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                         value.validate()?;
                     }
+                }
+                Ok(())
+            }
+            TaskOperatorV1::Measure { measures } => {
+                let source = source_input(cas, &input.inputs["source"])?;
+                if !output.outputs.keys().eq(measures.iter()) {
+                    return Err("Measure output names other measures".into());
+                }
+                for (name, value) in &output.outputs {
+                    let [id] = value.artifact_ids.as_slice() else {
+                        return Err("Measure output is not one Measurement".into());
+                    };
+                    let measurement = self.measurement(cas, input, id, Some(name))?;
+                    if measurement.snapshot_id != source
+                        || value.snapshot_id.as_ref() != Some(&source)
+                    {
+                        return Err("Measurement names another Snapshot".into());
+                    }
+                }
+                Ok(())
+            }
+            TaskOperatorV1::Compare { objective } => {
+                if self.compare(cas, input, objective)? != output.outputs {
+                    return Err("Comparison differs from its exact deterministic fold".into());
                 }
                 Ok(())
             }

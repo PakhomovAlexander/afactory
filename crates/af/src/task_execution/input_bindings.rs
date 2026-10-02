@@ -1,7 +1,8 @@
 //! Resolving a Task file's optional `inputs` table into ordinary root ports.
 //!
 //! Resolution happens once, at plan time, and reads only the Store named by `--state`
-//! (ADR-0117). From the resolved `ArtifactInputV1` onwards a binding is indistinguishable from
+//! (ADR-0117). Any root input port the selected Pipeline declares may be bound to a recorded
+//! Task's result output, and a `many` port to several of them (ADR-0134). From the resolved `ArtifactInputV1` onwards a binding is indistinguishable from
 //! a capture: the compiled plan carries exact artifact IDs, so `af task run`, resume, retry and
 //! replay never read the referencing Task file again.
 //!
@@ -13,14 +14,16 @@
 use super::*;
 use review_core::task::document::DOCUMENT_SOURCES_V1;
 use review_core::task::input_bindings::{
-    ReferencedTaskV1, TASK_INPUT_BINDINGS_V1, TaskInputBindingV1, TaskInputBindingsV1,
+    MAX_BOUND_OUTPUTS, ReferencedTaskV1, TASK_INPUT_BINDINGS_V1, TaskInputBindingV1,
+    TaskInputBindingsV1,
 };
 use review_core::task::optimization::OPTIMIZATION_HISTORY_V1;
+use review_core::task::pipeline::PipelineDefinitionV1;
 use review_source_git::task::{
     SourceTree, TaskSnapshot, TaskSourceBoundFromV1, TaskSourceOriginV2, read_origin, read_snapshot,
 };
 
-/// One root input reference in the Task file: exactly one of the two closed forms.
+/// One root input reference in the Task file: exactly one of the three closed forms.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TaskOutputRefV1 {
@@ -34,11 +37,43 @@ pub(super) struct ExactArtifactRefV1 {
     pub(super) artifact: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub(super) enum TaskInputRefV1 {
     Task(TaskOutputRefV1),
     Artifact(ExactArtifactRefV1),
+    /// Several recorded outputs gathered, in this order, into one `many` port (ADR-0134).
+    Outputs(Vec<TaskOutputRefV1>),
+}
+
+/// Decided by the JSON shape rather than by trying each form in turn: an array is a list of
+/// Task output references, an object naming `artifact` is an exact reference, and any other
+/// object is a Task output reference. Each form stays closed, and no form is read from another
+/// form's spelling — serde would otherwise read a two-string array as a Task reference.
+impl<'de> Deserialize<'de> for TaskInputRefV1 {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        use serde_json::Value;
+        fn object<E: Error, T: serde::de::DeserializeOwned>(value: Value) -> Result<T, E> {
+            if !value.is_object() {
+                return Err(E::custom("a Task input reference is an object"));
+            }
+            serde_json::from_value(value).map_err(E::custom)
+        }
+        match Value::deserialize(deserializer)? {
+            Value::Array(items) => {
+                if items.is_empty() || items.len() > MAX_BOUND_OUTPUTS {
+                    return Err(D::Error::custom(
+                        "a list of Task outputs names one to sixteen references",
+                    ));
+                }
+                let refs = items.into_iter().map(object::<D::Error, _>);
+                Ok(Self::Outputs(refs.collect::<Result<_, _>>()?))
+            }
+            value if value.get("artifact").is_some() => object(value).map(Self::Artifact),
+            value => object(value).map(Self::Task),
+        }
+    }
 }
 
 /// What resolution produced: the root ports to install, the identity of the typed record to
@@ -67,10 +102,106 @@ impl RecordedTasks for EventStore {
     }
 }
 
-/// The ports whose construction the Task-file adapter owns, and which a binding replaces.
-const BINDABLE: [&str; 3] = ["source", "history", "sources"];
-/// Root ports the adapter constructs from something else. Named so the refusal can say why.
+/// Root ports no binding may supply, whatever a Pipeline declares. Named so the refusal can say
+/// why.
 const NOT_BINDABLE: [&str; 3] = ["requirements", "base", "continuation"];
+
+/// Why each of [`NOT_BINDABLE`] stays refused (ADR-0117).
+fn not_bindable_reason(port: &str) -> &'static str {
+    match port {
+        "requirements" => "the Task file's goal is the requirements the Task is judged against",
+        "base" => "a bound base would make the Subject a diff outside the Review selector rules",
+        _ => "a Pipeline that needs it binds it inside its own graph",
+    }
+}
+
+/// The root input ports a binding may name beyond the ones this adapter constructs.
+///
+/// Pipeline selection reads the Task revision, so it runs after resolution; what "the selected
+/// Pipeline" means here is the Pipeline the Task file names or, when it names none, every
+/// captured Pipeline that accepts the Task's kind, which must then declare the port alike. The
+/// compiler compares the Pipeline actually selected once more, exactly, before any node exists.
+#[derive(Debug, Default)]
+pub(super) struct DeclaredPorts {
+    /// The named Pipeline, or `None` when every Pipeline accepting `kind` was consulted.
+    named: Option<String>,
+    kind: String,
+    /// How many Pipelines were consulted: a port every one of them must declare alike.
+    consulted: usize,
+    /// Per port, how many consulted Pipelines declare it and the distinct ways they do.
+    ports: BTreeMap<String, (usize, Vec<(String, PortCardinality)>)>,
+}
+
+impl DeclaredPorts {
+    pub(super) fn of(
+        pipelines: &BTreeMap<String, PipelineDefinitionV1>,
+        kind: &str,
+        named: Option<&str>,
+    ) -> Self {
+        let consulted: Vec<&PipelineDefinitionV1> = match named {
+            Some(name) => pipelines.get(name).into_iter().collect(),
+            None => pipelines
+                .values()
+                .filter(|pipeline| pipeline.accepts.kinds.contains(kind))
+                .collect(),
+        };
+        let mut ports: BTreeMap<String, (usize, Vec<(String, PortCardinality)>)> = BTreeMap::new();
+        let count = consulted.len();
+        for pipeline in consulted {
+            for (name, port) in &pipeline.contract.inputs {
+                let declared = (port.artifact_type.clone(), port.cardinality);
+                let (declaring, seen) = ports.entry(name.clone()).or_default();
+                *declaring += 1;
+                if !seen.contains(&declared) {
+                    seen.push(declared);
+                }
+            }
+        }
+        Self {
+            named: named.map(str::to_owned),
+            kind: kind.to_owned(),
+            consulted: count,
+            ports,
+        }
+    }
+
+    /// The one type and cardinality `port` carries, or why it cannot be bound.
+    fn port(&self, port: &str) -> Result<(String, PortCardinality), String> {
+        let named = shown(port, NAME_SHOWN);
+        let whose = match &self.named {
+            Some(pipeline) => format!("the selected Pipeline {}", shown(pipeline, NAME_SHOWN)),
+            None => format!(
+                "no captured Pipeline accepting kind {}",
+                shown(&self.kind, NAME_SHOWN)
+            ),
+        };
+        match self.ports.get(port) {
+            // Every consulted Pipeline declares the port one way: that is its contract.
+            Some((declaring, types)) if *declaring == self.consulted && types.len() == 1 => {
+                let (artifact_type, cardinality) = &types[0];
+                Ok((artifact_type.clone(), *cardinality))
+            }
+            // Some accepting Pipeline lacks it: selection could otherwise pick the one that has
+            // it and let the binding decide the Pipeline, which ADR-0134 refuses.
+            Some((declaring, _)) if *declaring < self.consulted => Err(format!(
+                "the captured Pipelines accepting kind {} do not all declare the root input \
+                 {named}; name the Pipeline in the Task file",
+                shown(&self.kind, NAME_SHOWN)
+            )),
+            Some(_) => Err(format!(
+                "the captured Pipelines accepting kind {} declare the root input {named} with \
+                 different types; name the Pipeline in the Task file",
+                shown(&self.kind, NAME_SHOWN)
+            )),
+            _ if self.named.is_some() => Err(format!(
+                "{named} is not a bindable root input port: {whose} does not declare it"
+            )),
+            _ => Err(format!(
+                "{named} is not a bindable root input port: {whose} declares it"
+            )),
+        }
+    }
+}
 
 fn cardinality_name(value: PortCardinality) -> &'static str {
     match value {
@@ -103,15 +234,20 @@ const DIGEST_SHOWN: usize = 80;
 /// output port, or the exact artifact ID.
 fn label(port: &str, reference: &TaskInputRefV1) -> String {
     let port = shown(port, NAME_SHOWN);
+    let output = |task: &TaskOutputRefV1| {
+        let named = shown(&task.task, NAME_SHOWN);
+        let output = shown(&task.port, NAME_SHOWN);
+        format!("task {named}/{output}")
+    };
     match reference {
-        TaskInputRefV1::Task(task) => {
-            let named = shown(&task.task, NAME_SHOWN);
-            let output = shown(&task.port, NAME_SHOWN);
-            format!("{port} <- task {named}/{output}")
-        }
+        TaskInputRefV1::Task(task) => format!("{port} <- {}", output(task)),
         TaskInputRefV1::Artifact(exact) => {
             let artifact = shown(&exact.artifact, DIGEST_SHOWN);
             format!("{port} <- artifact {artifact}")
+        }
+        TaskInputRefV1::Outputs(list) => {
+            let list = list.iter().map(output).collect::<Vec<_>>();
+            format!("{port} <- {}", list.join(", "))
         }
     }
 }
@@ -121,12 +257,16 @@ fn refuse(port: &str, reference: &TaskInputRefV1, reason: impl std::fmt::Display
     format!("Task input binding {named}: {reason}")
 }
 
-/// The type and cardinality this port carries for this Task's profile. A `many` recorded output
-/// never binds a `one` port, so the comparison is exact equality, never containment.
+/// The type and cardinality this port carries, and whether this adapter owns its construction.
+/// An adapter-owned port — `source`, `history` or `sources`, which a binding replaces — takes
+/// this Task's profile type, as ADR-0117 fixed it; any other port takes the selected Pipeline's
+/// declaration. A `many` recorded output never binds a `one` port, so the comparison is exact
+/// equality, never containment.
 fn expected_port(
     profile: TaskKindProfile,
+    declared: &DeclaredPorts,
     port: &str,
-) -> Result<(&'static str, PortCardinality), String> {
+) -> Result<(String, PortCardinality, bool), String> {
     let optimization = matches!(
         profile,
         TaskKindProfile::OptimizationAnalysis | TaskKindProfile::OptimizationCandidate
@@ -139,21 +279,36 @@ fn expected_port(
     let artifact_type = match port {
         "source" => SOURCE_TREE_V1,
         "history" => history,
+        // A report reads its own sources artifact; a Document's sources never bind to it.
+        "sources" if profile == TaskKindProfile::Report => {
+            review_core::task::report_task::REPORT_SOURCES_V1
+        }
         "sources" => DOCUMENT_SOURCES_V1,
         other if NOT_BINDABLE.contains(&other) => {
-            let bindable = BINDABLE.join(", ");
             let named = shown(other, NAME_SHOWN);
-            let reason = format!("the root input {named} is not bindable");
-            return Err(format!("{reason}; only {bindable} are"));
+            let why = not_bindable_reason(other);
+            return Err(format!("the root input {named} is not bindable: {why}"));
         }
         other => {
-            let bindable = BINDABLE.join(", ");
-            let named = shown(other, NAME_SHOWN);
-            let reason = format!("{named} is not a bindable root input port");
-            return Err(format!("{reason}; only {bindable} are"));
+            let (artifact_type, cardinality) = declared.port(other)?;
+            return Ok((artifact_type, cardinality, false));
         }
     };
-    Ok((artifact_type, PortCardinality::One))
+    // The profile fixes what an adapter-owned port carries; the selected Pipeline must still
+    // declare it, and declare it that way, or the binding is refused here by name and with both
+    // types rather than by the compiler's general contract check.
+    let (declared_type, declared_cardinality) = declared.port(port)?;
+    if declared_type != artifact_type || declared_cardinality != PortCardinality::One {
+        return Err(format!(
+            "the selected Pipeline declares the root input {} as {} {}, and this Task's profile \
+             binds {} one to it",
+            shown(port, NAME_SHOWN),
+            shown(&declared_type, NAME_SHOWN),
+            cardinality_name(declared_cardinality),
+            shown(artifact_type, NAME_SHOWN)
+        ));
+    }
+    Ok((artifact_type.to_owned(), PortCardinality::One, true))
 }
 
 /// The recorded output of a Task in this Store, with the provenance the binding record keeps.
@@ -188,8 +343,11 @@ fn recorded_output(
             carried.join(", ")
         };
         let port = shown(&reference.port, NAME_SHOWN);
+        // An Attempt's raw artifacts, runtime evidence and every other record a Task keeps are
+        // not in `outputs`, so this is the refusal that names them.
         return Err(format!(
-            "the recorded result has no output port {port}; it carries {names}"
+            "the recorded result has no output port {port}; only result outputs bind, never an \
+             Attempt's raw artifacts, runtime evidence or other records; it carries {names}"
         ));
     };
     for id in &recorded.artifact_ids {
@@ -289,6 +447,7 @@ fn bind_source(
             snapshot_id: Some(snapshot_id.clone()),
             rerooted_snapshot_id: None,
             task: task.cloned(),
+            also: Vec::new(),
         };
         let port = ArtifactInputV1 {
             snapshot_id: Some(snapshot_id),
@@ -325,23 +484,128 @@ fn bind_source(
         snapshot_id: Some(snapshot_id),
         rerooted_snapshot_id: Some(rerooted),
         task: task.cloned(),
+        also: Vec::new(),
     };
     Ok((port, binding, manifest))
+}
+
+fn mismatch(recorded: &ArtifactInputV1, want: &str, cardinality: PortCardinality) -> String {
+    format!(
+        "the reference is {} {} and this port takes {} {}",
+        shown(&recorded.artifact_type, NAME_SHOWN),
+        cardinality_name(recorded.cardinality),
+        shown(want, NAME_SHOWN),
+        cardinality_name(cardinality)
+    )
+}
+
+/// A `many` port bound from a list of recorded outputs, in list order. Each output must carry
+/// the port's type and may hold one artifact or several; together they make the port's
+/// artifacts, which must be distinct. One listed output keeps its Snapshot ID. Several carry
+/// none on the port, because a port names one Snapshot and they may have measured several —
+/// each artifact keeps its own subject Snapshot in its envelope.
+fn bind_outputs(
+    cas: &Cas,
+    store: &dyn RecordedTasks,
+    port: &str,
+    list: &[TaskOutputRefV1],
+    want: &str,
+) -> Result<(ArtifactInputV1, TaskInputBindingV1), String> {
+    let mut artifact_ids = Vec::new();
+    let mut bindings = Vec::new();
+    let mut snapshot_id = None;
+    for named in list {
+        let reference = TaskInputRefV1::Task(named.clone());
+        let found = recorded_output(cas, store, named);
+        let (recorded, task) = found.map_err(|e| refuse(port, &reference, e))?;
+        if recorded.artifact_type != want {
+            let reason = mismatch(&recorded, want, PortCardinality::Many);
+            return Err(refuse(port, &reference, reason));
+        }
+        if recorded.artifact_ids.is_empty() {
+            return Err(refuse(port, &reference, "the reference holds no artifact"));
+        }
+        // Every artifact the output holds is recorded, one entry each, so the record and the
+        // preview show everything the binding delivers, not only an output's first artifact.
+        for id in &recorded.artifact_ids {
+            if artifact_ids.contains(id) {
+                let id = shown(id, DIGEST_SHOWN);
+                let reason = format!("the listed outputs name artifact {id} twice");
+                return Err(refuse(port, &reference, reason));
+            }
+            artifact_ids.push(id.clone());
+            bindings.push(TaskInputBindingV1 {
+                artifact_id: id.clone(),
+                resolved_artifact_id: None,
+                snapshot_id: recorded.snapshot_id.clone(),
+                rerooted_snapshot_id: None,
+                task: Some(task.clone()),
+                also: Vec::new(),
+            });
+        }
+        snapshot_id = recorded.snapshot_id.clone();
+    }
+    let mut bindings = bindings.into_iter();
+    let mut binding = bindings.next().ok_or("a list names at least one output")?;
+    binding.also = bindings.collect();
+    let input = ArtifactInputV1 {
+        artifact_ids,
+        artifact_type: want.to_owned(),
+        cardinality: PortCardinality::Many,
+        snapshot_id: if list.len() == 1 { snapshot_id } else { None },
+    };
+    Ok((input, binding))
 }
 
 pub(super) fn resolve(
     cas: &Cas,
     store: &dyn RecordedTasks,
     profile: TaskKindProfile,
+    declared: &DeclaredPorts,
     references: &BTreeMap<String, TaskInputRefV1>,
 ) -> Result<BoundInputs, String> {
     let mut ports = BTreeMap::new();
     let mut bindings = BTreeMap::new();
     let mut source_manifest = None;
     for (port, reference) in references {
-        let wanted = expected_port(profile, port);
-        let (want_type, want_one) = wanted.map_err(|e| refuse(port, reference, e))?;
+        let wanted = expected_port(profile, declared, port);
+        let (want_type, want_cardinality, owned) =
+            wanted.map_err(|e| refuse(port, reference, e))?;
         let (recorded, task) = match reference {
+            TaskInputRefV1::Outputs(list) if want_cardinality != PortCardinality::Many => {
+                // Each listed output is judged first, so a Task file that names something that
+                // is not a result output, or an output of another type, hears that rather than
+                // only that its list has the wrong shape.
+                for item in list {
+                    let found = recorded_output(cas, store, item);
+                    let (recorded, _) = found.map_err(|e| refuse(port, reference, e))?;
+                    if recorded.artifact_type != want_type {
+                        let reason = mismatch(&recorded, &want_type, want_cardinality);
+                        return Err(refuse(port, reference, reason));
+                    }
+                }
+                let reason = format!(
+                    "a list of outputs binds only a many port, and this port takes {} one",
+                    shown(&want_type, NAME_SHOWN)
+                );
+                return Err(refuse(port, reference, reason));
+            }
+            TaskInputRefV1::Outputs(list) => {
+                let (input, binding) = bind_outputs(cas, store, port, list, &want_type)?;
+                let valid = input.validate();
+                valid.map_err(|e| refuse(port, reference, e))?;
+                ports.insert(port.clone(), input);
+                bindings.insert(port.clone(), binding);
+                continue;
+            }
+            // An exact ID can name any artifact in the Store — an Attempt's raw artifact or
+            // its runtime evidence among them — so only the ports ADR-0117 opened take one.
+            TaskInputRefV1::Artifact(_) if !owned => {
+                let reason = "only a recorded Task's result output binds this port, never an \
+                              exact artifact, which may be an Attempt's raw artifact or runtime \
+                              evidence; name it as { \"task\", \"port\" }";
+                return Err(refuse(port, reference, reason));
+            }
             TaskInputRefV1::Task(named) => {
                 let found = recorded_output(cas, store, named);
                 let (input, task) = found.map_err(|e| refuse(port, reference, e))?;
@@ -352,14 +616,11 @@ pub(super) fn resolve(
                 (found.map_err(|e| refuse(port, reference, e))?, None)
             }
         };
-        if recorded.artifact_type != want_type || recorded.cardinality != want_one {
-            let reason = format!(
-                "the reference is {} {} and this port takes {} {}",
-                shown(&recorded.artifact_type, NAME_SHOWN),
-                cardinality_name(recorded.cardinality),
-                want_type,
-                cardinality_name(want_one)
-            );
+        if recorded.artifact_type != want_type || recorded.cardinality != want_cardinality {
+            let mut reason = mismatch(&recorded, &want_type, want_cardinality);
+            if recorded.artifact_type == want_type && want_cardinality == PortCardinality::Many {
+                reason.push_str("; a list of outputs gathers one output into a many port");
+            }
             return Err(refuse(port, reference, reason));
         }
         let (resolved, binding) = if port.as_str() == "source" {
@@ -369,19 +630,41 @@ pub(super) fn resolve(
             (input, binding)
         } else {
             // `history` and `sources` hold no Snapshot semantics that sealing, ancestry or
-            // delivery depend on, so the referenced artifact ID is carried verbatim.
+            // delivery depend on, so the referenced artifact ID is carried verbatim and the
+            // port names no Snapshot, as ADR-0117 decided. Every other declared port keeps the
+            // Snapshot ID its recorded output carried (ADR-0134).
             let first = recorded.artifact_ids.first().cloned();
             let reason = "the reference holds no artifact";
             let artifact_id = first.ok_or_else(|| refuse(port, reference, reason))?;
+            let snapshot_id = if owned {
+                None
+            } else {
+                recorded.snapshot_id.clone()
+            };
+            // A `many` output holding several artifacts records every one of them.
+            let also = recorded
+                .artifact_ids
+                .iter()
+                .skip(1)
+                .map(|id| TaskInputBindingV1 {
+                    artifact_id: id.clone(),
+                    resolved_artifact_id: None,
+                    snapshot_id: snapshot_id.clone(),
+                    rerooted_snapshot_id: None,
+                    task: task.clone(),
+                    also: Vec::new(),
+                })
+                .collect();
             let binding = TaskInputBindingV1 {
                 artifact_id,
                 resolved_artifact_id: None,
-                snapshot_id: None,
+                snapshot_id: snapshot_id.clone(),
                 rerooted_snapshot_id: None,
                 task: task.clone(),
+                also,
             };
             let input = ArtifactInputV1 {
-                snapshot_id: None,
+                snapshot_id,
                 ..recorded
             };
             (input, binding)
@@ -400,6 +683,12 @@ pub(super) fn resolve(
     for binding in record.bindings.values() {
         refs.push(binding.artifact_id.clone());
         refs.extend(binding.resolved_artifact_id.clone());
+        refs.extend(
+            binding
+                .also
+                .iter()
+                .map(|further| further.artifact_id.clone()),
+        );
     }
     refs.sort();
     refs.dedup();

@@ -934,12 +934,55 @@ fn print_adoption_observation(
     Ok(())
 }
 
-pub(super) fn list(options: InspectOptions) -> Result<(), String> {
+pub(super) fn list(options: InspectOptions, sizes: bool) -> Result<(), String> {
     let repository = std::fs::canonicalize(&options.repo)
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
-    let tasks = super::task_execution::list_common(&state)?;
-    print_task_list(&options, tasks)
+    let mut tasks = super::task_execution::list_common(&state)?;
+    let store = if sizes {
+        // Each uncollected Task's CAS bytes, from the same walk `af task gc` sweeps by
+        // (ADR-0135). A collected Task reaches nothing. The rows and the walk are two reads: a
+        // Task `gc --apply` collects between them has a row and no footprint, so both are read
+        // again once, and the second pass lists it from its tombstone.
+        let mut store = None;
+        for attempt in 0..2 {
+            let (totals, footprints) = super::task_execution::list_sizes(&state)?;
+            let mut missing = None;
+            for task in &mut tasks {
+                if task.get("collected").is_some() {
+                    // A collected Task reaches no object: its row says so in numbers, in both
+                    // formats, rather than leaving the column empty.
+                    task["sizes"] = serde_json::json!({
+                        "exclusive_objects": 0, "exclusive_bytes": 0,
+                        "shared_objects": 0, "shared_bytes": 0,
+                    });
+                    continue;
+                }
+                let id = task["task_id"].as_str().unwrap_or_default().to_owned();
+                match footprints.get(&id) {
+                    Some(footprint) => task["sizes"] = footprint.clone(),
+                    None => {
+                        missing = Some(id);
+                        break;
+                    }
+                }
+            }
+            match missing {
+                None => {
+                    store = Some(totals);
+                    break;
+                }
+                Some(_) if attempt == 0 => {
+                    tasks = super::task_execution::list_common(&state)?;
+                }
+                Some(id) => return Err(format!("Task `{id}` has no recorded size")),
+            }
+        }
+        store
+    } else {
+        None
+    };
+    print_task_list(&options, tasks, store)
 }
 
 pub(super) fn show(options: InspectOptions) -> Result<(), String> {
@@ -1652,30 +1695,60 @@ fn print_delivery(options: &DeliveryOptions, receipt: &DeliveryReceipt) -> Resul
     Ok(())
 }
 
-fn print_task_list(options: &InspectOptions, tasks: Vec<serde_json::Value>) -> Result<(), String> {
+fn print_task_list(
+    options: &InspectOptions,
+    tasks: Vec<serde_json::Value>,
+    store: Option<serde_json::Value>,
+) -> Result<(), String> {
     if options.json {
+        let mut document = serde_json::json!({
+            "schema": "af/task-list@2",
+            "tasks": tasks,
+        });
+        if let Some(store) = store {
+            document["store"] = store;
+        }
         println!(
             "{}",
-            serde_json::to_string(&serde_json::json!({
-                "schema": "af/task-list@2",
-                "tasks": tasks,
-            }))
-            .map_err(|error| error.to_string())?
+            serde_json::to_string(&document).map_err(|error| error.to_string())?
         );
-    } else if tasks.is_empty() {
+        return Ok(());
+    }
+    if tasks.is_empty() {
         println!("no Tasks");
-    } else {
-        for task in tasks {
-            println!(
-                "{}  {:<10} {:>8} tokens  {}",
-                task["task_id"].as_str().unwrap_or("-"),
-                task["outcome"].as_str().unwrap_or("incomplete"),
-                task["chargeable_tokens"].as_str().unwrap_or("-"),
-                task.pointer("/delivery/outcome/kind")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("not-delivered"),
-            );
-        }
+    }
+    for task in tasks {
+        // A collected Task keeps only its retained summary: no delivery is shown for it.
+        let state = match task["collected"]["collected_unix_ms"].as_u64() {
+            Some(time) => format!(
+                "collected {}",
+                review_core::task::collection::collected_time(time)
+            ),
+            None => task
+                .pointer("/delivery/outcome/kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("not-delivered")
+                .to_owned(),
+        };
+        let sizes = match task.get("sizes") {
+            Some(sizes) => format!(
+                "  {} bytes exclusive, {} shared",
+                sizes["exclusive_bytes"], sizes["shared_bytes"]
+            ),
+            None => String::new(),
+        };
+        println!(
+            "{}  {:<10} {:>8} tokens  {state}{sizes}",
+            task["task_id"].as_str().unwrap_or("-"),
+            task["outcome"].as_str().unwrap_or("incomplete"),
+            task["chargeable_tokens"].as_str().unwrap_or("-"),
+        );
+    }
+    if let Some(store) = store {
+        println!(
+            "Store: {} objects, {} bytes ({} bytes unreachable)",
+            store["objects"], store["bytes"], store["unreachable_bytes"]
+        );
     }
     Ok(())
 }

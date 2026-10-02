@@ -33,7 +33,7 @@
       "minProperties": 1
     },
     "inputs": {
-      "$comment": "Optional root input bindings (ADR-0117). Absent by default; a Task file written before this decision compiles to the identical revision. The bindable ports are source, history and sources; requirements, base, continuation and any other name are refused by name at plan time, not here, so the refusal can say which Task and port asked for them.",
+      "$comment": "Optional root input bindings (ADR-0117, widened by ADR-0134). Absent by default; a Task file written before this decision compiles to the identical revision. Any root input the selected Pipeline declares may be bound except requirements, base and continuation; those and every undeclared name are refused by name at plan time, not here, so the refusal can say which Task and port asked for them. An exact artifact binds only source, history and sources; a list of Task outputs binds only a `many` port.",
       "type": "object",
       "minProperties": 1,
       "maxProperties": 16,
@@ -69,11 +69,39 @@
                 "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
               }
             }
+          },
+          {
+            "$comment": "Several recorded Task outputs gathered, in this order, into one `many` port (ADR-0134).",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "task",
+                "port"
+              ],
+              "properties": {
+                "task": {
+                  "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+                },
+                "port": {
+                  "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+                }
+              }
+            }
           }
         ]
       }
     },
     "document_sources": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*[\\\\\\x00-\\x1f\\x7f-\\x9f])(?!(?:.*/)?(?:\\.|\\.\\.|\\.git)(?:/|$))[^/]+(?:/[^/]+)*$"
+    },
+    "report_sources": {
       "type": "string",
       "minLength": 1,
       "maxLength": 4096,

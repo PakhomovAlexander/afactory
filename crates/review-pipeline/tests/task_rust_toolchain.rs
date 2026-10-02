@@ -499,6 +499,9 @@ fn run_code_task_domain_fixture(mapping: Option<PathBuf>, cold: bool, review_wra
         check_wall_ms: 20_000,
         check_process_wall_ms: Some(10_000),
         require_container: false,
+        warm: None,
+        measures: BTreeMap::new(),
+        objectives: BTreeMap::new(),
         rust_toolchain: Some(RustToolchainRequest {
             checks: names,
             ..request()

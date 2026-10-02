@@ -480,6 +480,7 @@ fn review_handoff_compares_task_and_successor_round_inside_the_append_transactio
             .referencing(references(&f.cas, &transition.change, Some(&state)).unwrap());
         let next: TaskRevisionV1 = revision(&f.cas, &handoff.successor_revision_id).unwrap();
         let permit = WritePermit {
+            bound_tasks: vec![],
             run_id: run.clone(),
             first: state.next_sequence,
             payloads: vec![value],

@@ -24,13 +24,17 @@ digest = "sha256:f10028c8e1f6b37238c5818b0b75c55e2daba7c5f497116b87e604865eec171
 version = "1.0.0"
 digest = "sha256:5e8328803396ff67dca66330a5b967b0bb06719098f06b9041bf9dff81e60ea7"
 
+[workers.design-sol]
+version = "1.0.0"
+digest = "sha256:69e8d385c1ea4b0914edb51fbf1365a6eadc23875d499bf2946768acfd9638db"
+
 [workers.performance]
 version = "1.1.0"
 digest = "sha256:e514535d498e11ea05d38830c8944f24b1e3c198da941d37e304f86ff7c801f7"
 
 [pipelines.design-review]
 version = "1.0.0"
-digest = "sha256:9ecebd6cc255192a3f32d015ca5a4501d072e54c59b6050276ab3aab3bfc1536"
+digest = "sha256:6d0fc6c14b0127b20da7a3f5e01411c721770216746f2ed65a5e29ea11b9c7ea"
 
 [pipelines.p1-review]
 version = "1.0.0"

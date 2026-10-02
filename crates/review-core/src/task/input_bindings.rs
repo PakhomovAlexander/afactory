@@ -50,6 +50,11 @@ impl ReferencedTaskV1 {
 /// `resolved_artifact_id` is present only when the adapter had to publish a different artifact
 /// for the port — a re-rooted `source`, whose `af/SourceTree@1` envelope must name the
 /// re-rooted Snapshot rather than the derived one it came from.
+///
+/// A `many` port bound from several recorded outputs (ADR-0134) keeps its first reference here
+/// and every further one, in Task-file order, in `also`: each names its own Task output and
+/// the Snapshot that output recorded, and none is re-rooted. `also` is absent for every port
+/// bound from one reference, so such a record is exactly what ADR-0117 wrote.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskInputBindingV1 {
@@ -78,7 +83,35 @@ pub struct TaskInputBindingV1 {
         deserialize_with = "present_option"
     )]
     pub task: Option<ReferencedTaskV1>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "present_list"
+    )]
+    pub also: Vec<TaskInputBindingV1>,
 }
+
+/// `also` is absent or holds at least one further output: an explicit empty list would be a
+/// second spelling of a single-reference binding.
+fn present_list<'de, D>(deserializer: D) -> Result<Vec<TaskInputBindingV1>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let list = Vec::<TaskInputBindingV1>::deserialize(deserializer)?;
+    if list.is_empty() {
+        return Err(serde::de::Error::custom(
+            "`also` is absent or names a further output",
+        ));
+    }
+    Ok(list)
+}
+
+/// The most recorded outputs one port may be bound from: the Task file's list of references.
+pub const MAX_BOUND_OUTPUTS: usize = 16;
+/// The most artifacts one port may be bound with, across every referenced output: a recorded
+/// `many` output holds any number of artifacts, and the record keeps every one of them, so the
+/// bound here is on the record, not on the references.
+pub const MAX_BOUND_ARTIFACTS: usize = 1024;
 
 impl TaskInputBindingV1 {
     pub fn validate(&self) -> Result<(), String> {
@@ -94,10 +127,32 @@ impl TaskInputBindingV1 {
                 || (self.snapshot_id.is_some() && self.resolved_artifact_id.is_some()),
             "A re-rooted binding retains both the referenced Snapshot and the republished artifact",
         )?;
-        match &self.task {
-            Some(task) => task.validate(),
-            None => Ok(()),
+        if let Some(task) = &self.task {
+            task.validate()?;
         }
+        if self.also.is_empty() {
+            return Ok(());
+        }
+        // Several outputs bind only by Task reference: the first names its Task too, and a
+        // further reference is one recorded output, never re-rooted and never nested.
+        require(
+            self.task.is_some()
+                && self.resolved_artifact_id.is_none()
+                && self.rerooted_snapshot_id.is_none()
+                && self.also.len() < MAX_BOUND_ARTIFACTS,
+            "A port bound from several outputs names each by Task and re-roots none",
+        )?;
+        for further in &self.also {
+            require(
+                further.task.is_some()
+                    && further.resolved_artifact_id.is_none()
+                    && further.rerooted_snapshot_id.is_none()
+                    && further.also.is_empty(),
+                "A further bound output names one Task output and nothing else",
+            )?;
+            further.validate()?;
+        }
+        Ok(())
     }
 }
 
@@ -157,6 +212,7 @@ mod tests {
                     snapshot_id: Some(digest('c')),
                     rerooted_snapshot_id: Some(digest('d')),
                     task: Some(task()),
+                    also: Vec::new(),
                 },
             )]),
         }
@@ -209,6 +265,67 @@ mod tests {
         }
     }
 
+    fn output(byte: char, port: &str) -> TaskInputBindingV1 {
+        TaskInputBindingV1 {
+            artifact_id: digest(byte),
+            resolved_artifact_id: None,
+            snapshot_id: Some(digest(if byte == 'a' { 'e' } else { 'f' })),
+            rerooted_snapshot_id: None,
+            task: Some(ReferencedTaskV1 {
+                port: port.into(),
+                ..task()
+            }),
+            also: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_port_bound_from_several_outputs_names_each_by_task_and_re_roots_none() {
+        let mut several = output('a', "baseline");
+        several.also.push(output('b', "candidate"));
+        let record = TaskInputBindingsV1 {
+            schema: "af.task-input-bindings/1".into(),
+            bindings: BTreeMap::from([("measurements".into(), several.clone())]),
+        };
+        record.validate().unwrap();
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(
+            value["bindings"]["measurements"]["also"][0]["task"]["port"],
+            "candidate"
+        );
+        assert_eq!(
+            serde_json::from_value::<TaskInputBindingsV1>(value.clone()).unwrap(),
+            record
+        );
+        // A single-reference binding writes no `also`, and an explicit empty one is refused.
+        let single = serde_json::to_value(output('a', "baseline")).unwrap();
+        assert!(single.get("also").is_none(), "{single}");
+        let mut empty = value;
+        empty["bindings"]["measurements"]["also"] = json!([]);
+        assert!(serde_json::from_value::<TaskInputBindingsV1>(empty).is_err());
+
+        let invalid = |edit: &dyn Fn(&mut TaskInputBindingV1)| {
+            let mut binding = several.clone();
+            edit(&mut binding);
+            binding.validate().is_err()
+        };
+        assert!(invalid(&|b| b.task = None), "the first names its Task");
+        assert!(
+            invalid(&|b| b.also[0].task = None),
+            "so does every further one"
+        );
+        assert!(invalid(&|b| b.resolved_artifact_id = Some(digest('c'))));
+        assert!(invalid(&|b| {
+            b.also[0].rerooted_snapshot_id = Some(digest('d'));
+            b.also[0].resolved_artifact_id = Some(digest('c'));
+        }));
+        assert!(invalid(&|b| b.also[0].also.push(output('c', "x"))));
+        assert!(invalid(&|b| b.also[0].artifact_id = "baseline".into()));
+        assert!(invalid(&|b| {
+            b.also = (0..MAX_BOUND_ARTIFACTS).map(|_| output('c', "x")).collect();
+        }));
+    }
+
     #[test]
     fn a_binding_with_no_task_round_trips() {
         let exact = TaskInputBindingsV1 {
@@ -221,6 +338,7 @@ mod tests {
                     snapshot_id: None,
                     rerooted_snapshot_id: None,
                     task: None,
+                    also: Vec::new(),
                 },
             )]),
         };

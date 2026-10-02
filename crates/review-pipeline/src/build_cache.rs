@@ -383,6 +383,9 @@ impl ReviewDomainState<'_> {
                 bytes_available: bytes,
                 lookup_ms,
                 materialization_ms,
+                evicted_bytes: None,
+                evicted_reason: None,
+                bound: None,
             },
         })
     }

@@ -60,9 +60,72 @@
           "type": "null"
         }
       ]
+    },
+    "collected": {
+      "description": "Present exactly when the Task was collected by `af task gc --apply` (ADR-0135): its retained tombstone. Such an entry is finished, carries no derived Snapshot or delivery, has a zero footprint under `--sizes`, and its phase names the result its log recorded.",
+      "$ref": "urn:af:schema:task-collected:1"
+    },
+    "sizes": {
+      "description": "`af task list --sizes` only (ADR-0135): the CAS objects only this Task reaches, and those it shares with another Task or Campaign record; all zero for a collected Task.",
+      "$ref": "#/$defs/footprint"
+    }
+  },
+  "$defs": {
+    "footprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exclusive_objects",
+        "exclusive_bytes",
+        "shared_objects",
+        "shared_bytes"
+      ],
+      "properties": {
+        "exclusive_objects": {
+          "$ref": "#/$defs/count"
+        },
+        "exclusive_bytes": {
+          "$ref": "#/$defs/count"
+        },
+        "shared_objects": {
+          "$ref": "#/$defs/count"
+        },
+        "shared_bytes": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
     }
   },
   "allOf": [
+    {
+      "if": {
+        "required": [
+          "collected"
+        ]
+      },
+      "then": {
+        "properties": {
+          "phase": {
+            "properties": {
+              "kind": {
+                "const": "finished"
+              }
+            }
+          },
+          "derived_snapshot_id": {
+            "type": "null"
+          },
+          "delivery": {
+            "type": "null"
+          }
+        }
+      }
+    },
     {
       "if": {
         "properties": {

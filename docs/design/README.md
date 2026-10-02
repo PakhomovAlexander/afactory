@@ -1,6 +1,6 @@
 # Design notes
 
-The two designs that still describe work in flight. They are direction, not an inventory of
+The designs that still describe work in flight. They are direction, not an inventory of
 shipped behaviour: the ADRs under [`../adr/`](../adr/) are the binding record, and where a note
 and an ADR disagree, the ADR wins. Shared vocabulary is defined in
 [`CONTEXT.md`](../../CONTEXT.md); the engineering values that order trade-offs are in
@@ -17,3 +17,6 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   name it as their plan.
 - [`self-optimizer.md`](self-optimizer.md) — the design behind `af self optimize`. Milestones
   M1–M3 ship; the M4 heavy whole-Pipeline redesign in §10 has not started.
+- [`research-pipelines.md`](research-pipelines.md) — research through `af`: warm Task checks,
+  kernel-run measurements and comparisons, a report Task profile, bindings for every declared
+  root port, and `af task gc`. Proposed 2026-09-27; packages R1–R6 are not yet delivered.

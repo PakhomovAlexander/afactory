@@ -1327,11 +1327,24 @@ fn main() {
                     inspect.json,
                 )
                 .map(|()| 0),
-                cli::TaskCommand::List { inspect } => {
+                cli::TaskCommand::List { sizes, inspect } => {
                     task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
-                        .and_then(task::list)
+                        .and_then(|options| task::list(options, sizes))
                         .map(|()| 0)
                 }
+                cli::TaskCommand::Gc {
+                    older_than,
+                    keep,
+                    apply,
+                    inspect,
+                } => task_execution::collection::gc(
+                    older_than,
+                    keep,
+                    apply,
+                    &inspect.repo,
+                    inspect.state.as_deref(),
+                    inspect.json,
+                ),
                 cli::TaskCommand::Show { task_id, inspect } => {
                     task::inspect_from_cli(Some(task_id), inspect.repo, inspect.state, inspect.json)
                         .and_then(task::show)

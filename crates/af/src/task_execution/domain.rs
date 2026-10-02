@@ -84,9 +84,16 @@ pub(crate) fn write_output(
                     serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                 document.validate()?;
                 document.text.into_bytes()
+            } else if artifact.artifact_type
+                == review_core::task::measurement::MEASUREMENT_COMPARISON_V1
+            {
+                let comparison: review_core::task::measurement::MeasurementComparisonV1 =
+                    serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+                comparison.render_markdown()?.into_bytes()
             } else {
                 return Err(
-                    "Markdown output requires a typed Document or OptimizationReport".into(),
+                    "Markdown output requires a typed Document, OptimizationReport or MeasurementComparison"
+                        .into(),
                 );
             }
         }
@@ -137,6 +144,16 @@ pub(super) fn environment(
                 .map_err(|e| e.to_string())?;
         policy.validate()?;
         Ok(Box::new(DataTaskEnvironment {
+            policy: policy.isolation(),
+        }))
+    } else if let Some(id) = &authority.report_policy_id {
+        // A report Worker reads the exact source Snapshot; an author with `execute-checks`
+        // gets the clone ADR-0118 gives a reviewer. No warm layer or cache reaches it.
+        let policy: ReportTaskPolicy =
+            serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        policy.validate()?;
+        Ok(Box::new(SnapshotTaskEnvironment {
             policy: policy.isolation(),
         }))
     } else {

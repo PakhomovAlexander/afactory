@@ -30,7 +30,10 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 157] = [
+const SCHEMAS: [&str; 166] = [
+    "code-task-policy-v1.json",
+    "measurement-v1.json",
+    "measurement-comparison-v1.json",
     "task-input-bindings-v1.json",
     "task-source-origin-v2.json",
     "provider-status-v1.json",
@@ -96,6 +99,11 @@ const SCHEMAS: [&str; 157] = [
     "document-evaluation-v1.json",
     "document-verification-v1.json",
     "document-task-policy-v1.json",
+    "document-draft-v2.json",
+    "report-sources-v1.json",
+    "report-check-receipt-v1.json",
+    "report-evaluation-v1.json",
+    "report-verification-v1.json",
     "catalog-contract-fixtures-v1.json",
     "shared-task-catalog-v1.json",
     "task-kind-v1.json",
@@ -134,6 +142,7 @@ const SCHEMAS: [&str; 157] = [
     "artifact-envelope-v1.json",
     "task-contracts-v1.json",
     "task-transition-v5.json",
+    "task-collected-v1.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
     "legacy-review-task-policy-v4.json",
@@ -727,6 +736,284 @@ fn light_optimizer_schemas_reject_rust_validator_divergences() {
             "proposal text uses the same control-character contract",
         );
     }
+}
+
+#[test]
+fn task_runtime_cache_observations_name_at_most_one_reason() {
+    use review_core::task::runtime::{TaskCacheObservationV1, TaskRuntimeEvidenceV1};
+    let digest = |fill: char| format!("sha256:{}", fill.to_string().repeat(64));
+    let mut evidence = TaskRuntimeEvidenceV1 {
+        task_id: "warm-check".into(),
+        attempt_id: "A".repeat(26),
+        node: "root.nodes.check".into(),
+        context_id: digest('a'),
+        check: None,
+        spans: vec![],
+        caches: vec![TaskCacheObservationV1 {
+            observation_id: digest('b'),
+            kind: "cargo_target".into(),
+            eligible: true,
+            source_digest: digest('c'),
+            toolchain_id: Some(digest('d')),
+            bytes_available: 4096,
+            lookup_ms: 1,
+            materialization_ms: 0,
+            evicted_bytes: None,
+            evicted_reason: None,
+            bound: None,
+        }],
+    };
+    for kind in [
+        "cargo_target",
+        "cargo_target:busy",
+        "cargo_target:toolchain_unresolved",
+        "cargo_target:bound_exceeded",
+        "cargo:unavailable",
+        "cargo_home",
+        "cargo_home:superseded",
+        "cargo_target:deadline_exhausted",
+        "cargo_home:cache_refused",
+    ] {
+        evidence.caches[0].kind = kind.into();
+        evidence.validate().unwrap();
+        assert_valid(
+            "task-runtime-evidence-v1.json",
+            &serde_json::to_value(&evidence).unwrap(),
+        );
+    }
+    for kind in [
+        "",
+        "cargo_target:",
+        ":busy",
+        "cargo_target:busy:again",
+        "cargo target:busy",
+        "cargo_target:_busy",
+    ] {
+        evidence.caches[0].kind = kind.into();
+        assert!(evidence.validate().is_err(), "{kind}");
+        assert_invalid(
+            "task-runtime-evidence-v1.json",
+            &serde_json::to_value(&evidence).unwrap(),
+            kind,
+        );
+    }
+}
+
+/// ADR-0135: an observation names which byte bound acted — `max_bytes` for an eviction whose
+/// check's result stood or a pre-check removal, `hard_max_bytes` for a check the bound ended —
+/// and never names one beside a `suspect` eviction or when no bound acted.
+#[test]
+fn task_runtime_cache_observations_name_the_bound_that_acted() {
+    use review_core::task::runtime::{TaskCacheBoundV1, TaskCacheObservationV1};
+    let digest = |fill: char| format!("sha256:{}", fill.to_string().repeat(64));
+    let base = TaskCacheObservationV1 {
+        observation_id: digest('b'),
+        kind: "cargo_target".into(),
+        eligible: true,
+        source_digest: digest('c'),
+        toolchain_id: Some(digest('d')),
+        bytes_available: 4096,
+        lookup_ms: 1,
+        materialization_ms: 0,
+        evicted_bytes: None,
+        evicted_reason: None,
+        bound: None,
+    };
+    let evidence = |cache: TaskCacheObservationV1| {
+        serde_json::to_value(review_core::task::runtime::TaskRuntimeEvidenceV1 {
+            task_id: "warm-check".into(),
+            attempt_id: "A".repeat(26),
+            node: "root.nodes.check".into(),
+            context_id: digest('a'),
+            check: None,
+            spans: vec![],
+            caches: vec![cache],
+        })
+        .unwrap()
+    };
+    let accepted = [
+        TaskCacheObservationV1 {
+            evicted_bytes: Some(6144),
+            evicted_reason: Some("bound_exceeded".into()),
+            bound: Some(TaskCacheBoundV1::MaxBytes),
+            ..base.clone()
+        },
+        TaskCacheObservationV1 {
+            evicted_bytes: Some(8192),
+            evicted_reason: Some("bound_exceeded".into()),
+            bound: Some(TaskCacheBoundV1::HardMaxBytes),
+            ..base.clone()
+        },
+        TaskCacheObservationV1 {
+            kind: "cargo_target:bound_exceeded".into(),
+            eligible: false,
+            bound: Some(TaskCacheBoundV1::MaxBytes),
+            ..base.clone()
+        },
+    ];
+    for observation in accepted {
+        observation.validate().unwrap();
+        let value = evidence(observation);
+        assert_valid("task-runtime-evidence-v1.json", &value);
+    }
+    let value = evidence(accepted_bound(&base));
+    assert_eq!(
+        value["caches"][0]["bound"], "hard_max_bytes",
+        "spelled as the schema names it"
+    );
+    let refused = [
+        (
+            "a bound beside a suspect eviction",
+            TaskCacheObservationV1 {
+                evicted_bytes: Some(0),
+                evicted_reason: Some("suspect".into()),
+                bound: Some(TaskCacheBoundV1::HardMaxBytes),
+                ..base.clone()
+            },
+        ),
+        (
+            "a bound where none acted",
+            TaskCacheObservationV1 {
+                bound: Some(TaskCacheBoundV1::MaxBytes),
+                ..base.clone()
+            },
+        ),
+    ];
+    for (label, observation) in refused {
+        assert!(observation.validate().is_err(), "{label}");
+        assert_invalid(
+            "task-runtime-evidence-v1.json",
+            &evidence(observation),
+            label,
+        );
+    }
+    let mut unknown = evidence(accepted_bound(&base));
+    unknown["caches"][0]["bound"] = json!("soft_max_bytes");
+    assert_invalid("task-runtime-evidence-v1.json", &unknown, "unknown bound");
+}
+
+fn accepted_bound(
+    base: &review_core::task::runtime::TaskCacheObservationV1,
+) -> review_core::task::runtime::TaskCacheObservationV1 {
+    review_core::task::runtime::TaskCacheObservationV1 {
+        evicted_bytes: Some(8192),
+        evicted_reason: Some("bound_exceeded".into()),
+        bound: Some(review_core::task::runtime::TaskCacheBoundV1::HardMaxBytes),
+        ..base.clone()
+    }
+}
+
+#[test]
+fn a_warm_evidence_group_names_its_check_whether_or_not_it_started() {
+    use review_core::task::runtime::{
+        TaskCacheObservationV1, TaskRuntimeCheckOutcomeV1, TaskRuntimeCheckV1,
+        TaskRuntimeEvidenceV1, TaskRuntimeRustupHomeV1, TaskRuntimeSpanKindV1, TaskRuntimeSpanV1,
+    };
+    let digest = |fill: char| format!("sha256:{}", fill.to_string().repeat(64));
+    let observation = |kind: &str| TaskCacheObservationV1 {
+        observation_id: digest('b'),
+        kind: kind.into(),
+        eligible: !kind.contains(':'),
+        source_digest: digest('c'),
+        toolchain_id: None,
+        bytes_available: 0,
+        lookup_ms: 0,
+        materialization_ms: 0,
+        evicted_bytes: None,
+        evicted_reason: None,
+        bound: None,
+    };
+    let span = |label: &str, kind| TaskRuntimeSpanV1 {
+        span_id: digest('e'),
+        kind,
+        label: label.into(),
+        started_unix_ms: 1,
+        elapsed_ms: 2,
+    };
+    let skipped = TaskRuntimeEvidenceV1 {
+        task_id: "warm-check".into(),
+        attempt_id: "A".repeat(26),
+        node: "root.nodes.check".into(),
+        context_id: digest('a'),
+        check: Some(TaskRuntimeCheckV1 {
+            name: "kernel".into(),
+            outcome: TaskRuntimeCheckOutcomeV1::NotRun,
+            rustup_home: TaskRuntimeRustupHomeV1::UnsetNotInstalled,
+        }),
+        spans: vec![],
+        caches: vec![
+            observation("cargo_target:deadline_exhausted"),
+            observation("cargo_home:deadline_exhausted"),
+        ],
+    };
+    skipped.validate().unwrap();
+    let value = serde_json::to_value(&skipped).unwrap();
+    assert_eq!(
+        value["check"],
+        json!({"name": "kernel", "outcome": "not_run", "rustup_home": "unset_not_installed"})
+    );
+    assert_valid("task-runtime-evidence-v1.json", &value);
+
+    let mut ran = skipped.clone();
+    ran.check.as_mut().unwrap().outcome = TaskRuntimeCheckOutcomeV1::Passed;
+    ran.check.as_mut().unwrap().rustup_home = TaskRuntimeRustupHomeV1::KernelEnvironment;
+    ran.spans = vec![span("kernel", TaskRuntimeSpanKindV1::Check)];
+    ran.validate().unwrap();
+    assert_valid(
+        "task-runtime-evidence-v1.json",
+        &serde_json::to_value(&ran).unwrap(),
+    );
+
+    let mut refused = Vec::new();
+    let mut without_caches = skipped.clone();
+    without_caches.caches.clear();
+    without_caches.spans = vec![span("kernel", TaskRuntimeSpanKindV1::Check)];
+    refused.push(("a named group without observations", without_caches));
+    let mut two_spans = ran.clone();
+    two_spans
+        .spans
+        .push(span("kernel", TaskRuntimeSpanKindV1::Check));
+    refused.push(("two spans for one check", two_spans));
+    let mut preparation = ran.clone();
+    preparation.spans = vec![span("kernel", TaskRuntimeSpanKindV1::DependencyPreparation)];
+    refused.push(("a span of another kind", preparation));
+    for (label, evidence) in refused {
+        assert!(evidence.validate().is_err(), "{label}");
+        assert_invalid(
+            "task-runtime-evidence-v1.json",
+            &serde_json::to_value(&evidence).unwrap(),
+            label,
+        );
+    }
+    // A span of another check is refused by the typed contract; the schema cannot compare
+    // two string fields.
+    let mut other = ran.clone();
+    other.spans = vec![span("markdownlint", TaskRuntimeSpanKindV1::Check)];
+    assert!(other.validate().is_err());
+    for (field, value) in [
+        ("outcome", json!("skipped")),
+        ("rustup_home", json!("/Users/me/.rustup")),
+        ("name", json!("not a name")),
+    ] {
+        let mut value_json = serde_json::to_value(&skipped).unwrap();
+        value_json["check"][field] = value;
+        assert_invalid("task-runtime-evidence-v1.json", &value_json, field);
+        assert!(
+            serde_json::from_value::<TaskRuntimeEvidenceV1>(value_json.clone())
+                .map_or(true, |evidence| evidence.validate().is_err())
+        );
+    }
+    let mut value_json = serde_json::to_value(&skipped).unwrap();
+    value_json["check"]["path"] = json!("/tmp");
+    assert_invalid(
+        "task-runtime-evidence-v1.json",
+        &value_json,
+        "unknown check field",
+    );
+    assert!(serde_json::from_value::<TaskRuntimeEvidenceV1>(value_json).is_err());
+    let mut value_json = serde_json::to_value(&skipped).unwrap();
+    value_json["check"] = json!(null);
+    assert!(serde_json::from_value::<TaskRuntimeEvidenceV1>(value_json).is_err());
 }
 
 #[test]
@@ -2155,6 +2442,76 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
         "change":{"kind":"approval_revoked","decision_id":id,"reason":"Revoked by developer"}});
     assert_invalid("task-transition-v5.json", &unproven, "revocation proof");
     assert!(serde_json::from_value::<TaskTransitionV1>(unproven).is_err());
+}
+
+/// ADR-0135: the `task_collected` tombstone carries `af/TaskCollected@1` inline, references no
+/// artifact, and is written at its own collection time; the schema and the typed contract refuse
+/// the same shapes, except the two field comparisons only the typed contract can make.
+#[test]
+fn a_task_tombstone_is_one_closed_transition_referencing_no_artifact() {
+    use review_core::task::collection::{TASK_COLLECTED_V1, TaskCollectedV1};
+    use review_core::task::event::{TaskChangeV1, TaskTransitionV1};
+    let collected = TaskCollectedV1 {
+        schema: TASK_COLLECTED_V1.into(),
+        task_id: "older".into(),
+        kind: "implement".into(),
+        revision_id: format!("sha256:{}", "a".repeat(64)),
+        outcome: "verified".into(),
+        chargeable_tokens: "0".into(),
+        last_event_unix_ms: 90,
+        collected_unix_ms: 100,
+        collected_bytes: 4096,
+    };
+    let transition = TaskTransitionV1 {
+        writer: "af-task-gc".into(),
+        epoch: 3,
+        now_unix_ms: 100,
+        change: TaskChangeV1::TaskCollected {
+            collected: collected.clone(),
+        },
+    };
+    transition.validate().unwrap();
+    assert!(transition.artifact_refs().is_empty(), "references nothing");
+    let value = serde_json::to_value(&transition).unwrap();
+    assert_eq!(value["change"]["kind"], "task_collected");
+    assert_eq!(value["change"]["collected"]["schema"], "af/TaskCollected@1");
+    assert_valid("task-transition-v5.json", &value);
+    assert_valid("task-collected-v1.json", &value["change"]["collected"]);
+    review_core::event::validate_event_payload(EventType::TaskTransitionV5, &value).unwrap();
+    for (field, bad) in [
+        ("schema", json!("af/TaskCollected@2")),
+        ("chargeable_tokens", json!("012")),
+        ("collected_bytes", json!(-1)),
+        ("result_id", json!(format!("sha256:{}", "b".repeat(64)))),
+    ] {
+        let mut forged = value.clone();
+        forged["change"]["collected"][field] = bad;
+        assert_invalid("task-transition-v5.json", &forged, field);
+        assert!(
+            review_core::event::validate_event_payload(EventType::TaskTransitionV5, &forged)
+                .is_err(),
+            "{field}"
+        );
+    }
+    // Comparisons the schema cannot make: collected before its last event, or at another time
+    // than the transition that carries it.
+    for forged in [
+        TaskTransitionV1 {
+            change: TaskChangeV1::TaskCollected {
+                collected: TaskCollectedV1 {
+                    last_event_unix_ms: 101,
+                    ..collected.clone()
+                },
+            },
+            ..transition.clone()
+        },
+        TaskTransitionV1 {
+            now_unix_ms: 101,
+            ..transition.clone()
+        },
+    ] {
+        assert!(forged.validate().is_err());
+    }
 }
 
 #[test]
@@ -3658,4 +4015,290 @@ fn task_catalog_review_generation_is_omitted_or_two() {
     let mut retired = value;
     retired["schema"] = json!("af.task-catalog/1");
     assert_invalid(name, &retired, "one catalog schema");
+}
+
+#[test]
+fn measurements_and_comparisons_match_their_schemas_in_both_directions() {
+    use review_core::task::measurement::*;
+    use review_core::task::pipeline::ReceiptOutcomeV1;
+    let id = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+    let d = |text: &str| MeasureDecimal::parse(text).unwrap();
+    let declared =
+        std::collections::BTreeMap::from([("bytes_written".to_string(), MetricUnitV1::Bytes)]);
+    let run = |value: &str| MeasurementRunV1 {
+        started_unix_ms: 1_790_000_000_000,
+        elapsed_ms: 12,
+        exit_code: Some(0),
+        stdout_id: Some(id('1')),
+        stderr_id: Some(id('2')),
+        cache: Some(MeasurementCacheV1 {
+            warm: true,
+            bytes: 4096,
+            reason: None,
+        }),
+        metrics: std::collections::BTreeMap::from([(
+            "bytes_written".to_string(),
+            MetricValueV1 {
+                value: d(value),
+                unit: MetricUnitV1::Bytes,
+            },
+        )]),
+    };
+    let runs = vec![run("100"), run("101")];
+    let passed = MeasurementV1 {
+        plan_id: id('a'),
+        policy_id: id('b'),
+        snapshot_id: id('c'),
+        measure: "write".into(),
+        command_id: id('d'),
+        toolchain_id: Some(id('e')),
+        warm: true,
+        repetitions: 2,
+        wall_ms: 1000,
+        metrics: declared.clone(),
+        outcome: ReceiptOutcomeV1::Passed,
+        failure: None,
+        summary: summarize(&declared, &runs).unwrap(),
+        runs,
+    };
+    passed.validate().unwrap();
+    assert_eq!(passed.summary["bytes_written"].median.to_string(), "100.5");
+    let value = serde_json::to_value(&passed).unwrap();
+    assert_valid("measurement-v1.json", &value);
+    let mut failed = passed.clone();
+    failed.outcome = ReceiptOutcomeV1::Failed;
+    failed.failure = Some(MeasurementFailureV1 {
+        repetition: 2,
+        reason: MeasurementFailureReasonV1::UnitMismatch,
+        detail: "metric bytes_written reported unit count".into(),
+    });
+    failed.runs[1].metrics.clear();
+    failed.summary.clear();
+    failed.validate().unwrap();
+    assert_valid(
+        "measurement-v1.json",
+        &serde_json::to_value(&failed).unwrap(),
+    );
+    let refused =
+        |mutate: &dyn Fn(&mut Value), why: &str, schema: &str, rust: &dyn Fn(Value) -> bool| {
+            let mut value =
+                serde_json::to_value(if schema == "passed" { &passed } else { &failed }).unwrap();
+            mutate(&mut value);
+            assert_invalid("measurement-v1.json", &value, why);
+            assert!(!rust(value), "Rust accepted a Measurement ({why})");
+        };
+    let rust = |value: Value| {
+        serde_json::from_value::<MeasurementV1>(value).is_ok_and(|m| m.validate().is_ok())
+    };
+    refused(
+        &|v| v["outcome"] = json!("inconclusive"),
+        "a measurement is passed or failed",
+        "passed",
+        &rust,
+    );
+    refused(
+        &|v| {
+            v["failure"] = json!({"repetition": 1, "reason": "exit", "detail": "x"});
+        },
+        "passed with a failure",
+        "passed",
+        &rust,
+    );
+    refused(
+        &|v| {
+            v.as_object_mut().unwrap().remove("failure");
+        },
+        "failed without a failure",
+        "failed",
+        &rust,
+    );
+    refused(
+        &|v| {
+            v["summary"] =
+                json!({"elapsed_ms": {"unit": "ms", "median": "1", "min": "1", "max": "1", "n": 1}})
+        },
+        "failed with a summary",
+        "failed",
+        &rust,
+    );
+    refused(
+        &|v| v["runs"][0]["metrics"]["bytes_written"]["value"] = json!("1".repeat(39)),
+        "39 significant digits",
+        "passed",
+        &rust,
+    );
+    refused(
+        &|v| v["runs"][0]["metrics"]["bytes_written"]["value"] = json!("1.50"),
+        "non-canonical decimal",
+        "passed",
+        &rust,
+    );
+    refused(
+        &|v| v["runs"][0]["metrics"]["bytes_written"]["unit"] = json!("kb"),
+        "unknown unit",
+        "passed",
+        &rust,
+    );
+    refused(
+        &|v| v["metrics"] = json!({"elapsed_ms": "ms"}),
+        "a declared metric may not reuse elapsed_ms",
+        "passed",
+        &rust,
+    );
+    refused(
+        &|v| v["repetitions"] = json!(17),
+        "more than 16 repetitions",
+        "passed",
+        &rust,
+    );
+    refused(
+        &|v| v["failure"]["reason"] = json!("crashed"),
+        "an unknown failure reason",
+        "failed",
+        &rust,
+    );
+    refused(
+        &|v| v["undeclared"] = json!(true),
+        "an unknown field",
+        "passed",
+        &rust,
+    );
+    // 38 significant digits and a small fraction are both reportable.
+    for text in [
+        "9".repeat(38),
+        format!("1.{}", "2".repeat(36)),
+        "0.000000000000000000000000000000000000000001".into(),
+    ] {
+        let mut value = serde_json::to_value(&passed).unwrap();
+        value["runs"][0]["metrics"]["bytes_written"]["value"] = json!(text);
+        assert!(validator("measurement-v1.json").is_valid(&value), "{text}");
+    }
+
+    let objective = MeasureObjectiveV1 {
+        measure: "write".into(),
+        metric: "bytes_written".into(),
+        direction: ObjectiveDirectionV1::Lower,
+        min_improvement_ratio: ImprovementRatio(d("0.1")),
+        min_repetitions: 2,
+    };
+    let mut smaller = passed.clone();
+    smaller.runs = vec![run("80"), run("90")];
+    smaller.summary = summarize(&declared, &smaller.runs).unwrap();
+    let comparison = compare_measurements(
+        &id('a'),
+        &id('b'),
+        (&id('f'), &passed),
+        (&id('9'), &smaller),
+        ComparisonObjective {
+            name: "smaller",
+            objective: &objective,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        comparison.metrics["bytes_written"]
+            .ratio
+            .as_ref()
+            .unwrap()
+            .to_string(),
+        "31/201"
+    );
+    let value = serde_json::to_value(&comparison).unwrap();
+    assert_valid("measurement-comparison-v1.json", &value);
+    let comparison_rust = |value: Value| {
+        serde_json::from_value::<MeasurementComparisonV1>(value).is_ok_and(|c| c.validate().is_ok())
+    };
+    for (mutate, why) in [
+        (json!({"ratio": "62/402"}), "a ratio not in lowest terms"),
+        (json!({"improvement": "-0"}), "negative zero"),
+        (json!({"conclusion": "better"}), "an unknown conclusion"),
+        (
+            json!({"baseline_median": "100.0"}),
+            "a non-canonical median",
+        ),
+    ] {
+        let mut value = value.clone();
+        for (key, field) in mutate.as_object().unwrap() {
+            value["metrics"]["bytes_written"][key] = field.clone();
+        }
+        if why != "a ratio not in lowest terms" {
+            assert_invalid("measurement-comparison-v1.json", &value, why);
+        }
+        assert!(
+            !comparison_rust(value),
+            "Rust accepted a comparison ({why})"
+        );
+    }
+    for (field, bad, why) in [
+        (
+            "min_improvement_ratio",
+            json!("1.5"),
+            "a threshold above one",
+        ),
+        (
+            "outcome",
+            json!("improved"),
+            "a conclusion is not an outcome",
+        ),
+        ("direction", json!("sideways"), "an unknown direction"),
+        ("min_repetitions", json!(0), "zero repetitions"),
+    ] {
+        let mut value = value.clone();
+        value[field] = bad;
+        assert_invalid("measurement-comparison-v1.json", &value, why);
+        assert!(
+            !comparison_rust(value),
+            "Rust accepted a comparison ({why})"
+        );
+    }
+    let mut value = value.clone();
+    value["metrics"]
+        .as_object_mut()
+        .unwrap()
+        .remove("elapsed_ms");
+    assert_invalid(
+        "measurement-comparison-v1.json",
+        &value,
+        "elapsed_ms is always compared",
+    );
+    assert!(!comparison_rust(value));
+
+    // Both operators are closed members of the Pipeline operator schema.
+    for (operator, valid) in [
+        (json!({"op": "measure", "measures": ["write"]}), true),
+        (json!({"op": "compare", "objective": "smaller"}), true),
+        (json!({"op": "measure", "measures": []}), false),
+        (
+            json!({"op": "measure", "measures": ["write"], "warm": true}),
+            false,
+        ),
+        (json!({"op": "compare"}), false),
+    ] {
+        let parsed =
+            serde_json::from_value::<review_core::task::pipeline::TaskOperatorV1>(operator.clone());
+        let pipeline = |operator: Value| {
+            json!({
+                "schema": "af.pipeline/1", "name": "fixture/p", "version": "1.0.0",
+                "contract": {"inputs": {}, "outputs": {"out": {"artifact_type": "af/Measurement@1",
+                    "cardinality": "one", "optional": false, "affinity": {"kind": "unbound"}, "covers": []}}},
+                "accepts": {"kinds": ["implement"], "required_facts": {}},
+                "slots": {},
+                "nodes": [{"id": "n", "operator": operator, "inputs": {}}],
+                "outputs": {"out": {"kind": "node", "node": "n", "port": "write"}},
+                "coverage": {}, "max_attempts": 1, "max_parallel": 1
+            })
+        };
+        let definition = pipeline(operator.clone());
+        assert_eq!(
+            validator("pipeline-definition-v1.json").is_valid(&definition),
+            valid,
+            "{operator}"
+        );
+        let rust = parsed.is_ok()
+            && serde_json::from_value::<review_core::task::pipeline::PipelineDefinitionV1>(
+                definition,
+            )
+            .is_ok_and(|p| p.validate().is_ok());
+        assert_eq!(rust, valid, "{operator}");
+    }
 }

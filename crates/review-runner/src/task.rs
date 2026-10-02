@@ -189,12 +189,17 @@ impl WorkerContract {
         if bytes.len() > MAX_WORKER_BYTES {
             return Err("Worker reply exceeds byte bound".into());
         }
-        let reply: WorkerReply = serde_json::from_slice(bytes)
+        let mut reply: WorkerReply = serde_json::from_slice(bytes)
             .map_err(|e| format!("Invalid typed Worker reply: {e}"))?;
         if reply.schema != "af.worker-reply/1"
             || reply.outputs.keys().any(|p| !self.outputs.contains_key(p))
         {
             return Err("Worker reply has an unsupported contract or undeclared port".into());
+        }
+        for values in reply.outputs.values_mut() {
+            for value in values.iter_mut() {
+                canonical_sets(value);
+            }
         }
         for (port, values) in &reply.outputs {
             if values.len() > 1024 {
@@ -232,11 +237,16 @@ impl WorkerContract {
         );
         let mut inputs = BTreeMap::new();
         for (port, input) in &invocation.inputs {
+            // A `many` port that names no Snapshot claims none for its values: a port bound
+            // from several recorded outputs of different Snapshots (ADR-0134). Each value keeps
+            // and shows its own; every other port's values name the port's one Snapshot.
+            let unclaimed = input.cardinality == review_core::PortCardinality::Many
+                && input.snapshot_id.is_none();
             let mut values = Vec::new();
             for id in &input.artifact_ids {
                 let value = worker_value(cas, id)?;
                 if value.artifact_type != input.artifact_type
-                    || value.snapshot_id != input.snapshot_id
+                    || (!unclaimed && value.snapshot_id != input.snapshot_id)
                 {
                     return Err("Worker input differs from its admitted type or Snapshot".into());
                 }
@@ -543,3 +553,81 @@ pub fn invoke_model(
 
 mod command;
 pub use command::{invoke_command, invoke_command_bytes};
+
+/// A set a Worker spells in any order is admitted in canonical order. A document draft's
+/// `citations` and `repository_citations` are sets the kernel records sorted and unique; a
+/// model that lists them in the order it used them is judged on what it cited, not on the
+/// order, so both are sorted and deduplicated here before the reply is validated. Any other
+/// value is left exactly as the Worker wrote it.
+fn canonical_sets(value: &mut Value) {
+    let draft = matches!(
+        value.get("schema").and_then(Value::as_str),
+        Some("af.document-draft/1" | "af.document-draft/2")
+    );
+    if !draft {
+        return;
+    }
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    if let Some(Value::Array(citations)) = object.get_mut("citations")
+        && citations.iter().all(Value::is_string)
+    {
+        citations.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+        citations.dedup();
+    }
+    if let Some(Value::Array(cited)) = object.get_mut("repository_citations")
+        && cited.iter().all(Value::is_object)
+    {
+        // The kernel's order: by path, then a citation without a line before one with a line.
+        let key = |c: &Value| {
+            (
+                c.get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_owned(),
+                c.get("line")
+                    .and_then(Value::as_u64)
+                    .map(|line| (1, line))
+                    .unwrap_or((0, 0)),
+            )
+        };
+        cited.sort_by_key(key);
+        cited.dedup();
+    }
+}
+
+#[cfg(test)]
+mod canonical_set_tests {
+    use super::*;
+
+    #[test]
+    fn a_drafts_sets_are_admitted_in_canonical_order_and_nothing_else_is_touched() {
+        let mut draft = serde_json::json!({
+            "schema": "af.document-draft/2",
+            "title": "t",
+            "sections": [{"heading": "Findings", "body": "b"}],
+            "citations": ["r2", "r1", "r2", "bench"],
+            "repository_citations": [
+                {"path": "src/b.rs", "line": 3},
+                {"path": "src/a.rs", "line": 9},
+                {"path": "src/a.rs"},
+                {"path": "src/a.rs", "line": 9}
+            ]
+        });
+        canonical_sets(&mut draft);
+        assert_eq!(draft["citations"], serde_json::json!(["bench", "r1", "r2"]));
+        assert_eq!(
+            draft["repository_citations"],
+            serde_json::json!([
+                {"path": "src/a.rs"},
+                {"path": "src/a.rs", "line": 9},
+                {"path": "src/b.rs", "line": 3}
+            ])
+        );
+        let mut other = serde_json::json!({"schema": "af.worker-reply/1", "citations": ["b", "a"]});
+        let before = other.clone();
+        canonical_sets(&mut other);
+        assert_eq!(other, before, "only a draft is a set-carrying reply");
+    }
+}

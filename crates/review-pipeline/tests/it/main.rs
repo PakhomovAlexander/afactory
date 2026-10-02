@@ -5,6 +5,7 @@
 // Shared fixtures, declared once for every subject module.
 mod support;
 
+mod code_policy_schema;
 mod optimization_producers;
 mod receipt_authority;
 mod task_campaign_review;

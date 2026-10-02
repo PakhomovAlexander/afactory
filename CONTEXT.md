@@ -59,6 +59,39 @@ acceptance requires current source/content checks and an independent evaluation;
 code Snapshot identity. Captured source text supplies requirements and evidence, never execution
 authority.
 
+**Report Task**:
+A Task of the installed report profile: a Document written against one exact source Snapshot,
+whose repository citations the kernel resolves against that Snapshot's Manifest and whose
+acceptance an independent verifier on the same Snapshot decides. Every one of its receipts names
+that Snapshot; it writes no source and is never delivered.
+_Avoid_: **Document** for it — a Document Task carries no Snapshot identity and its author
+cannot read the repository. And **Report** — a Report is one reviewer's immutable claim in a
+Campaign; a Report Task's output is a Document.
+
+**Measurement**:
+The kernel's own record of one declared command run a declared number of times against one exact
+Snapshot: every repetition's elapsed time, exit status, output digests and the metrics the
+command reported in declared units, or the reason it failed. A model never writes one.
+_Avoid_: **Evidence** — Evidence is linked to a Demand or a resolution, and the kernel checks
+only that it exists and is linked; a Measurement is what the kernel itself observed, and it
+satisfies no Demand by being recorded. Nor "the benchmark" a Worker reported in prose.
+
+**Comparison**:
+The deterministic fold of a baseline and a candidate Measurement of the same measure under one
+declared objective, in exact decimal arithmetic, concluding `improved`, `below_threshold`,
+`unchanged`, `regressed` or `inconclusive` per metric. It passes only for `improved` on the
+objective's metric.
+_Avoid_: **Demand** — a Demand is an obligation to measure a claim; a Comparison is a recorded
+result, and neither creates nor discharges the other. Nor the evaluator's verdict, which reads a
+Comparison and cannot change it.
+
+**Collected Task**:
+A finished Task whose log ends in the `af/TaskCollected@1` tombstone `af task gc --apply` wrote:
+its events stay, its projection stops at the tombstone, and it keeps only the summary the
+tombstone retains. Its CAS objects are removed unless an uncollected Task or a Campaign record
+still reaches them; its outputs can no longer be written or delivered.
+_Avoid_: "deleted Task" — no event is ever deleted, and the Task ID stays taken.
+
 **Implementation acceptance**:
 The conjunction of independent verification against exact Task Requirements and the configured
 Review or repair guarantee on the final Snapshot. Passing Review cannot cover a missing or

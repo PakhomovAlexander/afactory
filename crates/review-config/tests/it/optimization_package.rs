@@ -4,8 +4,11 @@ use review_core::task::pipeline::PipelineDefinitionV1;
 
 #[test]
 fn report_only_optimizer_package_has_exact_public_contract_and_no_worker_slots() {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures/self-optimizer/catalog");
+    // Resolved at run time: a test binary a warm gate reuses was compiled in another sandbox.
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .join("fixtures/self-optimizer/catalog");
     let pipeline: PipelineDefinitionV1 =
         toml::from_str(&std::fs::read_to_string(root.join("optimization/pipeline.toml")).unwrap())
             .unwrap();
@@ -30,8 +33,11 @@ fn report_only_optimizer_package_has_exact_public_contract_and_no_worker_slots()
 
 #[test]
 fn light_optimizer_ships_role_scoped_model_workers_with_captured_instructions() {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../fixtures/self-optimizer/catalog");
+    // Resolved at run time: a test binary a warm gate reuses was compiled in another sandbox.
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .join("fixtures/self-optimizer/catalog");
     let pipeline: PipelineDefinitionV1 = toml::from_str(
         &std::fs::read_to_string(root.join("optimization-light-model/pipeline.toml")).unwrap(),
     )

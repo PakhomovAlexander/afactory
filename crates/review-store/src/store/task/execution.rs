@@ -258,8 +258,15 @@ pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError>
         } => {
             let out = output(cas, output_id)?;
             invocation_ids.push(out.invocation_id.clone());
+            // The root inputs receipt republishes the Task's own input ports, which admission
+            // holds equal to the revision's, so it is judged as those inputs are.
+            let root = invocation(cas, &out.invocation_id)?.node == "root.inputs";
             for port in out.outputs.values() {
-                validate_input_refs(cas, port, &mut refs)?;
+                if root {
+                    validate_bound_input_refs(cas, port, &mut refs)?;
+                } else {
+                    validate_input_refs(cas, port, &mut refs)?;
+                }
             }
         }
         _ => (),
@@ -279,7 +286,7 @@ pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError>
         refs.insert(id);
         refs.insert(input.plan_id);
         for port in input.inputs.values() {
-            validate_input_refs(cas, port, &mut refs)?;
+            validate_bound_input_refs(cas, port, &mut refs)?;
         }
     }
     Ok(refs.into_iter().collect())
@@ -1750,8 +1757,15 @@ impl EventStore {
         execution.verify_output(cas, &out)?;
         let definition = execution.resolve_node(&input.node)?.definition;
         let mut refs = BTreeSet::new();
+        // `verify_output` has held a root inputs receipt equal to the Task's input ports, so it
+        // is judged as those inputs are; every other output keeps the output rule.
+        let root = matches!(definition.operator, CompiledOperator::RootInputs);
         for value in out.outputs.values() {
-            validate_input_refs(cas, value, &mut refs)?;
+            if root {
+                validate_bound_input_refs(cas, value, &mut refs)?;
+            } else {
+                validate_input_refs(cas, value, &mut refs)?;
+            }
         }
         for id in refs {
             cas.verify(&id)

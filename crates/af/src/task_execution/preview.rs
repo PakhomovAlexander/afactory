@@ -109,7 +109,9 @@ fn compact_visible(node: &CompiledNode) -> bool {
                     | TaskOperatorV1::ReviewReduce {}
                     | TaskOperatorV1::ReviewAccept {}
                     | TaskOperatorV1::DocumentSeal {}
-                    | TaskOperatorV1::DocumentAccept {},
+                    | TaskOperatorV1::DocumentAccept {}
+                    | TaskOperatorV1::ReportSeal {}
+                    | TaskOperatorV1::ReportAccept {},
                 ..
             }
     )
@@ -127,6 +129,17 @@ fn node_label(id: &str, node: &CompiledNode, plan: &ExecutionPlanV1) -> String {
                     "checks: {}",
                     checks.iter().cloned().collect::<Vec<_>>().join(", ")
                 ),
+                TaskOperatorV1::Measure { measures } => format!(
+                    "measure: {}",
+                    measures
+                        .iter()
+                        .map(|m| text(m))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                TaskOperatorV1::Compare { objective } => {
+                    format!("compare: {}", text(objective))
+                }
                 _ => serde_json::to_value(operator).expect("operator serializes")["op"]
                     .as_str()
                     .unwrap_or("operation")
@@ -276,7 +289,10 @@ fn input_labels<'a>(ports: impl Iterator<Item = &'a String>, bound: &BindingRows
             continue;
         };
         let origin = match &binding.task {
-            Some(_) => binding_origin(binding),
+            Some(_) => bound_outputs(binding)
+                .map(binding_origin)
+                .collect::<Vec<_>>()
+                .join(" + "),
             None => format!("artifact {}", text(&binding.artifact_id)),
         };
         labels.push(format!("{} <- {origin}", text(name)));
@@ -284,13 +300,25 @@ fn input_labels<'a>(ports: impl Iterator<Item = &'a String>, bound: &BindingRows
     labels.join(", ")
 }
 
-/// One `BOUND` group per bound port for `--tree`: the referenced Task, its output port, the
+/// Every recorded output one port was bound from, in Task-file order: the binding itself, then
+/// each further output a `many` port gathered (ADR-0134).
+pub(super) fn bound_outputs(
+    binding: &TaskInputBindingV1,
+) -> impl Iterator<Item = &TaskInputBindingV1> {
+    std::iter::once(binding).chain(&binding.also)
+}
+
+/// One `BOUND` group per bound output for `--tree`: the referenced Task, its output port, the
 /// acceptance and domain conclusion it had, and the exact artifact ID. An exact-artifact
 /// binding reads `artifact` in place of the Task and port and `-` where no Task supplied an
-/// acceptance or a conclusion. The digest gets its own row so no wrap can split it.
+/// acceptance or a conclusion. The digest gets its own row so no wrap can split it. A port
+/// bound from several outputs has one group per output, each in the same shape.
 fn binding_rows(bound: &BindingRows) -> Vec<String> {
     let mut rows = Vec::new();
-    for (name, binding) in bound {
+    let outputs = bound
+        .iter()
+        .flat_map(|(name, binding)| bound_outputs(binding).map(move |output| (name, output)));
+    for (name, binding) in outputs {
         let mut acceptance = "-".to_owned();
         let mut conclusion = "-".to_owned();
         if let Some(task) = &binding.task {
@@ -655,6 +683,7 @@ mod tests {
             snapshot_id: None,
             rerooted_snapshot_id: None,
             task: None,
+            also: Vec::new(),
         };
         let referenced = TaskInputBindingV1 {
             artifact_id: digest('b'),
@@ -669,6 +698,7 @@ mod tests {
                 acceptance: TaskAcceptanceV1::Unsatisfied,
                 domain_conclusion: "changes_requested".into(),
             }),
+            also: Vec::new(),
         };
         BindingRows::from([
             ("history".to_owned(), exact),
@@ -708,5 +738,50 @@ mod tests {
         assert!(out.lines().all(|row| row.len() <= WIDTH));
         // The exact artifact ID is never split across the wrap boundary.
         assert!(out.lines().any(|row| row.trim() == digest('b')));
+    }
+
+    /// A `many` port bound from several outputs (ADR-0134) is annotated with every output on
+    /// the `IN` row and gets one `BOUND` group per output, each in the single-output shape.
+    #[test]
+    fn a_port_bound_from_several_outputs_shows_each_output_in_the_same_shape() {
+        use review_core::task::input_bindings::ReferencedTaskV1;
+        let output = |byte: char, port: &str| TaskInputBindingV1 {
+            artifact_id: digest(byte),
+            resolved_artifact_id: None,
+            snapshot_id: Some(digest('f')),
+            rerooted_snapshot_id: None,
+            task: Some(ReferencedTaskV1 {
+                task_id: "experiment".into(),
+                task_revision_id: digest('1'),
+                result_id: digest('2'),
+                port: port.into(),
+                acceptance: TaskAcceptanceV1::Satisfied,
+                domain_conclusion: "verified".into(),
+            }),
+            also: Vec::new(),
+        };
+        let mut measurements = output('a', "baseline");
+        measurements.also.push(output('b', "candidate"));
+        let bound = BindingRows::from([
+            ("comparison".to_owned(), output('c', "comparison")),
+            ("measurements".to_owned(), measurements),
+        ]);
+        let ports = ["comparison", "measurements", "requirements"].map(str::to_owned);
+        assert_eq!(
+            input_labels(ports.iter(), &bound),
+            "comparison <- task experiment/comparison, measurements <- task \
+             experiment/baseline + task experiment/candidate, requirements"
+        );
+        assert_eq!(
+            binding_rows(&bound),
+            vec![
+                "BOUND comparison <- task experiment/comparison (satisfied/verified)".to_owned(),
+                format!("      {}", digest('c')),
+                "BOUND measurements <- task experiment/baseline (satisfied/verified)".to_owned(),
+                format!("      {}", digest('a')),
+                "BOUND measurements <- task experiment/candidate (satisfied/verified)".to_owned(),
+                format!("      {}", digest('b')),
+            ]
+        );
     }
 }

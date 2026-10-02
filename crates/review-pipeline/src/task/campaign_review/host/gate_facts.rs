@@ -43,6 +43,7 @@ impl CampaignReviewTaskHost<'_, '_> {
             attempt_id: attempt.id().into(),
             node: input.node.clone(),
             context_id: attempt.context_id().into(),
+            check: None,
             spans: self
                 .domain
                 .runtime_spans
@@ -97,6 +98,7 @@ impl CampaignReviewTaskHost<'_, '_> {
             attempt_id: attempt.id().into(),
             node: input.node.clone(),
             context_id: attempt.context_id().into(),
+            check: None,
             spans: vec![evidence.span],
             caches: vec![evidence.observation],
         };

@@ -226,3 +226,13 @@ future readers need.
   interrupted](0129-stop-task-workers-when-af-is-interrupted.md)
 - [0130 — Report a Provider CLI that cannot start as an installation
   failure](0130-report-a-provider-cli-that-cannot-start.md)
+- [0131 — Warm Task checks through a toolchain-keyed, bounded, machine-local
+  cache](0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)
+- [0132 — Measure and compare source candidates in the
+  kernel](0132-measure-and-compare-source-candidates-in-the-kernel.md)
+- [0133 — Accept reports bound to an exact source
+  Snapshot](0133-accept-reports-bound-to-an-exact-source-snapshot.md)
+- [0134 — Bind any declared root port to recorded Task
+  outputs](0134-bind-any-declared-root-port-to-recorded-task-outputs.md)
+- [0135 — Collect finished Tasks behind a tombstone and a reachability
+  sweep](0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)

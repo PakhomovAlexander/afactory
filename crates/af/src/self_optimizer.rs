@@ -965,8 +965,9 @@ mod tests {
 
     #[test]
     fn native_fixtures_redact_and_deduplicate_provider_counters() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
+        let root = std::env::var_os("AF_WORKSPACE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
             .join("fixtures/self-optimizer/native");
         let project = format!("sha256:{}", "1".repeat(64));
         let config: SourceConfig = serde_json::from_value(serde_json::json!({

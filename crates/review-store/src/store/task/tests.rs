@@ -1,6 +1,7 @@
 use super::*;
 use review_core::Producer;
 use review_core::task::plan::PlanDependencyV1;
+mod collection;
 mod lease;
 mod owned;
 mod planning;
@@ -788,6 +789,7 @@ fn lease_takeover_fences_old_writer_and_sequence_comparison_is_atomic() {
         valid_until: None,
         review_round: None,
         review_prefix: None,
+        bound_tasks: vec![],
     };
     let mut second = EventStore::open(&f.path).unwrap();
     second

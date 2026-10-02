@@ -102,6 +102,13 @@ pub enum TaskChangeV1 {
     DeliveryRecorded {
         record_id: String,
     },
+    /// The tombstone of `af task gc --apply` (ADR-0135): the last event a Task log ever holds.
+    /// It carries the Task's retained summary inline and references no artifact, so every
+    /// object only this Task reached becomes unreachable. Its writer is the collector, at an
+    /// epoch past the Task's last writer, which fences that writer for good.
+    TaskCollected {
+        collected: super::collection::TaskCollectedV1,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,6 +174,13 @@ impl TaskTransitionV1 {
                 !reason.trim().is_empty() && reason.chars().count() <= 65536,
                 "Revocation needs a bounded reason",
             ),
+            TaskChangeV1::TaskCollected { collected } => {
+                collected.validate()?;
+                require(
+                    collected.collected_unix_ms == self.now_unix_ms,
+                    "A Task tombstone is written at its own collection time",
+                )
+            }
             _ => Ok(()),
         }
     }

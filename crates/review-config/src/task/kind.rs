@@ -10,6 +10,9 @@ pub enum TaskKindProfile {
     RepairAllowedImplementation,
     Review,
     Document,
+    /// A Document written against one exact source Snapshot, accepted by an independent
+    /// verifier and never delivered: built-in kind `report`.
+    Report,
     OptimizationAnalysis,
     OptimizationCandidate,
 }

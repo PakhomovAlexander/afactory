@@ -853,6 +853,45 @@
           "additionalProperties": false,
           "required": [
             "op",
+            "measures"
+          ],
+          "properties": {
+            "op": {
+              "const": "measure"
+            },
+            "measures": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/name"
+              },
+              "uniqueItems": true,
+              "minItems": 1,
+              "maxItems": 16,
+              "$comment": "One af/Measurement@1 output per named measure of the captured code policy (ADR-0132). Canonical ascending order is required by semantic admission."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "objective"
+          ],
+          "properties": {
+            "op": {
+              "const": "compare"
+            },
+            "objective": {
+              "$ref": "#/$defs/name"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
             "slot"
           ],
           "properties": {
@@ -1024,6 +1063,42 @@
           "properties": {
             "op": {
               "const": "document_accept"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "report_seal"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "report_check"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "report_accept"
             }
           }
         },

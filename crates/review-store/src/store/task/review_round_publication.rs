@@ -443,6 +443,7 @@ impl EventStore {
             )?;
             appended.extend(super::super::insert_events(
                 &tx,
+                cas,
                 permit.campaign_id(),
                 chunk,
                 at,

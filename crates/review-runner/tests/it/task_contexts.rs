@@ -8,7 +8,10 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 fn validator(name: &str) -> jsonschema::Validator {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas");
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .join("schemas");
     let read = |name: &str| {
         serde_json::from_slice::<Value>(&std::fs::read(root.join(name)).unwrap()).unwrap()
     };
