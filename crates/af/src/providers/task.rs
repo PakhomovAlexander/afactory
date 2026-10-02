@@ -21,12 +21,23 @@ impl TaskProviderIdentity {
         if spec.kind.name() != expected_kind || spec.auth_dir.is_none() {
             return Err("Task Provider binding differs from its configured implementation".into());
         }
-        let program = resolve_program(spec.kind.command())
-            .ok_or("Task Provider executable is unavailable")?;
+        // A CLI that cannot start is refused here, before any Worker or admission Attempt runs.
+        let program = locate_cli(&spec).map_err(|failure| admission_refusal(&failure))?;
         let probe_path = sanitized_path();
         let cancelled = AtomicBool::new(false);
-        let (principal_id, auth_method) =
-            probe_identity(&program, &spec, &probe_path, &cancelled, None)?;
+        let (principal_id, auth_method) = observe_identity(
+            &program,
+            &spec,
+            &probe_path,
+            &cancelled,
+            None,
+        )
+        .map_err(|failure| {
+            match cli_cannot_start(&program, &spec, &probe_path, &cancelled, None, &failure) {
+                Some(installation) => admission_refusal(&installation),
+                None => failure.message,
+            }
+        })?;
         Ok(Self {
             spec,
             program,
@@ -138,9 +149,9 @@ impl TaskProviderIdentity {
     /// The executable is the one this identity names: every invocation runs that absolute path,
     /// so it must still be there. What `PATH` resolves to now is not compared. A native client
     /// that updates itself repoints its launcher at a new version file (ADR-0126).
-    fn check_current(&self, deadline: Instant, cancelled: &AtomicBool) -> Result<(), String> {
-        check_task_probe_control(Some(deadline), cancelled)?;
-        let current = configured_spec(&self.spec.id)?;
+    fn check_current(&self, deadline: Instant, cancelled: &AtomicBool) -> Result<(), Recheck> {
+        check_task_probe_control(Some(deadline), cancelled).map_err(|_| Recheck::NotCurrent)?;
+        let current = configured_spec(&self.spec.id).map_err(|_| Recheck::NotCurrent)?;
         if current.kind != self.spec.kind
             || current.auth_dir != self.spec.auth_dir
             || current.explicit_selector != self.spec.explicit_selector
@@ -149,23 +160,99 @@ impl TaskProviderIdentity {
             || std::env::var_os("HOME") != self.home
             || std::env::var_os("USER") != self.user
         {
-            return Err("Task Provider execution or authentication context changed".into());
+            return Err(Recheck::NotCurrent);
         }
-        let (principal, auth_method) = probe_identity(
+        self.recheck_identity(deadline, cancelled)
+    }
+
+    /// The token-free account recheck, telling a CLI that cannot start apart from an account
+    /// that changed or could not be proven.
+    fn recheck_identity(&self, deadline: Instant, cancelled: &AtomicBool) -> Result<(), Recheck> {
+        let (principal, auth_method) = observe_identity(
             &self.program,
             &self.spec,
             &self.probe_path,
             cancelled,
             Some(deadline),
-        )?;
-        check_task_probe_control(Some(deadline), cancelled)?;
+        )
+        .map_err(|failure| {
+            match cli_cannot_start(
+                &self.program,
+                &self.spec,
+                &self.probe_path,
+                cancelled,
+                Some(deadline),
+                &failure,
+            ) {
+                Some(installation) => Recheck::CliCannotStart(installation),
+                None => Recheck::NotCurrent,
+            }
+        })?;
+        check_task_probe_control(Some(deadline), cancelled).map_err(|_| Recheck::NotCurrent)?;
         if principal != self.principal_id || auth_method != self.auth_method {
-            return Err("Task Provider account changed".into());
+            return Err(Recheck::NotCurrent);
         }
         Ok(())
     }
 }
 
+/// Why the recheck before a private send refused it.
+enum Recheck {
+    /// The captured Provider identity is no longer current or could not be verified.
+    NotCurrent,
+    /// The Provider's CLI cannot start: an environment failure, not the model's or the login's.
+    CliCannotStart(CliInstallationFailure),
+}
+
+/// Why an account identity probe proved nothing.
+struct IdentityFailure {
+    message: String,
+    /// The CLI gave no answer af recognizes, and af did not give up waiting for one: it may not
+    /// start at all. A CLI that answered — logged out, another account — never is.
+    cli_silent: bool,
+}
+
+impl IdentityFailure {
+    fn answered(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            cli_silent: false,
+        }
+    }
+}
+
+/// The installation failure behind a silent identity probe, when the CLI's own version check
+/// confirms it.
+fn cli_cannot_start(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    deadline: Option<Instant>,
+    failure: &IdentityFailure,
+) -> Option<CliInstallationFailure> {
+    if !failure.cli_silent {
+        return None;
+    }
+    diagnose_cli(program, spec, probe_path, cancelled, deadline)
+}
+
+fn admission_refusal(failure: &CliInstallationFailure) -> String {
+    format!(
+        "Task Provider admission refused before any Worker was dispatched: {}",
+        failure.message()
+    )
+}
+
+/// The Attempt diagnostic for a CLI that stopped starting after admission.
+fn environment_failure(failure: &CliInstallationFailure) -> String {
+    format!(
+        "Provider environment failure, not a model or credential failure: {}",
+        failure.message()
+    )
+}
+
+#[cfg(test)]
 fn probe_identity(
     program: &Path,
     spec: &ProviderSpec,
@@ -173,27 +260,53 @@ fn probe_identity(
     cancelled: &AtomicBool,
     deadline: Option<Instant>,
 ) -> Result<(String, String), String> {
+    observe_identity(program, spec, probe_path, cancelled, deadline).map_err(|f| f.message)
+}
+
+fn observe_identity(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    deadline: Option<Instant>,
+) -> Result<(String, String), IdentityFailure> {
     match spec.kind {
         ProviderKind::Claude => {
-            let output = run_probe_before(program, spec, probe_path, cancelled, deadline)?;
+            let output = run_probe_before(program, spec, probe_path, cancelled, deadline).map_err(
+                |message| IdentityFailure {
+                    cli_silent: !probe_gave_up(&message),
+                    message,
+                },
+            )?;
             if !output.status.success() {
-                return Err("Claude account identity probe failed".into());
+                return Err(IdentityFailure {
+                    message: "Claude account identity probe failed".into(),
+                    cli_silent: !status_answered(spec.kind, &output.stdout),
+                });
             }
-            let status: serde_json::Value = serde_json::from_str(&output.stdout)
-                .map_err(|_| "Claude account identity response is invalid")?;
-            let principal = claude_principal(&status)?;
+            let status: serde_json::Value = serde_json::from_str(&output.stdout).map_err(|_| {
+                IdentityFailure::answered("Claude account identity response is invalid")
+            })?;
+            let principal = claude_principal(&status).map_err(IdentityFailure::answered)?;
             Ok((principal, status["authMethod"].as_str().unwrap().into()))
         }
         ProviderKind::Codex => {
-            let response = probe_codex_request_before(
+            let mut answered = false;
+            let response = probe_codex_request_observed(
                 program,
                 spec,
                 probe_path,
                 cancelled,
                 &serde_json::json!({"method":"account/read","id":2,"params":{"refreshToken":false}}),
                 deadline,
-            )?;
-            Ok((codex_principal(&response)?, "chatgpt".into()))
+                &mut answered,
+            )
+            .map_err(|message| IdentityFailure {
+                cli_silent: !answered && !probe_gave_up(&message),
+                message,
+            })?;
+            let principal = codex_principal(&response).map_err(IdentityFailure::answered)?;
+            Ok((principal, "chatgpt".into()))
         }
     }
 }
@@ -293,12 +406,16 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
                 Err(reason) => return refuse(reason),
             };
             // Raw status/account output and filesystem diagnostics remain local, never Worker
-            // evidence.
-            if identity.check_current(deadline, cancelled).is_err() {
-                if !is_executable(&identity.program) {
-                    continue;
+            // evidence. A CLI that cannot start is named as the environment failure it is, so
+            // neither retries nor reports blame the model or the login; its diagnostic is never
+            // retry feedback.
+            match identity.check_current(deadline, cancelled) {
+                Ok(()) => {}
+                Err(_) if !is_executable(&identity.program) => continue,
+                Err(Recheck::CliCannotStart(failure)) => {
+                    return refuse(&environment_failure(&failure));
                 }
-                return refused();
+                Err(Recheck::NotCurrent) => return refused(),
             }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return refused();

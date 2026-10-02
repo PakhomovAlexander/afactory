@@ -224,3 +224,5 @@ future readers need.
   connection](0125-renew-a-live-task-writer-lease-through-its-own-connection.md)
 - [0126 — Stop Task Workers when af is
   interrupted](0126-stop-task-workers-when-af-is-interrupted.md)
+- [0127 — Report a Provider CLI that cannot start as an installation
+  failure](0127-report-a-provider-cli-that-cannot-start.md)

@@ -254,3 +254,93 @@ fn the_installed_client_replaces_a_removed_executable_and_a_present_one_is_kept(
     );
     assert_eq!(identity.auth_method, "claude.ai");
 }
+
+const BROKEN_INSTALL: &str = "printf '%s\\n' 'Error: Missing optional dependency @openai/codex-darwin-arm64. Reinstall Codex: npm install -g @openai/codex@latest' >&2\nexit 1";
+
+fn identity(spec: ProviderSpec, program: PathBuf) -> TaskProviderIdentity {
+    TaskProviderIdentity {
+        spec,
+        program,
+        principal_id: "sha256:".to_string() + &"0".repeat(64),
+        auth_method: "chatgpt".into(),
+        probe_path: std::ffi::OsString::from("/usr/bin:/bin"),
+        home: std::env::var_os("HOME"),
+        user: std::env::var_os("USER"),
+    }
+}
+
+#[test]
+fn a_recheck_whose_cli_cannot_start_is_an_environment_failure_not_an_identity_one() {
+    for kind in [ProviderKind::Claude, ProviderKind::Codex] {
+        let directory = tempfile::tempdir().unwrap();
+        let (program, spec) = fixture(kind, directory.path(), BROKEN_INSTALL);
+        let checked = identity(spec, program.clone()).recheck_identity(
+            Instant::now() + Duration::from_secs(30),
+            &AtomicBool::new(false),
+        );
+        let Err(Recheck::CliCannotStart(failure)) = checked else {
+            panic!("a CLI that cannot start was reported as an identity refusal");
+        };
+        let diagnostic = environment_failure(&failure);
+        assert!(
+            diagnostic.starts_with(
+                "Provider environment failure, not a model or credential failure: provider fixture: Provider installation failure"
+            ),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains(&program.display().to_string()),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains(": Error: Missing optional dependency @openai/codex-darwin-arm64"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.ends_with("; fix: Reinstall Codex: npm install -g @openai/codex@latest"),
+            "{diagnostic}"
+        );
+        let refusal = admission_refusal(&failure);
+        assert!(
+            refusal.starts_with("Task Provider admission refused before any Worker was dispatched: provider fixture: Provider installation failure"),
+            "{refusal}"
+        );
+    }
+}
+
+/// A CLI that answered — another account, or no login — has started, so it is never diagnosed
+/// as an installation failure, even when it knows nothing about `--version`.
+#[test]
+fn a_recheck_that_the_cli_answered_stays_an_identity_refusal() {
+    let codex_other_account = r#"if [ "$1" = app-server ]; then
+  while read -r line; do
+    case "$line" in
+      *'"id":1'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+      *'"id":2'*) printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","email":"other@example.test"}}}' ;;
+    esac
+  done
+  exit 0
+fi
+exit 64"#;
+    let claude_logged_out = r#"if [ "$1" = auth ]; then
+  printf '%s\n' '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}'
+  exit 1
+fi
+exit 64"#;
+    for (kind, body) in [
+        (ProviderKind::Codex, codex_other_account),
+        (ProviderKind::Claude, claude_logged_out),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let (program, spec) = fixture(kind, directory.path(), body);
+        let checked = identity(spec, program).recheck_identity(
+            Instant::now() + Duration::from_secs(30),
+            &AtomicBool::new(false),
+        );
+        assert!(
+            matches!(checked, Err(Recheck::NotCurrent)),
+            "an answering {} CLI was diagnosed as uninstalled",
+            kind.name()
+        );
+    }
+}
