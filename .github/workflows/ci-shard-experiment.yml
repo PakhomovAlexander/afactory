@@ -46,14 +46,12 @@ jobs:
           AF_CI_METRICS: ${{ runner.temp }}/single-metrics.jsonl
         run: |
           python3 scripts/ci-step.py test-build cargo test --locked --no-run
+          python3 scripts/ci-step.py compile-cache python3 scripts/ci-shard-experiment.py cache-stats --arm single --output "$RUNNER_TEMP/single-compile-cache.json"
           python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --output "$RUNNER_TEMP/full.json"
           python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --partition count:1/2 --output "$RUNNER_TEMP/first.json"
           python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --partition count:2/2 --output "$RUNNER_TEMP/second.json"
           python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py verify --full "$RUNNER_TEMP/full.json" --first "$RUNNER_TEMP/first.json" --second "$RUNNER_TEMP/second.json"
           python3 scripts/ci-step.py test cargo nextest run --locked --profile ci --test-threads 4 --no-tests fail
-      - name: Record compile cache statistics
-        if: always()
-        run: sccache --show-stats > "$RUNNER_TEMP/sccache-stats.txt"
       - name: Retain measurements
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -61,14 +59,14 @@ jobs:
           name: single
           path: |
             ${{ runner.temp }}/single-metrics.jsonl
-            ${{ runner.temp }}/cache-metrics.json
             ${{ runner.temp }}/full.json
             ${{ runner.temp }}/first.json
             ${{ runner.temp }}/second.json
             ${{ runner.temp }}/head-sha.txt
             ${{ runner.temp }}/runner-cpus.txt
             ${{ runner.temp }}/rustc-version.txt
-            ${{ runner.temp }}/sccache-stats.txt
+            ${{ runner.temp }}/cache-metrics.json
+            ${{ runner.temp }}/single-compile-cache.json
             target/nextest/ci/junit.xml
           if-no-files-found: warn
 
@@ -100,13 +98,11 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/archive"
           python3 scripts/ci-step.py archive-build cargo nextest archive --locked --archive-file "$RUNNER_TEMP/archive/tests.tar.zst"
+          python3 scripts/ci-step.py compile-cache python3 scripts/ci-shard-experiment.py cache-stats --arm archive-build --output "$RUNNER_TEMP/archive-build-compile-cache.json"
           python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --archive "$RUNNER_TEMP/archive/tests.tar.zst" --extract-to "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/archive/full.json"
           python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --archive "$RUNNER_TEMP/archive/tests.tar.zst" --extract-to "$GITHUB_WORKSPACE" --partition count:1/2 --output "$RUNNER_TEMP/archive/first.json"
           python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --archive "$RUNNER_TEMP/archive/tests.tar.zst" --extract-to "$GITHUB_WORKSPACE" --partition count:2/2 --output "$RUNNER_TEMP/archive/second.json"
           python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py verify --full "$RUNNER_TEMP/archive/full.json" --first "$RUNNER_TEMP/archive/first.json" --second "$RUNNER_TEMP/archive/second.json"
-      - name: Record compile cache statistics
-        if: always()
-        run: sccache --show-stats > "$RUNNER_TEMP/sccache-stats.txt"
       - name: Share checked archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -120,11 +116,11 @@ jobs:
           name: archive-build-metrics
           path: |
             ${{ runner.temp }}/archive-build-metrics.jsonl
-            ${{ runner.temp }}/cache-metrics.json
             ${{ runner.temp }}/head-sha.txt
             ${{ runner.temp }}/runner-cpus.txt
             ${{ runner.temp }}/rustc-version.txt
-            ${{ runner.temp }}/sccache-stats.txt
+            ${{ runner.temp }}/cache-metrics.json
+            ${{ runner.temp }}/archive-build-compile-cache.json
           if-no-files-found: warn
 
   archive-shard:
@@ -204,14 +200,12 @@ jobs:
           AF_CI_METRICS: ${{ runner.temp }}/rebuild-shard-metrics.jsonl
         run: |
           python3 scripts/ci-step.py test-build cargo test --locked --no-run
+          python3 scripts/ci-step.py compile-cache python3 scripts/ci-shard-experiment.py cache-stats --arm rebuild-shard-${{ matrix.shard }} --output "$RUNNER_TEMP/rebuild-shard-${{ matrix.shard }}-compile-cache.json"
           python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --output "$RUNNER_TEMP/full.json"
           python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --partition count:1/2 --output "$RUNNER_TEMP/first.json"
           python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py record --partition count:2/2 --output "$RUNNER_TEMP/second.json"
           python3 scripts/ci-step.py manifest-proof python3 scripts/ci-shard-experiment.py verify --full "$RUNNER_TEMP/full.json" --first "$RUNNER_TEMP/first.json" --second "$RUNNER_TEMP/second.json"
           python3 scripts/ci-step.py test cargo nextest run --locked --profile ci --test-threads 4 --partition count:${{ matrix.shard }}/2 --no-tests fail
-      - name: Record compile cache statistics
-        if: always()
-        run: sccache --show-stats > "$RUNNER_TEMP/sccache-stats.txt"
       - name: Retain shard manifest
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -229,11 +223,11 @@ jobs:
           name: rebuild-shard-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/rebuild-shard-metrics.jsonl
-            ${{ runner.temp }}/cache-metrics.json
             ${{ runner.temp }}/head-sha.txt
             ${{ runner.temp }}/runner-cpus.txt
             ${{ runner.temp }}/rustc-version.txt
-            ${{ runner.temp }}/sccache-stats.txt
+            ${{ runner.temp }}/cache-metrics.json
+            ${{ runner.temp }}/rebuild-shard-${{ matrix.shard }}-compile-cache.json
             target/nextest/ci/junit.xml
           if-no-files-found: warn
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record and verify a complete default nextest selection for the CI experiment."""
+"""Record nextest ci selections and compile-cache evidence for the CI experiment."""
 
 import argparse
 import json
@@ -23,7 +23,7 @@ def selected(document):
 
 def record(args):
     command = ['cargo', 'nextest', 'list', '--message-format', 'json',
-               '--run-ignored', 'default']
+               '--run-ignored', 'default', '--profile', 'ci']
     if args.archive:
         command.extend(['--archive-file', str(args.archive)])
         if args.extract_to:
@@ -59,8 +59,47 @@ def verify(args):
                          f'extra={len((one | two) - all_tests)}')
     if one_ignored != all_ignored or two_ignored != all_ignored:
         raise SystemExit('ignored test inventory differs between manifests')
-    print(f'complete disjoint default partition: {len(one)} + {len(two)} = '
+    print(f'complete disjoint ci partition: {len(one)} + {len(two)} = '
           f'{len(all_tests)} runnable tests; {len(all_ignored)} ignored entries unchanged')
+
+
+def cache_stats(args):
+    """Capture the server's compile counters before a long test can idle it out."""
+    args.output.unlink(missing_ok=True)
+    result = subprocess.run(
+        ['sccache', '--show-stats', '--stats-format', 'json'],
+        capture_output=True, text=True,
+    )
+    if result.returncode:
+        raise SystemExit(f'sccache stats failed ({result.returncode}): {result.stderr}')
+    try:
+        raw = json.loads(result.stdout)
+        stats = raw['stats']
+        requests = stats['compile_requests']
+        if type(requests) is not int or requests <= 0:
+            raise ValueError('compile_requests must be positive')
+        totals = {}
+        for key in ('cache_hits', 'cache_misses'):
+            counts = stats[key]['counts']
+            if not isinstance(counts, dict) or any(
+                not isinstance(lang, str) or not lang or type(count) is not int
+                or count < 0 for lang, count in counts.items()
+            ):
+                raise ValueError(f'{key}.counts must contain nonnegative integer counts')
+            totals[key] = sum(counts.values())
+        if not 0 < totals['cache_hits'] + totals['cache_misses'] <= requests:
+            raise ValueError('cache hits and misses must be nonzero in aggregate and fit requests')
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise SystemExit(f'invalid compile cache statistics: {error}') from error
+    document = {
+        'schema': 'af.ci-compile-cache/1', 'arm': args.arm,
+        'phase': 'after-compile-before-test', 'compile_requests': requests,
+        'cache_hits': totals['cache_hits'], 'cache_misses': totals['cache_misses'],
+        'sccache': raw,
+    }
+    args.output.write_text(json.dumps(document, sort_keys=True) + '\n')
+    print(f'{args.arm}: compile requests={requests}, hits={totals["cache_hits"]}, '
+          f'misses={totals["cache_misses"]}')
 
 
 def main():
@@ -76,6 +115,11 @@ def main():
     for name in ('full', 'first', 'second'):
         check.add_argument(f'--{name}', required=True, type=Path)
     check.set_defaults(run=verify)
+    cache = commands.add_parser('cache-stats')
+    cache.add_argument('--arm', required=True, choices=['single', 'archive-build',
+                       'rebuild-shard-1', 'rebuild-shard-2'])
+    cache.add_argument('--output', required=True, type=Path)
+    cache.set_defaults(run=cache_stats)
     args = parser.parse_args()
     args.run(args)
 
