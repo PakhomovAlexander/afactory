@@ -1,20 +1,31 @@
 # Software Task starter
 
 Review the generated policy, definitions, Workers and captured contract fixtures, then initialize
-this directory as a Git repository and commit it. The Python command substitutes support the
-structured pagination specification in the supplied Task files. They perform no paid model calls.
+this directory as a Git repository and commit its authority and source. Move the supplied Task
+requests outside the checkout first: they are captured into Task state and do not belong in
+source Snapshots. Keep `contracts.json` (and `sources.json` in the combined starter) in place.
+The Python command substitutes support the structured pagination specification in the supplied
+Task files. They perform no paid model calls.
 
 ```sh
+task_files=$(mktemp -d "${TMPDIR:-/tmp}/af-task-requests.XXXXXX")
+mv implementation-*.json review-*.json planning.json "$task_files/"
+# The combined profile also includes a document Task request.
+if [ -f document.json ]; then mv document.json "$task_files/"; fi
 git init
 git add .
 git commit -m 'Configure software Task starters'
 af catalog test --source . --json
-af task start --file implementation-reviewed.json
+af task start --file "$task_files/implementation-reviewed.json"
 # Review the compact preview; use --tree for the embedded Pipeline hierarchy.
 af task explain implementation-reviewed --tree
 # Replace PLAN_ID with the full captured identity printed above.
 af task run implementation-reviewed --confirm-plan PLAN_ID
 ```
+
+Keep `task_files` in this shell (or save its printed path with `printf '%s\n' "$task_files"`)
+for later examples. Run all commands from the source checkout; an external `--file` does not
+change which repository the Task captures.
 
 The Task implements pagination, seals its output and calls the shared Review Pipeline with
 independent correctness and bounds reviewers. A final independent evaluator checks the exact
@@ -44,7 +55,7 @@ create the starter with `--developer-public-key` pointing to an existing minisig
 That key is assigned the developer label `owner`; the signing key stays outside Afactory.
 
 ```sh
-af task start --execute --file planning.json --json
+af task start --execute --file "$task_files/planning.json" --json
 af task explain generated-pagination --json
 af task decision-payload generated-pagination --developer owner --decision approved \
   --reason 'Reviewed the generated stages and verification' --output approval.payload
