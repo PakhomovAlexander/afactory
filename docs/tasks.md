@@ -86,10 +86,13 @@ The Task ID is chosen here and must be new to the state directory. Without `pipe
 
 Run from the clean repository at committed `HEAD`. State defaults to a directory outside the
 repository under the user's XDG state directory; `--state` selects another external directory.
+Save the Task request outside the checkout too (for example, `../ticket.json`); Afactory captures
+its contents into Task state. `--file` selects the request, not the source repository, so remain
+in the source checkout or select it with `--repo`.
 
 ```sh
 af provider status
-af task start --file ticket.json
+af task start --file ../ticket.json
 # Review the preview and copy its complete Plan identity.
 af task run pagination-cli --confirm-plan PLAN_ID
 af task list
