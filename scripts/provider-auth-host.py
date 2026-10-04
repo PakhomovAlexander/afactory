@@ -29,6 +29,9 @@ STATES = {
     "expired", "interrupted", "permission_denied", "private_route_unavailable",
     "unsupported", "authentication_failed", "invalid_challenge", "invalid_response",
     "context_changed", "registry_conflict",
+    "authentication_invalid_token_response", "authentication_proxy_configuration_failed",
+    "authentication_tls_configuration_failed", "authentication_rejected",
+    "authentication_transport_failed",
 }
 
 
@@ -124,6 +127,12 @@ def public_status(value, provider, kind, recovery=None):
     require(all(type(value[k]) is bool for k in ["challenge_delivered", "registered"]))
     require(all(type(value[k]) is int and value[k] >= 0 for k in [
         "created_at", "host_deadline", "exit_code"]))
+    expected = (0 if value["state"] in {"authenticated_unverified", "cancellation_requested"}
+                else 5 if value["state"] == "registry_conflict"
+                else 6 if value["state"].startswith("authentication_")
+                or value["state"] in {"invalid_challenge", "invalid_response", "context_changed"}
+                else 3)
+    require(value["exit_code"] == expected)
     return value
 
 

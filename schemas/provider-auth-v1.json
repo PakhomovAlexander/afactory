@@ -11,7 +11,7 @@
     "recovery_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "provider": {"type": "string"},
     "kind": {"enum": ["claude", "codex"]},
-    "state": {"enum": ["awaiting_permission", "starting", "awaiting_user", "completing", "authenticated_unverified", "cancelled", "cancellation_requested", "expired", "interrupted", "permission_denied", "private_route_unavailable", "unsupported", "authentication_failed", "invalid_challenge", "invalid_response", "context_changed", "registry_conflict"]},
+    "state": {"enum": ["awaiting_permission", "starting", "awaiting_user", "completing", "authenticated_unverified", "cancelled", "cancellation_requested", "expired", "interrupted", "permission_denied", "private_route_unavailable", "unsupported", "authentication_failed", "authentication_invalid_token_response", "authentication_proxy_configuration_failed", "authentication_tls_configuration_failed", "authentication_rejected", "authentication_transport_failed", "invalid_challenge", "invalid_response", "context_changed", "registry_conflict"]},
     "created_at": {"type": "integer", "minimum": 0},
     "host_deadline": {"type": "integer", "minimum": 0},
     "challenge_delivered": {"type": "boolean"},

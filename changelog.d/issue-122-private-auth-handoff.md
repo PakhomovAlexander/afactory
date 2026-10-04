@@ -9,3 +9,5 @@
   ([ADR-0138](docs/adr/0138-deliver-native-login-challenges-to-a-verified-private-requester.md)).
 - Preserve native authentication failure categories alongside usage diagnostics and suppress
   credential-bearing failed output before ordinary capture, retaining exact parsed usage.
+- Classify native login failures into closed response/proxy/TLS/rejection/transport states while
+  keeping stderr private and bounded; retain the native lifetime guard and credential boundary.

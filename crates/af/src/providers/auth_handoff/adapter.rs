@@ -39,6 +39,7 @@ pub(super) enum Failure {
     Unsupported,
     InvalidChallenge,
     Failed,
+    Authentication(super::guard::AuthenticationFailure),
     OutputLimit,
 }
 
@@ -169,8 +170,17 @@ impl NativeLogin {
                 self.read_output()?;
             }
         }
-        if self.exit.is_some_and(|status| !status.success()) {
-            return Err(Failure::Failed);
+        if let Some(status) = self.exit
+            && !status.success()
+        {
+            return Err(if self.guarded {
+                status
+                    .code()
+                    .and_then(super::guard::AuthenticationFailure::from_exit_code)
+                    .map_or(Failure::Failed, Failure::Authentication)
+            } else {
+                Failure::Failed
+            });
         }
         match &mut self.protocol {
             Protocol::Codex(protocol) => protocol.consume(&mut self.output, self.exit),
@@ -273,7 +283,8 @@ impl Drop for NativeLogin {
 // stdout frame, including unconditional SGR and the extra newline from println!. Match only
 // those SGR positions: never remove arbitrary terminal controls or search prose for a URL.
 // cli/src/login.rs::run_login_with_device_code reports completion on stderr and by exit status;
-// stderr is discarded. No success prose, app-server notification, or status alone completes login.
+// stderr stays inside the lifetime guard and yields only closed failure categories. No success
+// prose, app-server notification, or status alone completes login.
 const CODEX_DEVICE_URL: &str = "https://auth.openai.com/codex/device";
 const CODEX_DEVICE_PREFIX: &str = concat!(
     "\nWelcome to Codex [v\x1b[90m0.159.2\x1b[0m]\n",
@@ -1390,6 +1401,32 @@ mod tests {
         }
         assert!(matches!(login.poll(), Err(Failure::Failed)));
         assert!(login.stopped);
+    }
+
+    #[test]
+    fn private_guard_codes_are_decoded_only_for_owned_guard_children() {
+        use super::super::guard::AuthenticationFailure;
+        for (code, expected) in [
+            (70, AuthenticationFailure::InvalidTokenResponse),
+            (71, AuthenticationFailure::ProxyConfiguration),
+            (72, AuthenticationFailure::TlsConfiguration),
+            (73, AuthenticationFailure::Rejected),
+            (74, AuthenticationFailure::Transport),
+        ] {
+            for guarded in [false, true] {
+                let mut command = Command::new("/bin/sh");
+                command.env_clear().args(["-c", &format!("exit {code}")]);
+                let mut login =
+                    NativeLogin::spawn_owned(&mut command, ProviderKind::Codex, guarded).unwrap();
+                let result = next_event(&mut login);
+                assert!(matches!(result, Err(failure) if failure == if guarded {
+                    Failure::Authentication(expected)
+                } else {
+                    Failure::Failed
+                }));
+                assert!(login.stopped);
+            }
+        }
     }
 
     #[test]

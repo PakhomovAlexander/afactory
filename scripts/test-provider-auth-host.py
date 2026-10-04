@@ -191,6 +191,18 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(HOST.Rejected):
             HOST.public_status(value, "codex-main", "codex")
 
+    def test_closed_native_failure_states_do_not_authorize_continuation(self):
+        for state in ["authentication_invalid_token_response", "authentication_proxy_configuration_failed",
+                      "authentication_tls_configuration_failed", "authentication_rejected",
+                      "authentication_transport_failed"]:
+            value = HOST.public_status(status(state=state, code=6), "codex-main", "codex")
+            self.assertFalse(value["verified"])
+            self.assertEqual(value["continuation"], "not_authorized_by_login")
+        for state, code in [("authenticated_unverified", 6), ("authentication_failed", 0),
+                            ("arbitrary-native-secret", 6)]:
+            with self.assertRaises(HOST.Rejected):
+                HOST.public_status(status(state=state, code=code), "codex-main", "codex")
+
     def test_frames_bounded(self):
         with self.assertRaises(HOST.Rejected):
             HOST.frame(b"x" * (HOST.LIMIT + 1))
@@ -210,6 +222,7 @@ class ProtocolTests(unittest.TestCase):
             bridge.event(challenge(self.request))
         self.assertEqual(len(self.output), 1)
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux pipe-capacity fixture")
     def test_blocked_presentation_pipe_has_a_bounded_write_deadline(self):
         read, write = os.pipe()
         try:
@@ -225,6 +238,7 @@ class ProtocolTests(unittest.TestCase):
             os.close(write)
 
 
+@unittest.skipUnless(sys.platform == "linux", "Private auth host is Linux-only")
 class ProcessTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

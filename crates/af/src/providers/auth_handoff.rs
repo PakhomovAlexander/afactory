@@ -62,6 +62,11 @@ enum State {
     PrivateRouteUnavailable,
     Unsupported,
     AuthenticationFailed,
+    AuthenticationInvalidTokenResponse,
+    AuthenticationProxyConfigurationFailed,
+    AuthenticationTlsConfigurationFailed,
+    AuthenticationRejected,
+    AuthenticationTransportFailed,
     InvalidChallenge,
     InvalidResponse,
     ContextChanged,
@@ -81,6 +86,11 @@ impl State {
             Self::AuthenticatedUnverified | Self::CancellationRequested => EXIT_OK,
             Self::RegistryConflict => EXIT_REGISTRY_CONFLICT,
             Self::AuthenticationFailed
+            | Self::AuthenticationInvalidTokenResponse
+            | Self::AuthenticationProxyConfigurationFailed
+            | Self::AuthenticationTlsConfigurationFailed
+            | Self::AuthenticationRejected
+            | Self::AuthenticationTransportFailed
             | Self::InvalidChallenge
             | Self::InvalidResponse
             | Self::ContextChanged => EXIT_AUTHENTICATION_FAILED,
@@ -856,6 +866,19 @@ fn native_failure(failure: adapter::Failure) -> State {
             State::InvalidChallenge
         }
         adapter::Failure::Failed => State::AuthenticationFailed,
+        adapter::Failure::Authentication(failure) => match failure {
+            guard::AuthenticationFailure::InvalidTokenResponse => {
+                State::AuthenticationInvalidTokenResponse
+            }
+            guard::AuthenticationFailure::ProxyConfiguration => {
+                State::AuthenticationProxyConfigurationFailed
+            }
+            guard::AuthenticationFailure::TlsConfiguration => {
+                State::AuthenticationTlsConfigurationFailed
+            }
+            guard::AuthenticationFailure::Rejected => State::AuthenticationRejected,
+            guard::AuthenticationFailure::Transport => State::AuthenticationTransportFailed,
+        },
     }
 }
 

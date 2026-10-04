@@ -1,6 +1,6 @@
 //! Private host lifecycle tests. All challenges and CLI processes are deterministic fixtures.
 #![cfg(target_os = "linux")]
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio};
@@ -44,11 +44,17 @@ prompt=("\nWelcome to Codex [v\x1b[90m0.159.2\x1b[0m]\n"
     "   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n"
     "\n2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n   \x1b[94mAF-FAKE-SECRET\x1b[0m\n"
     "\n\x1b[90mContinue only if you started this login in Codex. If a website or another person gave you this code, cancel.\x1b[0m\n")
+def emit_diagnostic():
+    if (root/'stderr-fixture').exists():
+        sys.stderr.buffer.write((root/'stderr-fixture').read_bytes());sys.stderr.flush()
+if (root/'failure-before-prompt').exists():
+    emit_diagnostic();sys.exit(1)
 if (root/'empty-output').exists(): sys.exit(0)
 if (root/'invalid-prompt').exists(): prompt=prompt.replace('0.159.2','0.159.3')
 print(prompt,flush=True)
 while not (root/'complete').exists(): time.sleep(.01)
 if (root/'late-output').exists(): print('access_token=AF-FAKE-SECRET',flush=True)
+emit_diagnostic()
 if (root/'nonzero-exit').exists(): sys.exit(1)
 if not (root/'status-fails').exists(): (root/'ready').touch()
 print('Successfully logged in',file=sys.stderr)
@@ -323,6 +329,118 @@ fn codex_device_completion_requires_successful_native_exit_and_separate_status()
                 .join("config/af/providers.toml")
                 .exists()
         );
+        fixture.no_secrets(&output);
+    }
+}
+
+#[test]
+fn native_failure_categories_are_closed_secret_free_and_never_probe_or_register() {
+    for (diagnostic, expected) in [
+        (
+            "OAuth token response is invalid: access_token=AF-FAKE-SECRET",
+            "authentication_invalid_token_response",
+        ),
+        (
+            "Failed to configure outbound proxy selected for auth: AF-FAKE-SECRET",
+            "authentication_proxy_configuration_failed",
+        ),
+        (
+            "Failed to build HTTP client with explicit TLS configuration: AF-FAKE-SECRET",
+            "authentication_tls_configuration_failed",
+        ),
+        (
+            "token endpoint returned status 401 Unauthorized: access_token=AF-FAKE-SECRET",
+            "authentication_rejected",
+        ),
+        (
+            "error sending request for url (https://AF-FAKE-SECRET)",
+            "authentication_transport_failed",
+        ),
+        (
+            "unknown error access_token=AF-FAKE-SECRET",
+            "authentication_failed",
+        ),
+        (
+            "OAuth token response is invalid: AF-FAKE-SECRET\nerror sending request for url (AF-FAKE-SECRET)",
+            "authentication_failed",
+        ),
+    ] {
+        for before_prompt in [false, true] {
+            let fixture = Fixture::new();
+            fixture.mode(if before_prompt {
+                "failure-before-prompt"
+            } else {
+                "nonzero-exit"
+            });
+            std::fs::write(
+                fixture.root.path().join("auth/stderr-fixture"),
+                format!(
+                    "Error logging in with device code: device code exchange failed: {diagnostic}\n"
+                ),
+            )
+            .unwrap();
+            let (child, mut host) = fixture.begin();
+            let request = read(&mut host);
+            approve(&mut host, &request);
+            if !before_prompt {
+                assert_eq!(read(&mut host)["action"], "challenge");
+                send(&mut host, &response("delivered", &request));
+                fixture.complete();
+            }
+            let output = fixture.result(child);
+            assert_eq!(output.status.code(), Some(6));
+            let result = state(&output);
+            assert_eq!(result["state"], expected);
+            assert_eq!(result["exit_code"], 6);
+            assert_eq!(result["registered"], false);
+            assert_eq!(result["verified"], false);
+            assert_eq!(result["continuation"], "not_authorized_by_login");
+            assert!(!fixture.root.path().join("auth/status-probes").exists());
+            assert!(
+                !fixture
+                    .root
+                    .path()
+                    .join("config/af/providers.toml")
+                    .exists()
+            );
+            let mut host_tail = Vec::new();
+            host.reader.read_to_end(&mut host_tail).unwrap();
+            assert!(
+                host_tail.is_empty(),
+                "native failure bytes reached host pipe"
+            );
+            fixture.no_secrets(&output);
+            let status = fixture.command("status").output().unwrap();
+            assert_eq!(state(&status)["state"], expected);
+            assert_eq!(status.status.code(), Some(6));
+            fixture.no_secrets(&status);
+        }
+    }
+}
+
+#[test]
+fn truncated_and_oversized_native_stderr_remain_generic_without_echo() {
+    for diagnostic in [
+        "Error logging in with device code: OAuth token response is invalid: AF-FAKE-SECRET"
+            .to_string(),
+        format!(
+            "Error logging in with device code: OAuth token response is invalid: {}\n",
+            "AF-FAKE-SECRET".repeat(6000)
+        ),
+    ] {
+        let fixture = Fixture::new();
+        fixture.mode("nonzero-exit");
+        std::fs::write(fixture.root.path().join("auth/stderr-fixture"), diagnostic).unwrap();
+        let (child, mut host) = fixture.begin();
+        let request = read(&mut host);
+        approve(&mut host, &request);
+        assert_eq!(read(&mut host)["action"], "challenge");
+        send(&mut host, &response("delivered", &request));
+        fixture.complete();
+        let output = fixture.result(child);
+        assert_eq!(output.status.code(), Some(6));
+        assert_eq!(state(&output)["state"], "authentication_failed");
+        assert!(!fixture.root.path().join("auth/status-probes").exists());
         fixture.no_secrets(&output);
     }
 }

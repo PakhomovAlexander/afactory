@@ -240,6 +240,16 @@ The versioned status is [provider-auth-v1.json](../schemas/provider-auth-v1.json
 returns `cancellation_requested` until the owner observes it. Repeated cancellation of a finished
 matching session returns its final state. A stale recovery ID cannot cancel a replacement.
 
+Failed native Codex login also has closed, non-secret diagnostic states (all exit 6):
+`authentication_invalid_token_response`, `authentication_proxy_configuration_failed`,
+`authentication_tls_configuration_failed`, `authentication_rejected` and
+`authentication_transport_failed`. The lifetime guard drains bounded native stderr privately
+and recognizes only anchored, source-characterized error prefixes. It passes the category through
+reserved internal guard exit codes, never native text, response bodies, URLs or tokens. Unknown,
+conflicting and oversized errors remain `authentication_failed`; a category is evidence of the
+observed native failure class, not authorization to alter network/security settings or retry an
+OAuth exchange manually. No native exit value alone can manufacture successful authentication.
+
 A cancelled, expired, interrupted, unsupported or private-route-unavailable session is blocked,
 never authenticated. Restart starts a fresh official flow and requires a fresh host permission;
 af never restores a secret challenge from disk or trusts a stale PID. The live process and its
