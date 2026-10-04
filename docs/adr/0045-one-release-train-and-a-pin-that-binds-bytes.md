@@ -6,7 +6,9 @@ release checksums") and executes ADR-0043 (`.review/` is no longer read for new 
 Superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the 0.7.1 `af_version` lock
 shape, unsigned pre-0.8.0 releases, the 0.7.1 floor, the `.review/` to `.af/` conversion
 (`af onboard --migrate`), replay of `.review/` Campaigns, and §1's consumer fixtures (each built
-binary now onboards and plans a fresh repository instead).
+binary now onboards and plans a fresh repository instead). Extended by
+[ADR-0138](0138-the-repository-pins-its-newest-release.md): the train ends by pinning the
+published release in this repository's own lock.
 
 Release `v0.7.1` shipped `af self` and dispatch, but three things stayed manual or unbound: a
 release was a hand-edited version bump and a hand-pushed tag with no changelog, no signature, and
