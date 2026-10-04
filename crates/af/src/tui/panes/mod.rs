@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use super::keymap::Key;
-use super::paint::{Paint, Span};
+use super::paint::{Paint, Span, Tone};
 use super::scope::Scope;
 use super::tree::Item;
 
@@ -34,6 +34,40 @@ impl Row {
 
     pub(crate) fn blank() -> Row {
         Row::default()
+    }
+
+    /// An error: `word` (`error`, `refused`, `warning`) as a `fail` chip, then the message in
+    /// bold.
+    pub(crate) fn error(word: &str, message: impl AsRef<str>) -> Row {
+        Row {
+            spans: vec![
+                Span::chip(word, Tone::Fail),
+                Span::new(" ", Paint::Plain),
+                Span::new(message, Paint::Error),
+            ],
+        }
+    }
+
+    /// An error of several lines: the first behind the chip, the rest aligned under it.
+    pub(crate) fn errors<S: AsRef<str>>(
+        word: &str,
+        lines: impl IntoIterator<Item = S>,
+    ) -> Vec<Row> {
+        let indent = " ".repeat(word.len() + 3);
+        let mut rows = Vec::new();
+        for line in lines {
+            if rows.is_empty() {
+                rows.push(Row::error(word, line));
+                continue;
+            }
+            rows.push(Row {
+                spans: vec![
+                    Span::new(&indent, Paint::Plain),
+                    Span::new(line, Paint::Error),
+                ],
+            });
+        }
+        rows
     }
 
     pub(crate) fn text(&self) -> String {

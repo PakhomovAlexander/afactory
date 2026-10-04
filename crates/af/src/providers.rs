@@ -464,7 +464,7 @@ fn credential_name(kind: &str, auth_type: &str) -> &'static str {
 }
 
 /// Status never claims a Provider is usable: only a charged `af provider doctor` can.
-fn usability_name(status: &str) -> &'static str {
+pub(crate) fn usability_name(status: &str) -> &'static str {
     match status {
         "authenticated" => "usable_or_untested",
         "not authenticated" | "unavailable" | INSTALLATION_FAILED => "unusable",

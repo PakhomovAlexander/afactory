@@ -1,4 +1,4 @@
-# ADR-0138: Deliver native login challenges to a verified private requester
+# ADR-0139: Deliver native login challenges to a verified private requester
 
 **Status:** accepted (2026-10-04). Partially supersedes
 [ADR-0137](0137-permit-provider-logins-through-private-host-capabilities.md)'s blanket exclusion

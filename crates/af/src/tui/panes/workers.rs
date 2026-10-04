@@ -24,7 +24,7 @@ use super::pipelines::{CATALOG, blobs, declared, differing, head, listed, pinned
 use super::tasks::{self, Cache, Invoked, Target};
 use super::{Pane, Row};
 use crate::task_execution;
-use crate::tui::paint::Paint;
+use crate::tui::paint::{Paint, Span, Tone};
 use crate::tui::scope::Scope;
 use crate::tui::tree::Item;
 
@@ -698,7 +698,7 @@ impl WorkersPane {
                 "the entries below are from the last successful read"
             };
             let error = format!("HEAD could not be read; {stale}: {error}");
-            rows.push(Row::painted(error, Paint::Error));
+            rows.push(Row::error("error", error));
             rows.push(Row::blank());
         }
         if self.root.is_none() {
@@ -731,12 +731,12 @@ impl WorkersPane {
     fn store_refusals(&self) -> Vec<Row> {
         let mut rows = Vec::new();
         if let Some(error) = &self.no_state {
-            rows.push(Row::painted(error, Paint::Error));
+            rows.push(Row::error("error", error));
         }
         for store in &self.stores {
             if let Err(error) = &store.tallies {
                 let refusal = format!("{}: this Store cannot be read: {error}", store.shown);
-                rows.push(Row::painted(refusal, Paint::Error));
+                rows.push(Row::error("error", refusal));
             }
         }
         rows
@@ -748,7 +748,7 @@ impl WorkersPane {
         if let Some(error) = &self.error {
             let error =
                 format!("HEAD could not be read; shown from the last successful read: {error}");
-            rows.push(Row::painted(error, Paint::Error));
+            rows.push(Row::error("error", error));
         }
         if !entry.drifted.is_empty() {
             let files: Vec<&str> = entry
@@ -846,12 +846,22 @@ impl WorkersPane {
     }
 }
 
-/// The STATE counts, tokens and wall of a Worker's Attempts.
+/// The STATE counts, tokens and wall of a Worker's Attempts. A count above zero of reserved,
+/// settled ok or settled failed Attempts is a chip in its tone.
 pub(crate) fn tally_rows(tally: &Tally) -> Vec<Row> {
-    let attempts = format!(
-        "attempts  reserved {}  settled ok {}  settled failed {}  released {}",
-        tally.open, tally.ok, tally.failed, tally.released
-    );
+    let count = |word: &str, count: u64, tone| match count {
+        0 => Span::new(format!(" {word} 0 "), Paint::Plain),
+        count => Span::chip(&format!("{word} {count}"), tone),
+    };
+    let attempts = Row {
+        spans: vec![
+            Span::new("attempts ", Paint::Plain),
+            count("reserved", tally.open, Tone::Active),
+            count("settled ok", tally.ok, Tone::Ok),
+            count("settled failed", tally.failed, Tone::Fail),
+            Span::new(format!(" released {}", tally.released), Paint::Plain),
+        ],
+    };
     let wall = match tally.walls {
         0 => "wall      -  (no Attempt recorded a wall)".to_owned(),
         walls => format!(
@@ -861,7 +871,7 @@ pub(crate) fn tally_rows(tally: &Tally) -> Vec<Row> {
         ),
     };
     vec![
-        Row::plain(attempts),
+        attempts,
         Row::plain(format!("tokens    charged {}", tally.tokens)),
         Row::plain(wall),
     ]
@@ -1014,6 +1024,7 @@ impl Pane for WorkersPane {
                 format!("{} *", entry.label)
             },
             muted: !entry.drifted.is_empty() || self.error.is_some(),
+            tone: None,
             children: None,
         };
         let mut groups = Vec::new();
@@ -1039,6 +1050,7 @@ impl Pane for WorkersPane {
                     id: source.to_owned(),
                     label: format!("{folder} ({})", children.len()),
                     muted: false,
+                    tone: None,
                     children: Some(children),
                 }
             })

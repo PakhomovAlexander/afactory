@@ -6,7 +6,7 @@
 - Include a runnable, consent-bound personal-chat host for validated one-time browser challenges,
   native Codex headless device login and Claude 2.1.289's exact unterminated prompt; reusable
   credentials remain native and ordinary af status stays challenge-free
-  ([ADR-0138](docs/adr/0138-deliver-native-login-challenges-to-a-verified-private-requester.md)).
+  ([ADR-0139](docs/adr/0139-deliver-native-login-challenges-to-a-verified-private-requester.md)).
 - Preserve native authentication failure categories alongside usage diagnostics and suppress
   credential-bearing failed output before ordinary capture, retaining exact parsed usage.
 - Classify native login failures into closed response/proxy/TLS/rejection/transport states while

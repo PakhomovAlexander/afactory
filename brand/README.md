@@ -185,24 +185,41 @@ regenerates them from its copies.
 ## The TUI
 
 The browser that opens on bare `af` (docs/design/tui.md) paints printable ASCII only and takes
-the terminal's own foreground and ground, so it looks native in any terminal theme. Colour is
-detected once, in `crates/af/src/tui/paint.rs`:
+the terminal's own foreground and ground, so it looks native in any terminal theme. It never
+colours text on that ground, because no colour chosen inside the program reads on every ground:
+pink text is 3.4:1 on a light terminal, green 1.5:1. Colour comes only as a fill with ink on it,
+where the contrast holds whatever the theme (ink on blue 6.4:1, on pink 4.9:1, on green
+12.7:1): the status line, the state chips and the mascot. Colour is detected once, in
+`crates/af/src/tui/paint.rs`:
 
-| `NO_COLOR` | `COLORTERM` | palette | status line | errors |
+| `NO_COLOR` | `COLORTERM` | palette | status line | chips: active, ok, fail |
 |---|---|---|---|---|
-| set | any | mono | reverse video | bold |
-| unset | anything else | ansi | reverse video | bold, the terminal's red |
-| unset | `truecolor` or `24bit` | true | ink on blue `38;2;15;15;15;48;2;81;149;245` | bold pink `1;38;2;238;54;106` |
+| set | any | mono | reverse video, bold too with an error | the word alone, fail in bold |
+| unset | anything else | ansi | reverse video; black on bright red with an error | black on the terminal's bright blue, green, bright red (`30;104`, `30;42`, `30;101`) |
+| unset | `truecolor` or `24bit` | true | ink on `blue`; ink on `pink` with an error | ink on `active-fill`, `ok-fill`, `fail-fill` |
 
-That is the whole use of colour: the status line is the blue actor (it names the mode and the
-selected node), an error is pink, and everything else is the terminal's text with bold for
-titles, dim for muted rows, reverse for the cursor row and underline for the unfocused cursor.
-Bars are `#` and `.`, folds are `v` and `>`, branches are `+--` and `'--`. Do not add green for
-success: the words "verified" and "ready" carry it, and a green that reads on the user's
-ground cannot be chosen from inside the program.
+A chip is a state word with a space either side, on its tone's fill. It takes the place of
+spaces the plain row already had, so a row's text is the same in every palette, and it keeps its
+fill on the cursor row. The tones are the triad's: blue for what is happening (a running Task
+or stage, reserved Attempts), green for what passed (a done Task, an `[ok]` stage, an
+`authenticated` Provider, Attempts settled ok), pink for what failed or needs a person (a failed
+Task or stage, a Task awaiting approval, a Provider that cannot be used, Attempts settled
+failed). Chips stand on the Task header's STATE word, the stage marks `[ok]` `[..]` `[!!]`, the
+progress that ends a Task's bar row (right-aligned, so the chips stand in one column), a
+Provider's STATUS, and the Workers pane's Attempt counts above zero. An error row starts with
+an `error` chip (`refused` for a refused preview, `warning` for a warning) and gives its message
+in bold. The status line is the blue actor (it names the mode and the selected node) and turns
+pink while it carries an error.
+
+Everything else is the terminal's text with bold for titles, dim for muted rows, reverse for
+the cursor row and underline for the unfocused cursor. Bars are `#` and `.` in the text colour,
+folds are `v` and `>`, branches are `+--` and `'--`. Nothing moves but a state change and the
+spinner of a read still running.
 
 For a banner in a terminal (a version screen, a help header) use `ascii.txt`: the 11×6 worker
-and the 5-row block wordmark. Never a figlet face.
+and the 5-row block wordmark. Never a figlet face. The TUI's help header puts the worker to the
+left of the name; under truecolor its `#` cells are pink on pink and its eyes ink, a solid pixel
+worker whose copied text is still the drawing.
 
 ## GitHub
 
@@ -231,4 +248,4 @@ and the 5-row block wordmark. Never a figlet face.
 - Use yellow, orange or purple anywhere; the palette has three hues and they are spoken for.
 - Put pink text on paper below 19px bold; use `pink-deep`.
 - Round a pixel asset.
-- Paint a ground in the TUI.
+- Colour text on the terminal's own ground in the TUI: colour there is a fill with ink on it.

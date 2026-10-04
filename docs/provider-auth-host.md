@@ -2,7 +2,7 @@
 
 This is the explicit host integration for browser-only Provider setup and reauthentication
 ([ADR-0137](adr/0137-permit-provider-logins-through-private-host-capabilities.md), refined by
-[ADR-0138](adr/0138-deliver-native-login-challenges-to-a-verified-private-requester.md)). It partially
+[ADR-0139](adr/0139-deliver-native-login-challenges-to-a-verified-private-requester.md)). It partially
 implements issue #122. It does not yet suspend, verify or continue an executing/terminal Task.
 
 ## Boundary and supported environments
@@ -17,7 +17,7 @@ may additionally require a one-time browser-returned code through the same priva
 human does not run shell commands, use SSH, inspect auth directories or paste passwords/tokens.
 The host owns machine-side actions and the original requester's identity.
 
-A host must have verified private delivery. ADR-0138 permits a narrow personal-chat route: the
+A host must have verified private delivery. ADR-0139 permits a narrow personal-chat route: the
 original requester explicitly approves the exact native login, and the coordinator delivers only
 the validated short-lived browser challenge in that requester's verified one-to-one conversation.
 The challenge and one-time response may be visible to the assistant and retained in that private

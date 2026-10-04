@@ -236,3 +236,36 @@ jobs:
           gh release create "$tag" "${flags[@]}" dist/*.tar.gz SHA256SUMS SHA256SUMS.minisig install.sh
           gh release edit "$tag" --draft=false
           echo "published $tag"
+
+  # The repository runs its newest release (ADR-0138): once published, pin it in .af/af.lock on
+  # main. The release PR cannot carry the pin, because the digests exist only once SHA256SUMS
+  # does. A push with this token starts no workflow; the next pull request's `make check` covers
+  # the commit, and fails if this job ever leaves the pin more than one release behind.
+  pin:
+    name: pin the release in .af/af.lock
+    needs: [resolve, publish]
+    if: needs.resolve.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to push the pin commit to main
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+      - name: Install the published release
+        shell: bash
+        env:
+          AF_INSTALL_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+          sh install.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Pin it on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          bash scripts/pin-release.sh "${{ needs.resolve.outputs.version }}" --push

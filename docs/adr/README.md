@@ -239,5 +239,6 @@ future readers need.
 - [0136 — Remove a registered Provider by ID](0136-remove-a-registered-provider-by-id.md)
 - [0137 — Permit Provider logins through private host
   capabilities](0137-permit-provider-logins-through-private-host-capabilities.md)
-- [0138 — Deliver native login challenges to a verified private
-  requester](0138-deliver-native-login-challenges-to-a-verified-private-requester.md)
+- [0138 — The repository pins its newest release](0138-the-repository-pins-its-newest-release.md)
+- [0139 — Deliver native login challenges to a verified private
+  requester](0139-deliver-native-login-challenges-to-a-verified-private-requester.md)

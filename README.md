@@ -196,7 +196,10 @@ workspace-wide. See [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull r
 `make release VERSION=1.0.0 COMPAT="…"` bumps the workspace version, writes the `CHANGELOG.md`
 section from the merged pull requests and their notes under `changelog.d/`, and opens the release
 pull request. Merging it tags the commit, runs `make check` on Linux
-and macOS, builds every target, signs `SHA256SUMS`, and publishes the release.
+and macOS, builds every target, signs `SHA256SUMS`, and publishes the release. The workflow then
+pins that release in this repository's own `.af/af.lock` on `main`, so `af` here always runs the
+newest release; `make check` fails if the pin falls behind
+([ADR-0138](docs/adr/0138-the-repository-pins-its-newest-release.md)).
 
 ## Security and licence
 
