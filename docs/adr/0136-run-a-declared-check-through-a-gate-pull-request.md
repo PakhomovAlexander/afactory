@@ -113,15 +113,21 @@ operator calls, with the candidate Snapshot, the phase deadline and the cancella
   ref component is `remote_ref_invalid`. `git ls-remote` decides: a base with another commit is
   `remote_ref_conflict`; a present head is fetched and verified down to this Task's base — every
   commit with exactly one parent, the fixed identity and this Task's and owner's head message —
-  before anything is pushed. A head whose tip has the candidate tree is attached; otherwise one
-  child commit is pushed as a fast-forward. Every push is one `git push --atomic --porcelain
+  before anything is pushed. A gate-shaped message is not lineage, so every head commit must
+  also name a Snapshot this Task's Store holds and carry exactly that Snapshot's tree; a commit
+  someone appended under this Task's name is `remote_ref_conflict`. A tip that names the current
+  candidate Snapshot and has its tree is attached; otherwise one child commit is pushed as a
+  fast-forward. Every push is one `git push --atomic --porcelain
   --no-verify` of refspecs `<commit>:refs/heads/af-gate/<task-id>/{base,head}` built and checked
   by one function: never `--force`, never a `+` refspec, never another ref. A rejected push is
   `remote_push_refused`. A push stopped by the deadline or by cancellation proves nothing either
-  way, because the remote may have accepted the atomic update first: the two branches are read
-  back, and the push counts as landed when both are as pushed and as refused when both are as
-  found. When they cannot be read back the Attempt ends with a kernel error and no evidence, and
-  resume reconciles what it finds.
+  way, because the remote may have accepted the atomic update first. The two branches are read
+  back through one recovery call with its own 20-second bound, which runs although the phase's
+  deadline has passed or the Attempt is cancelled; it reads and never judges. Both as pushed is
+  a push that landed: the phase goes on when it has time, and otherwise the check is recorded
+  `published` with the deadline or cancellation reason, for resume to attach. Both as found is
+  a refusal. When they cannot be read back the Attempt ends with a kernel error and no
+  evidence, and resume reconciles what it finds.
 - The pull request from head to base is looked up in every state. An open one is attached; when
   none exists one is opened as a draft titled `af gate: <task-id>` with a fixed body saying it is
   not for review or merge. A closed one is never replaced by a second: the check is
@@ -131,7 +137,9 @@ operator calls, with the candidate Snapshot, the phase deadline and the cancella
   keeps those of the declared workflow path that list this pull request, and reads the jobs of
   each kept run's latest attempt only. No kept run 10 minutes after the push is
   `remote_check_missing`; two kept runs, or a job name twice, is `remote_check_ambiguous`; a
-  completed run without a required job is `remote_check_missing`.
+  completed run without a required job is `remote_check_missing`. A run or job listing that ten
+  pages of 100 do not exhaust proves nothing unique: nothing is judged from it, and the check
+  ends at the deadline with that diagnostic.
 - Before any check is judged, the pull request and `refs/pull/<n>/merge` are read back: open,
   joining exactly the two gate branches of this repository, at the pushed head and base, and a
   merge commit whose parents are that base and head and whose tree is the candidate tree. The

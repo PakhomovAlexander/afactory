@@ -498,7 +498,13 @@ fn as_af(directory: &Path, args: &[&str]) -> String {
 
 #[test]
 fn a_head_branch_this_task_did_not_make_is_refused_and_nothing_is_pushed() {
-    for variant in ["another base", "merge commit", "foreign message"] {
+    for variant in [
+        "another base",
+        "merge commit",
+        "foreign message",
+        "foreign snapshot",
+        "another tree than its snapshot",
+    ] {
         let setup = setup();
         setup.passing();
         let candidate = setup.snapshots.candidate(&setup.cas, "version 2\n");
@@ -532,10 +538,25 @@ fn a_head_branch_this_task_did_not_make_is_refused_and_nothing_is_pushed() {
                     &message,
                 ],
             ),
-            _ => as_af(
+            "foreign message" => as_af(
                 bare,
                 &["commit-tree", &tree, "-p", &base, "-m", "fix the build"],
             ),
+            // Gate-shaped in every respect — identity, Task, owner, even the candidate tree —
+            // but naming a Snapshot this Task's Store never held.
+            "foreign snapshot" => {
+                let foreign = message.replace(
+                    &format!("Af-Snapshot: {}", candidate.0),
+                    &format!("Af-Snapshot: sha256:{}", "7".repeat(64)),
+                );
+                assert_ne!(foreign, message);
+                as_af(bare, &["commit-tree", &tree, "-p", &head, "-m", &foreign])
+            }
+            // This Task's own head message, on a tree that is not that Snapshot's.
+            _ => {
+                let other = git(bare, &["rev-parse", &format!("{base}^{{tree}}")]);
+                as_af(bare, &["commit-tree", &other, "-p", &head, "-m", &message])
+            }
         };
         git(
             bare,
@@ -844,7 +865,7 @@ fn a_merge_proof_is_read_again_for_every_batch_of_checks() {
 }
 
 #[test]
-fn an_interrupted_push_that_landed_is_never_recorded_as_refused() {
+fn an_interrupted_push_that_landed_is_recorded_as_published_and_resume_attaches() {
     let setup = setup();
     setup.passing();
     // The remote accepts the atomic update and only then stalls: the client is stopped by the
@@ -870,18 +891,70 @@ fn an_interrupted_push_that_landed_is_never_recorded_as_refused() {
         setup.remote.branch("base").is_some() && setup.remote.branch("head").is_some(),
         "the push landed before the client was stopped"
     );
-    // No evidence claims `refused`: the Attempt ends without a publication claim and resume
-    // reconciles the branches it finds.
-    let error = result.expect_err("an interrupted push is not a recorded refusal");
-    assert!(
-        error.contains("interrupted") && error.contains("resume"),
-        "{error}"
+    // The recovery read-back saw both branches as pushed, so the record says `published`,
+    // never `refused`; nothing was judged after the deadline.
+    let outcomes = result.unwrap();
+    expect(
+        &outcomes[0],
+        RemoteCheckStateV1::Published,
+        Some(RemoteCheckReasonV1::DeadlineExpired),
     );
-    assert!(!error.contains(&setup.remote.push_url()), "{error}");
+    assert_eq!(
+        outcomes[0].evidence.head_commit,
+        setup.remote.branch("head")
+    );
+    assert_eq!(outcomes[0].evidence.pull_request, None);
+    let message = outcomes[0].message.clone().unwrap();
+    assert!(
+        message.contains("the push landed") && message.contains("resume"),
+        "{message}"
+    );
+    assert_eq!(
+        setup.remote.pulls_created(),
+        0,
+        "nothing ran after the deadline"
+    );
     std::fs::remove_file(&hook).unwrap();
     let resumed = setup.run(&setup.snapshots.candidate(&setup.cas, "version 2\n"), OWNER);
     expect(&resumed, RemoteCheckStateV1::Observed, None);
     assert_eq!(setup.remote.pulls_created(), 1);
+}
+
+#[test]
+fn a_listing_the_page_limit_does_not_exhaust_judges_nothing() {
+    let setup = setup();
+    setup.passing();
+    // The remote claims far more runs than ten pages hold: a second run of the workflow could
+    // sit beyond them, so the one that was read is not known to be the only one.
+    let runs = std::fs::read_to_string(
+        workspace_root().join("fixtures/remote-checks/github/runs-pull-request.json"),
+    )
+    .unwrap()
+    .replace("\"total_count\": 1", "\"total_count\": 1001");
+    assert!(runs.contains("1001"));
+    setup.remote.replace("runs.json", runs.as_bytes());
+    let outcomes = phase(
+        &setup.cas,
+        &setup.remote,
+        &setup.snapshots,
+        &setup.snapshots.candidate(&setup.cas, "version 2\n"),
+        OWNER,
+        TASK,
+        &[kernel_request(CI)],
+        Duration::from_secs(8),
+        None,
+    )
+    .unwrap();
+    expect(
+        &outcomes[0],
+        RemoteCheckStateV1::Published,
+        Some(RemoteCheckReasonV1::DeadlineExpired),
+    );
+    let diagnostic = outcomes[0].evidence.diagnostic.clone().unwrap();
+    assert!(
+        diagnostic.contains("more than 1000 workflow runs"),
+        "{diagnostic}"
+    );
 }
 
 #[test]

@@ -77,6 +77,8 @@ it ready, merges, closes or comments on it. Close it and delete its two af-gate 
 Task no longer needs them.";
 const WAIT_SLICE: Duration = Duration::from_millis(50);
 const MAX_PAGES: u32 = 10;
+/// The bound of the one read-back that follows an interrupted push.
+const PUSH_RECOVERY: Duration = Duration::from_secs(20);
 /// The tail kept of one unsuccessful job's log.
 pub const MAX_JOB_LOG_BYTES: usize = 256 * 1024;
 /// The log excerpt kept for one check, across its unsuccessful jobs.
@@ -321,14 +323,14 @@ pub fn run(
                 ));
             }
         };
-        let tip_commit = match repository.verify_chain(
+        let chain = match repository.verify_chain(
             &tools,
             &tip,
             &base_commit,
             phase.task_id,
             phase.owner,
         ) {
-            Ok(Ok(commit)) => commit,
+            Ok(Ok(chain)) => chain,
             Ok(Err(why)) => {
                 return Ok(refuse_all(
                     RemoteCheckReasonV1::RemoteRefConflict,
@@ -346,7 +348,54 @@ pub fn run(
                 return Err(kernel("reading the head gate branch", Ok(error)));
             }
         };
-        if tip_commit.tree == candidate_tree {
+        // A gate-shaped message is not lineage. Every head commit must name a Snapshot this
+        // Task's Store holds and carry exactly that Snapshot's tree, so a commit someone else
+        // appended under this Task's name is refused, whatever tree it has.
+        let mut named = Vec::new();
+        for commit in &chain {
+            match review_source_git::task::read_snapshot(phase.cas, &commit.snapshot) {
+                Ok((_, manifest)) => named.push(manifest),
+                Err(_) => {
+                    return Ok(refuse_all(
+                        RemoteCheckReasonV1::RemoteRefConflict,
+                        format!(
+                            "commit {} on branch `{head_branch}` names a Snapshot this Task's \
+                             Store does not hold; {delete_hint}",
+                            commit.id
+                        ),
+                        None,
+                    ));
+                }
+            }
+        }
+        let trees =
+            match repository.write_trees(&tools, phase.cas, &named.iter().collect::<Vec<_>>()) {
+                Ok(trees) => trees,
+                Err(Ok(error)) if interrupted(&error).is_some() => {
+                    return Ok(interrupted(&error).unwrap_or_default());
+                }
+                Err(error) => {
+                    return Err(kernel("writing the head branch's Snapshot trees", error));
+                }
+            };
+        if let Some((commit, _)) = chain
+            .iter()
+            .zip(&trees)
+            .find(|(commit, tree)| commit.tree != **tree)
+        {
+            return Ok(refuse_all(
+                RemoteCheckReasonV1::RemoteRefConflict,
+                format!(
+                    "commit {} on branch `{head_branch}` does not carry the tree of the Snapshot \
+                     it names; {delete_hint}",
+                    commit.id
+                ),
+                None,
+            ));
+        }
+        // Only a tip made for this very candidate is attached to.
+        let tip_commit = &chain[0];
+        if tip_commit.tree == candidate_tree && tip_commit.snapshot == phase.candidate_id {
             tip
         } else {
             let commit = match repository.commit(&tools, &candidate_tree, Some(&tip), &head_message)
@@ -372,24 +421,63 @@ pub fn run(
         refspecs.push(push_refspec(&commit, &head_ref, phase.task_id)?);
         commit
     };
+    let published = Published {
+        base: &base,
+        base_commit: &base_commit,
+        head_commit: &head_commit,
+        tree: &candidate_tree,
+    };
     let mut pushed_at = Instant::now();
     if !refspecs.is_empty() {
         let pushed = match repository.push(&tools, url, &refspecs) {
             // The remote may have accepted the atomic update before the client was stopped, so
-            // an interrupted push proves nothing either way. Read the two branches back: both
-            // as pushed is a push that landed, both as found is one that did not, and anything
-            // unreadable ends the Attempt without a claim, for resume to reconcile.
+            // an interrupted push proves nothing either way. Read the two branches back through
+            // a recovery call with its own short bound, which runs although the phase's
+            // deadline has passed or the Attempt is cancelled; it reads, it never judges.
             Err(error @ (ToolError::TimedOut | ToolError::Cancelled)) => {
-                match repository.ls_remote(&tools, url, &[&base_ref, &head_ref]) {
+                let recovery = Tools {
+                    path: settings.path.as_deref(),
+                    deadline: Instant::now() + PUSH_RECOVERY,
+                    cancellation: None,
+                    redactor: &redactor,
+                };
+                match repository.ls_remote(&recovery, url, &[&base_ref, &head_ref]) {
+                    // Both branches are as pushed: the push landed. With time left the phase
+                    // goes on; otherwise the branches are recorded as published, never refused.
                     Ok(now)
                         if now.get(&base_ref) == Some(&base_commit)
                             && now.get(&head_ref) == Some(&head_commit) =>
                     {
+                        if tools.cancelled() || tools.remaining().is_zero() {
+                            let (reason, message) = match error {
+                                ToolError::Cancelled => (
+                                    RemoteCheckReasonV1::Cancelled,
+                                    "the Attempt was cancelled as the gate branches were pushed; \
+                                     the push landed: resume the Task to attach to them",
+                                ),
+                                _ => (
+                                    RemoteCheckReasonV1::DeadlineExpired,
+                                    "the remote phase ran out of time (check_process_wall_ms or \
+                                     the check Attempt's deadline) as the gate branches were \
+                                     pushed; the push landed: resume the Task to attach to them, \
+                                     or raise the limit",
+                                ),
+                            };
+                            return Ok(phase
+                                .checks
+                                .iter()
+                                .map(|check| {
+                                    published.outcome(check, reason, message.into(), None, None)
+                                })
+                                .collect());
+                        }
                         Ok(())
                     }
+                    // Both branches are as found before the push: nothing landed.
                     Ok(now) if now == found => {
                         return Ok(interrupted(&error).unwrap_or_default());
                     }
+                    // Unreadable, or half of an update that is atomic: no claim is recorded.
                     _ => {
                         return Err(format!(
                             "the push of the gate branches `{base_branch}` and `{head_branch}` \
@@ -418,12 +506,6 @@ pub fn run(
         pushed_at = Instant::now();
     }
 
-    let published = Published {
-        base: &base,
-        base_commit: &base_commit,
-        head_commit: &head_commit,
-        tree: &candidate_tree,
-    };
     let github = phase.target.github.as_str();
     let api = Api {
         tools: &tools,
@@ -1216,6 +1298,7 @@ impl Api<'_> {
 
     fn runs(&self, head_commit: &str) -> Result<Vec<Run>, ToolError> {
         let mut runs = Vec::new();
+        let mut seen = 0_u64;
         for page in 1..=MAX_PAGES {
             let value = self.call(&[&format!(
                 "repos/{}/actions/runs?event=pull_request&head_sha={head_commit}&per_page=100&page={page}",
@@ -1226,13 +1309,15 @@ impl Api<'_> {
                 .cloned()
                 .unwrap_or_default();
             let total = value["total_count"].as_u64().unwrap_or(0);
+            seen += listed.len() as u64;
             let empty = listed.is_empty();
             runs.extend(listed.iter().filter_map(parse_run));
-            if empty || runs.len() as u64 >= total {
-                break;
+            if empty || seen >= total {
+                return Ok(runs);
             }
         }
-        Ok(runs)
+        // A listing the page limit did not exhaust proves no run unique: nothing is judged.
+        Err(unexhausted("workflow runs"))
     }
 
     fn jobs(&self, run: u64, attempt: u64) -> Result<Vec<Job>, ToolError> {
@@ -1249,11 +1334,21 @@ impl Api<'_> {
             let empty = listed.is_empty();
             jobs.extend(listed.iter().filter_map(parse_job));
             if empty || seen >= total {
-                break;
+                return Ok(jobs);
             }
         }
-        Ok(jobs)
+        // As for runs: a job name is unique only in a listing read to its end.
+        Err(unexhausted("jobs"))
     }
+}
+
+/// The failure of a listing that still had entries after [`MAX_PAGES`] pages of 100.
+fn unexhausted(what: &str) -> ToolError {
+    ToolError::Failed(Some(format!(
+        "the remote lists more than {} {what}; af reads no further and judges nothing from a \
+         partial listing",
+        MAX_PAGES * 100
+    )))
 }
 
 fn encode(value: &str) -> String {

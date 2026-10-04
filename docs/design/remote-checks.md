@@ -208,14 +208,18 @@ itself when it has no parent).
      naming the candidate Snapshot; push it.
    - head present: fetch it and verify the whole chain before trusting it. Walking from its tip,
      every commit has exactly one parent and a gate-commit message, and the walk ends at exactly
-     this Task's base commit. Anything else is `remote_ref_conflict`. Then, if the tip's tree is
-     the candidate tree, attach and push nothing; otherwise the head commit is a child of that
-     tip with the candidate tree, pushed as a fast-forward. Each repair round is therefore one
+     this Task's base commit. Each of those commits must also name a Snapshot this Task's Store
+     holds and carry exactly that Snapshot's tree. Anything else is `remote_ref_conflict`. Then,
+     if the tip names the candidate Snapshot and has its tree, attach and push nothing;
+     otherwise the head commit is a child of that tip with the candidate tree, pushed as a
+     fast-forward. Each repair round is therefore one
      more commit on the same pull request.
    A rejected push is `remote_push_refused`. A push stopped by the deadline or by cancellation
-   proves nothing, because the remote may have accepted it first: read the two branches back,
-   count the push as landed when both are as pushed and as refused when both are as found, and
-   otherwise end the Attempt with a kernel error and no evidence, for resume to reconcile.
+   proves nothing, because the remote may have accepted it first: read the two branches back
+   through one recovery call with its own short bound, which may run after the deadline or the
+   cancellation and never judges. Both as pushed is a landed push (go on with time left,
+   otherwise record `published`); both as found is a refusal; unreadable ends the Attempt with a
+   kernel error and no evidence, for resume to reconcile.
 6. **Pull request.** Look up the pull request from head to base in `github`, in every state.
    Attach to an open one. When none exists, open one as a draft with a fixed title
    (`af gate: <task-id>`) and a fixed body saying it was opened by a machine to run declared
@@ -233,7 +237,7 @@ itself when it has no parent).
    (the workflow does not run for draft pull requests into `af-gate/**` bases). More than one
    kept run for one workflow is `remote_check_ambiguous`. A completed run whose latest attempt
    lacks a required job name is `remote_check_missing`; a job name appearing twice in it is
-   `remote_check_ambiguous`.
+   `remote_check_ambiguous`. A listing the reader's page limit does not exhaust judges nothing.
 8. **Prove what was tested.** Before any check is judged `Passed` or `Failed`, read the pull
    request and its merge ref from the remote and require: the pull request is open, in `github`,
    from this head branch to this base branch, with head SHA the head commit and base SHA the
@@ -496,5 +500,23 @@ The mapping, the evidence and the result contract are as designed, with one simp
 found while adding the logs: the excerpt is the result's `stdout` and the evidence has no field
 for it, since no decision reads a log.
 
-- RC1 verification: see below.
+**RC1 — verification.** Task `remote-checks-rc1-verify-6` (`kernel/verification-reviewed`), on
+commit f4b05be, 2026-10-05: **verified**. 319,025 tokens, 5 Attempts; gate passed (`kernel`
+500.4 s cold, `markdownlint` 12.4 s); the evaluator passed every deliverable and acceptance
+line. Five earlier attempts never reached a reviewer and cost about 8,000 tokens together: one
+failed on a test of the hand fixes that replaced a fixture copied with the gate tree's read-only
+mode (fixed in f4b05be), three on load-sensitive tests of other crates while other sessions
+loaded the machine (load 20 to 119; lease expiry and capture retries), and one died when the
+machine slept.
+
+The two reviewers left three Findings on the verified tree, fixed by hand afterwards and not
+re-verified, as §5 allows one re-verification:
+
+| Finding | Disposition (after the verdict) |
+| --- | --- |
+| A gate-shaped commit naming another Snapshot could be adopted (correctness, blocker) | Every head commit must name a Snapshot of this Task's Store and carry its tree; only a tip naming the current candidate is attached. Two forged variants are tested. |
+| The read-back after an interrupted push could never run (bugs, major) | The read-back is one recovery call with its own 20-second bound; a landed push is recorded `published`. The test now expects that record and a successful resume. |
+| A listing cut at ten pages could still pass (correctness, major) | An unexhausted run or job listing is an error for that poll: nothing is judged from it. |
+
+Cost of RC1: 963,291 tokens to implement, 327,000 to verify, 162,258 for the design review.
 - RC2: not started.

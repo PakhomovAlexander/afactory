@@ -178,6 +178,15 @@ pub(super) struct RawCommit {
     pub message: String,
 }
 
+/// One verified commit of a head branch: its identity, its tree and the Snapshot its message
+/// names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ChainCommit {
+    pub id: String,
+    pub tree: String,
+    pub snapshot: String,
+}
+
 /// Which gate commit a message names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum GateRole {
@@ -343,6 +352,10 @@ impl GateRepository {
         cas: &Cas,
         manifests: &[&Manifest],
     ) -> Result<Vec<String>, Result<ToolError, String>> {
+        // Each call writes its own scratch refs: the trees of a second call do not descend from
+        // those of the first, and `git fast-import` will not move a ref sideways.
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let call = CALLS.fetch_add(1, Ordering::Relaxed);
         let mut marks: BTreeMap<&str, usize> = BTreeMap::new();
         let mut stream = Vec::new();
         for manifest in manifests {
@@ -364,8 +377,10 @@ impl GateRepository {
         }
         for (index, manifest) in manifests.iter().enumerate() {
             stream.extend_from_slice(
-                format!("commit refs/af/scratch/{index}\ncommitter {GATE_IDENTITY}\ndata 0\n")
-                    .as_bytes(),
+                format!(
+                    "commit refs/af/scratch/{call}-{index}\ncommitter {GATE_IDENTITY}\ndata 0\n"
+                )
+                .as_bytes(),
             );
             for entry in &manifest.entries {
                 stream.extend_from_slice(
@@ -411,7 +426,10 @@ impl GateRepository {
             let tree = self
                 .text(
                     tools,
-                    &["rev-parse", &format!("refs/af/scratch/{index}^{{tree}}")],
+                    &[
+                        "rev-parse",
+                        &format!("refs/af/scratch/{call}-{index}^{{tree}}"),
+                    ],
                     None,
                     &[],
                 )
@@ -635,7 +653,9 @@ impl GateRepository {
     }
 
     /// Walk `tip` down to `base`: every commit has exactly one parent, the fixed identity and a
-    /// head gate message of this Task and owner, and the walk ends at exactly `base`.
+    /// head gate message of this Task and owner, and the walk ends at exactly `base`. Returns
+    /// the head commits, tip first, each with the Snapshot its message names; the caller binds
+    /// every tree to that Snapshot.
     pub(super) fn verify_chain(
         &self,
         tools: &Tools<'_>,
@@ -643,9 +663,9 @@ impl GateRepository {
         base: &str,
         task_id: &str,
         owner: &str,
-    ) -> Result<Result<RawCommit, String>, ToolError> {
+    ) -> Result<Result<Vec<ChainCommit>, String>, ToolError> {
         let mut current = tip.to_owned();
-        let mut first = None;
+        let mut chain = Vec::new();
         for _ in 0..MAX_CHAIN {
             if current == base {
                 return Ok(Err(
@@ -667,20 +687,26 @@ impl GateRepository {
                     "commit {current} on the head branch was not made by af"
                 )));
             }
-            match parse_gate_message(&commit.message) {
-                Some((GateRole::Head, task, found, _)) if task == task_id && found == owner => {}
+            let snapshot = match parse_gate_message(&commit.message) {
+                Some((GateRole::Head, task, found, snapshot))
+                    if task == task_id && found == owner =>
+                {
+                    snapshot
+                }
                 _ => {
                     return Ok(Err(format!(
                         "commit {current} on the head branch has a message this Task did not write"
                     )));
                 }
-            }
+            };
             let parent = parent.clone();
-            if first.is_none() {
-                first = Some(commit);
-            }
+            chain.push(ChainCommit {
+                id: current.clone(),
+                tree: commit.tree,
+                snapshot,
+            });
             if parent == base {
-                return Ok(Ok(first.unwrap_or_else(|| unreachable!())));
+                return Ok(Ok(chain));
             }
             current = parent;
         }
