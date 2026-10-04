@@ -237,3 +237,5 @@ future readers need.
 - [0135 — Collect finished Tasks behind a tombstone and a reachability
   sweep](0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
 - [0136 — Remove a registered Provider by ID](0136-remove-a-registered-provider-by-id.md)
+- [0137 — Permit Provider logins through private host
+  capabilities](0137-permit-provider-logins-through-private-host-capabilities.md)

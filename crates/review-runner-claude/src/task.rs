@@ -1,5 +1,6 @@
 //! Claude framing for generic typed Task Workers. No review-result parser or retry loop.
 use super::*;
+use review_runner::native_failure::{NativeFailureKind, classify_native_failure};
 use review_runner::task::{ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter};
 
 mod model_usage;
@@ -154,8 +155,46 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         for (name, value) in environment {
             runner = runner.with_env(name, value);
         }
-        let capture = runner.capture(cas, &command, input, cancellation);
-        let parsed = serde_json::from_slice::<serde_json::Value>(&capture.stdout).ok();
+        let mut parsed = None;
+        let mut failure = None;
+        let capture = runner.capture_filtered(
+            cas,
+            &command,
+            input,
+            cancellation,
+            |failed, stdout, stderr| {
+                // Keep the original in-memory usage envelope, but never capture an auth
+                // challenge or token-bearing error as ordinary Task evidence.
+                parsed = serde_json::from_slice::<serde_json::Value>(stdout).ok();
+                let native_failed = parsed.as_ref().is_some_and(|value| {
+                    value.get("is_error").and_then(serde_json::Value::as_bool) == Some(true)
+                });
+                if failed || native_failed {
+                    let kind = parsed
+                        .as_ref()
+                        .filter(|_| native_failed)
+                        .map(native_failure)
+                        .unwrap_or(NativeFailureKind::Unknown);
+                    let candidates = [
+                        kind,
+                        classify_native_failure(&String::from_utf8_lossy(stderr)),
+                        classify_native_failure(&String::from_utf8_lossy(stdout)),
+                    ];
+                    failure = candidates
+                        .iter()
+                        .copied()
+                        .find(|kind| kind.is_auth())
+                        .or_else(|| {
+                            candidates
+                                .into_iter()
+                                .find(|kind| *kind != NativeFailureKind::Unknown)
+                        });
+                    failure
+                        .unwrap_or(NativeFailureKind::Unknown)
+                        .redact_auth_capture(stdout, stderr);
+                }
+            },
+        );
         let accounting = model_usage::account(parsed.as_ref(), &self.model);
         let success = accounting.error.is_none()
             && accounting.observation.is_none()
@@ -168,6 +207,19 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 parsed.as_ref().expect("successful envelope"),
                 output_schema.is_some(),
             )
+        } else if let Some(kind) = failure.filter(|kind| *kind != NativeFailureKind::Unknown) {
+            let mut error = format!(
+                "Claude Worker failed: {}; transport: {:?}",
+                kind.diagnostic(),
+                capture.status
+            );
+            if let Some(accounting_error) = accounting.error {
+                error.push_str("; ");
+                error.push_str(accounting_error);
+            } else if accounting.observation.is_some() {
+                error.push_str("; Claude native usage is absent or malformed");
+            }
+            Err(error)
         } else if let Some(error) = accounting.error {
             Err(error.into())
         } else {
@@ -185,6 +237,33 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             Err(Unstarted(Box::new(returned)))
         }
     }
+}
+
+fn native_failure(value: &serde_json::Value) -> NativeFailureKind {
+    let mut messages = Vec::new();
+    for key in ["errors", "error", "result", "message"] {
+        let Some(value) = value.get(key) else {
+            continue;
+        };
+        if let Some(message) = value.as_str() {
+            messages.push(message);
+        } else if let Some(values) = value.as_array() {
+            messages.extend(values.iter().filter_map(serde_json::Value::as_str));
+        } else if let Some(message) = value.get("message").and_then(serde_json::Value::as_str) {
+            messages.push(message);
+        }
+    }
+    let kinds: Vec<_> = messages.into_iter().map(classify_native_failure).collect();
+    kinds
+        .iter()
+        .copied()
+        .find(|kind| kind.is_auth())
+        .or_else(|| {
+            kinds
+                .into_iter()
+                .find(|kind| *kind != NativeFailureKind::Unknown)
+        })
+        .unwrap_or(NativeFailureKind::Unknown)
 }
 
 fn parse_usage(

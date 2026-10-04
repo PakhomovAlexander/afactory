@@ -1105,9 +1105,10 @@ Required Gate commands (declared as literal trusted argv; onboarding does not ex
 
 1. Run `af onboard` at the trusted base checkout. It validates the graph and every exact digest.
 2. Run `af provider status`; choose the machine-local Provider ID for each Worker without writing
-   a token into this repository. A Provider that is not authenticated needs a human at a private
-   terminal: `af provider setup` exits 3 and prints the exact `--login` command rather than
-   starting an OAuth exchange an agent could read.
+   a token into this repository. For missing or broken auth, an explicitly authorized private
+   host can use `af provider auth` (see docs/provider-auth-host.md) and send the requesting human
+   only the official browser handoff. Generic `af provider setup --login` remains terminal-only.
+   Login completion is unverified: do not claim paid admission or Task resumption from status.
 3. Fetch the pull request with the normal repository tooling, create a disposable worktree at its
    head, and identify the trusted base revision.
 4. From that worktree run:

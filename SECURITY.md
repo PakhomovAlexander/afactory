@@ -42,6 +42,19 @@ reviewer CLI as *paths*. Those granted path values are redacted from captured st
 stderr before anything is stored. That redaction covers the granted paths only — it does not
 recognise arbitrary token contents, and it is not a substitute for the environment isolation.
 
+**Private-host login is an explicit capability.** On Linux, `af provider auth` consumes two
+validated anonymous pipes separate from ordinary streams, binds one action-time host permission
+to a Provider/context/requester and deadline, and keeps challenge/code material only in private
+bounded memory. A separate lifetime guard retains the native auth-context lock until its login
+process group is stopped, including when the coordinating af process dies. Durable recovery
+state contains no challenges or account identities. The host is responsible for authenticating
+the requesting human and private delivery; same-user host compromise is outside this boundary.
+Generic `setup --login` remains terminal-only. See [the host contract](docs/provider-auth-host.md).
+
+Recognized authentication failures and obvious credential-bearing failed native output are
+replaced with a closed summary before capture; exact parsed usage remains separate. This is a
+bounded auth-error policy, not a promise to identify every secret in arbitrary successful output.
+
 **Git never runs your hooks or your config.** Snapshot capture invokes `git` with
 `env_clear()`, `core.hooksPath=/dev/null`, `core.fsmonitor=false`, and
 `GIT_CONFIG_GLOBAL=/dev/null`, so a hostile checkout or a global config cannot execute code

@@ -76,7 +76,11 @@ the machine-local registry; credentials remain owned by that CLI. An already aut
 needs no login. Starting one is opt-in with `--login` and happens only at an interactive terminal,
 because the OAuth URL and authorization code it prints are credentials in transit that must never
 reach a pipe, chat, an agent transcript, or logs; without both, setup exits 3 and prints the exact
-command for a human to run ([ADR-0112](docs/adr/0112-refuse-agent-mediated-provider-logins.md)).
+command for a human to run ([ADR-0112](docs/adr/0112-refuse-agent-mediated-provider-logins.md)). An
+explicitly authorized Linux host can instead use the separately permissioned
+[private-host login protocol](docs/provider-auth-host.md) to let the user complete browser consent
+without terminal access. It reports `authenticated_unverified` and never implicitly calls a model
+or resumes a Task ([ADR-0137](docs/adr/0137-permit-provider-logins-through-private-host-capabilities.md)).
 Login starts from an empty allowlisted environment in an owned auth directory that is
 not writable by other users, and one canonical auth context admits only one setup/login at a time.
 `setup` is machine-local and therefore does not dispatch to a repository's older pinned `af`;

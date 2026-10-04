@@ -1,5 +1,6 @@
 //! Codex framing for generic typed Task Workers, preserving failed and malformed usage.
 use super::*;
+use review_runner::native_failure::{NativeFailureKind, classify_native_failure};
 use review_runner::task::{
     MAX_WORKER_BYTES, ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter,
 };
@@ -138,8 +139,41 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         for (name, value) in environment {
             runner = runner.with_env(name, value);
         }
-        let capture = runner.capture(cas, &command, input, cancellation);
-        let events = TaskEvents::parse(&capture.stdout);
+        let mut events = TaskEvents::default();
+        let mut failure = None;
+        let capture = runner.capture_filtered(
+            cas,
+            &command,
+            input,
+            cancellation,
+            |failed, stdout, stderr| {
+                // Parse the bill before privacy filtering removes an authentication envelope.
+                events = TaskEvents::parse(stdout);
+                if failed || events.upstream_failure.is_some() {
+                    let candidates = [
+                        events
+                            .upstream_failure
+                            .unwrap_or(NativeFailureKind::Unknown),
+                        classify_native_failure(&String::from_utf8_lossy(stderr)),
+                        classify_native_failure(&String::from_utf8_lossy(stdout)),
+                    ];
+                    // Any recognized auth error makes both streams sensitive, even if an
+                    // earlier error concerned another failure or stdout was not valid JSONL.
+                    failure = candidates
+                        .iter()
+                        .copied()
+                        .find(|kind| kind.is_auth())
+                        .or_else(|| {
+                            candidates
+                                .into_iter()
+                                .find(|kind| *kind != NativeFailureKind::Unknown)
+                        });
+                    failure
+                        .unwrap_or(NativeFailureKind::Unknown)
+                        .redact_auth_capture(stdout, stderr);
+                }
+            },
+        );
         let mut returned = ModelWorkerReturn {
             usage_observation: None,
             message: Err("Codex Worker framing failed".into()),
@@ -149,15 +183,27 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         returned.usage = events.reported_usage();
         returned.usage_observation = events.observation();
         if !capture.status.as_ref().is_ok_and(|status| status.success()) || events.error.is_some() {
-            returned.message = Err(if events.malformed_usage {
-                format!(
-                    "Codex Worker returned malformed native usage: {:?}",
-                    events.error
-                )
-            } else {
-                // Keep the historical valid-usage failure diagnostic and artifact identity.
-                format!("Codex Worker failed with {:?}", capture.status)
-            });
+            returned.message = Err(
+                if let Some(kind) = failure.filter(|kind| *kind != NativeFailureKind::Unknown) {
+                    let mut message = format!(
+                        "Codex Worker failed: {}; transport: {:?}",
+                        kind.diagnostic(),
+                        capture.status
+                    );
+                    if events.malformed_usage {
+                        message.push_str("; Codex Worker returned malformed native usage");
+                    }
+                    message
+                } else if events.malformed_usage {
+                    format!(
+                        "Codex Worker returned malformed native usage: {:?}",
+                        events.error
+                    )
+                } else {
+                    // Keep the historical valid-usage failure diagnostic and artifact identity.
+                    format!("Codex Worker failed with {:?}", capture.status)
+                },
+            );
             return if capture.started {
                 Ok(returned)
             } else {
@@ -206,6 +252,7 @@ fn read_final_message(directory: &rustix::fd::OwnedFd) -> Result<Option<Vec<u8>>
 struct TaskEvents {
     usage: review_core::task::usage::TaskTokenUsageV3,
     error: Option<String>,
+    upstream_failure: Option<NativeFailureKind>,
     incomplete_charge: bool,
     malformed_usage: bool,
 }
@@ -287,9 +334,17 @@ impl TaskEvents {
                         .get("message")
                         .or_else(|| value.get("error").and_then(|e| e.get("message")))
                         .and_then(|m| m.as_str());
-                    if let Some(message) = message {
-                        events.error = Some(message.to_string());
+                    let kind = message
+                        .map(classify_native_failure)
+                        .unwrap_or(NativeFailureKind::Unknown);
+                    // Preserve the upstream cause independently of later usage diagnostics.
+                    // No raw provider error becomes an ordinary diagnostic.
+                    if events.upstream_failure.is_none_or(|prior| {
+                        prior == NativeFailureKind::Unknown || !prior.is_auth() && kind.is_auth()
+                    }) {
+                        events.upstream_failure = Some(kind);
                     }
+                    events.error = Some(kind.diagnostic().into());
                 }
                 _ => {}
             }

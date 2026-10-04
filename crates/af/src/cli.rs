@@ -815,6 +815,19 @@ Exit codes: 0 removed, 1 an ID is not registered or the registry cannot be rewri
         #[arg(value_name = "ID", required = true, num_args = 1..)]
         ids: Vec<String>,
     },
+    /// Explicit, separately permissioned private-host login recovery (no model calls)
+    #[command(
+        long_about = "Recover one exact native Provider auth context through a trusted \
+private host pipe pair (Linux with /proc/self/fd). The host must approve this login and deliver its challenge privately \
+to the requesting human. OAuth material never appears in ordinary output. The owner process \
+remains running across agent turns; the host must keep it and its private channel alive. \
+Completion is authenticated_unverified, never proof of model usability or Task execution authority. \
+Generic provider setup --login remains terminal-only."
+    )]
+    Auth {
+        #[command(subcommand)]
+        command: ProviderAuthCommand,
+    },
     /// Validate and close an interrupted Provider registry publication
     #[command(
         long_about = "Validate and close an interrupted Provider registry publication.\n\n\
@@ -830,6 +843,46 @@ one fenced preflight operation and reports identity, model, and spend.",
         after_long_help = "Examples:\n  af provider doctor --provider correctness=claude-code"
     )]
     Doctor(RunArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ProviderAuthCommand {
+    /// Begin or reuse one login; a private host grant is required before the CLI starts
+    Begin {
+        id: String,
+        #[arg(long, value_enum)]
+        kind: ProviderKindArg,
+        /// Exact existing or new native auth directory; ambient credentials are never selected
+        #[arg(long, value_name = "DIR")]
+        auth_dir: PathBuf,
+        /// Dedicated inherited pipe from the trusted host; must be greater than 2
+        #[arg(long)]
+        host_read_fd: u32,
+        /// Dedicated inherited pipe to the trusted host; must be greater than 2
+        #[arg(long)]
+        host_write_fd: u32,
+        /// Host-owned login lifetime; not the provider's challenge expiry (30..900 seconds)
+        #[arg(long, default_value_t = 600)]
+        timeout_secs: u64,
+    },
+    /// Inspect closed non-secret state; interrupted owners never appear authenticated
+    Status {
+        id: String,
+        #[arg(long, value_enum)]
+        kind: ProviderKindArg,
+        #[arg(long, value_name = "DIR")]
+        auth_dir: PathBuf,
+    },
+    /// Cancel only the currently identified recovery session (idempotent)
+    Cancel {
+        id: String,
+        #[arg(long, value_enum)]
+        kind: ProviderKindArg,
+        #[arg(long, value_name = "DIR")]
+        auth_dir: PathBuf,
+        #[arg(long)]
+        recovery_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
