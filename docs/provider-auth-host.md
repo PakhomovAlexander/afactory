@@ -1,7 +1,8 @@
 # Private-host Provider authentication
 
 This is the explicit host integration for browser-only Provider setup and reauthentication
-([ADR-0137](adr/0137-permit-provider-logins-through-private-host-capabilities.md)). It partially
+([ADR-0137](adr/0137-permit-provider-logins-through-private-host-capabilities.md), refined by
+[ADR-0138](adr/0138-deliver-native-login-challenges-to-a-verified-private-requester.md)). It partially
 implements issue #122. It does not yet suspend, verify or continue an executing/terminal Task.
 
 ## Boundary and supported environments
@@ -16,14 +17,78 @@ may additionally require a one-time browser-returned code through the same priva
 human does not run shell commands, use SSH, inspect auth directories or paste passwords/tokens.
 The host owns machine-side actions and the original requester's identity.
 
-A host must have a separate sensitive/private delivery capability. Normal assistant transcripts,
-ordinary stdout/stderr, shared conversations, issue text, Task inputs, Worker context, CAS, logs
-and notes are not this capability. If no private route exists, stop with that narrow blocker.
-Never fall back to publishing an authorization link in a group.
+A host must have verified private delivery. ADR-0138 permits a narrow personal-chat route: the
+original requester explicitly approves the exact native login, and the coordinator delivers only
+the validated short-lived browser challenge in that requester's verified one-to-one conversation.
+The challenge and one-time response may be visible to the assistant and retained in that private
+conversation/tool transcript. This is not secret-free messaging. Shared conversations, ordinary
+logs, issue text, Task inputs, Worker context, CAS and notes remain excluded. If no private route
+exists, stop. Never publish a challenge into a group, or disclose passwords, reusable tokens,
+native credential files or account identities through this interface.
 
 Permission is scoped to one login session. It neither approves model inference nor grants new
 implementation, plan, publication or continuation authority. Do not run a paid doctor/admission
 implicitly. Status and login completion are not usability proof.
+
+## Concrete personal-chat host
+
+`scripts/provider-auth-host.py` is the executable presentation adapter (Linux, Python 3 standard
+library). It does not contact a messaging service itself. The coordinator supplies that real
+capability and owns human identity, action-time consent, destination and accepted-send receipts.
+It launches the command in a retained command session; the human needs only their browser:
+
+```
+python3 scripts/provider-auth-host.py codex-main --kind codex \
+  --auth-dir /private/codex --af /installed/af \
+  --requester-ref ORIGINAL_REQUESTER_64_HEX --coordinator-ref COORDINATOR_64_HEX \
+  --delivery verified-private-chat --timeout-secs 600
+```
+
+Use actual random 64-character lowercase hexadecimal handles mapped by the coordinator, not the
+illustrative placeholders, names or guessed platform IDs. The delivery flag is an explicit
+output-routing contract, not evidence of consent. Do not use a shared CI logger or save stdout
+to artifacts. This selected output intentionally presents short-lived challenge fields; native
+output and the internal af pipes remain separate. PTY input echo is disabled before any request.
+
+1. Verify the original requester's one-to-one destination and obtain specific action-time consent
+   for this Provider/native directory, disclosing persistent account access until revoked.
+2. Read the bridge's `schema: af/provider-auth-chat@1`, `action: request_permission` record. No
+   native login has started. Bind the real approval to the current context and send on stdin:
+
+   ```json
+   {"action":"approve","recovery_id":"EXACT_ID","requester_ref":"EXACT_HANDLE","context_id":"EXACT_CONTEXT","approval_ref":"ACTUAL_CONSENT_MESSAGE_ID"}
+   ```
+
+3. Receive one `action: challenge`. Send its exact validated URL and Codex code only to that
+   original requester. Identify the personal cloud CLI receiving access and preserve the warning:
+   continue only if they initiated this login; cancel if an unrelated site/person supplied it.
+   The user signs in and approves on the official provider page in their own browser.
+4. Only after an accepted private send, acknowledge the actual returned message reference:
+
+   ```json
+   {"action":"delivered","recovery_id":"EXACT_ID","requester_ref":"EXACT_HANDLE","delivery_ref":"ACTUAL_SENT_MESSAGE_ID"}
+   ```
+
+   A failed or uncertain send is not a receipt; cancel/expire without blind resend. The script
+   checks bounded reference syntax, not the messaging platform's truth. That is the coordinator's
+   responsibility. Printing a challenge does not automatically acknowledge delivery.
+5. Codex needs no response to the bridge. Claude may show one `CODE#STATE` browser response.
+   Accept it only from the same requester for this active session and send the `action: code`
+   frame below on stdin. The bridge checks the exact active state and never echoes the code.
+   Never request passwords, MFA, setup-token output or reusable access/refresh tokens.
+6. Report non-secret completion only after native completion. `setup_completed` and `result`
+   refer to one result, not separate notifications. Keep the command session running while
+   waiting; it survives turns, not VM restarts. Closing stdin cancels ownership. Send the existing
+   `action: cancel` frame after approval; before approval close stdin without granting permission.
+
+The bridge's URL parser is intentionally tied to the characterized native endpoints/client/scope
+set below. Codex pairing codes use a bounded uppercase/digit/hyphen presentation alphabet, without
+assuming a fixed provider code length. Unknown framing fails closed. Both inbound frames and
+outbound writes are bounded; a blocked private output has a one-second write timeout and cancels
+ownership rather than hanging indefinitely.
+
+This is a host for coordinators with actual private messaging, not a chatbot identity service.
+Credential-free checks run with `python3 scripts/test-provider-auth-host.py` and in `make check`.
 
 ## Launch and retain the owner
 
@@ -71,7 +136,8 @@ preserved through the lifetime guard, matching terminal login. API keys, Node/br
 display/session state and TLS-verification-disable overrides are not inherited. af does not change
 these settings or print their values.
 
-Do not redirect either private pipe to a logger or model transcript. A broker must keep the
+Do not redirect either private pipe raw to a logger or model transcript. The concrete bridge
+validates and presents only explicitly authorized fields. A broker must keep the
 process and pipes alive across agent turns, bound its own buffers, read while writing, and close
 them on cancellation. The owner consumes the inherited descriptors and keeps only close-on-exec
 duplicates; native CLI children cannot impersonate host responses. Duplicates of ordinary
@@ -117,8 +183,8 @@ login approval and private-delivery capability, and replies:
 
 These handles are not names, emails or channel IDs. The host retains their actual mappings
 privately. The expiry must be in the future and no later than af's host deadline. It is a local
-maximum lifetime, not the provider's advertised expiry. Codex's checked app-server login schema
-has no expiry field. No approval, wrong Provider/context, expired grant or non-private delivery
+maximum lifetime, not the provider's advertised expiry. Codex's native prompt announces 15-minute
+validity; af's deadline can be shorter. No approval, wrong Provider/context, expired grant or non-private delivery
 starts a login. This acknowledgement must reflect real host authorization; a model deciding to
 write `approved: true` is not authorization.
 
@@ -183,22 +249,26 @@ existing Task identity fences.
 
 ## Verified provider surfaces and limitations
 
-- Codex 0.159.2's offline app-server schema supports `account/login/start` with
-  `chatgptDeviceCode`, `account/login/completed`, and `account/login/cancel`. Initialization comes
-  first; no model thread or turn is created. The adapter requires a matching private login ID.
-  See [official app-server auth documentation](https://learn.chatgpt.com/docs/app-server#authentication-endpoints).
-  That documentation restricts these auth endpoints to local/open-source apps, not commercial
-  hosted services. Hosts must assess applicability; this integration is not blanket permission
-  to use provider OAuth in a hosted service.
+- Codex 0.159.2's official `login --device-auth` command is documented for
+  [headless personal installations](https://learn.chatgpt.com/docs/auth#login-on-headless-devices).
+  The adapter validates its bounded, version-supported prompt and requires successful native
+  exit; no app-server auth endpoint or model turn is used. Codex clears old authentication when
+  starting device login, so cancellation can leave an existing context signed out. Native Codex
+  also owns its normal diagnostic log. The host never reads or forwards that log. This personal
+  CLI flow is not blanket permission to offer provider OAuth as a third-party hosted service.
 - Claude 2.1.289 supports the dedicated `auth login --claudeai` command and documented code-on-stdin
   fallback for SSH/container hosts. See [official troubleshooting](https://code.claude.com/docs/en/troubleshoot-install#oauth-login-fails-in-wsl2-ssh-or-containers)
   and [network origins](https://code.claude.com/docs/en/network-config#network-access-requirements).
   The provider publishes no versioned JSON login-output protocol. The adapter supports a complete
   bare URL followed by a newline-terminated browser-code instruction or an OSC-8 hyperlink target, including wrapped visible
   labels. Ambiguous/truncated bare URL wrapping is rejected; parameters are never reconstructed.
-  A bare URL followed only by an unterminated interactive prompt has no trusted frame boundary
-  and is not supported. CLI changes may produce `unsupported` or expire without a challenge
-  until the adapter is checked again. These variants have not been live-characterized here.
+  The exact 2.1.289 trailing `Paste code here if prompted > ` prompt is also supported without
+  a newline; arbitrary partial prompts remain unsupported. The concrete bridge checks the native
+  subscription endpoint `https://claude.com/cai/oauth/authorize`, native client ID
+  `9d1c250a-e61b-44d9-88ed-5944d1962f5e`, manual platform callback and known scope set. Custom
+  login hints/SSO routes fail closed. The native URL builder and `CODE#STATE` input handler were
+  statically characterized in installed 2.1.289. CLI changes need recharacterization. Offline
+  checks are not live authentication evidence.
 
 ## Credential-free checks and opt-in live proof
 

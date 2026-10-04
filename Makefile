@@ -50,3 +50,4 @@ release-check:
 preflight-check:
 	$(CI_STEP) task-preflight python3 scripts/test-task-preflight.py
 	$(CI_STEP) nextest-gate python3 scripts/test-nextest-gate.py
+	$(CI_STEP) provider-auth-host python3 scripts/test-provider-auth-host.py

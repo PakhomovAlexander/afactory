@@ -6,10 +6,6 @@
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
-use std::time::{Duration, Instant};
-
-use serde::Deserialize;
-use serde_json::Value;
 
 use super::super::{
     BoundDirectoryLock, ProviderKind, ProviderSpec, sanitized_path, set_nonblocking, stop_probe,
@@ -19,7 +15,6 @@ use super::super::{
 const MAX_OUTPUT: usize = 64 * 1024;
 const MAX_URL: usize = 12 * 1024;
 const MAX_CODE: usize = 4096;
-const CANCEL_GRACE: Duration = Duration::from_millis(200);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Mode {
@@ -130,14 +125,14 @@ impl NativeLogin {
             }
             return Err(Failure::Failed);
         }
-        let mut login = Self {
+        Ok(Self {
             child,
             watch,
             stdin: Some(stdin),
             guarded,
             stdout,
             protocol: match kind {
-                ProviderKind::Codex => Protocol::Codex(Codex::Initializing),
+                ProviderKind::Codex => Protocol::Codex(Codex::default()),
                 ProviderKind::Claude => Protocol::Claude(Claude::default()),
             },
             input: Vec::new(),
@@ -147,17 +142,7 @@ impl NativeLogin {
             exit: None,
             stopped: false,
             terminal: false,
-        };
-        if kind == ProviderKind::Codex {
-            login.queue_json(&serde_json::json!({
-                "id": 1,
-                "method": "initialize",
-                "params": { "clientInfo": {
-                    "name": "afactory", "version": env!("CARGO_PKG_VERSION")
-                }}
-            }));
-        }
-        Ok(login)
+        })
     }
 
     pub(super) fn poll(&mut self) -> Result<Option<Event>, Failure> {
@@ -187,33 +172,10 @@ impl NativeLogin {
         if self.exit.is_some_and(|status| !status.success()) {
             return Err(Failure::Failed);
         }
-        if let Protocol::Claude(protocol) = &mut self.protocol {
-            return protocol.consume(&mut self.output, self.exit);
+        match &mut self.protocol {
+            Protocol::Codex(protocol) => protocol.consume(&mut self.output, self.exit),
+            Protocol::Claude(protocol) => protocol.consume(&mut self.output, self.exit),
         }
-        while let Some(end) = self.output.iter().position(|byte| *byte == b'\n') {
-            let line: Vec<_> = self.output.drain(..=end).collect();
-            let line = line.strip_suffix(b"\n").unwrap_or(&line);
-            let line = line.strip_suffix(b"\r").unwrap_or(line);
-            let parsed = match &mut self.protocol {
-                Protocol::Codex(protocol) => protocol.line(line)?,
-                Protocol::Claude(_) => unreachable!("Claude consumes its dedicated text stream"),
-            };
-            match parsed {
-                Parsed::None => {}
-                Parsed::StartDevice => {
-                    self.queue_json(&serde_json::json!({"method":"initialized","params":{}}));
-                    self.queue_json(&serde_json::json!({
-                        "id":2, "method":"account/login/start", "params":{"type":"chatgptDeviceCode"}
-                    }));
-                    self.flush_input()?;
-                }
-                Parsed::Event(event) => return Ok(Some(event)),
-            }
-        }
-        if self.exit.is_some() {
-            return Err(Failure::Failed);
-        }
-        Ok(None)
     }
 
     pub(super) fn submit_code(&mut self, code: &str) -> Result<(), Failure> {
@@ -238,13 +200,6 @@ impl NativeLogin {
             return Err(error);
         }
         Ok(())
-    }
-
-    fn queue_json(&mut self, value: &Value) {
-        // These values only contain bounded native IDs and af-authored protocol requests.
-        serde_json::to_writer(&mut self.input, value)
-            .expect("writing JSON into memory cannot fail");
-        self.input.push(b'\n');
     }
 
     fn flush_input(&mut self) -> Result<(), Failure> {
@@ -287,58 +242,19 @@ impl NativeLogin {
         }
     }
 
-    fn wait_for_cancel(&mut self) {
-        let deadline = Instant::now() + CANCEL_GRACE;
-        while Instant::now() < deadline {
-            if self.flush_input().is_err() || self.read_output().is_err() {
-                return;
-            }
-            if let Some(response) = super::super::response_for_id(&self.output, 3)
-                && matches!(
-                    response
-                        .get("result")
-                        .and_then(|result| result.get("status"))
-                        .and_then(Value::as_str),
-                    Some("canceled" | "notFound")
-                )
-            {
-                return;
-            }
-            match review_process::try_reap_killing_group(&mut self.child, &mut self.watch) {
-                Ok(Some(status)) => {
-                    self.exit = Some(status);
-                    self.stopped = true;
-                    return;
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(5)),
-                Err(_) => return,
-            }
-        }
-    }
-
     fn stop(&mut self) {
         if !self.stopped {
-            if let Protocol::Codex(Codex::Waiting { login_id }) = &self.protocol {
-                let cancel = serde_json::json!({
-                    "id":3, "method":"account/login/cancel", "params":{"loginId":login_id}
-                });
-                self.queue_json(&cancel);
-                let _ = self.flush_input();
-                self.wait_for_cancel();
-            }
             // The child has not been reaped. A guard must finish native cleanup itself;
             // direct synthetic fixtures use the existing reserved-group kill-before-wait path.
-            if !self.stopped {
-                if self.guarded {
-                    // EOF reaches the independent guard even after this owner's hard death.
-                    // The guard keeps the context lock until native cleanup has completed.
-                    self.stdin.take();
-                    let _ = self.child.wait();
-                } else {
-                    stop_probe(&mut self.child);
-                }
-                self.stopped = true;
+            if self.guarded {
+                // EOF reaches the independent guard even after this owner's hard death.
+                // The guard keeps the context lock until native cleanup has completed.
+                self.stdin.take();
+                let _ = self.child.wait();
+            } else {
+                stop_probe(&mut self.child);
             }
+            self.stopped = true;
         }
         self.input.fill(0);
         self.input.clear();
@@ -353,135 +269,106 @@ impl Drop for NativeLogin {
     }
 }
 
-enum Parsed {
-    None,
-    StartDevice,
-    Event(Event),
-}
+// Codex 0.159.2 login/src/device_code_auth.rs::device_code_prompt prints this exact
+// stdout frame, including unconditional SGR and the extra newline from println!. Match only
+// those SGR positions: never remove arbitrary terminal controls or search prose for a URL.
+// cli/src/login.rs::run_login_with_device_code reports completion on stderr and by exit status;
+// stderr is discarded. No success prose, app-server notification, or status alone completes login.
+const CODEX_DEVICE_URL: &str = "https://auth.openai.com/codex/device";
+const CODEX_DEVICE_PREFIX: &str = concat!(
+    "\nWelcome to Codex [v\x1b[90m0.159.2\x1b[0m]\n",
+    "\x1b[90mOpenAI's command-line coding agent\x1b[0m\n",
+    "\nFollow these steps to sign in with ChatGPT using device code authorization:\n",
+    "\n1. Open this link in your browser and sign in to your account\n",
+    "   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n",
+    "\n2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n   \x1b[94m",
+);
+const CODEX_DEVICE_SUFFIX: &str = concat!(
+    "\x1b[0m\n\n\x1b[90mContinue only if you started this login in Codex. ",
+    "If a website or another person gave you this code, cancel.\x1b[0m\n\n",
+);
+const MAX_DEVICE_CODE: usize = 128;
 
-enum Codex {
-    Initializing,
-    Starting,
-    Waiting { login_id: String },
-    Completed,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DeviceResponse {
-    #[serde(rename = "type")]
-    kind: String,
-    login_id: String,
-    verification_url: String,
-    user_code: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LoginCompleted {
-    login_id: Option<String>,
-    success: bool,
-    error: Option<String>,
+#[derive(Default)]
+struct Codex {
+    challenge: bool,
 }
 
 impl Codex {
-    fn line(&mut self, line: &[u8]) -> Result<Parsed, Failure> {
-        let message: Value = serde_json::from_slice(line).map_err(|_| Failure::Unsupported)?;
-        let object = message.as_object().ok_or(Failure::Unsupported)?;
-        if let Some(id) = object.get("id").and_then(Value::as_u64) {
-            if object
-                .keys()
-                .any(|key| !matches!(key.as_str(), "id" | "result" | "error"))
-            {
+    fn consume(
+        &mut self,
+        output: &mut Vec<u8>,
+        exit: Option<ExitStatus>,
+    ) -> Result<Option<Event>, Failure> {
+        if self.challenge {
+            if !output.is_empty() {
                 return Err(Failure::Unsupported);
             }
-            if let Some(error) = object.get("error") {
-                return Err(
-                    if matches!(
-                        error.get("code").and_then(Value::as_i64),
-                        Some(-32601 | -32602)
-                    ) {
-                        Failure::Unsupported
-                    } else {
-                        Failure::Failed
-                    },
-                );
-            }
-            let result = object.get("result").ok_or(Failure::Unsupported)?;
-            return match (id, &self) {
-                (1, Self::Initializing) if result.is_object() => {
-                    *self = Self::Starting;
-                    Ok(Parsed::StartDevice)
-                }
-                (2, Self::Starting) => {
-                    let response: DeviceResponse = serde_json::from_value(result.clone())
-                        .map_err(|_| Failure::InvalidChallenge)?;
-                    if response.kind != "chatgptDeviceCode"
-                        || !bounded_graphic(&response.login_id, 512)
-                        || !bounded_graphic(&response.user_code, 128)
-                    {
-                        return Err(Failure::InvalidChallenge);
-                    }
-                    validate_url(ProviderKind::Codex, &response.verification_url)?;
-                    *self = Self::Waiting {
-                        login_id: response.login_id,
-                    };
-                    Ok(Parsed::Event(Event::Challenge(Challenge {
-                        mode: Mode::DeviceCode,
-                        url: response.verification_url,
-                        user_code: Some(response.user_code),
-                    })))
-                }
-                _ => Err(Failure::Unsupported),
+            return match exit {
+                Some(status) if status.success() => Ok(Some(Event::Completed)),
+                Some(_) => Err(Failure::Failed),
+                None => Ok(None),
             };
         }
-        if object
-            .keys()
-            .any(|key| !matches!(key.as_str(), "method" | "params"))
-        {
+        let prefix = CODEX_DEVICE_PREFIX.as_bytes();
+        let common = output.len().min(prefix.len());
+        if output[..common] != prefix[..common] {
             return Err(Failure::Unsupported);
         }
-        match object.get("method").and_then(Value::as_str) {
-            Some("account/login/completed") => {
-                let params = object.get("params").ok_or(Failure::Unsupported)?;
-                if !params
-                    .get("loginId")
-                    .is_some_and(|value| value.is_null() || value.is_string())
-                    || !params
-                        .get("error")
-                        .is_some_and(|value| value.is_null() || value.is_string())
-                {
-                    return Err(Failure::Unsupported);
-                }
-                let completed: LoginCompleted =
-                    serde_json::from_value(params.clone()).map_err(|_| Failure::Unsupported)?;
-                let Self::Waiting { login_id } = self else {
-                    return Err(Failure::Failed);
-                };
-                if completed.login_id.as_deref() != Some(login_id.as_str())
-                    || !completed.success
-                    || completed.error.is_some()
-                {
-                    return Err(Failure::Failed);
-                }
-                *self = Self::Completed;
-                Ok(Parsed::Event(Event::Completed))
-            }
-            // The official app-server announces the account change next to login completion.
-            // The host re-probes identity separately; no identity bytes leave this adapter.
-            Some("account/updated") if matches!(self, Self::Waiting { .. } | Self::Completed) => {
-                if !object.get("params").is_some_and(Value::is_object) {
-                    return Err(Failure::Unsupported);
-                }
-                Ok(Parsed::None)
-            }
-            _ => Err(Failure::Unsupported),
+        if output.len() < prefix.len() {
+            return if exit.is_some() {
+                Err(Failure::Failed)
+            } else {
+                Ok(None)
+            };
         }
+        let field = &output[prefix.len()..];
+        // Upstream treats user_code as an opaque server-issued String, not a fixed 4-4
+        // regex. Support bounded uppercase/digit/hyphen codes conservatively; any other
+        // alphabet requires explicit characterization, never guessing or forwarding tokens.
+        let code_end = field.iter().position(|byte| {
+            !(byte.is_ascii_uppercase() || byte.is_ascii_digit() || *byte == b'-')
+        });
+        let code_len = code_end.unwrap_or(field.len());
+        if code_len > MAX_DEVICE_CODE {
+            return Err(Failure::InvalidChallenge);
+        }
+        let Some(code_len) = code_end else {
+            return if exit.is_some() {
+                Err(Failure::Failed)
+            } else {
+                Ok(None)
+            };
+        };
+        if code_len == 0 || !field[..code_len].iter().any(u8::is_ascii_alphanumeric) {
+            return Err(Failure::InvalidChallenge);
+        }
+        let suffix = &field[code_len..];
+        let expected = CODEX_DEVICE_SUFFIX.as_bytes();
+        if suffix.len() > expected.len() || suffix != &expected[..suffix.len()] {
+            return Err(Failure::InvalidChallenge);
+        }
+        if suffix.len() != expected.len() {
+            return if exit.is_some() {
+                Err(Failure::Failed)
+            } else {
+                Ok(None)
+            };
+        }
+        if exit.is_some_and(|status| !status.success()) {
+            return Err(Failure::Failed);
+        }
+        let code =
+            String::from_utf8(field[..code_len].to_vec()).map_err(|_| Failure::InvalidChallenge)?;
+        output.fill(0);
+        output.clear();
+        self.challenge = true;
+        Ok(Some(Event::Challenge(Challenge {
+            mode: Mode::DeviceCode,
+            url: CODEX_DEVICE_URL.into(),
+            user_code: Some(code),
+        })))
     }
-}
-
-fn bounded_graphic(value: &str, maximum: usize) -> bool {
-    !value.is_empty() && value.len() <= maximum && value.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
 /// Accept an exact native HTTPS authority; never repair, shorten, decode, or join URL output.
@@ -528,8 +415,20 @@ fn validate_url(kind: ProviderKind, url: &str) -> Result<(), Failure> {
 /// Claude documents URL output and code stdin for the dedicated `auth login` command, not a
 /// machine-readable prompt protocol. Prose is discarded. Only one complete native HTTPS link
 /// is actionable; terminal controls, extra links and requests for other inputs fail closed.
+// Claude 2.1.289's dedicated login command under TERM=dumb/piped stdout writes
+// two newline-terminated headings, then exactly this unterminated stdin prompt.
+// The source-characterized literal boundary is distinct from generic partial "Enter code"
+// text. Both browser callback and pasted-code completion append this exact success line.
+const CLAUDE_NATIVE_PREFIX: &str =
+    "Opening browser to sign in…\nIf the browser didn't open, visit: ";
+const CLAUDE_NATIVE_PROMPT: &[u8] = b"Paste code here if prompted > ";
+const CLAUDE_NATIVE_SUCCESS: &[u8] = b"Login successful.\n";
+
 #[derive(Default)]
 struct Claude {
+    started: bool,
+    native: bool,
+    native_success: bool,
     challenge: bool,
     submitted: bool,
     pending_url: Option<String>,
@@ -542,6 +441,22 @@ impl Claude {
         output: &mut Vec<u8>,
         exit: Option<ExitStatus>,
     ) -> Result<Option<Event>, Failure> {
+        if !self.started {
+            // Wait across every split of the heading, including its UTF-8 ellipsis.
+            let heading = b"Opening browser";
+            if output.len() < heading.len() && heading.starts_with(output) {
+                return if exit.is_some() {
+                    Err(Failure::Failed)
+                } else {
+                    Ok(None)
+                };
+            }
+            self.native = output.starts_with(heading);
+            self.started = true;
+        }
+        if self.native {
+            return self.consume_native(output, exit);
+        }
         while let Some((consumed, record, hyperlink)) = claude_record(output, exit.is_some())? {
             output.drain(..consumed);
             self.record(&record, hyperlink)?;
@@ -578,6 +493,85 @@ impl Claude {
             };
         }
         Ok(None)
+    }
+
+    fn consume_native(
+        &mut self,
+        output: &mut Vec<u8>,
+        exit: Option<ExitStatus>,
+    ) -> Result<Option<Event>, Failure> {
+        if exit.is_some_and(|status| !status.success()) {
+            return Err(Failure::Failed);
+        }
+        if self.challenge {
+            if !output.is_empty() {
+                if self.native_success {
+                    return Err(Failure::Unsupported);
+                }
+                if !native_success_tail(output, exit)? {
+                    return Ok(None);
+                }
+                self.native_success = true;
+                output.clear();
+            }
+            return match exit {
+                Some(status) if status.success() && self.native_success => {
+                    Ok(Some(Event::Completed))
+                }
+                Some(_) => Err(Failure::Failed),
+                None => Ok(None),
+            };
+        }
+        let prefix = CLAUDE_NATIVE_PREFIX.as_bytes();
+        let common = output.len().min(prefix.len());
+        if output[..common] != prefix[..common] {
+            return Err(Failure::Unsupported);
+        }
+        if output.len() < prefix.len() {
+            return if exit.is_some() {
+                Err(Failure::Failed)
+            } else {
+                Ok(None)
+            };
+        }
+        let rest = &output[prefix.len()..];
+        let Some(end) = rest.iter().position(|byte| *byte == b'\n') else {
+            return if rest.len() > MAX_URL {
+                Err(Failure::InvalidChallenge)
+            } else if exit.is_some() {
+                Err(Failure::Failed)
+            } else {
+                Ok(None)
+            };
+        };
+        let url = std::str::from_utf8(&rest[..end]).map_err(|_| Failure::InvalidChallenge)?;
+        validate_url(ProviderKind::Claude, url)?;
+        let prompt = &rest[end + 1..];
+        let common = prompt.len().min(CLAUDE_NATIVE_PROMPT.len());
+        if prompt[..common] != CLAUDE_NATIVE_PROMPT[..common] {
+            return Err(Failure::Unsupported);
+        }
+        if prompt.len() < CLAUDE_NATIVE_PROMPT.len() {
+            return if exit.is_some() {
+                Err(Failure::Failed)
+            } else {
+                Ok(None)
+            };
+        }
+        let tail = &prompt[CLAUDE_NATIVE_PROMPT.len()..];
+        if !tail.is_empty() && !native_success_tail(tail, exit)? {
+            return Ok(None);
+        }
+        self.native_success = !tail.is_empty();
+        let url = url.to_owned();
+        output.fill(0);
+        output.clear();
+        self.challenge = true;
+        Ok(Some(Event::Challenge(Challenge {
+            mode: Mode::CodeOrCallback,
+            url,
+            user_code: None,
+        })))
     }
 
     fn record(&mut self, record: &str, hyperlink: bool) -> Result<(), Failure> {
@@ -624,6 +618,19 @@ impl Claude {
 
     fn can_submit(&self) -> bool {
         self.challenge && !self.submitted
+    }
+}
+
+fn native_success_tail(tail: &[u8], exit: Option<ExitStatus>) -> Result<bool, Failure> {
+    if !CLAUDE_NATIVE_SUCCESS.starts_with(tail) {
+        return Err(Failure::Unsupported);
+    }
+    if tail.len() == CLAUDE_NATIVE_SUCCESS.len() {
+        Ok(true)
+    } else if exit.is_some() {
+        Err(Failure::Failed)
+    } else {
+        Ok(false)
     }
 }
 
@@ -814,88 +821,151 @@ fn osc_end(input: &[u8]) -> Option<(usize, usize)> {
 mod tests {
     use super::*;
 
-    const DEVICE: &str = r#"{"id":2,"result":{"type":"chatgptDeviceCode","loginId":"synthetic-login","verificationUrl":"https://auth.openai.com/codex/device","userCode":"TEST-CODE"}}"#;
+    use std::os::unix::process::ExitStatusExt;
+    use std::time::{Duration, Instant};
 
-    fn initialized_codex() -> Codex {
-        let mut protocol = Codex::Initializing;
-        assert!(matches!(
-            protocol.line(br#"{"id":1,"result":{"userAgent":"synthetic"}}"#),
-            Ok(Parsed::StartDevice)
-        ));
-        protocol
-    }
+    // Exact 0.159.2 source-authored device_code_prompt fixture, with a synthetic code.
+    // https://raw.githubusercontent.com/openai/codex/rust-v0.159.2/codex-rs/login/src/device_code_auth.rs
+    const DEVICE: &str = "\nWelcome to Codex [v\x1b[90m0.159.2\x1b[0m]\n\x1b[90mOpenAI's command-line coding agent\x1b[0m\n\nFollow these steps to sign in with ChatGPT using device code authorization:\n\n1. Open this link in your browser and sign in to your account\n   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n\n2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n   \x1b[94mTEST-CODE\x1b[0m\n\n\x1b[90mContinue only if you started this login in Codex. If a website or another person gave you this code, cancel.\x1b[0m\n\n";
 
     #[test]
-    fn codex_uses_native_device_challenge_and_matching_completion() {
-        let mut protocol = initialized_codex();
-        let Parsed::Event(Event::Challenge(challenge)) = protocol.line(DEVICE.as_bytes()).unwrap()
-        else {
+    fn codex_0159_2_exact_native_device_prompt_and_successful_exit() {
+        let mut protocol = Codex::default();
+        let mut output = DEVICE.as_bytes().to_vec();
+        let Some(Event::Challenge(challenge)) = protocol.consume(&mut output, None).unwrap() else {
             panic!("expected a challenge");
         };
         assert!(challenge.mode == Mode::DeviceCode);
         assert_eq!(challenge.url, "https://auth.openai.com/codex/device");
         assert_eq!(challenge.user_code.as_deref(), Some("TEST-CODE"));
+        assert!(output.is_empty());
+        assert!(matches!(protocol.consume(&mut output, None), Ok(None)));
         assert!(matches!(
-            protocol.line(br#"{"method":"account/updated","params":{"authMode":"chatgpt","planType":"plus"}}"#),
-            Ok(Parsed::None)
-        ));
-        assert!(matches!(
-            protocol.line(br#"{"method":"account/login/completed","params":{"loginId":"synthetic-login","success":true,"error":null}}"#),
-            Ok(Parsed::Event(Event::Completed))
+            protocol.consume(&mut output, Some(ExitStatus::from_raw(0))),
+            Ok(Some(Event::Completed))
         ));
     }
 
     #[test]
-    fn codex_refuses_wrong_replayed_or_failed_completion() {
-        for completion in [
-            r#"{"loginId":"another-login","success":true,"error":null}"#,
-            r#"{"loginId":null,"success":true,"error":null}"#,
-            r#"{"loginId":"synthetic-login","success":false,"error":"synthetic secret"}"#,
-            r#"{"loginId":"synthetic-login","success":true,"error":"synthetic secret"}"#,
-        ] {
-            let mut protocol = initialized_codex();
-            protocol.line(DEVICE.as_bytes()).unwrap();
-            let message =
-                format!(r#"{{"method":"account/login/completed","params":{completion}}}"#);
+    fn codex_0159_2_waits_for_the_complete_frame_at_every_byte_boundary() {
+        for boundary in 0..DEVICE.len() {
+            let mut protocol = Codex::default();
+            let mut output = DEVICE.as_bytes()[..boundary].to_vec();
+            assert!(matches!(protocol.consume(&mut output, None), Ok(None)));
+            output.extend_from_slice(&DEVICE.as_bytes()[boundary..]);
             assert!(matches!(
-                protocol.line(message.as_bytes()),
-                Err(Failure::Failed)
+                protocol.consume(&mut output, None),
+                Ok(Some(Event::Challenge(_)))
             ));
         }
+        let mut protocol = Codex::default();
+        let mut output = Vec::new();
+        for (index, byte) in DEVICE.bytes().enumerate() {
+            output.push(byte);
+            let result = protocol.consume(&mut output, None);
+            if index + 1 == DEVICE.len() {
+                assert!(matches!(result, Ok(Some(Event::Challenge(_)))));
+            } else {
+                assert!(matches!(result, Ok(None)));
+            }
+        }
+    }
+
+    #[test]
+    fn codex_0159_2_refuses_nonzero_exit_or_success_without_a_complete_challenge() {
+        for output in ["", "Successfully logged in\n", &DEVICE[..DEVICE.len() - 1]] {
+            assert!(
+                Codex::default()
+                    .consume(
+                        &mut output.as_bytes().to_vec(),
+                        Some(ExitStatus::from_raw(0))
+                    )
+                    .is_err()
+            );
+        }
+        let mut protocol = Codex::default();
+        let mut output = DEVICE.as_bytes().to_vec();
         assert!(matches!(
-            initialized_codex().line(br#"{"method":"account/login/completed","params":{"loginId":"synthetic-login","success":true,"error":null}}"#),
+            protocol.consume(&mut output, Some(ExitStatus::from_raw(256))),
+            Err(Failure::Failed)
+        ));
+        let mut protocol = Codex::default();
+        protocol.consume(&mut output, None).unwrap();
+        assert!(matches!(
+            protocol.consume(&mut output, Some(ExitStatus::from_raw(256))),
             Err(Failure::Failed)
         ));
     }
 
     #[test]
-    fn codex_unsupported_native_method_is_a_redacted_category() {
-        assert!(matches!(
-            initialized_codex()
-                .line(br#"{"id":2,"error":{"code":-32602,"message":"synthetic-secret-error"}}"#),
-            Err(Failure::Unsupported)
-        ));
-        assert!(matches!(
-            initialized_codex()
-                .line(br#"{"id":2,"error":{"code":-32000,"message":"synthetic-secret-error"}}"#),
-            Err(Failure::Failed)
-        ));
-    }
-
-    #[test]
-    fn codex_rejects_unknown_or_broadened_challenge_shapes() {
+    fn codex_0159_2_rejects_unknown_framing_extra_urls_tokens_controls_and_versions() {
         for output in [
-            DEVICE.replace("chatgptDeviceCode", "chatgpt"),
-            DEVICE.replace("TEST-CODE", "TEST\\nCODE"),
+            DEVICE.replace("\nWelcome", "\n Welcome"),
+            DEVICE.replace("\nFollow", "\n Follow"),
+            DEVICE.replace("\n1.", "\n 1."),
+            DEVICE.replace("\n2.", "\n 2."),
+            DEVICE.replace("\n   \x1b[94m", "\n \x1b[94m"),
+            DEVICE.replace("\n   \x1b[94m", "\n  \x1b[94m"),
+            DEVICE.replace("\n   \x1b[94m", "\n    \x1b[94m"),
+            DEVICE.replace("0.159.2", "0.159.3"),
+            DEVICE.replace("0.159.2", "0.159.2; token=secret"),
             DEVICE.replace("auth.openai.com", "auth.openai.com.evil.invalid"),
-            DEVICE.replace(
-                "\"userCode\":\"TEST-CODE\"",
-                "\"token\":\"synthetic-secret\"",
-            ),
-            DEVICE.replace("\"id\":2", "\"id\":3"),
-            "not a protocol response".into(),
+            DEVICE.replace("codex/device", "codex/device?token=secret"),
+            DEVICE.replace("TEST-CODE", ""),
+            DEVICE.replace("TEST-CODE", "---"),
+            DEVICE.replace("TEST-CODE", "TEST CODE"),
+            DEVICE.replace("TEST-CODE", "TEST\nCODE"),
+            DEVICE.replace("TEST-CODE", "sk-synthetic-token"),
+            DEVICE.replace("TEST-CODE", "eyJhbGciOiJub25lIn0.payload.signature"),
+            DEVICE.replace("TEST-CODE", "https://auth.openai.com/codex/device"),
+            DEVICE.replace("TEST-CODE", &"A".repeat(MAX_DEVICE_CODE + 1)),
+            DEVICE.replace("TEST-CODE", "TEST\x1b[0m\x1b[94mCODE"),
+            DEVICE.replace("TEST-CODE", "TEST\rCODE"),
+            DEVICE.replace("\x1b[94m", "\x1b[2J"),
+            DEVICE.replace("\x1b[90m", "\x1b]8;;https://evil.invalid\x1b\\"),
+            DEVICE.replace("\x1b[0m", ""),
+            DEVICE.replace("\n", "\r\n"),
+            format!("{DEVICE}{DEVICE}"),
+            format!("{DEVICE}https://auth.openai.com/codex/device\n"),
+            format!("{DEVICE}access_token=synthetic-secret\n"),
+            format!("{DEVICE}Error logging in with device code\n"),
+            "not a supported prompt".into(),
+            r#"{"id":2,"result":{"type":"chatgptDeviceCode"}}"#.into(),
         ] {
-            assert!(initialized_codex().line(output.as_bytes()).is_err());
+            assert!(
+                Codex::default()
+                    .consume(&mut output.into_bytes(), None)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn codex_0159_2_does_not_invent_fixed_device_code_group_lengths() {
+        // Upstream deserializes user_code as String; ABCD-EFGH is only its test example.
+        for code in ["ABCD-EFGH", "ABCD-12345", "123456", "A-BC-DEFG"] {
+            let mut output = DEVICE.replace("TEST-CODE", code).into_bytes();
+            let Some(Event::Challenge(challenge)) =
+                Codex::default().consume(&mut output, None).unwrap()
+            else {
+                panic!("expected a bounded code");
+            };
+            assert_eq!(challenge.user_code.as_deref(), Some(code));
+        }
+    }
+
+    #[test]
+    fn codex_0159_2_rejects_late_output_and_a_replayed_prompt() {
+        for unexpected in [DEVICE, "\n", "Error logging in\n", "access_token=secret"] {
+            let mut protocol = Codex::default();
+            let mut output = DEVICE.as_bytes().to_vec();
+            protocol.consume(&mut output, None).unwrap();
+            output.extend_from_slice(unexpected.as_bytes());
+            assert!(
+                protocol
+                    .consume(&mut output, Some(ExitStatus::from_raw(0)))
+                    .is_err()
+            );
         }
     }
 
@@ -952,6 +1022,156 @@ mod tests {
             }
             assert!(Instant::now() < deadline, "synthetic login did not answer");
             std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    const CLAUDE_21289: &str = "Opening browser to sign in…\nIf the browser didn't open, visit: https://claude.ai/oauth/authorize?state=synthetic\nPaste code here if prompted > ";
+
+    #[test]
+    fn claude_21289_exact_unterminated_prompt_at_every_pipe_boundary() {
+        for split in 0..CLAUDE_21289.len() {
+            let mut protocol = Claude::default();
+            let mut output = CLAUDE_21289.as_bytes()[..split].to_vec();
+            assert!(
+                matches!(protocol.consume(&mut output, None), Ok(None)),
+                "split {split}"
+            );
+            output.extend_from_slice(&CLAUDE_21289.as_bytes()[split..]);
+            let Some(Event::Challenge(challenge)) = protocol.consume(&mut output, None).unwrap()
+            else {
+                panic!("expected the exact native prompt boundary");
+            };
+            assert!(challenge.mode == Mode::CodeOrCallback);
+            assert_eq!(
+                challenge.url,
+                "https://claude.ai/oauth/authorize?state=synthetic"
+            );
+            assert!(challenge.user_code.is_none());
+            assert!(protocol.can_submit());
+            assert!(output.is_empty());
+        }
+        let mut protocol = Claude::default();
+        let mut output = Vec::new();
+        for (index, byte) in CLAUDE_21289.bytes().enumerate() {
+            output.push(byte);
+            let result = protocol.consume(&mut output, None);
+            assert!(if index + 1 == CLAUDE_21289.len() {
+                matches!(result, Ok(Some(Event::Challenge(_))))
+            } else {
+                matches!(result, Ok(None))
+            });
+        }
+    }
+
+    #[test]
+    fn claude_21289_callback_and_code_completion_require_native_success_and_exit() {
+        for submitted in [false, true] {
+            for split in 0..=CLAUDE_NATIVE_SUCCESS.len() {
+                let mut protocol = Claude::default();
+                let mut output = CLAUDE_21289.as_bytes().to_vec();
+                protocol.consume(&mut output, None).unwrap();
+                protocol.submitted = submitted;
+                output.extend_from_slice(&CLAUDE_NATIVE_SUCCESS[..split]);
+                assert!(matches!(protocol.consume(&mut output, None), Ok(None)));
+                output.extend_from_slice(&CLAUDE_NATIVE_SUCCESS[split..]);
+                assert!(matches!(
+                    protocol.consume(&mut output, Some(ExitStatus::from_raw(0))),
+                    Ok(Some(Event::Completed))
+                ));
+            }
+        }
+        let mut protocol = Claude::default();
+        let mut output = format!("{CLAUDE_21289}Login successful.\n").into_bytes();
+        assert!(matches!(
+            protocol.consume(&mut output, Some(ExitStatus::from_raw(0))),
+            Ok(Some(Event::Challenge(_)))
+        ));
+        assert!(matches!(
+            protocol.consume(&mut output, Some(ExitStatus::from_raw(0))),
+            Ok(Some(Event::Completed))
+        ));
+    }
+
+    #[test]
+    fn claude_21289_partial_prompt_or_unproven_exit_is_never_completion() {
+        for split in 0..CLAUDE_21289.len() {
+            let mut output = CLAUDE_21289.as_bytes()[..split].to_vec();
+            assert!(
+                Claude::default()
+                    .consume(&mut output, Some(ExitStatus::from_raw(0)))
+                    .is_err()
+            );
+        }
+        for tail in ["", "Login successful.", "\n"] {
+            let mut protocol = Claude::default();
+            let mut output = CLAUDE_21289.as_bytes().to_vec();
+            protocol.consume(&mut output, None).unwrap();
+            output.extend_from_slice(tail.as_bytes());
+            assert!(
+                protocol
+                    .consume(&mut output, Some(ExitStatus::from_raw(0)))
+                    .is_err()
+            );
+        }
+        let mut protocol = Claude::default();
+        let mut output = CLAUDE_21289.as_bytes().to_vec();
+        protocol.consume(&mut output, None).unwrap();
+        output.extend_from_slice(CLAUDE_NATIVE_SUCCESS);
+        assert!(matches!(
+            protocol.consume(&mut output, Some(ExitStatus::from_raw(256))),
+            Err(Failure::Failed)
+        ));
+    }
+
+    #[test]
+    fn claude_21289_rejects_changed_prompts_urls_and_secret_suffixes() {
+        for text in [
+            CLAUDE_21289.replace("…", "..."),
+            CLAUDE_21289.replace("If the browser didn't open, visit:", "Visit this URL:"),
+            CLAUDE_21289.replace("claude.ai", "claude.ai.evil.invalid"),
+            CLAUDE_21289.replace(
+                "Paste code here if prompted > ",
+                "Paste code here if prompted > password: ",
+            ),
+            CLAUDE_21289.replace("Paste code here if prompted > ", "Enter code: "),
+            CLAUDE_21289.replace(
+                "Paste code here if prompted > ",
+                "Paste code here if prompted >\n",
+            ),
+            CLAUDE_21289.replace("state=synthetic", "state=synthetic\nwrapped=secret"),
+            CLAUDE_21289.replace(
+                "state=synthetic",
+                "state=synthetic https://claude.ai/oauth/authorize",
+            ),
+            CLAUDE_21289.replace("state=synthetic", "state=synthetic\x1b[0m"),
+        ] {
+            let mut output = text.into_bytes();
+            assert!(Claude::default().consume(&mut output, None).is_err());
+        }
+        for suffix in [
+            "password: ",
+            "access_token=secret",
+            "https://claude.ai/oauth/authorize",
+            "Login successful.\nsecret",
+            "\x1b[2J",
+        ] {
+            let text = format!("{CLAUDE_21289}{suffix}");
+            for split in 0..=text.len() {
+                let mut protocol = Claude::default();
+                let mut output = text.as_bytes()[..split].to_vec();
+                match protocol.consume(&mut output, None) {
+                    Err(_) => continue,
+                    Ok(Some(Event::Completed)) => panic!("unexpected completion"),
+                    Ok(_) => {}
+                }
+                output.extend_from_slice(&text.as_bytes()[split..]);
+                assert!(
+                    protocol
+                        .consume(&mut output, Some(ExitStatus::from_raw(0)))
+                        .is_err(),
+                    "suffix split {split}"
+                );
+            }
         }
     }
 
@@ -1122,14 +1342,13 @@ mod tests {
         assert!(matches!(login.poll(), Err(Failure::Failed)));
     }
 
+    fn device_script(tail: &str) -> String {
+        format!("printf '%s' '{}'; {tail}", DEVICE.replace('\'', "'\"'\"'"))
+    }
+
     #[test]
-    fn synthetic_codex_process_owns_protocol_and_is_reaped_on_completion() {
-        let mut login = fixture(
-            ProviderKind::Codex,
-            &format!(
-                "read -r initialize\nprintf '%s\\n' '{{\"id\":1,\"result\":{{}}}}'\nread -r initialized\nread -r start\nprintf '%s\\n' '{DEVICE}'\nprintf '%s\\n' '{{\"method\":\"account/login/completed\",\"params\":{{\"loginId\":\"synthetic-login\",\"success\":true,\"error\":null}}}}'\nread -r cancel"
-            ),
-        );
+    fn synthetic_codex_device_cli_is_reaped_on_successful_exit() {
+        let mut login = fixture(ProviderKind::Codex, &device_script("exit 0"));
         let pid = login.child.id();
         assert!(matches!(next_event(&mut login), Ok(Event::Challenge(_))));
         assert_eq!(
@@ -1138,17 +1357,16 @@ mod tests {
         );
         assert!(matches!(next_event(&mut login), Ok(Event::Completed)));
         assert!(login.stopped);
+        assert!(matches!(login.poll(), Err(Failure::Failed)));
         drop(login);
         assert!(nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_err());
     }
 
     #[test]
-    fn dropping_device_login_requests_native_cancel_before_reaping() {
+    fn dropping_device_login_reaps_the_owned_native_cli_without_json_requests() {
         let temporary = tempfile::tempdir().unwrap();
-        let marker = temporary.path().join("native-canceled");
-        let script = format!(
-            "read -r initialize\nprintf '%s\\n' '{{\"id\":1,\"result\":{{}}}}'\nread -r initialized\nread -r start\nprintf '%s\\n' '{DEVICE}'\nread -r cancel\ncase \"$cancel\" in *'account/login/cancel'*) ;; *) exit 1;; esac\ncase \"$cancel\" in *'synthetic-login'*) ;; *) exit 1;; esac\nprintf canceled > \"$1\"\nprintf '%s\\n' '{{\"id\":3,\"result\":{{\"status\":\"canceled\"}}}}'\nread -r hold"
-        );
+        let marker = temporary.path().join("unexpected-native-input");
+        let script = device_script("read -r unexpected; printf unexpected > \"$1\"; exit 1");
         let mut command = Command::new("/bin/sh");
         command
             .env_clear()
@@ -1158,8 +1376,20 @@ mod tests {
         let pid = login.child.id();
         assert!(matches!(next_event(&mut login), Ok(Event::Challenge(_))));
         drop(login);
-        assert_eq!(std::fs::read_to_string(marker).unwrap(), "canceled");
+        assert!(!marker.exists());
         assert!(nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_err());
+    }
+
+    #[test]
+    fn codex_native_failure_cannot_complete_or_publish_a_stale_challenge() {
+        let mut login = fixture(ProviderKind::Codex, &device_script("exit 1"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while login.watch.exited() != Some(true) {
+            assert!(Instant::now() < deadline, "synthetic exit was not observed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(matches!(login.poll(), Err(Failure::Failed)));
+        assert!(login.stopped);
     }
 
     #[test]
@@ -1183,7 +1413,7 @@ mod tests {
     #[test]
     fn native_output_limit_is_cumulative_and_never_a_diagnostic() {
         let mut login = fixture(
-            ProviderKind::Codex,
+            ProviderKind::Claude,
             "while :; do printf '%s' 'synthetic-secret-output'; done",
         );
         let deadline = Instant::now() + Duration::from_secs(5);

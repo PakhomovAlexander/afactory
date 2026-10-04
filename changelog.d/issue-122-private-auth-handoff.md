@@ -3,5 +3,9 @@
   state, recipient fencing and secret-free status. Generic setup login remains terminal-only;
   login never implicitly spends a model budget or resumes a Task
   ([ADR-0137](docs/adr/0137-permit-provider-logins-through-private-host-capabilities.md)).
+- Include a runnable, consent-bound personal-chat host for validated one-time browser challenges,
+  native Codex headless device login and Claude 2.1.289's exact unterminated prompt; reusable
+  credentials remain native and ordinary af status stays challenge-free
+  ([ADR-0138](docs/adr/0138-deliver-native-login-challenges-to-a-verified-private-requester.md)).
 - Preserve native authentication failure categories alongside usage diagnostics and suppress
   credential-bearing failed output before ordinary capture, retaining exact parsed usage.

@@ -72,7 +72,7 @@ pub(crate) fn supervise_early(argv: &[String]) -> Option<i32> {
         command.env("NO_COLOR", "1").env("TERM", "dumb");
         match kind {
             ProviderKind::Codex => {
-                command.args(["app-server", "--stdio"]);
+                command.args(["login", "--device-auth"]);
             }
             ProviderKind::Claude => {
                 command.args(["auth", "login", "--claudeai"]);

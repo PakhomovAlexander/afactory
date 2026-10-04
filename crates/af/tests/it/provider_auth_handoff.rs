@@ -20,34 +20,38 @@ impl Fixture {
         let executable = bin.join("codex");
         // No model dispatch method exists: any accidental inference call fails the fixture.
         std::fs::write(&executable, r#"#!/usr/bin/python3
-import json,os,sys,time
+import os,sys,time
 from pathlib import Path
 root=Path(os.environ['CODEX_HOME'])
 if sys.argv[1:]==['login','status']:
+    with (root/'status-probes').open('a') as f: f.write('status\n')
     if (root/'ready').exists():
         print('Logged in using ChatGPT',file=sys.stderr);sys.exit(0)
     print('Not logged in',file=sys.stderr);sys.exit(1)
 if sys.argv[1:]==['--version']:
     print('codex-cli 0.159.2');sys.exit(0)
-if sys.argv[1:] not in (['app-server'],['app-server','--stdio']): sys.exit(64)
+if sys.argv[1:]!=['login','--device-auth']: sys.exit(64)
 assert os.environ.get('HTTP_PROXY')=='http://fixture.invalid:8080'
 assert os.environ.get('SSL_CERT_FILE')=='/fixture/certificate.pem'
 assert all(name not in os.environ for name in ['OPENAI_API_KEY','ANTHROPIC_API_KEY','NODE_OPTIONS','NODE_TLS_REJECT_UNAUTHORIZED','BROWSER','DISPLAY'])
 (root/'native.pid').write_text(str(os.getpid()))
 with (root/'starts').open('a') as f: f.write('start\n')
-for line in sys.stdin:
-    req=json.loads(line)
-    if req['method']=='initialize':
-        print(json.dumps({'id':1,'result':{'userAgent':'fixture'}}),flush=True)
-    elif req['method']=='initialized': pass
-    elif req['method']=='account/login/start':
-        assert req['params']=={'type':'chatgptDeviceCode'}
-        print(json.dumps({'id':2,'result':{'type':'chatgptDeviceCode','loginId':'fixture-login','verificationUrl':'https://auth.openai.com/codex/device','userCode':'AF-FAKE-SECRET'}}),flush=True)
-        while not (root/'complete').exists(): time.sleep(.01)
-        (root/'ready').touch()
-        print(json.dumps({'method':'account/login/completed','params':{'loginId':'fixture-login','success':True,'error':None}}),flush=True)
-    elif req['method']=='account/login/cancel': sys.exit(0)
-    else: sys.exit(64)
+# Exact 0.159.2 device_code_prompt stdout, including unconditional SGR and println newline.
+prompt=("\nWelcome to Codex [v\x1b[90m0.159.2\x1b[0m]\n"
+    "\x1b[90mOpenAI's command-line coding agent\x1b[0m\n"
+    "\nFollow these steps to sign in with ChatGPT using device code authorization:\n"
+    "\n1. Open this link in your browser and sign in to your account\n"
+    "   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n"
+    "\n2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n   \x1b[94mAF-FAKE-SECRET\x1b[0m\n"
+    "\n\x1b[90mContinue only if you started this login in Codex. If a website or another person gave you this code, cancel.\x1b[0m\n")
+if (root/'empty-output').exists(): sys.exit(0)
+if (root/'invalid-prompt').exists(): prompt=prompt.replace('0.159.2','0.159.3')
+print(prompt,flush=True)
+while not (root/'complete').exists(): time.sleep(.01)
+if (root/'late-output').exists(): print('access_token=AF-FAKE-SECRET',flush=True)
+if (root/'nonzero-exit').exists(): sys.exit(1)
+if not (root/'status-fails').exists(): (root/'ready').touch()
+print('Successfully logged in',file=sys.stderr)
 "#).unwrap();
         std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::write(root.path().join("host.py"), r#"import os,sys,subprocess,threading
@@ -161,6 +165,13 @@ sys.exit(p.returncode)
         }
     }
 
+    fn mode(&self, mode: &str) {
+        let auth = self.root.path().join("auth");
+        std::fs::create_dir_all(&auth).unwrap();
+        std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(auth.join(mode), "").unwrap();
+    }
+
     fn complete(&self) {
         std::fs::write(self.root.path().join("auth/complete"), "").unwrap();
     }
@@ -272,7 +283,78 @@ fn private_device_handoff_finishes_setup_without_model_calls_or_secret_output() 
     assert_eq!(state(&output)["state"], "authenticated_unverified");
     assert_eq!(state(&output)["verified"], false);
     assert_eq!(state(&output)["registered"], true);
+    assert_eq!(
+        std::fs::read_to_string(fixture.root.path().join("auth/status-probes")).unwrap(),
+        "status\n"
+    );
     fixture.no_secrets(&output);
+}
+
+#[test]
+fn codex_device_completion_requires_successful_native_exit_and_separate_status() {
+    for mode in ["nonzero-exit", "status-fails", "late-output"] {
+        let fixture = Fixture::new();
+        fixture.mode(mode);
+        let (child, mut host) = fixture.begin();
+        let request = read(&mut host);
+        approve(&mut host, &request);
+        assert_eq!(read(&mut host)["action"], "challenge");
+        assert!(!fixture.root.path().join("auth/status-probes").exists());
+        send(&mut host, &response("delivered", &request));
+        fixture.complete();
+        let output = fixture.result(child);
+        assert!(!output.status.success());
+        assert_eq!(
+            state(&output)["state"],
+            if mode == "late-output" {
+                "unsupported"
+            } else {
+                "authentication_failed"
+            }
+        );
+        assert_eq!(
+            fixture.root.path().join("auth/status-probes").exists(),
+            mode == "status-fails"
+        );
+        assert!(
+            !fixture
+                .root
+                .path()
+                .join("config/af/providers.toml")
+                .exists()
+        );
+        fixture.no_secrets(&output);
+    }
+}
+
+#[test]
+fn codex_unknown_version_or_success_without_a_challenge_cannot_register() {
+    for mode in ["invalid-prompt", "empty-output"] {
+        let fixture = Fixture::new();
+        fixture.mode(mode);
+        let (child, mut host) = fixture.begin();
+        let request = read(&mut host);
+        approve(&mut host, &request);
+        let output = fixture.result(child);
+        assert!(!output.status.success());
+        assert_eq!(
+            state(&output)["state"],
+            if mode == "invalid-prompt" {
+                "unsupported"
+            } else {
+                "authentication_failed"
+            }
+        );
+        assert!(!fixture.root.path().join("auth/status-probes").exists());
+        assert!(
+            !fixture
+                .root
+                .path()
+                .join("config/af/providers.toml")
+                .exists()
+        );
+        fixture.no_secrets(&output);
+    }
 }
 
 #[test]
@@ -548,14 +630,15 @@ assert os.environ.get('HTTP_PROXY')=='http://fixture.invalid:8080'
 assert os.environ.get('SSL_CERT_FILE')=='/fixture/certificate.pem'
 assert all(name not in os.environ for name in ['OPENAI_API_KEY','ANTHROPIC_API_KEY','NODE_OPTIONS','NODE_TLS_REJECT_UNAUTHORIZED','BROWSER','DISPLAY'])
 url='https://claude.ai/oauth/authorize?state=AF-PRIVATE-FIXTURE'
+print('Opening browser to sign in…',flush=True)
+print("If the browser didn't open, visit: "+url,flush=True)
+print('Paste code here if prompted > ',end='',flush=True)
 if (root/'callback').exists():
-    print('\x1b]8;;'+url+'\x1b\\Open browser\x1b]8;;\x1b\\',flush=True)
     while not (root/'complete').exists():time.sleep(.01)
 else:
-    print(url,flush=True)
-    print('Paste the browser code: ',flush=True)
     if sys.stdin.readline().strip()!='AF-ONE-TIME-FIXTURE':sys.exit(65)
 (root/'ready').touch()
+print('Login successful.',flush=True)
 "#).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
         if callback {
