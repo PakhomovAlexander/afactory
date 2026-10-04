@@ -18,7 +18,7 @@ use serde_json::Value;
 use super::{Effect, Pane, Row};
 use crate::task_execution;
 use crate::tui::keymap::Key;
-use crate::tui::paint::{self, Paint};
+use crate::tui::paint::{self, Paint, Span, Tone};
 use crate::tui::scope::Scope;
 use crate::tui::tree::Item;
 
@@ -85,6 +85,15 @@ impl State {
             State::Awaiting => "awaiting approval",
             State::Done => "done",
             State::Failed => "failed",
+        }
+    }
+
+    /// The state's tone: a Task awaiting approval needs a person, as a failed one does.
+    pub(crate) fn tone(self) -> Tone {
+        match self {
+            State::Running => Tone::Active,
+            State::Done => Tone::Ok,
+            State::Awaiting | State::Failed => Tone::Fail,
         }
     }
 }
@@ -493,20 +502,22 @@ fn clip(text: &str, width: usize) -> String {
     }
 }
 
-/// A bar row, `task-id  outcome  progress%`, fitted to `width` columns. The Task id tells
+/// A bar row, `task-id  outcome  progress%`, fitted to `width` columns with the progress
+/// right-aligned in four, so every row's progress chip stands in one column. The Task id tells
 /// the rows apart, so the outcome yields first: it is cut, and below three columns left out;
 /// only then is the id cut.
 pub(crate) fn fit(task_id: &str, outcome: &str, percent: &str, width: usize) -> String {
-    let full = format!("{task_id}  {outcome}  {percent}");
-    if full.len() <= width {
-        return full;
-    }
-    let room = width.saturating_sub(task_id.len() + 4 + percent.len());
-    if room >= 3 {
-        return format!("{task_id}  {}  {percent}", clip(outcome, room));
-    }
-    let id = clip(task_id, width.saturating_sub(2 + percent.len()).max(1));
-    format!("{id}  {percent}")
+    let percent = format!("{percent:>4}");
+    let room = width.saturating_sub(percent.len() + 2);
+    let full = format!("{task_id}  {outcome}");
+    let left = if full.len() <= room {
+        full
+    } else if room >= task_id.len() + 2 + 3 {
+        format!("{task_id}  {}", clip(outcome, room - task_id.len() - 2))
+    } else {
+        clip(task_id, room.max(1))
+    };
+    format!("{left:<room$}  {percent}")
 }
 
 /// A stage's node without the root call and `nodes.` segments: `root.nodes.check` is `check`.
@@ -838,21 +849,28 @@ impl Detail {
         } else {
             "configured"
         };
-        let mut line = format!(
-            "PLAN  {}  {origin}  STATE {}",
-            short(document["plan_id"].as_str()),
-            state.word()
+        let lead = format!(
+            "PLAN  {}  {origin}  STATE",
+            short(document["plan_id"].as_str())
         );
+        // The chip takes the spaces either side of the state word.
+        let mut line = String::new();
         let span = span_of(document);
         let elapsed = span.map(|(first, last)| match state {
             State::Done | State::Failed => last.saturating_sub(first),
             State::Running | State::Awaiting => now_ms.saturating_sub(first),
         });
         if let (Some((first, _)), Some(elapsed)) = (span, elapsed) {
-            line.push_str(&format!("  started {}", clock(first)));
+            line.push_str(&format!(" started {}", clock(first)));
             line.push_str(&format!("  elapsed {}", duration(elapsed)));
         }
-        rows.push(Row::plain(line));
+        rows.push(Row {
+            spans: vec![
+                Span::new(lead, Paint::Plain),
+                Span::chip(state.word(), state.tone()),
+                Span::new(line, Paint::Plain),
+            ],
+        });
         rows.push(Row::plain(format!(
             "SNAP  source {}  derived {}  policy {}",
             short(plan["inputs"]["source"]["snapshot_id"].as_str()),
@@ -956,16 +974,20 @@ fn stage_row(stage: &Stage) -> Row {
         Mark::Skipped => "skipped".to_owned(),
         Mark::Ok | Mark::NotReached => String::new(),
     };
-    let line = format!(
-        "  {}  {name:<STAGE$} {wall:>7} {tokens:>12}  {note}",
-        stage.mark.text()
-    );
-    let paint = match stage.mark {
-        Mark::Failed => Paint::Error,
-        Mark::NotReached | Mark::Skipped => Paint::Muted,
-        Mark::Ok | Mark::Running => Paint::Plain,
+    let line = format!("  {name:<STAGE$} {wall:>7} {tokens:>12}  {note}");
+    let (mark, paint) = match stage.mark {
+        Mark::Ok => (Paint::Chip(Tone::Ok), Paint::Plain),
+        Mark::Running => (Paint::Chip(Tone::Active), Paint::Plain),
+        Mark::Failed => (Paint::Chip(Tone::Fail), Paint::Plain),
+        Mark::NotReached | Mark::Skipped => (Paint::Muted, Paint::Muted),
     };
-    Row::painted(line.trim_end(), paint)
+    Row {
+        spans: vec![
+            Span::new("  ", paint),
+            Span::new(stage.mark.text(), mark),
+            Span::new(line.trim_end(), paint),
+        ],
+    }
 }
 
 /// What one read of the scope's Task state found.
@@ -1290,7 +1312,7 @@ impl TasksPane {
             (Some(id), Some(Err(error))) => vec![
                 Row::painted(format!("TASK  {id}"), Paint::Title),
                 Row::blank(),
-                Row::painted(format!("cannot be read: {error}"), Paint::Error),
+                Row::error("error", format!("cannot be read: {error}")),
             ],
             _ => self.folder_rows(),
         };
@@ -1299,7 +1321,7 @@ impl TasksPane {
     fn folder_rows(&self) -> Vec<Row> {
         let mut rows = vec![Row::painted(&self.title, Paint::Title), Row::blank()];
         if let Some(error) = &self.error {
-            rows.push(Row::painted(error, Paint::Error));
+            rows.push(Row::error("error", error));
         } else if self.stores.is_empty() {
             rows.push(Row::plain("No Task state is recorded here yet."));
         }
@@ -1339,9 +1361,9 @@ impl TasksPane {
                         rows.push(Row::painted(line, Paint::Error));
                     }
                     let cause = format!("this Store cannot be read: {error}");
-                    for line in bounded(&cause, MAIN, "  ") {
-                        rows.push(Row::painted(line, Paint::Error));
-                    }
+                    let chip = "error";
+                    let lines = bounded(&cause, MAIN - (chip.len() + 3), "");
+                    rows.extend(Row::errors(chip, lines));
                 }
                 Ok(tasks) if tasks.is_empty() => {
                     rows.push(Row::plain(format!("{dir}: no Tasks")));
@@ -1383,7 +1405,14 @@ fn folder_row(task: &Listed) -> Row {
     );
     match &task.summary {
         Ok(_) => Row::plain(line),
-        Err(error) => Row::painted(format!("{line}  cannot be read: {error}"), Paint::Error),
+        Err(error) => Row {
+            spans: vec![
+                Span::new(format!("{line} "), Paint::Plain),
+                Span::chip("error", Tone::Fail),
+                Span::new(" ", Paint::Plain),
+                Span::new(format!("cannot be read: {error}"), Paint::Error),
+            ],
+        },
     }
 }
 
@@ -1396,6 +1425,7 @@ fn store_items(store: &Store, depth: usize) -> Vec<Item> {
                 id: TasksPane::id(store, UNREADABLE),
                 label: "! Store unreadable".to_owned(),
                 muted: true,
+                tone: None,
                 children: None,
             }];
         }
@@ -1405,10 +1435,12 @@ fn store_items(store: &Store, depth: usize) -> Vec<Item> {
     for state in State::ALL {
         let mut children = Vec::new();
         for task in tasks.iter().filter(|task| task.state() == state) {
+            let muted = task.summary.is_err();
             children.push(Item {
                 id: TasksPane::id(store, &task.task_id),
                 label: fit(&task.task_id, task.outcome(), &task.percent(), width),
-                muted: task.summary.is_err(),
+                muted,
+                tone: (!muted).then(|| state.tone()),
                 children: None,
             });
         }
@@ -1420,6 +1452,7 @@ fn store_items(store: &Store, depth: usize) -> Vec<Item> {
             id: TasksPane::id(store, &folder),
             label: format!("{folder} ({})", children.len()),
             muted: false,
+            tone: None,
             children: Some(children),
         });
     }
@@ -1460,6 +1493,7 @@ impl Pane for TasksPane {
                         id: format!("{repo}/"),
                         label: format!("{repo}/ ({count})"),
                         muted: store.tasks.is_err(),
+                        tone: None,
                         children: Some(children),
                     });
                 }
@@ -1471,6 +1505,7 @@ impl Pane for TasksPane {
                 id: EARLIER.to_owned(),
                 label: format!("! {count} old {stores}"),
                 muted: true,
+                tone: None,
                 children: None,
             });
         }

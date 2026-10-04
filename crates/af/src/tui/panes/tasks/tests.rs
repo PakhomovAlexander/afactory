@@ -4,6 +4,14 @@ use serde_json::json;
 
 use super::*;
 
+#[test]
+fn a_task_awaiting_approval_needs_a_person_as_a_failed_one_does() {
+    assert_eq!(State::Running.tone(), Tone::Active);
+    assert_eq!(State::Done.tone(), Tone::Ok);
+    assert_eq!(State::Awaiting.tone(), Tone::Fail);
+    assert_eq!(State::Failed.tone(), Tone::Fail);
+}
+
 fn document(state: &Path, task_id: &str) -> Value {
     task_execution::inspection_document(state, task_id, true)
         .unwrap()
@@ -111,8 +119,17 @@ fn tasks_group_by_phase_and_by_the_acceptance_a_finished_task_records() {
 #[test]
 fn a_bar_row_fits_its_width_cutting_the_outcome_first() {
     assert_eq!(fit("t-1", "verified", "100%", 19), "t-1  verified  100%");
-    assert_eq!(fit("t-01", "verified", "50%", 17), "t-01  verif~  50%");
-    assert_eq!(fit("pagination", "verified", "50%", 19), "pagination  50%");
+    assert_eq!(fit("t-01", "verified", "50%", 17), "t-01  veri~   50%");
+    // Wider than the row needs: padded so the progress ends at the bar's edge.
+    let wide = fit("t-01", "verified", "50%", 30);
+    assert_eq!(
+        (wide.len(), wide.ends_with("verified             50%")),
+        (30, true)
+    );
+    assert_eq!(
+        fit("pagination", "verified", "50%", 19),
+        "pagination      50%"
+    );
     assert_eq!(
         fit("pagination-cli", "verified", "100%", 20),
         "pagination-cli  100%"
@@ -123,7 +140,7 @@ fn a_bar_row_fits_its_width_cutting_the_outcome_first() {
     );
     assert_eq!(
         fit("pagination-unfinished", "failed", "0%", 17),
-        "pagination-u~  0%"
+        "pagination~    0%"
     );
     let progress = Progress {
         settled: 1,
@@ -211,7 +228,12 @@ fn stage_marks_and_progress_follow_the_recorded_task() {
     }
     expected[1] = Mark::Failed;
     assert_eq!(marks(&state, &retrying), with(expected));
-    let row = stage_row(&stage(&state, &retrying, "implement")).text();
+    let row = stage_row(&stage(&state, &retrying, "implement"));
+    // The mark is the chip; the rest of the row is plain text on the terminal's ground.
+    let fail = Paint::Chip(Tone::Fail);
+    let paints: Vec<Paint> = row.spans.iter().map(|span| span.paint).collect();
+    assert_eq!(paints, [Paint::Plain, fail, Paint::Plain]);
+    let row = row.text();
     assert!(row.contains("[!!]  implement"), "{row}");
     assert!(row.ends_with("failed, attempt 1/1"), "{row}");
 
@@ -1120,7 +1142,7 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
         .unwrap_or_else(|| panic!("{rows:#?}"));
     assert_eq!(
         rows[at + 1],
-        "  this Store cannot be read: permission denied"
+        " error  this Store cannot be read: permission denied"
     );
     assert!(
         !rows.iter().any(|row| row.contains("TaskTransition")),
@@ -1170,7 +1192,7 @@ fn a_long_state_path_keeps_every_row_within_the_pane() {
     assert!(location.contains("state/af/task/local"), "{rows:#?}");
     assert!(
         rows.iter()
-            .any(|row| row == "  this Store cannot be read: file is not a database"),
+            .any(|row| row == " error  this Store cannot be read: file is not a database"),
         "{rows:#?}"
     );
 }

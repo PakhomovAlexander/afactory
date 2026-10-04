@@ -774,6 +774,113 @@ fn the_tasks_pane_golden_at_100x30_and_its_verbs() {
     assert_eq!(app.opened, Opened::Item(Tab::Pipelines, package.to_owned()));
 }
 
+/// The first screen row holding `needle`, and the column it starts at.
+fn find(frame: &Frame, needle: &str) -> (usize, usize) {
+    let text = frame.text();
+    let found = text
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| line.find(needle).map(|column| (row, column)));
+    found.unwrap_or_else(|| panic!("{needle:?} is not on the screen:\n{text}"))
+}
+
+/// The paints of the cells `needle` covers where it first shows.
+fn paints_of(frame: &Frame, needle: &str) -> Vec<Paint> {
+    let (row, column) = find(frame, needle);
+    (column..column + needle.len())
+        .map(|column| frame.paint_at(row, column))
+        .collect()
+}
+
+#[test]
+fn states_are_chips_in_the_bar_the_task_header_and_its_stages() {
+    let (_temp, root) = temp_root();
+    let (repo, _state) = hub_with_tasks(&root);
+    let mut app = app_at(&root, repo);
+    let mut host = Recorder::default();
+    let ok = Paint::Chip(paint::Tone::Ok);
+    press(&mut app, &mut host, b"]]]]]]]]jj");
+    assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
+    // The bar row ends in its percentage as a chip, which keeps its fill on the cursor row.
+    let frame = app.frame(100, 30);
+    let (row, column) = find(&frame, "  100%");
+    assert!(column + 6 < BAR_WIDTH, "{}", frame.text());
+    assert_eq!(frame.paint_at(row, column), Paint::Cursor);
+    assert!((column + 1..column + 6).all(|at| frame.paint_at(row, at) == ok));
+    press(&mut app, &mut host, b"\r");
+    let frame = app.frame(100, 30);
+    // The state word takes a space either side, and the text is the golden's.
+    assert_eq!(paints_of(&frame, "STATE"), vec![Paint::Plain; 5]);
+    assert_eq!(paints_of(&frame, " done "), vec![ok; 6]);
+    assert_eq!(paints_of(&frame, "[ok]  inputs")[..4], vec![ok; 4]);
+    assert_eq!(
+        paints_of(&frame, "[ok]  inputs")[4..],
+        vec![Paint::Plain; 8]
+    );
+    assert_eq!(masked(&frame.text()), TASK);
+}
+
+#[test]
+fn bar_chips_are_one_width_for_right_aligned_progress() {
+    for (label, chip) in [
+        ("gg-51945-c~  100%", " 100%"),
+        ("gg-51945-c~   63%", "  63%"),
+        ("gg-51945-c~    0%", "   0%"),
+    ] {
+        let text = format!("        {label}");
+        let at = chip_start(&text).unwrap();
+        assert_eq!(&text[at..], chip, "{label}");
+    }
+    assert_eq!(chip_start("no-space"), None);
+}
+
+#[test]
+fn a_provider_status_is_a_chip_and_a_muted_candidate_stays_muted() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b"]]\r");
+    let frame = app.frame(100, 30);
+    let ok = Paint::Chip(paint::Tone::Ok);
+    assert_eq!(paints_of(&frame, " authenticated "), vec![ok; 15]);
+    let (row, column) = find(&frame, "not authenticated");
+    assert!((column..column + 17).all(|at| frame.paint_at(row, at) == Paint::Muted));
+}
+
+#[test]
+fn the_status_line_turns_pink_while_it_carries_an_error() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let frame = app.frame(100, 30);
+    assert!((0..100).all(|at| frame.paint_at(29, at) == Paint::Status));
+    app.say_error("cannot read the scope");
+    let frame = app.frame(100, 30);
+    assert!(frame.text().ends_with("cannot read the scope\n"));
+    assert!((0..100).all(|at| frame.paint_at(29, at) == Paint::Alert));
+    app.say("read again");
+    let frame = app.frame(100, 30);
+    assert!((0..100).all(|at| frame.paint_at(29, at) == Paint::Status));
+}
+
+#[test]
+fn the_help_banner_draws_the_pink_worker_with_its_eyes() {
+    let rows = banner_rows();
+    let text: Vec<String> = rows.iter().map(Row::text).collect();
+    // The drawing is brand/ascii.txt's, cell for cell.
+    assert_eq!(text[2], "  #  ###  #      agent pipelines made fast");
+    let paints: Vec<Paint> = rows[2]
+        .spans
+        .iter()
+        .flat_map(|span| std::iter::repeat_n(span.paint, span.text.len()))
+        .collect();
+    let (body, eye) = (Paint::Mascot, Paint::Eye);
+    assert_eq!(
+        paints[2..11],
+        [body, eye, eye, body, body, body, eye, eye, body]
+    );
+    assert!(paints[11..].iter().all(|paint| *paint == Paint::Plain));
+}
+
 #[test]
 fn a_store_this_binary_cannot_read_is_an_error_row_naming_it() {
     let (_temp, root) = temp_root();
@@ -793,7 +900,7 @@ fn a_store_this_binary_cannot_read_is_an_error_row_naming_it() {
     // The Store's location, then its cause on a row of its own.
     let at = rows.iter().position(|row| *row == format!("~/{shown}:"));
     let at = at.unwrap_or_else(|| panic!("{rows:#?}"));
-    let cause = "  this Store cannot be read: ";
+    let cause = " error  this Store cannot be read: ";
     assert!(
         rows[at + 1].starts_with(cause) && rows[at + 1].len() > cause.len(),
         "{rows:#?}"

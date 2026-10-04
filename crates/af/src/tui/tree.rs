@@ -1,6 +1,8 @@
 //! The left bar: a folding tree whose depth-1 folders are the four fixed tabs, with vim folds,
 //! motion and search over it.
 
+use super::paint::Tone;
+
 /// The four fixed folders under the scope root, in bar order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Tab {
@@ -40,6 +42,9 @@ pub(crate) struct Item {
     pub(crate) label: String,
     /// Discovered but not selectable, like an ambient Provider candidate.
     pub(crate) muted: bool,
+    /// The entry's state: the label ends in a chip of it, from its last word and the spaces
+    /// before that word but one.
+    pub(crate) tone: Option<Tone>,
     /// `Some` for a group that folds, holding its entries; `None` for an entry.
     pub(crate) children: Option<Vec<Item>>,
 }
@@ -50,6 +55,7 @@ struct Node {
     id: String,
     label: String,
     muted: bool,
+    tone: Option<Tone>,
     folded: bool,
     children: Vec<Node>,
 }
@@ -61,6 +67,7 @@ impl Node {
             id: tab.name().to_owned(),
             label: format!("{}/", tab.name()),
             muted: false,
+            tone: None,
             folded: false,
             children: Vec::new(),
         }
@@ -79,6 +86,7 @@ impl Node {
             id: item.id,
             label: item.label,
             muted: item.muted,
+            tone: item.tone,
             folded: false,
             children,
         }
@@ -93,6 +101,7 @@ pub(crate) struct Row {
     pub(crate) id: String,
     pub(crate) label: String,
     pub(crate) muted: bool,
+    pub(crate) tone: Option<Tone>,
     /// `Some(folded)` for the root and the folders, `None` for an item.
     pub(crate) fold: Option<bool>,
     /// Child indices from the root to this node.
@@ -123,6 +132,7 @@ impl Tree {
             id: String::new(),
             label: root.to_owned(),
             muted: false,
+            tone: None,
             folded: false,
             children: Tab::ALL.into_iter().map(Node::folder).collect(),
         };
@@ -395,6 +405,7 @@ fn visit(node: &Node, depth: usize, path: &mut Vec<usize>, rows: &mut Vec<Row>) 
         id: node.id.clone(),
         label: node.label.clone(),
         muted: node.muted,
+        tone: node.tone,
         fold: match node.kind {
             NodeKind::Item(_) => None,
             NodeKind::Root | NodeKind::Folder(_) | NodeKind::Group(_) => Some(node.folded),
@@ -429,6 +440,7 @@ mod tests {
             id: id.to_owned(),
             label: id.to_owned(),
             muted: false,
+            tone: None,
             children: None,
         }
     }
@@ -566,6 +578,7 @@ mod tests {
             id: id.to_owned(),
             label: format!("{id} ({})", children.len()),
             muted: false,
+            tone: None,
             children: Some(children),
         }
     }

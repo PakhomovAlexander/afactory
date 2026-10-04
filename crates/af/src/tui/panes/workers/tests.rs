@@ -4,6 +4,34 @@ use super::super::pipelines::git;
 use super::*;
 use crate::config;
 
+#[test]
+fn tally_counts_above_zero_are_chips_in_their_tone() {
+    let tally = Tally {
+        open: 1,
+        ok: 2,
+        released: 3,
+        ..Tally::default()
+    };
+    let rows = tally_rows(&tally);
+    let expected = "attempts  reserved 1  settled ok 2  settled failed 0  released 3";
+    assert_eq!(rows[0].text(), expected);
+    let spans: Vec<(&str, Paint)> = rows[0]
+        .spans
+        .iter()
+        .map(|span| (span.text.as_str(), span.paint))
+        .collect();
+    assert_eq!(
+        spans,
+        [
+            ("attempts ", Paint::Plain),
+            (" reserved 1 ", Paint::Chip(Tone::Active)),
+            (" settled ok 2 ", Paint::Chip(Tone::Ok)),
+            (" settled failed 0 ", Paint::Plain),
+            (" released 3", Paint::Plain),
+        ]
+    );
+}
+
 fn commit_all(root: &Path, message: &str) {
     if !root.join(".git").exists() {
         for args in [
@@ -253,13 +281,13 @@ fn a_failed_read_of_head_keeps_the_last_entries_under_the_error() {
     assert!(pane.items()[0].muted);
     let rows = texts(pane.rows());
     assert!(
-        rows[0].starts_with("HEAD could not be read; shown from the last successful read"),
+        rows[0].starts_with(" error  HEAD could not be read; shown from the last successful read"),
         "{rows:#?}"
     );
     pane.open(None);
     let rows = texts(pane.rows());
     assert!(
-        rows[2].starts_with("HEAD could not be read; the entries below"),
+        rows[2].starts_with(" error  HEAD could not be read; the entries below"),
         "{rows:#?}"
     );
     // The kept entries still follow the working tree: drift is read against their commit.
