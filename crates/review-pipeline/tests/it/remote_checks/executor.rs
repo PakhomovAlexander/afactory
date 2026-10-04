@@ -811,7 +811,7 @@ fn a_merge_proof_is_read_again_for_every_batch_of_checks() {
             assert!(waited.elapsed() < LIMIT, "the first proof never happened");
             std::thread::sleep(Duration::from_millis(20));
         }
-        std::fs::write(state.join("merge-mode"), "other-tree").unwrap();
+        Remote::replace_in(&state, "merge-mode", b"other-tree");
         let done = json!({"total_count": 1, "jobs": [{
             "id": 1004, "run_id": 80, "run_attempt": 1, "name": "slow / build",
             "status": "completed", "conclusion": "success",
@@ -819,7 +819,7 @@ fn a_merge_proof_is_read_again_for_every_batch_of_checks() {
             "html_url": "https://github.com/octo/gate/actions/runs/80/job/1004",
             "steps": [{"name": "Set up job", "status": "completed",
                        "conclusion": "success", "number": 1}]}]});
-        std::fs::write(state.join("jobs-80-1.json"), done.to_string()).unwrap();
+        Remote::replace_in(&state, "jobs-80-1.json", done.to_string().as_bytes());
     });
     let outcomes = phase(
         &setup.cas,

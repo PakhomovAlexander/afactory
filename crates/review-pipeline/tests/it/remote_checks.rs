@@ -179,13 +179,26 @@ impl Remote {
     }
 
     fn serve(&self, document: &str, as_name: &str) {
-        std::fs::copy(
+        // Written, not copied: a copy would keep the read-only mode a Task check's source tree
+        // gives the fixture, and a test could then never serve another document in its place.
+        let bytes = std::fs::read(
             workspace_root()
                 .join("fixtures/remote-checks/github")
                 .join(document),
-            self.state.join(as_name),
         )
         .unwrap();
+        self.replace(as_name, &bytes);
+    }
+
+    /// Put `bytes` at `name` in one step, so the fake never reads a half-written document.
+    pub fn replace(&self, name: &str, bytes: &[u8]) {
+        Self::replace_in(&self.state, name, bytes);
+    }
+
+    pub fn replace_in(state: &Path, name: &str, bytes: &[u8]) {
+        let staged = state.join(format!("{name}.staged"));
+        std::fs::write(&staged, bytes).unwrap();
+        std::fs::rename(&staged, state.join(name)).unwrap();
     }
 
     /// Serve `text` as one job's log; a job without one answers 404.
