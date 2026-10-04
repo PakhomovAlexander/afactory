@@ -74,6 +74,10 @@ uncommitted work. Overwriting the current checkout would make unrelated human wo
 recovery; publishing is a human action and would widen the credential and remote-authority
 boundary; delivering an unverified Snapshot would bypass the acceptance Gate and evaluator
 contract ([ADR-0031](adr/0031-deliver-verified-tasks-to-new-local-worktrees.md)).
+The gate branches and draft pull request of a Remote Check are not delivery: they exist only
+under an operator's mapping, carry commits built from Task Snapshots, are never merged, and the
+gate pull request is never used as a delivery pull request
+([ADR-0136](adr/0136-run-a-declared-check-through-a-gate-pull-request.md)).
 
 ### Model output as plan approval
 

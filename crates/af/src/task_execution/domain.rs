@@ -1,15 +1,80 @@
 //! Select an installed domain's policy and environment without manufacturing code authority.
 use super::*;
 use review_pipeline::task::host::{DataTaskEnvironment, TaskEnvironment};
+use review_pipeline::task::remote_check::RemoteCheckHost;
 use std::io::Write;
 
 pub(super) fn code_domain(
     cas: &Cas,
     policy_id: &str,
     graph: CompiledTask,
+    state: &Path,
 ) -> Result<CodeTaskDomain, String> {
     let mapping = std::env::var_os("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE").map(PathBuf::from);
-    Ok(CodeTaskDomain::captured(cas, policy_id, graph)?.with_rust_toolchain_mapping(mapping))
+    Ok(CodeTaskDomain::captured(cas, policy_id, graph)?
+        .with_rust_toolchain_mapping(mapping)
+        .with_remote_checks(remote_checks(state)?))
+}
+
+/// The machine-local Remote Check configuration (ADR-0136): the operator's mapping, resolved
+/// once here as the Rust toolchain mapping is, and the owner every gate commit names. Candidate
+/// commands never receive the variable or the path.
+pub(super) fn remote_checks(state: &Path) -> Result<RemoteCheckHost, String> {
+    let database = state.join("events.sqlite");
+    Ok(RemoteCheckHost {
+        mapping: remote_check_mapping()?,
+        owner: Some(std::sync::Arc::new(move |task_id: &str| {
+            task_owner(&database, task_id)
+        })),
+        github_pr: Default::default(),
+    })
+}
+
+/// `AF_TASK_REMOTE_CHECK_POLICY_FILE` when set (it must be absolute), otherwise
+/// `$XDG_CONFIG_HOME/af/remote-checks.toml`. No locatable configuration home is no mapping.
+fn remote_check_mapping() -> Result<Option<PathBuf>, String> {
+    if let Some(path) = std::env::var_os("AF_TASK_REMOTE_CHECK_POLICY_FILE") {
+        let path = PathBuf::from(path);
+        if path.as_os_str().is_empty() || !path.is_absolute() {
+            return Err("AF_TASK_REMOTE_CHECK_POLICY_FILE must be an absolute path".into());
+        }
+        return Ok(Some(path));
+    }
+    Ok(crate::config::config_home()
+        .ok()
+        .map(|home| home.join("af").join("remote-checks.toml")))
+}
+
+/// The Task's durable identity in this Store: a digest of the transition that opened its log.
+/// It survives every resume, since a log only grows, and differs between Stores, since the
+/// opening names its writer and the Store's own clock (ADR-0136).
+fn task_owner(database: &Path, task_id: &str) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let store = EventStore::open_read_only(database).map_err(|e| e.to_string())?;
+    let run_id = review_store::store::task::task_run_id(task_id).map_err(|e| e.to_string())?;
+    let first = store
+        .replay(&run_id)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .next()
+        .ok_or("Task has no log to own gate commits")?;
+    let transition =
+        review_store::store::task::read_task_transition(&first).map_err(|e| e.to_string())?;
+    if !matches!(
+        transition.change,
+        review_core::task::event::TaskChangeV1::Opened { .. }
+    ) {
+        return Err("Task log does not begin with its opening".into());
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"af/remote-check-owner/v1\0");
+    digest.update(task_id.as_bytes());
+    digest.update(b"\0");
+    digest.update(serde_json::to_vec(&first.payload).map_err(|e| e.to_string())?);
+    Ok(format!(
+        "sha256:{}",
+        review_core::hex::encode(&digest.finalize())
+    ))
 }
 
 pub(super) fn capture_policy<T: Serialize + serde::de::DeserializeOwned>(

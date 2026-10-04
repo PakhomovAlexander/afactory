@@ -10,6 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use review_core::{
     EventType,
     exec::{Arg, ArgError, Command},
+    task::remote_check::RemoteCheckV1,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +30,15 @@ pub struct CheckDefinition {
     pub command: Command,
     /// A required check blocks the gate. Optional checks are recorded and reported, never gating.
     pub required: bool,
+    /// The same check run by a remote executor (ADR-0136). Committed policy only declares it;
+    /// an operator's machine-local mapping selects it. Absent, a definition serializes exactly
+    /// as it did before the table existed.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub remote: Option<RemoteCheckV1>,
 }
 
 impl CheckDefinition {
@@ -37,6 +47,7 @@ impl CheckDefinition {
             name: name.into(),
             command,
             required: true,
+            remote: None,
         }
     }
 
@@ -64,6 +75,15 @@ pub struct CheckResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stderr: Option<String>,
     pub required: bool,
+    /// The `af/RemoteCheckEvidence@1` artifact a remote result was derived from. A result that
+    /// carries it is the second shape (ADR-0136): no program, exit code or output, and no
+    /// arguments; a local result never carries it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub remote: Option<String>,
 }
 
 /// Host-clock observation of the shared check boundary. It is retained separately from the
@@ -98,6 +118,39 @@ pub enum CheckEnding {
 impl CheckResult {
     pub fn passed(&self) -> bool {
         self.status == CheckStatus::Passed
+    }
+
+    /// A remote result: the status its evidence derives, the evidence artifact, and nothing a
+    /// local command would have produced.
+    pub fn remote(
+        definition: &CheckDefinition,
+        status: CheckStatus,
+        reason: Option<String>,
+        evidence_id: String,
+    ) -> CheckResult {
+        CheckResult {
+            name: definition.name.clone(),
+            status,
+            exit_code: None,
+            reason,
+            program: None,
+            args: Vec::new(),
+            stdout: None,
+            stderr: None,
+            required: definition.required,
+            remote: Some(evidence_id),
+        }
+    }
+
+    /// Whether this result is exactly one of the two shapes: local (no `remote`) or remote
+    /// (`remote`, and no program, exit code, output or arguments). A mixture is neither.
+    pub fn has_one_shape(&self) -> bool {
+        self.remote.is_none()
+            || (self.program.is_none()
+                && self.exit_code.is_none()
+                && self.stdout.is_none()
+                && self.stderr.is_none()
+                && self.args.is_empty())
     }
 }
 
@@ -421,6 +474,7 @@ fn base_result(definition: &CheckDefinition) -> CheckResult {
         stdout: None,
         stderr: None,
         required: definition.required,
+        remote: None,
     }
 }
 

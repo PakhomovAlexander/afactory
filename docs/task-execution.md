@@ -62,6 +62,13 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   arithmetic. Neither invokes a Provider, and an evaluator gated on a comparison cannot change
   it ([ADR-0132](adr/0132-measure-and-compare-source-candidates-in-the-kernel.md),
   [experiments](task-execution/experiments.md)).
+- A declared check may also run as a Remote Check: an operator's machine-local mapping, never
+  committed policy, hands it to the repository's `pull_request` workflow through two
+  `af-gate/<task-id>/` branches built from Snapshots and one draft pull request. Local checks
+  run first; the result counts only after the merge ref reads back as the candidate tree, and
+  every remote fact is one `af/RemoteCheckEvidence@1`
+  ([ADR-0136](adr/0136-run-a-declared-check-through-a-gate-pull-request.md),
+  [Remote Checks](task-execution/remote-checks.md)).
 - A report is accepted by an independent verifier, not by its author, and every report receipt
   names the source Snapshot its repository citations were resolved against. A report Task
   allows no `write-source`, has no `snapshot` output and is never delivered; `af task output`
@@ -149,6 +156,7 @@ Start with the Task-file walkthrough, then follow the composition pages in order
 - [Issues](task-execution/issues.md) — read-only local/Jira requirement capture and explicit revision refresh.
 - [Documents](task-execution/document.md) — document Tasks with captured sources, content checks and independent acceptance.
 - [Experiments](task-execution/experiments.md) — measured baselines and candidates, the deterministic comparison and the evaluator gated on it.
+- [Remote Checks](task-execution/remote-checks.md) — declare a check's `remote` table, map it on one machine, and read the gate pull request's evidence.
 - [Run reports](task-execution/run-reports.md) — scheduler diagnostics and domain publication recovery.
 - [Self-optimizer economics](task-execution/self-optimizer.md) — declared history capture, exact project economics, the bounded candidate experiment and the light optimizer path.
 - [Review report inspection](task-execution/review-report-inspection.md) — exact current Task accounting beside immutable report snapshots.

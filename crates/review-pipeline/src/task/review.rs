@@ -343,6 +343,12 @@ impl ReviewTaskDomain {
         self
     }
 
+    /// Machine-local Remote Check configuration (ADR-0136) for the checks this domain runs.
+    pub fn with_remote_checks(mut self, remote: super::remote_check::RemoteCheckHost) -> Self {
+        self.code = self.code.with_remote_checks(remote);
+        self
+    }
+
     /// Chosen by the captured Task-kind profile, never by a Worker response or display name.
     pub fn with_review_task(mut self, review: bool) -> Self {
         self.review_task = review;

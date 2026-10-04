@@ -14,6 +14,9 @@ use review_core::task::measurement::{
 };
 use review_core::task::pipeline::*;
 use review_core::task::plan::ExecutionPlanV1;
+use review_core::task::remote_check::{
+    REMOTE_CHECK_EVIDENCE_V1, RemoteCheckEvidenceV1, RemoteCheckReasonV1,
+};
 use review_core::task::runtime::{
     TASK_RUNTIME_EVIDENCE_V1, TaskRuntimeCheckOutcomeV1, TaskRuntimeCheckV1, TaskRuntimeEvidenceV1,
     TaskRuntimeSpanKindV1, TaskRuntimeSpanV1,
@@ -32,6 +35,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::host::TaskDomain;
+use super::remote_check::github_pr::{self, RemotePhase};
+use super::remote_check::{
+    GithubPrTarget, RemoteCheckHost, RemoteCheckMapping, RemoteCheckOutcome, RemoteCheckRequest,
+    result_matches_evidence,
+};
 use super::source::{
     invocation_producer, seal_candidate, source_input, source_snapshot, validate_seal,
 };
@@ -392,6 +400,13 @@ impl CodeTaskPolicy {
                 "Code Task requires bounded named checks and at least one required verifier".into(),
             );
         }
+        for (name, check) in &self.checks {
+            if let Some(remote) = &check.remote {
+                remote
+                    .validate()
+                    .map_err(|error| format!("Code policy check {name}: {error}"))?;
+            }
+        }
         if let Some(warm) = &self.warm {
             if self.require_container {
                 return Err(
@@ -442,6 +457,35 @@ impl CodeTaskPolicy {
             Policy::trusted_local()
         }
     }
+}
+
+/// The reason every declared warm kind of a remote-selected check records (ADR-0136).
+const REMOTE_SKIP: &str = "remote";
+
+/// The Task's captured source for `candidate`: its root ancestor along `parent_snapshot_id`,
+/// or the candidate itself when it has no parent.
+fn root_snapshot(
+    cas: &Cas,
+    candidate_id: &str,
+    candidate: &review_source_git::task::TaskSnapshot,
+) -> Result<(String, review_source_git::Manifest), String> {
+    let mut id = candidate_id.to_owned();
+    let mut parent = candidate.parent_snapshot_id.clone();
+    let mut manifest = None;
+    for _ in 0..4096 {
+        let Some(next) = parent else {
+            let manifest = match manifest {
+                Some(manifest) => manifest,
+                None => review_source_git::task::read_snapshot(cas, &id)?.1,
+            };
+            return Ok((id, manifest));
+        };
+        let (snapshot, read) = review_source_git::task::read_snapshot(cas, &next)?;
+        id = next;
+        parent = snapshot.parent_snapshot_id;
+        manifest = Some(read);
+    }
+    Err("Task Snapshot ancestry is deeper than 4096 Snapshots".into())
 }
 
 fn port(artifact_type: &str, affinity: PortAffinityV1) -> PipelinePortV1 {
@@ -687,6 +731,7 @@ pub struct CodeTaskDomain {
     graph: CompiledTask,
     warm: WarmCheckHost,
     rust_toolchain_mapping: Option<PathBuf>,
+    remote: RemoteCheckHost,
 }
 
 impl CodeTaskDomain {
@@ -731,6 +776,7 @@ impl CodeTaskDomain {
             graph,
             warm: WarmCheckHost::default(),
             rust_toolchain_mapping: None,
+            remote: RemoteCheckHost::default(),
         })
     }
 
@@ -769,6 +815,56 @@ impl CodeTaskDomain {
         self
     }
 
+    /// Machine-local Remote Check configuration (ADR-0136): the operator's mapping, the Task
+    /// owner resolver and the executor's settings. Never captured candidate authority.
+    pub fn with_remote_checks(mut self, remote: RemoteCheckHost) -> Self {
+        self.remote = remote;
+        self
+    }
+
+    /// The operator's mapping entry for this Snapshot's repository and the checks of `names` it
+    /// selects. Consulted only when the captured policy declares a `remote` table, so a policy
+    /// without one behaves exactly as before; a malformed selected mapping is an error before
+    /// any check starts.
+    fn remote_selection(
+        &self,
+        cas: &Cas,
+        snapshot: &review_source_git::task::TaskSnapshot,
+        names: &BTreeSet<String>,
+    ) -> Result<Option<(GithubPrTarget, BTreeSet<String>)>, String> {
+        if !self
+            .policy
+            .checks
+            .values()
+            .any(|check| check.remote.is_some())
+        {
+            return Ok(None);
+        }
+        let Some(path) = &self.remote.mapping else {
+            return Ok(None);
+        };
+        let Some(mapping) = RemoteCheckMapping::read(path)? else {
+            return Ok(None);
+        };
+        let origin = review_source_git::task::read_origin(cas, &snapshot.origin_id)?;
+        let Some(entry) = mapping.select(origin.repository_id(), &self.policy)? else {
+            return Ok(None);
+        };
+        let selected: BTreeSet<String> = names.intersection(&entry.checks).cloned().collect();
+        Ok((!selected.is_empty()).then(|| (entry.clone(), selected)))
+    }
+
+    /// The reader of one recorded check receipt: every result validated against its captured
+    /// definition — a local result by its command, a remote result by its evidence — and the
+    /// outcome those results derive.
+    pub fn check_receipt_outcome(
+        &self,
+        cas: &Cas,
+        receipt: &TaskCheckReceiptV1,
+    ) -> Result<ReceiptOutcomeV1, String> {
+        self.check_outcome(cas, receipt)
+    }
+
     fn operator(&self, input: &TaskInvocationV1) -> Result<&TaskOperatorV1, String> {
         match &self
             .graph
@@ -805,10 +901,46 @@ impl CodeTaskDomain {
                     .map_err(|e| e.to_string())?;
             if result.name != *name
                 || result.required != definition.required
-                || result.program.as_ref() != Some(&definition.command.program)
-                || result.args != definition.command.args
+                || !result.has_one_shape()
             {
                 return Err("Check result changed its captured definition".into());
+            }
+            match &result.remote {
+                None => {
+                    if result.program.as_ref() != Some(&definition.command.program)
+                        || result.args != definition.command.args
+                    {
+                        return Err("Check result changed its captured definition".into());
+                    }
+                }
+                Some(evidence_id) => {
+                    // A remote result is validated by its evidence, never by a command: the
+                    // definition must declare `remote`, the evidence must be exactly that
+                    // declaration's for this Snapshot, and the status the one it derives.
+                    let declared = definition
+                        .remote
+                        .as_ref()
+                        .ok_or("Check result changed its captured definition")?;
+                    let artifact = envelope(cas, evidence_id)?;
+                    if artifact.artifact_type != REMOTE_CHECK_EVIDENCE_V1
+                        || artifact.subject_snapshot_id.as_ref() != Some(&receipt.snapshot_id)
+                    {
+                        return Err("Remote check evidence has another type or Snapshot".into());
+                    }
+                    let evidence: RemoteCheckEvidenceV1 =
+                        serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+                    evidence.validate()?;
+                    if evidence.declaration() != *declared
+                        || evidence.snapshot_id != receipt.snapshot_id
+                        || !result_matches_evidence(
+                            result.status,
+                            result.reason.as_deref(),
+                            &evidence,
+                        )
+                    {
+                        return Err("Check result changed its captured definition".into());
+                    }
+                }
             }
             for id in result.stdout.iter().chain(result.stderr.iter()) {
                 cas.verify(id).map_err(|e| e.to_string())?;
@@ -838,6 +970,23 @@ impl CodeTaskDomain {
     ) -> Result<(ArtifactInputV1, Vec<String>), String> {
         let source = input.inputs.get("source").ok_or("Check needs source")?;
         let (snapshot_id, snapshot, manifest) = source_snapshot(cas, source)?;
+        // Remote selection (ADR-0136) is settled before any check starts: a malformed selected
+        // mapping, or a Task whose Store identity cannot be read, ends the Attempt here.
+        let remote = match self.remote_selection(cas, &snapshot, names)? {
+            Some((target, selected)) => {
+                let resolver =
+                    self.remote.owner.as_ref().ok_or(
+                        "Remote checks need the Task's Store identity, which this host lacks",
+                    )?;
+                Some((target, selected, resolver(attempt.task_id())?))
+            }
+            None => None,
+        };
+        let remote_selected = remote
+            .as_ref()
+            .map(|(_, selected, _)| selected.clone())
+            .unwrap_or_default();
+        let mut local_failed = Vec::new();
         let mut session = match &self.policy.warm {
             Some(warm) => Some(WarmSession::new(
                 &self.warm,
@@ -856,7 +1005,9 @@ impl CodeTaskDomain {
         // and its cache observations, so a reader never has to guess which check an
         // observation belongs to.
         let mut warm_evidence = Vec::new();
-        for name in names {
+        // Local checks first, in name order; a remote-selected check never executes candidate
+        // code on this machine.
+        for name in names.iter().filter(|name| !remote_selected.contains(*name)) {
             let definition = self
                 .policy
                 .checks
@@ -1020,6 +1171,7 @@ impl CodeTaskDomain {
                         stdout: None,
                         stderr: None,
                         required: definition.required,
+                        remote: None,
                     },
                     None,
                 )
@@ -1162,10 +1314,150 @@ AF_TOOLCHAIN_SNAPSHOT ",
                 }
                 None => spans.extend(span),
             }
+            if definition.required && result.status != CheckStatus::Passed {
+                local_failed.push(name.clone());
+            }
             let id = cas
                 .put_json(&serde_json::to_value(result).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
             checks.insert(name.clone(), id);
+        }
+        let mut remote_evidence = Vec::new();
+        if let Some((target, selected, owner)) = &remote {
+            let (source_id, source_manifest) = root_snapshot(cas, &snapshot_id, &snapshot)?;
+            let requests: Vec<RemoteCheckRequest> = selected
+                .iter()
+                .map(|name| {
+                    let definition = self
+                        .policy
+                        .checks
+                        .get(name)
+                        .ok_or("Named check is not captured")?;
+                    Ok(RemoteCheckRequest {
+                        name: name.clone(),
+                        declaration: definition
+                            .remote
+                            .clone()
+                            .ok_or("Remote-selected check lost its remote table")?,
+                    })
+                })
+                .collect::<Result<_, String>>()?;
+            let outcomes = if local_failed.is_empty() {
+                // One clock for the whole remote phase: it ends at the earlier of the per-check
+                // wall on this timer and the Attempt's deadline.
+                let started = std::time::Instant::now();
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| e.to_string())?
+                    .as_millis() as u64;
+                let remaining = attempt.reservation().deadline_unix_ms.saturating_sub(now);
+                let limit = self
+                    .policy
+                    .check_process_wall_ms
+                    .map_or(remaining, |limit| limit.min(remaining));
+                github_pr::run(
+                    &RemotePhase {
+                        cas,
+                        task_id: attempt.task_id(),
+                        owner,
+                        candidate_id: &snapshot_id,
+                        candidate: &manifest,
+                        source_id: &source_id,
+                        source: &source_manifest,
+                        target,
+                        mapping: self.remote.mapping.as_deref(),
+                        checks: &requests,
+                        deadline: started + Duration::from_millis(limit),
+                        cancellation,
+                    },
+                    &self.remote.github_pr,
+                )?
+            } else {
+                let base = super::remote_check::EvidenceBase {
+                    github: &target.github,
+                    snapshot_id: &snapshot_id,
+                    source_snapshot_id: &source_id,
+                };
+                let failed = local_failed
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                requests
+                    .iter()
+                    .map(|request| {
+                        base.refused(
+                            request,
+                            RemoteCheckReasonV1::RemoteSkippedLocalFailed,
+                            format!(
+                                "remote check `{}` was not dispatched because required local                                  check(s) {failed} did not pass; fix the local failure and run                                  the checks again",
+                                request.name
+                            ),
+                            None,
+                        )
+                    })
+                    .collect::<Vec<RemoteCheckOutcome>>()
+            };
+            if outcomes.len() != requests.len()
+                || outcomes
+                    .iter()
+                    .zip(&requests)
+                    .any(|(o, r)| o.name != r.name)
+            {
+                return Err("The remote executor did not conclude every remote check".into());
+            }
+            for outcome in outcomes {
+                outcome.evidence.validate()?;
+                let definition = self
+                    .policy
+                    .checks
+                    .get(&outcome.name)
+                    .ok_or("Named check is not captured")?;
+                let evidence_id = cas
+                    .put_artifact(
+                        REMOTE_CHECK_EVIDENCE_V1,
+                        invocation_producer(cas, input, Some(attempt))?,
+                        vec![snapshot_id.clone(), source_id.clone()],
+                        Some(snapshot_id.clone()),
+                        serde_json::to_value(&outcome.evidence).map_err(|e| e.to_string())?,
+                    )
+                    .map_err(|e| e.to_string())?
+                    .0;
+                let (status, reason) = outcome.result(definition);
+                let result = CheckResult::remote(definition, status, reason, evidence_id.clone());
+                if let (Some(session), Some(rustup)) = (session.as_ref(), &rustup) {
+                    // Under [warm] a remote check keeps its evidence group: every declared kind
+                    // skipped for the reason `remote`, and no span — it ran nothing here.
+                    let caches = session
+                        .skipped(cas, REMOTE_SKIP)?
+                        .into_iter()
+                        .map(|observation| {
+                            observation.record(
+                                cas,
+                                [attempt.task_id(), attempt.id(), &input.node, &outcome.name],
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    warm_evidence.push((
+                        TaskRuntimeCheckV1 {
+                            name: outcome.name.clone(),
+                            outcome: match status {
+                                CheckStatus::Passed => TaskRuntimeCheckOutcomeV1::Passed,
+                                CheckStatus::Failed => TaskRuntimeCheckOutcomeV1::Failed,
+                                CheckStatus::NotRun => TaskRuntimeCheckOutcomeV1::NotRun,
+                            },
+                            rustup_home: rustup.source,
+                        },
+                        None,
+                        caches,
+                    ));
+                }
+                let id = cas
+                    .put_json(&serde_json::to_value(result).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+                checks.insert(outcome.name.clone(), id);
+                remote_evidence.push(evidence_id);
+            }
         }
         let mut receipt = TaskCheckReceiptV1 {
             plan_id: input.plan_id.clone(),
@@ -1181,6 +1473,7 @@ AF_TOOLCHAIN_SNAPSHOT ",
             .cloned()
             .chain(source.artifact_ids.iter().cloned())
             .chain([input.plan_id.clone(), self.policy_id.clone()])
+            .chain(remote_evidence)
             .collect();
         let id = cas
             .put_artifact(

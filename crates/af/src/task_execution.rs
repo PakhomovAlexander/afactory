@@ -1101,6 +1101,7 @@ fn start_captured(
     presentation: Presentation,
 ) -> Result<i32, String> {
     let profile = selected_profile(&compiler, &authority, &file.kind, file.verification)?;
+    let (_, state) = state_path(&options.repo, options.state.as_deref())?;
     // Resolved once, here, from the `--state` Store alone, before any Worker is dispatched or
     // any Provider admitted. A bound port replaces this adapter's construction of it and
     // nothing else changes (ADR-0117).
@@ -1619,7 +1620,15 @@ fn start_captured(
         )
         .map_err(|e| e.to_string())?
         .0;
-    let inner = captured_domain(&cas, &authority, profile, graph.clone(), &plan, &compiler)?;
+    let inner = captured_domain(
+        &cas,
+        &authority,
+        profile,
+        graph.clone(),
+        &plan,
+        &compiler,
+        &state,
+    )?;
     let models = model_bindings(&plan, &graph, &adapters)?;
     let domain = ProviderTaskDomain {
         graph: &graph,
@@ -1917,6 +1926,7 @@ pub(super) fn restore_experimental_slots(
     Ok(compiler)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn captured_domain(
     cas: &Cas,
     authority: &RunAuthority,
@@ -1924,10 +1934,11 @@ fn captured_domain(
     graph: CompiledTask,
     plan: &ExecutionPlanV1,
     compiler: &TaskPlanCompiler,
+    state: &Path,
 ) -> Result<Box<dyn TaskDomain>, String> {
     match profile {
         TaskKindProfile::Implementation if authority.review_policy_id.is_none() => Ok(Box::new(
-            domain::code_domain(cas, authority.code_policy_id()?, graph)?
+            domain::code_domain(cas, authority.code_policy_id()?, graph, state)?
                 .with_cache_source_resolver(crate::caches::resolve_kind),
         )),
         TaskKindProfile::Review
@@ -1945,6 +1956,7 @@ fn captured_domain(
             .with_rust_toolchain_mapping(
                 std::env::var_os("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE").map(PathBuf::from),
             )
+            .with_remote_checks(domain::remote_checks(state)?)
             .with_review_task(profile == TaskKindProfile::Review)
             .with_cache_source_resolver(crate::caches::resolve_kind),
         )),
@@ -2126,7 +2138,15 @@ pub(super) fn run(
         &projection.revision.kind,
         verification,
     )?;
-    let inner = captured_domain(&cas, &authority, profile, graph.clone(), &plan, &compiler)?;
+    let inner = captured_domain(
+        &cas,
+        &authority,
+        profile,
+        graph.clone(),
+        &plan,
+        &compiler,
+        &state,
+    )?;
     let models = model_bindings(&plan, &graph, &adapters)?;
     let domain = ProviderTaskDomain {
         graph: &graph,
@@ -2510,6 +2530,9 @@ fn present_with_format(
         for line in check_cache_lines(&value) {
             println!("{line}");
         }
+        for line in remote_check_lines(&value) {
+            println!("{line}");
+        }
         for line in measurement_lines(cas, &state)? {
             println!("{line}");
         }
@@ -2695,6 +2718,153 @@ fn cache_condition(measurement: &review_core::task::measurement::MeasurementV1) 
     } else {
         format!(", warm {warm} of {total}")
     }
+}
+
+/// Every remote check result of the Task's current check receipts (ADR-0136), in node and
+/// check order, with the evidence document it derives from. Replay reads only the Store.
+fn remote_check_records(
+    cas: &Cas,
+    state: &TaskProjection,
+) -> Result<Vec<serde_json::Value>, String> {
+    use review_core::task::remote_check::{REMOTE_CHECK_EVIDENCE_V1, RemoteCheckEvidenceV1};
+    use review_core::task::verification::{TASK_CHECK_RECEIPT_V1, TaskCheckReceiptV1};
+    let mut records = Vec::new();
+    let Some(execution) = &state.execution else {
+        return Ok(records);
+    };
+    for (node, (_, output)) in &execution.outputs {
+        for value in output.outputs.values() {
+            if value.artifact_type != TASK_CHECK_RECEIPT_V1 {
+                continue;
+            }
+            for id in &value.artifact_ids {
+                let receipt: TaskCheckReceiptV1 = artifact(cas, id, TASK_CHECK_RECEIPT_V1)?;
+                for (check, result_id) in &receipt.checks {
+                    // The result's second shape names its evidence; a local result has none.
+                    let result = cas.get_json(result_id).map_err(|e| e.to_string())?;
+                    let Some(evidence_id) = result["remote"].as_str() else {
+                        continue;
+                    };
+                    let evidence: RemoteCheckEvidenceV1 =
+                        artifact(cas, evidence_id, REMOTE_CHECK_EVIDENCE_V1)?;
+                    evidence.validate()?;
+                    records.push(json!({
+                        "node": node,
+                        "check": check,
+                        "status": result["status"],
+                        "artifact_id": evidence_id,
+                        "artifact_type": REMOTE_CHECK_EVIDENCE_V1,
+                        "record": evidence,
+                    }));
+                }
+            }
+        }
+    }
+    Ok(records)
+}
+
+/// Whole seconds since the epoch of an evidence timestamp (`YYYY-MM-DDTHH:MM:SS[.f]Z`).
+fn evidence_seconds(text: &str) -> Option<i64> {
+    let number = |range: std::ops::Range<usize>| text.get(range)?.parse::<i64>().ok();
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    // Days from the civil date (proleptic Gregorian), after Howard Hinnant's algorithm.
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let of_era = year - era * 400;
+    let of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let of_cycle = of_era * 365 + of_era / 4 - of_era / 100 + of_year;
+    let days = era * 146_097 + of_cycle - 719_468;
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+/// The text `af task show` prints for each remote check (ADR-0136): the executor and pull
+/// request, the run and its attempt, each required job with its conclusion and duration, the
+/// unsuccessful steps, the refusal reason, and the two commands that clean up after the gate.
+fn remote_check_lines(inspection: &serde_json::Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut cleanups = BTreeSet::new();
+    for entry in inspection["remote_checks"].as_array().into_iter().flatten() {
+        let record = &entry["record"];
+        let name = preview::text(entry["check"].as_str().unwrap_or_default());
+        let status = preview::text(entry["status"].as_str().unwrap_or("not_run"));
+        let executor = preview::text(record["executor"].as_str().unwrap_or_default());
+        let github = preview::text(record["github"].as_str().unwrap_or_default());
+        let mut line = format!("remote check {name}: {status} by {executor} on {github}");
+        if let Some(url) = record["pull_request"]["url"].as_str() {
+            line.push_str(&format!(", pull request {}", preview::text(url)));
+        }
+        if let (Some(id), Some(attempt)) = (
+            record["run"]["id"].as_u64(),
+            record["run"]["attempt"].as_u64(),
+        ) {
+            line.push_str(&format!(", run {id} attempt {attempt}"));
+        }
+        lines.push(line);
+        for job in record["jobs"].as_array().into_iter().flatten() {
+            let duration = match (
+                job["started_at"].as_str().and_then(evidence_seconds),
+                job["completed_at"].as_str().and_then(evidence_seconds),
+            ) {
+                (Some(start), Some(end)) if end >= start => format!(" in {} s", end - start),
+                _ => String::new(),
+            };
+            let mut text = format!(
+                "  job {}: {}{duration}",
+                preview::text(job["name"].as_str().unwrap_or_default()),
+                preview::text(job["conclusion"].as_str().unwrap_or_default())
+            );
+            let steps = job["steps"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|step| {
+                    format!(
+                        "{} ({})",
+                        preview::text(step["name"].as_str().unwrap_or_default()),
+                        preview::text(step["conclusion"].as_str().unwrap_or_default())
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !steps.is_empty() {
+                text.push_str(&format!("; unsuccessful steps: {}", steps.join(", ")));
+            }
+            if job["conclusion"] != "success"
+                && let Some(url) = job["url"].as_str()
+            {
+                text.push_str(&format!("; log at {}", preview::text(url)));
+            }
+            lines.push(text);
+        }
+        if let Some(reason) = record["reason"].as_str() {
+            lines.push(format!("  reason: {}", preview::text(reason)));
+        }
+        if let Some(diagnostic) = record["diagnostic"].as_str() {
+            lines.push(format!(
+                "  diagnostic: {}",
+                preview::text(&diagnostic.replace('\n', " | "))
+            ));
+        }
+        if record["state"] != "refused" {
+            cleanups.insert((
+                github.clone(),
+                record["pull_request"]["number"].as_u64(),
+                preview::text(inspection["task_id"].as_str().unwrap_or_default()),
+            ));
+        }
+    }
+    for (github, number, task_id) in cleanups {
+        lines.push(format!(
+            "gate branches af-gate/{task_id}/base and af-gate/{task_id}/head stay until you remove them:"
+        ));
+        if let Some(number) = number {
+            lines.push(format!("  gh pr close {number} --repo {github}"));
+        }
+        lines.push(format!(
+            "  git push <push-url> --delete af-gate/{task_id}/base af-gate/{task_id}/head"
+        ));
+    }
+    lines
 }
 
 /// One line per warm check (ADR-0131), named by its evidence group's check binding: its outcome,
@@ -2946,6 +3116,10 @@ fn inspection(
             .collect::<Vec<_>>();
         value["attempt_walls"] = serde_json::to_value(walls).map_err(|e| e.to_string())?;
         value["runtime_observations"] = json!(runtime_observations);
+    }
+    let remote_checks = remote_check_records(cas, &state)?;
+    if !remote_checks.is_empty() {
+        value["remote_checks"] = json!(remote_checks);
     }
     if !owned_child_sets.is_empty() {
         value["owned_child_sets"] = json!(owned_child_sets);
@@ -3264,5 +3438,121 @@ mod check_cache_line_tests {
             "caches": [{"kind": "cargo_target:busy", "eligible": false, "bytes_available": 0}],
         }));
         assert!(check_cache_lines(&unnamed).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod remote_check_line_tests {
+    use super::*;
+
+    fn fixture(name: &str) -> serde_json::Value {
+        let path = std::env::var_os("AF_WORKSPACE_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .join("fixtures/remote-checks/evidence")
+            .join(name);
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    fn entry(check: &str, status: &str, record: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({"node": "root.nodes.check", "check": check, "status": status,
+            "artifact_id": format!("sha256:{}", "e".repeat(64)),
+            "artifact_type": "af/RemoteCheckEvidence@1", "record": record})
+    }
+
+    #[test]
+    fn a_remote_check_prints_its_pull_request_run_jobs_steps_and_cleanup() {
+        let inspection = serde_json::json!({"task_id": "rc1", "remote_checks": [
+            entry("kernel", "failed", fixture("observed-failed.json")),
+            entry("docs", "not_run", fixture("published-check-missing.json")),
+        ]});
+        let lines = remote_check_lines(&inspection);
+        assert_eq!(
+            lines,
+            [
+                "remote check kernel: failed by github-pr on octo/gate, pull request \
+                 https://github.com/octo/gate/pull/12, run 77 attempt 2",
+                "  job validation / lint: success in 750 s",
+                "  job validation / check (ubuntu-latest): failure in 750 s; unsuccessful steps: \
+                 Run make check (failure), Upload report (skipped); log at \
+                 https://github.com/octo/gate/actions/runs/77/job/1002",
+                "remote check docs: not_run by github-pr on octo/gate, pull request \
+                 https://github.com/octo/gate/pull/12",
+                "  reason: remote_check_missing",
+                "gate branches af-gate/rc1/base and af-gate/rc1/head stay until you remove them:",
+                "  gh pr close 12 --repo octo/gate",
+                "  git push <push-url> --delete af-gate/rc1/base af-gate/rc1/head",
+            ]
+        );
+        // A refusal published nothing, so it prints no cleanup; its redacted diagnostic shows.
+        let refused = serde_json::json!({"task_id": "rc1", "remote_checks": [
+            entry("kernel", "not_run", fixture("refused-push-refused.json")),
+        ]});
+        let lines = remote_check_lines(&refused);
+        assert_eq!(
+            lines[0],
+            "remote check kernel: not_run by github-pr on octo/gate"
+        );
+        assert_eq!(lines[1], "  reason: remote_push_refused");
+        assert!(
+            lines[2].starts_with("  diagnostic: To <push-url> | "),
+            "{}",
+            lines[2]
+        );
+        assert_eq!(lines.len(), 3);
+        assert!(remote_check_lines(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn evidence_times_are_whole_seconds_since_the_epoch() {
+        assert_eq!(evidence_seconds("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(evidence_seconds("2000-03-01T00:00:01Z"), Some(951_868_801));
+        assert_eq!(
+            evidence_seconds("2026-10-04T10:12:30.5Z"),
+            Some(1_791_108_750)
+        );
+        assert_eq!(evidence_seconds("not a time"), None);
+    }
+
+    #[test]
+    fn the_task_owner_survives_rereading_and_differs_between_stores() {
+        use crate::tui::panes::pipelines::{PREVIEW_TASK_ID, preview_task};
+        use crate::tui::tests::hub_repo;
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let repo = hub_repo(&root);
+        let file = root.join("task.json");
+        let task = preview_task("fixture/implementation", "implement", 3);
+        std::fs::write(&file, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
+        let owner = |state: &Path| {
+            start(StartOptions {
+                file: file.clone(),
+                bindings: None,
+                source_bindings: None,
+                repo: repo.clone(),
+                state: Some(state.to_path_buf()),
+                authority: "HEAD".into(),
+                uncommitted: false,
+                json: false,
+                plan_only: true,
+                timeout_secs: None,
+                optimization_history: None,
+            })
+            .unwrap();
+            let host = domain::remote_checks(state).unwrap();
+            let resolve = host.owner.unwrap();
+            let first = resolve(PREVIEW_TASK_ID).unwrap();
+            assert_eq!(resolve(PREVIEW_TASK_ID).unwrap(), first, "stable on resume");
+            assert!(review_core::is_digest(&first));
+            assert!(resolve("no-such-task").is_err());
+            first
+        };
+        let one = owner(&root.join("state-one"));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let two = owner(&root.join("state-two"));
+        assert_ne!(
+            one, two,
+            "the same Task ID in another Store has another owner"
+        );
     }
 }

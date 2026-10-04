@@ -1,7 +1,8 @@
 # Remote Checks — design and implementation plan
 
 **Status:** proposed, 2026-10-04; revised the same day after the design review recorded in §6.
-Package RC1 is not yet delivered.
+Package RC1 is implemented in the change that adds
+[ADR-0136](../adr/0136-run-a-declared-check-through-a-gate-pull-request.md); RC2 is not started.
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 
 A Task check today is a command this machine runs. This note lets a machine hand a declared
@@ -450,4 +451,9 @@ Campaign follows.
 
 ### Packages
 
-Not yet started.
+- RC1: implemented with ADR-0136, the walkthrough
+  [`docs/task-execution/remote-checks.md`](../task-execution/remote-checks.md) and the offline
+  fixtures under `fixtures/remote-checks/`. ADR-0136 records the Task owner a gate commit names:
+  a digest of the transition that opened the Task's log, because a first revision's ID is
+  content-addressed and is the same in two Stores that start the same Task file.
+- RC2: not started.
