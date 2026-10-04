@@ -8,14 +8,19 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use super::{Pane, Row, SPINNER};
+use super::{Effect, Pane, Row, SPINNER};
 use crate::providers::{self, ProviderInventory, ProviderStatus, UsageProbe};
+use crate::tui::keymap::Key;
 use crate::tui::paint::Paint;
 use crate::tui::scope::Scope;
 use crate::tui::tree::Item;
 
 /// Columns of a limit bar.
 const BAR: usize = 10;
+
+/// What `d` says where no Provider is selected.
+pub(crate) const REMOVE_NEEDS_A_PROVIDER: &str =
+    "d removes a Provider: select one in the bar, or open it";
 
 struct Job {
     receiver: Receiver<ProviderInventory>,
@@ -58,6 +63,24 @@ impl ProvidersPane {
         pane.discover = false;
         pane.rebuild();
         pane
+    }
+
+    /// `d` on a Provider this pane lists: the `:` line that removes it from the registry, as
+    /// `af provider remove` does. An ambient candidate has no registry entry behind it, so
+    /// there is no line to offer and the pane says why.
+    pub(crate) fn remove_line(&self, id: &str) -> Result<String, String> {
+        let inventory = self.inventory.as_ref();
+        let listed = inventory.and_then(|inventory| {
+            let mut providers = inventory.providers.iter();
+            providers.find(|provider| provider.id == id)
+        });
+        match listed {
+            Some(provider) if providers::is_ambient_candidate(provider) => Err(format!(
+                "{id} is discovered, not registered: there is no registry entry to remove"
+            )),
+            Some(_) => Ok(format!("provider remove {}", shell_words::quote(id))),
+            None => Err(format!("{id} is not a listed Provider")),
+        }
     }
 
     fn start(&mut self, usage: UsageProbe) {
@@ -135,8 +158,23 @@ impl Pane for ProvidersPane {
         &self.rows
     }
 
+    /// `d` fills the `:` line with `provider remove ID` for the opened Provider; nothing is
+    /// removed until the user runs that line.
+    fn key(&mut self, key: Key, _row: usize) -> Result<Option<Effect>, String> {
+        if key != Key::Char('d') {
+            return Ok(None);
+        }
+        match &self.selected {
+            Some(id) => self.remove_line(id).map(Effect::Prefill).map(Some),
+            None => Err(REMOVE_NEEDS_A_PROVIDER.to_owned()),
+        }
+    }
+
     fn legend(&self) -> &'static str {
-        "j/k move  R probe usage  y yank id  gf registry  Tab bar  :cmd  q quit"
+        match self.selected {
+            Some(_) => "d remove  R probe usage  y yank id  gf registry  Tab bar  :cmd  q quit",
+            None => "j/k move  R probe usage  y yank id  gf registry  Tab bar  :cmd  q quit",
+        }
     }
 
     /// `R` runs the bounded usage probe `af provider status --usage` runs.
@@ -161,6 +199,12 @@ impl Pane for ProvidersPane {
         let usage = job.usage;
         match job.receiver.try_recv() {
             Ok(inventory) => {
+                // A Provider removed since the last discovery is no longer there to show: the
+                // folder shows what is registered now.
+                let listed = |id: &String| inventory.providers.iter().any(|p| p.id == *id);
+                if !self.selected.as_ref().is_some_and(listed) {
+                    self.selected = None;
+                }
                 self.inventory = Some(inventory);
                 self.usage = usage;
                 self.job = None;
@@ -276,5 +320,58 @@ mod tests {
         assert_eq!(bar(68), "[#######...]");
         assert_eq!(bar(100), "[##########]");
         assert_eq!(bar(255), "[##########]");
+    }
+
+    fn inventory(ids: &[&str]) -> ProviderInventory {
+        let provider = |id: &&str| ProviderStatus {
+            id: (*id).to_owned(),
+            kind: "codex".to_owned(),
+            auth_context: "/auth".to_owned(),
+            source: "registry".to_owned(),
+            status: "authenticated".to_owned(),
+            auth_type: "ChatGPT".to_owned(),
+            subscription: "-".to_owned(),
+            limits: Vec::new(),
+            usage: providers::UsageState::NotRequested,
+            detail: String::new(),
+        };
+        ProviderInventory {
+            providers: ids.iter().map(provider).collect(),
+            registry: None,
+            warning: None,
+        }
+    }
+
+    /// A finished discovery, as the thread `start` spawns would hand it over.
+    fn discovered(pane: &mut ProvidersPane, inventory: ProviderInventory) {
+        let (sender, receiver) = mpsc::channel();
+        pane.job = Some(Job {
+            receiver,
+            cancel: Arc::new(AtomicBool::new(false)),
+            usage: UsageProbe::Skip,
+        });
+        sender.send(inventory).unwrap();
+        assert!(pane.poll());
+    }
+
+    #[test]
+    fn a_discovery_without_the_opened_provider_shows_the_folder() {
+        let both = inventory(&["codex-main", "codex-work"]);
+        let mut pane = ProvidersPane::with_inventory(both, UsageProbe::Skip);
+        pane.open(Some("codex-work"));
+        assert_eq!(pane.rows()[0].text(), "PROVIDERS  codex-work");
+        // `af provider remove codex-work` ran: the next discovery no longer lists it.
+        discovered(&mut pane, inventory(&["codex-main"]));
+        assert_eq!(pane.selected, None);
+        assert_eq!(pane.rows()[0].text(), "PROVIDERS  (af provider status)");
+        assert!(
+            pane.rows()
+                .iter()
+                .any(|row| row.text().starts_with("codex-main "))
+        );
+        // A Provider the discovery still lists stays opened.
+        pane.open(Some("codex-main"));
+        discovered(&mut pane, inventory(&["codex-main"]));
+        assert_eq!(pane.selected.as_deref(), Some("codex-main"));
     }
 }

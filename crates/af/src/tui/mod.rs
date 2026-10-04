@@ -68,6 +68,8 @@ gf                 open the file behind the node in $EDITOR
 R                  read the pane again; providers: probe quota windows
 q ZZ :q            quit; <C-c> first cancels a prompt or a running probe
 
+providers: d fills the : line with `provider remove ID` for a registered
+           Provider; Enter on the line runs it
 workers: gf opens the prompt (or the declaration), y copies the name;
          the folder lists its Workers once it is first opened
 tasks: Enter on a HISTORY row shows its artifact (q or Esc returns),
@@ -723,17 +725,25 @@ impl App {
         effect
     }
 
-    /// A pane-local key while the bar has focus: `r` and `D` act on the bar's selected Task and
-    /// on nothing else, never on a Task opened in the main pane; any other key is the opened
-    /// pane's, as it always was.
+    /// A pane-local key while the bar has focus: `r` and `D` act on the bar's selected Task,
+    /// and `d` on its selected Provider, and on nothing else, never on what the main pane has
+    /// opened; any other key is the opened pane's, as it always was.
     fn bar_key(&mut self, key: Key) -> Option<Effect> {
-        if !matches!(key, Key::Char('r' | 'D')) {
-            return self.pane_key(key);
-        }
         let row = self.tree.selected();
-        let verb = (row.kind == NodeKind::Item(Tab::Tasks))
-            .then(|| self.panes.tasks.bar_verb(&row.id, key))
-            .flatten();
+        let (verb, nothing) = match key {
+            Key::Char('r' | 'D') => (
+                (row.kind == NodeKind::Item(Tab::Tasks))
+                    .then(|| self.panes.tasks.bar_verb(&row.id, key))
+                    .flatten(),
+                "r and D act on a Task: select one in the bar, or open it",
+            ),
+            Key::Char('d') => (
+                (row.kind == NodeKind::Item(Tab::Providers))
+                    .then(|| self.panes.providers.remove_line(&row.id)),
+                panes::providers::REMOVE_NEEDS_A_PROVIDER,
+            ),
+            _ => return self.pane_key(key),
+        };
         match verb {
             Some(Ok(line)) => Some(Effect::Prefill(line)),
             Some(Err(error)) => {
@@ -741,7 +751,7 @@ impl App {
                 None
             }
             None => {
-                self.say_error("r and D act on a Task: select one in the bar, or open it");
+                self.say_error(nothing);
                 None
             }
         }

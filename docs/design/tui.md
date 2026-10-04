@@ -166,6 +166,12 @@ The main pane shows the same columns as the CLI table for the selected provider,
 `ProviderLimit` as a bar with `used_percent` and `format_limit`'s reset text, then `detail` as
 `note`. Ambient candidates render greyed with the `af provider setup` hint the CLI prints.
 
+`d` on a registered Provider, on the bar or in its opened pane, fills the `:` line with
+`provider remove ID` and does not submit it; Enter runs it, handing the terminal over as
+described in §4 (ADR-0136). `d` on an ambient candidate says on the status line that there is no
+registry entry to remove. After the command the pane discovers again, and an opened Provider it
+no longer lists gives way to the folder.
+
 `R` runs the provider probe (a probe cancelled with `<C-c>` is forgotten: the last complete
 inventory stays, and `R` probes again) (the bounded, possibly charged probe in `providers`) with a spinner in the bar
 row, polled from the event loop without blocking key handling.

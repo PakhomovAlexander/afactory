@@ -1476,6 +1476,61 @@ fn completion_comes_from_the_clap_definition() {
     assert!(host.events.is_empty());
 }
 
+/// `d` on a registered Provider, from the bar and from its opened pane, prefills the `:` line
+/// with `provider remove ID` and never submits it. An ambient candidate has no registry entry,
+/// and a row that is no Provider has nothing to remove.
+#[test]
+fn the_providers_pane_prefills_remove_for_a_registered_provider() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    let line = "provider remove claude-main";
+    press(&mut app, &mut host, b"]]j");
+    assert_eq!(app.breadcrumb(), "providers/claude-main");
+    press(&mut app, &mut host, b"d");
+    assert_eq!(app.mode, Mode::Command);
+    assert_eq!(app.prompt.text, line);
+    assert_eq!(app.prompt.cursor, line.len());
+    press(&mut app, &mut host, b"\x1b");
+    // Opened, with the main pane focused: the same line, and the legend names the verb.
+    press(&mut app, &mut host, b"\r\t");
+    let status = status_line(&mut app);
+    assert!(status.contains("d remove"), "{status}");
+    press(&mut app, &mut host, b"d");
+    assert_eq!(app.prompt.text, line);
+    press(&mut app, &mut host, b"\x1b");
+    assert!(host.events.is_empty(), "nothing was submitted");
+    // Enter on the prefilled line is what runs it, as typed.
+    press(&mut app, &mut host, b"d\r");
+    assert_eq!(host.runs[0].args, ["provider", "remove", "claude-main"]);
+
+    // An ambient candidate is discovered, not registered: no line is offered, from the bar or
+    // from its opened pane.
+    let ambient = "codex-ambient is discovered, not registered: there is no registry entry to \
+                   remove";
+    press(&mut app, &mut host, b"\tj");
+    assert_eq!(app.breadcrumb(), "providers/codex-ambient");
+    for keys in [&b"d"[..], b"\r\td"] {
+        press(&mut app, &mut host, keys);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.message, Some((ambient.to_owned(), true)));
+    }
+
+    // The folder opened, and the bar on a row that is no Provider while one stays opened:
+    // `d` acts on nothing.
+    let nothing = "d removes a Provider: select one in the bar, or open it";
+    press(&mut app, &mut host, b"\tk\rgg");
+    assert!(matches!(app.opened, Opened::Item(Tab::Providers, _)));
+    assert_eq!(app.focus, Focus::Bar);
+    press(&mut app, &mut host, b"d");
+    assert_eq!(app.message, Some((nothing.to_owned(), true)));
+    press(&mut app, &mut host, b"]]\r\t");
+    assert_eq!(app.opened, Opened::Folder(Tab::Providers));
+    press(&mut app, &mut host, b"d");
+    assert_eq!(app.message, Some((nothing.to_owned(), true)));
+    assert_eq!(host.runs.len(), 1, "only the submitted line ran");
+}
+
 /// `r` and `D` from the bar and from the opened Task prefill the `:` line and never submit it;
 /// `D` refuses a Task that is not verified. A Task ID completes from the Tasks pane.
 #[test]
