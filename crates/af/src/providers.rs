@@ -515,6 +515,40 @@ pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<i32, String>
     Ok(EXIT_OK)
 }
 
+/// Remove registered Providers by ID: the inverse of `add` and `setup`.
+///
+/// Only registry entries go. Each auth directory, and the login its Provider CLI keeps there, is
+/// left as it is. The registry is rewritten through the publication `add` uses (ADR-0136).
+pub fn remove(ids: &[String]) -> Result<i32, String> {
+    let mut wanted = BTreeSet::new();
+    for id in ids {
+        validate_removable_id(id)?;
+        wanted.insert(id.as_str());
+    }
+    let path = registry_path()?.ok_or("no provider registry path is available")?;
+    let (removed, preserved) = remove_from_registry(&path, &wanted)?;
+    for entry in &removed {
+        let context = match (&entry.kind, &entry.auth_dir) {
+            (Some(kind), Some(auth_dir)) => format!(" ({kind}, {auth_dir})"),
+            _ => String::new(),
+        };
+        println!(
+            "provider {} removed from {}{context}",
+            entry.id,
+            path.display()
+        );
+    }
+    println!("auth directories and their logins were not touched");
+    if let Some(previous) = preserved {
+        println!(
+            "previous provider registry preserved at {}",
+            previous.display()
+        );
+    }
+    println!("next: af provider status");
+    Ok(EXIT_OK)
+}
+
 /// What `af provider setup` concluded, as one closed vocabulary shared by both output shapes.
 enum SetupOutcome {
     Registered {
@@ -971,6 +1005,22 @@ fn validate_explicit_id(id: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// An ambient label is refused by name: status lists it, so it looks removable, but no registry
+/// entry stands behind it.
+fn validate_removable_id(id: &str) -> Result<(), String> {
+    safe_id(id)?;
+    let (cli, selector, default) = match id {
+        "claude-ambient" => ("claude", "CLAUDE_CONFIG_DIR", "~/.claude"),
+        "codex-ambient" => ("codex", "CODEX_HOME", "~/.codex"),
+        _ => return Ok(()),
+    };
+    Err(format!(
+        "`{id}` is an ambient discovery label, not a registry entry, so there is nothing to \
+         remove; it is listed while the directory the {cli} CLI uses by default ({selector}, or \
+         {default}) is not the auth directory of a registered Provider"
+    ))
 }
 
 fn resolve_auth_dir(
@@ -1824,6 +1874,134 @@ fn add_to_registry_locked(
     }
     parse_registry(&bytes, path)?;
     write_registry(path, bytes.as_bytes(), existing.as_deref()).map(RegistryAdd::Added)
+}
+
+/// One entry `remove` took out, as the registry spelled it; a malformed entry may lack either.
+struct RemovedProvider {
+    id: String,
+    kind: Option<String>,
+    auth_dir: Option<String>,
+}
+
+fn remove_from_registry(
+    path: &Path,
+    ids: &BTreeSet<&str>,
+) -> Result<(Vec<RemovedProvider>, Option<PathBuf>), String> {
+    // An absent registry holds no entry, and finding that out must not create its directory and
+    // lock. A marker without a registry is an unfinished first publication, never absence.
+    let absent = matches!(
+        fs::symlink_metadata(path),
+        Err(error) if error.kind() == ErrorKind::NotFound
+    );
+    if absent && !registry_transaction_exists(path)? {
+        return Err(no_registry(path, ids));
+    }
+    let _lock = registry_lock(path)?;
+    remove_from_registry_locked(path, ids)
+}
+
+fn remove_from_registry_locked(
+    path: &Path,
+    ids: &BTreeSet<&str>,
+) -> Result<(Vec<RemovedProvider>, Option<PathBuf>), String> {
+    ensure_no_registry_transaction(path)?;
+    let existing = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(format!(
+                "provider registry {} must be a regular file, not a symlink",
+                path.display()
+            ));
+        }
+        Ok(_) => read_registry(path)?,
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect provider registry {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    let Some(existing) = existing else {
+        return Err(no_registry(path, ids));
+    };
+    // The existing registry is read by shape alone. An entry whose auth directory is gone makes
+    // the whole registry invalid for every reader, and removing that entry is the repair. The
+    // version is still required, so a format this release does not know is never rewritten.
+    let mut document = existing
+        .parse::<DocumentMut>()
+        .map_err(|error| format!("provider registry {}: {error}", path.display()))?;
+    if document.get("version").and_then(Item::as_integer) != Some(1) {
+        return Err(format!(
+            "provider registry {} must declare version = 1",
+            path.display()
+        ));
+    }
+    normalize_provider_tables(&mut document, path)?;
+    let providers = document["providers"]
+        .as_array_of_tables_mut()
+        .ok_or_else(|| {
+            format!(
+                "provider registry {} `providers` must be an array of tables",
+                path.display()
+            )
+        })?;
+    let mut removed = Vec::new();
+    providers.retain(|entry| {
+        let text = |key: &str| entry.get(key).and_then(Item::as_str).map(str::to_owned);
+        match text("id") {
+            Some(id) if ids.contains(id.as_str()) => {
+                removed.push(RemovedProvider {
+                    id,
+                    kind: text("kind"),
+                    auth_dir: text("auth_dir"),
+                });
+                false
+            }
+            _ => true,
+        }
+    });
+    let mut missing = ids.clone();
+    missing.retain(|id| !removed.iter().any(|entry| entry.id == *id));
+    if !missing.is_empty() {
+        return Err(format!(
+            "{} in {}; nothing was removed",
+            not_registered(&missing),
+            path.display()
+        ));
+    }
+    // What is published is a registry every reader accepts, as after `add`.
+    let bytes = document.to_string();
+    parse_registry(&bytes, path).map_err(|error| {
+        format!(
+            "removing {} would leave provider registry {} invalid, so nothing was removed: \
+             {error}; if that is another stale entry, name it in the same command",
+            quoted(ids),
+            path.display()
+        )
+    })?;
+    let preserved = write_registry(path, bytes.as_bytes(), Some(&existing))?;
+    Ok((removed, preserved))
+}
+
+fn no_registry(path: &Path, ids: &BTreeSet<&str>) -> String {
+    format!(
+        "{}: provider registry {} does not exist",
+        not_registered(ids),
+        path.display()
+    )
+}
+
+fn not_registered(ids: &BTreeSet<&str>) -> String {
+    if ids.len() == 1 {
+        format!("provider {} is not registered", quoted(ids))
+    } else {
+        format!("providers {} are not registered", quoted(ids))
+    }
+}
+
+fn quoted(ids: &BTreeSet<&str>) -> String {
+    let named: Vec<String> = ids.iter().map(|id| format!("`{id}`")).collect();
+    named.join(", ")
 }
 
 fn normalize_provider_tables(document: &mut DocumentMut, path: &Path) -> Result<(), String> {

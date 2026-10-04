@@ -1525,6 +1525,7 @@ fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
             let kind = provider_kind(kind);
             providers::add(&id, kind, auth_dir.as_deref())
         }
+        cli::ProviderCommand::Remove { ids } => providers::remove(&ids),
         cli::ProviderCommand::Recover => providers::recover().map(|()| 0),
         cli::ProviderCommand::Doctor(args) => {
             if args.task_file.is_some() {

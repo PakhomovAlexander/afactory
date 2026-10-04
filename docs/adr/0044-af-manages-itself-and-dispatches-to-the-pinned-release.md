@@ -6,8 +6,10 @@ Part 2's "verifying it against the release checksums" is revised by
 [ADR-0045](0045-one-release-train-and-a-pin-that-binds-bytes.md): under a lock, the lock's own
 per-target digest is what the bytes must match.
 ADR-0111 narrowly supersedes the exhaustive command list below for machine-local
-`af provider setup` and `af provider recover`; repository-authority and execution commands remain
-pinned. Superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the `afactory/`
+`af provider setup` and `af provider recover`, and
+[ADR-0136](0136-remove-a-registered-provider-by-id.md) for `af provider remove`;
+repository-authority and execution commands remain pinned.
+Superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the `afactory/`
 configuration read-through and the `AFACTORY_*` rename refusals. The trust gate that the
 Consequences declare was never implemented, and its `af help trust` topic was removed before GA.
 

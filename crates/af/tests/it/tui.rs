@@ -1102,3 +1102,89 @@ fn the_exit_line_starts_its_own_line() {
     browser.keys(b":q\r");
     assert_eq!(browser.exit_code(), 0);
 }
+
+/// `d` on a registered Provider fills the `:` line with `provider remove ID` and Enter hands the
+/// terminal to that command: the registry loses the entry and nothing else, and the bar stops
+/// listing it once the pane has discovered again. An ambient candidate offers no line.
+#[test]
+fn d_removes_a_registered_provider_through_af_provider_remove() {
+    let (_temp, root) = temp_root();
+    let home = root.join("home");
+    let config = home.join("config/af");
+    std::fs::create_dir_all(&config).unwrap();
+    // Two registered Codex contexts, and a `codex` that answers its login status at once.
+    let mut registry = "version = 1\n".to_owned();
+    for id in ["codex-main", "codex-work"] {
+        let auth = home.join(id);
+        std::fs::create_dir(&auth).unwrap();
+        registry.push_str(&format!(
+            "\n[[providers]]\nid = \"{id}\"\nkind = \"codex\"\nauth_dir = {:?}\n",
+            auth.to_str().unwrap()
+        ));
+    }
+    let registry_path = config.join("providers.toml");
+    std::fs::write(&registry_path, &registry).unwrap();
+    let bin = root.join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let codex = bin.join("codex");
+    let script = "#!/bin/sh\n\
+        if [ \"$1\" = login ] && [ \"$2\" = status ]; then\n  \
+        printf '%s\\n' 'Logged in using ChatGPT' >&2\n  exit 0\nfi\nexit 64\n";
+    std::fs::write(&codex, script).unwrap();
+    let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+    std::fs::set_permissions(&codex, executable).unwrap();
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+
+    let mut browser = Browser::launch_with(&home, &home, ROWS, COLS, &[("PATH", &path)]);
+    let listed = |screen: &Screen, id: &str| bar_rows(screen).iter().any(|row| row.trim() == id);
+    let discovered = |screen: &Screen| listed(screen, "codex-main") && listed(screen, "codex-work");
+    browser.wait_for("the registered providers", discovered);
+
+    // The ambient candidate is listed, and has no registry entry behind it.
+    browser.keys(b"/codex-ambient\r");
+    browser.keys(b"d");
+    let refusal =
+        "codex-ambient is discovered, not registered: there is no registry entry to remove";
+    browser.wait_for("the refusal", |screen| {
+        screen.lines()[ROWS - 1].ends_with(refusal)
+    });
+
+    browser.keys(b"/codex-work\r");
+    browser.keys(b"d");
+    let line = "provider remove codex-work";
+    let prefilled = format!(":{line}");
+    browser.wait_for("the prefilled line", |screen| {
+        screen.lines()[ROWS - 1].starts_with(&prefilled)
+    });
+    assert_eq!(
+        std::fs::read_to_string(&registry_path).unwrap(),
+        registry,
+        "the key alone removes nothing"
+    );
+    browser.keys(b"\r");
+    let shown = exit_line(line, "exit 0");
+    let screen = browser.wait_for("the exit line", |screen| screen.lines().contains(&shown));
+    let text = screen.text();
+    assert!(
+        text.contains("auth directories and their logins were not touched"),
+        "{text}"
+    );
+    browser.keys(b"\r");
+    let rediscovered = |screen: &Screen| {
+        tree_listed(screen) && listed(screen, "codex-main") && !listed(screen, "codex-work")
+    };
+    browser.wait_for("the bar without the removed provider", rediscovered);
+    let kept = std::fs::read_to_string(&registry_path).unwrap();
+    assert!(kept.contains("id = \"codex-main\""), "{kept}");
+    assert!(!kept.contains("codex-work"), "{kept}");
+    assert!(home.join("codex-work").is_dir(), "the auth directory stays");
+    browser.keys(b":q\r");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+/// The browser's own frame is on the screen again: the bar lists its providers folder.
+fn tree_listed(screen: &Screen) -> bool {
+    bar_rows(screen)
+        .iter()
+        .any(|row| row.contains("providers/"))
+}

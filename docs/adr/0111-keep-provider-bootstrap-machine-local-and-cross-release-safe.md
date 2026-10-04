@@ -1,6 +1,8 @@
 # ADR-0111: Keep Provider bootstrap machine-local and cross-release safe
 
-**Status:** accepted (2026-09-15)
+**Status:** accepted (2026-09-15). Extended by
+[ADR-0136](0136-remove-a-registered-provider-by-id.md): `af provider remove` is machine-local
+bootstrap too.
 
 Provider authentication and its registry are machine-local bootstrap state, not repository
 authority. `af provider setup` and `af provider recover` therefore run in the invoking release and

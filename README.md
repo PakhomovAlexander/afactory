@@ -85,6 +85,9 @@ authenticated context without opening a login and applies the same auth-director
 If a crash leaves publication fenced, `af provider recover` validates the marker plus the live,
 candidate, and prior hashes before archiving it; it reports which version is live and retains both
 preserved copies. Recovery is machine-local and also bypasses an older project pin.
+`af provider remove` drops named entries from the registry through the same atomic publication and
+leaves each auth directory and its login untouched; it is machine-local too
+([ADR-0136](docs/adr/0136-remove-a-registered-provider-by-id.md)).
 Ambient IDs shown by `status` are discovery labels and cannot be selected directly. `af provider
 status` is a fast registry and authentication check; `--usage` adds the optional subscription and
 quota probe, whose failure exits 7 and never demotes an authenticated Provider, and `af provider

@@ -1065,3 +1065,200 @@ fn add_refuses_to_exceed_the_registry_entry_limit() {
     assert!(stderr(&output).contains("limit of 32 entries"));
     assert_eq!(std::fs::read_to_string(path).unwrap(), registry);
 }
+
+/// A registry of Codex contexts under `root`, each with its own auth directory, written by hand
+/// with a comment above the file and above every entry.
+fn commented_registry(root: &Path, ids: &[&str]) -> (std::path::PathBuf, String) {
+    let config = root.join("config/af");
+    std::fs::create_dir_all(&config).unwrap();
+    let mut registry = "# machine-local\nversion = 1\n".to_string();
+    for id in ids {
+        let auth = root.join(format!("{id}-auth"));
+        std::fs::create_dir(&auth).unwrap();
+        registry.push_str(&format!(
+            "\n# the {id} login\n[[providers]]\nid = \"{id}\"\nkind = \"codex\"\nauth_dir = {:?}\n",
+            auth.canonicalize().unwrap().to_str().unwrap()
+        ));
+    }
+    let path = config.join("providers.toml");
+    std::fs::write(&path, &registry).unwrap();
+    (path, registry)
+}
+
+fn registered_ids(path: &Path) -> Vec<String> {
+    let registry = std::fs::read_to_string(path).unwrap();
+    let value: toml::Value = toml::from_str(&registry).unwrap();
+    assert_eq!(value["version"].as_integer(), Some(1), "{registry}");
+    let providers = value.get("providers").and_then(toml::Value::as_array);
+    let ids = providers.into_iter().flatten();
+    ids.map(|provider| provider["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn remove_drops_the_named_entry_and_touches_nothing_else() {
+    let root = tempfile::tempdir().unwrap();
+    let (path, registry) = commented_registry(root.path(), &["codex-first", "codex-second"]);
+
+    let output = af(root.path(), &["provider", "remove", "codex-first"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let first = root.path().join("codex-first-auth").canonicalize().unwrap();
+    let removed = format!(
+        "provider codex-first removed from {} (codex, {})",
+        path.display(),
+        first.display()
+    );
+    assert!(stdout.contains(&removed), "{stdout}");
+    assert!(
+        stdout.contains("auth directories and their logins were not touched"),
+        "{stdout}"
+    );
+    // The entry and its own comment are gone; the rest of the file is as it was written.
+    let entry = |id: &str| registry.find(&format!("\n# the {id} login")).unwrap();
+    let (first_entry, second_entry) = (entry("codex-first"), entry("codex-second"));
+    let expected = format!("{}{}", &registry[..first_entry], &registry[second_entry..]);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+    assert_eq!(registered_ids(&path), ["codex-second"]);
+    assert!(first.is_dir(), "the auth directory is not af's to delete");
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    // The registry it replaced is preserved, byte for byte.
+    let preserved = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("previous provider registry preserved at "))
+        .unwrap_or_else(|| panic!("{stdout}"));
+    assert_eq!(std::fs::read_to_string(preserved).unwrap(), registry);
+
+    // Removing the last entry leaves a valid, empty registry that `add` extends again.
+    let output = af(root.path(), &["provider", "remove", "codex-second"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(registered_ids(&path).is_empty());
+    let output = af(
+        root.path(),
+        &[
+            "provider",
+            "add",
+            "codex-first",
+            "--kind",
+            "codex",
+            "--auth-dir",
+            first.to_str().unwrap(),
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(registered_ids(&path), ["codex-first"]);
+}
+
+#[test]
+fn remove_refuses_what_is_not_a_registry_entry() {
+    // No registry: nothing is registered, and asking creates neither the registry nor its lock.
+    let empty = tempfile::tempdir().unwrap();
+    let output = af(empty.path(), &["provider", "remove", "codex-main"]);
+    assert_eq!(output.status.code(), Some(1));
+    let error = stderr(&output);
+    assert!(
+        error.contains("provider `codex-main` is not registered")
+            && error.contains("does not exist"),
+        "{error}"
+    );
+    let config = empty.path().join("config/af");
+    assert!(!config.join("providers.toml").exists());
+    assert!(!config.join("providers.toml.lock").exists());
+
+    let root = tempfile::tempdir().unwrap();
+    let (path, registry) = commented_registry(root.path(), &["codex-main"]);
+    for (ids, refusal) in [
+        (
+            &["codex-other"][..],
+            "provider `codex-other` is not registered in",
+        ),
+        // One unknown ID refuses the whole command: the registered one stays.
+        (
+            &["codex-main", "codex-other"],
+            "provider `codex-other` is not registered in",
+        ),
+        (
+            &["codex-other", "codex-third"],
+            "providers `codex-other`, `codex-third` are not registered in",
+        ),
+        // Status lists an ambient label, but no registry entry stands behind it.
+        (
+            &["codex-ambient"],
+            "`codex-ambient` is an ambient discovery label, not a registry entry",
+        ),
+        (
+            &["claude-ambient", "codex-main"],
+            "CLAUDE_CONFIG_DIR, or ~/.claude",
+        ),
+        (&["../codex-main"], "provider id `../codex-main` is unsafe"),
+    ] {
+        let mut args = vec!["provider", "remove"];
+        args.extend(ids);
+        let output = af(root.path(), &args);
+        assert_eq!(output.status.code(), Some(1), "{ids:?}");
+        assert!(stderr(&output).contains(refusal), "{}", stderr(&output));
+        assert!(output.stdout.is_empty(), "{ids:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), registry, "{ids:?}");
+    }
+    // An ID is required: clap's usage error, not a silent success.
+    let output = af(root.path(), &["provider", "remove"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), registry);
+}
+
+#[test]
+fn remove_repairs_a_registry_whose_auth_directories_are_gone() {
+    let root = tempfile::tempdir().unwrap();
+    let ids = ["codex-kept", "codex-gone", "codex-lost"];
+    let (path, registry) = commented_registry(root.path(), &ids);
+    std::fs::remove_dir(root.path().join("codex-gone-auth")).unwrap();
+    std::fs::remove_dir(root.path().join("codex-lost-auth")).unwrap();
+    // One missing auth directory makes the whole registry invalid: nothing can be added.
+    let extra = root.path().join("codex-extra-auth");
+    std::fs::create_dir(&extra).unwrap();
+    let add = |root: &Path| {
+        let extra = extra.to_str().unwrap();
+        let args = [
+            "provider",
+            "add",
+            "codex-extra",
+            "--kind",
+            "codex",
+            "--auth-dir",
+            extra,
+        ];
+        af(root, &args)
+    };
+    let output = add(root.path());
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("cannot be inspected"),
+        "{}",
+        stderr(&output)
+    );
+
+    // Removing one stale entry would publish a registry that is still invalid, so it is refused
+    // and names the other one.
+    let output = af(root.path(), &["provider", "remove", "codex-gone"]);
+    assert_eq!(output.status.code(), Some(1));
+    let error = stderr(&output);
+    assert!(
+        error.contains("removing `codex-gone` would leave provider registry")
+            && error.contains("provider `codex-lost` auth_dir")
+            && error.contains("nothing was removed"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), registry);
+
+    // Both in one command is the repair.
+    let output = af(
+        root.path(),
+        &["provider", "remove", "codex-gone", "codex-lost"],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(registered_ids(&path), ["codex-kept"]);
+    let output = add(root.path());
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(registered_ids(&path), ["codex-kept", "codex-extra"]);
+}
