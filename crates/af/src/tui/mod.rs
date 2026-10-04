@@ -16,6 +16,7 @@ mod keymap;
 mod paint;
 pub(crate) mod panes;
 mod scope;
+mod splash;
 mod term;
 mod tree;
 
@@ -137,8 +138,57 @@ pub(crate) fn wanted() -> bool {
     std::io::IsTerminal::is_terminal(&std::io::stdout())
 }
 
-/// `af` with no subcommand on a terminal: resolve the scope and browse until `q`.
+/// `af` with no subcommand on a terminal: browse the scope until `q`. The terminal is entered and
+/// the splash painted first, before anything is read; the scope and every pane load on a thread
+/// of their own while it animates.
 pub(crate) fn launch(repo: Option<&Path>) -> Result<i32, String> {
+    let mut session = term::Session::open()?;
+    let palette = paint::Palette::from_env();
+    let (sender, loaded) = std::sync::mpsc::channel();
+    let repo = repo.map(Path::to_path_buf);
+    let spawned = std::thread::Builder::new()
+        .name("af-browser-load".to_owned())
+        .spawn(move || {
+            // A panic here would print onto the splash and vanish with it: it becomes the error
+            // `af` prints once the terminal is back.
+            let loaded = std::panic::catch_unwind(|| load(repo.as_deref()));
+            let loaded = loaded.unwrap_or_else(|panic| {
+                let why = panic
+                    .downcast_ref::<&str>()
+                    .map(|why| why.to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                Err(format!("loading the browser panicked: {why}"))
+            });
+            // The splash may have ended with `q`: nobody waits for the browser then.
+            let _ = sender.send(loaded);
+        });
+    if let Err(error) = spawned {
+        session.close();
+        return Err(format!("starting to load the browser: {error}"));
+    }
+    let (mut app, typed) = match splash::show(&mut session, palette, &loaded) {
+        Ok(splash::Ended::Loaded(Ok(app), typed)) => (app, typed),
+        Ok(splash::Ended::Quit) => {
+            session.close();
+            return Ok(0);
+        }
+        Ok(splash::Ended::Loaded(Err(error), _)) | Err(error) => {
+            session.close();
+            return Err(error);
+        }
+    };
+    let outcome = run(&mut app, &mut session, palette, typed);
+    session.close();
+    outcome?;
+    match app.fatal.take() {
+        Some(why) => Err(why),
+        None => Ok(0),
+    }
+}
+
+/// The scope and every pane, read: what the splash waits for.
+fn load(repo: Option<&Path>) -> Result<App, String> {
     let scope = match repo {
         Some(dir) => {
             let scope = Scope::resolve(Some(dir))?;
@@ -155,21 +205,17 @@ pub(crate) fn launch(repo: Option<&Path>) -> Result<i32, String> {
         None => std::env::current_dir().ok(),
     };
     let panes = Panes::new(ProvidersPane::discovering());
-    let mut app = App::new(scope, start, panes);
-    let mut session = term::Session::open()?;
-    let outcome = run(&mut app, &mut session);
-    session.close();
-    outcome?;
-    match app.fatal.take() {
-        Some(why) => Err(why),
-        None => Ok(0),
-    }
+    Ok(App::new(scope, start, panes))
 }
 
 /// The event loop: paint what changed, read keys for at most a tenth of a second, collect
-/// background work, again.
-fn run(app: &mut App, session: &mut term::Session) -> Result<(), String> {
-    let palette = paint::Palette::from_env();
+/// background work, again. `typed` holds the keys typed during the splash: they come first.
+fn run(
+    app: &mut App,
+    session: &mut term::Session,
+    palette: paint::Palette,
+    mut typed: Vec<u8>,
+) -> Result<(), String> {
     let mut shown = Vec::new();
     let mut size = (0, 0);
     let mut buffer = [0_u8; 512];
@@ -186,11 +232,13 @@ fn run(app: &mut App, session: &mut term::Session) -> Result<(), String> {
         if app.quit {
             return Ok(());
         }
-        let count = session.read(&mut buffer)?;
-        let keys = if count == 0 {
-            decoder.flush()
+        let keys = if !typed.is_empty() {
+            decoder.feed(&std::mem::take(&mut typed))
         } else {
-            decoder.feed(&buffer[..count])
+            match session.read(&mut buffer)? {
+                0 => decoder.flush(),
+                count => decoder.feed(&buffer[..count]),
+            }
         };
         for key in keys {
             if let Some(effect) = app.key(key) {
@@ -1611,36 +1659,23 @@ fn chip_start(text: &str) -> Option<usize> {
 
 /// The pixel worker beside the name and the tagline (`brand/ascii.txt`), above the key
 /// reference. Printable ASCII, 42 columns, so it fits the main pane at the 80-column minimum.
-/// Where the terminal takes truecolor the worker is solid pink with ink eyes; elsewhere it is
-/// the `#` drawing.
+/// It is the pink worker, the mascot, painted as the splash paints its workers.
 fn banner_rows() -> Vec<Row> {
-    // `o` marks an eye: a space painted ink.
-    const WORKER: [&str; 6] = [
-        "     ###    ",
-        "  ######### ",
-        "  #oo###oo# ",
-        "  #oo###oo# ",
-        "  ######### ",
-        " ###########",
-    ];
     let name = format!("af {}", env!("CARGO_PKG_VERSION"));
     let beside = ["", name.as_str(), "agent pipelines made fast", "", "", ""];
-    WORKER
+    beside
         .iter()
-        .zip(beside)
-        .map(|(left, right)| {
-            let line = format!("{left}     {right}");
-            let mut spans: Vec<Span> = Vec::new();
-            for (column, cell) in line.trim_end().chars().enumerate() {
-                let (text, paint) = match cell {
-                    '#' if column < left.len() => ('#', Paint::Mascot),
-                    'o' if column < left.len() => (' ', Paint::Eye),
-                    _ => (cell, Paint::Plain),
-                };
-                match spans.last_mut() {
-                    Some(span) if span.paint == paint => span.text.push(text),
-                    _ => spans.push(Span::new(text.to_string(), paint)),
+        .enumerate()
+        .map(|(row, right)| {
+            let mut spans = splash::worker_spans(row, paint::Pixel::Pink);
+            if right.is_empty() {
+                // Nothing beside it: the row ends where the drawing does.
+                if let Some(last) = spans.last_mut().filter(|span| span.paint == Paint::Plain) {
+                    last.text.truncate(last.text.trim_end().len());
                 }
+                spans.retain(|span| !span.text.is_empty());
+            } else {
+                spans.push(Span::new(format!("     {right}"), Paint::Plain));
             }
             Row { spans }
         })

@@ -873,7 +873,10 @@ fn the_help_banner_draws_the_pink_worker_with_its_eyes() {
         .iter()
         .flat_map(|span| std::iter::repeat_n(span.paint, span.text.len()))
         .collect();
-    let (body, eye) = (Paint::Mascot, Paint::Eye);
+    let (body, eye) = (
+        Paint::Pixel(paint::Pixel::Pink),
+        Paint::Pixel(paint::Pixel::Eye),
+    );
     assert_eq!(
         paints[2..11],
         [body, eye, eye, body, body, body, eye, eye, body]

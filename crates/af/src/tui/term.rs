@@ -133,6 +133,15 @@ impl Session {
         }
     }
 
+    /// What has been typed so far, without waiting for more.
+    pub(crate) fn read_ready(&mut self, buffer: &mut [u8]) -> Result<usize, String> {
+        match rustix::io::ioctl_fionread(&self.tty) {
+            Ok(0) => Ok(0),
+            Ok(_) => self.read(buffer),
+            Err(error) => Err(format!("reading the terminal: {error}")),
+        }
+    }
+
     pub(crate) fn paint(
         &mut self,
         frame: &Frame,

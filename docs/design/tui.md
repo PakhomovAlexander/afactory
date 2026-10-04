@@ -32,6 +32,13 @@ still shows project Tasks — grouped by repository — because the Store is use
 scope filters the same Store by repository identity. `arg_required_else_help` on `Af` goes away;
 `Option<Command>::None` dispatches to `tui::launch(scope)`.
 
+`launch` enters the terminal and paints the splash (`splash.rs`, `brand/README.md`) before it
+reads anything, a few milliseconds after `af` starts. The scope and every pane load on a thread
+of their own; the splash animates while it waits on that load a step at a time and ends the
+moment the load arrives, so the browser is never later than it would be without one. `q` or
+`<C-c>` on the splash quits at once; any other key typed meanwhile is the browser's first input.
+A scope error (`--repo` outside a repository) leaves the terminal before it is printed.
+
 `af review tui` no longer exists (PR #114). `af task tui` is not added: the Task pane covers it.
 
 ## 3. Layout
@@ -286,6 +293,7 @@ The TUI is a new module tree under `crates/af/src/tui/`:
 ```
 crates/af/src/tui/
   mod.rs        launch(scope), event loop
+  splash.rs     the splash painted while the scope and the panes load; the pixel worker
   term.rs       the /dev/tty raw-mode session; its panic hook restores the terminal only when
                 the thread that entered raw mode panics, never for a background thread
   keymap.rs     mode + key sequence parser (gg, zo, ]], <C-w>l), one table, unit-tested

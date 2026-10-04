@@ -412,6 +412,57 @@ fn bare_af_on_a_pipe_prints_help_and_exits_2() {
 }
 
 #[test]
+fn the_splash_is_painted_first_and_the_browser_replaces_it() {
+    let (_temp, root) = temp_root();
+    let repo = hub(&root);
+    let mut browser = Browser::launch(&repo, &root.join("home"));
+    let ready = |screen: &Screen| screen.text().contains("SETTINGS  project: hub");
+    let screen = browser.wait_for("project settings", ready);
+    // The first frame is the splash, painted before anything is read: the workers, the Task on
+    // its belt and the tagline come before the first pane.
+    let painted = String::from_utf8_lossy(&browser.bytes).into_owned();
+    let pane = painted.find("SETTINGS").unwrap();
+    let splash = painted.find("agent pipelines made fast");
+    assert!(splash.is_some_and(|at| at < pane), "{painted:?}");
+    assert!(painted[..pane].contains("[#]"), "{painted:?}");
+    // The browser paints over all of it.
+    let shown = screen.text();
+    assert!(!shown.contains("agent pipelines made fast"), "{shown}");
+    browser.keys(b"q");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+#[test]
+fn keys_typed_while_the_splash_shows_reach_the_browser() {
+    let (_temp, root) = temp_root();
+    let repo = hub(&root);
+    let mut browser = Browser::launch(&repo, &root.join("home"));
+    // Typed at once, before the browser has loaded: they wait for it and none is lost.
+    browser.keys(b"]]");
+    let status = |screen: &Screen| screen.lines().last().cloned().unwrap_or_default();
+    let ready = |screen: &Screen| status(screen).starts_with("NORMAL  providers/");
+    browser.wait_for("the providers folder selected", ready);
+    browser.keys(b"q");
+    assert_eq!(browser.exit_code(), 0);
+}
+
+#[test]
+fn q_typed_at_once_quits_and_gives_the_terminal_back() {
+    let (_temp, root) = temp_root();
+    let repo = hub(&root);
+    let mut browser = Browser::launch(&repo, &root.join("home"));
+    browser.keys(b"q");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !String::from_utf8_lossy(&browser.bytes).contains("\x1b[?1049l") {
+        assert!(Instant::now() < deadline, "the main screen never came back");
+        if let Ok(chunk) = browser.output.recv_timeout(Duration::from_millis(50)) {
+            browser.bytes.extend(chunk);
+        }
+    }
+    assert_eq!(browser.exit_code(), 0);
+}
+
+#[test]
 fn bare_af_in_a_repository_opens_the_project_scope() {
     let (_temp, root) = temp_root();
     let repo = hub(&root);
