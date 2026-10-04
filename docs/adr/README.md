@@ -237,3 +237,4 @@ future readers need.
 - [0135 — Collect finished Tasks behind a tombstone and a reachability
   sweep](0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
 - [0136 — Remove a registered Provider by ID](0136-remove-a-registered-provider-by-id.md)
+- [0138 — The repository pins its newest release](0138-the-repository-pins-its-newest-release.md)
