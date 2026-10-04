@@ -32,7 +32,7 @@ use scope::{Scope, ScopeKind};
 use tree::{NodeKind, Tab, Tree};
 
 /// Columns the bar takes, its `|` separator included.
-const BAR_WIDTH: usize = 28;
+const BAR_WIDTH: usize = 29;
 /// Below this width the bar starts hidden; `<C-b>` still shows it.
 const BAR_MIN_WIDTH: usize = 90;
 const MIN_WIDTH: usize = 80;
@@ -1404,10 +1404,12 @@ impl App {
             };
             let fill = if index == cursor { paint } else { Paint::Plain };
             let line = index - self.bar_top + 1;
+            // The chip's opening space takes the second of the two before the field, and its
+            // closing space the column the entry leaves free.
             let spans = match row.tone.zip(chip_start(&text)) {
                 Some((tone, at)) => vec![
-                    Span::new(&text[..at], paint),
-                    Span::new(&text[at..], Paint::Chip(tone)),
+                    Span::new(&text[..at - 1], paint),
+                    Span::chip(&text[at..], tone),
                 ],
                 None => vec![Span::new(text, paint)],
             };
@@ -1650,11 +1652,12 @@ fn help_rows(words: &[String]) -> Vec<Row> {
     rows
 }
 
-/// Where a bar entry's state chip starts: at its last word, taking the spaces before it but
-/// one, so right-aligned words make chips of one width.
+/// Where the field of a bar entry's state chip starts: two columns after the text before its last
+/// word, taking any further spaces in, so a right-aligned word makes chips of one width and every
+/// chip stands a space clear of the label.
 fn chip_start(text: &str) -> Option<usize> {
     let word = text.rfind(' ')? + 1;
-    Some(text[..word].trim_end().len() + 1)
+    Some((text[..word].trim_end().len() + 2).min(word))
 }
 
 /// The pixel worker beside the name and the tagline (`brand/ascii.txt`), above the key

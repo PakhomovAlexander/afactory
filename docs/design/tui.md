@@ -67,7 +67,7 @@ A scope error (`--repo` outside a repository) leaves the terminal before it is p
 
 Three regions, fixed for the whole session:
 
-- **Left bar** (28 columns, `nvim-tree` style; hidden below 90 columns with `<C-b>` to toggle).
+- **Left bar** (29 columns, `nvim-tree` style; hidden below 90 columns with `<C-b>` to toggle).
   A folding tree whose depth-1 folders are the four fixed tabs: `providers/`, `workers/`,
   `pipelines/`, `tasks/`. Selecting the root row opens the settings pane for the scope.
 - **Main pane**: one renderer per node kind (§5). Scrollable; never wider than the terminal.

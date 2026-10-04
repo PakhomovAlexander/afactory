@@ -14,6 +14,8 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 const AF: &str = env!("CARGO_BIN_EXE_af");
 const ROWS: usize = 30;
 const COLS: usize = 100;
+/// The bar's columns before its `|` separator.
+const BAR_INNER: usize = 28;
 
 fn workspace() -> PathBuf {
     // Resolved at run time: a test binary a warm gate reuses was compiled in another sandbox.
@@ -383,7 +385,7 @@ impl Browser {
 fn bar_rows(screen: &Screen) -> Vec<String> {
     let mut rows = Vec::new();
     for line in screen.lines() {
-        let bar: String = line.chars().take(27).collect();
+        let bar: String = line.chars().take(BAR_INNER).collect();
         rows.push(bar.trim_end().to_owned());
     }
     rows
@@ -600,13 +602,13 @@ fn the_tasks_pane_shows_the_numbers_af_task_show_json_records() {
         let lines = screen.lines();
         lines
             .iter()
-            .any(|line| line.get(28..) == Some("HISTORY  (af task show)"))
+            .any(|line| line.get(BAR_INNER + 1..) == Some("HISTORY  (af task show)"))
     };
     let screen = browser.wait_for("the Task", opened);
     let main: Vec<String> = screen
         .lines()
         .iter()
-        .map(|line| line.get(28..).unwrap_or("").to_owned())
+        .map(|line| line.get(BAR_INNER + 1..).unwrap_or("").to_owned())
         .collect();
     let text = screen.text();
     let line = |prefix: &str| {
@@ -878,7 +880,7 @@ fn the_workers_pane_shows_the_attempts_af_task_show_json_records() {
             // <C-b> hides the bar again, so the pane starts at the first column.
             browser.keys(b"\x02");
         }
-        let left = if narrow { 0 } else { 28 };
+        let left = if narrow { 0 } else { BAR_INNER + 1 };
         let main = |screen: &Screen| -> Vec<String> {
             let lines = screen.lines();
             let main = lines.iter().map(|line| line.get(left..).unwrap_or(""));

@@ -1135,7 +1135,7 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
             "af does not read pre-GA state (ADR-0113); move or remove them.",
         ]
     );
-    assert!(rows[2..5].iter().all(|row| row.len() <= 72), "{rows:#?}");
+    assert!(rows[2..5].iter().all(|row| row.len() <= MAIN), "{rows:#?}");
     let at = rows
         .iter()
         .position(|row| row == "~/.local/state/af/task/local/0000000000000002:")
