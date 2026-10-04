@@ -23,6 +23,19 @@ review corpora belong in consuming repositories, not here.
   ([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)). Self-management still installs and
   dispatches to pinned releases from 0.8.0 on.
 
+## Building
+
+- Build in the checkout's own `target/`, the default. Never set `CARGO_TARGET_DIR` to a path
+  under `/tmp`, `$TMPDIR` or `~/.cache`: such a target outlives the task that created it, no
+  sweep reaches it, and one development machine collected 45 GB of them. The one external
+  target is the read-only gate cache that `scripts/verify.sh` owns.
+- One worktree per task, removed with its `target/` when the task's PR merges (the hub's
+  `make worktree-rm` or `make worktree-sweep`). A built worktree is 5-50 GB; `make target-sweep`
+  in the hub prunes stale artifacts from the ones that stay.
+- `af` removes the sandbox directories (`$TMPDIR/af-sandbox-<pid>-…`) that a killed or aborted
+  process left behind the next time it starts. Do not clear `$TMPDIR` by hand while a review or
+  Task runs: a live sandbox is a directory nobody else may touch.
+
 ## Invariants
 
 - Task is the common execution abstraction. Every Pipeline has a public input/output contract,

@@ -25,7 +25,8 @@ serde_json = { version = "1.0.149", features = ["preserve_order"] }
 tempfile = "3.27.0"
 # A runtime capability probe is bounded and kills the probe's whole process group on timeout.
 # An installed Docker client with a wedged daemon must not hang the review gate forever.
-nix = { version = "0.31.3", default-features = false, features = ["dir", "fs", "user"] }
+# `process` and `signal` give the stale-sandbox sweep its pid liveness check (`kill(pid, 0)`).
+nix = { version = "0.31.3", default-features = false, features = ["dir", "fs", "process", "signal", "user"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 exacl = "0.13.0"

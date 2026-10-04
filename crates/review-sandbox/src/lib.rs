@@ -33,6 +33,7 @@ pub mod build_cache;
 pub mod cache;
 pub mod container;
 pub mod seal;
+pub mod stale;
 pub mod task_build_cache;
 pub mod toolchain;
 pub mod workspace;
@@ -48,6 +49,7 @@ pub use cache::{
 };
 pub use container::{Availability, ContainerProvider};
 pub use seal::{MutationSet, SealedSandbox};
+pub use stale::{SweepReport, sweep_stale_sandboxes, sweep_stale_sandboxes_in};
 pub use task_build_cache::{
     Ensured, TaskBuildCacheKeyLock, TaskBuildCacheLock, Uninspectable, WARM_KINDS, WarmDirectory,
     default_task_build_cache_root, directory_bytes, lock_task_build_cache,
@@ -358,7 +360,7 @@ pub struct SandboxTemplate {
 
 impl SandboxTemplate {
     pub fn materialize(manifest: &Manifest, cas: &Cas) -> Result<SandboxTemplate, std::io::Error> {
-        let dir = tempfile::tempdir()?;
+        let dir = stale::tempdir()?;
         let root = dir.path().join("tree");
         materialize(manifest, cas, &root).map_err(std::io::Error::other)?;
         Ok(SandboxTemplate {
@@ -390,7 +392,7 @@ impl Sandbox {
         cas: &Cas,
         mode: Mode,
     ) -> Result<Sandbox, std::io::Error> {
-        let dir = tempfile::tempdir()?;
+        let dir = stale::tempdir()?;
         let root = dir.path().join("tree");
         materialize(manifest, cas, &root).map_err(std::io::Error::other)?;
 
@@ -422,7 +424,7 @@ impl Sandbox {
         mode: Mode,
         isolation: Isolation,
     ) -> Result<Sandbox, std::io::Error> {
-        let dir = tempfile::tempdir()?;
+        let dir = stale::tempdir()?;
         let root = dir.path().join("tree");
         let cloned_directories = clone_tree(&template.root, &root, mode)?;
 

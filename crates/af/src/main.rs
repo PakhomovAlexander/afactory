@@ -1076,6 +1076,7 @@ fn main() {
         eprintln!("af: {error}");
         std::process::exit(1);
     }
+    sweep_stale_sandboxes_in_background();
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
         cli::Command::Review(namespace) => ("af review", review_command(namespace)),
         cli::Command::Provider { command } => ("af provider", provider_command(command)),
@@ -3700,6 +3701,28 @@ fn provider_doctor(options: &Options) -> Result<i32, String> {
     let campaign = campaign_run_id(options.campaign.as_deref().unwrap_or("local"));
     review_task::require_common_campaign(&cas, &store, &campaign)?;
     review_task::doctor(options, &cas, &mut store, &repo, &campaign)
+}
+
+/// Remove the sandbox directories that earlier `af` processes left in `$TMPDIR` when they were
+/// killed. A sandbox is removed by the handle that owns it, so only a process that never ran
+/// its drops leaves one, and a leftover tree a Gate built into holds a whole `target/`. The
+/// sweep keeps every directory whose process still exists and runs on its own thread, so a
+/// command that finishes first leaves the rest of the work to the next start. One stderr line
+/// reports what was removed; stdout and every `--json` document are untouched.
+fn sweep_stale_sandboxes_in_background() {
+    let _ = std::thread::Builder::new()
+        .name("af-sandbox-sweep".into())
+        .spawn(|| {
+            let report = review_sandbox::sweep_stale_sandboxes();
+            if report.removed > 0 {
+                eprintln!(
+                    "af: removed {} stale sandbox director{} left by exited processes under {}",
+                    report.removed,
+                    if report.removed == 1 { "y" } else { "ies" },
+                    std::env::temp_dir().display()
+                );
+            }
+        });
 }
 
 fn run(options: &Options) -> Result<RunVerdict, String> {
