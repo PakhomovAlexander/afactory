@@ -11,7 +11,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use super::{Effect, Pane, Row, SPINNER};
 use crate::providers::{self, ProviderInventory, ProviderStatus, UsageProbe};
 use crate::tui::keymap::Key;
-use crate::tui::paint::Paint;
+use crate::tui::paint::{Paint, Span, Tone};
 use crate::tui::scope::Scope;
 use crate::tui::tree::Item;
 
@@ -143,6 +143,7 @@ impl Pane for ProvidersPane {
                 id: provider.id.clone(),
                 label: provider.id.clone(),
                 muted: providers::is_ambient_candidate(provider),
+                tone: None,
                 children: None,
             });
         }
@@ -253,7 +254,7 @@ fn inventory_rows(
     rows: &mut Vec<Row>,
 ) {
     if let Some(warning) = &inventory.warning {
-        rows.push(Row::painted(format!("warning: {warning}"), Paint::Error));
+        rows.push(Row::error("warning", warning));
     }
     if inventory.providers.is_empty() {
         let none = "No supported provider CLI is installed and no provider registry entries exist";
@@ -285,7 +286,7 @@ fn provider_rows(
 ) {
     let ambient = providers::is_ambient_candidate(provider);
     let paint = if ambient { Paint::Muted } else { Paint::Plain };
-    rows.push(Row::painted(providers::status_table_row(provider), paint));
+    rows.push(status_row(provider, paint));
     if alone {
         rows.push(Row::blank());
     }
@@ -300,6 +301,34 @@ fn provider_rows(
     if ambient {
         let hint = providers::setup_hint(&provider.kind, ids);
         rows.push(Row::painted(hint, Paint::Muted));
+    }
+}
+
+/// The provider's `af provider status` row, its STATUS word as a chip: green for
+/// `authenticated`, pink for a provider that cannot be used, none for one that is not known.
+fn status_row(provider: &ProviderStatus, paint: Paint) -> Row {
+    let row = providers::status_table_row(provider);
+    let tone = match providers::usability_name(&provider.status) {
+        "usable_or_untested" => Tone::Ok,
+        "unusable" => Tone::Fail,
+        _ => return Row::painted(row, paint),
+    };
+    if paint != Paint::Plain {
+        return Row::painted(row, paint);
+    }
+    // STATUS follows the ID and KIND cells; the chip takes the space either side of the word.
+    let word = format!(" {} ", provider.status);
+    let from = provider.id.len() + 1 + provider.kind.len();
+    let Some(at) = row.get(from..).and_then(|rest| rest.find(&word)) else {
+        return Row::painted(row, paint);
+    };
+    let at = from + at;
+    Row {
+        spans: vec![
+            Span::new(&row[..at], paint),
+            Span::chip(&provider.status, tone),
+            Span::new(&row[at + word.len()..], paint),
+        ],
     }
 }
 
