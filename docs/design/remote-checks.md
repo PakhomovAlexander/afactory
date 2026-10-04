@@ -383,7 +383,9 @@ Deliverables:
    the failed jobs' log tails kept as `stdout` within the 256 KiB and 1 MiB bounds; a log that
    cannot be fetched leaving the outcome unchanged; each reason of
    3.6; local failure skips the push; resume attaches without a second pull request or commit;
-   a repair round appends one commit; a head branch with the candidate
+   a closed gate pull request is refused and never replaced by a second; a push interrupted
+   after it landed is not recorded as refused, and resume attaches to it; a merge ref changed
+   after one check passed refuses the later check; a repair round appends one commit; a head branch with the candidate
    tree but another base, a merge commit, or a foreign commit message is refused; the same Task
    ID from another Store is refused at the base; a successful job on a `push`-event run or on
    another workflow's run for the same head commit earns nothing; a run with two attempts is
@@ -472,10 +474,27 @@ second Campaign follows.
 
 ### Packages
 
-- RC1: implemented with ADR-0136, the walkthrough
-  [`docs/task-execution/remote-checks.md`](../task-execution/remote-checks.md) and the offline
-  fixtures under `fixtures/remote-checks/`. Task `remote-checks-rc1` (plan `sha256:0ffa4271…`)
-  was planned at commit 69ce704, before the owner's decision to keep job logs, so its
-  implementer built the variant without them; the log excerpt of 3.4 step 10 and its
-  result-shape rule were added by hand after that Task's verdict.
+**RC1 — implementation.** Task `remote-checks-rc1` (`kernel/implementation-reviewed`; plan
+`sha256:0ffa4271…`), planned at commit 69ce704, 2026-10-04: 963,291 tokens, 7 Attempts, about
+92 minutes. The gate passed (`kernel` 632.8 s cold, `markdownlint` 15.8 s). The Task ended
+`changes_requested`: two reviewers (GPT-6 Sol, high) reported five Findings, three distinct, and
+the evaluator failed on two points. The candidate (Snapshot `sha256:1018f4c5…`) was committed
+unmodified as 14c15f9.
+
+| Finding | Disposition (commit dd32598, by hand) |
+| --- | --- |
+| A merge-ref proof was reused for a later check (both reviewers, evaluator) | The proof is read again for every batch of checks being judged; a test changes the merge ref after the first check passed. |
+| An interrupted push was recorded as `refused` (both reviewers) | The two branches are read back; unreadable ends the Attempt with a kernel error and no evidence. A test stalls the remote after it accepted the push. |
+| A closed gate pull request was replaced by a second one (bugs reviewer) | Pull requests are looked up in every state; a closed one is `remote_pr_refused`. |
+| The Task owner could be equal in two Stores (evaluator) | The opening writer carries 64 bits of operating-system randomness, journaled in the opening transition. |
+
+The Task was planned before the owner's decision to keep job logs, so its implementer built the
+variant without them. The log excerpt of 3.4 step 10, its result-shape rule, the `log_id` of
+`af task show --json` and their tests were added by hand in the same commit.
+
+The mapping, the evidence and the result contract are as designed, with one simplification
+found while adding the logs: the excerpt is the result's `stdout` and the evidence has no field
+for it, since no decision reads a log.
+
+- RC1 verification: see below.
 - RC2: not started.
