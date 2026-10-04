@@ -154,7 +154,8 @@ pub struct Sandbox {
     /// change" is computed rather than reported by the reviewer.
     baseline: Arc<Manifest>,
     /// Kept so the directory outlives the handle and is removed with it. An `Option` only so
-    /// [`Sandbox::into_parts`] can move it out while the `Drop` below still runs.
+    /// [`Sandbox::into_parts`] and [`Sandbox::preserve`] can move it out while the `Drop` below
+    /// still runs.
     _dir: Option<tempfile::TempDir>,
 }
 
@@ -485,6 +486,22 @@ impl Sandbox {
     /// solves, one layer up.
     pub fn seal(self) -> Result<SealedSandbox, std::io::Error> {
         seal::seal(self)
+    }
+
+    /// Release the directory without removing it, and return the tree's path for the operator.
+    ///
+    /// A provider calls this when a container's cleanup was not confirmed: a daemon-owned
+    /// process may still hold the tree as a writable bind, and deleting under it is worse than
+    /// a leftover. The directory is marked beside its tree, where no bind can see the marker,
+    /// so the stale-sandbox sweep of a later `af` process keeps it too (see [`stale`]).
+    pub fn preserve(mut self) -> PathBuf {
+        let root = std::mem::take(&mut self.root);
+        if let Some(dir) = self._dir.take() {
+            let _ = stale::mark_preserved(dir.path());
+            let _ = dir.keep();
+        }
+        // The emptied handle drops as a no-op: no tree to make writable, no `TempDir` to remove.
+        root
     }
 
     pub(crate) fn into_parts(mut self) -> (PathBuf, Arc<Manifest>, tempfile::TempDir) {

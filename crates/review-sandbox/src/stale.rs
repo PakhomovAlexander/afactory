@@ -8,19 +8,30 @@
 //! that a Gate built into carries a whole `target/` directory. The pid in the name is what lets
 //! a later process tell such a leftover from a sandbox another live process is using right now.
 //!
-//! The sweep is conservative. It touches only directories with this exact name shape, it keeps a
+//! The sweep is conservative. It touches only directories with this exact name shape; it keeps a
 //! directory whenever a process with that pid exists (a recycled pid keeps a leftover until the
-//! next sweep, which is the harmless direction), and it never follows a symlink into or out of a
-//! sandbox. The temporary root is the one `std::env::temp_dir()` names for this process, so a
-//! sweep under a redirected `TMPDIR` sees exactly the sandboxes created under that `TMPDIR`. A
-//! check that outlived its killed `af` parent loses its tree here; it was orphaned already, and
-//! `review-process` ends a supervised group with its leader on every path short of `SIGKILL`.
+//! next sweep, which is the harmless direction); it keeps a directory the kernel preserved on
+//! purpose, marked by [`PRESERVED`] beside the tree, because a container may still hold that
+//! tree as a writable bind; and it removes a tree only through directory descriptors opened
+//! without following links, so a child that outlived its killed `af` parent cannot redirect the
+//! walk by swapping a directory for a symlink while it runs. The temporary root is the one
+//! `std::env::temp_dir()` names for this process, so a sweep under a redirected `TMPDIR` sees
+//! exactly the sandboxes created under that `TMPDIR`. A check that outlived its killed parent
+//! loses its tree here; it was orphaned already, and `review-process` ends a supervised group
+//! with its leader on every path short of `SIGKILL`.
 
 use std::path::Path;
 
-use crate::restore_writable_dirs;
-
 const PREFIX: &str = "af-sandbox-";
+
+/// The marker a provider writes beside a sandbox tree (never inside it, where a container bind
+/// could see it) when it releases the handle without removing the directory on purpose. A
+/// marked directory is an operator's to recover; no sweep touches it.
+pub(crate) const PRESERVED: &str = "preserved";
+
+/// Directories deeper than this are not walked; a sandbox tree is nowhere near it, and a bound
+/// keeps a hostile tree from exhausting the stack.
+const MAX_DEPTH: u32 = 128;
 
 /// A fresh, private directory for one sandbox or template, named so a later sweep can
 /// attribute it to this process.
@@ -28,6 +39,14 @@ pub(crate) fn tempdir() -> std::io::Result<tempfile::TempDir> {
     tempfile::Builder::new()
         .prefix(&format!("{PREFIX}{}-", std::process::id()))
         .tempdir()
+}
+
+/// Write the [`PRESERVED`] marker into a sandbox's own directory (the parent of its tree).
+pub(crate) fn mark_preserved(sandbox_dir: &Path) -> std::io::Result<()> {
+    std::fs::write(
+        sandbox_dir.join(PRESERVED),
+        b"container cleanup was not confirmed\n",
+    )
 }
 
 /// The owning pid encoded in a sandbox directory name, or `None` for any other entry.
@@ -68,6 +87,8 @@ pub struct SweepReport {
     pub failed: usize,
     /// Directories kept because their process is still running.
     pub live: usize,
+    /// Directories kept because the kernel preserved them on purpose.
+    pub preserved: usize,
 }
 
 /// Remove every sandbox directory under this process's temporary root whose owning process no
@@ -100,7 +121,11 @@ pub fn sweep_stale_sandboxes_in(root: &Path) -> SweepReport {
             report.live += 1;
             continue;
         }
-        if remove_sandbox_dir(&path) {
+        if path.join(PRESERVED).exists() {
+            report.preserved += 1;
+            continue;
+        }
+        if remove_tree_nofollow(root, &entry.file_name()) {
             report.removed += 1;
         } else {
             report.failed += 1;
@@ -109,11 +134,85 @@ pub fn sweep_stale_sandboxes_in(root: &Path) -> SweepReport {
     report
 }
 
-/// A read-only sandbox left its directories at 0o555; restore owner write before unlinking,
-/// exactly as a live handle's drop does.
-fn remove_sandbox_dir(path: &Path) -> bool {
-    restore_writable_dirs(path);
-    std::fs::remove_dir_all(path).is_ok()
+/// Remove `<parent>/<name>` and everything below it without following a single link: every
+/// directory is opened relative to its parent's descriptor with `O_NOFOLLOW`, made writable
+/// through that descriptor (a read-only sandbox left its directories at 0o555), and emptied
+/// with `unlinkat`. A name that turns into a symlink between the listing and the open is
+/// unlinked as the link it now is. Returns whether the whole tree is gone.
+#[cfg(unix)]
+fn remove_tree_nofollow(parent: &Path, name: &std::ffi::OsStr) -> bool {
+    use nix::dir::Dir;
+    use nix::fcntl::OFlag;
+    use nix::sys::stat::Mode;
+    use nix::unistd::{UnlinkatFlags, unlinkat};
+
+    let flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY;
+    let Ok(parent) = Dir::open(parent, flags, Mode::empty()) else {
+        return false;
+    };
+    let Ok(mut root) = Dir::openat(&parent, name, flags, Mode::empty()) else {
+        return false;
+    };
+    if remove_children_nofollow(&mut root, 0).is_err() {
+        return false;
+    }
+    drop(root);
+    unlinkat(&parent, name, UnlinkatFlags::RemoveDir).is_ok()
+}
+
+#[cfg(unix)]
+fn remove_children_nofollow(directory: &mut nix::dir::Dir, depth: u32) -> nix::Result<()> {
+    use nix::dir::{Dir, Type};
+    use nix::errno::Errno;
+    use nix::fcntl::OFlag;
+    use nix::sys::stat::{Mode, fchmod};
+    use nix::unistd::{UnlinkatFlags, unlinkat};
+    use std::ffi::CString;
+
+    if depth > MAX_DEPTH {
+        return Err(Errno::ELOOP);
+    }
+    // Owner read, write and search on the descriptor itself: unlinking an entry needs write on
+    // its directory, and nothing a path lookup could be redirected to is touched.
+    fchmod(&*directory, Mode::S_IRWXU)?;
+    // List first, unlink after: a directory stream read while its entries vanish is undefined.
+    let mut entries = Vec::new();
+    for entry in directory.iter() {
+        let entry = entry?;
+        let name = entry.file_name();
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        entries.push((CString::from(name), entry.file_type()));
+    }
+    let flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY;
+    for (name, kind) in entries {
+        let name = name.as_c_str();
+        if kind.is_some_and(|kind| kind != Type::Directory) {
+            unlinkat(&*directory, name, UnlinkatFlags::NoRemoveDir)?;
+            continue;
+        }
+        // A directory, or a filesystem that does not say: open it without following. `ENOTDIR`
+        // and `ELOOP` mean the entry is not a directory after all (a symlink put in its place
+        // included), so it is unlinked as what it is.
+        match Dir::openat(&*directory, name, flags, Mode::empty()) {
+            Ok(mut child) => {
+                remove_children_nofollow(&mut child, depth + 1)?;
+                drop(child);
+                unlinkat(&*directory, name, UnlinkatFlags::RemoveDir)?;
+            }
+            Err(Errno::ENOTDIR | Errno::ELOOP) => {
+                unlinkat(&*directory, name, UnlinkatFlags::NoRemoveDir)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn remove_tree_nofollow(parent: &Path, name: &std::ffi::OsStr) -> bool {
+    std::fs::remove_dir_all(parent.join(name)).is_ok()
 }
 
 #[cfg(test)]
@@ -165,13 +264,71 @@ mod tests {
             SweepReport {
                 removed: 1,
                 failed: 0,
-                live: 1
+                live: 1,
+                preserved: 0,
             }
         );
         assert!(!dead.exists());
         assert!(live.exists());
         assert!(stranger.exists());
         assert!(file.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_preserved_sandbox_of_a_dead_owner_is_kept() {
+        let root = tempfile::tempdir().unwrap();
+        let kept = root.path().join("af-sandbox-2000000000-kept01");
+        std::fs::create_dir_all(kept.join("tree")).unwrap();
+        mark_preserved(&kept).unwrap();
+
+        let report = sweep_stale_sandboxes_in(root.path());
+
+        assert_eq!(
+            report,
+            SweepReport {
+                removed: 0,
+                failed: 0,
+                live: 0,
+                preserved: 1,
+            }
+        );
+        assert!(kept.join("tree").exists());
+        assert!(kept.join(PRESERVED).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_sweep_never_follows_a_link_out_of_a_dead_sandbox() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = root.path().join("outside");
+        std::fs::create_dir_all(outside.join("keep")).unwrap();
+        std::fs::write(outside.join("keep").join("data"), b"precious").unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let dead = root.path().join("af-sandbox-2000000000-dead02");
+        std::fs::create_dir_all(dead.join("tree")).unwrap();
+        // A directory entry that is a link: the swap a surviving child could make mid-walk.
+        symlink(&outside, dead.join("tree").join("escape")).unwrap();
+        symlink(
+            outside.join("keep").join("data"),
+            dead.join("tree").join("file"),
+        )
+        .unwrap();
+
+        let report = sweep_stale_sandboxes_in(root.path());
+
+        assert_eq!(report.removed, 1, "{report:?}");
+        assert!(!dead.exists());
+        assert!(outside.join("keep").join("data").exists());
+        assert_eq!(
+            std::fs::metadata(&outside).unwrap().permissions().mode() & 0o777,
+            0o555,
+            "the link target's mode is untouched"
+        );
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     #[test]

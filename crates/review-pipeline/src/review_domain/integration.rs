@@ -712,10 +712,9 @@ impl IntegrationCheckSequence<'_> {
                     None => runner.run(definition),
                 };
                 if let Some(error) = cleanup_failure {
-                    let preserved = sandbox.root().to_path_buf();
                     // Preserve before any fallible evidence write: CAS failure must not delete a
                     // writable bind which may still have a daemon-owned process attached.
-                    std::mem::forget(sandbox);
+                    let preserved = sandbox.preserve();
                     let evidence = match record_integration_check(self.cas, &result) {
                         Ok(id) => {
                             result_artifact_ids.push(id.clone());

@@ -1076,7 +1076,9 @@ fn main() {
         eprintln!("af: {error}");
         std::process::exit(1);
     }
-    sweep_stale_sandboxes_in_background();
+    let sandbox_sweep = runs_task_work(&command)
+        .then(sweep_stale_sandboxes_in_background)
+        .flatten();
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
         cli::Command::Review(namespace) => ("af review", review_command(namespace)),
         cli::Command::Provider { command } => ("af provider", provider_command(command)),
@@ -1437,6 +1439,11 @@ fn main() {
             1
         }
     };
+    if let Some(sweep) = sandbox_sweep {
+        // The command's own work is done; a sweep still removing a large leftover finishes
+        // before the process ends, so a stale directory never outlives two Task-running commands.
+        let _ = sweep.join();
+    }
     selfmgmt::after_command(&argv);
     if code != 0 {
         std::process::exit(code);
@@ -3706,11 +3713,13 @@ fn provider_doctor(options: &Options) -> Result<i32, String> {
 /// Remove the sandbox directories that earlier `af` processes left in `$TMPDIR` when they were
 /// killed. A sandbox is removed by the handle that owns it, so only a process that never ran
 /// its drops leaves one, and a leftover tree a Gate built into holds a whole `target/`. The
-/// sweep keeps every directory whose process still exists and runs on its own thread, so a
-/// command that finishes first leaves the rest of the work to the next start. One stderr line
-/// reports what was removed; stdout and every `--json` document are untouched.
-fn sweep_stale_sandboxes_in_background() {
-    let _ = std::thread::Builder::new()
+/// sweep runs for the commands that create sandboxes themselves (`runs_task_work`), on its own
+/// thread so a long removal overlaps the command's work, and `main` joins it before exiting so
+/// it always completes. It keeps every directory whose process still exists and every one the
+/// kernel preserved on purpose. One stderr line reports what was removed; stdout and every
+/// `--json` document are untouched.
+fn sweep_stale_sandboxes_in_background() -> Option<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
         .name("af-sandbox-sweep".into())
         .spawn(|| {
             let report = review_sandbox::sweep_stale_sandboxes();
@@ -3722,7 +3731,8 @@ fn sweep_stale_sandboxes_in_background() {
                     std::env::temp_dir().display()
                 );
             }
-        });
+        })
+        .ok()
 }
 
 fn run(options: &Options) -> Result<RunVerdict, String> {

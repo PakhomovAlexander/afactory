@@ -33,8 +33,9 @@ review corpora belong in consuming repositories, not here.
   `make worktree-rm` or `make worktree-sweep`). A built worktree is 5-50 GB; `make target-sweep`
   in the hub prunes stale artifacts from the ones that stay.
 - `af` removes the sandbox directories (`$TMPDIR/af-sandbox-<pid>-…`) that a killed or aborted
-  process left behind the next time it starts. Do not clear `$TMPDIR` by hand while a review or
-  Task runs: a live sandbox is a directory nobody else may touch.
+  process left behind the next time it runs review or Task work; a directory marked `preserved`
+  (a container's cleanup was not confirmed) is left for the operator. Do not clear `$TMPDIR` by
+  hand while a review or Task runs: a live sandbox is a directory nobody else may touch.
 
 ## Invariants
 
