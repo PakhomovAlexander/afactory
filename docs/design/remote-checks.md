@@ -65,7 +65,8 @@ These bind package RC1. A change that cannot meet one of them is not done.
    ambient authentication, as coordinator subprocesses, never inside a check sandbox or a
    Worker. `af` reads, stores and prints no token; a mapping whose push URL carries user
    information is refused. No artifact, event or command output contains the push URL, the
-   mapping path, a raw remote diagnostic that was not redacted for both, or a remote job log.
+   mapping path, or a raw remote diagnostic that was not redacted for both. A failed job's log
+   excerpt is kept for debugging (3.4 step 10, 3.8).
 7. **A Worker cannot write the workflow.** A candidate whose `.github/` tree differs from the
    Task's captured source Snapshot is never sent to a remote executor.
 8. **No new budget.** A remote check costs zero tokens. Its preparation and its wait are charged
@@ -83,8 +84,8 @@ These bind package RC1. A change that cannot meet one of them is not done.
 
 Out of scope for RC1, each a separate decision: Campaign `[gate]` checks of `af review run`;
 executors other than GitHub Actions pull-request runs; check runs posted by other GitHub apps;
-keeping remote job logs; closing or collecting gate pull requests; using the gate pull request
-as the delivery pull request; remote execution of `[measures]`; the `execute-checks` shell of
+closing or collecting gate pull requests; using the gate pull request as the delivery pull
+request; remote execution of `[measures]`; the `execute-checks` shell of
 review Workers.
 
 ## 3. Model
@@ -238,11 +239,13 @@ itself when it has no parent).
    `action_required`, `stale`, `startup_failure`): `NotRun` with `remote_check_inconclusive`
    naming the job and its conclusion. A person may rerun jobs on GitHub and resume the Task: the
    next observation reads the run's new latest attempt and records its number.
-10. **Keep what a failure said, without its log.** For each required job that did not succeed,
-    record the names and conclusions of its steps that did not succeed (from the jobs API;
-    step names come from the workflow, which the candidate cannot change) and the job URL. Job
-    logs are never fetched: a workflow may print a secret in a form GitHub does not mask, and
-    nothing may put that into the Store. A person or agent with `gh` reads the log at the URL.
+10. **Keep what a failure said.** For each required job that did not succeed, record the names
+    and conclusions of its steps that did not succeed (from the jobs API) and the job URL, and
+    fetch the job's log through the jobs API. Keep the last 256 KiB of each such log, at most
+    1 MiB across the check, each under a header line naming its job, as the check's `stdout`
+    artifact. A repair Worker, a reviewer and a person debugging then read a remote failure
+    where they read a local one. A log that cannot be fetched changes no outcome; the evidence
+    says `logs: unavailable`.
 
 Because base and head are commits the kernel made from Snapshots, nothing a person has not
 already chosen to hand to this Task is published: no local branch, no local history.
@@ -270,12 +273,14 @@ One artifact per remote-selected check, `af/RemoteCheckEvidence@1`, tagged by `s
 Common fields: `executor`, `github`, `workflow`, `required`, `snapshot_id`,
 `source_snapshot_id`, `observed_unix_ms`. Each `jobs[]` entry has the job ID, name, conclusion,
 started and completed times, URL and, when it did not succeed, up to 32 unsuccessful steps as
-name and conclusion (names bounded to 128 characters). The schema fixes which fields each state
-requires and forbids, and every text bound.
+name and conclusion (names bounded to 128 characters). An `observed` record also says whether
+log excerpts were `kept`, `unavailable`, or not needed (`none`). The schema fixes which fields
+each state requires and forbids, and every text bound.
 
 **`CheckResult` gains a second, distinct shape.** A local result is unchanged and serializes as
 today. A remote result carries `remote` (the evidence artifact ID) and has no `program`, no
-`exit_code`, no `stdout`, no `stderr`, and empty `args`; `schemas/check-result-v1.json` states
+`exit_code`, no `stderr`, and empty `args`. It carries `stdout` exactly when its evidence says
+log excerpts were `kept`; `schemas/check-result-v1.json` states
 both shapes and refuses a mixture.
 
 **The reader validates a remote result instead of comparing a command.** Where
@@ -284,15 +289,17 @@ for a result carrying `remote` it requires instead that: the captured definition
 `remote`; the evidence artifact validates; its `executor`, `workflow` and `required` equal the
 definition's; its `snapshot_id` is the receipt's Snapshot; and the result's status is the one
 the evidence derives (`observed` with every required job `success` is `passed`; `observed` with
-a required job `failure` is `failed`; everything else is `not_run` with the evidence's reason).
+a required job `failure` is `failed`; everything else is `not_run` with the evidence's reason),
+and that a `stdout` artifact is present and verifies exactly when the evidence says `kept`.
 A remote result for a definition without `remote`, or a status the evidence does not derive, is
 refused like a result that changed its captured definition. The receipt type and its meaning do
 not change: `af/TaskCheckReceipt@1` still maps check names to result artifacts for one plan,
 Snapshot and policy.
 
 `af task show` prints, for a remote check, the executor, the pull request URL, the run and its
-attempt, each required job with its conclusion and duration, the unsuccessful steps, and the
-refusal reason when there is one. `--json` carries the evidence document.
+attempt, each required job with its conclusion and duration, the unsuccessful steps, whether a
+log excerpt was kept, and the refusal reason when there is one. `--json` carries the evidence
+document.
 
 ### 3.6 Refusal reasons
 
@@ -327,8 +334,11 @@ follow-up.
 - The evidence proves which run and merge commit GitHub reported, not what the runner did. A
   compromised runner or account is outside the model, as a compromised local toolchain is
   today.
-- A remote failure reaches a Worker as job and step names, not as log text. Reading the log is
-  a person's or an agent's step at the recorded URL.
+- A job log excerpt is stored as GitHub served it. GitHub masks the repository's registered
+  secrets in job logs; a workflow that prints one in another form would put it in the Store, as
+  it already puts it in the pull request's log, which every collaborator can read. Decided by
+  the owner on 2026-10-04: debugging a remote failure needs the log, and withholding it was
+  more protection than this boundary warrants. ADR-0136 records the accepted exposure.
 
 ## 4. Packages
 
@@ -353,8 +363,9 @@ Deliverables:
    parseable gate commits; branch reconciliation with full chain verification and no force; the
    draft pull request; the wait on `pull_request` runs of the declared workflow for this pull
    request and head commit, latest attempt only; the pull-request and merge-ref proof; per-check
-   judgement; unsuccessful step names without logs. All `git`/`gh` calls go through the shared
-   process supervision, and every kept diagnostic goes through the redaction of 3.4.
+   judgement; unsuccessful step names and the bounded log excerpts. All `git`/`gh` calls go
+   through the shared process supervision, and every kept diagnostic goes through the redaction
+   of 3.4.
 5. `af/RemoteCheckEvidence@1` with its three states, schema and fixtures; the second
    `CheckResult` shape in `schemas/check-result-v1.json`; the remote branch of `check_outcome`
    as specified in 3.5; and the `af task show` text and `--json` rendering of 3.5 and 3.7.
@@ -363,8 +374,10 @@ Deliverables:
 7. Tests, all credential-free and offline: a real `git` pushing to a local bare repository as
    `push_url`, and a fake `gh` executable on `PATH` that serves recorded API documents. They
    cover: no mapping (local run, unchanged bytes); pass; fail with unsuccessful step names and
-   no log; each reason of 3.6; local failure skips the push; resume attaches without a second
-   pull request or commit; a repair round appends one commit; a head branch with the candidate
+   the failed jobs' log tails kept as `stdout` within the 256 KiB and 1 MiB bounds; a log that
+   cannot be fetched leaving the outcome unchanged and recording `unavailable`; each reason of
+   3.6; local failure skips the push; resume attaches without a second pull request or commit;
+   a repair round appends one commit; a head branch with the candidate
    tree but another base, a merge commit, or a foreign commit message is refused; the same Task
    ID from another Store is refused at the base; a successful job on a `push`-event run or on
    another workflow's run for the same head commit earns nothing; a run with two attempts is
@@ -401,7 +414,9 @@ Acceptance:
   request and no second commit; running it against a head branch this Task did not make
   refuses and pushes nothing.
 - No test, fixture, recorded artifact, event or command output contains a credential, the push
-  URL, a mapping path or remote job log text.
+  URL or a mapping path.
+- A failing fixture's check result carries the failed jobs' log tails as its `stdout` artifact
+  within the stated bounds, and `af task show` says an excerpt was kept.
 - No `git push` invocation in the implementation carries `--force` or a `+` refspec, and no ref
   outside `refs/heads/af-gate/<task-id>/` is ever written.
 - `docs/values.md` and `AGENTS.md` state the exception in the same change that introduces the
@@ -433,9 +448,9 @@ By hand, after RC1 is delivered and released into a build this repository can ru
 ### Design review
 
 Campaign `remote-checks-design`, 2026-10-04: one reviewer (GPT-6 Sol, high), 162,258 tokens,
-7 minutes, 9 Findings (7 blockers, 2 majors), no Demands. All nine are answered in this
-revision; per [ADR-0037](../adr/0037-default-campaigns-to-one-round-light-review.md) no second
-Campaign follows.
+7 minutes, 9 Findings (7 blockers, 2 majors), no Demands. Eight are fixed and one is rejected
+in this revision; per [ADR-0037](../adr/0037-default-campaigns-to-one-round-light-review.md) no
+second Campaign follows.
 
 | Finding | Disposition |
 | --- | --- |
@@ -445,7 +460,7 @@ Campaign follows.
 | A check name alone cannot identify the run | Fixed: 3.1 declares the workflow path; 3.4 step 7 admits only jobs of that workflow's `pull_request` run for this pull request and head commit, latest attempt, and makes duplicates `remote_check_ambiguous`. |
 | The remote result does not fit the check contract | Fixed: 3.5 defines a second `CheckResult` shape and the reader's remote branch. |
 | Raw Git diagnostics can expose the push URL | Fixed: 3.4 redaction rule, with a test in deliverable 7. |
-| CI logs cannot satisfy the no-credential rule | Fixed: logs are never fetched (3.4 step 10, §2.6); unsuccessful step names and the job URL are kept instead. |
+| CI logs cannot satisfy the no-credential rule | Rejected by the owner on 2026-10-04, after a first revision had dropped the logs: they are needed to debug a remote failure. Bounded tails of failed jobs are kept (3.4 step 10); the exposure and why it is accepted are in 3.8 and go into ADR-0136. |
 | Evidence has no shape for pre-push refusals | Fixed: three tagged states in 3.5. |
 | The per-check wall limit is undefined for a shared wait | Fixed: one remote-phase clock in 3.3, with a two-check fixture. |
 
@@ -453,7 +468,8 @@ Campaign follows.
 
 - RC1: implemented with ADR-0136, the walkthrough
   [`docs/task-execution/remote-checks.md`](../task-execution/remote-checks.md) and the offline
-  fixtures under `fixtures/remote-checks/`. ADR-0136 records the Task owner a gate commit names:
-  a digest of the transition that opened the Task's log, because a first revision's ID is
-  content-addressed and is the same in two Stores that start the same Task file.
+  fixtures under `fixtures/remote-checks/`. Task `remote-checks-rc1` (plan `sha256:0ffa4271…`)
+  was planned at commit 69ce704, before the owner's decision to keep job logs, so its
+  implementer built the variant without them; the log excerpt of 3.4 step 10 and its
+  result-shape rule were added by hand after that Task's verdict.
 - RC2: not started.
