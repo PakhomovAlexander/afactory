@@ -193,9 +193,10 @@ itself when it has no parent).
 3. **Fixed identities with an owner.** Every gate commit has fixed metadata (author and
    committer `af <af@localhost>`, time zero UTC) and a message the kernel can parse back. The
    base commit has the source tree, no parent, and a message naming the source Snapshot, the
-   Task ID and the Task's durable identity in its Store (its first revision's ID, or whichever
-   identity the implementation shows to survive resume and differ between Stores; ADR-0136
-   records which). Its identity is thus a function of the source Snapshot and the owning Task,
+   Task ID and the Task's durable identity in its Store: a digest of the transition that opened
+   the Task's log, whose writer carries 64 bits from the operating system's random source
+   (ADR-0136; a first revision's ID is content-addressed and equal across Stores). Its identity
+   is thus a function of the source Snapshot and the owning Task,
    and of nothing else.
 4. **Branches.** `refs/heads/af-gate/<task-id>/base` and `refs/heads/af-gate/<task-id>/head`.
    A Task ID that is not a valid single ref component is `remote_ref_invalid`.
@@ -211,11 +212,16 @@ itself when it has no parent).
      the candidate tree, attach and push nothing; otherwise the head commit is a child of that
      tip with the candidate tree, pushed as a fast-forward. Each repair round is therefore one
      more commit on the same pull request.
-   A rejected push is `remote_push_refused`.
-6. **Pull request.** Find the open pull request from head to base in `github`; when none
-   exists, open one as a draft with a fixed title (`af gate: <task-id>`) and a fixed body saying
-   it was opened by a machine to run declared checks and is not for review or merge. A failure
-   is `remote_pr_refused`.
+   A rejected push is `remote_push_refused`. A push stopped by the deadline or by cancellation
+   proves nothing, because the remote may have accepted it first: read the two branches back,
+   count the push as landed when both are as pushed and as refused when both are as found, and
+   otherwise end the Attempt with a kernel error and no evidence, for resume to reconcile.
+6. **Pull request.** Look up the pull request from head to base in `github`, in every state.
+   Attach to an open one. When none exists, open one as a draft with a fixed title
+   (`af gate: <task-id>`) and a fixed body saying it was opened by a machine to run declared
+   checks and is not for review or merge. A closed one is never replaced by a second: the check
+   is `remote_pr_refused`, naming the pull request to reopen. Any other failure is also
+   `remote_pr_refused`.
 7. **Wait on the right run.** Immediately and then every 15 seconds, until every remote-selected
    check is judged or the remote phase ends (3.3) or the Attempt is cancelled:
    - list the Actions workflow runs with event `pull_request` and head SHA equal to the head
@@ -233,7 +239,8 @@ itself when it has no parent).
    from this head branch to this base branch, with head SHA the head commit and base SHA the
    base commit; and `refs/pull/<n>/merge` is a commit whose parents are that base and that head
    and whose tree equals the candidate tree. A stale merge ref is re-read until the phase ends.
-   Failing this is `remote_merge_mismatch`.
+   Failing this is `remote_merge_mismatch`. The proof is read again for every batch of checks
+   about to be judged; one read for an earlier check never carries a later one.
 9. **Judge each check.** All required jobs `success`: `Passed`. Any required job `failure`:
    `Failed`. Any other conclusion (`cancelled`, `skipped`, `timed_out`, `neutral`,
    `action_required`, `stale`, `startup_failure`): `NotRun` with `remote_check_inconclusive`
@@ -244,8 +251,7 @@ itself when it has no parent).
     fetch the job's log through the jobs API. Keep the last 256 KiB of each such log, at most
     1 MiB across the check, each under a header line naming its job, as the check's `stdout`
     artifact. A repair Worker, a reviewer and a person debugging then read a remote failure
-    where they read a local one. A log that cannot be fetched changes no outcome; the evidence
-    says `logs: unavailable`.
+    where they read a local one. A log that cannot be fetched is left out and changes no outcome.
 
 Because base and head are commits the kernel made from Snapshots, nothing a person has not
 already chosen to hand to this Task is published: no local branch, no local history.
@@ -273,15 +279,15 @@ One artifact per remote-selected check, `af/RemoteCheckEvidence@1`, tagged by `s
 Common fields: `executor`, `github`, `workflow`, `required`, `snapshot_id`,
 `source_snapshot_id`, `observed_unix_ms`. Each `jobs[]` entry has the job ID, name, conclusion,
 started and completed times, URL and, when it did not succeed, up to 32 unsuccessful steps as
-name and conclusion (names bounded to 128 characters). An `observed` record also says whether
-log excerpts were `kept`, `unavailable`, or not needed (`none`). The schema fixes which fields
-each state requires and forbids, and every text bound.
+name and conclusion (names bounded to 128 characters). The schema fixes which fields each state
+requires and forbids, and every text bound.
 
 **`CheckResult` gains a second, distinct shape.** A local result is unchanged and serializes as
 today. A remote result carries `remote` (the evidence artifact ID) and has no `program`, no
-`exit_code`, no `stderr`, and empty `args`. It carries `stdout` exactly when its evidence says
-log excerpts were `kept`; `schemas/check-result-v1.json` states
-both shapes and refuses a mixture.
+`exit_code`, no `stderr`, and empty `args`. Its `stdout`, present only when the check did not
+pass, is the log excerpt of 3.4 step 10: an attachment for whoever debugs the failure, not
+evidence, and no decision reads it. `schemas/check-result-v1.json` states both shapes and
+refuses a mixture.
 
 **The reader validates a remote result instead of comparing a command.** Where
 `check_outcome` today requires a result's program and arguments to equal the captured command,
@@ -290,7 +296,7 @@ for a result carrying `remote` it requires instead that: the captured definition
 definition's; its `snapshot_id` is the receipt's Snapshot; and the result's status is the one
 the evidence derives (`observed` with every required job `success` is `passed`; `observed` with
 a required job `failure` is `failed`; everything else is `not_run` with the evidence's reason),
-and that a `stdout` artifact is present and verifies exactly when the evidence says `kept`.
+and that a `stdout` artifact, when present, verifies and accompanies `observed` evidence.
 A remote result for a definition without `remote`, or a status the evidence does not derive, is
 refused like a result that changed its captured definition. The receipt type and its meaning do
 not change: `af/TaskCheckReceipt@1` still maps check names to result artifacts for one plan,
@@ -375,7 +381,7 @@ Deliverables:
    `push_url`, and a fake `gh` executable on `PATH` that serves recorded API documents. They
    cover: no mapping (local run, unchanged bytes); pass; fail with unsuccessful step names and
    the failed jobs' log tails kept as `stdout` within the 256 KiB and 1 MiB bounds; a log that
-   cannot be fetched leaving the outcome unchanged and recording `unavailable`; each reason of
+   cannot be fetched leaving the outcome unchanged; each reason of
    3.6; local failure skips the push; resume attaches without a second pull request or commit;
    a repair round appends one commit; a head branch with the candidate
    tree but another base, a merge commit, or a foreign commit message is refused; the same Task

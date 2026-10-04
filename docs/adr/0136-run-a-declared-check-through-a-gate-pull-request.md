@@ -103,9 +103,12 @@ operator calls, with the candidate Snapshot, the phase deadline and the cancella
   and no parent; the head is a child with the candidate tree.
 - **The Task owner** is a digest of the transition that opened the Task's log in its Store
   (writer, epoch, the Store's clock and the first revision). It survives every resume, since a
-  log only grows, and differs between Stores. The first revision's ID was considered and
-  rejected: a revision is content-addressed, so two Stores that start the same Task file over
-  the same source produce the same ID and would adopt each other's branches.
+  log only grows, and differs between Stores: the opening writer is `cli-<pid>-<nonce>`, whose
+  nonce is 64 bits from the operating system's random source, journaled in that transition and
+  never drawn again. The PID and the clock alone were not enough — two Stores could open the
+  same revision with the same PID in the same millisecond. The first revision's ID was
+  considered and rejected: a revision is content-addressed, so two Stores that start the same
+  Task file over the same source produce the same ID and would adopt each other's branches.
 - Branches are `refs/heads/af-gate/<task-id>/base` and `.../head`; a Task ID that is not a single
   ref component is `remote_ref_invalid`. `git ls-remote` decides: a base with another commit is
   `remote_ref_conflict`; a present head is fetched and verified down to this Task's base — every
@@ -114,9 +117,16 @@ operator calls, with the candidate Snapshot, the phase deadline and the cancella
   child commit is pushed as a fast-forward. Every push is one `git push --atomic --porcelain
   --no-verify` of refspecs `<commit>:refs/heads/af-gate/<task-id>/{base,head}` built and checked
   by one function: never `--force`, never a `+` refspec, never another ref. A rejected push is
-  `remote_push_refused`.
-- The pull request from head to base is found, or opened as a draft titled `af gate: <task-id>`
-  with a fixed body saying it is not for review or merge; a failure is `remote_pr_refused`.
+  `remote_push_refused`. A push stopped by the deadline or by cancellation proves nothing either
+  way, because the remote may have accepted the atomic update first: the two branches are read
+  back, and the push counts as landed when both are as pushed and as refused when both are as
+  found. When they cannot be read back the Attempt ends with a kernel error and no evidence, and
+  resume reconciles what it finds.
+- The pull request from head to base is looked up in every state. An open one is attached; when
+  none exists one is opened as a draft titled `af gate: <task-id>` with a fixed body saying it is
+  not for review or merge. A closed one is never replaced by a second: the check is
+  `remote_pr_refused`, naming the pull request to reopen. Any other failure is also
+  `remote_pr_refused`.
 - At once and then every 15 seconds the executor lists `pull_request` runs for the head commit,
   keeps those of the declared workflow path that list this pull request, and reads the jobs of
   each kept run's latest attempt only. No kept run 10 minutes after the push is
@@ -124,12 +134,19 @@ operator calls, with the candidate Snapshot, the phase deadline and the cancella
   completed run without a required job is `remote_check_missing`.
 - Before any check is judged, the pull request and `refs/pull/<n>/merge` are read back: open,
   joining exactly the two gate branches of this repository, at the pushed head and base, and a
-  merge commit whose parents are that base and head and whose tree is the candidate tree. A
+  merge commit whose parents are that base and head and whose tree is the candidate tree. The
+  proof belongs to the observation it was read with: every batch of checks about to be judged
+  reads it again, so a pull request changed after one check passed cannot carry a later one. A
   merge ref with another tree, or a pull request joining other branches, is refused at once; a
   stale one is re-read until the phase ends. Either way the failure is `remote_merge_mismatch`.
 - All required jobs `success` is `Passed`; any `failure` is `Failed`; any other conclusion is
   `NotRun` with `remote_check_inconclusive`. A job that did not succeed keeps up to 32
-  unsuccessful steps by name and conclusion and its URL. Job logs are never fetched.
+  unsuccessful steps by name and conclusion and its URL.
+- For each required job that did not succeed the executor fetches the job's log and keeps its
+  last 256 KiB, at most 1 MiB across the check, each tail under a header naming its job and cut
+  at a line. The excerpt is the check result's `stdout`, where a local failure's output is; it
+  is not evidence, and no decision reads it. A log that cannot be fetched is left out and
+  changes no outcome.
 - `git` and `gh` run with the operator's ambient authentication as coordinator subprocesses,
   through `review-process` supervision, each with its own wall inside the phase's remaining time
   and the shared kill path on cancellation; local plumbing runs without the operator's Git
@@ -147,18 +164,21 @@ job decided it) or `observed` (the jobs decided it, after the merge-ref proof). 
 remote fact replay reads.
 
 `CheckResult@1` gains a second, distinct shape: `remote` names the evidence artifact, and there
-is no `program`, `exit_code`, `stdout` or `stderr`, and `args` is empty. The schema states both
-shapes and refuses a mixture. Where the reader compares a local result's command with the
+is no `program`, `exit_code` or `stderr`, and `args` is empty; its `stdout`, present only when
+the check did not pass, is the log excerpt. The schema states both shapes and refuses a
+mixture. Where the reader compares a local result's command with the
 captured definition, for a remote result it requires that the definition declares `remote`, the
 evidence validates, its executor, workflow and required names equal the declaration, its
-Snapshot is the receipt's, and the result's status is the one the evidence derives — a not-run
-reason begins with the evidence's reason code. Anything else is refused like a result that
+Snapshot is the receipt's, the result's status is the one the evidence derives — a not-run
+reason begins with the evidence's reason code — and a log excerpt accompanies only evidence that
+observed jobs. Anything else is refused like a result that
 changed its captured definition. `af/TaskCheckReceipt@1` is unchanged.
 
 `af task show` prints, per remote check, the executor, pull request, run and attempt, each
-required job with its conclusion and duration, the unsuccessful steps, the refusal reason, and
-the two commands that close the pull request and delete the branches; `--json` carries each
-evidence document under `remote_checks` in `af/task-inspection@11`.
+required job with its conclusion and duration, the unsuccessful steps, the CAS object of the
+kept log excerpt, the refusal reason, and the two commands that close the pull request and
+delete the branches; `--json` carries each evidence document, and `log_id` when an excerpt was
+kept, under `remote_checks` in `af/task-inspection@11`.
 
 ### The exception to "humans publish"
 
@@ -179,10 +199,16 @@ commits, pushes, opens a pull request or invokes a remote.
   acceptable; the `.github/` refusal keeps a Worker from changing what those workflows are.
 - The evidence proves which run and merge commit GitHub reported, not what the runner did; a
   compromised runner or account is outside the model, as a compromised local toolchain is.
+- A kept log excerpt is GitHub's text, with the push URL and machine paths replaced like every
+  kept diagnostic. GitHub masks the repository's registered secrets in job logs; a workflow that
+  prints one in another form puts it in the Store, as it already puts it in the pull request's
+  log, which every collaborator can read. The design review asked for logs to be left out for
+  this reason; the owner decided on 2026-10-04 that a remote failure must be debuggable from
+  the Store and that withholding the log was more protection than this boundary warrants.
 - Gate branches and pull requests outlive their checks so that resume and repair rounds attach
   to them; RC1 never removes them, and `af task show` names the two commands that do.
 - Out of scope, each a separate decision: Campaign `[gate]` checks, other executors, check runs
-  of other GitHub apps, keeping job logs, collecting gate pull requests, using the gate pull
+  of other GitHub apps, collecting gate pull requests, using the gate pull
   request for delivery, remote `[measures]` and the review Workers' `execute-checks` shell.
 - Rollback is deleting the mapping file: every check runs locally again, with no state to
   migrate.

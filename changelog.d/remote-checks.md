@@ -6,9 +6,10 @@
   pull request between them, waits on the declared workflow's `pull_request` run for that head
   commit, and accepts the result only after reading `refs/pull/<n>/merge` back as the candidate
   tree. Every remote fact is one `af/RemoteCheckEvidence@1`; a remote `CheckResult@1` names it
-  instead of a command; every refusal is `not_run` with a named reason; job logs are never
-  fetched; no record holds the push URL or the mapping's path. `af task show` prints the pull
-  request, run, jobs and cleanup commands, and `--json` carries the evidence under
-  `remote_checks`. Without a mapping nothing changes. This is the one operator-authorized
-  exception to "publishing is a human action"; delivery still never pushes
+  instead of a command; every refusal is `not_run` with a named reason; the last 256 KiB of each
+  unsuccessful job's log (1 MiB per check) is kept as the result's `stdout`; no record holds the
+  push URL or the mapping's path. `af task show` prints the pull request, run, jobs, kept log
+  excerpt and cleanup commands, and `--json` carries the evidence under `remote_checks`. Without
+  a mapping nothing changes. This is the one operator-authorized exception to "publishing is a
+  human action"; delivery still never pushes
   ([ADR-0136](docs/adr/0136-run-a-declared-check-through-a-gate-pull-request.md)).

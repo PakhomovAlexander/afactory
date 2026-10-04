@@ -3,7 +3,9 @@
 //! workflow's `pull_request` run for that pull request and head commit.
 //!
 //! The executor never force-pushes, writes no ref outside this Task's two branches, and never
-//! merges, marks ready, closes, comments on or deletes anything. Job logs are never fetched.
+//! merges, marks ready, closes, comments on or deletes anything. For a required job that did not
+//! succeed it keeps a bounded tail of the job's log, so a remote failure can be debugged where a
+//! local one is.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -75,6 +77,10 @@ it ready, merges, closes or comments on it. Close it and delete its two af-gate 
 Task no longer needs them.";
 const WAIT_SLICE: Duration = Duration::from_millis(50);
 const MAX_PAGES: u32 = 10;
+/// The tail kept of one unsuccessful job's log.
+pub const MAX_JOB_LOG_BYTES: usize = 256 * 1024;
+/// The log excerpt kept for one check, across its unsuccessful jobs.
+pub const MAX_CHECK_LOG_BYTES: usize = 1024 * 1024;
 
 /// Run the remote phase once for every remote-selected check of one Check node. `Err` is a
 /// kernel error (a tree that did not read back, an unwritable private repository), never a
@@ -368,10 +374,35 @@ pub fn run(
     };
     let mut pushed_at = Instant::now();
     if !refspecs.is_empty() {
-        if let Err(error) = repository.push(&tools, url, &refspecs) {
-            if let Some(outcomes) = interrupted(&error) {
-                return Ok(outcomes);
+        let pushed = match repository.push(&tools, url, &refspecs) {
+            // The remote may have accepted the atomic update before the client was stopped, so
+            // an interrupted push proves nothing either way. Read the two branches back: both
+            // as pushed is a push that landed, both as found is one that did not, and anything
+            // unreadable ends the Attempt without a claim, for resume to reconcile.
+            Err(error @ (ToolError::TimedOut | ToolError::Cancelled)) => {
+                match repository.ls_remote(&tools, url, &[&base_ref, &head_ref]) {
+                    Ok(now)
+                        if now.get(&base_ref) == Some(&base_commit)
+                            && now.get(&head_ref) == Some(&head_commit) =>
+                    {
+                        Ok(())
+                    }
+                    Ok(now) if now == found => {
+                        return Ok(interrupted(&error).unwrap_or_default());
+                    }
+                    _ => {
+                        return Err(format!(
+                            "the push of the gate branches `{base_branch}` and `{head_branch}` \
+                             was interrupted and the remote's state could not be read back; \
+                             nothing is recorded about it: resume the Task to reconcile the \
+                             gate branches"
+                        ));
+                    }
+                }
             }
+            other => other,
+        };
+        if let Err(error) = pushed {
             let diagnostic = match error {
                 ToolError::Failed(diagnostic) => diagnostic,
                 _ => None,
@@ -400,8 +431,33 @@ pub fn run(
         cwd: repository.root(),
     };
     let pull = match api.find_pull(&head_branch, &base_branch) {
-        Ok(Some(pull)) => pull,
-        Ok(None) => match api.create_pull(phase.task_id, &head_branch, &base_branch) {
+        Ok(FoundPull::Open(pull)) => pull,
+        // A gate pull request someone closed is never replaced by a second one.
+        Ok(FoundPull::Closed(closed)) => {
+            let pull_request = RemotePullRequestV1 {
+                number: closed.number,
+                url: closed.url.clone(),
+            };
+            return Ok(phase
+                .checks
+                .iter()
+                .map(|check| {
+                    published.outcome(
+                        check,
+                        RemoteCheckReasonV1::RemotePrRefused,
+                        format!(
+                            "this Task's gate pull request #{} is closed, and af opens only one; \
+                             reopen it (`gh pr reopen {}`), or delete both gate branches to \
+                             start over, then resume the Task",
+                            closed.number, closed.number
+                        ),
+                        None,
+                        Some(&pull_request),
+                    )
+                })
+                .collect());
+        }
+        Ok(FoundPull::None) => match api.create_pull(phase.task_id, &head_branch, &base_branch) {
             Ok(pull) => pull,
             Err(error) => {
                 return Ok(phase
@@ -426,7 +482,6 @@ pub fn run(
 
     // Wait: observe immediately, then every poll interval, until every check is decided.
     let mut decided: BTreeMap<String, RemoteCheckOutcome> = BTreeMap::new();
-    let mut proven: Option<String> = None;
     let mut stale: Option<String> = None;
     let mut last_diagnostic: Option<String> = None;
     loop {
@@ -623,7 +678,11 @@ pub fn run(
             }
             Err(_) => continue,
         }
-        if !ready.is_empty() && proven.is_none() {
+        // The proof belongs to the observation it was read with: every batch of checks about
+        // to be judged reads the pull request and its merge ref again, so a pull request
+        // changed after an earlier check passed cannot carry a later one.
+        let mut proven: Option<String> = None;
+        if !ready.is_empty() {
             match prove(
                 &api,
                 &repository,
@@ -636,7 +695,10 @@ pub fn run(
                 &head_commit,
                 &candidate_tree,
             ) {
-                Ok(Proof::Proven(merge)) => proven = Some(merge),
+                Ok(Proof::Proven(merge)) => {
+                    stale = None;
+                    proven = Some(merge);
+                }
                 Ok(Proof::Stale(why)) => stale = Some(why),
                 Ok(Proof::Refused(why)) => {
                     let open: Vec<&RemoteCheckRequest> = phase
@@ -673,7 +735,7 @@ pub fn run(
             for (check, run, jobs) in ready {
                 decided.insert(
                     check.name.clone(),
-                    published.observed(check, &pull_request, merge, &run, jobs, github),
+                    published.observed(check, &pull_request, merge, &run, jobs, &api),
                 );
             }
         }
@@ -759,6 +821,7 @@ impl Published<'_> {
             name: check.name.clone(),
             evidence,
             message: Some(format!("remote check `{}`: {message}", check.name)),
+            log: None,
         }
     }
 
@@ -804,8 +867,9 @@ impl Published<'_> {
         merge: &str,
         run: &Run,
         jobs: Vec<Job>,
-        github: &str,
+        api: &Api<'_>,
     ) -> RemoteCheckOutcome {
+        let github = api.github;
         let jobs: Vec<RemoteJobV1> = jobs
             .into_iter()
             .map(|job| {
@@ -880,12 +944,57 @@ impl Published<'_> {
             attempt: run.attempt,
             workflow: run.path.clone(),
         });
+        let log = log_excerpt(api, &jobs);
         evidence.jobs = jobs;
         RemoteCheckOutcome {
             name: check.name.clone(),
             evidence,
             message,
+            log,
         }
+    }
+}
+
+/// The log tails of the jobs that did not succeed, each under a header naming its job: at most
+/// [`MAX_JOB_LOG_BYTES`] per job and [`MAX_CHECK_LOG_BYTES`] in all. A log that cannot be
+/// fetched is left out and changes no outcome; `None` when nothing was kept.
+fn log_excerpt(api: &Api<'_>, jobs: &[RemoteJobV1]) -> Option<Vec<u8>> {
+    let mut excerpt = String::new();
+    for job in jobs.iter().filter(|job| job.conclusion != "success") {
+        let Ok(raw) = api.job_log(job.id) else {
+            continue;
+        };
+        let header = format!("==> job {:?} ({}) {}\n", job.name, job.conclusion, job.url);
+        let room = MAX_CHECK_LOG_BYTES.saturating_sub(excerpt.len() + header.len() + 1);
+        let tail = log_tail(
+            &api.tools.redactor.apply(&String::from_utf8_lossy(&raw)),
+            room,
+        );
+        if tail.is_empty() {
+            continue;
+        }
+        excerpt.push_str(&header);
+        excerpt.push_str(tail.trim_end_matches('\n'));
+        excerpt.push('\n');
+    }
+    (!excerpt.is_empty()).then(|| excerpt.into_bytes())
+}
+
+/// The last `MAX_JOB_LOG_BYTES` of `text`, and no more than `room`, starting at a line when the
+/// text was cut.
+fn log_tail(text: &str, room: usize) -> String {
+    let keep = MAX_JOB_LOG_BYTES.min(room);
+    if text.len() <= keep {
+        return text.to_owned();
+    }
+    let mut start = text.len() - keep;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    let tail = &text[start..];
+    match tail.find('\n') {
+        Some(newline) if newline + 1 < tail.len() => tail[newline + 1..].to_owned(),
+        _ => tail.to_owned(),
     }
 }
 
@@ -924,6 +1033,13 @@ struct Job {
     completed_at: Option<String>,
     url: String,
     unsuccessful_steps: Vec<RemoteStepV1>,
+}
+
+/// What the remote holds for this Task's gate branch pair.
+enum FoundPull {
+    Open(Pull),
+    Closed(Pull),
+    None,
 }
 
 enum Assessment {
@@ -1034,10 +1150,12 @@ impl Api<'_> {
         })
     }
 
-    fn find_pull(&self, head: &str, base: &str) -> Result<Option<Pull>, ToolError> {
+    /// This Task's gate pull request, in whatever state: the open one when there is one,
+    /// otherwise the newest closed one.
+    fn find_pull(&self, head: &str, base: &str) -> Result<FoundPull, ToolError> {
         let owner = self.github.split('/').next().unwrap_or_default();
         let path = format!(
-            "repos/{}/pulls?state=open&head={}&base={}&per_page=100",
+            "repos/{}/pulls?state=all&head={}&base={}&per_page=100",
             self.github,
             encode(&format!("{owner}:{head}")),
             encode(base)
@@ -1049,10 +1167,20 @@ impl Api<'_> {
         let mut found: Vec<Pull> = pulls
             .iter()
             .filter_map(|pull| parse_pull(pull, self.github))
-            .filter(|pull| pull.open && pull.head_ref == head && pull.base_ref == base)
+            .filter(|pull| pull.head_ref == head && pull.base_ref == base)
             .collect();
         found.sort_by_key(|pull| pull.number);
-        Ok(found.into_iter().next())
+        if let Some(open) = found.iter().find(|pull| pull.open) {
+            return Ok(FoundPull::Open(open.clone()));
+        }
+        Ok(found.pop().map_or(FoundPull::None, FoundPull::Closed))
+    }
+
+    /// One job's log as GitHub serves it. It is plain text, not JSON.
+    fn job_log(&self, job: u64) -> Result<Vec<u8>, ToolError> {
+        let path = format!("repos/{}/actions/jobs/{job}/logs", self.github);
+        self.tools
+            .run("gh", &["api", &path], None, false, self.cwd, &[])
     }
 
     fn create_pull(&self, task_id: &str, head: &str, base: &str) -> Result<Pull, ToolError> {

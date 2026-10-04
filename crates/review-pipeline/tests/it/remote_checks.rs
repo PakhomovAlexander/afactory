@@ -1,7 +1,7 @@
 //! Remote Checks (ADR-0136), credential-free and offline: a real `git` pushes to a local bare
 //! repository named as the mapping's `push_url`, and a fake `gh` on the executor's PATH serves
 //! the recorded GitHub API documents under `fixtures/remote-checks/github/`, simulating the
-//! pull request and its merge ref in that bare repository.
+//! pull request, its merge ref and its jobs' logs in that bare repository.
 
 mod executor;
 mod task;
@@ -60,7 +60,9 @@ merge_ref() {
 }
 pull() {
   merge_ref
-  printf '{"number":12,"html_url":"https://github.com/octo/gate/pull/12","state":"open","draft":true,"head":{"ref":"af-gate/%s/head","sha":"%s","repo":{"full_name":"octo/gate"}},"base":{"ref":"af-gate/%s/base","sha":"%s","repo":{"full_name":"octo/gate"}}}' "$TASK" "$(head_sha)" "$TASK" "$(base_sha)"
+  PULL_STATE=$(cat "$STATE/pull-state" 2>/dev/null || echo open)
+  printf '{"number":12,"html_url":"https://github.com/octo/gate/pull/12","state":"%s","draft":true,' "$PULL_STATE"
+  printf '"head":{"ref":"af-gate/%s/head","sha":"%s","repo":{"full_name":"octo/gate"}},"base":{"ref":"af-gate/%s/base","sha":"%s","repo":{"full_name":"octo/gate"}}}' "$TASK" "$(head_sha)" "$TASK" "$(base_sha)"
 }
 serve() { sed -e "s/@HEAD@/$(head_sha)/g" -e "s/@TASK@/$TASK/g" "$1"; }
 case "$1" in
@@ -81,7 +83,10 @@ if [ "$1" = "--method" ] && [ "$2" = "POST" ]; then
   pull; exit 0
 fi
 case "$1" in
-  *logs*) echo LOGS-FETCHED >> "$STATE/calls.log"; echo "SECRET-LOG-LINE"; exit 0;;
+  repos/octo/gate/actions/jobs/*/logs)
+    P=${1#repos/octo/gate/actions/jobs/}; JOB=${P%%/*}
+    if [ -e "$STATE/log-$JOB.txt" ]; then cat "$STATE/log-$JOB.txt"; exit 0; fi
+    echo "gh: Not Found (HTTP 404)" >&2; exit 1;;
   repos/octo/gate/pulls\?*)
     if [ -e "$STATE/pull-open" ]; then printf '['; pull; printf ']'; else printf '[]'; fi;;
   repos/octo/gate/pulls/12) pull;;
@@ -181,6 +186,16 @@ impl Remote {
             self.state.join(as_name),
         )
         .unwrap();
+    }
+
+    /// Serve `text` as one job's log; a job without one answers 404.
+    pub fn serve_log(&self, job: u64, text: &[u8]) {
+        std::fs::write(self.state.join(format!("log-{job}.txt")), text).unwrap();
+    }
+
+    /// What the fake reports as the gate pull request's state: `open` or `closed`.
+    pub fn pull_state(&self, state: &str) {
+        std::fs::write(self.state.join("pull-state"), state).unwrap();
     }
 
     pub fn flag(&self, name: &str) {

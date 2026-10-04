@@ -277,7 +277,8 @@ pub struct RemoteStepV1 {
     pub conclusion: String,
 }
 
-/// One required job the decision relied on. Its log is never fetched; a person reads it at
+/// One required job the decision relied on. Its log is not evidence: the tail of an
+/// unsuccessful job's log is the check result's `stdout`, and the whole log stays at
 /// `url`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

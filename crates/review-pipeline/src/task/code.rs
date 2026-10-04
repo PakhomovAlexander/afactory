@@ -930,6 +930,14 @@ impl CodeTaskDomain {
                     let evidence: RemoteCheckEvidenceV1 =
                         serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
                     evidence.validate()?;
+                    // Only jobs can have left a log: an excerpt beside evidence that observed
+                    // none is a result nobody recorded.
+                    if result.stdout.is_some()
+                        && evidence.state
+                            != review_core::task::remote_check::RemoteCheckStateV1::Observed
+                    {
+                        return Err("Check result changed its captured definition".into());
+                    }
                     if evidence.declaration() != *declared
                         || evidence.snapshot_id != receipt.snapshot_id
                         || !result_matches_evidence(
@@ -1424,7 +1432,16 @@ AF_TOOLCHAIN_SNAPSHOT ",
                     .map_err(|e| e.to_string())?
                     .0;
                 let (status, reason) = outcome.result(definition);
-                let result = CheckResult::remote(definition, status, reason, evidence_id.clone());
+                // The log excerpt of the jobs that did not succeed is the result's `stdout`,
+                // where a local failure's output is.
+                let log = match (&outcome.log, status) {
+                    (Some(log), CheckStatus::Failed | CheckStatus::NotRun) => {
+                        Some(cas.put(log).map_err(|e| e.to_string())?)
+                    }
+                    _ => None,
+                };
+                let result =
+                    CheckResult::remote(definition, status, reason, evidence_id.clone(), log);
                 if let (Some(session), Some(rustup)) = (session.as_ref(), &rustup) {
                     // Under [warm] a remote check keeps its evidence group: every declared kind
                     // skipped for the reason `remote`, and no span — it ran nothing here.

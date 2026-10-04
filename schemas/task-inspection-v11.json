@@ -912,6 +912,10 @@
           },
           "record": {
             "$ref": "urn:af:schema:remote-check-evidence:1"
+          },
+          "log_id": {
+            "description": "The CAS object holding the bounded log excerpt of the remote jobs that did not succeed: the result's `stdout`. Absent when none was kept.",
+            "$ref": "urn:af:schema:remote-check-evidence:1#/$defs/digest"
           }
         }
       }

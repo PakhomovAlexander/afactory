@@ -1652,7 +1652,10 @@ fn start_captured(
         .open_task(
             &cas,
             &revision_id,
-            &format!("cli-{}", std::process::id()),
+            // The opening writer is what makes one Store's Task distinguishable from another
+            // Store's Task of the same file (ADR-0136 derives the gate owner from this
+            // transition), so it carries 64 bits from the operating system, not the PID alone.
+            &format!("cli-{}-{:016x}", std::process::id(), opening_nonce()),
             15_000,
         )
         .map_err(|e| e.to_string())?;
@@ -2748,19 +2751,34 @@ fn remote_check_records(
                     let evidence: RemoteCheckEvidenceV1 =
                         artifact(cas, evidence_id, REMOTE_CHECK_EVIDENCE_V1)?;
                     evidence.validate()?;
-                    records.push(json!({
+                    let mut record = json!({
                         "node": node,
                         "check": check,
                         "status": result["status"],
                         "artifact_id": evidence_id,
                         "artifact_type": REMOTE_CHECK_EVIDENCE_V1,
                         "record": evidence,
-                    }));
+                    });
+                    // The kept log excerpt of the jobs that did not succeed, when there is one.
+                    if let Some(log) = result["stdout"].as_str() {
+                        record["log_id"] = json!(log);
+                    }
+                    records.push(record);
                 }
             }
         }
     }
     Ok(records)
+}
+
+/// 64 bits from the operating system's random source, through the standard library's
+/// per-process hash keys. It is the only entropy a Task's opening transition carries, and it is
+/// journaled there: replay reads it back and never draws it again.
+fn opening_nonce() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
 }
 
 /// Whole seconds since the epoch of an evidence timestamp (`YYYY-MM-DDTHH:MM:SS[.f]Z`).
@@ -2780,7 +2798,8 @@ fn evidence_seconds(text: &str) -> Option<i64> {
 
 /// The text `af task show` prints for each remote check (ADR-0136): the executor and pull
 /// request, the run and its attempt, each required job with its conclusion and duration, the
-/// unsuccessful steps, the refusal reason, and the two commands that clean up after the gate.
+/// unsuccessful steps, the kept log excerpt, the refusal reason, and the two commands that clean
+/// up after the gate.
 fn remote_check_lines(inspection: &serde_json::Value) -> Vec<String> {
     let mut lines = Vec::new();
     let mut cleanups = BTreeSet::new();
@@ -2835,6 +2854,12 @@ fn remote_check_lines(inspection: &serde_json::Value) -> Vec<String> {
                 text.push_str(&format!("; log at {}", preview::text(url)));
             }
             lines.push(text);
+        }
+        if let Some(log) = entry["log_id"].as_str() {
+            lines.push(format!(
+                "  log excerpt of the unsuccessful jobs: CAS object {}",
+                preview::text(log)
+            ));
         }
         if let Some(reason) = record["reason"].as_str() {
             lines.push(format!("  reason: {}", preview::text(reason)));
@@ -3462,8 +3487,10 @@ mod remote_check_line_tests {
 
     #[test]
     fn a_remote_check_prints_its_pull_request_run_jobs_steps_and_cleanup() {
+        let mut failed = entry("kernel", "failed", fixture("observed-failed.json"));
+        failed["log_id"] = serde_json::json!(format!("sha256:{}", "a".repeat(64)));
         let inspection = serde_json::json!({"task_id": "rc1", "remote_checks": [
-            entry("kernel", "failed", fixture("observed-failed.json")),
+            failed,
             entry("docs", "not_run", fixture("published-check-missing.json")),
         ]});
         let lines = remote_check_lines(&inspection);
@@ -3476,6 +3503,10 @@ mod remote_check_line_tests {
                 "  job validation / check (ubuntu-latest): failure in 750 s; unsuccessful steps: \
                  Run make check (failure), Upload report (skipped); log at \
                  https://github.com/octo/gate/actions/runs/77/job/1002",
+                &format!(
+                    "  log excerpt of the unsuccessful jobs: CAS object sha256:{}",
+                    "a".repeat(64)
+                ),
                 "remote check docs: not_run by github-pr on octo/gate, pull request \
                  https://github.com/octo/gate/pull/12",
                 "  reason: remote_check_missing",
@@ -3547,12 +3578,21 @@ mod remote_check_line_tests {
             assert!(resolve("no-such-task").is_err());
             first
         };
+        // No pause between the two: the opening writer's nonce, not the clock, tells the
+        // Stores apart, even for one process opening both.
         let one = owner(&root.join("state-one"));
-        std::thread::sleep(std::time::Duration::from_millis(5));
         let two = owner(&root.join("state-two"));
         assert_ne!(
             one, two,
             "the same Task ID in another Store has another owner"
         );
+    }
+
+    #[test]
+    fn the_opening_writer_carries_a_fresh_nonce_and_stays_a_name() {
+        let (first, second) = (opening_nonce(), opening_nonce());
+        assert_ne!(first, second);
+        let writer = format!("cli-{}-{first:016x}", std::process::id());
+        assert!(review_core::task::is_name(&writer), "{writer}");
     }
 }

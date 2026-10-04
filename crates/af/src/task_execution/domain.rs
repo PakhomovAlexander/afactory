@@ -47,7 +47,8 @@ fn remote_check_mapping() -> Result<Option<PathBuf>, String> {
 
 /// The Task's durable identity in this Store: a digest of the transition that opened its log.
 /// It survives every resume, since a log only grows, and differs between Stores, since the
-/// opening names its writer and the Store's own clock (ADR-0136).
+/// opening names a writer that carries 64 bits of operating-system randomness beside the PID
+/// and the Store's own clock (ADR-0136).
 fn task_owner(database: &Path, task_id: &str) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let store = EventStore::open_read_only(database).map_err(|e| e.to_string())?;

@@ -93,12 +93,20 @@ is refused with `remote_ref_conflict`, and nothing is pushed.
 remote check kernel: failed by github-pr on owner/name, pull request https://github.com/owner/name/pull/12, run 77 attempt 2
   job validation / lint: success in 70 s
   job validation / check (ubuntu-latest): failure in 750 s; unsuccessful steps: Run make check (failure); log at https://github.com/owner/name/actions/runs/77/job/1002
+  log excerpt of the unsuccessful jobs: CAS object sha256:9f2c…
 ```
 
 and a `reason:` line for every check that did not pass or fail. `af task show --json` carries
 each `af/RemoteCheckEvidence@1` document under `remote_checks`
-([schema](../../schemas/remote-check-evidence-v1.json)). Job logs are never fetched or stored: a
-workflow may print a secret in a form GitHub does not mask. Read a log at the recorded job URL.
+([schema](../../schemas/remote-check-evidence-v1.json)), with `log_id` when a log excerpt was
+kept.
+
+For every required job that did not succeed, `af` keeps the last 256 KiB of its log (1 MiB per
+check) as the check result's `stdout`, each tail under a `==> job …` header. Read it from the
+Task Store's CAS, where an object `sha256:<aa><rest>` is the file
+`<state>/cas/objects/<aa>/<rest>`; the full log stays at the recorded job URL. The excerpt is
+GitHub's text: GitHub masks the repository's registered secrets, and anything a workflow prints
+in another form is stored as printed.
 
 | Reason | What to do |
 | --- | --- |

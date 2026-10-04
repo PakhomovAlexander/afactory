@@ -427,8 +427,49 @@ fn a_mapped_remote_check_passes_through_the_check_operator() {
     let bytes = store_bytes(recorded.directory.path());
     assert!(!contains(&bytes, &remote.push_url()));
     assert!(!contains(&bytes, remote.directory.path().to_str().unwrap()));
-    assert!(!contains(&bytes, "SECRET-LOG-LINE"));
-    assert!(!remote.calls().contains("logs"));
+    assert!(
+        !remote.calls().contains("/logs"),
+        "a passing check asks for no log"
+    );
+}
+
+#[test]
+fn a_failed_remote_check_keeps_its_log_excerpt_as_the_results_stdout() {
+    let remote = Remote::new();
+    remote.serve_runs("runs-pull-request.json");
+    remote.serve_jobs(77, 1, "jobs-failure.json");
+    remote.serve_log(
+        1002,
+        b"FAIL [ 1.0s] af::it task_repair\nerror: test run failed\n",
+    );
+    let recorded = run(
+        &policy(true, true),
+        &["fmt", "kernel"],
+        mapped(&remote, remote.mapping_text(&["kernel"])),
+    );
+    let receipt = recorded.receipt();
+    assert_eq!(receipt.outcome, ReceiptOutcomeV1::Failed);
+    let (_, kernel) = recorded.result("kernel");
+    assert_eq!(kernel.status, CheckStatus::Failed);
+    assert!(kernel.has_one_shape() && kernel.stderr.is_none() && kernel.exit_code.is_none());
+    let log = recorded
+        .cas
+        .get(kernel.stdout.as_ref().expect("a log excerpt"))
+        .unwrap();
+    let log = String::from_utf8(log).unwrap();
+    assert!(log.starts_with("==> job ") && log.contains("FAIL [ 1.0s] af::it task_repair"));
+    assert_eq!(
+        recorded
+            .domain
+            .check_receipt_outcome(&recorded.cas, receipt),
+        Ok(ReceiptOutcomeV1::Failed)
+    );
+    // The excerpt is the only place the log text lives: the evidence names jobs and steps.
+    assert!(
+        !serde_json::to_string(&recorded.evidence("kernel"))
+            .unwrap()
+            .contains("task_repair")
+    );
 }
 
 #[test]
@@ -512,6 +553,11 @@ fn the_reader_refuses_mixed_and_underived_remote_results() {
             "evidence that is not evidence",
             Box::new(|v| v["remote"] = v["args"].clone()),
         ),
+        (
+            "a log excerpt on a check that passed",
+            Box::new(|v| v["stdout"] = v["remote"].clone()),
+        ),
+        ("stderr", Box::new(|v| v["stderr"] = v["remote"].clone())),
     ] {
         assert!(forge(&*edit).is_err(), "the reader accepted {why}");
     }

@@ -126,7 +126,7 @@ fn a_remote_result_is_its_own_shape_and_mixtures_are_refused() {
             Some("remote_check_missing: no run".to_string()),
         ),
     ] {
-        let result = CheckResult::remote(&definition, status, reason, evidence.clone());
+        let result = CheckResult::remote(&definition, status, reason, evidence.clone(), None);
         assert!(result.has_one_shape());
         let value = serde_json::to_value(&result).unwrap();
         assert_valid(&value);
@@ -140,14 +140,36 @@ fn a_remote_result_is_its_own_shape_and_mixtures_are_refused() {
         );
     }
     let v = validator();
+    let digest = format!("sha256:{}", "ab".repeat(32));
+    // A remote result that did not pass may carry the unsuccessful jobs' log excerpt as
+    // `stdout`; one that passed has none to carry.
+    for (status, reason) in [
+        (CheckStatus::Failed, None),
+        (
+            CheckStatus::NotRun,
+            Some("remote_check_inconclusive: job cancelled".to_string()),
+        ),
+    ] {
+        let with_log = CheckResult::remote(
+            &definition,
+            status,
+            reason,
+            evidence.clone(),
+            Some(digest.clone()),
+        );
+        assert!(with_log.has_one_shape());
+        let value = serde_json::to_value(&with_log).unwrap();
+        assert_valid(&value);
+        assert_eq!(value["stdout"], json!(digest));
+    }
     let remote = serde_json::to_value(CheckResult::remote(
         &definition,
         CheckStatus::Passed,
         None,
         evidence.clone(),
+        None,
     ))
     .unwrap();
-    let digest = format!("sha256:{}", "ab".repeat(32));
     for (field, value) in [
         ("program", json!("bash")),
         ("exit_code", json!(0)),

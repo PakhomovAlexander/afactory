@@ -2,7 +2,8 @@
 
 Offline fixtures for Remote Checks
 ([ADR-0136](../../docs/adr/0136-run-a-declared-check-through-a-gate-pull-request.md)). Nothing
-here holds a credential, a push URL, a mapping path or job log text.
+here holds a credential, a push URL or a mapping path. Job logs are written by the tests that
+serve them, not recorded here.
 
 - `evidence/` holds one `af/RemoteCheckEvidence@1` payload per state and reason the schema
   parity suite (`crates/review-core/tests/schema_parity/remote_check.rs`) checks against both the

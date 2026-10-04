@@ -4,8 +4,9 @@
 //! [`github_pr::run`] once with the candidate Snapshot, the remote phase's deadline and the
 //! Attempt's cancellation flag. The executor returns one [`RemoteCheckOutcome`] per
 //! remote-selected check; the operator records each as an `af/RemoteCheckEvidence@1` artifact
-//! and a remote-shaped `CheckResult`. Nothing the executor keeps from a subprocess reaches a
-//! record without passing through [`Redactor`].
+//! and a remote-shaped `CheckResult`, whose `stdout` is the log excerpt of the jobs that did not
+//! succeed. Nothing the executor keeps from a subprocess reaches a record without passing
+//! through [`Redactor`].
 
 mod gate;
 pub mod github_pr;
@@ -47,13 +48,15 @@ pub struct RemoteCheckRequest {
     pub declaration: RemoteCheckV1,
 }
 
-/// What the executor concluded for one check: its evidence, and the human message a
-/// `CheckResult` reason carries after the evidence's reason code.
+/// What the executor concluded for one check: its evidence, the human message a `CheckResult`
+/// reason carries after the evidence's reason code, and the bounded log excerpt of the jobs
+/// that did not succeed, which becomes the result's `stdout`.
 #[derive(Debug, Clone)]
 pub struct RemoteCheckOutcome {
     pub name: String,
     pub evidence: RemoteCheckEvidenceV1,
     pub message: Option<String>,
+    pub log: Option<Vec<u8>>,
 }
 
 impl RemoteCheckOutcome {
@@ -151,6 +154,7 @@ impl EvidenceBase<'_> {
             name: request.name.clone(),
             evidence,
             message: Some(message),
+            log: None,
         }
     }
 }

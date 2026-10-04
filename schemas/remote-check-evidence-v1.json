@@ -213,7 +213,7 @@
         "completed_at": { "$ref": "#/$defs/timestamp" },
         "url": { "$ref": "#/$defs/url" },
         "steps": {
-          "description": "The steps that did not succeed, by name and conclusion; never their log.",
+          "description": "The steps that did not succeed, by name and conclusion. The job's log tail is the check result's `stdout`, never part of this evidence.",
           "type": "array",
           "minItems": 1,
           "maxItems": 32,
