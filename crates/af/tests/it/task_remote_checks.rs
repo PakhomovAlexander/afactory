@@ -399,6 +399,44 @@ fn a_remote_pipeline_without_a_target_is_refused_before_any_attempt() {
 }
 
 #[test]
+fn a_remote_check_needs_no_local_executable_for_its_command() {
+    let fixture = fixture();
+    fixture.map("");
+    // This machine cannot run the check's command at all: that is what the remote gate is for.
+    let policy = fixture.repo.join(".af/code-policy.toml");
+    let text = std::fs::read_to_string(&policy).unwrap();
+    let program = text
+        .lines()
+        .find(|line| line.starts_with("program = "))
+        .expect("the fixture's check names a program")
+        .to_owned();
+    std::fs::write(
+        &policy,
+        text.replacen(&program, "program = \"af-test-tool-this-host-lacks\"", 1),
+    )
+    .unwrap();
+    git(
+        &fixture.repo,
+        &["commit", "-qam", "a command this host lacks"],
+    );
+    let (code, stdout, stderr) = fixture.plan(&fixture.root.join("state-remote"), TASK, REMOTE);
+    assert_eq!(code, 0, "the remote pipeline plans\n{stderr}\n{stdout}");
+    assert!(
+        line(&stdout, "SEND ").contains("github:octo/gate"),
+        "{stdout}"
+    );
+    // The same check listed in `checks` would run here, so there the executable is required.
+    let (code, stdout, stderr) =
+        fixture.plan(&fixture.root.join("state-local"), "rc3-local", LOCAL);
+    assert_ne!(code, 0, "{stdout}");
+    let said = format!("{stdout}\n{stderr}");
+    assert!(
+        said.contains("af-test-tool-this-host-lacks") && said.contains("unavailable"),
+        "{said}"
+    );
+}
+
+#[test]
 fn a_local_pipeline_plans_exactly_as_before_whatever_the_mapping_holds() {
     let fixture = fixture();
     let mut plans = Vec::new();

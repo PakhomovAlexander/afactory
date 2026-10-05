@@ -14,7 +14,8 @@ where
     let set = super::unique_set(deserializer)?;
     if set.is_empty() {
         return Err(serde::de::Error::custom(
-            "remote_checks, when present, names at least one check",
+            "a check node's `remote_checks`, when present, names at least one check: name \
+             one, or remove the key",
         ));
     }
     Ok(set)

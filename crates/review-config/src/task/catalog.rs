@@ -585,7 +585,8 @@ impl TaskPlanCompiler {
                 let pipeline = super::parse_task_pipeline(
                     std::str::from_utf8(source).map_err(|e| e.to_string())?,
                 )
-                .map_err(|e| e.to_string())?;
+                // The parser reports the TOML position of the node; say whose file it is.
+                .map_err(|e| format!("Pipeline {}: {e}", bytes.name))?;
                 if pipeline.name != bytes.name || pipeline.version != bytes.version {
                     return Err("Pipeline manifest disagrees with its pin".into());
                 }

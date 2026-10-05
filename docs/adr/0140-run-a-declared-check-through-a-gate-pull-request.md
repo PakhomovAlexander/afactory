@@ -262,7 +262,9 @@ no per-machine override.
   check, in a root pipeline or a child a parent calls. The code policy installs each check's
   remote form as the operator signature `operator/check/remote/<name>` only when the check
   declares `remote`; that signature carries the effect `publish-gate`, so a Planner, offered
-  only operators the Task's authority already permits, is never offered one.
+  only operators the Task's authority already permits, is never offered one. A generated
+  proposal that lists `remote_checks` anyway is refused by name when its structure is checked:
+  only an installed pipeline chooses a remote gate.
 - **The mapping names push targets only.** `[[github_pr]]` entries carry `repository_id`,
   `github` and `push_url`. A file that still carries `checks` is refused with a message naming
   the pipeline's check node as the place that chooses. A pipeline without remote checks never
@@ -279,7 +281,12 @@ no per-machine override.
 - **The run reads the target again.** Before any check of a node with remote checks starts, the
   check operator reads the plan's recorded destination and the mapping. No target for the
   repository, or another `github` than the plan recorded, ends the Attempt with an error naming
-  the knob and the repository; nothing is pushed. The push URL never enters the plan.
+  the knob and the repository; nothing is pushed. The push URL never enters the plan. The
+  reader holds evidence to the same destination: a remote result whose evidence names another
+  repository than its plan recorded is refused at admission and on replay.
+- **Only local checks need their tools here.** Planning requires the executable of a required
+  check's command only when some node lists that check in `checks`. A check that runs remotely
+  everywhere can name a tool this machine lacks, which is what a remote gate is for.
 - **Unchanged.** `checks` run first, then `remote_checks` through the executor, with RC1's
   order, clock, transport, evidence, result contract, refusal reasons and receipt; the receipt
   names every check of both lists, and output admission refuses a receipt whose check ran

@@ -991,6 +991,25 @@ impl CodeTaskDomain {
                     {
                         return Err("Check result changed its captured definition".into());
                     }
+                    // The plan recorded where its remote checks publish, and its developer
+                    // confirmed that destination: evidence gathered at any other repository
+                    // is not this plan's, whatever it says about the Snapshot.
+                    let plan: ExecutionPlanV1 =
+                        serde_json::from_value(envelope(cas, &receipt.plan_id)?.payload)
+                            .map_err(|e| e.to_string())?;
+                    let destinations: Vec<&str> = plan
+                        .authority
+                        .data_destinations
+                        .iter()
+                        .filter_map(|destination| github_of_destination(destination))
+                        .collect();
+                    if destinations.as_slice() != [evidence.github.as_str()] {
+                        return Err(
+                            "Remote check evidence names another repository than its plan's \
+                             recorded destination"
+                                .into(),
+                        );
+                    }
                     if evidence.declaration() != *declared
                         || evidence.snapshot_id != receipt.snapshot_id
                         || !result_matches_evidence(

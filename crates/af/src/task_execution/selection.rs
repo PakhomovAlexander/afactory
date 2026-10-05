@@ -95,8 +95,26 @@ pub(super) fn available_tools(
                 .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
+        // A check a node lists in `remote_checks` runs in the repository's CI, never here
+        // (ADR-0140): its command's executable is not this machine's to provide.
+        let local: std::collections::BTreeSet<&String> = graph
+            .nodes
+            .values()
+            .filter_map(|node| match &node.operator {
+                review_graph::task::CompiledOperator::Primitive {
+                    operator: pipeline::TaskOperatorV1::Check { checks, .. },
+                    ..
+                } => Some(checks),
+                _ => None,
+            })
+            .flatten()
+            .collect();
         if !policy.require_container {
-            for check in policy.checks.values().filter(|check| check.required) {
+            for check in policy
+                .checks
+                .values()
+                .filter(|check| check.required && local.contains(&check.name))
+            {
                 // Relative source executables may be produced by the implementation. A
                 // host capability lookup cannot decide whether those future artifacts exist.
                 if !check.command.program.contains('/')

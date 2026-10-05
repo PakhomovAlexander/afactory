@@ -648,6 +648,20 @@ proof's own plan preview printed `SEND  none` and the run then pushed the source
 owner decided that the pipeline's check node chooses and that there is no per-machine override;
 two pipeline variants serve a project that wants both. Package RC3 implements it.
 
+**RC3 — implementation.** Task `remote-checks-rc3` (`kernel/implementation-reviewed`; plan
+`sha256:47ed704d…`), planned at commit 6367a39, 2026-10-05: 862,622 tokens, 7 Attempts, about
+73 minutes. The gate passed (`kernel` 549.8 s cold, `markdownlint` 11.5 s) and the evaluator
+passed; the review round left four Findings, so the Task ended `changes_requested`. The candidate
+(Snapshot `sha256:7a0fbefb…`) is commit 7c17995, unmodified; it was then renumbered to ADR-0140
+and merged with `main` at the v0.11.0 release, which had shipped RC1's selection.
+
+| Finding | Disposition (by hand) |
+| --- | --- |
+| A remote plan still required the remote check's local executable (bugs, major) | Planning requires a required check's executable only when some node lists it in `checks`. A test plans the remote twin with a command this host lacks, and sees the local twin refused. |
+| A generated pipeline could not acquire gate authority (bugs, major) | Decided the other way: a generated proposal that lists `remote_checks` is refused by name when its structure is checked. Only an installed pipeline chooses a remote gate, and a Planner cannot grant itself the publishing effect. |
+| Remote evidence was not bound to the plan's destination (correctness, major) | The reader requires the evidence's `github` to be the plan's one recorded `github:` destination, at admission and on replay. |
+| An empty `remote_checks` lost the pipeline in its diagnostic (correctness, minor) | A pipeline parse refusal now names its package; the TOML position names the node. Keeping "written but empty" apart from "absent" through to validation would need the field's presence to survive deserialization, which nothing else needs. |
+
 Not done: this repository's own `.af/code-policy.toml` does not declare the table (it follows the
 release that carries Remote Checks, since the lock pins the newest release), and the two proof
 pull requests and their four branches are still open.

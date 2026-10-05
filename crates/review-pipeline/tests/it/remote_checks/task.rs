@@ -814,6 +814,25 @@ fn the_reader_refuses_mixed_and_underived_remote_results() {
         .unwrap()
         .0;
     assert!(forge(&|v| v["remote"] = json!(other)).is_err());
+    // Evidence gathered at another repository than the plan's recorded destination is not this
+    // plan's, even when everything it says about the Snapshot is right.
+    let mut elsewhere = recorded.evidence("kernel");
+    assert_eq!(elsewhere.github, "octo/gate");
+    elsewhere.github = "octo/elsewhere".into();
+    elsewhere.validate().unwrap();
+    let elsewhere = recorded
+        .cas
+        .put_artifact(
+            REMOTE_CHECK_EVIDENCE_V1,
+            producer(),
+            vec![],
+            Some(recorded.candidate.clone()),
+            serde_json::to_value(&elsewhere).unwrap(),
+        )
+        .unwrap()
+        .0;
+    let refused = forge(&|v| v["remote"] = json!(elsewhere)).unwrap_err();
+    assert!(refused.contains("another repository"), "{refused}");
     // A remote result for a definition without `remote` is refused like a changed definition.
     let local = run(&policy(true, false), &["fmt", "kernel"], &[], |_| {
         RemoteCheckHost::default()
