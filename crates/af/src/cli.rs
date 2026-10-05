@@ -39,9 +39,13 @@ Exit codes:
 
 Examples:
   af onboard --apply             generate `.af/` for this repository (token-free preview first)
-  af review plan                 what a review would run, without spending a token
-  af review --uncommitted        review the working tree against HEAD
-  af self status                 what is installed and which pin applies here";
+  af review plan --policy-rev HEAD --base HEAD --uncommitted
+  af review --policy-rev HEAD --base HEAD --uncommitted
+  af self status                 what is installed and which pin applies here
+
+Review and commit generated `.af/` before selecting it with --policy-rev. These review examples
+use trusted policy at HEAD and compare working-tree changes against HEAD; run refuses an empty diff.
+To execute, also supply --provider NODE=ID for every model Worker required by that policy.";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -83,7 +87,7 @@ A Campaign reviews one Subject (a diff or the working tree) against committed `.
 `plan` is token-free. `run` executes the pipeline inside sandboxes and folds results into the \
 ledger; the remaining commands read or resolve that ledger. Flags given directly to `af review` \
 are shorthand for `af review run`.",
-        after_long_help = "Examples:\n  af review plan --json\n  af review --uncommitted\n  af review run --campaign pr-42 --heavy\n  af review ledger --campaign pr-42\n  af review report --campaign pr-42 --format md",
+        after_long_help = "Examples:\nHEAD must contain trusted, committed `.af/`; make candidate changes first.\nTo execute, also supply --provider NODE=ID for every model Worker required by that policy.\n  af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  af review --policy-rev HEAD --base HEAD --uncommitted\n  af review run --campaign pr-42 --policy-rev HEAD --base HEAD --uncommitted --heavy\n  af review ledger --campaign pr-42\n  af review report --campaign pr-42 --format md",
         override_usage = "af review <COMMAND>\n       af review [--heavy] [RUN OPTIONS]   (shorthand for `af review run`)",
         args_conflicts_with_subcommands = true,
         subcommand_negates_reqs = true,
@@ -137,12 +141,12 @@ explicitly requests convergence review, and repeat that explicit mode when resum
         arg_required_else_help = true,
         long_about = "Start, inspect, and deliver an implement Task.\n\n\
 A Task file (`--file`) names the Task's ID, kind, goal and limits. The Pipeline and Worker \
-packages it runs are pinned in the committed `.af/task-catalog.toml`; `af catalog init \
+packages it runs are pinned in the committed `.af/task-catalog.toml`; `af catalog init --profile software \
 --destination DIR` creates a new starter directory with a working catalog and runnable Task \
 files. The Task runs over a captured source Snapshot and ends at a verified or unverified \
 derived Snapshot. Nothing is written back to the repository unless you `deliver` it, to a new \
 local branch and worktree, after confirming the Task ID.",
-        after_long_help = "Examples:\n  af task start --file ticket.json\n  af task run TASK_ID --confirm-plan PLAN_ID\n  af task list --json\n  af task show TASK_ID\n  af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID"
+        after_long_help = "Examples:\n  af task start --file ../ticket.json\n  af task run TASK_ID --confirm-plan PLAN_ID\n  af task list --json\n  af task show TASK_ID\n  af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID"
     )]
     Task {
         #[command(subcommand)]
@@ -932,7 +936,7 @@ pub(crate) enum TaskCommand {
     /// Capture a Task and preview its plan before execution
     #[command(
         long_about = "Capture a Task and show its execution plan before any Worker runs.\n\nInspect the compact ASCII preview, or use `af task explain TASK_ID --tree` for the expanded hierarchy. Run with `--confirm-plan PLAN_ID` after reviewing the captured plan. `--execute` explicitly opts into immediate automation. JSON output also previews by default. Generated plans still require signed developer approval.\n\nExecution never writes to the original repository, commits, pushes, or delivers; see `af task deliver`.",
-        after_long_help = "Examples:\n  af task start --file ticket.json\n  af task explain TASK_ID --tree\n  af task run TASK_ID --confirm-plan sha256:...\n  af task start --file ticket.json --execute --json"
+        after_long_help = "Examples:\n  af task start --file ../ticket.json\n  af task explain TASK_ID --tree\n  af task run TASK_ID --confirm-plan sha256:...\n  af task start --file ../ticket.json --execute --json"
     )]
     Start {
         /// Versioned Task JSON/TOML file, processed by the common Task runtime
