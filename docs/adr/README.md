@@ -242,3 +242,5 @@ future readers need.
 - [0138 — The repository pins its newest release](0138-the-repository-pins-its-newest-release.md)
 - [0139 — Deliver native login challenges to a verified private
   requester](0139-deliver-native-login-challenges-to-a-verified-private-requester.md)
+- [0140 — Run a declared check through a gate pull
+  request](0140-run-a-declared-check-through-a-gate-pull-request.md)

@@ -30,8 +30,9 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 166] = [
+const SCHEMAS: [&str; 167] = [
     "code-task-policy-v1.json",
+    "remote-check-evidence-v1.json",
     "measurement-v1.json",
     "measurement-comparison-v1.json",
     "task-input-bindings-v1.json",
@@ -3906,6 +3907,9 @@ mod provider_onboarding;
 
 #[path = "schema_parity/task_recording.rs"]
 mod task_recording;
+
+#[path = "schema_parity/remote_check.rs"]
+mod remote_check;
 
 #[test]
 fn task_review_readable_subject_is_strict() {

@@ -303,3 +303,57 @@ fn measures_and_objectives_round_trip_and_refuse_alike() {
         assert!(!rust_accepts(&value), "Rust accepted {value}");
     }
 }
+
+/// A check's optional `remote` table (ADR-0140): every accepted shape round-trips through the
+/// schema as declared, a policy without it is captured without the field, and every shape
+/// either side refuses the other refuses too.
+#[test]
+fn remote_tables_round_trip_and_refuse_alike() {
+    let schema = validator();
+    let with = |remote: Value| {
+        let mut value = policy(None, false);
+        value["checks"]["kernel"]["remote"] = remote;
+        value
+    };
+    for remote in [
+        json!({"executor": "github-pr", "workflow": ".github/workflows/ci.yml",
+            "required": ["validation / lint", "validation / check (ubuntu-latest)"]}),
+        json!({"executor": "github-pr", "workflow": ".github/workflows/build-all.yaml",
+            "required": ["x".repeat(128)]}),
+    ] {
+        let value = with(remote);
+        assert!(schema.is_valid(&value), "{value}");
+        let parsed: CodeTaskPolicy = serde_json::from_value(value.clone()).unwrap();
+        parsed.validate().unwrap();
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), value);
+    }
+    let without = policy(None, false);
+    let parsed: CodeTaskPolicy = serde_json::from_value(without.clone()).unwrap();
+    let written = serde_json::to_value(&parsed).unwrap();
+    assert_eq!(written, without, "no table, the same captured bytes");
+    assert!(written["checks"]["kernel"].get("remote").is_none());
+    for remote in [
+        json!({"executor": "gitlab-mr", "workflow": ".github/workflows/ci.yml", "required": ["a"]}),
+        json!({"executor": "github-pr", "workflow": "ci.yml", "required": ["a"]}),
+        json!({"executor": "github-pr", "workflow": ".github/workflows/nested/ci.yml",
+            "required": ["a"]}),
+        json!({"executor": "github-pr", "workflow": ".github/workflows/ci.json", "required": ["a"]}),
+        json!({"executor": "github-pr", "workflow": ".github/workflows/ci.yml", "required": []}),
+        json!({"executor": "github-pr", "workflow": ".github/workflows/ci.yml",
+            "required": ["a", "a"]}),
+        json!({"executor": "github-pr", "workflow": ".github/workflows/ci.yml",
+            "required": ["x".repeat(129)]}),
+        json!({"executor": "github-pr", "workflow": ".github/workflows/ci.yml",
+            "required": ["line\nbreak"]}),
+        json!({"executor": "github-pr", "workflow": ".github/workflows/ci.yml",
+            "required": (0..33).map(|i| i.to_string()).collect::<Vec<_>>()}),
+        json!({"executor": "github-pr", "workflow": ".github/workflows/ci.yml",
+            "required": ["a"], "push_url": "git@github.com:o/r.git"}),
+        json!({"executor": "github-pr", "required": ["a"]}),
+        json!(null),
+    ] {
+        let value = with(remote.clone());
+        assert!(!rust_accepts(&value), "Rust accepted {remote}");
+        assert!(!schema.is_valid(&value), "the schema accepted {remote}");
+    }
+}

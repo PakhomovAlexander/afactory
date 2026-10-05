@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:review-kernel:schema:check-result:1",
   "title": "CheckResult@1 payload",
-  "description": "One execution of one check, recorded per attempt. Each execution is its own immutable artifact, so a later run never erases an earlier one and 'the checks were green' always names the execution it describes.",
+  "description": "One execution of one check, recorded per attempt. Each execution is its own immutable artifact, so a later run never erases an earlier one and 'the checks were green' always names the execution it describes. Two distinct shapes exist: a local result records the command that ran; a remote result (ADR-0140) carries `remote`, the `af/RemoteCheckEvidence@1` artifact its status derives from, and no program, exit code, arguments or `stderr`; its `stdout`, present only when the check did not pass, is the bounded log excerpt of the remote jobs that did not succeed. A mixture of the two is refused.",
   "type": "object",
   "additionalProperties": false,
   "required": ["name", "status", "args"],
@@ -17,23 +17,23 @@
       "enum": ["passed", "failed", "not_run"]
     },
     "exit_code": {
-      "description": "Absent exactly when the check never ran.",
+      "description": "Absent exactly when the check never ran, and always on a remote result.",
       "type": "integer",
       "minimum": -256,
       "maximum": 256
     },
     "reason": {
-      "description": "Why a `not_run` check could not execute. Required for that status; a check that did not run without a stated reason is indistinguishable from one nobody defined.",
+      "description": "Why a `not_run` check could not execute. Required for that status; a check that did not run without a stated reason is indistinguishable from one nobody defined. A remote result's reason begins with its evidence's reason code.",
       "type": "string",
       "minLength": 1
     },
     "program": {
-      "description": "The executable, always a trusted literal from project configuration and never derived from anything under review. Absent only when the check named no program at all — a malformed definition has nothing to record here, and an empty string would claim it did.",
+      "description": "The executable, always a trusted literal from project configuration and never derived from anything under review. Absent only when the check named no program at all — a malformed definition has nothing to record here, and an empty string would claim it did — and on a remote result.",
       "type": "string",
       "minLength": 1
     },
     "args": {
-      "description": "The rendered argument vector, each slot carrying its provenance. Kept in the record so a reviewer of the review can see exactly what ran, including which values came from untrusted input.",
+      "description": "The rendered argument vector, each slot carrying its provenance. Kept in the record so a reviewer of the review can see exactly what ran, including which values came from untrusted input. Empty on a remote result.",
       "type": "array",
       "items": { "$ref": "#/$defs/arg" }
     },
@@ -43,6 +43,10 @@
       "description": "Whether the gate blocks on this check. A required check that is `failed` or `not_run` fails the gate.",
       "type": "boolean",
       "default": true
+    },
+    "remote": {
+      "description": "The `af/RemoteCheckEvidence@1` artifact a remote executor's result derives from (ADR-0140). Present only on a remote result.",
+      "$ref": "#/$defs/digest"
     }
   },
   "$defs": {
@@ -61,13 +65,32 @@
           "enum": ["literal", "untrusted"]
         }
       }
+    },
+    "not_run_has_reason": {
+      "if": { "properties": { "status": { "const": "not_run" } }, "required": ["status"] },
+      "then": { "required": ["reason"] }
     }
   },
   "allOf": [
     {
-      "if": { "properties": { "status": { "const": "not_run" } }, "required": ["status"] },
-      "then": { "required": ["reason"], "not": { "required": ["exit_code"] } },
-      "else": { "required": ["exit_code", "program"] }
+      "if": { "required": ["remote"] },
+      "then": {
+        "$ref": "#/$defs/not_run_has_reason",
+        "properties": { "args": { "maxItems": 0 } },
+        "not": {
+          "anyOf": [
+            { "required": ["program"] },
+            { "required": ["exit_code"] },
+            { "required": ["stderr"] },
+            { "required": ["stdout"], "properties": { "status": { "const": "passed" } } }
+          ]
+        }
+      },
+      "else": {
+        "if": { "properties": { "status": { "const": "not_run" } }, "required": ["status"] },
+        "then": { "required": ["reason"], "not": { "required": ["exit_code"] } },
+        "else": { "required": ["exit_code", "program"] }
+      }
     }
   ]
 }

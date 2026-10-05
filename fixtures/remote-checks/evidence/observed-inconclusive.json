@@ -1,0 +1,51 @@
+{
+  "state": "observed",
+  "executor": "github-pr",
+  "github": "octo/gate",
+  "workflow": ".github/workflows/ci.yml",
+  "required": [
+    "validation / lint",
+    "validation / check (ubuntu-latest)"
+  ],
+  "snapshot_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "source_snapshot_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "observed_unix_ms": 1791100000000,
+  "reason": "remote_check_inconclusive",
+  "jobs": [
+    {
+      "id": 1001,
+      "name": "validation / lint",
+      "conclusion": "success",
+      "started_at": "2026-10-04T10:00:00Z",
+      "completed_at": "2026-10-04T10:12:30Z",
+      "url": "https://github.com/octo/gate/actions/runs/77/job/1001"
+    },
+    {
+      "id": 1002,
+      "name": "validation / check (ubuntu-latest)",
+      "conclusion": "cancelled",
+      "started_at": "2026-10-04T10:00:00Z",
+      "completed_at": "2026-10-04T10:12:30Z",
+      "url": "https://github.com/octo/gate/actions/runs/77/job/1002",
+      "steps": [
+        {
+          "name": "Run make check",
+          "conclusion": "cancelled"
+        }
+      ]
+    }
+  ],
+  "base_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "head_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "tree": "cccccccccccccccccccccccccccccccccccccccc",
+  "pull_request": {
+    "number": 12,
+    "url": "https://github.com/octo/gate/pull/12"
+  },
+  "merge_commit": "dddddddddddddddddddddddddddddddddddddddd",
+  "run": {
+    "id": 77,
+    "attempt": 2,
+    "workflow": ".github/workflows/ci.yml"
+  }
+}

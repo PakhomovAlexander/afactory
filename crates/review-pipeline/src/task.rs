@@ -15,6 +15,7 @@ mod owned;
 pub mod planning;
 pub mod provider;
 mod provider_admissions;
+pub mod remote_check;
 pub use provider_admissions::TaskProviderAdmissionReport;
 mod report;
 pub mod report_task;

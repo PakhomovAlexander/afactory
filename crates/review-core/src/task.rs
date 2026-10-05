@@ -20,6 +20,7 @@ pub mod pipeline;
 pub mod plan;
 pub mod planning;
 pub mod provider;
+pub mod remote_check;
 pub mod repair;
 pub mod report;
 pub mod report_task;
