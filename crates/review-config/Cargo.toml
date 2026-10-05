@@ -26,7 +26,7 @@ serde_json = { version = "1.0.149", features = ["preserve_order"] }
 toml = "1.1.6"
 
 [dev-dependencies]
-jsonschema = { version = "0.57.0", default-features = false }
+jsonschema = { version = "0.58.4", default-features = false }
 tempfile = "3.27.0"
 
 [lints]
