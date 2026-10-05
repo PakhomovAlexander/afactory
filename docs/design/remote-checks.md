@@ -662,6 +662,15 @@ and merged with `main` at the v0.11.0 release, which had shipped RC1's selection
 | Remote evidence was not bound to the plan's destination (correctness, major) | The reader requires the evidence's `github` to be the plan's one recorded `github:` destination, at admission and on replay. |
 | An empty `remote_checks` lost the pipeline in its diagnostic (correctness, minor) | A pipeline parse refusal now names its package; the TOML position names the node. Keeping "written but empty" apart from "absent" through to validation would need the field's presence to survive deserialization, which nothing else needs. |
 
+**RC3 — verification.** Task `remote-checks-rc3-verify-1` (`kernel/verification-reviewed`) on
+commit 8075e73: `changes_requested`, 258,301 tokens; the gate passed (`kernel` 538.5 s cold).
+Both reviewers reported one defect, and the evaluator failed on one point:
+
+| Finding | Disposition (by hand) |
+| --- | --- |
+| A local-only Task failed when the mapping variable held an invalid path (bugs, correctness) | The coordinator resolves the mapping only for a graph that has remote checks; a local-only graph gets no Remote Check configuration at all. A test plans and runs a local pipeline with a relative path in the variable. |
+| The release note was not at `changelog.d/remote-checks.md` (evaluator) | It is again. It had been renamed when the v0.11.0 release consumed the first note of that name. |
+
 Not done: this repository's own `.af/code-policy.toml` does not declare the table (it follows the
 release that carries Remote Checks, since the lock pins the newest release), and the two proof
 pull requests and their four branches are still open.

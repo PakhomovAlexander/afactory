@@ -28,6 +28,8 @@ struct Fixture {
     bin: PathBuf,
     /// The operator's mapping, outside the repository and the Store.
     mapping: PathBuf,
+    /// What `AF_TASK_REMOTE_CHECK_POLICY_FILE` holds instead of `mapping`, when a test sets it.
+    mapping_setting: std::cell::RefCell<Option<std::ffi::OsString>>,
     repository_id: String,
 }
 
@@ -128,6 +130,7 @@ fn fixture() -> Fixture {
     std::fs::create_dir_all(root.join("tasks")).unwrap();
     Fixture {
         mapping: root.join("config/remote-checks.toml"),
+        mapping_setting: Default::default(),
         _root: directory,
         root,
         repo,
@@ -203,7 +206,13 @@ impl Fixture {
             .env("HOME", &home)
             .env("XDG_CONFIG_HOME", home.join(".config"))
             .env("XDG_CACHE_HOME", self.root.join("cache"))
-            .env("AF_TASK_REMOTE_CHECK_POLICY_FILE", &self.mapping)
+            .env(
+                "AF_TASK_REMOTE_CHECK_POLICY_FILE",
+                self.mapping_setting
+                    .borrow()
+                    .clone()
+                    .unwrap_or_else(|| self.mapping.clone().into_os_string()),
+            )
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("PATH", path)
             .env_remove("AF_CACHE_POLICY_FILE")
@@ -395,6 +404,39 @@ fn a_remote_pipeline_without_a_target_is_refused_before_any_attempt() {
         git(&fixture.bare, &["for-each-ref", "--format=%(refname)"]),
         "",
         "nothing was pushed"
+    );
+}
+
+#[test]
+fn a_local_pipeline_plans_and_runs_whatever_the_mapping_setting_holds() {
+    let fixture = fixture();
+    // A setting the mapping reader refuses outright: a relative path. A pipeline whose checks
+    // all run here never reads it, at plan time or at run time.
+    *fixture.mapping_setting.borrow_mut() = Some("relative-remote-checks.toml".into());
+    let state = fixture.root.join("state-local-run");
+    let planned = fixture.plan_json(&state, "rc3-local-run", LOCAL);
+    let plan_id = planned["plan_id"].as_str().unwrap();
+    let (code, stdout, stderr) = fixture.af(
+        &state,
+        &[
+            "task",
+            "run",
+            "rc3-local-run",
+            "--confirm-plan",
+            plan_id,
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
+    let done: Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(done["result"]["acceptance"], "satisfied", "{done}");
+    assert!(done.get("remote_checks").is_none(), "{done}");
+    // The same setting does stop a pipeline that has remote checks, naming the variable.
+    let (code, stdout, stderr) = fixture.plan(&fixture.root.join("state-remote-bad"), TASK, REMOTE);
+    assert_ne!(code, 0, "{stdout}");
+    assert!(
+        format!("{stdout}\n{stderr}").contains("AF_TASK_REMOTE_CHECK_POLICY_FILE"),
+        "{stdout}\n{stderr}"
     );
 }
 

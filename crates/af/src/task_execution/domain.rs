@@ -11,15 +11,27 @@ pub(super) fn code_domain(
     state: &Path,
 ) -> Result<CodeTaskDomain, String> {
     let mapping = std::env::var_os("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE").map(PathBuf::from);
+    let remote = remote_checks(state, &graph)?;
     Ok(CodeTaskDomain::captured(cas, policy_id, graph)?
         .with_rust_toolchain_mapping(mapping)
-        .with_remote_checks(remote_checks(state)?))
+        .with_remote_checks(remote))
 }
 
 /// The machine-local Remote Check configuration (ADR-0140): the operator's mapping, resolved
 /// once here as the Rust toolchain mapping is, and the owner every gate commit names. Candidate
 /// commands never receive the variable or the path.
-pub(super) fn remote_checks(state: &Path) -> Result<RemoteCheckHost, String> {
+///
+/// A graph whose checks all run on this machine gets none of it: such a Task plans and runs
+/// the same whatever the mapping variable holds, even a path this function would refuse.
+pub(super) fn remote_checks(state: &Path, graph: &CompiledTask) -> Result<RemoteCheckHost, String> {
+    if graph.remote_checks().is_empty() {
+        return Ok(RemoteCheckHost::default());
+    }
+    machine_remote_checks(state)
+}
+
+/// The configuration itself, for a graph that has remote checks.
+pub(super) fn machine_remote_checks(state: &Path) -> Result<RemoteCheckHost, String> {
     let database = state.join("events.sqlite");
     Ok(RemoteCheckHost {
         mapping: remote_check_mapping()?,
