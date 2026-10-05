@@ -476,6 +476,10 @@ mod tests {
             ProviderKind::Codex,
             "Error: cannot determine whether user is not logged in\n"
         ));
+        assert!(!status_answered(
+            ProviderKind::Codex,
+            "Not logged in\nError: status backend failed\n"
+        ));
         assert!(!status_answered(ProviderKind::Codex, NPM_ERROR));
         assert!(status_answered(
             ProviderKind::Claude,

@@ -208,7 +208,7 @@ fn status_keeps_a_default_context_whose_status_probe_failed() {
         "codex",
         r#"#!/bin/sh
 # The registered directory answers like codex-cli; the default one fails its probe with an error
-# that merely mentions the logged-out phrase.
+# that prints the logged-out line beside a diagnostic.
 if [ "$1" = --version ]; then
   printf '%s\n' 'codex-cli 0.160.0'
   exit 0
@@ -217,7 +217,7 @@ if [ "$1" = login ] && [ "$2" = status ]; then
   if [ -f "${CODEX_HOME:-$HOME/.codex}/registered" ]; then
     printf '%s\n' 'Not logged in' >&2
   else
-    printf '%s\n' 'Error: cannot determine whether user is not logged in' >&2
+    printf '%s\n' 'Error: failed to read auth store' 'Not logged in' >&2
   fi
   exit 1
 fi
