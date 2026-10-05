@@ -157,6 +157,7 @@ fn pipeline(implement: &OperatorSignature, evaluate: &OperatorSignature) -> Pipe
                 "check",
                 TaskOperatorV1::Check {
                     checks: BTreeSet::from(["pagination".into()]),
+                    remote_checks: BTreeSet::new(),
                 },
                 BTreeMap::from([("source".into(), from("seal", "snapshot"))]),
             ),

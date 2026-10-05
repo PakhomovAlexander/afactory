@@ -3,8 +3,9 @@
 This repository is **Afactory**: the `af` CLI, a multi-agent coding factory whose first capability
 is the deterministic Review Kernel behind `af review`, and whose Task runtime runs
 implementation Tasks behind `af task`. Reviewers and implementers only ever mutate a sandbox; the
-kernel integrates; humans publish, apart from the gate branches of an operator-mapped Remote
-Check ([ADR-0139](docs/adr/0139-run-a-declared-check-through-a-gate-pull-request.md)).
+kernel integrates; humans publish, apart from the gate branches of a Remote Check that a
+pipeline chose and an operator's machine authorized
+([ADR-0139](docs/adr/0139-run-a-declared-check-through-a-gate-pull-request.md)).
 
 Before changing behaviour, read [`CONTEXT.md`](CONTEXT.md) for the canonical vocabulary and
 [`docs/adr/README.md`](docs/adr/README.md) for the binding decisions; [`docs/README.md`](docs/README.md)
@@ -86,12 +87,15 @@ review corpora belong in consuming repositories, not here.
   persists recovery state, and never commits, pushes, opens a PR, invokes a remote, or overwrites
   an existing branch or path
   ([ADR-0031](docs/adr/0031-deliver-verified-tasks-to-new-local-worktrees.md)).
-- Publishing is a human action, with one operator-authorized exception: for a check an
-  operator's machine-local mapping selects as a Remote Check, the kernel pushes exactly the two
-  branches `af-gate/<task-id>/base` and `af-gate/<task-id>/head`, built from Task Snapshots, and
-  opens one draft gate pull request between them. It never force-pushes, writes another ref,
-  merges, marks ready, closes, comments or deletes, and never sends a candidate that changes
-  `.github/`. Committed policy never forces a remote run; delivery above is unchanged
+- Publishing is a human action, with one operator-authorized exception: for a check a Task
+  pipeline's check node lists in `remote_checks`, the kernel pushes exactly the two branches
+  `af-gate/<task-id>/base` and `af-gate/<task-id>/head`, built from Task Snapshots, and opens one
+  draft gate pull request between them. It never force-pushes, writes another ref, merges, marks
+  ready, closes, comments or deletes, and never sends a candidate that changes `.github/`. The
+  pipeline chooses where a check runs; the operator's machine-local mapping supplies only the
+  push target, and with it the authorization. A pipeline with remote checks cannot be planned on
+  a machine without a target, and its plan carries `publish-gate` and the `github:` destination,
+  so confirming the plan is the consent. Delivery above is unchanged
   ([ADR-0139](docs/adr/0139-run-a-declared-check-through-a-gate-pull-request.md)).
 - `af onboard` is deterministic and token-free. It may atomically create only an absent `.af/`
   authority bundle; it never overwrites existing policy, invents or hand-types lock digests,

@@ -1,9 +1,10 @@
 # ADR-0139: Run a declared check through a gate pull request
 
-Status: accepted, 2026-10-04. Supersedes, for operator-authorized gate branches and the gate
-pull request only, the rule that publishing is a human action
-([`docs/values.md`](../values.md), [`AGENTS.md`](../../AGENTS.md)). Delivery is unchanged
-([ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md)).
+Status: accepted, 2026-10-04; amended 2026-10-05 ([the pipeline chooses](#amendment-2026-10-05-the-pipeline-chooses)),
+which replaces the per-machine selection of option 3 and of *Declaration and selection*.
+Supersedes, for operator-authorized gate branches and the gate pull request only, the rule that
+publishing is a human action ([`docs/values.md`](../values.md), [`AGENTS.md`](../../AGENTS.md)).
+Delivery is unchanged ([ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md)).
 
 Implements package RC1 of [`docs/design/remote-checks.md`](../design/remote-checks.md) under
 that plan's §2 fixed requirements.
@@ -40,8 +41,9 @@ The four choices below were made on 2026-10-04.
    - *A host-pushed commit the kernel only watches* — rejected. The kernel would have to trust
      that a commit someone else pushed has the candidate's tree, which is the gap §1 of the
      design describes, and could not refuse a branch another Task made.
-3. **Who selects a remote run.**
-   - *Per machine, through an operator's mapping* — chosen. Authority to act on a remote belongs
+3. **Who selects a remote run.** Superseded on 2026-10-05: the pipeline chooses (see the
+   amendment).
+   - *Per machine, through an operator's mapping* — chosen in RC1. Authority to act on a remote belongs
      to a person at a machine, as Provider bindings do; the same commit runs locally on a large
      host and remotely on a small one.
    - *Fixed by committed policy* — rejected. A commit would then force a push and grant push
@@ -56,6 +58,9 @@ The four choices below were made on 2026-10-04.
 ## Decision
 
 ### Declaration and selection
+
+*The selection paragraphs below describe RC1; the amendment of 2026-10-05 replaces them. The
+mapping no longer selects checks: a pipeline's check node does.*
 
 A check in `.af/code-policy.toml` may add `[checks.<name>.remote]` with `executor`
 (`github-pr`, a closed set), `workflow` (a `.github/workflows/<file>.yml|.yaml` path) and
@@ -218,5 +223,74 @@ commits, pushes, opens a pull request or invokes a remote.
 - Out of scope, each a separate decision: Campaign `[gate]` checks, other executors, check runs
   of other GitHub apps, collecting gate pull requests, using the gate pull
   request for delivery, remote `[measures]` and the review Workers' `execute-checks` shell.
-- Rollback is deleting the mapping file: every check runs locally again, with no state to
-  migrate.
+- Rollback is planning the Task with the pipeline variant whose check node lists the check in
+  `checks`; with the amendment, deleting the mapping no longer turns a remote pipeline local, it
+  makes it unplannable on that machine.
+
+## Amendment, 2026-10-05: the pipeline chooses
+
+Implements package RC3 of [`docs/design/remote-checks.md`](../design/remote-checks.md), under
+§2 item 2 as amended that day.
+
+### Why
+
+The RC2 live proof planned a Task whose plan preview printed `SEND  none`; the run then pushed
+the Task's source to GitHub. Where a check ran was decided by a machine file that neither the
+pipeline nor the plan showed, so the one confirmation a developer gives — the plan — did not
+cover the one thing the kernel publishes. And asked how to make a gate local or remote, the only
+answer was "edit a file on each machine": the pipeline, where a developer reads what a gate
+does, said nothing. The owner decided that the pipeline's check node chooses and that there is
+no per-machine override.
+
+### Options
+
+- *The check node lists its remote checks* — chosen. What a gate does is read where it is
+  defined, and two pipeline variants serve a project that wants both a local and a remote gate;
+  a Task file names one.
+- *The per-machine mapping RC1 shipped* — rejected. The plan cannot show a choice it does not
+  make, so confirming a plan never consented to the push.
+- *A pipeline default with a bindings override* — rejected. An override would put the choice
+  back on the machine, outside the plan, and every reader would have to consult both.
+
+### Decision
+
+- **The check node.** The Task pipeline's `check` operator gains an optional, non-empty
+  `remote_checks` set beside `checks`. A node without it serializes and plans exactly as before.
+  A name in both lists, or a node naming no check, is refused when the pipeline's package is
+  captured; a `remote_checks` name the captured code policy does not declare with a `remote`
+  table is refused when the plan is compiled. Every refusal names the pipeline, the node and the
+  check, in a root pipeline or a child a parent calls. The code policy installs each check's
+  remote form as the operator signature `operator/check/remote/<name>` only when the check
+  declares `remote`; that signature carries the effect `publish-gate`, so a Planner, offered
+  only operators the Task's authority already permits, is never offered one.
+- **The mapping names push targets only.** `[[github_pr]]` entries carry `repository_id`,
+  `github` and `push_url`. A file that still carries `checks` is refused with a message naming
+  the pipeline's check node as the place that chooses. A pipeline without remote checks never
+  reads the mapping.
+- **The plan says so.** When a candidate pipeline's compiled graph has remote checks, the
+  coordinator reads the mapping for the source Snapshot's repository before the revision has an
+  identity. Without a target the pipeline is unavailable — planning refuses before any Attempt,
+  naming the mapping's knob and the repository identity. With one, the revision's authority, and
+  so the plan's, gains the effect `publish-gate` and the data destination `github:<owner/name>`:
+  `af task plan` prints them on `EFFECTS` and `SEND`, and `--json` and `af task explain` carry
+  them. A data destination is a policy name or such a `github:` repository. The catalog compiler
+  requires the effect and exactly one `github:` destination when the graph has remote checks,
+  and neither when it has none, so admission's recompilation refuses any other pairing.
+- **The run reads the target again.** Before any check of a node with remote checks starts, the
+  check operator reads the plan's recorded destination and the mapping. No target for the
+  repository, or another `github` than the plan recorded, ends the Attempt with an error naming
+  the knob and the repository; nothing is pushed. The push URL never enters the plan.
+- **Unchanged.** `checks` run first, then `remote_checks` through the executor, with RC1's
+  order, clock, transport, evidence, result contract, refusal reasons and receipt; the receipt
+  names every check of both lists, and output admission refuses a receipt whose check ran
+  somewhere its node did not say. A node whose checks all run remotely records no local runtime
+  evidence group without `[warm]`, since it ran nothing on the machine.
+
+### Consequences
+
+- A remote pipeline is a reviewed, committed choice, and its plan shows what it publishes; the
+  operator's mapping remains the authority to publish, and one machine without it cannot plan
+  the pipeline at all.
+- This repository's remote twins are staged under
+  [`fixtures/remote-checks/packages/`](../../fixtures/remote-checks/packages/README.md) for a
+  person to install, since a Worker may not write `.af/`.

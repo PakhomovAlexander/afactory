@@ -13,6 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Node, NodeKind, Pipeline, Planned, Port, PortContract, SnapshotAffinity};
 
+/// The installed name of a check's remote form: `operator/check/remote/<name>`, present only
+/// for a check the captured code policy declares with a `remote` table (ADR-0139).
+pub const REMOTE_CHECK_SIGNATURE_PREFIX: &str = "operator/check/remote/";
+
 /// Metadata authenticated by the package resolver. The key is the Worker package name, or
 /// the installed operator name. Evidence is keyed by output and exact verifier policy ID.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +222,21 @@ pub struct CompiledTask {
 }
 
 impl CompiledTask {
+    /// Every compiled check node that lists remote checks, with the checks it lists, child
+    /// pipelines included. Empty for a graph whose checks all run on this machine.
+    pub fn remote_checks(&self) -> BTreeMap<String, BTreeSet<String>> {
+        self.nodes
+            .iter()
+            .filter_map(|(name, node)| match &node.operator {
+                CompiledOperator::Primitive {
+                    operator: TaskOperatorV1::Check { remote_checks, .. },
+                    ..
+                } if !remote_checks.is_empty() => Some((name.clone(), remote_checks.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Review requires a complete predecessor barrier, including optional input producers.
     /// Ordinary Task operators retain conditional/optional-input recovery semantics.
     pub fn requires_successful_predecessors(&self, node: &str) -> bool {
@@ -1691,8 +1710,12 @@ impl Compiler<'_> {
                         if paid && signature.attempt.is_none() {
                             return Err(format!("{signature_name} has no bounded Attempt cost"));
                         }
-                        if let TaskOperatorV1::Check { checks } = &operator {
-                            for check in checks {
+                        if let TaskOperatorV1::Check {
+                            checks,
+                            remote_checks,
+                        } = &operator
+                        {
+                            for check in checks.iter().chain(remote_checks) {
                                 if self
                                     .context
                                     .signatures
@@ -1700,7 +1723,24 @@ impl Compiler<'_> {
                                     != Some(signature)
                                 {
                                     return Err(format!(
-                                        "Check {check} is not installed under the captured check policy"
+                                        "Pipeline {} node {}: check {check} is not installed under the captured check policy",
+                                        definition.name, node.id
+                                    ));
+                                }
+                            }
+                            // Where a check runs is the pipeline's choice, but what its remote
+                            // form is belongs to the policy (ADR-0139): only a check declared
+                            // with a `remote` table installs its remote signature.
+                            for check in remote_checks {
+                                if !self.context.signatures.contains_key(&format!(
+                                    "{REMOTE_CHECK_SIGNATURE_PREFIX}{check}"
+                                )) {
+                                    return Err(format!(
+                                        "Pipeline {} node {} lists check {check} in \
+                                         `remote_checks`, but the captured code policy declares \
+                                         it without a `remote` table; declare \
+                                         [checks.{check}.remote] or move it to `checks`",
+                                        definition.name, node.id
                                     ));
                                 }
                             }

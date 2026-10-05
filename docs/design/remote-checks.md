@@ -3,7 +3,9 @@
 **Status:** proposed, 2026-10-04; revised the same day after the design review recorded in §6.
 Package RC1 is implemented and verified in the change that adds
 [ADR-0139](../adr/0139-run-a-declared-check-through-a-gate-pull-request.md); the RC2 live proof
-ran on 2026-10-05, and adoption in this repository's own policy follows the release.
+ran on 2026-10-05, and adoption in this repository's own policy follows the release. Package RC3
+(the pipeline chooses) is implemented in the change that amends ADR-0139 on 2026-10-05; its
+remote pipeline twins are staged under `fixtures/remote-checks/packages/`.
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 
 A Task check today is a command this machine runs. This note lets a machine hand a declared
@@ -546,8 +548,9 @@ By hand, after RC1 is delivered and released into a build this repository can ru
   repository's own policy and verified by its reviewers and evaluator. Findings are fixed by
   hand in the delivery worktree and re-verified at most once.
 - Nothing in RC1 runs against a real remote. The only live step is RC2, started by a person.
-- Rollback is deleting the mapping file: every check runs locally again, with no state to
-  migrate.
+- Rollback was deleting the mapping file under RC1. Since RC3 it is planning the pipeline
+  variant whose check node lists the check in `checks`; deleting the mapping makes a remote
+  pipeline unplannable on that machine, and there is still no state to migrate.
 
 ## 6. Execution record
 

@@ -1,15 +1,14 @@
-//! The operator's machine-local Remote Check mapping (ADR-0139 §3.2): per repository, which
-//! declared checks this machine hands to a remote executor, and where it may push the gate
-//! branches. It is the operator's authorization, never committed policy, so nothing here is
-//! recorded: the push URL and the mapping's path stay out of every artifact, event and message.
+//! The operator's machine-local Remote Check mapping (ADR-0139 §3.2): per repository, where
+//! this machine may push the gate branches. It names push targets only: a Task pipeline's check
+//! node chooses which checks run remotely. It is the operator's authorization, never committed
+//! policy, so nothing here is recorded: the push URL and the mapping's path stay out of every
+//! artifact, event and message.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 
 use review_core::task::remote_check::is_github_name;
 use serde::Deserialize;
-
-use crate::task::code::CodeTaskPolicy;
 
 const MAX_MAPPING_BYTES: u64 = 64 * 1024;
 const MAX_PUSH_URL_BYTES: usize = 1024;
@@ -19,18 +18,28 @@ const MAX_PUSH_URL_BYTES: usize = 1024;
 struct MappingFile {
     version: u32,
     #[serde(default)]
-    github_pr: Vec<GithubPrTarget>,
+    github_pr: Vec<MappingEntry>,
 }
 
-/// One `[[github_pr]]` entry: the repository it maps, the GitHub `owner/name` that `gh`
-/// addresses, the Git URL the gate branches are pushed to, and the checks it selects.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// One `[[github_pr]]` entry as written. `checks` is read only to refuse it by name: RC1's
+/// mapping selected checks, and a file that still does must not be mistaken for a target.
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct MappingEntry {
+    repository_id: String,
+    github: String,
+    push_url: String,
+    #[serde(default)]
+    checks: Option<toml::Value>,
+}
+
+/// One `[[github_pr]]` target: the repository it maps, the GitHub `owner/name` that `gh`
+/// addresses, and the Git URL the gate branches are pushed to.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GithubPrTarget {
     pub repository_id: String,
     pub github: String,
     pub push_url: String,
-    pub checks: BTreeSet<String>,
 }
 
 /// A validated mapping file.
@@ -45,8 +54,8 @@ pub const MAPPING_KNOB: &str = "the remote check mapping (AF_TASK_REMOTE_CHECK_P
 
 impl RemoteCheckMapping {
     /// Read the mapping at `path` with the no-follow, bounded reader the Rust toolchain mapping
-    /// uses. `None` when the file does not exist: every check then runs locally. Anything else
-    /// that is not a valid mapping is an error before any check starts.
+    /// uses. `None` when the file does not exist: this machine then has no push target. Anything
+    /// else that is not a valid mapping is an error.
     pub fn read(path: &Path) -> Result<Option<Self>, String> {
         if !path.is_absolute() {
             return Err(format!("{MAPPING_KNOB} must be an absolute path"));
@@ -91,13 +100,22 @@ impl RemoteCheckMapping {
             ));
         }
         let mut repositories = BTreeSet::new();
-        for entry in &file.github_pr {
+        let mut entries = Vec::with_capacity(file.github_pr.len());
+        for entry in file.github_pr {
             let name = &entry.repository_id;
             if !is_repository_id(name) {
                 return Err(format!(
                     "{MAPPING_KNOB} has an entry whose repository_id is not a sorted, \
                      comma-separated list of root commits; write `git rev-list --max-parents=0 \
                      HEAD` sorted and joined by commas"
+                ));
+            }
+            if entry.checks.is_some() {
+                return Err(format!(
+                    "{MAPPING_KNOB} entry for repository {name} carries `checks`, which selects \
+                     nothing any more: a Task pipeline's check node chooses where a check runs, \
+                     by listing it in `remote_checks`; remove `checks` from the mapping and plan \
+                     a pipeline whose check node lists the remote checks"
                 ));
             }
             if !repositories.insert(name.clone()) {
@@ -113,59 +131,20 @@ impl RemoteCheckMapping {
             push_url_admissible(&entry.push_url).map_err(|why| {
                 format!("{MAPPING_KNOB} entry for repository {name}: `push_url` {why}")
             })?;
-            if entry.checks.is_empty()
-                || entry.checks.len() > 32
-                || entry
-                    .checks
-                    .iter()
-                    .any(|check| !review_core::task::is_name(check))
-            {
-                return Err(format!(
-                    "{MAPPING_KNOB} entry for repository {name}: `checks` names 1 to 32 \
-                     declared checks"
-                ));
-            }
+            entries.push(GithubPrTarget {
+                repository_id: entry.repository_id,
+                github: entry.github,
+                push_url: entry.push_url,
+            });
         }
-        Ok(Self {
-            entries: file.github_pr,
-        })
+        Ok(Self { entries })
     }
 
-    /// The entry for `repository_id`, validated against the captured policy: every check it
-    /// names must be declared with a `remote` table. `None` when the mapping does not name the
-    /// repository.
-    pub fn select(
-        &self,
-        repository_id: &str,
-        policy: &CodeTaskPolicy,
-    ) -> Result<Option<&GithubPrTarget>, String> {
-        let Some(entry) = self
-            .entries
+    /// The push target for `repository_id`, `None` when the mapping does not name it.
+    pub fn target(&self, repository_id: &str) -> Option<&GithubPrTarget> {
+        self.entries
             .iter()
             .find(|entry| entry.repository_id == repository_id)
-        else {
-            return Ok(None);
-        };
-        for name in &entry.checks {
-            match policy.checks.get(name) {
-                None => {
-                    return Err(format!(
-                        "{MAPPING_KNOB} selects check `{name}` for repository {repository_id}, \
-                         but the captured code policy declares no such check; remove it from \
-                         `checks`"
-                    ));
-                }
-                Some(check) if check.remote.is_none() => {
-                    return Err(format!(
-                        "{MAPPING_KNOB} selects check `{name}` for repository {repository_id}, \
-                         but the captured code policy declares it without a `remote` table; \
-                         declare [checks.{name}.remote] or remove it from `checks`"
-                    ));
-                }
-                Some(_) => {}
-            }
-        }
-        Ok(Some(entry))
     }
 }
 
@@ -230,21 +209,44 @@ mod tests {
 
     const ROOT: &str = "5f1c000000000000000000000000000000000000";
 
-    fn mapping(push_url: &str, checks: &str) -> String {
+    fn mapping(push_url: &str) -> String {
         format!(
             "version = 1\n[[github_pr]]\nrepository_id = \"{ROOT}\"\ngithub = \"o/r\"\n\
-             push_url = \"{push_url}\"\nchecks = [{checks}]\n"
+             push_url = \"{push_url}\"\n"
         )
     }
 
     #[test]
-    fn a_valid_mapping_selects_its_repository() {
-        let parsed =
-            RemoteCheckMapping::parse(&mapping("git@github.com:o/r.git", "\"kernel\"")).unwrap();
-        assert_eq!(parsed.entries.len(), 1);
-        assert_eq!(parsed.entries[0].checks, BTreeSet::from(["kernel".into()]));
+    fn a_valid_mapping_names_a_push_target_per_repository() {
+        let parsed = RemoteCheckMapping::parse(&mapping("git@github.com:o/r.git")).unwrap();
+        assert_eq!(
+            parsed.target(ROOT),
+            Some(&GithubPrTarget {
+                repository_id: ROOT.into(),
+                github: "o/r".into(),
+                push_url: "git@github.com:o/r.git".into(),
+            })
+        );
+        assert_eq!(parsed.target(&"6".repeat(40)), None);
         let empty = RemoteCheckMapping::parse("version = 1\n").unwrap();
         assert!(empty.entries.is_empty());
+    }
+
+    #[test]
+    fn a_mapping_that_still_selects_checks_is_refused_and_names_the_check_node() {
+        for checks in ["[\"kernel\"]", "[]", "\"kernel\""] {
+            let text = format!("{}checks = {checks}\n", mapping("git@github.com:o/r.git"));
+            let error = RemoteCheckMapping::parse(&text).unwrap_err();
+            assert!(error.contains("carries `checks`"), "{error}");
+            assert!(
+                error.contains("pipeline's check node") && error.contains("`remote_checks`"),
+                "{error}"
+            );
+            assert!(
+                error.contains(ROOT) && !error.contains("git@github.com"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
@@ -257,7 +259,7 @@ mod tests {
             "git:s3cret-token@github.com:o/r.git",
             "%73ecret@github.com:o/r.git",
         ] {
-            let error = RemoteCheckMapping::parse(&mapping(url, "\"kernel\"")).unwrap_err();
+            let error = RemoteCheckMapping::parse(&mapping(url)).unwrap_err();
             assert!(error.contains("user information"), "{url}: {error}");
             assert!(
                 !error.contains("s3cret") && !error.contains("ecret@"),
@@ -272,7 +274,7 @@ mod tests {
             "/srv/git/gate.git",
             "file:///srv/git/gate.git",
         ] {
-            RemoteCheckMapping::parse(&mapping(url, "\"kernel\"")).unwrap();
+            RemoteCheckMapping::parse(&mapping(url)).unwrap();
         }
     }
 
@@ -280,17 +282,15 @@ mod tests {
     fn malformed_mappings_are_errors() {
         for text in [
             "version = 2\n".to_string(),
-            mapping("git@github.com:o/r.git", ""),
-            mapping("git@github.com:o/r.git", "\"bad name\""),
-            mapping("--upload-pack=x", "\"kernel\""),
-            mapping("git@github.com:o/r.git", "\"kernel\"").replace("o/r\"", "o\""),
-            mapping("git@github.com:o/r.git", "\"kernel\"").replace(ROOT, "HEAD"),
+            mapping("--upload-pack=x"),
+            mapping("git@github.com:o/r.git").replace("o/r\"", "o\""),
+            mapping("git@github.com:o/r.git").replace(ROOT, "HEAD"),
             format!(
                 "{}{}",
-                mapping("a:b", "\"kernel\""),
-                mapping("a:b", "\"kernel\"").replace("version = 1\n", "")
+                mapping("a:b"),
+                mapping("a:b").replace("version = 1\n", "")
             ),
-            mapping("git@github.com:o/r.git", "\"kernel\"") + "token = \"x\"\n",
+            mapping("git@github.com:o/r.git") + "token = \"x\"\n",
         ] {
             assert!(RemoteCheckMapping::parse(&text).is_err(), "{text}");
         }
@@ -306,7 +306,7 @@ mod tests {
         );
         assert!(RemoteCheckMapping::read(Path::new("remote-checks.toml")).is_err());
         let file = root.join("real.toml");
-        std::fs::write(&file, mapping("git@github.com:o/r.git", "\"kernel\"")).unwrap();
+        std::fs::write(&file, mapping("git@github.com:o/r.git")).unwrap();
         assert!(RemoteCheckMapping::read(&file).unwrap().is_some());
         let link = root.join("link.toml");
         std::os::unix::fs::symlink(&file, &link).unwrap();

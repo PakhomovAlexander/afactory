@@ -173,6 +173,11 @@ pub(super) fn assess(
                 };
             }
             revision.provenance.input_artifact_ids = provenance_input_artifact_ids(cas, &revision);
+            // A pipeline with remote checks publishes to its repository's push target, and its
+            // authority says so before the revision has an identity (ADR-0139).
+            if let Err(reason) = domain::remote_check_authority(cas, &mut revision, &graph) {
+                return CandidateState::Unavailable { reason };
+            }
             let revision_id = match capture_revision(cas, &revision) {
                 Ok(id) => id,
                 Err(reason) => return CandidateState::Invalid { reason },

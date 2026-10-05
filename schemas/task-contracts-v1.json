@@ -8,6 +8,14 @@
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
     },
+    "github_destination": {
+      "type": "string",
+      "pattern": "^github:[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}$",
+      "not": {
+        "pattern": "^github:(\\.\\.?/|[^/]*/\\.\\.?$)"
+      },
+      "$comment": "The repository a plan with remote checks publishes its gate branches to (ADR-0139), recorded beside the effect publish-gate."
+    },
     "package": {
       "type": "string",
       "maxLength": 256,
@@ -118,7 +126,14 @@
         "data_destinations": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/name"
+            "anyOf": [
+              {
+                "$ref": "#/$defs/name"
+              },
+              {
+                "$ref": "#/$defs/github_destination"
+              }
+            ]
           },
           "uniqueItems": true,
           "minItems": 0,
@@ -843,10 +858,34 @@
                 "$ref": "#/$defs/name"
               },
               "uniqueItems": true,
+              "minItems": 0,
+              "$comment": "Run on this machine. Canonical ascending order is required by semantic admission."
+            },
+            "remote_checks": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/name"
+              },
+              "uniqueItems": true,
               "minItems": 1,
-              "$comment": "Canonical ascending order is required by semantic admission."
+              "$comment": "Run by each check's declared remote executor (ADR-0139); absent, never empty. A name in both lists is refused by semantic admission. Canonical ascending order is required by semantic admission."
             }
-          }
+          },
+          "anyOf": [
+            {
+              "properties": {
+                "checks": {
+                  "minItems": 1
+                }
+              }
+            },
+            {
+              "required": [
+                "remote_checks"
+              ]
+            }
+          ],
+          "$comment": "A node names at least one check in all."
         },
         {
           "type": "object",

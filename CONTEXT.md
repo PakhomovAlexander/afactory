@@ -86,20 +86,25 @@ result, and neither creates nor discharges the other. Nor the evaluator's verdic
 Comparison and cannot change it.
 
 **Remote Check**:
-A declared code check that an operator's machine hands to a remote executor instead of running
-its command: in RC1, the declared workflow's `pull_request` run on GitHub Actions for a Gate pull
-request. It passes only when every required job of that run's latest attempt succeeded and the
-kernel read back that GitHub tested exactly the checked Snapshot's tree; every refusal or
-inconclusive state is `not_run` with a named reason. Its record is one
-`af/RemoteCheckEvidence@1` ([ADR-0139](docs/adr/0139-run-a-declared-check-through-a-gate-pull-request.md)).
-_Avoid_: "green CI" — a CI conclusion nobody bound to the Snapshot is not a Remote Check. Nor
-"remote policy": committed policy only declares the `remote` table; it never selects it.
+A declared code check that a Task pipeline's check node lists in `remote_checks`, so the kernel
+hands it to the check's declared remote executor instead of running its command: the declared
+workflow's `pull_request` run on GitHub Actions for a Gate pull request. It passes only when
+every required job of that run's latest attempt succeeded and the kernel read back that GitHub
+tested exactly the checked Snapshot's tree; every refusal or inconclusive state is `not_run`
+with a named reason. Its record is one `af/RemoteCheckEvidence@1`, and its plan carries the
+effect `publish-gate` and the destination `github:<owner/name>`
+([ADR-0139](docs/adr/0139-run-a-declared-check-through-a-gate-pull-request.md)).
+_Avoid_: "green CI" — a CI conclusion nobody bound to the Snapshot is not a Remote Check. Nor a
+per-machine switch: the code policy declares what a check's remote form is, the pipeline
+chooses where it runs, and a project that wants both gates keeps two pipeline variants.
 
 **Remote Check mapping**:
 The operator's machine-local file (`$XDG_CONFIG_HOME/af/remote-checks.toml` or
-`AF_TASK_REMOTE_CHECK_POLICY_FILE`) that names, per repository, which declared checks run
-remotely on this machine and where their gate branches may be pushed. It is the authorization to
-push; no record ever holds its path or push URL. Without it every check runs locally.
+`AF_TASK_REMOTE_CHECK_POLICY_FILE`) that names, per repository, where this machine may push gate
+branches, and nothing else. Having a target is the authorization to push: a pipeline with remote
+checks cannot be planned without one, and the target is read again before the check Attempt
+pushes. It selects no check, and a file that still carries RC1's `checks` key is refused. No
+record ever holds its path or push URL.
 _Avoid_: putting it in `.af/` — authority to act on a remote belongs to a person at a machine.
 
 **Gate pull request**:

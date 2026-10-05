@@ -159,9 +159,14 @@ impl TaskAuthorityV1 {
             is_digest(&self.policy_id),
             "Task policy must be an exact artifact ID",
         )?;
+        // A destination is a trusted policy name, or the `github:<owner/name>` repository a
+        // plan with remote checks publishes its gate branches to (ADR-0139).
         require(
             self.allowed_effects.iter().all(|s| is_name(s))
-                && self.data_destinations.iter().all(|s| is_name(s)),
+                && self
+                    .data_destinations
+                    .iter()
+                    .all(|s| is_name(s) || remote_check::github_of_destination(s).is_some()),
             "Task effects and destinations must name trusted policy entries",
         )
     }
