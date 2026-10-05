@@ -192,14 +192,16 @@ class ProtocolTests(unittest.TestCase):
             HOST.public_status(value, "codex-main", "codex")
 
     def test_closed_native_failure_states_do_not_authorize_continuation(self):
-        for state in ["authentication_invalid_token_response", "authentication_proxy_configuration_failed",
-                      "authentication_tls_configuration_failed", "authentication_rejected",
-                      "authentication_transport_failed"]:
-            value = HOST.public_status(status(state=state, code=6), "codex-main", "codex")
+        for state, code in [("authentication_invalid_token_response", 6),
+                            ("authentication_proxy_configuration_failed", 6),
+                            ("authentication_tls_configuration_failed", 6),
+                            ("authentication_rejected", 6), ("authentication_transport_failed", 6),
+                            ("provider_cli_missing", 4)]:
+            value = HOST.public_status(status(state=state, code=code), "codex-main", "codex")
             self.assertFalse(value["verified"])
             self.assertEqual(value["continuation"], "not_authorized_by_login")
         for state, code in [("authenticated_unverified", 6), ("authentication_failed", 0),
-                            ("arbitrary-native-secret", 6)]:
+                            ("provider_cli_missing", 6), ("arbitrary-native-secret", 6)]:
             with self.assertRaises(HOST.Rejected):
                 HOST.public_status(status(state=state, code=code), "codex-main", "codex")
 

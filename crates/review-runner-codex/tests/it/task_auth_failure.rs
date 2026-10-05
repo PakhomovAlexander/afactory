@@ -213,3 +213,42 @@ fn successful_output_about_device_authentication_is_unchanged() {
         output.as_bytes()
     );
 }
+
+#[test]
+fn model_text_about_revoked_credentials_cannot_replace_a_network_failure() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let output = [
+        serde_json::json!({"type":"item.completed","item":{"type":"agent_message","text":"Reviewed: the OAuth token has been revoked (auth_revoked) branch."}}),
+        serde_json::json!({"type":"turn.failed","error":{"message":"stream disconnected: connection refused"}}),
+    ]
+    .map(|event| event.to_string())
+    .join("\n");
+    let script = temp.path().join("provider");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{}'\nexit 1\n",
+            output.replace('\'', "'\\''")
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = CodexTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"input".to_vec(),
+        Duration::from_secs(5),
+        WorkerAccess::ReadOnly,
+        None,
+        &[],
+    );
+    let error = returned.message.unwrap_err();
+    assert!(error.contains("(network)"), "{error}");
+    assert!(!error.contains("(auth_"), "{error}");
+    assert_eq!(
+        cas.get(&returned.raw_artifact_ids[0]).unwrap(),
+        output.as_bytes()
+    );
+}

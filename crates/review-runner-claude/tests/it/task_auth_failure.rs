@@ -199,3 +199,56 @@ fn network_failure_does_not_publish_device_challenges_from_either_stream() {
         }
     }
 }
+
+#[test]
+fn model_text_about_revoked_credentials_cannot_replace_a_network_failure() {
+    let model_text = "Reviewed: the OAuth token has been revoked (auth_revoked) branch.";
+    for (output, stderr) in [
+        // A failed process whose envelope still carries the model's reply.
+        (
+            serde_json::json!({"is_error":false,"result":model_text,"usage":{"input_tokens":1,"output_tokens":1}}),
+            "connection refused",
+        ),
+        // Structured native errors outrank the reply text of an error envelope.
+        (
+            serde_json::json!({"is_error":true,"errors":["connection refused"],"result":model_text}),
+            "",
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        let output = output.to_string();
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{}'\nprintf '%s' '{}' >&2\nexit 1\n",
+                output.replace('\'', "'\\''"),
+                stderr
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter = ClaudeTaskAdapter::new(&Command::new(
+            script.to_str().unwrap(),
+            vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+        ))
+        .unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            Duration::from_secs(5),
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        let error = returned.message.unwrap_err();
+        assert!(error.contains("(network)"), "{error}");
+        assert!(!error.contains("(auth_"), "{error}");
+        assert_eq!(
+            cas.get(&returned.raw_artifact_ids[0]).unwrap(),
+            output.as_bytes()
+        );
+    }
+}

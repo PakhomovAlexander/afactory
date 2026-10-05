@@ -95,15 +95,19 @@ sys.exit(p.returncode)
     }
 
     fn command(&self, action: &str) -> Command {
+        self.command_kind(action, "codex")
+    }
+
+    fn command_kind(&self, action: &str, kind: &str) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_af"));
         command
             .args([
                 "provider",
                 "auth",
                 action,
-                "codex-main",
+                &format!("{kind}-main"),
                 "--kind",
-                "codex",
+                kind,
                 "--auth-dir",
             ])
             .arg(self.root.path().join("auth"))
@@ -176,6 +180,36 @@ sys.exit(p.returncode)
         std::fs::create_dir_all(&auth).unwrap();
         std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o700)).unwrap();
         std::fs::write(auth.join(mode), "").unwrap();
+    }
+
+    /// Claude 2.1.289's login frames. A `callback` marker completes without a pasted code.
+    fn claude_cli(&self) {
+        let path = self.root.path().join("bin/claude");
+        std::fs::write(&path, r#"#!/usr/bin/python3
+import json,os,sys,time
+from pathlib import Path
+root=Path(os.environ['CLAUDE_CONFIG_DIR'])
+if sys.argv[1:]==['auth','status','--json']:
+    ready=(root/'ready').exists()
+    print(json.dumps({'loggedIn':ready,'authMethod':'claude.ai' if ready else 'none','apiProvider':'firstParty'}))
+    sys.exit(0 if ready else 1)
+if sys.argv[1:]!=['auth','login','--claudeai']:sys.exit(64)
+assert os.environ.get('HTTP_PROXY')=='http://fixture.invalid:8080'
+assert os.environ.get('SSL_CERT_FILE')=='/fixture/certificate.pem'
+assert all(name not in os.environ for name in ['OPENAI_API_KEY','ANTHROPIC_API_KEY','NODE_OPTIONS','NODE_TLS_REJECT_UNAUTHORIZED','BROWSER','DISPLAY'])
+(root/'native.pid').write_text(str(os.getpid()))
+url='https://claude.ai/oauth/authorize?state=AF-PRIVATE-FIXTURE'
+print('Opening browser to sign in…',flush=True)
+print("If the browser didn't open, visit: "+url,flush=True)
+print('Paste code here if prompted > ',end='',flush=True)
+if (root/'callback').exists():
+    while not (root/'complete').exists():time.sleep(.01)
+else:
+    if sys.stdin.readline().strip()!='AF-ONE-TIME-FIXTURE':sys.exit(65)
+(root/'ready').touch()
+print('Login successful.',flush=True)
+"#).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     fn complete(&self) {
@@ -260,6 +294,36 @@ fn response(action: &str, request: &Value) -> Value {
 
 fn state(output: &Output) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn assert_matches_schema(value: &Value) {
+    let path = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .join("schemas/provider-auth-v1.json");
+    let schema: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(value), "{value}");
+}
+
+fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !condition() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn pid(fixture: &Fixture, name: &str) -> nix::unistd::Pid {
+    nix::unistd::Pid::from_raw(
+        std::fs::read_to_string(fixture.root.path().join(name))
+            .unwrap()
+            .parse()
+            .unwrap(),
+    )
 }
 
 #[test]
@@ -482,6 +546,10 @@ fn concurrent_begin_reuses_session_and_never_sends_a_second_challenge() {
     let request = read(&mut host);
     approve(&mut host, &request);
     let _challenge = read(&mut host);
+    // The owner records awaiting_user just after sending the challenge.
+    wait_until("the awaiting_user state", || {
+        state(&fixture.command("status").output().unwrap())["state"] == "awaiting_user"
+    });
     let output = fixture
         .command("begin")
         .args(["--host-read-fd", "0", "--host-write-fd", "1"])
@@ -605,13 +673,7 @@ fn private_status_matches_published_schema() {
         .args(["--host-read-fd", "0", "--host-write-fd", "1"])
         .output()
         .unwrap();
-    let root = std::env::var_os("AF_WORKSPACE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
-        .join("schemas/provider-auth-v1.json");
-    let schema: Value = serde_json::from_slice(&std::fs::read(root).unwrap()).unwrap();
-    let validator = jsonschema::validator_for(&schema).unwrap();
-    assert!(validator.is_valid(&state(&output)));
+    assert_matches_schema(&state(&output));
 }
 
 #[test]
@@ -692,22 +754,13 @@ fn expired_permission_never_starts_login() {
 #[test]
 fn killing_the_owner_reaps_native_login_before_context_becomes_reusable() {
     use nix::sys::signal::{Signal, kill};
-    use nix::unistd::Pid;
     let fixture = Fixture::new();
     let (child, mut host) = fixture.begin();
     let request = read(&mut host);
     approve(&mut host, &request);
     let _challenge = read(&mut host);
-    let pid = |name: &str| -> Pid {
-        Pid::from_raw(
-            std::fs::read_to_string(fixture.root.path().join(name))
-                .unwrap()
-                .parse()
-                .unwrap(),
-        )
-    };
-    let native = pid("auth/native.pid");
-    let owner = pid("owner.pid");
+    let native = pid(&fixture, "auth/native.pid");
+    let owner = pid(&fixture, "owner.pid");
     // The synthetic provider deliberately ignores stdin while polling its completion marker.
     kill(owner, Signal::SIGKILL).unwrap();
     let _owner_result = fixture.result(child);
@@ -728,37 +781,30 @@ fn killing_the_owner_reaps_native_login_before_context_becomes_reusable() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     assert!(!fixture.root.path().join("auth/ready").exists());
+    // Cancel agrees with status: no owner remains to observe a cancellation marker.
+    let recovery_id = request["recovery_id"].as_str().unwrap();
+    let cancel = fixture
+        .command("cancel")
+        .arg("--recovery-id")
+        .arg(recovery_id)
+        .output()
+        .unwrap();
+    assert_eq!(cancel.status.code(), Some(3));
+    assert_eq!(state(&cancel)["state"], "interrupted");
+    assert!(
+        !fixture
+            .root
+            .path()
+            .join(format!("auth/.af-codex-auth-recovery/cancel-{recovery_id}"))
+            .exists()
+    );
 }
 
 #[test]
 fn claude_private_code_and_callback_paths_complete_without_task_dispatch() {
     for callback in [false, true] {
         let fixture = Fixture::new();
-        let path = fixture.root.path().join("bin/claude");
-        std::fs::write(&path, r#"#!/usr/bin/python3
-import json,os,sys,time
-from pathlib import Path
-root=Path(os.environ['CLAUDE_CONFIG_DIR'])
-if sys.argv[1:]==['auth','status','--json']:
-    ready=(root/'ready').exists()
-    print(json.dumps({'loggedIn':ready,'authMethod':'claude.ai' if ready else 'none','apiProvider':'firstParty'}))
-    sys.exit(0 if ready else 1)
-if sys.argv[1:]!=['auth','login','--claudeai']:sys.exit(64)
-assert os.environ.get('HTTP_PROXY')=='http://fixture.invalid:8080'
-assert os.environ.get('SSL_CERT_FILE')=='/fixture/certificate.pem'
-assert all(name not in os.environ for name in ['OPENAI_API_KEY','ANTHROPIC_API_KEY','NODE_OPTIONS','NODE_TLS_REJECT_UNAUTHORIZED','BROWSER','DISPLAY'])
-url='https://claude.ai/oauth/authorize?state=AF-PRIVATE-FIXTURE'
-print('Opening browser to sign in…',flush=True)
-print("If the browser didn't open, visit: "+url,flush=True)
-print('Paste code here if prompted > ',end='',flush=True)
-if (root/'callback').exists():
-    while not (root/'complete').exists():time.sleep(.01)
-else:
-    if sys.stdin.readline().strip()!='AF-ONE-TIME-FIXTURE':sys.exit(65)
-(root/'ready').touch()
-print('Login successful.',flush=True)
-"#).unwrap();
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        fixture.claude_cli();
         if callback {
             std::fs::create_dir(fixture.root.path().join("auth")).unwrap();
             std::fs::write(fixture.root.path().join("auth/callback"), "").unwrap();
@@ -887,5 +933,119 @@ fn reauthentication_never_recreates_an_existing_binding_removed_during_login() {
         std::fs::read_to_string(registry).unwrap(),
         "version = 1\nproviders = []\n"
     );
+    fixture.no_secrets(&output);
+}
+
+#[test]
+fn a_code_queued_while_the_callback_completes_cannot_invalidate_login() {
+    use nix::sys::signal::{Signal, kill};
+    let fixture = Fixture::new();
+    fixture.claude_cli();
+    fixture.mode("callback");
+    let (child, mut host) = fixture.begin_kind("claude");
+    let request = read(&mut host);
+    approve(&mut host, &request);
+    assert_eq!(read(&mut host)["action"], "challenge");
+    send(&mut host, &response("delivered", &request));
+    wait_until("the delivery acknowledgement", || {
+        let output = fixture.command_kind("status", "claude").output().unwrap();
+        state(&output)["challenge_delivered"] == true
+    });
+    // Freeze the owner while the callback completes natively and the user's code is queued,
+    // so one owner poll observes both.
+    let owner = pid(&fixture, "owner.pid");
+    let native = pid(&fixture, "auth/native.pid");
+    kill(owner, Signal::SIGSTOP).unwrap();
+    fixture.complete();
+    wait_until("the native login to exit", || {
+        matches!(kill(native, None), Err(nix::errno::Errno::ESRCH))
+    });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let mut code = response("code", &request);
+    code["code"] = json!("AF-ONE-TIME-FIXTURE");
+    send(&mut host, &code);
+    kill(owner, Signal::SIGCONT).unwrap();
+    assert_eq!(read(&mut host)["action"], "setup_completed");
+    let output = fixture.result(child);
+    assert!(output.status.success());
+    assert_eq!(state(&output)["state"], "authenticated_unverified");
+    assert_eq!(state(&output)["registered"], true);
+}
+
+#[test]
+fn cancellation_and_registry_publication_never_disagree() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let fixture = Fixture::new();
+    let (child, mut host) = fixture.begin();
+    let request = read(&mut host);
+    approve(&mut host, &request);
+    let _challenge = read(&mut host);
+    send(&mut host, &response("delivered", &request));
+    // Keep the commit section closed while the owner reaches publication and a cancel arrives.
+    let commit = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(
+            fixture
+                .root
+                .path()
+                .join("auth/.af-codex-auth-recovery/commit.lock"),
+        )
+        .unwrap();
+    fs2::FileExt::lock_exclusive(&commit).unwrap();
+    fixture.complete();
+    wait_until("the token-free status probe", || {
+        fixture.root.path().join("auth/status-probes").exists()
+    });
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let mut cancel = fixture
+        .command("cancel")
+        .arg("--recovery-id")
+        .arg(request["recovery_id"].as_str().unwrap())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(
+        cancel.try_wait().unwrap().is_none(),
+        "cancel did not wait for the commit section"
+    );
+    drop(commit);
+    let cancel = cancel.wait_with_output().unwrap();
+    let output = fixture.result(child);
+    let registered = std::fs::read_to_string(fixture.root.path().join("config/af/providers.toml"))
+        .is_ok_and(|text| text.contains("codex-main"));
+    match state(&cancel)["state"].as_str() {
+        Some("cancellation_requested") => {
+            assert_eq!(state(&output)["state"], "cancelled");
+            assert!(
+                !registered,
+                "a requested cancellation still published setup"
+            );
+        }
+        Some("authenticated_unverified") => {
+            assert_eq!(state(&output)["state"], "authenticated_unverified");
+            assert!(registered);
+        }
+        other => panic!("unexpected cancel result {other:?}"),
+    }
+    fixture.no_secrets(&output);
+}
+
+#[test]
+fn a_missing_native_cli_is_not_reported_as_failed_authentication() {
+    let fixture = Fixture::new();
+    std::fs::remove_file(fixture.root.path().join("bin/codex")).unwrap();
+    let (child, mut host) = fixture.begin();
+    let request = read(&mut host);
+    approve(&mut host, &request);
+    let output = fixture.result(child);
+    assert_eq!(output.status.code(), Some(4));
+    let status = state(&output);
+    assert_eq!(status["state"], "provider_cli_missing");
+    assert_eq!(status["registered"], false);
+    assert_matches_schema(&status);
     fixture.no_secrets(&output);
 }

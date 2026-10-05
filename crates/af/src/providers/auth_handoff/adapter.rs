@@ -37,6 +37,7 @@ pub(super) enum Event {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Failure {
     Unsupported,
+    ProviderCliMissing,
     InvalidChallenge,
     Failed,
     Authentication(super::guard::AuthenticationFailure),
@@ -174,10 +175,12 @@ impl NativeLogin {
             && !status.success()
         {
             return Err(if self.guarded {
-                status
-                    .code()
-                    .and_then(super::guard::AuthenticationFailure::from_exit_code)
-                    .map_or(Failure::Failed, Failure::Authentication)
+                match status.code() {
+                    Some(super::guard::PROVIDER_CLI_MISSING) => Failure::ProviderCliMissing,
+                    code => code
+                        .and_then(super::guard::AuthenticationFailure::from_exit_code)
+                        .map_or(Failure::Failed, Failure::Authentication),
+                }
             } else {
                 Failure::Failed
             });

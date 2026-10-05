@@ -22,6 +22,9 @@ const MAX_STDERR: usize = 64 * 1024;
 const MAX_LIFETIME: Duration = Duration::from_secs(900);
 const POLL: Duration = Duration::from_millis(5);
 
+/// The official CLI is absent or cannot be started; no native login ever ran.
+pub(super) const PROVIDER_CLI_MISSING: i32 = 75;
+
 /// Private guard exit codes, never native exit codes or bytes on either protocol stream.
 /// These categories carry no native text and can never confer successful authentication.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,7 +161,9 @@ pub(crate) fn supervise_early(argv: &[String]) -> Option<i32> {
             registry_declared: false,
             source: "private-auth-guard".into(),
         };
-        let program = locate_cli(&spec).map_err(|_| ())?;
+        let Ok(program) = locate_cli(&spec) else {
+            return Ok(PROVIDER_CLI_MISSING);
+        };
         let mut command = Command::new(program);
         super::configure_private_login_environment(&mut command, &spec, &sanitized_path());
         command.env("NO_COLOR", "1").env("TERM", "dumb");
@@ -253,7 +258,9 @@ fn relay(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    let child = review_process::spawn(command).map_err(|_| ())?;
+    let Ok(child) = review_process::spawn(command) else {
+        return Ok(PROVIDER_CLI_MISSING);
+    };
     let mut native = NativeChild {
         watch: review_process::ExitWatch::new(child.id()),
         child,
@@ -517,7 +524,7 @@ mod tests {
 
     #[test]
     fn guard_synthesizes_failure_codes_only_from_failed_native_diagnostics() {
-        for native_code in [1, 70, 71, 72, 73, 74] {
+        for native_code in [1, 70, 71, 72, 73, 74, PROVIDER_CLI_MISSING] {
             let (result, stdout) = relay_fixture(&format!(
                 "import os\nos.write(2,b'POISON')\nraise SystemExit({native_code})"
             ));
@@ -531,6 +538,21 @@ mod tests {
             assert_eq!(result, Ok(guard_code));
             assert!(stdout.is_empty());
         }
+    }
+
+    #[test]
+    fn a_native_cli_that_cannot_start_is_reported_as_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut guard_input, _parent_input) = pipes();
+        let (_parent_output, mut guard_output) = pipes();
+        let result = relay(
+            &mut Command::new(root.path().join("absent-cli")),
+            ProviderKind::Codex,
+            &mut guard_input,
+            &mut guard_output,
+            || true,
+        );
+        assert_eq!(result, Ok(PROVIDER_CLI_MISSING));
     }
 
     #[test]

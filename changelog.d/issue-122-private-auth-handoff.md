@@ -11,3 +11,4 @@
   credential-bearing failed output before ordinary capture, retaining exact parsed usage.
 - Classify native login failures into closed response/proxy/TLS/rejection/transport states while
   keeping stderr private and bounded; retain the native lifetime guard and credential boundary.
+  An absent or unstartable official CLI reports `provider_cli_missing` (exit 4).

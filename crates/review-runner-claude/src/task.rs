@@ -170,15 +170,15 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                     value.get("is_error").and_then(serde_json::Value::as_bool) == Some(true)
                 });
                 if failed || native_failed {
-                    let kind = parsed
-                        .as_ref()
-                        .filter(|_| native_failed)
-                        .map(native_failure)
-                        .unwrap_or(NativeFailureKind::Unknown);
+                    // A parsed envelope speaks only through its native error fields, so model
+                    // text cannot choose the category. Unparsed stdout is native output.
+                    let kind = match &parsed {
+                        Some(value) => native_failure(value, native_failed),
+                        None => classify_native_failure(&String::from_utf8_lossy(stdout)),
+                    };
                     let candidates = [
                         kind,
                         classify_native_failure(&String::from_utf8_lossy(stderr)),
-                        classify_native_failure(&String::from_utf8_lossy(stdout)),
                     ];
                     failure = candidates
                         .iter()
@@ -239,9 +239,15 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
     }
 }
 
-fn native_failure(value: &serde_json::Value) -> NativeFailureKind {
+/// `result` is the CLI's own API error text only in an `is_error` envelope without structured
+/// errors; anywhere else it is the model's reply and is never classified.
+fn native_failure(value: &serde_json::Value, is_error: bool) -> NativeFailureKind {
+    let api_error_text = is_error && value.get("errors").is_none() && value.get("error").is_none();
     let mut messages = Vec::new();
     for key in ["errors", "error", "result", "message"] {
+        if key == "result" && !api_error_text {
+            continue;
+        }
         let Some(value) = value.get(key) else {
             continue;
         };

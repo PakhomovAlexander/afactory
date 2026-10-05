@@ -213,6 +213,8 @@ For a Claude browser-returned code, use the same approved human-private route an
 
 A code is accepted only once, after delivery acknowledgement, for this active recipient/session
 and the correct provider mode. It is bounded data on native stdin, never a command or argument.
+If the browser callback has already completed the native login, a code queued at the same time
+is not needed and is never submitted; setup completes normally.
 Do not turn native requests for passwords, API keys, access/refresh tokens, MFA or permission
 bypasses into this message. Wrong-recipient/session, replay, unknown messages and stale replies
 terminate the owned flow without exposing the response.
@@ -238,7 +240,10 @@ af provider auth cancel codex-main --kind codex --auth-dir /private/codex --reco
 
 The versioned status is [provider-auth-v1.json](../schemas/provider-auth-v1.json). Cancellation
 returns `cancellation_requested` until the owner observes it. Repeated cancellation of a finished
-matching session returns its final state. A stale recovery ID cannot cancel a replacement.
+matching session returns its final state. Cancellation is serialized with registry publication: a
+cancel that arrives while the owner publishes waits and returns the published result, so
+`cancellation_requested` always means setup will not complete. A session whose owner is gone
+reports `interrupted` to cancel as to status. A stale recovery ID cannot cancel a replacement.
 
 Failed native Codex login also has closed, non-secret diagnostic states (all exit 6):
 `authentication_invalid_token_response`, `authentication_proxy_configuration_failed`,
@@ -249,6 +254,9 @@ reserved internal guard exit codes, never native text, response bodies, URLs or 
 conflicting and oversized errors remain `authentication_failed`; a category is evidence of the
 observed native failure class, not authorization to alter network/security settings or retry an
 OAuth exchange manually. No native exit value alone can manufacture successful authentication.
+
+An official CLI that is absent or cannot start ends the session as `provider_cli_missing`
+(exit 4), not as an authentication failure; install or repair the CLI, then begin again.
 
 A cancelled, expired, interrupted, unsupported or private-route-unavailable session is blocked,
 never authenticated. Restart starts a fresh official flow and requires a fresh host permission;
@@ -272,7 +280,7 @@ existing Task identity fences.
   The provider publishes no versioned JSON login-output protocol. The adapter supports a complete
   bare URL followed by a newline-terminated browser-code instruction or an OSC-8 hyperlink target, including wrapped visible
   labels. Ambiguous/truncated bare URL wrapping is rejected; parameters are never reconstructed.
-  The exact 2.1.289 trailing `Paste code here if prompted > ` prompt is also supported without
+  The exact 2.1.289 trailing `Paste code here if prompted >` prompt (with its trailing space) is also supported without
   a newline; arbitrary partial prompts remain unsupported. The concrete bridge checks the native
   subscription endpoint `https://claude.com/cai/oauth/authorize`, native client ID
   `9d1c250a-e61b-44d9-88ed-5944d1962f5e`, manual platform callback and known scope set. Custom

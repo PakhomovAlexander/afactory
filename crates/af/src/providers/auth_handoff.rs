@@ -15,6 +15,7 @@ pub(crate) use guard::supervise_early;
 const SCHEMA: &str = "af/provider-auth@1";
 const HOST_SCHEMA: &str = "af/provider-auth-host@1";
 const STATE_FILE: &str = "session.json";
+const COMMIT_LOCK: &str = "commit.lock";
 const MAX_MESSAGE: usize = 16 * 1024;
 const POLL: Duration = Duration::from_millis(25);
 
@@ -61,6 +62,7 @@ enum State {
     PermissionDenied,
     PrivateRouteUnavailable,
     Unsupported,
+    ProviderCliMissing,
     AuthenticationFailed,
     AuthenticationInvalidTokenResponse,
     AuthenticationProxyConfigurationFailed,
@@ -85,6 +87,7 @@ impl State {
         match self {
             Self::AuthenticatedUnverified | Self::CancellationRequested => EXIT_OK,
             Self::RegistryConflict => EXIT_REGISTRY_CONFLICT,
+            Self::ProviderCliMissing => EXIT_PROVIDER_CLI_MISSING,
             Self::AuthenticationFailed
             | Self::AuthenticationInvalidTokenResponse
             | Self::AuthenticationProxyConfigurationFailed
@@ -278,6 +281,17 @@ impl Storage {
     fn cancelled(&self, recovery_id: &str) -> bool {
         self.path.join(format!("cancel-{recovery_id}")).exists()
     }
+
+    /// Serializes cancellation with the owner's final registry publication. A cancel either
+    /// lands before the owner's last check or reads the published result, never between them.
+    fn commit_lock(&self) -> Result<File, String> {
+        self.current()?;
+        let file = open_lock_at(&self.directory, std::ffi::OsStr::new(COMMIT_LOCK))
+            .map_err(|_| "cannot open auth recovery commit lock")?;
+        fs2::FileExt::lock_exclusive(&file).map_err(|_| "cannot lock auth recovery commit")?;
+        self.current()?;
+        Ok(file)
+    }
 }
 
 /// Uses exactly the lock used by terminal setup, but never queues another login behind it.
@@ -393,12 +407,18 @@ pub fn cancel(id: &str, kind: &str, auth: &Path, recovery_id: &str) -> Result<i3
     let spec = resolve(id, kind, auth, false)?;
     let auth = spec.auth_dir.as_deref().expect("explicit auth context");
     let storage = Storage::open(auth, spec.kind, false)?;
+    let _commit = storage.commit_lock()?;
     let mut session = storage.read()?.ok_or("no auth recovery session")?;
     matches_context(&session, &spec)?;
     if session.recovery_id != recovery_id {
         return Err("stale recovery ID".into());
     }
     if !session.state.active() {
+        return Ok(session.emit());
+    }
+    // No owner remains to observe a marker; report the session exactly as status does.
+    if try_context_lock(spec.kind, auth)?.is_some() {
+        session.state = State::Interrupted;
         return Ok(session.emit());
     }
     storage.current()?;
@@ -725,6 +745,7 @@ fn own(
     let mut native = adapter::NativeLogin::start(spec, lock).map_err(native_failure)?;
     let mut challenge_sent = false;
     let mut completed = false;
+    let mut queued_code: Option<String> = None;
     loop {
         control(spec, lock, storage, session)?;
         if !completed && let Some(event) = native.poll().map_err(native_failure)? {
@@ -754,6 +775,18 @@ fn own(
                     completed = true;
                 }
             }
+        }
+        // A browser callback can complete Claude while the host is queuing the user's code.
+        // Completion with an acknowledged delivery finishes before any queued code is read.
+        if completed && session.challenge_delivered {
+            drop(native);
+            return finish(spec, registry, lock, storage, session, &mut host);
+        }
+        // A received code reaches the native login only after this fresh poll found it running.
+        if let Some(code) = queued_code.take() {
+            native
+                .submit_code(&code)
+                .map_err(|_| State::InvalidResponse)?;
         }
         if let Some(response) = host.read::<Response>()? {
             let (recovery_id, requester_ref) = match &response {
@@ -785,19 +818,12 @@ fn own(
                 {
                     session.response_consumed = true;
                     session.state = State::Completing;
-                    storage.save(session).map_err(|_| State::ContextChanged)?;
-                    native
-                        .submit_code(&code)
-                        .map_err(|_| State::InvalidResponse)?;
+                    queued_code = Some(code);
                 }
                 Response::Cancel { .. } => return Err(State::Cancelled),
                 _ => return Err(State::InvalidResponse),
             }
             storage.save(session).map_err(|_| State::ContextChanged)?;
-        }
-        if completed && session.challenge_delivered {
-            drop(native);
-            return finish(spec, registry, lock, storage, session, &mut host);
         }
         thread::sleep(POLL);
     }
@@ -830,6 +856,8 @@ fn finish(
             return Err(State::RegistryConflict);
         }
     };
+    // From this last check to the durable result, a cancel waits and then reads that result.
+    let commit = storage.commit_lock().map_err(|_| State::ContextChanged)?;
     control(spec, lock, storage, session)?;
     match inspect_registration(registry, &spec.id, spec.kind, auth)
         .map_err(|_| State::RegistryConflict)?
@@ -851,6 +879,7 @@ fn finish(
     }
     session.state = State::AuthenticatedUnverified;
     storage.save(session).map_err(|_| State::ContextChanged)?;
+    drop(commit);
     // Durable result precedes notification. A disconnect cannot erase completion.
     let _ = host.send(&serde_json::json!({
         "schema":HOST_SCHEMA, "action":"setup_completed", "recovery_id":session.recovery_id,
@@ -862,6 +891,7 @@ fn finish(
 fn native_failure(failure: adapter::Failure) -> State {
     match failure {
         adapter::Failure::Unsupported => State::Unsupported,
+        adapter::Failure::ProviderCliMissing => State::ProviderCliMissing,
         adapter::Failure::InvalidChallenge | adapter::Failure::OutputLimit => {
             State::InvalidChallenge
         }

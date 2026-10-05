@@ -150,12 +150,14 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                 // Parse the bill before privacy filtering removes an authentication envelope.
                 events = TaskEvents::parse(stdout);
                 if failed || events.upstream_failure.is_some() {
+                    // Framed events speak only through their error fields: an agent message
+                    // that quotes an auth error is model output, never a native diagnostic.
                     let candidates = [
                         events
                             .upstream_failure
                             .unwrap_or(NativeFailureKind::Unknown),
                         classify_native_failure(&String::from_utf8_lossy(stderr)),
-                        classify_native_failure(&String::from_utf8_lossy(stdout)),
+                        classify_native_failure(&unframed(stdout)),
                     ];
                     // Any recognized auth error makes both streams sensitive, even if an
                     // earlier error concerned another failure or stdout was not valid JSONL.
@@ -351,6 +353,21 @@ impl TaskEvents {
         }
         events
     }
+}
+
+/// Stdout lines outside the JSONL event framing: native text a failing client wrote around
+/// or instead of its events. Framed events, including all model output, are excluded.
+fn unframed(stdout: &[u8]) -> String {
+    let mut text = String::new();
+    for line in stdout.split(|b| *b == b'\n') {
+        let framed = serde_json::from_slice::<serde_json::Value>(line)
+            .is_ok_and(|value| value.get("type").is_some_and(serde_json::Value::is_string));
+        if !framed {
+            text.push_str(&String::from_utf8_lossy(line));
+            text.push('\n');
+        }
+    }
+    text
 }
 
 // Each parsed component is u64; a completed turn consumes more than two bytes.
