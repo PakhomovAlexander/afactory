@@ -2,13 +2,13 @@
 
 Review the generated policy, definitions, Workers and captured contract fixtures, then initialize
 this directory as a Git repository and commit its authority and source. Move the supplied Task
-requests outside the checkout first: they are captured into Task state and do not belong in
-source Snapshots. Keep `contracts.json` (and `sources.json` in the combined starter) in place.
+requests outside the checkout first, into a new directory beside it: they are captured into Task
+state and do not belong in source Snapshots. Keep `contracts.json` (and `sources.json` in the combined starter) in place.
 The Python command substitutes support the structured pagination specification in the supplied
 Task files. They perform no paid model calls.
 
 ```sh
-task_files=$(mktemp -d "${TMPDIR:-/tmp}/af-task-requests.XXXXXX")
+task_files=$(mktemp -d "$(dirname "$PWD")/af-task-requests.XXXXXX")
 mv implementation-*.json review-*.json planning.json "$task_files/"
 # The combined profile also includes a document Task request.
 if [ -f document.json ]; then mv document.json "$task_files/"; fi

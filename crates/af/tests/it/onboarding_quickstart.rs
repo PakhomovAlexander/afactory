@@ -199,7 +199,10 @@ af() {{
   esac
 }}
 cd project
+# A TMPDIR inside the checkout must not pull the requests back into the committed source.
+export TMPDIR="$PWD"
 {block}
+case "$task_files/" in "$PWD"/*) echo "Task requests inside the checkout: $task_files" >&2; exit 1 ;; esac
 af task explain implementation-reviewed --json > ../task-plan.json
 git ls-files > ../tracked.txt
 test -z "$(git status --porcelain)"
@@ -217,6 +220,11 @@ test ! -e implementation-reviewed.json
     assert!(!String::from_utf8_lossy(&output.stderr).contains("is inside the repository"));
     let tracked = std::fs::read_to_string(root.path().join("tracked.txt")).unwrap();
     assert!(tracked.lines().any(|path| path == "contracts.json"));
+    assert!(
+        !tracked
+            .lines()
+            .any(|path| path.contains("af-task-requests"))
+    );
     if profile == "all" {
         assert!(tracked.lines().any(|path| path == "sources.json"));
         assert!(!tracked.lines().any(|path| path == "document.json"));

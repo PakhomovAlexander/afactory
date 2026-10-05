@@ -5,7 +5,7 @@ Create a complete credential-free catalog in an absent directory:
 ```sh
 af catalog init --profile all --destination task-demo --json
 cd task-demo
-task_files=$(mktemp -d "${TMPDIR:-/tmp}/af-task-requests.XXXXXX")
+task_files=$(mktemp -d "$(dirname "$PWD")/af-task-requests.XXXXXX")
 mv implementation-*.json review-*.json planning.json document.json "$task_files/"
 git init
 # Review the generated authority and Worker definitions.
@@ -17,9 +17,11 @@ af task start --file "$task_files/implementation-reviewed.json"
 af task run implementation-reviewed --confirm-plan PLAN_ID
 ```
 
-Task request files belong outside the checkout; keep `task_files` in this shell for later examples.
-`contracts.json` and `sources.json` remain with the committed catalog. The generated README gives
-the corresponding commands for software-only and planning starters.
+These Task requests belong outside the checkout, so the commands put them in a new directory
+beside it; keep `task_files` in this shell for later examples. `contracts.json` and `sources.json`
+remain with the committed catalog. The generated README gives the corresponding commands for
+software-only and planning starters. The report starter is the exception: its author reads and
+cites the committed `report.json`, so keep that request in the tree, as its README says.
 
 The factory runs no Workers and commits nothing. It creates supported typed definitions, actual
 package pins, contract fixtures, captured policies and runnable Task files. Git and Python 3 are

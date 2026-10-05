@@ -50,7 +50,10 @@ cargo install --path crates/af --locked
 A source checkout can be ahead of the latest published release. `af --version --json` identifies
 its version, commit and target. A source build has no release receipt, so onboarding generates
 package pins but cannot create a verified `af` release pin; use an official installed release for
-that byte-binding pin. An existing release pin is preserved.
+that byte-binding pin. Onboarding leaves an existing release pin in the lock unchanged. Dispatch
+enforces the pinned bytes only through install receipts: a source build of any other version runs
+the pinned release, but a source build of the pinned version itself has no receipt to compare and
+runs as built.
 
 A source install has no signed release receipt, so `af self update`, `rollback`, and `uninstall`
 refuse to manage it. `af self status` identifies that state and prints the exact

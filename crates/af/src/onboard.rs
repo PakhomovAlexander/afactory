@@ -1146,7 +1146,9 @@ normal controls. Never weaken a Gate or boundary merely to obtain a passing revi
 also binds a receipted `af` release by version and archive digest: ordinary commands dispatch to
 that pinned release. To move it intentionally, use `af onboard --refresh-lock --af <version>`;
 review and commit the resulting lock diff. A source build without an install receipt cannot
-create a verified release pin and preserves an existing one; package digests are still checked.
+create a verified release pin and leaves an existing one unchanged; package digests are still
+checked. A source build of the pinned version runs as built: with no receipt, it has no bytes to
+compare with the pinned digest.
 "#
     )
 }
