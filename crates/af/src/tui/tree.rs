@@ -42,8 +42,8 @@ pub(crate) struct Item {
     pub(crate) label: String,
     /// Discovered but not selectable, like an ambient Provider candidate.
     pub(crate) muted: bool,
-    /// The entry's state: the label ends in a chip of it, from its last word and the spaces
-    /// before that word but one.
+    /// The entry's state: the label's last word, right-aligned, is a chip of it, two columns
+    /// clear of the text before it.
     pub(crate) tone: Option<Tone>,
     /// `Some` for a group that folds, holding its entries; `None` for an entry.
     pub(crate) children: Option<Vec<Item>>,

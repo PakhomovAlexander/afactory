@@ -189,7 +189,7 @@ the terminal's own foreground and ground, so it looks native in any terminal the
 colours text on that ground, because no colour chosen inside the program reads on every ground:
 pink text is 3.4:1 on a light terminal, green 1.5:1. Colour comes only as a fill with ink on it,
 where the contrast holds whatever the theme (ink on blue 6.4:1, on pink 4.9:1, on green
-12.7:1): the status line, the state chips and the mascot. Colour is detected once, in
+12.7:1): the status line, the state chips and the pixel workers. Colour is detected once, in
 `crates/af/src/tui/paint.rs`:
 
 | `NO_COLOR` | `COLORTERM` | palette | status line | chips: active, ok, fail |
@@ -213,13 +213,25 @@ pink while it carries an error.
 
 Everything else is the terminal's text with bold for titles, dim for muted rows, reverse for
 the cursor row and underline for the unfocused cursor. Bars are `#` and `.` in the text colour,
-folds are `v` and `>`, branches are `+--` and `'--`. Nothing moves but a state change and the
-spinner of a read still running.
+folds are `v` and `>`, branches are `+--` and `'--`. Nothing moves but a state change, the
+spinner of a read still running, and the splash.
+
+The splash is the first thing bare `af` paints, a few milliseconds after it starts and before
+it reads anything; the browser replaces it the moment the scope and its panes have loaded, so
+it never makes `af` slower. It is the row of three workers (pink, green, blue) standing on a
+conveyor belt, with the name and the tagline under them. A Task block `[#]` rides the belt to
+the right; the worker it has reached is at work, in its colour, and the other two wait in grey.
+That change of state is the only way a worker moves. `q` or `<C-c>` on the splash quits; any
+other key waits for the browser.
+
+A pixel worker is the `ascii.txt` drawing with its `#` cells painted solid and its eyes ink:
+under truecolor in `pink`, `green`, `blue`, or `grey` while it waits; under 16 colours in the
+terminal's bright red, green, bright blue and bright black; without colour as the `#` drawing,
+bold at work and dim waiting. Its copied text is still the drawing.
 
 For a banner in a terminal (a version screen, a help header) use `ascii.txt`: the 11×6 worker
-and the 5-row block wordmark. Never a figlet face. The TUI's help header puts the worker to the
-left of the name; under truecolor its `#` cells are pink on pink and its eyes ink, a solid pixel
-worker whose copied text is still the drawing.
+and the 5-row block wordmark. Never a figlet face. The TUI's help header puts the pink pixel
+worker, the mascot, to the left of the name.
 
 ## GitHub
 

@@ -882,17 +882,30 @@ fn exempt_from_dispatch(argv: &[String]) -> bool {
     if browser_invocation(argv) {
         return true;
     }
-    let first = argv.get(1).map(String::as_str);
+    let mut command_index = 1;
+    while let Some(word) = argv.get(command_index) {
+        if word == "--repo" && argv.get(command_index + 1).is_some() {
+            command_index += 2;
+        } else if word.starts_with("--repo=") {
+            command_index += 1;
+        } else {
+            break;
+        }
+    }
+    let first = argv.get(command_index).map(String::as_str);
     // Bootstrap is machine-local, not project authority. Dispatching it through an older project
     // pin would make the newly installed command disappear precisely where users need it.
     // `self optimize` is the exception: it reads project authority, so it dispatches (ADR-0105).
-    let binary_management_self =
-        first == Some("self") && argv.get(2).map(String::as_str) != Some("optimize");
+    let binary_management_self = first == Some("self")
+        && argv.get(command_index + 1).map(String::as_str) != Some("optimize");
     matches!(first, None | Some("help" | "completions" | "config"))
         || binary_management_self
         || matches!(
-            (first, argv.get(2).map(String::as_str)),
-            (Some("provider"), Some("setup" | "remove" | "recover"))
+            (first, argv.get(command_index + 1).map(String::as_str)),
+            (
+                Some("provider"),
+                Some("setup" | "remove" | "recover" | "auth")
+            )
         )
         || argv
             .iter()
@@ -1841,6 +1854,17 @@ mod tests {
             "codex-main"
         ])));
         assert!(!exempt_from_dispatch(&argv(&["af", "provider", "status"])));
+        assert!(exempt_from_dispatch(&argv(&[
+            "af", "--repo", "/tmp/x", "provider", "auth", "begin"
+        ])));
+        assert!(exempt_from_dispatch(&argv(&[
+            "af",
+            "--repo=/tmp/x",
+            "provider",
+            "auth",
+            "status"
+        ])));
+
         // The browser: bare, or with only a repository to open.
         assert!(exempt_from_dispatch(&argv(&["af", "--repo", "/tmp/x"])));
         assert!(exempt_from_dispatch(&argv(&["af", "--repo=/tmp/x"])));

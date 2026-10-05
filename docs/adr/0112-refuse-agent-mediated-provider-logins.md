@@ -1,6 +1,8 @@
 # ADR-0112: Refuse agent-mediated Provider logins and separate status from usage
 
-**Status:** accepted (2026-09-21)
+**Status:** accepted (2026-09-21). Partially superseded by
+[ADR-0137](0137-permit-provider-logins-through-private-host-capabilities.md), which adds an
+explicit private-host capability path while preserving the generic terminal-only default.
 
 An interactive Provider login prints an OAuth URL and an authorization code. Both are credentials
 in transit, and every reader of the process's standard streams gets them: a pipe, a CI log, a chat

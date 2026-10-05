@@ -68,15 +68,36 @@ macro_rules! green {
         "54;238;168"
     };
 }
+macro_rules! grey {
+    () => {
+        "153;153;153"
+    };
+}
 /// Ink text on one of the brand's colours.
 macro_rules! on {
     ($fill:ident) => {
         concat!("\x1b[0;38;2;", ink!(), ";48;2;", $fill!(), "m")
     };
 }
+/// A solid cell of one of the brand's colours: its `#` drawn in the colour of its fill.
+macro_rules! solid {
+    ($fill:ident) => {
+        concat!("\x1b[0;38;2;", $fill!(), ";48;2;", $fill!(), "m")
+    };
+}
+
+/// A cell of a pixel worker: solid in its colour, grey while it waits, or one of its ink eyes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pixel {
+    Pink,
+    Green,
+    Blue,
+    Grey,
+    Eye,
+}
 
 /// The whole palette. Colour appears only as a fill with ink on it: the status line, the state
-/// chips and the mascot. Text on the terminal's own ground is never coloured, since no colour
+/// chips and the pixel workers. Text on the terminal's own ground is never coloured, since no colour
 /// chosen inside the program reads on every ground.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Paint {
@@ -95,24 +116,24 @@ pub(crate) enum Paint {
     Error,
     /// A state word on its tone's fill, in ink.
     Chip(Tone),
-    /// A cell of the pink worker, painted solid, and one of its ink eyes.
-    Mascot,
-    Eye,
+    /// A cell of a pixel worker.
+    Pixel(Pixel),
 }
 
 impl Paint {
-    /// What the cursor row paints a span in: the row turns reverse, but a chip and the mascot
-    /// keep their fill, so a state still shows on the selected row.
+    /// What the cursor row paints a span in: the row turns reverse, but a chip and a pixel
+    /// worker keep their fill, so a state still shows on the selected row.
     pub(crate) fn under_cursor(self) -> Paint {
         match self {
-            Paint::Chip(_) | Paint::Mascot | Paint::Eye => self,
+            Paint::Chip(_) | Paint::Pixel(_) => self,
             _ => Paint::Cursor,
         }
     }
 
     /// Under 16 colours a chip is black on the terminal's bright blue and red, since many
     /// themes keep the plain ones too dark for black text, and on its plain green, which some
-    /// themes turn grey in the bright form.
+    /// themes turn grey in the bright form; a pixel worker takes the same colours, and bright
+    /// black for grey. Without colour a worker is its `#` drawing: bold at work, dim waiting.
     fn sgr(self, palette: Palette) -> &'static str {
         match (self, palette) {
             (Paint::Plain, _) => "\x1b[0m",
@@ -134,11 +155,19 @@ impl Paint {
             (Paint::Chip(Tone::Fail), Palette::Ansi) => "\x1b[0;30;101m",
             (Paint::Chip(Tone::Fail), Palette::Mono) => "\x1b[0;1m",
             (Paint::Chip(_), Palette::Mono) => "\x1b[0m",
-            (Paint::Mascot, Palette::True) => {
-                concat!("\x1b[0;38;2;", pink!(), ";48;2;", pink!(), "m")
-            }
-            (Paint::Eye, Palette::True) => concat!("\x1b[0;48;2;", ink!(), "m"),
-            (Paint::Mascot | Paint::Eye, _) => "\x1b[0m",
+            (Paint::Pixel(Pixel::Pink), Palette::True) => solid!(pink),
+            (Paint::Pixel(Pixel::Green), Palette::True) => solid!(green),
+            (Paint::Pixel(Pixel::Blue), Palette::True) => solid!(blue),
+            (Paint::Pixel(Pixel::Grey), Palette::True) => solid!(grey),
+            (Paint::Pixel(Pixel::Eye), Palette::True) => solid!(ink),
+            (Paint::Pixel(Pixel::Pink), Palette::Ansi) => "\x1b[0;91;101m",
+            (Paint::Pixel(Pixel::Green), Palette::Ansi) => "\x1b[0;32;42m",
+            (Paint::Pixel(Pixel::Blue), Palette::Ansi) => "\x1b[0;94;104m",
+            (Paint::Pixel(Pixel::Grey), Palette::Ansi) => "\x1b[0;90;100m",
+            (Paint::Pixel(Pixel::Eye), Palette::Ansi) => "\x1b[0;30;40m",
+            (Paint::Pixel(Pixel::Grey), Palette::Mono) => "\x1b[0;2m",
+            (Paint::Pixel(Pixel::Eye), Palette::Mono) => "\x1b[0m",
+            (Paint::Pixel(_), Palette::Mono) => "\x1b[0;1m",
         }
     }
 }
@@ -344,7 +373,7 @@ mod tests {
         assert_eq!(detect(None, None), Palette::Ansi);
     }
 
-    const ALL: [Paint; 13] = [
+    const ALL: [Paint; 16] = [
         Paint::Plain,
         Paint::Muted,
         Paint::Title,
@@ -356,8 +385,11 @@ mod tests {
         Paint::Chip(Tone::Active),
         Paint::Chip(Tone::Ok),
         Paint::Chip(Tone::Fail),
-        Paint::Mascot,
-        Paint::Eye,
+        Paint::Pixel(Pixel::Pink),
+        Paint::Pixel(Pixel::Green),
+        Paint::Pixel(Pixel::Blue),
+        Paint::Pixel(Pixel::Grey),
+        Paint::Pixel(Pixel::Eye),
     ];
 
     /// The SGR parameters of one paint.
@@ -391,14 +423,26 @@ mod tests {
                 mono.iter().all(|p| [0, 1, 2, 4, 7].contains(p)),
                 "{paint:?}"
             );
-            // 16 colours: black text only, and only on one of the three fills.
+            // 16 colours: a coloured foreground only on a fill, black or the fill's own colour
+            // for a solid pixel; never a fill without its text colour.
             let ansi = parameters(paint, Palette::Ansi);
-            let fills = ansi.iter().filter(|p| [42, 101, 104].contains(*p)).count();
-            let attributes = |p: &u16| [0, 1, 2, 4, 7, 30, 42, 101, 104].contains(p);
-            assert!(ansi.iter().all(attributes), "{paint:?}");
-            assert_eq!(ansi.contains(&30), fills == 1, "{paint:?}");
+            let colour = |range: [u16; 2]| -> Vec<u16> {
+                let ranges = [range[0]..=range[0] + 7, range[1]..=range[1] + 7];
+                let within = |p: &&u16| ranges.iter().any(|r| r.contains(*p));
+                ansi.iter().filter(within).copied().collect()
+            };
+            let (fg, bg) = (colour([30, 90]), colour([40, 100]));
+            let attribute = |p: &u16| [0, 1, 2, 4, 7].contains(p);
+            assert!(
+                ansi.iter()
+                    .all(|p| attribute(p) || fg.contains(p) || bg.contains(p))
+            );
+            assert_eq!(fg.len(), bg.len(), "{paint:?}");
+            if let (Some(&fg), Some(&bg)) = (fg.first(), bg.first()) {
+                assert!(fg == 30 || fg + 10 == bg, "{paint:?}");
+            }
             // Truecolor: a coloured foreground only on a fill, in ink, or the fill's own colour
-            // for a solid cell of the mascot.
+            // for a solid pixel.
             let (fg, bg) = rgb(&parameters(paint, Palette::True));
             if let Some(fg) = fg {
                 assert!(bg.is_some_and(|bg| fg == ink || fg == bg), "{paint:?}");
