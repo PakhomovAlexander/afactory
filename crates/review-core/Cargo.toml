@@ -14,7 +14,7 @@ doctest = false
 
 [dependencies]
 base64 = "0.23.1"
-num-bigint = "0.4.8"
+num-bigint = "0.5.1"
 num-integer = "0.1.47"
 num-traits = "0.2.19"
 serde = { version = "1.0.228", features = ["derive"] }
