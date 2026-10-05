@@ -14,6 +14,15 @@ program = "bash"
 value = "scripts/verify.sh"
 provenance = "literal"
 
+# The same check as this repository's CI runs it (ADR-0140): the pull_request run of ci.yml, by
+# the job names the Actions jobs API reports for it. container-probes is not part of the local
+# `make check`. A pipeline runs it there by listing `kernel` in its check node's `remote_checks`;
+# the released 0.11.0, which the lock may still pin, selects it through the machine mapping.
+[checks.kernel.remote]
+executor = "github-pr"
+workflow = ".github/workflows/ci.yml"
+required = ["validation / lint", "validation / check (ubuntu-latest)"]
+
 [checks.markdownlint]
 name = "markdownlint"
 required = true

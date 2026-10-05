@@ -24,9 +24,7 @@ use serde_json::Value;
 use super::gate::{
     GateRepository, GateRole, ToolError, Tools, gate_message, is_ref_component, push_refspec,
 };
-use super::{
-    EvidenceBase, GithubPrTarget, MAPPING_KNOB, Redactor, RemoteCheckOutcome, RemoteCheckRequest,
-};
+use super::{EvidenceBase, GithubPrTarget, Redactor, RemoteCheckOutcome, RemoteCheckRequest};
 
 /// How the executor reaches `git` and `gh` and how it paces its wait. The defaults are the
 /// design's; a test shortens them.
@@ -50,8 +48,8 @@ impl Default for GithubPrSettings {
     }
 }
 
-/// Everything one remote phase needs: the exact Snapshots, the operator's target, the
-/// remote-selected checks, the phase's deadline and the Attempt's cancellation flag.
+/// Everything one remote phase needs: the exact Snapshots, the operator's target, the check
+/// node's remote checks, the phase's deadline and the Attempt's cancellation flag.
 pub struct RemotePhase<'a> {
     pub cas: &'a Cas,
     pub task_id: &'a str,
@@ -84,7 +82,7 @@ pub const MAX_JOB_LOG_BYTES: usize = 256 * 1024;
 /// The log excerpt kept for one check, across its unsuccessful jobs.
 pub const MAX_CHECK_LOG_BYTES: usize = 1024 * 1024;
 
-/// Run the remote phase once for every remote-selected check of one Check node. `Err` is a
+/// Run the remote phase once for every remote check of one Check node. `Err` is a
 /// kernel error (a tree that did not read back, an unwritable private repository), never a
 /// check result; every remote refusal and inconclusive state is an outcome.
 pub fn run(
@@ -116,7 +114,8 @@ pub fn run(
             format!(
                 "the candidate differs from the Task's source Snapshot under `.github/` (first \
                  at `{path}`), so it is never sent to a remote executor; run this Task where the \
-                 check is local by removing it from `checks` in {MAPPING_KNOB}"
+                 check is local, with a pipeline whose check node lists it in `checks` instead \
+                 of `remote_checks`"
             ),
             None,
         ));

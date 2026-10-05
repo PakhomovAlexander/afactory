@@ -3,7 +3,9 @@
 **Status:** proposed, 2026-10-04; revised the same day after the design review recorded in §6.
 Package RC1 is implemented and verified in the change that adds
 [ADR-0140](../adr/0140-run-a-declared-check-through-a-gate-pull-request.md); the RC2 live proof
-ran on 2026-10-05, and adoption in this repository's own policy follows the release.
+ran on 2026-10-05, and adoption in this repository's own policy follows the release. Package RC3
+(the pipeline chooses) is implemented in the change that amends ADR-0140 on 2026-10-05; its
+remote pipeline twins are staged under `fixtures/remote-checks/packages/`.
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 
 A Task check today is a command this machine runs. This note lets a machine hand a declared
@@ -546,8 +548,9 @@ By hand, after RC1 is delivered and released into a build this repository can ru
   repository's own policy and verified by its reviewers and evaluator. Findings are fixed by
   hand in the delivery worktree and re-verified at most once.
 - Nothing in RC1 runs against a real remote. The only live step is RC2, started by a person.
-- Rollback is deleting the mapping file: every check runs locally again, with no state to
-  migrate.
+- Rollback was deleting the mapping file under RC1. Since RC3 it is planning the pipeline
+  variant whose check node lists the check in `checks`; deleting the mapping makes a remote
+  pipeline unplannable on that machine, and there is still no state to migrate.
 
 ## 6. Execution record
 
@@ -645,6 +648,46 @@ proof's own plan preview printed `SEND  none` and the run then pushed the source
 owner decided that the pipeline's check node chooses and that there is no per-machine override;
 two pipeline variants serve a project that wants both. Package RC3 implements it.
 
-Not done: this repository's own `.af/code-policy.toml` does not declare the table (it follows the
-release that carries Remote Checks, since the lock pins the newest release), and the two proof
-pull requests and their four branches are still open.
+**RC3 — implementation.** Task `remote-checks-rc3` (`kernel/implementation-reviewed`; plan
+`sha256:47ed704d…`), planned at commit 6367a39, 2026-10-05: 862,622 tokens, 7 Attempts, about
+73 minutes. The gate passed (`kernel` 549.8 s cold, `markdownlint` 11.5 s) and the evaluator
+passed; the review round left four Findings, so the Task ended `changes_requested`. The candidate
+(Snapshot `sha256:7a0fbefb…`) is commit 7c17995, unmodified; it was then renumbered to ADR-0140
+and merged with `main` at the v0.11.0 release, which had shipped RC1's selection.
+
+| Finding | Disposition (by hand) |
+| --- | --- |
+| A remote plan still required the remote check's local executable (bugs, major) | Planning requires a required check's executable only when some node lists it in `checks`. A test plans the remote twin with a command this host lacks, and sees the local twin refused. |
+| A generated pipeline could not acquire gate authority (bugs, major) | Decided the other way: a generated proposal that lists `remote_checks` is refused by name when its structure is checked. Only an installed pipeline chooses a remote gate, and a Planner cannot grant itself the publishing effect. |
+| Remote evidence was not bound to the plan's destination (correctness, major) | The reader requires the evidence's `github` to be the plan's one recorded `github:` destination, at admission and on replay. |
+| An empty `remote_checks` lost the pipeline in its diagnostic (correctness, minor) | A pipeline parse refusal now names its package; the TOML position names the node. Keeping "written but empty" apart from "absent" through to validation would need the field's presence to survive deserialization, which nothing else needs. |
+
+**RC3 — verification.** Task `remote-checks-rc3-verify-1` (`kernel/verification-reviewed`) on
+commit 8075e73: `changes_requested`, 258,301 tokens; the gate passed (`kernel` 538.5 s cold).
+Both reviewers reported one defect, and the evaluator failed on one point:
+
+| Finding | Disposition (by hand) |
+| --- | --- |
+| A local-only Task failed when the mapping variable held an invalid path (bugs, correctness) | The coordinator resolves the mapping only for a graph that has remote checks; a local-only graph gets no Remote Check configuration at all. A test plans and runs a local pipeline with a relative path in the variable. |
+| The release note was not at `changelog.d/remote-checks.md` (evaluator) | It is again. It had been renamed when the v0.11.0 release consumed the first note of that name. |
+
+The second attempt, on a loaded workstation, failed its local gate on three tests of other
+crates, and the third then waited an hour for a quiet machine. It was run instead through the
+released remote gate: `remote-checks-rc3-verify-3` under `af` 0.11.0, with this repository's
+policy now declaring `[checks.kernel.remote]` and the workstation's mapping selecting `kernel`.
+**Verified**, 277,303 tokens, 27 min 45 s in all: `markdownlint` local in 14.6 s, `kernel` in
+GitHub Actions through gate pull request #185 (check job 899 s), then both reviewers and the
+evaluator, who passed every deliverable.
+
+One Finding was left on the verified tree, fixed afterwards and not re-verified:
+
+| Finding | Disposition (after the verdict) |
+| --- | --- |
+| The recorded `github` destination did not constrain the push URL (correctness, major) | A mapping whose `push_url` is a github.com URL must name the same repository as `github`, in any of Git's spellings; a mismatch is refused when the file is read, at plan time and again at run time. A push URL on another host, or a local path, names nothing the file can compare, and is still accepted: establishing where such a URL leads is not attempted. |
+
+Cost of RC3: 862,622 tokens to implement, 535,604 to verify (two verdicts), and about 4,500 on
+the attempt that died at its local gate.
+
+Not done: the staged remote pipelines are not installed in this repository's `.af/` (the lock
+still pins a release that cannot read `remote_checks`), and the gate pull requests of the proofs
+and of the verification are left for a person to close.

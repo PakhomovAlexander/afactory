@@ -1,9 +1,11 @@
 //! Remote Checks (ADR-0140): a declared code check that a machine may hand to a remote
 //! executor, and the one typed record of everything the kernel observed while it did.
 //!
-//! The declaration is committed policy and grants nothing; the operator's machine-local
-//! mapping selects it. The evidence is the only source a reader consults: replay derives a
-//! remote check's status from it and never asks the remote again.
+//! The declaration is committed policy and grants nothing; a Task pipeline's check node selects
+//! it by listing it in `remote_checks`, and the operator's machine-local mapping supplies only
+//! the push target. A plan with remote checks carries [`PUBLISH_GATE_EFFECT`] and the
+//! [`github_destination`] in its authority. The evidence is the only source a reader consults:
+//! replay derives a remote check's status from it and never asks the remote again.
 
 use std::collections::BTreeSet;
 
@@ -132,6 +134,24 @@ fn is_github_repository(value: &str) -> bool {
 /// The `owner/name` GitHub repository spelling a mapping and the evidence use.
 pub fn is_github_name(value: &str) -> bool {
     is_github_repository(value)
+}
+
+/// The effect a plan's authority carries when its graph has remote checks: the kernel pushes
+/// the two gate branches and opens the draft gate pull request (ADR-0140).
+pub const PUBLISH_GATE_EFFECT: &str = "publish-gate";
+
+const GITHUB_DESTINATION_PREFIX: &str = "github:";
+
+/// The data destination a plan with remote checks records: `github:<owner/name>`.
+pub fn github_destination(github: &str) -> String {
+    format!("{GITHUB_DESTINATION_PREFIX}{github}")
+}
+
+/// The `owner/name` of a `github:<owner/name>` data destination, `None` for any other name.
+pub fn github_of_destination(destination: &str) -> Option<&str> {
+    destination
+        .strip_prefix(GITHUB_DESTINATION_PREFIX)
+        .filter(|github| is_github_name(github))
 }
 
 fn is_timestamp(value: &str) -> bool {

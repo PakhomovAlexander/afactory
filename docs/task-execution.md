@@ -62,11 +62,13 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   arithmetic. Neither invokes a Provider, and an evaluator gated on a comparison cannot change
   it ([ADR-0132](adr/0132-measure-and-compare-source-candidates-in-the-kernel.md),
   [experiments](task-execution/experiments.md)).
-- A declared check may also run as a Remote Check: an operator's machine-local mapping, never
-  committed policy, hands it to the repository's `pull_request` workflow through two
-  `af-gate/<task-id>/` branches built from Snapshots and one draft pull request. Local checks
-  run first; the result counts only after the merge ref reads back as the candidate tree, and
-  every remote fact is one `af/RemoteCheckEvidence@1`
+- A declared check may also run as a Remote Check: a pipeline's check node lists it in
+  `remote_checks`, and the kernel hands it to the repository's `pull_request` workflow through
+  two `af-gate/<task-id>/` branches built from Snapshots and one draft pull request. The
+  operator's machine-local mapping supplies only the push target; without one the pipeline
+  cannot be planned, and its plan carries `publish-gate` and the `github:` destination. Local
+  checks run first; the result counts only after the merge ref reads back as the candidate tree,
+  and every remote fact is one `af/RemoteCheckEvidence@1`
   ([ADR-0140](adr/0140-run-a-declared-check-through-a-gate-pull-request.md),
   [Remote Checks](task-execution/remote-checks.md)).
 - A report is accepted by an independent verifier, not by its author, and every report receipt

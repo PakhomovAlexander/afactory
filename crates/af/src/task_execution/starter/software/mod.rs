@@ -201,6 +201,7 @@ fn verification(evaluator: &TaskWorkerManifest) -> PipelineDefinitionV1 {
             "checks",
             TaskOperatorV1::Check {
                 checks: BTreeSet::from(["pagination".into()]),
+                remote_checks: BTreeSet::new(),
             },
             inputs(&[("source", input("source"))]),
         ),
@@ -347,6 +348,7 @@ fn review(correctness: &TaskWorkerManifest, bugs: &TaskWorkerManifest) -> Pipeli
             "checks",
             TaskOperatorV1::Check {
                 checks: BTreeSet::from(["pagination".into()]),
+                remote_checks: BTreeSet::new(),
             },
             inputs(&[("source", input("source"))]),
         ),
@@ -563,6 +565,7 @@ fn repair(
             "checks",
             TaskOperatorV1::Check {
                 checks: BTreeSet::from(["pagination".into()]),
+                remote_checks: BTreeSet::new(),
             },
             inputs(&[("source", output("seal", "snapshot"))]),
         ),

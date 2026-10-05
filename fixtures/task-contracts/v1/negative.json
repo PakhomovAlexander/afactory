@@ -473,5 +473,60 @@
     "pointer": "/contract/inputs/requirements/covers",
     "op": "remove",
     "expected_content_id": "sha256:fa3ca2cea2084fcfb023abf8262ff821f60a0444a6a5bbf8badf9406ba99e466"
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "a check runs in one place, so a name in both lists is refused",
+    "layer": "semantic",
+    "pointer": "/nodes/0/operator",
+    "op": "replace",
+    "value": {
+      "op": "check",
+      "checks": [
+        "lint"
+      ],
+      "remote_checks": [
+        "lint"
+      ]
+    },
+    "expected_content_id": "sha256:9aed4a130e86e6dc97e1d8dad8a53b7ce791bf40dacd820f85ad907b5f15dd08"
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "a check node names at least one check",
+    "layer": "shape",
+    "pointer": "/nodes/0/operator",
+    "op": "replace",
+    "value": {
+      "op": "check",
+      "checks": []
+    },
+    "expected_content_id": "sha256:845f95f0179bc31cb1116cd949b79266845d6e1b807080b6442b98838da98319"
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "remote checks are absent or named, never an empty list",
+    "layer": "shape",
+    "pointer": "/nodes/0/operator",
+    "op": "replace",
+    "value": {
+      "op": "check",
+      "checks": [
+        "lint"
+      ],
+      "remote_checks": []
+    },
+    "expected_content_id": "sha256:b281dcc4f76df42ac8a7b22e1c320060407e87681b7f48e4975f6924e2d39043"
+  },
+  {
+    "contract": "task-revision",
+    "why": "a destination is a policy name or a github owner/name repository",
+    "layer": "shape",
+    "pointer": "/authority/data_destinations",
+    "op": "replace",
+    "value": [
+      "github:nobody"
+    ],
+    "expected_content_id": "sha256:7732bb0aa8db2ea755c46e90c939d50e5ee24cba44833fc469a124943d7e5fe3"
   }
 ]

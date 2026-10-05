@@ -95,8 +95,26 @@ pub(super) fn available_tools(
                 .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;
+        // A check a node lists in `remote_checks` runs in the repository's CI, never here
+        // (ADR-0140): its command's executable is not this machine's to provide.
+        let local: std::collections::BTreeSet<&String> = graph
+            .nodes
+            .values()
+            .filter_map(|node| match &node.operator {
+                review_graph::task::CompiledOperator::Primitive {
+                    operator: pipeline::TaskOperatorV1::Check { checks, .. },
+                    ..
+                } => Some(checks),
+                _ => None,
+            })
+            .flatten()
+            .collect();
         if !policy.require_container {
-            for check in policy.checks.values().filter(|check| check.required) {
+            for check in policy
+                .checks
+                .values()
+                .filter(|check| check.required && local.contains(&check.name))
+            {
                 // Relative source executables may be produced by the implementation. A
                 // host capability lookup cannot decide whether those future artifacts exist.
                 if !check.command.program.contains('/')
@@ -173,6 +191,11 @@ pub(super) fn assess(
                 };
             }
             revision.provenance.input_artifact_ids = provenance_input_artifact_ids(cas, &revision);
+            // A pipeline with remote checks publishes to its repository's push target, and its
+            // authority says so before the revision has an identity (ADR-0140).
+            if let Err(reason) = domain::remote_check_authority(cas, &mut revision, &graph) {
+                return CandidateState::Unavailable { reason };
+            }
             let revision_id = match capture_revision(cas, &revision) {
                 Ok(id) => id,
                 Err(reason) => return CandidateState::Invalid { reason },

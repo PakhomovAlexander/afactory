@@ -191,6 +191,40 @@ fn exact_version(version: &str) -> bool {
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
+/// A plan publishes gate branches exactly when its graph has remote checks (ADR-0140): then
+/// its authority carries the effect `publish-gate` and one `github:<owner/name>` destination,
+/// which the coordinator added from this machine's push target and the preview prints;
+/// otherwise it carries neither, so no authority promises a push that no node makes.
+fn remote_check_authority(
+    root: &str,
+    task: &TaskRevisionV1,
+    graph: &CompiledTask,
+) -> Result<(), String> {
+    use review_core::task::remote_check::{PUBLISH_GATE_EFFECT, github_of_destination};
+    let remote = !graph.remote_checks().is_empty();
+    let publishes = task.authority.allowed_effects.contains(PUBLISH_GATE_EFFECT);
+    let destinations = task
+        .authority
+        .data_destinations
+        .iter()
+        .filter(|destination| github_of_destination(destination).is_some())
+        .count();
+    if remote && !(publishes && destinations == 1) {
+        return Err(format!(
+            "Pipeline {root} runs remote checks, so its plan's authority must carry \
+             `{PUBLISH_GATE_EFFECT}` and one `github:` destination: plan it where the remote \
+             check mapping names a push target for the repository"
+        ));
+    }
+    if !remote && (publishes || destinations > 0) {
+        return Err(format!(
+            "Pipeline {root} runs no remote check, so its plan's authority carries neither \
+             `{PUBLISH_GATE_EFFECT}` nor a `github:` destination"
+        ));
+    }
+    Ok(())
+}
+
 fn capture_producer() -> Producer {
     Producer::KernelOperation {
         run_id: "task-catalog-v1".into(),
@@ -551,7 +585,8 @@ impl TaskPlanCompiler {
                 let pipeline = super::parse_task_pipeline(
                     std::str::from_utf8(source).map_err(|e| e.to_string())?,
                 )
-                .map_err(|e| e.to_string())?;
+                // The parser reports the TOML position of the node; say whose file it is.
+                .map_err(|e| format!("Pipeline {}: {e}", bytes.name))?;
                 if pipeline.name != bytes.name || pipeline.version != bytes.version {
                     return Err("Pipeline manifest disagrees with its pin".into());
                 }
@@ -980,6 +1015,7 @@ impl TaskPlanCompiler {
         graph.experimental_slots = self.experimental_slots.clone();
         graph.validate_experimental_slots()?;
         self.validate_replacement_schemas(&graph)?;
+        remote_check_authority(root, &task, &graph)?;
         let bindings = self.effective_bindings(cas, &graph)?;
         let mut used: BTreeSet<String> = graph
             .calls
