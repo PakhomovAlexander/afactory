@@ -14,7 +14,9 @@ against a pinned Snapshot and folds what they return into a findings ledger with
 implementers only ever mutate a sandbox and return typed artifacts; only the kernel integrates;
 publishing to a branch or pull request stays an explicit human action.
 
-**Status:** public alpha (0.9.0). APIs, configuration and persisted state may change before 1.0.
+**Status:** public alpha. See the latest release badge above for the published version;
+`af --version` reports the binary you actually run. APIs, configuration and persisted state may
+change before 1.0.
 Compatibility obligations start at 1.0: from the first 1.0
 release on, every change that affects committed `.af/` policy or a persisted artifact type is
 announced in [`CHANGELOG.md`](CHANGELOG.md) under *Authority compatibility*, with the hand edit
@@ -45,6 +47,14 @@ target, build from source:
 cargo install --path crates/af --locked
 ```
 
+A source checkout can be ahead of the latest published release. `af --version --json` identifies
+its version, commit and target. A source build has no release receipt, so onboarding generates
+package pins but cannot create a verified `af` release pin; use an official installed release for
+that byte-binding pin. Onboarding leaves an existing release pin in the lock unchanged. Dispatch
+enforces the pinned bytes only through install receipts: a source build of any other version runs
+the pinned release, but a source build of the pinned version itself has no receipt to compare and
+runs as built.
+
 A source install has no signed release receipt, so `af self update`, `rollback`, and `uninstall`
 refuse to manage it. `af self status` identifies that state and prints the exact
 `af self install <version>` command. That command replaces the running source-installed executable
@@ -56,14 +66,50 @@ BSDs: a source build on any of them stops with a compile error.
 
 ## Quickstart
 
+Start from a clean, trusted Git checkout. Generate the proposed authority using the repository's
+real acceptance Gate:
+
 ```sh
 af onboard                          # preview .af/ and the exact apply command; spends no tokens
-af onboard --runner codex --gate 'check=make check' --apply  # use the real Gate for this repository
+af onboard --runner codex --gate 'check=make check' --apply  # replace with this repository's Gate
+```
+
+Review all generated policy, Worker prompts, Gate commands and lock entries before trusting them.
+Intent-to-add makes new files visible in the diff without staging their contents:
+
+```sh
+git add --intent-to-add .af
+git diff -- .af
+```
+
+After approving that diff, commit only the authority and capture its local revision. No push or
+remote branch is needed:
+
+```sh
+git add .af
+git commit -m 'Configure Afactory review authority'
+policy_rev=$(git rev-parse HEAD)
+base_rev="$policy_rev"
+```
+
+Now make the source changes you want reviewed, keeping this shell open, then inspect the plan:
+
+```sh
+af review plan --policy-rev "$policy_rev" --base "$base_rev" --uncommitted
+```
+
+The policy revision must contain the reviewed, committed `.af/`. The Base independently selects
+what to compare against; for an existing branch change, set `base_rev` to its intended comparison
+commit. The plan can show an empty Change Set, but `run` refuses it: make a real candidate change
+before execution. Planning needs no Provider login, Gate execution or model calls.
+
+To execute that plan with the generated Codex Workers, register a Provider at your own terminal
+and supply its bindings explicitly (this step runs the Gate and spends model tokens):
+
+```sh
 af provider setup codex-main --kind codex --login  # log in at YOUR terminal, then register
 af provider status                 # verify registered and ambient Claude / Codex contexts
-af review plan --policy-rev origin/main --base origin/main --uncommitted \
-  --provider correctness=codex-main --provider architecture=codex-main
-af review run --campaign pr-123 --policy-rev origin/main --base origin/main --uncommitted \
+af review run --campaign pr-123 --policy-rev "$policy_rev" --base "$base_rev" --uncommitted \
   --provider correctness=codex-main --provider architecture=codex-main --json
 ```
 
@@ -126,8 +172,8 @@ af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directori
   read-only acceptance checks inspect the sealed result, an independent evaluator approves a
   content-addressed Snapshot, and `af task deliver` — only after explicit Task-ID confirmation —
   creates a new branch and linked worktree. It never commits, pushes, opens a PR, or touches the
-  source checkout. `af catalog init --destination DIR` creates a new starter directory with a
-  runnable catalog.
+  source checkout. `af catalog init --profile software --destination DIR` creates a new starter
+  directory with a runnable catalog.
 - **Deterministic gates that reuse CI checks.** A Gate is whatever the pipeline declares — usually
   the project's own `make check` — executed through an admitted provider in a disposable clone. A
   check that could not run is not a pass, and neither is a Gate with no required checks.

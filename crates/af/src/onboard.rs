@@ -1144,8 +1144,12 @@ Edit the ordinary files under `.af/`, then explicitly run `af onboard --refresh-
 command recomputes only the selected pipeline pin and the Worker packages it references. Review
 the authority and lock diff together, run `af onboard` again, then commit through the project's
 normal controls. Never weaken a Gate or boundary merely to obtain a passing review. The lock
-also records the `af` release that wrote it: a newer `af` proceeds and notes the difference, an
-older `af` refuses until the lock is re-pinned.
+also binds a receipted `af` release by version and archive digest: ordinary commands dispatch to
+that pinned release. To move it intentionally, use `af onboard --refresh-lock --af <version>`;
+review and commit the resulting lock diff. A source build without an install receipt cannot
+create a verified release pin and leaves an existing one unchanged; package digests are still
+checked. A source build of the pinned version runs as built: with no receipt, it has no bytes to
+compare with the pinned digest.
 "#
     )
 }
