@@ -23,7 +23,7 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
 - [`remote-checks.md`](remote-checks.md) — a declared Task check run by a remote executor (a
   draft pull request and the repository's CI) and bound to the exact Snapshot, chosen by the
   pipeline's check node, for hosts too small to build the project. Package RC1 is accepted as
-  [ADR-0139 *Run a declared check through a gate pull request*](../adr/0139-run-a-declared-check-through-a-gate-pull-request.md),
+  [ADR-0140 *Run a declared check through a gate pull request*](../adr/0140-run-a-declared-check-through-a-gate-pull-request.md),
   and package RC3, which moves the choice from the machine to the pipeline, as its amendment of
   2026-10-05; the live proof is recorded in its §6, and adoption in this repository's policy
   follows the release.

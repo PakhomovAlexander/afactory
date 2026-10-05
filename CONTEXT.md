@@ -93,7 +93,7 @@ every required job of that run's latest attempt succeeded and the kernel read ba
 tested exactly the checked Snapshot's tree; every refusal or inconclusive state is `not_run`
 with a named reason. Its record is one `af/RemoteCheckEvidence@1`, and its plan carries the
 effect `publish-gate` and the destination `github:<owner/name>`
-([ADR-0139](docs/adr/0139-run-a-declared-check-through-a-gate-pull-request.md)).
+([ADR-0140](docs/adr/0140-run-a-declared-check-through-a-gate-pull-request.md)).
 _Avoid_: "green CI" — a CI conclusion nobody bound to the Snapshot is not a Remote Check. Nor a
 per-machine switch: the code policy declares what a check's remote form is, the pipeline
 chooses where it runs, and a project that wants both gates keeps two pipeline variants.

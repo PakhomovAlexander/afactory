@@ -195,4 +195,4 @@ operator's machine-local mapping, which names the push target, authorizes it, an
 so: such a pipeline cannot be planned on a machine without a target, and its preview prints the
 `publish-gate` effect and the `github:` destination that confirming the plan consents to.
 Delivery still never commits, pushes or opens a pull request
-([ADR-0139](adr/0139-run-a-declared-check-through-a-gate-pull-request.md)).
+([ADR-0140](adr/0140-run-a-declared-check-through-a-gate-pull-request.md)).

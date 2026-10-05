@@ -1,4 +1,4 @@
-# Pins of the staged remote twins (ADR-0139), computed from the bytes under task-packages/.
+# Pins of the staged remote twins (ADR-0140), computed from the bytes under task-packages/.
 # Each version is its local original's; the path is where the README installs it. Add each
 # entry to `.af/task-catalog.toml` beside the original, never in place of it.
 

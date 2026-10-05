@@ -570,7 +570,7 @@ fn report_contracts_name_their_snapshot_and_keep_the_document_shape() {
     }
 }
 
-/// The pipeline chooses where a check runs (ADR-0139): a check node lists `remote_checks`
+/// The pipeline chooses where a check runs (ADR-0140): a check node lists `remote_checks`
 /// beside `checks`, and a plan with remote checks records its `github:` destination. Schema and
 /// Rust admit and refuse the same documents, and a node without the field keeps its bytes.
 #[test]

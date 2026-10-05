@@ -463,7 +463,7 @@ impl CodeTaskPolicy {
     }
 }
 
-/// The reason every declared warm kind of a remote check records (ADR-0139).
+/// The reason every declared warm kind of a remote check records (ADR-0140).
 const REMOTE_SKIP: &str = "remote";
 
 /// The Task's captured source for `candidate`: its root ancestor along `parent_snapshot_id`,
@@ -604,7 +604,7 @@ pub fn code_signatures(
     for (name, definition) in &policy.checks {
         signatures.insert(format!("operator/check/{name}"), check.clone());
         // A check declared with a `remote` table installs its remote form, which a check node
-        // may list in `remote_checks` (ADR-0139). Its effect names what running it there does,
+        // may list in `remote_checks` (ADR-0140). Its effect names what running it there does,
         // so a Planner, offered only what the Task's authority already permits, never sees it.
         if definition.remote.is_some() {
             let mut remote = check.clone();
@@ -845,14 +845,14 @@ impl CodeTaskDomain {
         self
     }
 
-    /// Machine-local Remote Check configuration (ADR-0139): the operator's mapping, the Task
+    /// Machine-local Remote Check configuration (ADR-0140): the operator's mapping, the Task
     /// owner resolver and the executor's settings. Never captured candidate authority.
     pub fn with_remote_checks(mut self, remote: RemoteCheckHost) -> Self {
         self.remote = remote;
         self
     }
 
-    /// The push target of a check node with remote checks, read again at run time (ADR-0139).
+    /// The push target of a check node with remote checks, read again at run time (ADR-0140).
     /// The pipeline chose the checks and the plan recorded the destination its developer
     /// confirmed; the mapping must still name exactly that `github` for the source Snapshot's
     /// repository. Anything else ends the Attempt before any check starts, so nothing is pushed.
@@ -1032,7 +1032,7 @@ impl CodeTaskDomain {
     ) -> Result<(ArtifactInputV1, Vec<String>), String> {
         let source = input.inputs.get("source").ok_or("Check needs source")?;
         let (snapshot_id, snapshot, manifest) = source_snapshot(cas, source)?;
-        // The pipeline chose the remote checks (ADR-0139); their target is settled before any
+        // The pipeline chose the remote checks (ADR-0140); their target is settled before any
         // check starts: a mapping that no longer names the plan's destination, or a Task whose
         // Store identity cannot be read, ends the Attempt here.
         let remote = if remote_names.is_empty() {
@@ -1574,7 +1574,7 @@ AF_TOOLCHAIN_SNAPSHOT ",
                 .collect::<Vec<_>>()
         } else if local.is_empty() && !remote_names.is_empty() {
             // A node whose checks all ran remotely ran nothing on this machine: there is no
-            // span to group, and its remote evidence is already in the receipt (ADR-0139).
+            // span to group, and its remote evidence is already in the receipt (ADR-0140).
             Vec::new()
         } else {
             vec![evidence(None, spans, vec![])]
@@ -2168,7 +2168,7 @@ impl TaskDomain for CodeTaskDomain {
                     return Err("Check receipt changed its invocation or results".into());
                 }
                 // Each check ran where its node said: a `checks` result is local, a
-                // `remote_checks` result names its evidence (ADR-0139).
+                // `remote_checks` result names its evidence (ADR-0140).
                 for (name, id) in &receipt.checks {
                     let result: CheckResult =
                         serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::{Node, NodeKind, Pipeline, Planned, Port, PortContract, SnapshotAffinity};
 
 /// The installed name of a check's remote form: `operator/check/remote/<name>`, present only
-/// for a check the captured code policy declares with a `remote` table (ADR-0139).
+/// for a check the captured code policy declares with a `remote` table (ADR-0140).
 pub const REMOTE_CHECK_SIGNATURE_PREFIX: &str = "operator/check/remote/";
 
 /// Metadata authenticated by the package resolver. The key is the Worker package name, or
@@ -1729,7 +1729,7 @@ impl Compiler<'_> {
                                 }
                             }
                             // Where a check runs is the pipeline's choice, but what its remote
-                            // form is belongs to the policy (ADR-0139): only a check declared
+                            // form is belongs to the policy (ADR-0140): only a check declared
                             // with a `remote` table installs its remote signature.
                             for check in remote_checks {
                                 if !self.context.signatures.contains_key(&format!(

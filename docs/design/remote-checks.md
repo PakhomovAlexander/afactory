@@ -2,9 +2,9 @@
 
 **Status:** proposed, 2026-10-04; revised the same day after the design review recorded in §6.
 Package RC1 is implemented and verified in the change that adds
-[ADR-0139](../adr/0139-run-a-declared-check-through-a-gate-pull-request.md); the RC2 live proof
+[ADR-0140](../adr/0140-run-a-declared-check-through-a-gate-pull-request.md); the RC2 live proof
 ran on 2026-10-05, and adoption in this repository's own policy follows the release. Package RC3
-(the pipeline chooses) is implemented in the change that amends ADR-0139 on 2026-10-05; its
+(the pipeline chooses) is implemented in the change that amends ADR-0140 on 2026-10-05; its
 remote pipeline twins are staged under `fixtures/remote-checks/packages/`.
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 
@@ -65,7 +65,7 @@ These bind package RC1. A change that cannot meet one of them is not done.
    them. It never force-pushes, pushes any other ref, merges, marks ready, closes, comments or
    deletes. This is a new, operator-authorized exception to the rule that publishing is a human
    action; RC1 must state it where that rule is stated (`docs/values.md`, `AGENTS.md`,
-   ADR-0139) before the behaviour exists. Delivery is unchanged
+   ADR-0140) before the behaviour exists. Delivery is unchanged
    ([ADR-0031](../adr/0031-deliver-verified-tasks-to-new-local-worktrees.md)): it still never
    commits, pushes or opens a pull request.
 6. **No credential and no machine path in any record.** `git` and `gh` run with the operator's
@@ -219,7 +219,7 @@ itself when it has no parent).
    base commit has the source tree, no parent, and a message naming the source Snapshot, the
    Task ID and the Task's durable identity in its Store: a digest of the transition that opened
    the Task's log, whose writer carries 64 bits from the operating system's random source
-   (ADR-0139; a first revision's ID is content-addressed and equal across Stores). Its identity
+   (ADR-0140; a first revision's ID is content-addressed and equal across Stores). Its identity
    is thus a function of the source Snapshot and the owning Task,
    and of nothing else.
 4. **Branches.** `refs/heads/af-gate/<task-id>/base` and `refs/heads/af-gate/<task-id>/head`.
@@ -372,7 +372,7 @@ follow-up.
   secrets in job logs; a workflow that prints one in another form would put it in the Store, as
   it already puts it in the pull request's log, which every collaborator can read. Decided by
   the owner on 2026-10-04: debugging a remote failure needs the log, and withholding it was
-  more protection than this boundary warrants. ADR-0139 records the accepted exposure.
+  more protection than this boundary warrants. ADR-0140 records the accepted exposure.
 
 ## 4. Packages
 
@@ -426,7 +426,7 @@ Deliverables:
    information in `push_url` is refused; a stored result that mixes the local and remote
    shapes, or whose status its evidence does not derive, is refused by the reader;
    cancellation during the wait ends the subprocesses.
-8. One ADR (0139) recording the decision; the four choices made on 2026-10-04 (draft pull
+8. One ADR (0140) recording the decision; the four choices made on 2026-10-04 (draft pull
    request over a bare gate branch; the kernel pushes under an operator mapping over a
    host-pushed commit; per-machine selection over policy-fixed; refusing `.github/` changes
    over flagging them) with the rejected options; and that it supersedes, for
@@ -507,7 +507,7 @@ Deliverables:
    a mapping with `checks` is refused; a target removed or changed between plan and run ends
    the Attempt before any push. Every RC1 test that selected checks through the mapping selects
    them through a pipeline instead and keeps its assertions.
-8. ADR-0139 gains a dated amendment recording that the pipeline chooses, why (the live proof's
+8. ADR-0140 gains a dated amendment recording that the pipeline chooses, why (the live proof's
    plan preview said `SEND none` for a Task that then pushed its source, and the pipeline is
    where a developer reads what a gate does), and the rejected alternatives (the per-machine
    mapping RC1 shipped; a pipeline default with a bindings override). `CONTEXT.md`,
@@ -563,13 +563,13 @@ second Campaign follows.
 
 | Finding | Disposition |
 | --- | --- |
-| Kernel publication conflicts with the human-publication rule | Fixed: §2.5 names the exception; deliverable 8 and the last acceptance line require `docs/values.md`, `AGENTS.md` and ADR-0139 to state it in the same change. |
+| Kernel publication conflicts with the human-publication rule | Fixed: §2.5 names the exception; deliverable 8 and the last acceptance line require `docs/values.md`, `AGENTS.md` and ADR-0140 to state it in the same change. |
 | An existing head branch is trusted by tree equality alone | Fixed: 3.4 steps 3 and 5 give gate commits an owning Task identity and verify the whole chain down to this Task's base before attaching or appending. |
 | Pull-request checks are polled on the wrong commit | Partly rejected, partly fixed. Rejected premise: a `pull_request` run does report under the pull request's head SHA (read on this repository's PR #155: run event `pull_request`, `head_sha` equal to the head commit, jobs listed under it). Fixed concern: 3.4 step 8 now reads the merge ref back and requires its parents and tree, so the tested tree is proven, not inferred. |
 | A check name alone cannot identify the run | Fixed: 3.1 declares the workflow path; 3.4 step 7 admits only jobs of that workflow's `pull_request` run for this pull request and head commit, latest attempt, and makes duplicates `remote_check_ambiguous`. |
 | The remote result does not fit the check contract | Fixed: 3.5 defines a second `CheckResult` shape and the reader's remote branch. |
 | Raw Git diagnostics can expose the push URL | Fixed: 3.4 redaction rule, with a test in deliverable 7. |
-| CI logs cannot satisfy the no-credential rule | Rejected by the owner on 2026-10-04, after a first revision had dropped the logs: they are needed to debug a remote failure. Bounded tails of failed jobs are kept (3.4 step 10); the exposure and why it is accepted are in 3.8 and go into ADR-0139. |
+| CI logs cannot satisfy the no-credential rule | Rejected by the owner on 2026-10-04, after a first revision had dropped the logs: they are needed to debug a remote failure. Bounded tails of failed jobs are kept (3.4 step 10); the exposure and why it is accepted are in 3.8 and go into ADR-0140. |
 | Evidence has no shape for pre-push refusals | Fixed: three tagged states in 3.5. |
 | The per-check wall limit is undefined for a shared wait | Fixed: one remote-phase clock in 3.3, with a two-check fixture. |
 

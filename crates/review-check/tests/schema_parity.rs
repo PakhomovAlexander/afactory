@@ -106,7 +106,7 @@ fn the_contract_still_rejects_what_it_must() {
     );
 }
 
-/// The second shape (ADR-0139): a remote result carries its evidence artifact and nothing a
+/// The second shape (ADR-0140): a remote result carries its evidence artifact and nothing a
 /// local command would have produced, and the contract refuses every mixture.
 #[test]
 fn a_remote_result_is_its_own_shape_and_mixtures_are_refused() {

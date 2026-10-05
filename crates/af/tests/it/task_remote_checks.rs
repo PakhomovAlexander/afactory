@@ -1,4 +1,4 @@
-//! Remote Checks through the real CLI (ADR-0139): the pipeline's check node chooses where a
+//! Remote Checks through the real CLI (ADR-0140): the pipeline's check node chooses where a
 //! check runs, and the plan says so. The `pagination` fixture declares `[checks.pagination.remote]`
 //! and gains a remote twin of its pipeline, `fixture/implementation-remote`, whose check node
 //! lists `pagination` in `remote_checks`. The operator's mapping only names a push target: a real

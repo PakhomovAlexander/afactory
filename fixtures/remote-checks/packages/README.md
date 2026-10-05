@@ -2,7 +2,7 @@
 
 The pipelines that run this repository's `kernel` check through a gate pull request instead of on
 the planning machine
-([ADR-0139](../../../docs/adr/0139-run-a-declared-check-through-a-gate-pull-request.md), package
+([ADR-0140](../../../docs/adr/0140-run-a-declared-check-through-a-gate-pull-request.md), package
 RC3 of [`docs/design/remote-checks.md`](../../../docs/design/remote-checks.md)). They are staged
 here because a Task Worker may not write `.af/`; installing them is a reviewed hand edit.
 

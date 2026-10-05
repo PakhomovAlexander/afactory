@@ -213,7 +213,7 @@ pub enum TaskOperatorV1 {
     /// conditional evaluator, and admits success only from current independent evidence.
     Accept {},
     /// The node's checks: `checks` run on this machine, then `remote_checks` run by each
-    /// check's declared remote executor (ADR-0139). A node without `remote_checks` serializes
+    /// check's declared remote executor (ADR-0140). A node without `remote_checks` serializes
     /// exactly as it did before the field existed.
     Check {
         #[serde(deserialize_with = "super::unique_set")]

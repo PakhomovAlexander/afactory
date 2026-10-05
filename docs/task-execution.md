@@ -69,7 +69,7 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   cannot be planned, and its plan carries `publish-gate` and the `github:` destination. Local
   checks run first; the result counts only after the merge ref reads back as the candidate tree,
   and every remote fact is one `af/RemoteCheckEvidence@1`
-  ([ADR-0139](adr/0139-run-a-declared-check-through-a-gate-pull-request.md),
+  ([ADR-0140](adr/0140-run-a-declared-check-through-a-gate-pull-request.md),
   [Remote Checks](task-execution/remote-checks.md)).
 - A report is accepted by an independent verifier, not by its author, and every report receipt
   names the source Snapshot its repository citations were resolved against. A report Task

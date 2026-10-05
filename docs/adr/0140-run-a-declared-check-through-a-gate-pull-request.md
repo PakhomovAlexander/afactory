@@ -1,4 +1,4 @@
-# ADR-0139: Run a declared check through a gate pull request
+# ADR-0140: Run a declared check through a gate pull request
 
 Status: accepted, 2026-10-04; amended 2026-10-05 ([the pipeline chooses](#amendment-2026-10-05-the-pipeline-chooses)),
 which replaces the per-machine selection of option 3 and of *Declaration and selection*.

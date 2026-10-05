@@ -19,4 +19,4 @@
   commands, and `--json` carries the evidence under `remote_checks`. A pipeline without
   `remote_checks` plans and runs exactly as before. This is the one operator-authorized exception
   to "publishing is a human action"; delivery still never pushes
-  ([ADR-0139](docs/adr/0139-run-a-declared-check-through-a-gate-pull-request.md)).
+  ([ADR-0140](docs/adr/0140-run-a-declared-check-through-a-gate-pull-request.md)).

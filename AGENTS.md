@@ -5,7 +5,7 @@ is the deterministic Review Kernel behind `af review`, and whose Task runtime ru
 implementation Tasks behind `af task`. Reviewers and implementers only ever mutate a sandbox; the
 kernel integrates; humans publish, apart from the gate branches of a Remote Check that a
 pipeline chose and an operator's machine authorized
-([ADR-0139](docs/adr/0139-run-a-declared-check-through-a-gate-pull-request.md)).
+([ADR-0140](docs/adr/0140-run-a-declared-check-through-a-gate-pull-request.md)).
 
 Before changing behaviour, read [`CONTEXT.md`](CONTEXT.md) for the canonical vocabulary and
 [`docs/adr/README.md`](docs/adr/README.md) for the binding decisions; [`docs/README.md`](docs/README.md)
@@ -96,7 +96,7 @@ review corpora belong in consuming repositories, not here.
   push target, and with it the authorization. A pipeline with remote checks cannot be planned on
   a machine without a target, and its plan carries `publish-gate` and the `github:` destination,
   so confirming the plan is the consent. Delivery above is unchanged
-  ([ADR-0139](docs/adr/0139-run-a-declared-check-through-a-gate-pull-request.md)).
+  ([ADR-0140](docs/adr/0140-run-a-declared-check-through-a-gate-pull-request.md)).
 - `af onboard` is deterministic and token-free. It may atomically create only an absent `.af/`
   authority bundle; it never overwrites existing policy, invents or hand-types lock digests,
   executes Gates, accesses credentials, or publishes repository changes. Emitted authority is

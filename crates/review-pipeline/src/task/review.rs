@@ -343,7 +343,7 @@ impl ReviewTaskDomain {
         self
     }
 
-    /// Machine-local Remote Check configuration (ADR-0139) for the checks this domain runs.
+    /// Machine-local Remote Check configuration (ADR-0140) for the checks this domain runs.
     pub fn with_remote_checks(mut self, remote: super::remote_check::RemoteCheckHost) -> Self {
         self.code = self.code.with_remote_checks(remote);
         self

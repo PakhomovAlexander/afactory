@@ -14,7 +14,7 @@
       "not": {
         "pattern": "^github:(\\.\\.?/|[^/]*/\\.\\.?$)"
       },
-      "$comment": "The repository a plan with remote checks publishes its gate branches to (ADR-0139), recorded beside the effect publish-gate."
+      "$comment": "The repository a plan with remote checks publishes its gate branches to (ADR-0140), recorded beside the effect publish-gate."
     },
     "package": {
       "type": "string",
@@ -868,7 +868,7 @@
               },
               "uniqueItems": true,
               "minItems": 1,
-              "$comment": "Run by each check's declared remote executor (ADR-0139); absent, never empty. A name in both lists is refused by semantic admission. Canonical ascending order is required by semantic admission."
+              "$comment": "Run by each check's declared remote executor (ADR-0140); absent, never empty. A name in both lists is refused by semantic admission. Canonical ascending order is required by semantic admission."
             }
           },
           "anyOf": [

@@ -1,4 +1,4 @@
-//! Remote Checks (ADR-0139): a declared code check that a machine may hand to a remote
+//! Remote Checks (ADR-0140): a declared code check that a machine may hand to a remote
 //! executor, and the one typed record of everything the kernel observed while it did.
 //!
 //! The declaration is committed policy and grants nothing; a Task pipeline's check node selects
@@ -137,7 +137,7 @@ pub fn is_github_name(value: &str) -> bool {
 }
 
 /// The effect a plan's authority carries when its graph has remote checks: the kernel pushes
-/// the two gate branches and opens the draft gate pull request (ADR-0139).
+/// the two gate branches and opens the draft gate pull request (ADR-0140).
 pub const PUBLISH_GATE_EFFECT: &str = "publish-gate";
 
 const GITHUB_DESTINATION_PREFIX: &str = "github:";
@@ -182,7 +182,7 @@ fn is_conclusion(value: &str) -> bool {
     (1..=32).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
 }
 
-/// Every named reason a remote check did not pass or fail (ADR-0139 §3.6), plus the deadline
+/// Every named reason a remote check did not pass or fail (ADR-0140 §3.6), plus the deadline
 /// and cancellation every check shares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

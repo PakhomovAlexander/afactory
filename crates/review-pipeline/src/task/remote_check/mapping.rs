@@ -1,4 +1,4 @@
-//! The operator's machine-local Remote Check mapping (ADR-0139 §3.2): per repository, where
+//! The operator's machine-local Remote Check mapping (ADR-0140 §3.2): per repository, where
 //! this machine may push the gate branches. It names push targets only: a Task pipeline's check
 //! node chooses which checks run remotely. It is the operator's authorization, never committed
 //! policy, so nothing here is recorded: the push URL and the mapping's path stay out of every

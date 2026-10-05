@@ -191,7 +191,7 @@ fn exact_version(version: &str) -> bool {
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// A plan publishes gate branches exactly when its graph has remote checks (ADR-0139): then
+/// A plan publishes gate branches exactly when its graph has remote checks (ADR-0140): then
 /// its authority carries the effect `publish-gate` and one `github:<owner/name>` destination,
 /// which the coordinator added from this machine's push target and the preview prints;
 /// otherwise it carries neither, so no authority promises a push that no node makes.
