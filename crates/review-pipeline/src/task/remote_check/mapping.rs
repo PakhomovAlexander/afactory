@@ -131,6 +131,19 @@ impl RemoteCheckMapping {
             push_url_admissible(&entry.push_url).map_err(|why| {
                 format!("{MAPPING_KNOB} entry for repository {name}: `push_url` {why}")
             })?;
+            // The plan shows `github` as where the source goes, so a push URL that names a
+            // github.com repository must name that one. (A URL on another host, or a local
+            // path, says nothing this file can check.)
+            if let Some(pushed) = github_of_push_url(&entry.push_url)
+                && !pushed.eq_ignore_ascii_case(&entry.github)
+            {
+                return Err(format!(
+                    "{MAPPING_KNOB} entry for repository {name}: `push_url` names the GitHub \
+                     repository {pushed}, but `github` is {}; a plan shows `github` as the \
+                     destination, so both must name one repository",
+                    entry.github
+                ));
+            }
             entries.push(GithubPrTarget {
                 repository_id: entry.repository_id,
                 github: entry.github,
@@ -158,6 +171,34 @@ fn is_repository_id(value: &str) -> bool {
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         })
         && roots.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+/// The `owner/name` a push URL names on github.com, when it is a github.com URL in one of
+/// Git's spellings (`https://github.com/o/r[.git]`, `ssh://[login@]github.com[:port]/o/r[.git]`,
+/// `[login@]github.com:o/r[.git]`; `ssh.github.com` is the same service). `None` for any other
+/// host and for a local path: such a URL's repository cannot be told from its text.
+pub(crate) fn github_of_push_url(url: &str) -> Option<String> {
+    let is_github = |host: &str| {
+        let host = host.rsplit_once('@').map_or(host, |(_, host)| host);
+        let host = host.split(':').next().unwrap_or_default();
+        host.eq_ignore_ascii_case("github.com") || host.eq_ignore_ascii_case("ssh.github.com")
+    };
+    let path = match url.split_once("://") {
+        Some((_, rest)) => {
+            let (authority, path) = rest.split_once('/')?;
+            is_github(authority).then_some(path)?
+        }
+        None => {
+            // scp-like `[login@]host:path`; a first segment without `:` is a local path.
+            let (host, path) = url.split_once(':')?;
+            (!host.contains('/') && is_github(host)).then_some(path)?
+        }
+    };
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, name) = path.split_once('/')?;
+    (!owner.is_empty() && !name.is_empty() && !name.contains('/'))
+        .then(|| format!("{owner}/{name}"))
 }
 
 /// A push URL may not carry user information: no password anywhere, and no user name except
@@ -247,6 +288,41 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    #[test]
+    fn a_github_push_url_must_name_the_repository_the_plan_shows() {
+        for url in [
+            "git@github.com:o/r.git",
+            "git@github.com:O/R",
+            "ssh://git@github.com/o/r.git",
+            "ssh://git@ssh.github.com:443/o/r.git",
+            "https://github.com/o/r",
+            "https://github.com/o/r.git/",
+            // Not github.com: nothing here to compare.
+            "/srv/git/gate.git",
+            "git@example.org:other/repo.git",
+            "https://git.example.org/other/repo.git",
+        ] {
+            RemoteCheckMapping::parse(&mapping(url)).unwrap_or_else(|e| panic!("{url}: {e}"));
+        }
+        for url in [
+            "git@github.com:other/repo.git",
+            "ssh://git@github.com/o/other.git",
+            "https://github.com/other/r",
+        ] {
+            let error = RemoteCheckMapping::parse(&mapping(url)).unwrap_err();
+            assert!(
+                error.contains("both must name one repository") && error.contains("o/r"),
+                "{url}: {error}"
+            );
+        }
+        assert_eq!(
+            github_of_push_url("git@github.com:o/r.git").as_deref(),
+            Some("o/r")
+        );
+        assert_eq!(github_of_push_url("./github.com:o/r"), None);
+        assert_eq!(github_of_push_url("https://github.com/o"), None);
     }
 
     #[test]

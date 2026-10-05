@@ -266,7 +266,9 @@ no per-machine override.
   proposal that lists `remote_checks` anyway is refused by name when its structure is checked:
   only an installed pipeline chooses a remote gate.
 - **The mapping names push targets only.** `[[github_pr]]` entries carry `repository_id`,
-  `github` and `push_url`. A file that still carries `checks` is refused with a message naming
+  `github` and `push_url`. A `push_url` that is a github.com URL must name the repository
+  `github` names, since the plan shows `github` as the destination; a URL on another host, or
+  a local path, cannot be compared and is accepted as the operator wrote it. A file that still carries `checks` is refused with a message naming
   the pipeline's check node as the place that chooses. A pipeline without remote checks never
   reads the mapping.
 - **The plan says so.** When a candidate pipeline's compiled graph has remote checks, the

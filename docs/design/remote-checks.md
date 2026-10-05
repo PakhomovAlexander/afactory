@@ -671,6 +671,23 @@ Both reviewers reported one defect, and the evaluator failed on one point:
 | A local-only Task failed when the mapping variable held an invalid path (bugs, correctness) | The coordinator resolves the mapping only for a graph that has remote checks; a local-only graph gets no Remote Check configuration at all. A test plans and runs a local pipeline with a relative path in the variable. |
 | The release note was not at `changelog.d/remote-checks.md` (evaluator) | It is again. It had been renamed when the v0.11.0 release consumed the first note of that name. |
 
-Not done: this repository's own `.af/code-policy.toml` does not declare the table (it follows the
-release that carries Remote Checks, since the lock pins the newest release), and the two proof
-pull requests and their four branches are still open.
+The second attempt, on a loaded workstation, failed its local gate on three tests of other
+crates, and the third then waited an hour for a quiet machine. It was run instead through the
+released remote gate: `remote-checks-rc3-verify-3` under `af` 0.11.0, with this repository's
+policy now declaring `[checks.kernel.remote]` and the workstation's mapping selecting `kernel`.
+**Verified**, 277,303 tokens, 27 min 45 s in all: `markdownlint` local in 14.6 s, `kernel` in
+GitHub Actions through gate pull request #185 (check job 899 s), then both reviewers and the
+evaluator, who passed every deliverable.
+
+One Finding was left on the verified tree, fixed afterwards and not re-verified:
+
+| Finding | Disposition (after the verdict) |
+| --- | --- |
+| The recorded `github` destination did not constrain the push URL (correctness, major) | A mapping whose `push_url` is a github.com URL must name the same repository as `github`, in any of Git's spellings; a mismatch is refused when the file is read, at plan time and again at run time. A push URL on another host, or a local path, names nothing the file can compare, and is still accepted: establishing where such a URL leads is not attempted. |
+
+Cost of RC3: 862,622 tokens to implement, 535,604 to verify (two verdicts), and about 4,500 on
+the attempt that died at its local gate.
+
+Not done: the staged remote pipelines are not installed in this repository's `.af/` (the lock
+still pins a release that cannot read `remote_checks`), and the gate pull requests of the proofs
+and of the verification are left for a person to close.
