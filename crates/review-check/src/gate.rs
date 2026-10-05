@@ -102,6 +102,7 @@ mod tests {
             stdout: None,
             stderr: None,
             required,
+            remote: None,
         }
     }
 
@@ -167,6 +168,7 @@ mod tests {
             stdout: None,
             stderr: None,
             required: true,
+            remote: None,
         };
         let decision = GateDecision::evaluate(&[refused]);
         assert!(!decision.passed());

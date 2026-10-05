@@ -51,6 +51,7 @@ fn base(status: CheckStatus) -> CheckResult {
         stdout: None,
         stderr: None,
         required: true,
+        remote: None,
     }
 }
 
@@ -102,5 +103,108 @@ fn the_contract_still_rejects_what_it_must() {
     assert!(
         !v.is_valid(&json!({ "name": "build", "status": "not_run", "args": [] })),
         "a not_run without a reason must be refused"
+    );
+}
+
+/// The second shape (ADR-0140): a remote result carries its evidence artifact and nothing a
+/// local command would have produced, and the contract refuses every mixture.
+#[test]
+fn a_remote_result_is_its_own_shape_and_mixtures_are_refused() {
+    let evidence = format!("sha256:{}", "cd".repeat(32));
+    let definition = review_check::CheckDefinition::new(
+        "kernel",
+        Command::new("bash", vec![Arg::literal("scripts/verify.sh")]),
+    );
+    for (status, reason) in [
+        (CheckStatus::Passed, None),
+        (
+            CheckStatus::Failed,
+            Some("required job `lint` concluded failure".to_string()),
+        ),
+        (
+            CheckStatus::NotRun,
+            Some("remote_check_missing: no run".to_string()),
+        ),
+    ] {
+        let result = CheckResult::remote(&definition, status, reason, evidence.clone(), None);
+        assert!(result.has_one_shape());
+        let value = serde_json::to_value(&result).unwrap();
+        assert_valid(&value);
+        for absent in ["program", "exit_code", "stdout", "stderr"] {
+            assert!(value.get(absent).is_none(), "{absent}");
+        }
+        assert_eq!(value["args"], json!([]));
+        assert_eq!(
+            serde_json::from_value::<CheckResult>(value).unwrap(),
+            result
+        );
+    }
+    let v = validator();
+    let digest = format!("sha256:{}", "ab".repeat(32));
+    // A remote result that did not pass may carry the unsuccessful jobs' log excerpt as
+    // `stdout`; one that passed has none to carry.
+    for (status, reason) in [
+        (CheckStatus::Failed, None),
+        (
+            CheckStatus::NotRun,
+            Some("remote_check_inconclusive: job cancelled".to_string()),
+        ),
+    ] {
+        let with_log = CheckResult::remote(
+            &definition,
+            status,
+            reason,
+            evidence.clone(),
+            Some(digest.clone()),
+        );
+        assert!(with_log.has_one_shape());
+        let value = serde_json::to_value(&with_log).unwrap();
+        assert_valid(&value);
+        assert_eq!(value["stdout"], json!(digest));
+    }
+    let remote = serde_json::to_value(CheckResult::remote(
+        &definition,
+        CheckStatus::Passed,
+        None,
+        evidence.clone(),
+        None,
+    ))
+    .unwrap();
+    for (field, value) in [
+        ("program", json!("bash")),
+        ("exit_code", json!(0)),
+        ("stdout", json!(digest)),
+        ("stderr", json!(digest)),
+        (
+            "args",
+            json!([{"value": "scripts/verify.sh", "provenance": "literal"}]),
+        ),
+    ] {
+        let mut mixed = remote.clone();
+        mixed[field] = value;
+        assert!(
+            !v.is_valid(&mixed),
+            "a remote result with {field} is a mixture"
+        );
+        let parsed: CheckResult = serde_json::from_value(mixed).unwrap();
+        assert!(!parsed.has_one_shape(), "{field}");
+    }
+    let mut unexplained = remote.clone();
+    unexplained["status"] = json!("not_run");
+    assert!(
+        !v.is_valid(&unexplained),
+        "a not_run remote result names why"
+    );
+    let local = CheckResult {
+        exit_code: Some(0),
+        ..base(CheckStatus::Passed)
+    };
+    assert!(local.has_one_shape());
+    assert!(
+        serde_json::to_value(&local)
+            .unwrap()
+            .get("remote")
+            .is_none(),
+        "a local result serializes as before"
     );
 }

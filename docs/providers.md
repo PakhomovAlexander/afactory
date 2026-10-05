@@ -10,11 +10,13 @@ kind, and an auth directory. Bootstrap runs in the invoking release rather than 
 pinned one, and registry publication stays atomic for older readers
 ([ADR-0111](adr/0111-keep-provider-bootstrap-machine-local-and-cross-release-safe.md)).
 
-## The one rule that shapes everything else
+## The default terminal boundary
 
 An interactive Provider login prints an **OAuth URL and an authorization code**. Those are
 credentials in transit. Anything that can read them — a pipe, a chat window, an agent transcript, a
-CI log — is a place they must never reach.
+CI log — is a place they must never reach through ordinary output. An explicitly permissioned
+private host can instead use [the dedicated host protocol](provider-auth-host.md); its human-private
+transport is separate from every ordinary command stream.
 
 So `af provider setup` starts an official login only when **both** are true:
 
@@ -22,7 +24,7 @@ So `af provider setup` starts an official login only when **both** are true:
 2. this process owns an interactive terminal on stdin, stdout **and** stderr.
 
 Otherwise setup fails fast with the `human_action_required` result, exit code 3, and the exact
-command a human should run at a private terminal. `af` does not proxy, broker, or headlessly
+command a human should run at a private terminal. In this default path, `af` does not proxy, broker, or headlessly
 complete an OAuth flow, and it never captures, parses, stores or re-emits what that login prints
 ([ADR-0112](adr/0112-refuse-agent-mediated-provider-logins.md)).
 
@@ -47,8 +49,16 @@ non-interactive automation surface, while login deliberately hands the private t
 Provider CLI. Re-running any of these is safe. `af provider add` registers an already-authenticated
 context and never offers a login at all.
 
-An agent, a CI job, or anything else reading `af`'s output should run `setup` **without**
-`--login`, read the result, and surface the `next_action.command` to a human.
+Generic automation should run `setup` **without** `--login` and respect the terminal-only refusal.
+An assistant with an authorized private host integration should own browser-only setup using
+[`af provider auth`](provider-auth-host.md), rather than ask its user to obtain SSH or terminal
+access. This explicit path also reauthenticates a stale context even if local status says logged in.
+Without the private host capability, report that narrow integration blocker; never publish raw
+OAuth output to a shared conversation. Authentication completion remains `authenticated_unverified`.
+
+`provider auth begin/status/cancel` are machine-local, have a separate versioned non-secret status
+schema, and never invoke model verification or resume Tasks. See the host contract for lifecycle,
+expiry, cancellation, supported providers, and the remaining runtime scope of issue #122.
 
 ## Removing a Provider
 
@@ -77,7 +87,7 @@ Two cases come up often:
   entries, so there is nothing to remove. One is listed while the directory the Provider CLI uses
   by default (`CLAUDE_CONFIG_DIR` or `~/.claude`; `CODEX_HOME` or `~/.codex`) is not a registered
   Provider's auth directory, and, once a Provider of its kind is registered, only while that
-  directory holds a login ([ADR-0140](adr/0140-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)).
+  directory holds a login ([ADR-0141](adr/0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)).
   Start `af` with that variable naming a registered directory, or register the default
   directory, and the label goes away.
 

@@ -186,4 +186,10 @@ catalog, plugin contracts, or starter pack already ship.
 These values are applied in [`architecture.md`](architecture.md); the
 kernel invariants in [`AGENTS.md`](../AGENTS.md) (never weaken a contract, fixture, gate,
 budget, or sandbox boundary; no credential in any artifact; publishing is a human action)
-remain in force alongside them.
+remain in force alongside them. Publishing has one narrow, operator-authorized exception: when an
+operator's machine-local mapping selects a declared check as a Remote Check, the kernel pushes
+exactly two `af-gate/<task-id>/` branches built from Task Snapshots and opens one draft pull
+request between them, so the repository's own CI can run that check. It never force-pushes,
+writes another ref, merges, marks ready, closes, comments or deletes; committed policy cannot
+ask for it; and delivery still never commits, pushes or opens a pull request
+([ADR-0140](adr/0140-run-a-declared-check-through-a-gate-pull-request.md)).

@@ -351,8 +351,8 @@ fn the_pipelines_pane_is_the_task_plan_tree_preview() {
     // The frame paints those rows beside the bar, clipped to the main pane.
     let frame = app.frame(100, 30).text();
     for (line, row) in frame.lines().zip(&shown) {
-        let clipped = &row[..row.len().min(72)];
-        let main = line.get(28..).unwrap_or("");
+        let clipped = &row[..row.len().min(100 - BAR_WIDTH)];
+        let main = line.get(BAR_WIDTH..).unwrap_or("");
         assert_eq!(main, clipped.trim_end(), "{frame}");
     }
     // With the main pane focused, the status line names a Worker row's slot binding.
@@ -643,10 +643,15 @@ fn masked(frame: &str) -> String {
         while index < words.len() {
             let word = words[index];
             let next = words.get(index + 1).copied().unwrap_or_default();
+            // What follows `elapsed` is a duration even where the pane's edge cuts it short.
+            let numeric = |word: &str| word.starts_with(|c: char| c.is_ascii_digit());
+            let elapsed = kept.last().is_some_and(|word| word == "elapsed") && numeric(word);
             let taken = if pair(word, next) {
                 2
             } else if single(word) {
                 1
+            } else if elapsed {
+                if numeric(next) { 2 } else { 1 }
             } else {
                 0
             };
@@ -682,6 +687,10 @@ fn masking_folds_durations_and_hides_ids_and_times() {
     let line = "PLAN  96779029  configured  STATE done  started 15:32:48Z  elapsed 1m 02s\n";
     let expected = "PLAN  ########  configured  STATE done  started hh:mm:ssZ  elapsed  <t>\n";
     assert_eq!(masked(line), expected);
+    // Cut short by the edge of the pane, it is still the duration.
+    for cut in ["elapsed 987m\n", "elapsed 1m 0\n"] {
+        assert_eq!(masked(cut), "elapsed  <t>\n", "{cut}");
+    }
     let row = "  [ok]  check                 46ms        0 tok\n";
     let wider = "  [ok]  check               1.3s        0 tok\n";
     assert_eq!(masked(row), masked(wider));
@@ -803,10 +812,11 @@ fn states_are_chips_in_the_bar_the_task_header_and_its_stages() {
     assert_eq!(app.breadcrumb(), "tasks/pagination-cli");
     // The bar row ends in its percentage as a chip, which keeps its fill on the cursor row.
     let frame = app.frame(100, 30);
-    let (row, column) = find(&frame, "  100%");
-    assert!(column + 6 < BAR_WIDTH, "{}", frame.text());
+    let (row, column) = find(&frame, "  100% |");
+    // A space of the cursor row, then ` 100% ` as the chip, ending at the separator.
+    assert_eq!(column + 7, BAR_WIDTH - 1, "{}", frame.text());
     assert_eq!(frame.paint_at(row, column), Paint::Cursor);
-    assert!((column + 1..column + 6).all(|at| frame.paint_at(row, at) == ok));
+    assert!((column + 1..column + 7).all(|at| frame.paint_at(row, at) == ok));
     press(&mut app, &mut host, b"\r");
     let frame = app.frame(100, 30);
     // The state word takes a space either side, and the text is the golden's.
@@ -822,15 +832,18 @@ fn states_are_chips_in_the_bar_the_task_header_and_its_stages() {
 
 #[test]
 fn bar_chips_are_one_width_for_right_aligned_progress() {
-    for (label, chip) in [
-        ("gg-51945-c~  100%", " 100%"),
-        ("gg-51945-c~   63%", "  63%"),
-        ("gg-51945-c~    0%", "   0%"),
+    for (label, field) in [
+        ("gg-51945-c~  100%", "100%"),
+        ("gg-51945-c~   63%", " 63%"),
+        ("gg-51945-c~    0%", "  0%"),
     ] {
         let text = format!("        {label}");
         let at = chip_start(&text).unwrap();
-        assert_eq!(&text[at..], chip, "{label}");
+        assert_eq!(&text[at..], field, "{label}");
+        // The chip's opening space is the second of the two before the field.
+        assert_eq!(&text[at - 3..at], "~  ", "{label}");
     }
+    assert_eq!(chip_start("a b"), Some(2));
     assert_eq!(chip_start("no-space"), None);
 }
 
@@ -873,7 +886,10 @@ fn the_help_banner_draws_the_pink_worker_with_its_eyes() {
         .iter()
         .flat_map(|span| std::iter::repeat_n(span.paint, span.text.len()))
         .collect();
-    let (body, eye) = (Paint::Mascot, Paint::Eye);
+    let (body, eye) = (
+        Paint::Pixel(paint::Pixel::Pink),
+        Paint::Pixel(paint::Pixel::Eye),
+    );
     assert_eq!(
         paints[2..11],
         [body, eye, eye, body, body, body, eye, eye, body]

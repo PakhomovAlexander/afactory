@@ -29,7 +29,7 @@ use crate::tui::scope::Scope;
 use crate::tui::tree::Item;
 
 /// The columns of a section rule: the main pane beside the bar at 100 columns.
-const RULE: usize = 72;
+const RULE: usize = 100 - crate::tui::BAR_WIDTH;
 const LOCK: &str = ".af/af.lock";
 
 /// What a declaration makes: which lock pins it, and which file the kernel sends as its prompt.

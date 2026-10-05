@@ -19,6 +19,99 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.11.0] - 2026-10-05
+
+### Authority compatibility
+
+Committed `.af/` policy from v0.10.0 keeps working as is. Remote Checks are opt-in twice: a check's `[checks.<name>.remote]` table is optional, and without an operator's machine-local mapping every check still runs locally. To move a project pin to v0.11.0, run `af onboard --refresh-lock --af 0.11.0`. This is a public alpha: compatibility guarantees begin at 1.0; persisted pre-GA Task and Campaign state is unsupported across upgrades, so finish or inspect a Task with the release that started it.
+
+### Changes
+
+- release: v0.10.0 (#154)
+- Add af provider remove, and a d key for it in the Providers pane (#168)
+- Sweep the sandbox directories a killed af process leaves in $TMPDIR (#169)
+- Show TUI state in the brand's colours, as chips (#172)
+- Pin af 0.10.0, and pin every release the workflow publishes (#173)
+- Pin af 0.10.0 in .af/af.lock (#164)
+- Fix executable onboarding and first-run guidance (#156)
+- Open the TUI on a splash of three workers while it loads (#181)
+- Add private-host Provider authentication (stage 1 of #122) (#171)
+- Remote Checks: run a declared Task check in CI through a draft gate pull request (#178)
+
+- Make the first review walkthrough executable with reviewed, locally committed authority and
+  explicit policy, Base and candidate selectors; no remote push or Provider login is needed to
+  inspect a plan. Clarify empty Change Sets and source-build versus signed-release pins.
+- Select the software catalog profile explicitly in implementation entrypoints and keep tutorial
+  Task requests outside committed source Snapshots. Exercise the documented Quickstart and
+  generated tutorial through token-free planning in regression tests.
+
+- Sandbox directories are named `af-sandbox-<pid>-…` under `$TMPDIR`, and every command that
+  runs review or Task work (`af review run`, `af task start --execute`, `af task run`,
+  `af provider doctor`) begins by removing the ones whose process no longer exists, finishing the
+  removal before it exits. A sandbox is removed by the handle that owns it, so only a killed or
+  aborted process leaves one behind, and a leftover tree that a Gate built into carries a whole
+  `target/`: one development machine held 15 GB of them. The sweep keeps every directory whose
+  process is still running and every directory the kernel preserved on purpose after an
+  unconfirmed container cleanup (now marked `preserved` beside the tree), removes a tree only
+  through directory descriptors opened without following links, touches nothing else under
+  `$TMPDIR`, and reports what it removed in one stderr line.
+
+- `af provider remove ID...` drops named Providers from the machine-local registry through the
+  same locked, atomic publication `add` uses. Auth directories and their logins are left
+  untouched, and the previous registry is preserved. It also repairs a registry made invalid by a
+  deleted auth directory, runs in the invoking release from any repository, and refuses ambient
+  IDs by name. In the browser, `d` on a registered Provider fills the `:` line with the command
+  ([ADR-0136](docs/adr/0136-remove-a-registered-provider-by-id.md)).
+
+- Add explicitly permissioned, private-host Provider authentication for browser-only setup and
+  reauthentication, with Codex device approval, Claude code/callback support, bounded session
+  state, recipient fencing and secret-free status. Generic setup login remains terminal-only;
+  login never implicitly spends a model budget or resumes a Task
+  ([ADR-0137](docs/adr/0137-permit-provider-logins-through-private-host-capabilities.md)).
+- Include a runnable, consent-bound personal-chat host for validated one-time browser challenges,
+  native Codex headless device login and Claude 2.1.289's exact unterminated prompt; reusable
+  credentials remain native and ordinary af status stays challenge-free
+  ([ADR-0139](docs/adr/0139-deliver-native-login-challenges-to-a-verified-private-requester.md)).
+- Preserve native authentication failure categories alongside usage diagnostics and suppress
+  credential-bearing failed output before ordinary capture, retaining exact parsed usage.
+- Classify native login failures into closed response/proxy/TLS/rejection/transport states while
+  keeping stderr private and bounded; retain the native lifetime guard and credential boundary.
+  An absent or unstartable official CLI reports `provider_cli_missing` (exit 4).
+
+- Remote Checks: a declared code check may add a `[checks.<name>.remote]` table (`executor =
+  "github-pr"`, `workflow`, `required` job names), and an operator's machine-local mapping
+  (`$XDG_CONFIG_HOME/af/remote-checks.toml` or `AF_TASK_REMOTE_CHECK_POLICY_FILE`) selects it per
+  repository. Local checks run first; the kernel then builds two `af-gate/<task-id>/` branches
+  from the Task's Snapshots in a private repository, pushes them without force, opens one draft
+  pull request between them, waits on the declared workflow's `pull_request` run for that head
+  commit, and accepts the result only after reading `refs/pull/<n>/merge` back as the candidate
+  tree. Every remote fact is one `af/RemoteCheckEvidence@1`; a remote `CheckResult@1` names it
+  instead of a command; every refusal is `not_run` with a named reason; the last 256 KiB of each
+  unsuccessful job's log (1 MiB per check) is kept as the result's `stdout`; no record holds the
+  push URL or the mapping's path. `af task show` prints the pull request, run, jobs, kept log
+  excerpt and cleanup commands, and `--json` carries the evidence under `remote_checks`. Without
+  a mapping nothing changes. This is the one operator-authorized exception to "publishing is a
+  human action"; delivery still never pushes
+  ([ADR-0140](docs/adr/0140-run-a-declared-check-through-a-gate-pull-request.md)).
+
+- The TUI shows state in the brand's colours: chips of ink on blue (running), green (passed) and
+  pink (failed or awaiting approval) on a Task's STATE, its stage marks, the progress in the bar,
+  a Provider's STATUS and the Workers pane's Attempt counts, and an `error` chip before every
+  error row. The status line turns pink while it carries an error, and the help header's worker
+  is drawn in solid pink. Text on the terminal's own ground is never coloured, so every colour
+  reads on a light or a dark terminal; `NO_COLOR` still leaves attributes only.
+
+- This repository's own `.af/af.lock` pins `0.10.0` (it still pinned `0.9.0-rc.6`). From now on
+  the release workflow pins each release it publishes, and `make check` fails when the pin falls
+  more than one release behind `CHANGELOG.md`
+  ([ADR-0138](docs/adr/0138-the-repository-pins-its-newest-release.md)).
+
+- Bare `af` paints a splash a few milliseconds after it starts: the three workers on a conveyor
+  belt, the one a Task block reaches lit in its colour, while the scope and its panes load behind
+  it. The browser replaces it as soon as it has loaded, so `af` is never slower; outside a
+  repository, where reading every Task Store takes seconds, the terminal no longer sits blank.
+  `q` or `<C-c>` quits from the splash, and other keys typed meanwhile reach the browser.
+
 ## [0.10.0] - 2026-10-02
 
 ### Authority compatibility

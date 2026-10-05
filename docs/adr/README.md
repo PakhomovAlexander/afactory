@@ -237,6 +237,12 @@ future readers need.
 - [0135 — Collect finished Tasks behind a tombstone and a reachability
   sweep](0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
 - [0136 — Remove a registered Provider by ID](0136-remove-a-registered-provider-by-id.md)
+- [0137 — Permit Provider logins through private host
+  capabilities](0137-permit-provider-logins-through-private-host-capabilities.md)
 - [0138 — The repository pins its newest release](0138-the-repository-pins-its-newest-release.md)
-- [0140 — List a logged-out default context only until its kind is
-  registered](0140-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)
+- [0139 — Deliver native login challenges to a verified private
+  requester](0139-deliver-native-login-challenges-to-a-verified-private-requester.md)
+- [0140 — Run a declared check through a gate pull
+  request](0140-run-a-declared-check-through-a-gate-pull-request.md)
+- [0141 — List a logged-out default context only until its kind is
+  registered](0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)

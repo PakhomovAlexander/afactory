@@ -1,4 +1,4 @@
-# ADR-0140: List a logged-out default context only until its kind is registered
+# ADR-0141: List a logged-out default context only until its kind is registered
 
 **Status:** accepted (2026-10-05). Narrows when `af provider status` lists an ambient discovery
 label, the rule [ADR-0136](0136-remove-a-registered-provider-by-id.md) records.

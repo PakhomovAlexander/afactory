@@ -99,6 +99,7 @@ impl CodeTaskDomain {
                 name: name.clone(),
                 command: definition.command.clone(),
                 required: true,
+                remote: None,
             };
             let mut runs = Vec::new();
             let mut failure = None;

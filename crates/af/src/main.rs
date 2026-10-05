@@ -1041,6 +1041,9 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if let Some(code) = providers::auth_handoff::supervise_early(&argv) {
+        std::process::exit(code);
+    }
     clap_complete::CompleteEnv::with_factory(cli::Af::command).complete();
     selfmgmt::maybe_dispatch(&argv);
     let parsed = cli::Af::parse_from(&argv);
@@ -1070,7 +1073,7 @@ fn main() {
         std::process::exit(code);
     };
     // Still the only thread: every thread started from here inherits the blocked signals.
-    if runs_task_work(&command)
+    if needs_interrupt_handling(&command)
         && let Err(error) = interrupt::install()
     {
         eprintln!("af: {error}");
@@ -1466,6 +1469,19 @@ fn runs_task_work(command: &cli::Command) -> bool {
     }
 }
 
+/// A private login owns native processes but never runs Task work or its maintenance sweep.
+fn needs_interrupt_handling(command: &cli::Command) -> bool {
+    runs_task_work(command)
+        || matches!(
+            command,
+            cli::Command::Provider {
+                command: cli::ProviderCommand::Auth {
+                    command: cli::ProviderAuthCommand::Begin { .. }
+                }
+            }
+        )
+}
+
 /// An interrupted command ends by its signal once its Workers have stopped, so a shell reports
 /// the conventional status (130 for SIGINT, 143 for SIGTERM), and says how to resume. A failure
 /// other than the interrupt itself is still reported first; `--json` carries the same status.
@@ -1480,10 +1496,17 @@ fn exit_interrupted(
         Some(id) => format!("resume it with `af task run {id}`"),
         None => "run the same command again to resume it".into(),
     };
-    let message = format!(
-        "interrupted by {signal}; its Worker processes were stopped and the Task was not \
-         finished. To continue, {resume}"
-    );
+    let message = if argv.get(1).is_some_and(|s| s == "provider")
+        && argv.get(2).is_some_and(|s| s == "auth")
+    {
+        format!(
+            "interrupted by {signal}; native login stopped. Inspect the non-secret recovery status; a new login requires a fresh private host permission"
+        )
+    } else {
+        format!(
+            "interrupted by {signal}; its Worker processes were stopped and the Task was not finished. To continue, {resume}"
+        )
+    };
     if let Some(error) = error {
         if error != interrupt::INTERRUPTED {
             eprintln!("{prefix}: {error}");
@@ -1534,6 +1557,32 @@ fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
             providers::add(&id, kind, auth_dir.as_deref())
         }
         cli::ProviderCommand::Remove { ids } => providers::remove(&ids),
+        cli::ProviderCommand::Auth { command } => match command {
+            cli::ProviderAuthCommand::Begin {
+                id,
+                kind,
+                auth_dir,
+                host_read_fd,
+                host_write_fd,
+                timeout_secs,
+            } => providers::auth_handoff::begin(
+                &id,
+                provider_kind(kind),
+                &auth_dir,
+                host_read_fd,
+                host_write_fd,
+                timeout_secs,
+            ),
+            cli::ProviderAuthCommand::Status { id, kind, auth_dir } => {
+                providers::auth_handoff::status(&id, provider_kind(kind), &auth_dir)
+            }
+            cli::ProviderAuthCommand::Cancel {
+                id,
+                kind,
+                auth_dir,
+                recovery_id,
+            } => providers::auth_handoff::cancel(&id, provider_kind(kind), &auth_dir, &recovery_id),
+        },
         cli::ProviderCommand::Recover => providers::recover().map(|()| 0),
         cli::ProviderCommand::Doctor(args) => {
             if args.task_file.is_some() {
@@ -3753,6 +3802,29 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
 
 #[cfg(test)]
 mod option_tests {
+    #[test]
+    fn private_login_handles_interrupts_without_starting_task_maintenance() {
+        use clap::Parser;
+        let parsed = crate::cli::Af::parse_from([
+            "af",
+            "provider",
+            "auth",
+            "begin",
+            "codex-main",
+            "--kind",
+            "codex",
+            "--auth-dir",
+            "/fixture/auth",
+            "--host-read-fd",
+            "3",
+            "--host-write-fd",
+            "4",
+        ]);
+        let command = parsed.command.unwrap();
+        assert!(super::needs_interrupt_handling(&command));
+        assert!(!super::runs_task_work(&command));
+    }
+
     use super::{
         CampaignMode, Options, campaign_id, campaign_labels_beneath, campaign_state_beneath,
         default_campaigns_root, enumerate_campaigns, latest_round_evidence, validate_campaign_name,

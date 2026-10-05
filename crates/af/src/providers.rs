@@ -34,6 +34,7 @@ use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 
+pub mod auth_handoff;
 mod installation;
 pub mod task;
 
@@ -233,7 +234,7 @@ pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> Provid
 /// Leave out a CLI's default context that has no login once a Provider of its kind is registered:
 /// the operator has set up the logins they use, and the default directory is one they do not.
 /// Before one is registered, the row and its `auth login` fix are how a new machine starts, and a
-/// default context with a login stays, since it is a login the operator may register (ADR-0140).
+/// default context with a login stays, since it is a login the operator may register (ADR-0141).
 fn drop_unused_ambient_contexts(providers: &mut Vec<ProviderStatus>) {
     let registered: BTreeSet<String> = providers
         .iter()
@@ -2052,6 +2053,13 @@ fn normalize_provider_tables(document: &mut DocumentMut, path: &Path) -> Result<
 }
 
 fn registry_lock(path: &Path) -> Result<BoundDirectoryLock, String> {
+    registry_lock_controlled(path, None)
+}
+
+fn registry_lock_controlled(
+    path: &Path,
+    mut control: Option<&mut dyn FnMut() -> Result<(), String>>,
+) -> Result<BoundDirectoryLock, String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
@@ -2106,8 +2114,28 @@ fn registry_lock(path: &Path) -> Result<BoundDirectoryLock, String> {
             ));
         }
     }
-    fs2::FileExt::lock_exclusive(&file)
-        .map_err(|error| format!("locking provider registry {}: {error}", lock_path.display()))?;
+    if let Some(check) = control.as_mut() {
+        loop {
+            check()?;
+            match fs2::FileExt::try_lock_exclusive(&file) {
+                Ok(()) => break,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(25))
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "locking provider registry {}: {error}",
+                        lock_path.display()
+                    ));
+                }
+            }
+        }
+        check()?;
+    } else {
+        fs2::FileExt::lock_exclusive(&file).map_err(|error| {
+            format!("locking provider registry {}: {error}", lock_path.display())
+        })?;
+    }
     if !bound_directory_is_current(parent, &directory).unwrap_or(false) {
         return Err(format!(
             "provider registry directory {} changed while waiting for its lock; retry",
