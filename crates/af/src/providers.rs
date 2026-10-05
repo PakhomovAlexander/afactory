@@ -4849,6 +4849,16 @@ fn normalize_claude_plan(value: &str) -> Option<&'static str> {
     }
 }
 
+/// Whether `codex login status` said it has no login: a line that is exactly the CLI's logged-out
+/// answer, never the phrase inside another message. A logged-out default context is left out of
+/// the listing once its kind is registered (ADR-0141), so an error that merely mentions "not
+/// logged in" must stay a failed probe, which is listed.
+fn codex_reports_logged_out(captured: &str) -> bool {
+    captured
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case("not logged in"))
+}
+
 fn parse_codex_status(success: bool, stdout: &str) -> (String, String, String) {
     if let Some(auth_type) = stdout
         .lines()
@@ -4867,7 +4877,7 @@ fn parse_codex_status(success: bool, stdout: &str) -> (String, String, String) {
             String::new(),
         );
     }
-    if stdout.to_ascii_lowercase().contains("not logged in") {
+    if codex_reports_logged_out(stdout) {
         return (
             "not authenticated".to_string(),
             "-".to_string(),
@@ -6041,6 +6051,10 @@ auth_dir = "{}"
             include_str!("../tests/fixtures/providers/codex-0.149.0-logged-out.txt"),
         );
         assert_eq!(status, "not authenticated");
+        // The phrase inside an error is a failed probe, not a logout.
+        let error = "Error: cannot determine whether user is not logged in\n";
+        assert_eq!(parse_codex_status(false, error).0, "unavailable");
+        assert_eq!(parse_codex_status(true, error).0, "unknown");
         assert_eq!(parse_claude_status(true, "{}").0, "unknown");
         assert_eq!(parse_codex_status(true, "changed output").0, "unknown");
         assert_eq!(

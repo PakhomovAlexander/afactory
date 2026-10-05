@@ -200,6 +200,76 @@ exit 64
 }
 
 #[test]
+fn status_keeps_a_default_context_whose_status_probe_failed() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path();
+    let bin = fake_provider(
+        home,
+        "codex",
+        r#"#!/bin/sh
+# The registered directory answers like codex-cli; the default one fails its probe with an error
+# that merely mentions the logged-out phrase.
+if [ "$1" = --version ]; then
+  printf '%s\n' 'codex-cli 0.160.0'
+  exit 0
+fi
+if [ "$1" = login ] && [ "$2" = status ]; then
+  if [ -f "${CODEX_HOME:-$HOME/.codex}/registered" ]; then
+    printf '%s\n' 'Not logged in' >&2
+  else
+    printf '%s\n' 'Error: cannot determine whether user is not logged in' >&2
+  fi
+  exit 1
+fi
+exit 64
+"#,
+    );
+    let default = home.join(".codex");
+    let auth = home.join("codex-main");
+    for dir in [&default, &auth] {
+        std::fs::create_dir(dir).unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::fs::write(auth.join("registered"), "").unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_af"))
+            .args(args)
+            .env("HOME", home)
+            .env("XDG_CONFIG_HOME", home.join("config"))
+            .env("AF_SELF_OFFLINE", "1")
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_HOME")
+            .output()
+            .unwrap()
+    };
+    let added = run(&[
+        "provider",
+        "add",
+        "codex-main",
+        "--kind",
+        "codex",
+        "--auth-dir",
+        auth.to_str().unwrap(),
+    ]);
+    assert!(added.status.success(), "{}", stderr(&added));
+    let output = run(&["provider", "status"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let listing = String::from_utf8_lossy(&output.stdout);
+    let registered = listing
+        .lines()
+        .find(|line| line.starts_with("codex-main "))
+        .unwrap_or_else(|| panic!("codex-main is listed: {listing}"));
+    assert!(registered.contains("not authenticated"), "{listing}");
+    // A failed probe is not a logout, so a Provider of its kind being registered hides nothing.
+    let ambient = listing
+        .lines()
+        .find(|line| line.starts_with("codex-ambient "))
+        .unwrap_or_else(|| panic!("codex-ambient is listed: {listing}"));
+    assert!(!ambient.contains("not authenticated"), "{listing}");
+}
+
+#[test]
 fn setup_owns_claude_login_registration_and_idempotent_recheck() {
     let root = tempfile::tempdir().unwrap();
     let auth = root.path().join("claude auth");
