@@ -6,10 +6,15 @@ host too small to build the project can still hold a real Gate
 ([ADR-0140](../adr/0140-run-a-declared-check-through-a-gate-pull-request.md)). The design and its
 fixed requirements are in [`docs/design/remote-checks.md`](../design/remote-checks.md).
 
+Three places say three things. The code policy declares what a check's remote form *is*. A Task
+pipeline's check node chooses *where* each check runs. The operator's machine-local mapping says
+*where this machine may push*, and nothing else.
+
 ## 1. Declare the check
 
 Add a `remote` table to a check the project already declares. The `command` stays: it is the
-check's local equivalent, and every machine without a mapping runs it exactly as before.
+check's local equivalent, and every pipeline that lists the check in `checks` runs it exactly as
+before.
 
 ```toml
 [checks.kernel]
@@ -36,7 +41,33 @@ required = ["validation / lint", "validation / check (ubuntu-latest)"]
 Declaring both forms is the project's statement that they verify the same thing. A policy
 without the table is captured byte for byte as before.
 
-## 2. Map it on this machine
+## 2. Choose it in a pipeline
+
+The check node of a Task pipeline lists where each of its checks runs:
+
+```toml
+[nodes.operator]
+op = "check"
+checks = ["markdownlint"]        # run on this machine, first
+remote_checks = ["kernel"]       # run by the check's declared remote executor
+```
+
+- `remote_checks` is optional. A node without it is byte for byte the node it was, plans to the
+  same plan, and never reads the mapping.
+- A check appears in one list only, and a node names at least one check in all; `checks` may be
+  empty when `remote_checks` is not.
+- Every name in `remote_checks` must be a check the captured code policy declares with a
+  `remote` table. Anything else is refused when the plan is captured, naming the pipeline, the
+  node and the check. The same holds in a child pipeline a parent calls.
+
+There is no per-machine switch. A project that wants a local gate and a remote one keeps two
+pipelines that differ only in these two lists — this repository stages
+`kernel/gate-bench-remote`, `kernel/implementation-reviewed-remote` and
+`kernel/verification-reviewed-remote` under
+[`fixtures/remote-checks/packages/`](../../fixtures/remote-checks/packages/README.md) — and a
+Task file names the one it wants.
+
+## 3. Give this machine a push target
 
 The mapping is an operator file outside every source tree:
 `$XDG_CONFIG_HOME/af/remote-checks.toml` (`~/.config/af/remote-checks.toml`), or the absolute
@@ -49,27 +80,40 @@ version = 1
 repository_id = "5f1c…"   # git rev-list --max-parents=0 HEAD, sorted, joined by commas
 github = "owner/name"     # the repository `gh` addresses
 push_url = "git@github.com:owner/name.git"
-checks = ["kernel"]
 ```
 
 - `repository_id` is the identity Task source origins record, so one machine can map several
   repositories without ambiguity.
-- `checks` names declared checks with a `remote` table; any other name is an error before the
-  first check starts.
 - `push_url` is any Git URL without user information. Authenticate through Git's credential
   helper or SSH, and log `gh` in once with `gh auth login`; `af` reads, stores and prints no
   token.
+- The file selects no checks. One that still carries the `checks` key of the first release is
+  refused, with a message that the pipeline's check node chooses now.
 
 The mapping is the authorization for this machine to push the gate branches of that repository.
-Delete it and every check runs locally again; there is no state to migrate.
+It is read when a plan is captured: a pipeline with remote checks and no target for the source
+Snapshot's repository is refused there, before any Attempt, naming the mapping and the
+repository identity. Otherwise the plan's authority gains the effect `publish-gate` and the data
+destination `github:<owner/name>`:
 
-## 3. Run
+```text
+EFFECTS execute-checks, publish-gate, read-source, write-source
+SEND  github:owner/name
+```
+
+`af task plan` prints them, `af task plan --json` and `af task explain` carry them, and
+confirming the plan confirms them. The push URL stays on the machine and is read again when the
+check Attempt starts: a mapping that then names no target for the repository, or another
+`github` than the plan recorded, ends the Attempt with an error before any check runs, and
+nothing is pushed.
+
+## 4. Run
 
 Start or resume a Task as usual. Within its check Attempt:
 
-1. Local checks run first, in name order. If a required local check fails, each remote check is
+1. The node's `checks` run first, in name order. If a required local check fails, each remote check is
    recorded `not_run` with `remote_skipped_local_failed` and nothing is pushed.
-2. Otherwise one remote phase serves every remote check, on one clock that ends at the earlier of
+2. Otherwise one remote phase serves every check of `remote_checks`, on one clock that ends at the earlier of
    `check_process_wall_ms` and the check Attempt's deadline.
 3. The kernel builds two commits from the Task's Snapshots in a private repository — `base`
    from the Task's captured source, `head` from the candidate — and pushes them as
@@ -85,7 +129,7 @@ branches and pull request without a new commit. A repair round appends one commi
 branch. A branch this Task did not make — another Task's, or this Task ID's in another Store —
 is refused with `remote_ref_conflict`, and nothing is pushed.
 
-## 4. Read the evidence
+## 5. Read the evidence
 
 `af task show <task-id>` prints, per remote check:
 
@@ -111,7 +155,7 @@ in another form is stored as printed.
 | Reason | What to do |
 | --- | --- |
 | `remote_skipped_local_failed` | fix the local failure |
-| `remote_candidate_changes_ci` | the candidate changes `.github/`; run this Task where the check is local |
+| `remote_candidate_changes_ci` | the candidate changes `.github/`; run this Task with a pipeline that lists the check in `checks` |
 | `remote_tool_unavailable` | install `git` or `gh`, or run `gh auth login` |
 | `remote_ref_invalid` | use a ref-safe Task ID |
 | `remote_ref_conflict` | another Task owns the branches; delete them or rename the Task |
@@ -126,7 +170,7 @@ A remote check still incomplete when the phase ends is `not_run` with the deadli
 local check uses; resume the Task to attach again. A kept diagnostic names the push URL, the
 mapping and the private repository only as `<push-url>`, `<mapping>` and `<gate-repository>`.
 
-## 5. Clean up
+## 6. Clean up
 
 The branches and the pull request stay, so resume and repair rounds can use them. When the Task
 no longer needs them, `af task show` prints the two commands:
@@ -136,7 +180,7 @@ gh pr close <number> --repo owner/name
 git push <push-url> --delete af-gate/<task-id>/base af-gate/<task-id>/head
 ```
 
-## 6. What the workflow must allow
+## 7. What the workflow must allow
 
 - It runs on `pull_request` for draft pull requests whose base is an `af-gate/**` branch. A
   workflow filtered to `main`, or one that skips drafts, never starts, and the check is

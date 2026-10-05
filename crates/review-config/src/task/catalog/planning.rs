@@ -166,6 +166,28 @@ impl TaskPlanCompiler {
         let mut preview = self.clone();
         // These private placeholders are never published as a plan or returned to a caller.
         preview.install_proposal_bytes(cas, proposal, &self.engine_id, &self.engine_id)?;
+        // Where a check runs is chosen by a committed pipeline a person installed (ADR-0140).
+        // A Planner's proposal cannot give itself the publishing effect, so one that lists
+        // remote checks is refused here, by name, rather than failing later on authority.
+        for name in proposal.definitions.keys() {
+            let Some(definition) = preview.pipelines.get(name) else {
+                continue;
+            };
+            for node in &definition.nodes {
+                if let review_core::task::pipeline::TaskOperatorV1::Check { remote_checks, .. } =
+                    &node.operator
+                    && !remote_checks.is_empty()
+                {
+                    return Err(format!(
+                        "A generated pipeline cannot list remote checks (pipeline {name} node \
+                         {} lists {}): only an installed pipeline chooses a remote gate; list \
+                         them in `checks`, or name an installed remote pipeline in the Task file",
+                        node.id,
+                        remote_checks.iter().cloned().collect::<Vec<_>>().join(", ")
+                    ));
+                }
+            }
+        }
         let mut normalized = task.clone();
         normalized.inputs =
             preview.normalize_root_inputs(cas, &proposal.root, normalized.inputs)?;

@@ -570,6 +570,90 @@ fn report_contracts_name_their_snapshot_and_keep_the_document_shape() {
     }
 }
 
+/// The pipeline chooses where a check runs (ADR-0140): a check node lists `remote_checks`
+/// beside `checks`, and a plan with remote checks records its `github:` destination. Schema and
+/// Rust admit and refuse the same documents, and a node without the field keeps its bytes.
+#[test]
+fn check_nodes_choose_remote_checks_and_plans_record_their_github_destination() {
+    for (operator, valid) in [
+        (json!({"op": "check", "checks": ["lint"]}), true),
+        (
+            json!({"op": "check", "checks": ["lint"], "remote_checks": ["kernel"]}),
+            true,
+        ),
+        (
+            json!({"op": "check", "checks": [], "remote_checks": ["kernel"]}),
+            true,
+        ),
+        (json!({"op": "check", "checks": []}), false),
+        (json!({"op": "check", "remote_checks": ["kernel"]}), false),
+        (
+            json!({"op": "check", "checks": ["lint"], "remote_checks": []}),
+            false,
+        ),
+        (
+            json!({"op": "check", "checks": ["lint"], "remote_checks": ["bad name"]}),
+            false,
+        ),
+        (
+            json!({"op": "check", "checks": ["lint"], "remote_checks": null}),
+            false,
+        ),
+    ] {
+        let mut definition = fixture("pipeline-definition");
+        definition["nodes"][0]["operator"] = operator.clone();
+        if valid {
+            assert_valid("pipeline-definition-v1.json", &definition);
+            assert_eq!(
+                typed_value("pipeline-definition", definition.clone()).as_ref(),
+                Ok(&definition),
+                "{operator} round-trips byte for byte"
+            );
+        } else {
+            assert_invalid("pipeline-definition-v1.json", &definition, "check node");
+            assert!(
+                typed("pipeline-definition", definition).is_err(),
+                "{operator}"
+            );
+        }
+    }
+    // A name in both lists is schema-shaped but refused by semantic admission, naming the
+    // pipeline, the node and the check.
+    let mut both = fixture("pipeline-definition");
+    both["nodes"][0]["operator"] =
+        json!({"op": "check", "checks": ["kernel"], "remote_checks": ["kernel"]});
+    assert_valid("pipeline-definition-v1.json", &both);
+    let error = typed("pipeline-definition", both).unwrap_err();
+    assert!(
+        error.contains("node write lists check kernel in both"),
+        "{error}"
+    );
+
+    for (destinations, valid) in [
+        (json!(["personal"]), true),
+        (json!(["github:octo/gate", "personal"]), true),
+        (json!(["github:octo/gate.js"]), true),
+        (json!(["github:octo"]), false),
+        (json!(["github:octo/.."]), false),
+        (json!(["github:octo/gate/extra"]), false),
+        (json!(["gitlab:octo/gate"]), false),
+    ] {
+        let mut revision = fixture("task-revision");
+        revision["authority"]["data_destinations"] = destinations.clone();
+        if valid {
+            assert_valid("task-revision-v1.json", &revision);
+            typed("task-revision", revision).unwrap();
+        } else {
+            assert_invalid("task-revision-v1.json", &revision, "destination");
+            assert!(typed("task-revision", revision).is_err(), "{destinations}");
+        }
+    }
+}
+
+fn typed_value(contract: &str, value: Value) -> Result<Value, String> {
+    corpus::typed_round_trip(contract, value)
+}
+
 fn fixture(name: &str) -> Value {
     let path = workspace_root()
         .join("fixtures/task-contracts/v1")

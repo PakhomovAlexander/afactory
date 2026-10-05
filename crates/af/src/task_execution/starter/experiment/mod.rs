@@ -137,6 +137,7 @@ fn experiment(author: &TaskWorkerManifest, evaluator: &TaskWorkerManifest) -> Pi
             "checks",
             TaskOperatorV1::Check {
                 checks: BTreeSet::from(["sanity".into()]),
+                remote_checks: BTreeSet::new(),
             },
             inputs(&[("source", output("seal", "snapshot"))]),
         ),

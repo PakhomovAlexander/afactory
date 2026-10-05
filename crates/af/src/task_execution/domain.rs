@@ -11,15 +11,27 @@ pub(super) fn code_domain(
     state: &Path,
 ) -> Result<CodeTaskDomain, String> {
     let mapping = std::env::var_os("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE").map(PathBuf::from);
+    let remote = remote_checks(state, &graph)?;
     Ok(CodeTaskDomain::captured(cas, policy_id, graph)?
         .with_rust_toolchain_mapping(mapping)
-        .with_remote_checks(remote_checks(state)?))
+        .with_remote_checks(remote))
 }
 
 /// The machine-local Remote Check configuration (ADR-0140): the operator's mapping, resolved
 /// once here as the Rust toolchain mapping is, and the owner every gate commit names. Candidate
 /// commands never receive the variable or the path.
-pub(super) fn remote_checks(state: &Path) -> Result<RemoteCheckHost, String> {
+///
+/// A graph whose checks all run on this machine gets none of it: such a Task plans and runs
+/// the same whatever the mapping variable holds, even a path this function would refuse.
+pub(super) fn remote_checks(state: &Path, graph: &CompiledTask) -> Result<RemoteCheckHost, String> {
+    if graph.remote_checks().is_empty() {
+        return Ok(RemoteCheckHost::default());
+    }
+    machine_remote_checks(state)
+}
+
+/// The configuration itself, for a graph that has remote checks.
+pub(super) fn machine_remote_checks(state: &Path) -> Result<RemoteCheckHost, String> {
     let database = state.join("events.sqlite");
     Ok(RemoteCheckHost {
         mapping: remote_check_mapping()?,
@@ -28,6 +40,77 @@ pub(super) fn remote_checks(state: &Path) -> Result<RemoteCheckHost, String> {
         })),
         github_pr: Default::default(),
     })
+}
+
+/// The authority of a plan whose graph has remote checks (ADR-0140): the pipeline chose them,
+/// so the plan says what they do. It gains the effect `publish-gate` and the data destination
+/// `github:<owner/name>` of this machine's push target for the source Snapshot's repository,
+/// which `af task plan` prints on its EFFECTS and SEND lines; confirming the plan confirms
+/// them. Without a target the pipeline cannot be planned on this machine. A graph without
+/// remote checks never reads the mapping and keeps the authority it had.
+pub(super) fn remote_check_authority(
+    cas: &Cas,
+    revision: &mut TaskRevisionV1,
+    graph: &CompiledTask,
+) -> Result<(), String> {
+    use review_core::task::remote_check::{
+        PUBLISH_GATE_EFFECT, github_destination, github_of_destination,
+    };
+    use review_pipeline::task::remote_check::{MAPPING_KNOB, RemoteCheckMapping};
+    // A refreshed revision starts from its predecessor's authority: what it publishes is
+    // decided again here, from this graph and this machine's target.
+    revision
+        .authority
+        .allowed_effects
+        .remove(PUBLISH_GATE_EFFECT);
+    revision
+        .authority
+        .data_destinations
+        .retain(|destination| github_of_destination(destination).is_none());
+    let remote = graph.remote_checks();
+    if remote.is_empty() {
+        return Ok(());
+    }
+    let named = remote
+        .iter()
+        .map(|(node, checks)| {
+            format!(
+                "{node} lists {}",
+                checks.iter().cloned().collect::<Vec<_>>().join(", ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let source = revision.inputs.get("source").ok_or_else(|| {
+        format!("Remote checks ({named}) need the Task's source Snapshot to name its repository")
+    })?;
+    let (_, snapshot, _) = review_pipeline::task::source::source_snapshot(cas, source)?;
+    let origin = review_source_git::task::read_origin(cas, &snapshot.origin_id)?;
+    let repository = origin.repository_id();
+    let mapping = match remote_check_mapping()? {
+        Some(path) => RemoteCheckMapping::read(&path)?,
+        None => None,
+    };
+    let target = mapping
+        .as_ref()
+        .and_then(|mapping| mapping.target(repository))
+        .ok_or_else(|| {
+            format!(
+                "This pipeline runs remote checks ({named}), but {MAPPING_KNOB} names no push \
+                 target for repository {repository} on this machine; add a [[github_pr]] entry \
+                 for that repository, or plan a pipeline whose check node lists these checks \
+                 in `checks`"
+            )
+        })?;
+    revision
+        .authority
+        .allowed_effects
+        .insert(PUBLISH_GATE_EFFECT.into());
+    revision
+        .authority
+        .data_destinations
+        .insert(github_destination(&target.github));
+    Ok(())
 }
 
 /// `AF_TASK_REMOTE_CHECK_POLICY_FILE` when set (it must be absolute), otherwise

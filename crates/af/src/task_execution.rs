@@ -1947,22 +1947,25 @@ fn captured_domain(
         TaskKindProfile::Review
         | TaskKindProfile::Implementation
         | TaskKindProfile::ReviewedImplementation
-        | TaskKindProfile::RepairAllowedImplementation => Ok(Box::new(
-            ReviewTaskDomain::captured(
-                cas,
-                authority
-                    .review_policy_id
-                    .as_deref()
-                    .ok_or("Review Task lost its captured policy")?,
-                graph,
-            )?
-            .with_rust_toolchain_mapping(
-                std::env::var_os("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE").map(PathBuf::from),
-            )
-            .with_remote_checks(domain::remote_checks(state)?)
-            .with_review_task(profile == TaskKindProfile::Review)
-            .with_cache_source_resolver(crate::caches::resolve_kind),
-        )),
+        | TaskKindProfile::RepairAllowedImplementation => {
+            let remote = domain::remote_checks(state, &graph)?;
+            Ok(Box::new(
+                ReviewTaskDomain::captured(
+                    cas,
+                    authority
+                        .review_policy_id
+                        .as_deref()
+                        .ok_or("Review Task lost its captured policy")?,
+                    graph,
+                )?
+                .with_rust_toolchain_mapping(
+                    std::env::var_os("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE").map(PathBuf::from),
+                )
+                .with_remote_checks(remote)
+                .with_review_task(profile == TaskKindProfile::Review)
+                .with_cache_source_resolver(crate::caches::resolve_kind),
+            ))
+        }
         TaskKindProfile::Document => Ok(Box::new(DocumentTaskDomain::captured(
             cas,
             authority
@@ -3599,7 +3602,7 @@ mod remote_check_line_tests {
                 optimization_history: None,
             })
             .unwrap();
-            let host = domain::remote_checks(state).unwrap();
+            let host = domain::machine_remote_checks(state).unwrap();
             let resolve = host.owner.unwrap();
             let first = resolve(PREVIEW_TASK_ID).unwrap();
             assert_eq!(resolve(PREVIEW_TASK_ID).unwrap(), first, "stable on resume");

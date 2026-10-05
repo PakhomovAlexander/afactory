@@ -1,9 +1,11 @@
 //! Remote Checks (ADR-0140): the seam between the code check operator and a remote executor.
 //!
-//! The check operator partitions a Check node's checks, runs the local ones first, and calls
-//! [`github_pr::run`] once with the candidate Snapshot, the remote phase's deadline and the
-//! Attempt's cancellation flag. The executor returns one [`RemoteCheckOutcome`] per
-//! remote-selected check; the operator records each as an `af/RemoteCheckEvidence@1` artifact
+//! A Task pipeline's check node chooses where each check runs: `checks` on this machine,
+//! `remote_checks` by the check's declared remote executor. The check operator runs the local
+//! ones first and calls [`github_pr::run`] once with the candidate Snapshot, the push target the
+//! operator's [`RemoteCheckMapping`] names for the plan's recorded destination, the remote
+//! phase's deadline and the Attempt's cancellation flag. The executor returns one
+//! [`RemoteCheckOutcome`] per remote check; the operator records each as an `af/RemoteCheckEvidence@1` artifact
 //! and a remote-shaped `CheckResult`, whose `stdout` is the log excerpt of the jobs that did not
 //! succeed. Nothing the executor keeps from a subprocess reaches a record without passing
 //! through [`Redactor`].
@@ -31,17 +33,18 @@ pub use mapping::{GithubPrTarget, MAPPING_KNOB, RemoteCheckMapping};
 pub type OwnerResolver = dyn Fn(&str) -> Result<String, String> + Send + Sync;
 
 /// Machine-local Remote Check configuration the coordinator hands the code domain. Committed
-/// policy contributes none of it.
+/// policy contributes none of it, and none of it selects a check.
 #[derive(Clone, Default)]
 pub struct RemoteCheckHost {
-    /// The mapping file's path; `None` means no mapping, so every check runs locally.
+    /// The mapping file's path, read again for the push target when a check node with remote
+    /// checks runs; `None` means this machine has no target, which ends such an Attempt.
     pub mapping: Option<PathBuf>,
     /// The Task owner resolver; a remote phase without one is a kernel error.
     pub owner: Option<Arc<OwnerResolver>>,
     pub github_pr: GithubPrSettings,
 }
 
-/// One remote-selected check of a Check node.
+/// One remote check of a Check node.
 #[derive(Debug, Clone)]
 pub struct RemoteCheckRequest {
     pub name: String,
