@@ -25,14 +25,14 @@ use crate::tui::tree::Item;
 /// How often an opened running Task is read again.
 const LIVE: Duration = Duration::from_secs(1);
 /// The bar's columns, its separator excluded.
-const BAR_INNER: usize = 27;
+const BAR_INNER: usize = crate::tui::BAR_WIDTH - 1;
 /// The hex digits of an artifact ID the pane prints; `Enter` and `y` use the whole ID.
 const SHORT: usize = 8;
 /// The columns a stage name takes in PROGRESS.
 const STAGE: usize = 18;
 /// The columns of the main pane beside the bar at 100 columns; the TASK line fits its goal
 /// into them.
-const MAIN: usize = 72;
+const MAIN: usize = 100 - crate::tui::BAR_WIDTH;
 /// The bar id of a Store that cannot be read.
 const UNREADABLE: &str = "!unreadable";
 /// The bar id of the Stores an earlier af release wrote, listed as one entry.
@@ -1337,7 +1337,7 @@ impl TasksPane {
             } else {
                 ("Task Stores", "were")
             };
-            // Short lines: the main pane is 72 columns beside the bar.
+            // Short lines: the main pane is MAIN columns beside the bar.
             rows.push(Row::painted(
                 format!("{count} {stores} {were} written by an earlier af release, in"),
                 Paint::Muted,
@@ -1430,7 +1430,8 @@ fn store_items(store: &Store, depth: usize) -> Vec<Item> {
             }];
         }
     };
-    let width = BAR_INNER.saturating_sub(2 * (depth + 1) + 2);
+    // The indent and the fold glyph, and a last column for the progress chip's closing space.
+    let width = BAR_INNER.saturating_sub(2 * (depth + 1) + 2 + 1);
     let mut groups = Vec::new();
     for state in State::ALL {
         let mut children = Vec::new();
