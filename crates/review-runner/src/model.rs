@@ -1346,7 +1346,26 @@ impl ModelRunner {
         input: Vec<u8>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> SettledCapture {
+        self.capture_filtered(cas, command, input, cancellation, |_, _, _| {})
+    }
+
+    /// Parse accounting and remove sensitive native failure output before CAS publication.
+    /// The filter receives grant-redacted streams and whether the transport failed. It cannot
+    /// alter process status, deadline, accounting authority or whether the process started.
+    pub fn capture_filtered(
+        &self,
+        cas: &Cas,
+        command: &Command,
+        input: Vec<u8>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        filter: impl FnOnce(bool, &mut Vec<u8>, &mut Vec<u8>),
+    ) -> SettledCapture {
         let mut capture = self.capture_process(command, input, cancellation);
+        filter(
+            !capture.status.as_ref().is_ok_and(|status| status.success()),
+            &mut capture.stdout,
+            &mut capture.stderr,
+        );
         for bytes in [&capture.stdout, &capture.stderr] {
             if bytes.is_empty() {
                 continue;

@@ -3,6 +3,7 @@
 //! Add a new subject as `tests/it/<subject>.rs` plus a `mod` line below.
 
 mod fake_codex;
+mod task_auth_failure;
 mod task_cancellation;
 mod task_capture;
 mod task_final_message;

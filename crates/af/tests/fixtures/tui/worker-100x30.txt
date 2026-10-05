@@ -1,30 +1,30 @@
-~/hub                      |WORKER  fixture/implementer
-v hub  (project)           |
-  v providers/             |IDENTITY  worker.toml at HEAD
-      claude-main          |name      fixture/implementer
-      codex-ambient        |version   1.0.0
-  v workers/               |schema    af.worker/1
-      fixture/evaluator    |path      .af/task-packages/fixture/implementer
-      fixture/implementer  |pin       .af/task-catalog.toml  1.0.0  ########
-  v pipelines/             |runner    kind command  program /usr/bin/python3  model -  effort -
-      review               |args      -B @package/worker.py
-      fixture/implementatio|attempt   tokens 0  wall_ms 5000
-  v tasks/                 |effects   write-source
-    v done/ (1)            |roles     implement
-        pagination-c~  100%|------------------------------------------------------------------------
-    v failed/ (1)          |STATE  Attempts in this scope's Task Stores
-        pagination-u~  100%|attempts  reserved 0  settled ok 1  settled failed 0  released 0
-                           |tokens    charged 0
-                           |wall      -  (no Attempt recorded a wall)
-                           |other     1 Attempts ran this name at an unpinned digest
-                           |------------------------------------------------------------------------
-                           |PROMPT  instructions.md at HEAD
-                           |This package commits no instructions.md.
-                           |The kernel sends a Task Worker that file; nothing else is guessed.
-                           |
-                           |
-                           |
-                           |
-                           |
-                           |
+~/hub                       |WORKER  fixture/implementer
+v hub  (project)            |
+  v providers/              |IDENTITY  worker.toml at HEAD
+      claude-main           |name      fixture/implementer
+      codex-ambient         |version   1.0.0
+  v workers/                |schema    af.worker/1
+      fixture/evaluator     |path      .af/task-packages/fixture/implementer
+      fixture/implementer   |pin       .af/task-catalog.toml  1.0.0  ########
+  v pipelines/              |runner    kind command  program /usr/bin/python3  model -  effort -
+      review                |args      -B @package/worker.py
+      fixture/implementation|attempt   tokens 0  wall_ms 5000
+  v tasks/                  |effects   write-source
+    v done/ (1)             |roles     implement
+        pagination-c~  100% |-----------------------------------------------------------------------
+    v failed/ (1)           |STATE  Attempts in this scope's Task Stores
+        pagination-u~  100% |attempts  reserved 0  settled ok 1  settled failed 0  released 0
+                            |tokens    charged 0
+                            |wall      -  (no Attempt recorded a wall)
+                            |other     1 Attempts ran this name at an unpinned digest
+                            |-----------------------------------------------------------------------
+                            |PROMPT  instructions.md at HEAD
+                            |This package commits no instructions.md.
+                            |The kernel sends a Task Worker that file; nothing else is guessed.
+                            |
+                            |
+                            |
+                            |
+                            |
+                            |
 NORMAL  workers/fixture/implementer         j/k move  Enter open  zo/zc fold  / search  :cmd  q quit

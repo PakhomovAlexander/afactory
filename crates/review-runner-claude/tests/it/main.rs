@@ -4,6 +4,7 @@
 
 mod fake_claude;
 mod session;
+mod task_auth_failure;
 mod task_cancellation;
 mod task_capture;
 mod task_model_usage;

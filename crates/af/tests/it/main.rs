@@ -18,6 +18,8 @@ mod cli_surface;
 mod common_review_summaries;
 mod lock_af_version;
 mod onboard;
+mod onboarding_quickstart;
+mod provider_auth_handoff;
 mod provider_cli_health;
 mod provider_onboarding;
 mod provider_registry;

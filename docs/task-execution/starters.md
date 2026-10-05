@@ -5,15 +5,23 @@ Create a complete credential-free catalog in an absent directory:
 ```sh
 af catalog init --profile all --destination task-demo --json
 cd task-demo
+task_files=$(mktemp -d "$(dirname "$PWD")/af-task-requests.XXXXXX")
+mv implementation-*.json review-*.json planning.json document.json "$task_files/"
 git init
 # Review the generated authority and Worker definitions.
 git add .
 git commit -m 'Configure Task starter catalog'
 af catalog test --source . --json
-af task start --file implementation-reviewed.json
+af task start --file "$task_files/implementation-reviewed.json"
 # Review the preview; copy its complete PLAN identity.
 af task run implementation-reviewed --confirm-plan PLAN_ID
 ```
+
+These Task requests belong outside the checkout, so the commands put them in a new directory
+beside it; keep `task_files` in this shell for later examples. `contracts.json` and `sources.json`
+remain with the committed catalog. The generated README gives the corresponding commands for
+software-only and planning starters. The report starter is the exception: its author reads and
+cites the committed `report.json`, so keep that request in the tree, as its README says.
 
 The factory runs no Workers and commits nothing. It creates supported typed definitions, actual
 package pins, contract fixtures, captured policies and runnable Task files. Git and Python 3 are
@@ -83,7 +91,8 @@ af catalog init --profile planning --developer-public-key /path/to/owner.pub \
   --destination planning-demo --json
 ```
 
-Review, initialize and commit that directory as above. The supplied `planning.json` changes a
+Follow its generated README to move Task requests outside the checkout, then review, initialize
+and commit the authority and source. The supplied `planning.json` changes a
 captured applicability fact so none of the existing implementation definitions fits. Its shared
 `builtin/planner` Worker runs inside the engine's fixed preparation Pipeline and emits a typed
 reviewed-implementation definition. The Task stops at `needs_plan_review` after one Planner

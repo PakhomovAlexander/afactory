@@ -39,9 +39,13 @@ Exit codes:
 
 Examples:
   af onboard --apply             generate `.af/` for this repository (token-free preview first)
-  af review plan                 what a review would run, without spending a token
-  af review --uncommitted        review the working tree against HEAD
-  af self status                 what is installed and which pin applies here";
+  af review plan --policy-rev HEAD --base HEAD --uncommitted
+  af review --policy-rev HEAD --base HEAD --uncommitted
+  af self status                 what is installed and which pin applies here
+
+Review and commit generated `.af/` before selecting it with --policy-rev. These review examples
+use trusted policy at HEAD and compare working-tree changes against HEAD; run refuses an empty diff.
+To execute, also supply --provider NODE=ID for every model Worker required by that policy.";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -83,7 +87,7 @@ A Campaign reviews one Subject (a diff or the working tree) against committed `.
 `plan` is token-free. `run` executes the pipeline inside sandboxes and folds results into the \
 ledger; the remaining commands read or resolve that ledger. Flags given directly to `af review` \
 are shorthand for `af review run`.",
-        after_long_help = "Examples:\n  af review plan --json\n  af review --uncommitted\n  af review run --campaign pr-42 --heavy\n  af review ledger --campaign pr-42\n  af review report --campaign pr-42 --format md",
+        after_long_help = "Examples:\nHEAD must contain trusted, committed `.af/`; make candidate changes first.\nTo execute, also supply --provider NODE=ID for every model Worker required by that policy.\n  af review plan --policy-rev HEAD --base HEAD --uncommitted --json\n  af review --policy-rev HEAD --base HEAD --uncommitted\n  af review run --campaign pr-42 --policy-rev HEAD --base HEAD --uncommitted --heavy\n  af review ledger --campaign pr-42\n  af review report --campaign pr-42 --format md",
         override_usage = "af review <COMMAND>\n       af review [--heavy] [RUN OPTIONS]   (shorthand for `af review run`)",
         args_conflicts_with_subcommands = true,
         subcommand_negates_reqs = true,
@@ -137,12 +141,12 @@ explicitly requests convergence review, and repeat that explicit mode when resum
         arg_required_else_help = true,
         long_about = "Start, inspect, and deliver an implement Task.\n\n\
 A Task file (`--file`) names the Task's ID, kind, goal and limits. The Pipeline and Worker \
-packages it runs are pinned in the committed `.af/task-catalog.toml`; `af catalog init \
+packages it runs are pinned in the committed `.af/task-catalog.toml`; `af catalog init --profile software \
 --destination DIR` creates a new starter directory with a working catalog and runnable Task \
 files. The Task runs over a captured source Snapshot and ends at a verified or unverified \
 derived Snapshot. Nothing is written back to the repository unless you `deliver` it, to a new \
 local branch and worktree, after confirming the Task ID.",
-        after_long_help = "Examples:\n  af task start --file ticket.json\n  af task run TASK_ID --confirm-plan PLAN_ID\n  af task list --json\n  af task show TASK_ID\n  af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID"
+        after_long_help = "Examples:\n  af task start --file ../ticket.json\n  af task run TASK_ID --confirm-plan PLAN_ID\n  af task list --json\n  af task show TASK_ID\n  af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID"
     )]
     Task {
         #[command(subcommand)]
@@ -815,6 +819,19 @@ Exit codes: 0 removed, 1 an ID is not registered or the registry cannot be rewri
         #[arg(value_name = "ID", required = true, num_args = 1..)]
         ids: Vec<String>,
     },
+    /// Explicit, separately permissioned private-host login recovery (no model calls)
+    #[command(
+        long_about = "Recover one exact native Provider auth context through a trusted \
+private host pipe pair (Linux with /proc/self/fd). The host must approve this login and deliver its challenge privately \
+to the requesting human. OAuth material never appears in ordinary output. The owner process \
+remains running across agent turns; the host must keep it and its private channel alive. \
+Completion is authenticated_unverified, never proof of model usability or Task execution authority. \
+Generic provider setup --login remains terminal-only."
+    )]
+    Auth {
+        #[command(subcommand)]
+        command: ProviderAuthCommand,
+    },
     /// Validate and close an interrupted Provider registry publication
     #[command(
         long_about = "Validate and close an interrupted Provider registry publication.\n\n\
@@ -830,6 +847,46 @@ one fenced preflight operation and reports identity, model, and spend.",
         after_long_help = "Examples:\n  af provider doctor --provider correctness=claude-code"
     )]
     Doctor(RunArgs),
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ProviderAuthCommand {
+    /// Begin or reuse one login; a private host grant is required before the CLI starts
+    Begin {
+        id: String,
+        #[arg(long, value_enum)]
+        kind: ProviderKindArg,
+        /// Exact existing or new native auth directory; ambient credentials are never selected
+        #[arg(long, value_name = "DIR")]
+        auth_dir: PathBuf,
+        /// Dedicated inherited pipe from the trusted host; must be greater than 2
+        #[arg(long)]
+        host_read_fd: u32,
+        /// Dedicated inherited pipe to the trusted host; must be greater than 2
+        #[arg(long)]
+        host_write_fd: u32,
+        /// Host-owned login lifetime; not the provider's challenge expiry (30..900 seconds)
+        #[arg(long, default_value_t = 600)]
+        timeout_secs: u64,
+    },
+    /// Inspect closed non-secret state; interrupted owners never appear authenticated
+    Status {
+        id: String,
+        #[arg(long, value_enum)]
+        kind: ProviderKindArg,
+        #[arg(long, value_name = "DIR")]
+        auth_dir: PathBuf,
+    },
+    /// Cancel only the currently identified recovery session (idempotent)
+    Cancel {
+        id: String,
+        #[arg(long, value_enum)]
+        kind: ProviderKindArg,
+        #[arg(long, value_name = "DIR")]
+        auth_dir: PathBuf,
+        #[arg(long)]
+        recovery_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -932,7 +989,7 @@ pub(crate) enum TaskCommand {
     /// Capture a Task and preview its plan before execution
     #[command(
         long_about = "Capture a Task and show its execution plan before any Worker runs.\n\nInspect the compact ASCII preview, or use `af task explain TASK_ID --tree` for the expanded hierarchy. Run with `--confirm-plan PLAN_ID` after reviewing the captured plan. `--execute` explicitly opts into immediate automation. JSON output also previews by default. Generated plans still require signed developer approval.\n\nExecution never writes to the original repository, commits, pushes, or delivers; see `af task deliver`.",
-        after_long_help = "Examples:\n  af task start --file ticket.json\n  af task explain TASK_ID --tree\n  af task run TASK_ID --confirm-plan sha256:...\n  af task start --file ticket.json --execute --json"
+        after_long_help = "Examples:\n  af task start --file ../ticket.json\n  af task explain TASK_ID --tree\n  af task run TASK_ID --confirm-plan sha256:...\n  af task start --file ../ticket.json --execute --json"
     )]
     Start {
         /// Versioned Task JSON/TOML file, processed by the common Task runtime

@@ -501,7 +501,7 @@ fn merge_files(
     software.insert(".af/task-catalog.toml".into(), toml_bytes(&catalog)?);
     software.insert("catalog.toml".into(), toml_bytes(&shared)?);
     software.insert("contracts.json".into(), json_bytes(&contracts)?);
-    software.get_mut("README.md").ok_or("Starter guide missing")?.extend_from_slice(b"\nThe document starter is also installed: run `af task start --execute --file document.json --json`.\nSave its output with `af task output release-notes --port document --format markdown --output release-notes.md --json`.\n");
+    software.get_mut("README.md").ok_or("Starter guide missing")?.extend_from_slice(b"\nThe document starter is also installed: run `af task start --execute --file \"$task_files/document.json\" --json`.\nSave its output with `af task output release-notes --port document --format markdown --output release-notes.md --json`.\n");
     Ok(software)
 }
 

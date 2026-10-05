@@ -7,6 +7,7 @@
 //! change.
 
 pub mod model;
+pub mod native_failure;
 pub mod session;
 pub mod task;
 
