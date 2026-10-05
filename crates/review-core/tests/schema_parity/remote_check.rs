@@ -40,6 +40,10 @@ fn recorded_evidence_of_every_state_is_valid_and_derives_its_status() {
             RemoteCheckVerdictV1::NotRun(RemoteCheckReasonV1::DeadlineExpired),
         ),
         ("observed-passed.json", RemoteCheckVerdictV1::Passed),
+        (
+            "observed-passed-trusted-ci.json",
+            RemoteCheckVerdictV1::Passed,
+        ),
         ("observed-failed.json", RemoteCheckVerdictV1::Failed),
         (
             "observed-inconclusive.json",
@@ -67,10 +71,46 @@ fn evidence_shapes_either_side_refuses_the_other_refuses() {
         edit(&mut value);
         value
     };
+    let trusted = fixture("observed-passed-trusted-ci.json");
     for (why, value) in [
         (
             "unknown field",
             mutate(&observed, &|v| v["log"] = json!("secret")),
+        ),
+        (
+            "a trusted CI exception under another spelling of the tag",
+            mutate(&trusted, &|v| v["trusted_ci"]["tag"] = json!("CI")),
+        ),
+        (
+            "a trusted CI exception under a tag that merely contains ci",
+            mutate(&trusted, &|v| v["trusted_ci"]["tag"] = json!("cicd")),
+        ),
+        (
+            "a trusted CI exception without its plan",
+            mutate(&trusted, &|v| {
+                v["trusted_ci"].as_object_mut().unwrap().remove("plan_id");
+            }),
+        ),
+        (
+            "a trusted CI exception with an unknown field",
+            mutate(&trusted, &|v| v["trusted_ci"]["granted"] = json!(true)),
+        ),
+        (
+            "a trusted CI exception naming a mutable authority",
+            mutate(&trusted, &|v| {
+                v["trusted_ci"]["authority_id"] = json!("HEAD")
+            }),
+        ),
+        (
+            "a null trusted CI exception",
+            mutate(&observed, &|v| v["trusted_ci"] = Value::Null),
+        ),
+        (
+            "a trusted CI exception beside the .github refusal",
+            mutate(&refused, &|v| {
+                v["reason"] = json!("remote_candidate_changes_ci");
+                v["trusted_ci"] = trusted["trusted_ci"].clone();
+            }),
         ),
         (
             "unknown state",

@@ -7,10 +7,14 @@
 //! and a remote-shaped `CheckResult`, whose `stdout` is the log excerpt of the jobs that did not
 //! succeed. Nothing the executor keeps from a subprocess reaches a record without passing
 //! through [`Redactor`].
+//!
+//! A candidate that changes `.github/` is refused unless the coordinator handed the code domain
+//! a [`TrustedCiPipeline`] it captured for the Task's admitted plan (ADR-0141).
 
 mod gate;
 pub mod github_pr;
 pub mod mapping;
+pub mod trust;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,11 +23,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use review_check::{CheckDefinition, CheckStatus};
 use review_core::task::remote_check::{
     MAX_REMOTE_DIAGNOSTIC_BYTES, RemoteCheckEvidenceV1, RemoteCheckReasonV1, RemoteCheckStateV1,
-    RemoteCheckV1, RemoteCheckVerdictV1,
+    RemoteCheckV1, RemoteCheckVerdictV1, RemoteTrustedCiV1,
 };
 
 pub use github_pr::{GithubPrSettings, RemotePhase};
 pub use mapping::{GithubPrTarget, MAPPING_KNOB, RemoteCheckMapping};
+pub use trust::TrustedCiPipeline;
 
 /// Resolves a Task ID to the Task's durable identity in its Store, the owner every gate commit
 /// names. The coordinator supplies it; the identity must survive resume and differ between
@@ -106,6 +111,8 @@ pub(crate) struct EvidenceBase<'a> {
     pub github: &'a str,
     pub snapshot_id: &'a str,
     pub source_snapshot_id: &'a str,
+    /// The trusted CI exception this phase used, only when it sent a changed `.github/`.
+    pub trusted_ci: Option<&'a RemoteTrustedCiV1>,
 }
 
 impl EvidenceBase<'_> {
@@ -123,6 +130,7 @@ impl EvidenceBase<'_> {
             required: declaration.required.clone(),
             snapshot_id: self.snapshot_id.into(),
             source_snapshot_id: self.source_snapshot_id.into(),
+            trusted_ci: self.trusted_ci.cloned(),
             observed_unix_ms: now_unix_ms(),
             reason,
             diagnostic: None,
@@ -264,6 +272,7 @@ mod tests {
             github: "o/r",
             snapshot_id: &format!("sha256:{}", "1".repeat(64)),
             source_snapshot_id: &format!("sha256:{}", "2".repeat(64)),
+            trusted_ci: None,
         };
         let request = RemoteCheckRequest {
             name: "kernel".into(),

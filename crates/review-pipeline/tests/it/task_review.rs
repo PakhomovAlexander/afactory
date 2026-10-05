@@ -312,6 +312,7 @@ fn run_case(case: &str) {
             coverage: BTreeMap::from([("reviewed".into(), from("reduce", "result"))]),
             max_attempts: 3,
             max_parallel: 2,
+            tags: Default::default(),
         };
         // A command Worker keeps only stdout, which holds nothing but its reply, so a reviewer
         // that read the exact patch bytes says so in this file.

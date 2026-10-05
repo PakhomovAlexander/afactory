@@ -1626,6 +1626,7 @@ fn start_captured(
         profile,
         graph.clone(),
         &plan,
+        &plan_id,
         &compiler,
         &state,
     )?;
@@ -1929,6 +1930,8 @@ pub(super) fn restore_experimental_slots(
     Ok(compiler)
 }
 
+/// The domain of one admitted plan. `plan_id` is the plan's recorded artifact, from which a
+/// code or Review domain captures its trusted CI Pipeline exception (ADR-0141).
 #[allow(clippy::too_many_arguments)]
 fn captured_domain(
     cas: &Cas,
@@ -1936,12 +1939,13 @@ fn captured_domain(
     profile: TaskKindProfile,
     graph: CompiledTask,
     plan: &ExecutionPlanV1,
+    plan_id: &str,
     compiler: &TaskPlanCompiler,
     state: &Path,
 ) -> Result<Box<dyn TaskDomain>, String> {
     match profile {
         TaskKindProfile::Implementation if authority.review_policy_id.is_none() => Ok(Box::new(
-            domain::code_domain(cas, authority.code_policy_id()?, graph, state)?
+            domain::code_domain(cas, authority.code_policy_id()?, graph, state, plan_id)?
                 .with_cache_source_resolver(crate::caches::resolve_kind),
         )),
         TaskKindProfile::Review
@@ -1960,6 +1964,7 @@ fn captured_domain(
                 std::env::var_os("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE").map(PathBuf::from),
             )
             .with_remote_checks(domain::remote_checks(state)?)
+            .with_trusted_ci(domain::trusted_ci(cas, plan_id)?)?
             .with_review_task(profile == TaskKindProfile::Review)
             .with_cache_source_resolver(crate::caches::resolve_kind),
         )),
@@ -2147,6 +2152,10 @@ pub(super) fn run(
         profile,
         graph.clone(),
         &plan,
+        projection
+            .plan_id
+            .as_deref()
+            .ok_or("Task has no captured plan")?,
         &compiler,
         &state,
     )?;
@@ -2820,6 +2829,14 @@ fn remote_check_lines(inspection: &serde_json::Value) -> Vec<String> {
             line.push_str(&format!(", run {id} attempt {attempt}"));
         }
         lines.push(line);
+        // A changed workflow judged this candidate: say whose exception sent it (ADR-0141).
+        if let Some(pipeline) = record["trusted_ci"]["pipeline"].as_str() {
+            lines.push(format!(
+                "  changed .github/ sent under trusted CI Pipeline {} (tag ci); the altered \
+                 workflow, not the source's, judged this candidate",
+                preview::text(pipeline)
+            ));
+        }
         for job in record["jobs"].as_array().into_iter().flatten() {
             let duration = match (
                 job["started_at"].as_str().and_then(evidence_seconds),
@@ -3561,6 +3578,28 @@ mod remote_check_line_tests {
         );
         assert_eq!(lines.len(), 3);
         assert!(remote_check_lines(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn a_trusted_ci_exception_is_named_under_its_check() {
+        let inspection = serde_json::json!({"task_id": "rc1", "remote_checks": [
+            entry("kernel", "passed", fixture("observed-passed-trusted-ci.json")),
+        ]});
+        let lines = remote_check_lines(&inspection);
+        assert_eq!(
+            lines[1],
+            "  changed .github/ sent under trusted CI Pipeline project/ci-implementation (tag \
+             ci); the altered workflow, not the source's, judged this candidate"
+        );
+        // Evidence without the exception prints no such line.
+        let plain = serde_json::json!({"task_id": "rc1", "remote_checks": [
+            entry("kernel", "passed", fixture("observed-passed.json")),
+        ]});
+        assert!(
+            !remote_check_lines(&plain)
+                .iter()
+                .any(|line| line.contains("trusted CI"))
+        );
     }
 
     #[test]

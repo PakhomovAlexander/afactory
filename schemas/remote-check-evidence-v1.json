@@ -36,6 +36,23 @@
       "description": "The Task's captured source: the candidate's root ancestor, whose tree is the gate base.",
       "$ref": "#/$defs/digest"
     },
+    "trusted_ci": {
+      "description": "Present exactly when the candidate differs from the source under `.github/` and the trusted CI Pipeline exception (ADR-0141) let it reach the remote: the Task revision's captured run authority, the admitted plan, and the selected root Pipeline that authority pins with the exact tag `ci`. A changed workflow is trusted code; a green run of it is not a universal quality guarantee.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag", "authority_id", "plan_id", "pipeline", "pipeline_id"],
+      "properties": {
+        "tag": { "const": "ci" },
+        "authority_id": { "$ref": "#/$defs/digest" },
+        "plan_id": { "$ref": "#/$defs/digest" },
+        "pipeline": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*(/[A-Za-z0-9][A-Za-z0-9_-]*)*$"
+        },
+        "pipeline_id": { "$ref": "#/$defs/digest" }
+      }
+    },
     "observed_unix_ms": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
     "reason": {
       "enum": [
@@ -103,6 +120,12 @@
     }
   },
   "allOf": [
+    {
+      "if": { "required": ["trusted_ci"] },
+      "then": {
+        "properties": { "reason": { "not": { "const": "remote_candidate_changes_ci" } } }
+      }
+    },
     {
       "if": { "properties": { "state": { "const": "refused" } } },
       "then": {

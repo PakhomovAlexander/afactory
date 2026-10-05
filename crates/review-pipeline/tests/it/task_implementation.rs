@@ -178,6 +178,7 @@ fn pipeline(implement: &OperatorSignature, evaluate: &OperatorSignature) -> Pipe
         coverage: BTreeMap::from([("verified".into(), from("accept", "result"))]),
         max_attempts: 3,
         max_parallel: 2,
+        tags: Default::default(),
     }
 }
 

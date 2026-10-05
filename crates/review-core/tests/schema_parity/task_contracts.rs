@@ -716,6 +716,48 @@ fn optional_properties_accept_omission_but_reject_explicit_null() {
     }
 }
 
+/// Pipeline tags (ADR-0141) are optional, sorted and unique, and kept exactly as spelled:
+/// absent is the untagged canonical form, and every shape one side refuses the other refuses.
+#[test]
+fn pipeline_tags_are_an_optional_exact_bounded_set() {
+    let base = fixture("pipeline-definition");
+    assert!(
+        base.get("tags").is_none(),
+        "the canonical fixture is untagged"
+    );
+    for tags in [
+        json!(["ci"]),
+        json!(["CI", "ci", "release"]),
+        json!(["cicd"]),
+    ] {
+        let mut value = base.clone();
+        value["tags"] = tags.clone();
+        assert_valid("pipeline-definition-v1.json", &value);
+        let round = corpus::typed_round_trip("pipeline-definition", value.clone())
+            .unwrap_or_else(|e| panic!("{tags}: {e}"));
+        assert_eq!(round, value, "{tags}");
+    }
+    let many: Vec<String> = (0..17).map(|i| format!("t{i:02}")).collect();
+    for (why, tags) in [
+        ("a duplicate tag", json!(["ci", "ci"])),
+        ("an empty tag", json!([""])),
+        ("a tag with a space", json!(["c i"])),
+        ("a tag starting with punctuation", json!(["-ci"])),
+        ("a tag that is not a string", json!([1])),
+        ("a tag string instead of a set", json!("ci")),
+        ("null tags", Value::Null),
+        ("seventeen tags", json!(many)),
+    ] {
+        let mut value = base.clone();
+        value["tags"] = tags;
+        assert_invalid("pipeline-definition-v1.json", &value, why);
+        assert!(
+            typed("pipeline-definition", value).is_err(),
+            "Rust admitted {why}"
+        );
+    }
+}
+
 #[test]
 fn output_affinity_can_reference_an_input_with_the_same_name() {
     let mut value = fixture("pipeline-definition");

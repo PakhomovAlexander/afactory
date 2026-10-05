@@ -95,6 +95,15 @@ inconclusive state is `not_run` with a named reason. Its record is one
 _Avoid_: "green CI" — a CI conclusion nobody bound to the Snapshot is not a Remote Check. Nor
 "remote policy": committed policy only declares the `remote` table; it never selects it.
 
+**Trusted CI Pipeline**:
+The Task's selected root Pipeline when the Task's captured run authority pins it and its own
+`pipeline.toml` carries the exact tag `ci`. It alone lets a Remote Check send a candidate that
+changes `.github/`, and every record of that phase names it as `trusted_ci`
+([ADR-0141](docs/adr/0141-let-a-pinned-ci-tagged-root-pipeline-send-a-changed-workflow.md)).
+_Avoid_: "CI Pipeline" for any Pipeline or job whose name mentions CI, a tagged child or
+unselected Pipeline, or a generated one — none of them grants anything. Nor "verified CI": a
+green run of a changed workflow shows that the changed workflow passed, nothing more.
+
 **Remote Check mapping**:
 The operator's machine-local file (`$XDG_CONFIG_HOME/af/remote-checks.toml` or
 `AF_TASK_REMOTE_CHECK_POLICY_FILE`) that names, per repository, which declared checks run

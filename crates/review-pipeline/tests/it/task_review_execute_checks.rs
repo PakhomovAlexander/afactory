@@ -343,6 +343,7 @@ fn run(case: &'static str) -> Outcome {
         coverage: BTreeMap::from([("reviewed".into(), from("reduce", "result"))]),
         max_attempts: 3,
         max_parallel: 2,
+        tags: Default::default(),
     };
     let worker = TaskWorkerManifest {
         schema: "af.worker/1".into(),

@@ -68,7 +68,10 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   run first; the result counts only after the merge ref reads back as the candidate tree, and
   every remote fact is one `af/RemoteCheckEvidence@1`
   ([ADR-0140](adr/0140-run-a-declared-check-through-a-gate-pull-request.md),
-  [Remote Checks](task-execution/remote-checks.md)).
+  [Remote Checks](task-execution/remote-checks.md)). A candidate that changes `.github/` is
+  sent only when the selected root Pipeline is catalog-pinned and tagged exactly `ci`, and the
+  evidence names that grant
+  ([ADR-0141](adr/0141-let-a-pinned-ci-tagged-root-pipeline-send-a-changed-workflow.md)).
 - A report is accepted by an independent verifier, not by its author, and every report receipt
   names the source Snapshot its repository citations were resolved against. A report Task
   allows no `write-source`, has no `snapshot` output and is never delivered; `af task output`

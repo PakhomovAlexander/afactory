@@ -313,6 +313,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
         coverage: BTreeMap::from([("verified".into(), output("accept", "result"))]),
         max_attempts: 3,
         max_parallel: 1,
+        tags: Default::default(),
     };
     pipeline.validate()?;
     let kind = TaskKindManifest {

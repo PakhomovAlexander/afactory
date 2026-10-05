@@ -371,6 +371,7 @@ impl TaskPlanCompiler {
             coverage: BTreeMap::new(),
             max_attempts: settings.max_attempts + provider_attempt,
             max_parallel: 1,
+            tags: Default::default(),
         };
         definition.validate()?;
         if self.packages.contains_key(PLANNER_PIPELINE) {

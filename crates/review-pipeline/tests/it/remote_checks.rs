@@ -5,6 +5,7 @@
 
 mod executor;
 mod task;
+mod trusted_ci;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,7 @@ use review_core::task::remote_check::{
 use review_pipeline::task::remote_check::github_pr::{self, RemotePhase};
 use review_pipeline::task::remote_check::{
     GithubPrSettings, GithubPrTarget, RemoteCheckMapping, RemoteCheckOutcome, RemoteCheckRequest,
+    TrustedCiPipeline,
 };
 use review_source_git::task::{capture_snapshot, read_snapshot};
 use review_source_git::{Entry, EntryKind, Manifest};
@@ -380,14 +382,25 @@ impl Snapshots {
         kind: EntryKind,
         bytes: &[u8],
     ) -> (String, Manifest) {
+        self.derived_all(cas, &[(path, kind, bytes)])
+    }
+
+    /// A candidate derived from the source with every one of `changes` written over it.
+    pub fn derived_all(
+        &self,
+        cas: &Cas,
+        changes: &[(&str, EntryKind, &[u8])],
+    ) -> (String, Manifest) {
         let mut entries: Vec<Entry> = self
             .source
             .entries
             .iter()
-            .filter(|e| e.path != path)
+            .filter(|e| !changes.iter().any(|(path, _, _)| e.path == *path))
             .cloned()
             .collect();
-        entries.push(entry(cas, path, kind, bytes));
+        for (path, kind, bytes) in changes {
+            entries.push(entry(cas, path, *kind, bytes));
+        }
         let manifest = Manifest::new(entries).unwrap();
         let id = capture_snapshot(cas, &manifest, &self.origin, Some(&self.source_id)).unwrap();
         assert_eq!(read_snapshot(cas, &id).unwrap().1, manifest);
@@ -406,7 +419,8 @@ pub fn kernel_request(workflow: &str) -> RemoteCheckRequest {
     }
 }
 
-/// Run the remote phase directly, the way the check operator calls it.
+/// Run the remote phase directly, the way the check operator calls it, without a trusted CI
+/// exception.
 #[allow(clippy::too_many_arguments)]
 pub fn phase(
     cas: &Cas,
@@ -418,6 +432,34 @@ pub fn phase(
     checks: &[RemoteCheckRequest],
     limit: Duration,
     cancellation: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Vec<RemoteCheckOutcome>, String> {
+    phase_trusted(
+        cas,
+        remote,
+        snapshots,
+        candidate,
+        owner,
+        task_id,
+        checks,
+        limit,
+        cancellation,
+        None,
+    )
+}
+
+/// [`phase`] with the trusted CI exception the coordinator captured, if any (ADR-0141).
+#[allow(clippy::too_many_arguments)]
+pub fn phase_trusted(
+    cas: &Cas,
+    remote: &Remote,
+    snapshots: &Snapshots,
+    candidate: &(String, Manifest),
+    owner: &str,
+    task_id: &str,
+    checks: &[RemoteCheckRequest],
+    limit: Duration,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
+    trusted_ci: Option<&TrustedCiPipeline>,
 ) -> Result<Vec<RemoteCheckOutcome>, String> {
     let target = remote.target();
     github_pr::run(
@@ -434,6 +476,7 @@ pub fn phase(
             checks,
             deadline: Instant::now() + limit,
             cancellation,
+            trusted_ci,
         },
         &remote.settings(),
     )

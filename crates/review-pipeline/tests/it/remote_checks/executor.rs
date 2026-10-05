@@ -347,6 +347,7 @@ fn missing_or_unauthenticated_tools_are_refused_with_their_fix() {
                 checks: &[kernel_request(CI)],
                 deadline: Instant::now() + LIMIT,
                 cancellation: None,
+                trusted_ci: None,
             },
             &settings,
         )

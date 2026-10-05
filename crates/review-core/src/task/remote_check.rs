@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::{present_option, require};
+use super::pipeline::PIPELINE_TAG_CI;
+use super::{is_package_name, present_option, require};
 use crate::is_digest;
 
 pub const REMOTE_CHECK_EVIDENCE_V1: &str = "af/RemoteCheckEvidence@1";
@@ -326,6 +327,40 @@ impl RemoteJobV1 {
     }
 }
 
+/// The trusted CI Pipeline exception (ADR-0141) a remote phase relied on to send a candidate
+/// whose `.github/` differs from the Task's source. It names the exact authority that granted
+/// it: the Task revision's captured run authority, the admitted plan, and the selected root
+/// Pipeline that authority pins with the exact tag `ci`. Present only when the exception was
+/// used; a reader accepts it only when its own capture of the same plan grants the same.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteTrustedCiV1 {
+    /// Always [`PIPELINE_TAG_CI`].
+    pub tag: String,
+    /// The Task revision's captured run authority, whose catalog pins the root Pipeline.
+    pub authority_id: String,
+    /// The admitted Execution Plan whose selected root this is.
+    pub plan_id: String,
+    /// The selected root Pipeline's package name.
+    pub pipeline: String,
+    /// The captured package artifact of that Pipeline, as the authority pins it.
+    pub pipeline_id: String,
+}
+
+impl RemoteTrustedCiV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            self.tag == PIPELINE_TAG_CI
+                && is_digest(&self.authority_id)
+                && is_digest(&self.plan_id)
+                && is_package_name(&self.pipeline)
+                && is_digest(&self.pipeline_id),
+            "A trusted CI exception names the tag `ci`, an exact run authority, plan and root \
+             Pipeline package",
+        )
+    }
+}
+
 /// What a remote check's evidence derives: the only status a stored remote result may carry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteCheckVerdictV1 {
@@ -345,6 +380,14 @@ pub struct RemoteCheckEvidenceV1 {
     pub required: Vec<String>,
     pub snapshot_id: String,
     pub source_snapshot_id: String,
+    /// Present exactly when the candidate's `.github/` differs from the source's and the
+    /// selected root Pipeline's trusted CI exception let it reach the remote (ADR-0141).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    pub trusted_ci: Option<RemoteTrustedCiV1>,
     pub observed_unix_ms: u64,
     #[serde(
         default,
@@ -422,6 +465,14 @@ impl RemoteCheckEvidenceV1 {
             "Remote check evidence requires a GitHub repository, exact Snapshots, an observation \
              time and a bounded diagnostic",
         )?;
+        if let Some(trusted) = &self.trusted_ci {
+            trusted.validate()?;
+            require(
+                self.reason != Some(RemoteCheckReasonV1::RemoteCandidateChangesCi),
+                "Remote check evidence cannot both use the trusted CI exception and refuse the \
+                 candidate for changing `.github/`",
+            )?;
+        }
         let published = self.base_commit.is_some() && self.head_commit.is_some();
         require(
             self.base_commit.as_deref().is_none_or(is_commit)
@@ -552,6 +603,7 @@ mod tests {
             required: required.clone(),
             snapshot_id: digest('1'),
             source_snapshot_id: digest('2'),
+            trusted_ci: None,
             observed_unix_ms: 1,
             reason: None,
             diagnostic: None,
@@ -678,5 +730,55 @@ mod tests {
         published.diagnostic = None;
         published.reason = Some(RemoteCheckReasonV1::RemoteSkippedLocalFailed);
         assert!(published.validate().is_err());
+    }
+
+    fn trusted() -> RemoteTrustedCiV1 {
+        RemoteTrustedCiV1 {
+            tag: "ci".into(),
+            authority_id: digest('3'),
+            plan_id: digest('4'),
+            pipeline: "project/ci".into(),
+            pipeline_id: digest('5'),
+        }
+    }
+
+    #[test]
+    fn a_trusted_ci_exception_names_its_exact_authority() {
+        let mut evidence = observed(&["success"]);
+        evidence.trusted_ci = Some(trusted());
+        evidence.validate().unwrap();
+        assert_eq!(evidence.verdict(), RemoteCheckVerdictV1::Passed);
+        let edits: [fn(&mut RemoteTrustedCiV1); 7] = [
+            |t| t.tag = "CI".into(),
+            |t| t.tag = "cicd".into(),
+            |t| t.tag = String::new(),
+            |t| t.authority_id = "project/authority".into(),
+            |t| t.plan_id = "latest".into(),
+            |t| t.pipeline = "Not A Package".into(),
+            |t| t.pipeline_id = "sha256:short".into(),
+        ];
+        for edit in edits {
+            let mut forged = evidence.clone();
+            edit(forged.trusted_ci.as_mut().unwrap());
+            assert!(forged.validate().is_err(), "{forged:?}");
+        }
+        // Granted and refused for changing `.github/` at once is a contradiction.
+        let mut refused = evidence.clone();
+        refused.state = RemoteCheckStateV1::Refused;
+        refused.reason = Some(RemoteCheckReasonV1::RemoteCandidateChangesCi);
+        refused.base_commit = None;
+        refused.head_commit = None;
+        refused.tree = None;
+        refused.pull_request = None;
+        refused.merge_commit = None;
+        refused.run = None;
+        refused.jobs.clear();
+        assert!(refused.validate().is_err());
+        refused.trusted_ci = None;
+        refused.validate().unwrap();
+        // A later refusal of a granted phase keeps the grant it was made under.
+        refused.trusted_ci = Some(trusted());
+        refused.reason = Some(RemoteCheckReasonV1::RemoteSkippedLocalFailed);
+        refused.validate().unwrap();
     }
 }

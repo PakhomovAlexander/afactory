@@ -33,7 +33,7 @@ pub fn parse_task_pipeline(text: &str) -> Result<PipelineDefinitionV1, ConfigErr
                 for (name, value) in object {
                     if matches!(
                         name.as_str(),
-                        "covers" | "kinds" | "checks" | "independent_from"
+                        "covers" | "kinds" | "checks" | "independent_from" | "tags"
                     ) {
                         if let Some(items) = value.as_array_mut() {
                             let mut strings = items
@@ -111,5 +111,41 @@ mod tests {
             ))
             .is_err()
         );
+    }
+
+    #[test]
+    fn tags_are_absent_by_default_and_parse_as_a_bounded_exact_set() {
+        let text = toml::to_string(&definition()).unwrap();
+        assert!(definition().tags.is_empty());
+        assert!(
+            !text.contains("tags"),
+            "an untagged Pipeline keeps its bytes"
+        );
+        let tagged = parse_task_pipeline(&format!("tags = [\"release\", \"ci\"]\n{text}")).unwrap();
+        assert_eq!(
+            tagged.tags.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["ci", "release"]
+        );
+        // Spellings are kept exactly: `CI` is a different tag from `ci`.
+        let upper = parse_task_pipeline(&format!("tags = [\"CI\"]\n{text}")).unwrap();
+        assert!(
+            !upper
+                .tags
+                .contains(review_core::task::pipeline::PIPELINE_TAG_CI)
+        );
+        for invalid in [
+            "tags = [\"ci\", \"ci\"]",
+            "tags = [\"\"]",
+            "tags = [\"c i\"]",
+            "tags = [1]",
+            "tags = \"ci\"",
+        ] {
+            assert!(
+                parse_task_pipeline(&format!("{invalid}\n{text}")).is_err(),
+                "{invalid}"
+            );
+        }
+        let many = (0..17).map(|i| format!("\"t{i:02}\"")).collect::<Vec<_>>();
+        assert!(parse_task_pipeline(&format!("tags = [{}]\n{text}", many.join(", "))).is_err());
     }
 }
