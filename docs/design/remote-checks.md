@@ -42,10 +42,14 @@ These bind package RC1. A change that cannot meet one of them is not done.
 1. **Same check, another executor.** A check in `.af/code-policy.toml` may add a `remote` table.
    Its `command` stays mandatory: every remote check has a local equivalent. A policy without
    the table is captured byte-identically to today and behaves identically.
-2. **The machine chooses.** An operator's machine-local mapping names, per repository, which
-   declared checks run remotely on this machine. No mapping, or a check not listed in it, means
-   the local command runs exactly as today. Committed policy never forces a remote run and
-   never grants push authority.
+2. **The pipeline chooses, and the plan says so.** A Task pipeline's check node lists the
+   checks that run remotely (`remote_checks`); there is no per-machine switch. A project that
+   wants both gates keeps two pipeline variants and a Task file names one. The machine supplies
+   only the push target, and by having one, the authorization. A plan whose pipeline has remote
+   checks carries the publishing effect and the destination repository in its authority, the
+   preview prints both, and confirming the plan is the consent; such a pipeline cannot be
+   planned on a machine that has no target for the repository. (Decided 2026-10-05, replacing
+   the per-machine selection RC1 shipped with; see §6.)
 3. **Exact Snapshot, verified.** A remote conclusion is accepted only when the kernel has read
    back, from the remote, that the tree GitHub merged and tested for the pull request equals the
    tree it built from the checked Snapshot, and that every job it relied on belongs to the
@@ -93,6 +97,8 @@ review Workers.
 
 ### 3.1 Declaration
 
+What a check's remote form *is* belongs to the check, in `.af/code-policy.toml`:
+
 ```toml
 [checks.kernel]
 name = "kernel"
@@ -108,25 +114,39 @@ workflow = ".github/workflows/ci.yml"
 required = ["validation / lint", "validation / check (ubuntu-latest)"]
 ```
 
-- `executor` is a closed set; RC1 admits `github-pr` only. An unknown name is refused when the
-  policy is captured.
+- `executor` is a closed set; `github-pr` only. An unknown name is refused when the policy is
+  captured.
 - `workflow` is the repository path of the workflow whose `pull_request` run earns the result.
   Jobs of any other workflow are never admitted, whatever their names.
 - `required` lists 1 to 32 distinct job names, each 1 to 128 characters, exactly as the GitHub
   Actions jobs API reports them for that run (a job of a called workflow reads
   `validation / lint`). All of them must conclude `success` for the check to pass.
-- The table is optional per check. The policy schema stays `af.code-task-policy/1`; the JSON
-  schema and the policy validator gain the table.
+- The table is optional per check and `command` stays mandatory. Declaring both forms is the
+  project's statement that they verify the same thing; the kernel does not compare a workflow
+  with a command.
 
-Declaring both forms is the project's statement that they verify the same thing. The kernel
-does not compare a workflow with a command.
+*Where* a check runs belongs to the pipeline, in the check node of a Task pipeline:
 
-### 3.2 Machine mapping
+```toml
+[nodes.operator]
+op = "check"
+checks = ["markdownlint"]        # run on this machine
+remote_checks = ["kernel"]       # run by the check's declared remote executor
+```
+
+- `remote_checks` is optional; a node without it serializes and behaves as before.
+- A name appears in one list only, and a node names at least one check in all.
+- Every `remote_checks` name must be a check the captured code policy declares with a `remote`
+  table; anything else is refused when the plan is captured, naming the pipeline, the node and
+  the check.
+- A project that wants a local and a remote gate keeps two pipelines that differ in these two
+  lists, and the Task file names one of them.
+
+### 3.2 Machine mapping: the push target
 
 The mapping is an operator file outside any source tree: `$XDG_CONFIG_HOME/af/remote-checks.toml`,
-or the absolute path in `AF_TASK_REMOTE_CHECK_POLICY_FILE` when set. The coordinator resolves it
-once when it constructs the code domain, as it does for the Rust toolchain mapping; candidate
-commands never receive the variable or the path.
+or the absolute path in `AF_TASK_REMOTE_CHECK_POLICY_FILE` when set. It names where this machine
+may push gate branches for a repository, and nothing else:
 
 ```toml
 version = 1
@@ -135,48 +155,49 @@ version = 1
 repository_id = "5f1c…"            # git rev-list --max-parents=0 HEAD, sorted
 github = "PakhomovAlexander/afactory"
 push_url = "git@github.com:PakhomovAlexander/afactory.git"
-checks = ["kernel"]
 ```
 
 - `repository_id` is the identity Task source origins already record (the repository's sorted
   root commits), so one machine can map several repositories without ambiguity.
-- `checks` names declared checks. A name the captured policy does not declare, or declares
-  without a `remote` table, is an error before any check starts.
 - `push_url` is any Git URL without user information. `github` is the `owner/name` used for
   API calls through `gh`.
-- A malformed selected mapping is an error before the first check starts. An absent file is
-  not an error: every check runs locally.
+- The file selects no checks. One that still carries the `checks` key RC1 read is refused, with
+  a message that the pipeline's check node chooses now.
+- It is read when a plan is captured. A pipeline with remote checks and no entry for the source
+  Snapshot's repository is refused there, naming this file and the repository identity. A
+  pipeline without remote checks never reads it.
 
 The mapping is the operator's authorization for this machine to push the gate branches of that
-repository. It is machine-local for the same reason Provider bindings are: authority to act on
-a remote belongs to a person at a machine, not to a commit.
+repository: authority to act on a remote belongs to a person at a machine, not to a commit. The
+plan records the `github` repository as a data destination and `publish-gate` as an effect, so
+`af task plan` prints them on its `SEND` and `EFFECTS` lines and confirming the plan confirms
+them. The push URL stays machine-local and is read again at run time; if the mapping then names
+no target, or another `github` than the plan recorded, the check Attempt ends with an error
+before any check starts.
 
-### 3.3 Selection, order and time within one check Attempt
+### 3.3 Order and time within one check Attempt
 
-For the named checks of one Check node:
+For one Check node:
 
-1. Partition them into *remote-selected* (declared with `remote`, listed in the mapping entry
-   for the Snapshot's `repository_id`) and *local* (all others).
-2. Run every local check as today, in name order, each under its own
+1. Run every check of `checks` as today, in name order, each under its own
    `check_process_wall_ms` as today.
-3. If any required local check did not pass, record each remote-selected check as `NotRun` with
-   reason `remote_skipped_local_failed`. Nothing is pushed.
-4. Otherwise run the remote phase (3.4) once for all remote-selected checks. They share one
-   push and one pull request and are judged separately, each against its own `workflow` and
-   `required` names.
+2. If any required local check did not pass, record each check of `remote_checks` as `NotRun`
+   with reason `remote_skipped_local_failed`. Nothing is pushed.
+3. Otherwise run the remote phase (3.4) once for all of `remote_checks`. They share one push and
+   one pull request and are judged separately, each against its own `workflow` and `required`
+   names.
 
 **One clock for the remote phase.** The remote phase starts one timer when it begins (before
-the `.github/` comparison). Transport and polling time is charged to every remote-selected
-check alike. The phase ends at the earlier of `check_process_wall_ms` on that timer and the
-Attempt's deadline. A check is judged as soon as all its required jobs are complete; a check
-still incomplete when the phase ends is `NotRun` with the deadline reason a local check uses.
-No remote-selected check can therefore pass on an observation made after its captured
-per-check limit.
+the `.github/` comparison). Transport and polling time is charged to every remote check alike.
+The phase ends at the earlier of `check_process_wall_ms` on that timer and the Attempt's
+deadline. A check is judged as soon as all its required jobs are complete; a check still
+incomplete when the phase ends is `NotRun` with the deadline reason a local check uses. No
+remote check can therefore pass on an observation made after its captured per-check limit.
 
-A remote-selected check never executes candidate code on this machine: no sandbox is
-materialized for it, no Rust toolchain snapshot is prepared and no warm directory is bound.
-Under `[warm]` it still has its evidence group, with each declared kind recorded as skipped for
-the reason `remote`.
+A remote check never executes candidate code on this machine: no sandbox is materialized for
+it, no Rust toolchain snapshot is prepared and no warm directory is bound. Under `[warm]` it
+still has its evidence group, with each declared kind recorded as skipped for the reason
+`remote`.
 
 ### 3.4 Transport: two branches and one draft pull request
 
@@ -227,7 +248,7 @@ itself when it has no parent).
    checks and is not for review or merge. A closed one is never replaced by a second: the check
    is `remote_pr_refused`, naming the pull request to reopen. Any other failure is also
    `remote_pr_refused`.
-7. **Wait on the right run.** Immediately and then every 15 seconds, until every remote-selected
+7. **Wait on the right run.** Immediately and then every 15 seconds, until every remote
    check is judged or the remote phase ends (3.3) or the Attempt is cancelled:
    - list the Actions workflow runs with event `pull_request` and head SHA equal to the head
      commit; keep those whose workflow path is a declared `workflow` and whose pull-request list
@@ -273,7 +294,7 @@ occurrence of the exact push URL is replaced by `<push-url>` and of the mapping 
 
 ### 3.5 Evidence and the result contract
 
-One artifact per remote-selected check, `af/RemoteCheckEvidence@1`, tagged by `state`:
+One artifact per remote check, `af/RemoteCheckEvidence@1`, tagged by `state`:
 
 | State | When | Fields beyond the common ones |
 | --- | --- | --- |
@@ -355,7 +376,8 @@ follow-up.
 
 ### RC1 — Remote checks in the kernel
 
-**Depends on:** nothing.
+**Depends on:** nothing. Delivered and verified (§6). Its deliverables 2 and 3 describe the
+per-machine selection RC1 shipped with, which RC3 replaces.
 
 Deliverables:
 
@@ -390,7 +412,8 @@ Deliverables:
    3.6; local failure skips the push; resume attaches without a second pull request or commit;
    a closed gate pull request is refused and never replaced by a second; a push interrupted
    after it landed is not recorded as refused, and resume attaches to it; a merge ref changed
-   after one check passed refuses the later check; a repair round appends one commit; a head branch with the candidate
+   after one check passed refuses the later check; a repair round appends one commit; a head
+   branch with the candidate
    tree but another base, a merge commit, or a foreign commit message is refused; the same Task
    ID from another Store is refused at the base; a successful job on a `push`-event run or on
    another workflow's run for the same head commit earns nothing; a run with two attempts is
@@ -434,6 +457,76 @@ Acceptance:
   outside `refs/heads/af-gate/<task-id>/` is ever written.
 - `docs/values.md` and `AGENTS.md` state the exception in the same change that introduces the
   behaviour.
+
+### RC3 — The pipeline chooses
+
+**Depends on:** RC1 as merged into this branch. Replaces RC1's per-machine selection (§2.2,
+3.1 to 3.3); the transport, the evidence and the result contract of 3.4 to 3.8 do not change.
+
+Deliverables:
+
+1. The Task pipeline's `check` operator gains the optional `remote_checks` set of 3.1, in the
+   pipeline TOML, its JSON schema, its parity fixtures and the compiler: a node without it has
+   the bytes and identity it had; a name in both lists, a node naming no check at all, and a
+   `remote_checks` name the captured code policy does not declare with a `remote` table are
+   each refused when the plan is captured, with a message naming the pipeline, the node and the
+   check. It works the same in a child pipeline a parent calls.
+2. The code check operator takes its remote checks from the compiled operator and never from
+   the mapping: `checks` run locally first, `remote_checks` through the executor, with the
+   order, clock, transport, evidence and receipt of RC1 unchanged. The receipt still names every
+   check of both lists.
+3. The machine mapping of 3.2 names push targets only. The `checks` key is removed from its
+   reader, its documentation and every fixture; a file that still carries it is refused with a
+   message that names the pipeline's check node as the place that chooses.
+4. A plan whose graph has remote checks is captured only when the mapping holds a target for
+   the source Snapshot's repository; otherwise capture is refused, naming the mapping file's
+   knob and the repository identity, before any Attempt. Such a plan's authority gains the
+   effect `publish-gate` and the data destination `github:<owner/name>`, so `af task plan`
+   prints them on `EFFECTS` and `SEND` and `af task plan --json` and `af task explain` carry
+   them. A plan without remote checks has the authority, the bytes and the identity it had
+   before this package, whatever the mapping holds.
+5. At run time the target is read again for its push URL. A mapping that then names no target
+   for the repository, or another `github` than the plan's recorded destination, ends the check
+   Attempt with an error before any check starts; nothing is pushed.
+6. Remote twins of this repository's pipelines, staged because a Worker may not write `.af/`:
+   under `fixtures/remote-checks/packages/`, `kernel/gate-bench-remote`,
+   `kernel/implementation-reviewed-remote` and `kernel/verification-reviewed-remote`, with
+   remote twins of whichever child pipelines of theirs own a check node. Each is its local
+   original with `kernel` moved from `checks` to `remote_checks`, its own name, and nothing
+   else changed. A catalog fragment with computed pins and a README of the install steps
+   accompany them, and one test proves the staged packages compile against a code policy that
+   declares `[checks.kernel.remote]` and that installing them twice changes nothing.
+7. Tests, credential-free and offline as in RC1, now driving selection through pipelines: a
+   pipeline with `remote_checks` runs its local checks first and then the remote phase; the
+   same checks in a pipeline without `remote_checks` run locally whatever the mapping holds; a
+   name in both lists, an empty node and an undeclared remote form are refused at capture;
+   planning without a target is refused and names the knob and the repository; the preview and
+   the JSON plan show `publish-gate` and the `github:` destination only for a remote pipeline;
+   a mapping with `checks` is refused; a target removed or changed between plan and run ends
+   the Attempt before any push. Every RC1 test that selected checks through the mapping selects
+   them through a pipeline instead and keeps its assertions.
+8. ADR-0139 gains a dated amendment recording that the pipeline chooses, why (the live proof's
+   plan preview said `SEND none` for a Task that then pushed its source, and the pipeline is
+   where a developer reads what a gate does), and the rejected alternatives (the per-machine
+   mapping RC1 shipped; a pipeline default with a bindings override). `CONTEXT.md`,
+   `AGENTS.md`, `docs/task-execution/remote-checks.md`, the mapping examples everywhere and
+   `changelog.d/remote-checks.md` say the same thing.
+
+Acceptance:
+
+- A Task over a pipeline without `remote_checks` is planned and run exactly as before this
+  package, whatever the mapping holds: same plan identity, same authority, same receipt.
+- With `remote_checks = ["kernel"]` and a mapped target, `af task plan` prints `publish-gate`
+  among `EFFECTS` and `github:<owner/name>` on `SEND`, and the run pushes the two branches and
+  records `observed` evidence as in RC1.
+- On a machine with no target for the repository, `af task plan` of that pipeline refuses before
+  any Attempt and names the mapping file and the repository identity.
+- No field of the mapping selects a check, and the mapping fixture that still has `checks` is
+  refused.
+- The staged remote pipelines compile against this repository's policy plus the `remote` table,
+  and differ from their originals only in name and in the two check lists.
+- No test, fixture, recorded artifact, event or command output contains a credential, the push
+  URL or a mapping path; no push carries `--force` or a `+` refspec.
 
 ### RC2 — Adoption and live proof (no package code)
 
@@ -545,6 +638,12 @@ What the live runs showed that the note did not say:
   GitHub opens it and runs CI on it.
 - The repository's `pull_request` workflow ran for a draft pull request into an `af-gate/**`
   base without any workflow change.
+
+**The pipeline chooses (decision of 2026-10-05).** Asked how a developer sets a gate local or
+remote, the answer RC1 gave was "in a machine file the pipeline and the plan never show": the
+proof's own plan preview printed `SEND  none` and the run then pushed the source to GitHub. The
+owner decided that the pipeline's check node chooses and that there is no per-machine override;
+two pipeline variants serve a project that wants both. Package RC3 implements it.
 
 Not done: this repository's own `.af/code-policy.toml` does not declare the table (it follows the
 release that carries Remote Checks, since the lock pins the newest release), and the two proof
