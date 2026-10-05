@@ -113,6 +113,74 @@ fn setup_in_terminal(
 }
 
 #[test]
+fn status_leaves_out_a_logged_out_default_context_once_its_kind_is_registered() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path();
+    let bin = fake_provider(
+        home,
+        "claude",
+        r#"#!/bin/sh
+# Like the real CLI: CLAUDE_CONFIG_DIR, or ~/.claude without it.
+if [ "$1" = auth ] && [ "$2" = status ] && [ "$3" = --json ]; then
+  if [ -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/logged-in" ]; then
+    printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}'
+    exit 0
+  fi
+  printf '%s\n' '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}'
+  exit 1
+fi
+exit 64
+"#,
+    );
+    // The Claude CLI's default context, `~/.claude`, and a registered one elsewhere.
+    let default = home.join(".claude");
+    let auth = home.join("claude-main");
+    for dir in [&default, &auth] {
+        std::fs::create_dir(dir).unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::fs::write(auth.join("logged-in"), "").unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_af"))
+            .args(args)
+            .env("HOME", home)
+            .env("XDG_CONFIG_HOME", home.join("config"))
+            .env("AF_SELF_OFFLINE", "1")
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("CODEX_HOME")
+            .output()
+            .unwrap()
+    };
+    let status = || {
+        let output = run(&["provider", "status"]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    // Before a Claude Provider is registered, the logged-out default context is how setup starts.
+    let before = status();
+    assert!(before.contains("claude-ambient"), "{before}");
+    let added = run(&[
+        "provider",
+        "add",
+        "claude-main",
+        "--kind",
+        "claude",
+        "--auth-dir",
+        auth.to_str().unwrap(),
+    ]);
+    assert!(added.status.success(), "{}", stderr(&added));
+    // Once one is, the default directory with no login is one the operator does not use.
+    let after = status();
+    assert!(after.contains("claude-main"), "{after}");
+    assert!(!after.contains("claude-ambient"), "{after}");
+    // A login there brings it back: it is a login the operator may register.
+    std::fs::write(default.join("logged-in"), "").unwrap();
+    let again = status();
+    assert!(again.contains("claude-ambient"), "{again}");
+}
+
+#[test]
 fn setup_owns_claude_login_registration_and_idempotent_recheck() {
     let root = tempfile::tempdir().unwrap();
     let auth = root.path().join("claude auth");
