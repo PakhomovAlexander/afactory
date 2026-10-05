@@ -86,8 +86,9 @@ Two cases come up often:
 - **An ambient ID.** `claude-ambient` and `codex-ambient` are discovery labels, not registry
   entries, so there is nothing to remove. One is listed while the directory the Provider CLI uses
   by default (`CLAUDE_CONFIG_DIR` or `~/.claude`; `CODEX_HOME` or `~/.codex`) is not a registered
-  Provider's auth directory, and, once a Provider of its kind is registered, only while that
-  directory holds a login ([ADR-0141](adr/0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)).
+  Provider's auth directory. Once a Provider of its kind is registered, it is left out when its
+  status is `not authenticated`; with a login, or when the status probe fails (`unavailable`,
+  `installation failed`), it stays listed ([ADR-0141](adr/0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)).
   Start `af` with that variable naming a registered directory, or register the default
   directory, and the label goes away.
 

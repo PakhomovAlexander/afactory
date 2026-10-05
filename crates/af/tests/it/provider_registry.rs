@@ -132,10 +132,23 @@ fi
 exit 64
 "#,
     );
-    // The Claude CLI's default context, `~/.claude`, and a registered one elsewhere.
+    fake_provider(
+        home,
+        "codex",
+        r#"#!/bin/sh
+# Like codex-cli: CODEX_HOME, or ~/.codex without it; login status goes to stderr.
+if [ "$1" = login ] && [ "$2" = status ]; then
+  printf '%s\n' 'Not logged in' >&2
+  exit 1
+fi
+exit 64
+"#,
+    );
+    // The Claude CLI's default context, `~/.claude`, and a registered one elsewhere; the Codex
+    // CLI's default context, `~/.codex`, with no login and no Codex Provider registered.
     let default = home.join(".claude");
     let auth = home.join("claude-main");
-    for dir in [&default, &auth] {
+    for dir in [&default, &auth, &home.join(".codex")] {
         std::fs::create_dir(dir).unwrap();
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
@@ -174,6 +187,12 @@ exit 64
     let after = status();
     assert!(after.contains("claude-main"), "{after}");
     assert!(!after.contains("claude-ambient"), "{after}");
+    // A Provider of the other kind hides nothing: Codex's logged-out default context stays.
+    let codex = after
+        .lines()
+        .find(|line| line.starts_with("codex-ambient "))
+        .unwrap_or_else(|| panic!("codex-ambient is listed: {after}"));
+    assert!(codex.contains("not authenticated"), "{after}");
     // A login there brings it back: it is a login the operator may register.
     std::fs::write(default.join("logged-in"), "").unwrap();
     let again = status();
