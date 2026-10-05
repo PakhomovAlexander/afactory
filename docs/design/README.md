@@ -22,5 +22,7 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   root port, and `af task gc`. Proposed 2026-09-27; packages R1–R6 are not yet delivered.
 - [`remote-checks.md`](remote-checks.md) — a declared Task check run by a remote executor (a
   draft pull request and the repository's CI) and bound to the exact Snapshot, chosen per
-  machine, for hosts too small to build the project. Proposed 2026-10-04; package RC1 is not yet
-  delivered.
+  machine, for hosts too small to build the project. Package RC1 is accepted as
+  [ADR-0139 *Run a declared check through a gate pull request*](../adr/0139-run-a-declared-check-through-a-gate-pull-request.md);
+  the live proof is recorded in its §6, and adoption in this repository's policy follows the
+  release.

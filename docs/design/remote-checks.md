@@ -1,8 +1,9 @@
 # Remote Checks — design and implementation plan
 
 **Status:** proposed, 2026-10-04; revised the same day after the design review recorded in §6.
-Package RC1 is implemented in the change that adds
-[ADR-0139](../adr/0139-run-a-declared-check-through-a-gate-pull-request.md); RC2 is not started.
+Package RC1 is implemented and verified in the change that adds
+[ADR-0139](../adr/0139-run-a-declared-check-through-a-gate-pull-request.md); the RC2 live proof
+ran on 2026-10-05, and adoption in this repository's own policy follows the release.
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 
 A Task check today is a command this machine runs. This note lets a machine hand a declared
@@ -519,4 +520,32 @@ re-verified, as §5 allows one re-verification:
 | A listing cut at ten pages could still pass (correctness, major) | An unexhausted run or job listing is an error for that poll: nothing is judged from it. |
 
 Cost of RC1: 963,291 tokens to implement, 327,000 to verify, 162,258 for the design review.
-- RC2: not started.
+**RC2 — live proof, 2026-10-05.** Two real Tasks against this repository on GitHub, each the
+zero-token `kernel/gate-bench` pipeline over the merged tree plus one local commit declaring
+`[checks.kernel.remote]` (workflow `.github/workflows/ci.yml`; jobs `validation / lint` and
+`validation / check (ubuntu-latest)`), with a mapping selected through
+`AF_TASK_REMOTE_CHECK_POLICY_FILE`. `markdownlint` ran locally, `kernel` remotely.
+
+| Host | Task | Result | Whole Task | Remote `check` job | `af` on the host |
+| --- | --- | --- | --- | --- | --- |
+| Workstation (14 cores) | `remote-gate-proof-1`, gate pull request #179 | verified | 15 min 41 s | 884 s | not measured |
+| Agent host (2 vCPU, 3.8 GB) | `remote-gate-proof-vm-1`, gate pull request #180 | verified | 15 min 37 s | 892 s | 58 s of CPU (6%), 245 MB peak, load under 1 |
+
+On the agent host the last local cold gates took 43 to 60 minutes of both cores and were ended
+by the 60-minute limit or by the memory killer. Both runs pushed the two branches and opened the
+draft pull request within about 90 seconds of starting; the rest was waiting for CI. Each
+evidence document names the pull request, run, base, head and merge commits, and both required
+jobs.
+
+What the live runs showed that the note did not say:
+
+- `af task show` printed `check kernel: passed, never started` for the remote check's cache
+  line. It now says `run remotely`.
+- A gate pull request whose head equals its base tree (a verification Task) is one empty commit;
+  GitHub opens it and runs CI on it.
+- The repository's `pull_request` workflow ran for a draft pull request into an `af-gate/**`
+  base without any workflow change.
+
+Not done: this repository's own `.af/code-policy.toml` does not declare the table (it follows the
+release that carries Remote Checks, since the lock pins the newest release), and the two proof
+pull requests and their four branches are still open.

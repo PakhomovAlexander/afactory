@@ -2893,7 +2893,8 @@ fn remote_check_lines(inspection: &serde_json::Value) -> Vec<String> {
 }
 
 /// One line per warm check (ADR-0131), named by its evidence group's check binding: its outcome,
-/// its host-observed elapsed time or that it never started, and, per declared kind,
+/// its host-observed elapsed time, or that it never started or was run remotely, and, per
+/// declared kind,
 /// `warm <bytes>` or `cold <reason>`. A check without observations prints nothing, so a Task
 /// whose policy has no `[warm]` reads as before, and no line is ever printed without a name.
 fn check_cache_lines(inspection: &serde_json::Value) -> Vec<String> {
@@ -2930,6 +2931,20 @@ fn check_cache_lines(inspection: &serde_json::Value) -> Vec<String> {
                 format!("{} in {} ms", preview::text(outcome), check["elapsed_ms"])
             }
             (Some(check), None) => format!("{} ms", check["elapsed_ms"]),
+            // A remote check ran nothing here: every declared kind was skipped as `remote`
+            // (ADR-0139), and its own `remote check` lines say what ran and where.
+            (None, outcome)
+                if caches.iter().all(|cache| {
+                    cache["kind"]
+                        .as_str()
+                        .is_some_and(|kind| kind.ends_with(":remote"))
+                }) =>
+            {
+                format!(
+                    "{}, run remotely",
+                    preview::text(outcome.unwrap_or("not_run"))
+                )
+            }
             (None, outcome) => format!(
                 "{}, never started",
                 preview::text(outcome.unwrap_or("not_run"))
@@ -3456,6 +3471,20 @@ mod check_cache_line_tests {
             [
                 "check markdownlint: not_run, never started, cargo_target cold deadline_exhausted, \
               cargo_home cold deadline_exhausted"
+            ]
+        );
+        // A remote check ran nothing here, and its line says so rather than "never started".
+        let remote = group(serde_json::json!({
+            "check": {"name": "kernel", "outcome": "passed", "rustup_home": "kernel_home"},
+            "caches": [
+                {"kind": "cargo_target:remote", "eligible": false, "bytes_available": 0},
+                {"kind": "cargo_home:remote", "eligible": false, "bytes_available": 0},
+            ],
+        }));
+        assert_eq!(
+            check_cache_lines(&remote),
+            [
+                "check kernel: passed, run remotely, cargo_target cold remote, cargo_home cold remote"
             ]
         );
         // A group that names no check prints nothing rather than an unnamed line.
