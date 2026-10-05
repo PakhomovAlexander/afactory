@@ -51,7 +51,7 @@ jsonschema = { version = "0.57.0", default-features = false }
 portable-pty = { version = "0.9.0", default-features = false }
 # Signs test releases the way the release job signs real ones, so signature verification is
 # exercised end to end without a key on disk.
-minisign = "0.9.1"
+minisign = "0.10.0"
 
 [lints]
 workspace = true
