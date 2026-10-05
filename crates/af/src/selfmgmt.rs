@@ -892,7 +892,7 @@ fn exempt_from_dispatch(argv: &[String]) -> bool {
         || binary_management_self
         || matches!(
             (first, argv.get(2).map(String::as_str)),
-            (Some("provider"), Some("setup" | "recover"))
+            (Some("provider"), Some("setup" | "remove" | "recover"))
         )
         || argv
             .iter()
@@ -1833,6 +1833,14 @@ mod tests {
             "codex"
         ])));
         assert!(exempt_from_dispatch(&argv(&["af", "provider", "recover"])));
+        // An older pinned release has no `remove`, and the registry is machine-local (ADR-0136).
+        assert!(exempt_from_dispatch(&argv(&[
+            "af",
+            "provider",
+            "remove",
+            "codex-main"
+        ])));
+        assert!(!exempt_from_dispatch(&argv(&["af", "provider", "status"])));
         // The browser: bare, or with only a repository to open.
         assert!(exempt_from_dispatch(&argv(&["af", "--repo", "/tmp/x"])));
         assert!(exempt_from_dispatch(&argv(&["af", "--repo=/tmp/x"])));

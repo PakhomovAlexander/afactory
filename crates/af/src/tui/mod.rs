@@ -68,6 +68,8 @@ gf                 open the file behind the node in $EDITOR
 R                  read the pane again; providers: probe quota windows
 q ZZ :q            quit; <C-c> first cancels a prompt or a running probe
 
+providers: d fills the : line with `provider remove ID` for a registered
+           Provider; Enter on the line runs it
 workers: gf opens the prompt (or the declaration), y copies the name;
          the folder lists its Workers once it is first opened
 tasks: Enter on a HISTORY row shows its artifact (q or Esc returns),
@@ -723,17 +725,25 @@ impl App {
         effect
     }
 
-    /// A pane-local key while the bar has focus: `r` and `D` act on the bar's selected Task and
-    /// on nothing else, never on a Task opened in the main pane; any other key is the opened
-    /// pane's, as it always was.
+    /// A pane-local key while the bar has focus: `r` and `D` act on the bar's selected Task,
+    /// and `d` on its selected Provider, and on nothing else, never on what the main pane has
+    /// opened; any other key is the opened pane's, as it always was.
     fn bar_key(&mut self, key: Key) -> Option<Effect> {
-        if !matches!(key, Key::Char('r' | 'D')) {
-            return self.pane_key(key);
-        }
         let row = self.tree.selected();
-        let verb = (row.kind == NodeKind::Item(Tab::Tasks))
-            .then(|| self.panes.tasks.bar_verb(&row.id, key))
-            .flatten();
+        let (verb, nothing) = match key {
+            Key::Char('r' | 'D') => (
+                (row.kind == NodeKind::Item(Tab::Tasks))
+                    .then(|| self.panes.tasks.bar_verb(&row.id, key))
+                    .flatten(),
+                "r and D act on a Task: select one in the bar, or open it",
+            ),
+            Key::Char('d') => (
+                (row.kind == NodeKind::Item(Tab::Providers))
+                    .then(|| self.panes.providers.remove_line(&row.id)),
+                panes::providers::REMOVE_NEEDS_A_PROVIDER,
+            ),
+            _ => return self.pane_key(key),
+        };
         match verb {
             Some(Ok(line)) => Some(Effect::Prefill(line)),
             Some(Err(error)) => {
@@ -741,7 +751,7 @@ impl App {
                 None
             }
             None => {
-                self.say_error("r and D act on a Task: select one in the bar, or open it");
+                self.say_error(nothing);
                 None
             }
         }
@@ -1310,7 +1320,7 @@ impl App {
         };
         self.paint_main(&mut frame, left, width - left, body);
         let fill = match self.mode {
-            Mode::Normal => Paint::Status,
+            Mode::Normal => self.status_paint(),
             Mode::Command | Mode::Search { .. } => Paint::Plain,
         };
         let status = self.status_spans(width);
@@ -1346,7 +1356,14 @@ impl App {
             };
             let fill = if index == cursor { paint } else { Paint::Plain };
             let line = index - self.bar_top + 1;
-            frame.paint_spans(line, 0, inner, &[Span::new(text, paint)], fill);
+            let spans = match row.tone.zip(chip_start(&text)) {
+                Some((tone, at)) => vec![
+                    Span::new(&text[..at], paint),
+                    Span::new(&text[at..], Paint::Chip(tone)),
+                ],
+                None => vec![Span::new(text, paint)],
+            };
+            frame.paint_spans(line, 0, inner, &spans, fill);
         }
         let separator = [Span::new("|", Paint::Muted)];
         for line in 0..body {
@@ -1371,7 +1388,7 @@ impl App {
             let line = index - view.top;
             if focused && index == view.cursor {
                 for span in &mut spans {
-                    span.paint = Paint::Cursor;
+                    span.paint = span.paint.under_cursor();
                 }
                 frame.paint_spans(line, left, width, &spans, Paint::Cursor);
             } else {
@@ -1396,10 +1413,10 @@ impl App {
             left.push_str("  ");
             left.push_str(pending);
         }
-        let (right, paint) = match &self.message {
-            Some((text, true)) => (text.clone(), Paint::Error),
-            Some((text, false)) => (text.clone(), Paint::Status),
-            None => (self.legend(), Paint::Status),
+        let paint = self.status_paint();
+        let right = match &self.message {
+            Some((text, _)) => text.clone(),
+            None => self.legend(),
         };
         // The message, binding or legend on the right is what the line is for. At a narrow
         // width the breadcrumb shrinks to the mode word, then goes, before the right is cut.
@@ -1412,10 +1429,18 @@ impl App {
         }
         let gap = width.saturating_sub(left.len() + right.len()).max(2);
         vec![
-            Span::new(left, Paint::Status),
-            Span::new(" ".repeat(gap), Paint::Status),
+            Span::new(left, paint),
+            Span::new(" ".repeat(gap), paint),
             Span::new(right, paint),
         ]
+    }
+
+    /// The status line is the blue actor, and turns pink while it carries an error.
+    fn status_paint(&self) -> Paint {
+        match &self.message {
+            Some((_, true)) => Paint::Alert,
+            _ => Paint::Status,
+        }
     }
 
     /// The `:` or `/` line, with the cursor on its character.
@@ -1577,14 +1602,24 @@ fn help_rows(words: &[String]) -> Vec<Row> {
     rows
 }
 
+/// Where a bar entry's state chip starts: at its last word, taking the spaces before it but
+/// one, so right-aligned words make chips of one width.
+fn chip_start(text: &str) -> Option<usize> {
+    let word = text.rfind(' ')? + 1;
+    Some(text[..word].trim_end().len() + 1)
+}
+
 /// The pixel worker beside the name and the tagline (`brand/ascii.txt`), above the key
 /// reference. Printable ASCII, 42 columns, so it fits the main pane at the 80-column minimum.
+/// Where the terminal takes truecolor the worker is solid pink with ink eyes; elsewhere it is
+/// the `#` drawing.
 fn banner_rows() -> Vec<Row> {
+    // `o` marks an eye: a space painted ink.
     const WORKER: [&str; 6] = [
         "     ###    ",
         "  ######### ",
-        "  #  ###  # ",
-        "  #  ###  # ",
+        "  #oo###oo# ",
+        "  #oo###oo# ",
         "  ######### ",
         " ###########",
     ];
@@ -1593,7 +1628,22 @@ fn banner_rows() -> Vec<Row> {
     WORKER
         .iter()
         .zip(beside)
-        .map(|(left, right)| Row::plain(format!("{left}     {right}").trim_end()))
+        .map(|(left, right)| {
+            let line = format!("{left}     {right}");
+            let mut spans: Vec<Span> = Vec::new();
+            for (column, cell) in line.trim_end().chars().enumerate() {
+                let (text, paint) = match cell {
+                    '#' if column < left.len() => ('#', Paint::Mascot),
+                    'o' if column < left.len() => (' ', Paint::Eye),
+                    _ => (cell, Paint::Plain),
+                };
+                match spans.last_mut() {
+                    Some(span) if span.paint == paint => span.text.push(text),
+                    _ => spans.push(Span::new(text.to_string(), paint)),
+                }
+            }
+            Row { spans }
+        })
         .chain(std::iter::once(Row::blank()))
         .collect()
 }

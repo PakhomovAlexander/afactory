@@ -798,6 +798,23 @@ Exit codes: 0 registered, 5 registry conflict.",
         #[arg(long, value_name = "DIR")]
         auth_dir: Option<PathBuf>,
     },
+    /// Remove named Providers from the machine-local registry
+    #[command(
+        long_about = "Remove named Providers from the machine-local registry.\n\n\
+Only the registry entries go: each auth directory, and the login its Provider CLI keeps there, \
+is left untouched, so `af provider add` or `setup` can register the context again. The previous \
+registry is preserved beside the new one.\n\n\
+An entry whose auth directory no longer exists makes the whole registry invalid, and removing \
+it is the repair; name every stale entry in one command. An ambient ID (`claude-ambient`, \
+`codex-ambient`) is a discovery label, not a registry entry, and cannot be removed.\n\n\
+Exit codes: 0 removed, 1 an ID is not registered or the registry cannot be rewritten.",
+        after_long_help = "Examples:\n  af provider remove codex-main\n  af provider remove claude-work codex-work"
+    )]
+    Remove {
+        /// Registered Provider IDs to remove
+        #[arg(value_name = "ID", required = true, num_args = 1..)]
+        ids: Vec<String>,
+    },
     /// Validate and close an interrupted Provider registry publication
     #[command(
         long_about = "Validate and close an interrupted Provider registry publication.\n\n\

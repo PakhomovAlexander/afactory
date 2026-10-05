@@ -33,6 +33,7 @@ pub mod build_cache;
 pub mod cache;
 pub mod container;
 pub mod seal;
+pub mod stale;
 pub mod task_build_cache;
 pub mod toolchain;
 pub mod workspace;
@@ -48,6 +49,7 @@ pub use cache::{
 };
 pub use container::{Availability, ContainerProvider};
 pub use seal::{MutationSet, SealedSandbox};
+pub use stale::{SweepReport, sweep_stale_sandboxes, sweep_stale_sandboxes_in};
 pub use task_build_cache::{
     Ensured, TaskBuildCacheKeyLock, TaskBuildCacheLock, Uninspectable, WARM_KINDS, WarmDirectory,
     default_task_build_cache_root, directory_bytes, lock_task_build_cache,
@@ -152,7 +154,8 @@ pub struct Sandbox {
     /// change" is computed rather than reported by the reviewer.
     baseline: Arc<Manifest>,
     /// Kept so the directory outlives the handle and is removed with it. An `Option` only so
-    /// [`Sandbox::into_parts`] can move it out while the `Drop` below still runs.
+    /// [`Sandbox::into_parts`] and [`Sandbox::preserve`] can move it out while the `Drop` below
+    /// still runs.
     _dir: Option<tempfile::TempDir>,
 }
 
@@ -358,7 +361,7 @@ pub struct SandboxTemplate {
 
 impl SandboxTemplate {
     pub fn materialize(manifest: &Manifest, cas: &Cas) -> Result<SandboxTemplate, std::io::Error> {
-        let dir = tempfile::tempdir()?;
+        let dir = stale::tempdir()?;
         let root = dir.path().join("tree");
         materialize(manifest, cas, &root).map_err(std::io::Error::other)?;
         Ok(SandboxTemplate {
@@ -390,7 +393,7 @@ impl Sandbox {
         cas: &Cas,
         mode: Mode,
     ) -> Result<Sandbox, std::io::Error> {
-        let dir = tempfile::tempdir()?;
+        let dir = stale::tempdir()?;
         let root = dir.path().join("tree");
         materialize(manifest, cas, &root).map_err(std::io::Error::other)?;
 
@@ -422,7 +425,7 @@ impl Sandbox {
         mode: Mode,
         isolation: Isolation,
     ) -> Result<Sandbox, std::io::Error> {
-        let dir = tempfile::tempdir()?;
+        let dir = stale::tempdir()?;
         let root = dir.path().join("tree");
         let cloned_directories = clone_tree(&template.root, &root, mode)?;
 
@@ -483,6 +486,22 @@ impl Sandbox {
     /// solves, one layer up.
     pub fn seal(self) -> Result<SealedSandbox, std::io::Error> {
         seal::seal(self)
+    }
+
+    /// Release the directory without removing it, and return the tree's path for the operator.
+    ///
+    /// A provider calls this when a container's cleanup was not confirmed: a daemon-owned
+    /// process may still hold the tree as a writable bind, and deleting under it is worse than
+    /// a leftover. The directory is marked beside its tree, where no bind can see the marker,
+    /// so the stale-sandbox sweep of a later `af` process keeps it too (see [`stale`]).
+    pub fn preserve(mut self) -> PathBuf {
+        let root = std::mem::take(&mut self.root);
+        if let Some(dir) = self._dir.take() {
+            let _ = stale::mark_preserved(dir.path());
+            let _ = dir.keep();
+        }
+        // The emptied handle drops as a no-op: no tree to make writable, no `TempDir` to remove.
+        root
     }
 
     pub(crate) fn into_parts(mut self) -> (PathBuf, Arc<Manifest>, tempfile::TempDir) {

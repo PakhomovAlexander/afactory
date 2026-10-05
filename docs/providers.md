@@ -50,6 +50,38 @@ context and never offers a login at all.
 An agent, a CI job, or anything else reading `af`'s output should run `setup` **without**
 `--login`, read the result, and surface the `next_action.command` to a human.
 
+## Removing a Provider
+
+```sh
+af provider remove codex-main                # drop one registry entry
+af provider remove claude-work codex-work    # drop several in one publication
+```
+
+`remove` deletes registry entries and nothing else. Each auth directory, and the login its
+Provider CLI keeps there, is left untouched, so `af provider add` or `setup` registers the context
+again. The registry is rewritten through the same locked, atomic publication `add` uses, and the
+version it replaced is preserved; the command prints where
+([ADR-0136](adr/0136-remove-a-registered-provider-by-id.md)). A comment directly above a removed
+entry goes with it.
+
+The command is all or nothing. An ID that is not registered refuses it with exit 1 and removes
+nothing. `af` does not check whether a pipeline, Campaign or Task still binds a removed ID.
+
+Two cases come up often:
+
+- **A deleted auth directory.** One entry whose auth directory no longer exists makes the whole
+  registry invalid: `status` warns and lists no registered Provider. Removing that entry is the
+  repair. When several are stale, name them all in one command, because `af` publishes only a
+  registry that is valid.
+- **An ambient ID.** `claude-ambient` and `codex-ambient` are discovery labels, not registry
+  entries, so there is nothing to remove. One is listed while the directory the Provider CLI uses
+  by default (`CLAUDE_CONFIG_DIR` or `~/.claude`; `CODEX_HOME` or `~/.codex`) is not a registered
+  Provider's auth directory. Start `af` with that variable naming a registered directory, or
+  register the default directory, and the label goes away.
+
+In the browser, `d` on a registered Provider fills the `:` line with `provider remove ID`, and
+Enter runs it.
+
 ## Checking a Provider
 
 ```sh
@@ -122,7 +154,7 @@ discards stdout still shows the operator what happened.
 | Code | Condition | Commands |
 |---|---|---|
 | 0 | success | all |
-| 1 | unclassified failure (unsafe auth directory, unreadable registry, …) | all |
+| 1 | unclassified failure (unsafe auth directory, unreadable registry, an ID `remove` does not find, …) | all |
 | 2 | usage error, from clap | all |
 | 3 | human action required | `setup` |
 | 4 | Provider CLI missing or cannot start | `setup`, `status` |
@@ -146,4 +178,5 @@ table keeps the Provider's own window labels.
 | exit 6, `authentication_failed` | The Provider CLI answered, and not with a usable login. Repeat the login at a private terminal and confirm with `af provider status`. |
 | exit 7 from `status --usage` | Optional usage probing did not answer. Authentication is unaffected; drop `--usage` if you only needed that. |
 | `auth directory … is writable by another user` | Tighten ownership and permissions on the directory (and its rename-controlling parents) before registering it. |
+| `provider registry … is invalid` after an auth directory was deleted | Run `af provider remove ID` for the entry that names it; name every stale entry in one command. |
 | `unfinished publication transaction` | Run `af provider recover`: it validates the marker and every preserved hash before archiving, and deletes no version. |

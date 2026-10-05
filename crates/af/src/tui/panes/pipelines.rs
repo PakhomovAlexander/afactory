@@ -188,9 +188,9 @@ impl PipelinesPane {
     fn notice_rows(&self, entry: &Entry) -> Vec<Row> {
         let mut rows = Vec::new();
         if let Some(error) = &self.error {
-            rows.push(Row::painted(
+            rows.push(Row::error(
+                "error",
                 format!("HEAD could not be read; shown from the last successful read: {error}"),
-                Paint::Error,
             ));
         }
         if entry.modified {
@@ -303,7 +303,7 @@ impl PipelinesPane {
                 // what the browser can show without inventing business inputs.
                 rows.push(Row::painted(heading, Paint::Title));
                 rows.push(Row::blank());
-                rows.extend(error.lines().map(|line| Row::painted(line, Paint::Error)));
+                rows.extend(Row::errors("refused", error.lines()));
                 rows.push(Row::blank());
                 rows.extend(contract_rows(&declared(&entry.declaration)));
             }
@@ -326,9 +326,9 @@ impl PipelinesPane {
             } else {
                 "the entries below are from the last successful read"
             };
-            rows.push(Row::painted(
+            rows.push(Row::error(
+                "error",
                 format!("HEAD could not be read; {stale}: {error}"),
-                Paint::Error,
             ));
             rows.push(Row::blank());
         }
@@ -376,6 +376,7 @@ impl Pane for PipelinesPane {
                 id: entry.id.clone(),
                 label,
                 muted: entry.modified || self.error.is_some(),
+                tone: None,
                 children: None,
             });
         }
@@ -1014,7 +1015,7 @@ mod tests {
         assert_eq!(pane.entries.len(), 1);
         let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
         assert!(
-            rows[2].starts_with("HEAD could not be read; the entries below"),
+            rows[2].starts_with(" error  HEAD could not be read; the entries below"),
             "{rows:#?}"
         );
         assert!(pane.items()[0].muted);
@@ -1022,7 +1023,8 @@ mod tests {
         pane.open(Some("x"));
         let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
         assert!(
-            rows[0].starts_with("HEAD could not be read; shown from the last successful read"),
+            rows[0]
+                .starts_with(" error  HEAD could not be read; shown from the last successful read"),
             "{rows:#?}"
         );
         assert!(pane.busy().is_none());

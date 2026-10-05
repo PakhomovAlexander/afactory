@@ -44,7 +44,7 @@
   --af-accent-text: var(--af-pink);         /* the accent as text on the ground */
   --af-on-accent: var(--af-ink);            /* text on any triad fill */
   --af-ok: var(--af-green);                 /* text: verified, pass, ready */
-  --af-fail: var(--af-pink);                /* text: refused, failed, error */
+  --af-fail: var(--af-pink);                /* text: refused, failed, error, needs a person */
   --af-active: var(--af-blue);              /* text: running, selected, focus */
   --af-ok-fill: var(--af-green);
   --af-fail-fill: var(--af-pink);

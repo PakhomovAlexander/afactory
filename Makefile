@@ -41,10 +41,13 @@ review-kernel-container-probes:
 	cargo test --locked -p review-sandbox container::tests::a_timed_out_container_is_removed_before_execution_returns -- --ignored --exact
 	cargo test --locked -p review-pipeline --test it task_campaign_review::host::domain::a_container_gate_executes_on_the_task_host -- --ignored --exact
 
-# Exercise release selection and tag races against disposable local Git remotes.
+# Exercise release selection and tag races against disposable local Git remotes, and keep
+# this repository's own .af/af.lock on the newest release (ADR-0138).
 release-check:
 	$(CI_STEP) release-resolution python3 scripts/test-release-resolve.py
 	$(CI_STEP) changelog-notes python3 scripts/changelog-notes.py --check
+	$(CI_STEP) af-pin-tests python3 scripts/test-af-pin.py
+	$(CI_STEP) af-pin python3 scripts/af-pin.py --check
 
 # Offline advisory orchestration checks against the native inspection fixture.
 preflight-check:
