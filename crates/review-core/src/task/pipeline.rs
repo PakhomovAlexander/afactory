@@ -5,6 +5,22 @@ use crate::{PortCardinality, is_artifact_type};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+/// An optional set that, when written, names at least one entry: an empty `remote_checks`
+/// would be a second spelling of an absent one.
+fn present_unique_set<'de, D>(deserializer: D) -> Result<BTreeSet<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let set = super::unique_set(deserializer)?;
+    if set.is_empty() {
+        return Err(serde::de::Error::custom(
+            "a check node's `remote_checks`, when present, names at least one check: name \
+             one, or remove the key",
+        ));
+    }
+    Ok(set)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PipelineSchemaV1 {
     #[serde(rename = "af.pipeline/1")]
@@ -197,9 +213,18 @@ pub enum TaskOperatorV1 {
     /// Kernel receipt assembly: preserves negative/inconclusive checks without invoking a
     /// conditional evaluator, and admits success only from current independent evidence.
     Accept {},
+    /// The node's checks: `checks` run on this machine, then `remote_checks` run by each
+    /// check's declared remote executor (ADR-0140). A node without `remote_checks` serializes
+    /// exactly as it did before the field existed.
     Check {
         #[serde(deserialize_with = "super::unique_set")]
         checks: BTreeSet<String>,
+        #[serde(
+            default,
+            skip_serializing_if = "BTreeSet::is_empty",
+            deserialize_with = "present_unique_set"
+        )]
+        remote_checks: BTreeSet<String>,
     },
     Verify {
         slot: String,
@@ -341,10 +366,29 @@ impl PipelineDefinitionV1 {
                         && self.slots.contains_key(candidate_slot),
                     "Optimization experiment needs distinct captured baseline/candidate slots",
                 )?,
-                TaskOperatorV1::Check { checks } => require(
-                    !checks.is_empty() && checks.iter().all(|s| is_name(s)),
-                    "Check operator needs named trusted checks",
-                )?,
+                TaskOperatorV1::Check {
+                    checks,
+                    remote_checks,
+                } => {
+                    require(
+                        checks.iter().chain(remote_checks).all(|s| is_name(s)),
+                        "Check operator needs named trusted checks",
+                    )?;
+                    if checks.is_empty() && remote_checks.is_empty() {
+                        return Err(format!(
+                            "Pipeline {} node {} names no check: list at least one check in \
+                             `checks` or `remote_checks`",
+                            self.name, node.id
+                        ));
+                    }
+                    if let Some(check) = checks.intersection(remote_checks).next() {
+                        return Err(format!(
+                            "Pipeline {} node {} lists check {check} in both `checks` and \
+                             `remote_checks`; a check runs in one place, so keep it in one list",
+                            self.name, node.id
+                        ));
+                    }
+                }
                 TaskOperatorV1::Measure { measures } => require(
                     !measures.is_empty()
                         && measures.len() <= 16

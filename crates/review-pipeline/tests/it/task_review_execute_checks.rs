@@ -320,6 +320,7 @@ fn run(case: &'static str) -> Outcome {
                 "check",
                 TaskOperatorV1::Check {
                     checks: BTreeSet::from(["syntax".into()]),
+                    remote_checks: BTreeSet::new(),
                 },
                 BTreeMap::from([("source".into(), root("source"))]),
             ),

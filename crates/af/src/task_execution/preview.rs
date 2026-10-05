@@ -125,10 +125,24 @@ fn node_label(id: &str, node: &CompiledNode, plan: &ExecutionPlanV1) -> String {
         match &node.operator {
             CompiledOperator::ProviderAdmission { .. } => "Provider admission (budgeted)".into(),
             CompiledOperator::Primitive { operator, .. } => match operator {
-                TaskOperatorV1::Check { checks } => format!(
-                    "checks: {}",
-                    checks.iter().cloned().collect::<Vec<_>>().join(", ")
-                ),
+                TaskOperatorV1::Check {
+                    checks,
+                    remote_checks,
+                } => {
+                    let list = |names: &BTreeSet<String>| {
+                        names.iter().cloned().collect::<Vec<_>>().join(", ")
+                    };
+                    // Where each check runs is the pipeline's choice, so the preview says it.
+                    match (checks.is_empty(), remote_checks.is_empty()) {
+                        (_, true) => format!("checks: {}", list(checks)),
+                        (true, false) => format!("remote checks: {}", list(remote_checks)),
+                        (false, false) => format!(
+                            "checks: {}; remote checks: {}",
+                            list(checks),
+                            list(remote_checks)
+                        ),
+                    }
+                }
                 TaskOperatorV1::Measure { measures } => format!(
                     "measure: {}",
                     measures

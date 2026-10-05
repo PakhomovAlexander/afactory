@@ -439,6 +439,46 @@ fn export_uses_shared_defaults_and_checked_renaming_without_local_authority() {
 }
 
 #[test]
+fn a_generated_proposal_cannot_choose_a_remote_gate() {
+    use review_core::task::pipeline::*;
+    use review_core::task::planning::PipelineProposalV1;
+    let f = Fixture::new();
+    let mut pipeline = f.compiler.pipelines["builtin/document"].clone();
+    pipeline.name = "generated/remote-gate".into();
+    pipeline.nodes.push(TaskNodeV1 {
+        id: "gate".into(),
+        operator: TaskOperatorV1::Check {
+            checks: BTreeSet::new(),
+            remote_checks: BTreeSet::from(["kernel".into()]),
+        },
+        inputs: BTreeMap::new(),
+        when: None,
+    });
+    let proposal = PipelineProposalV1 {
+        schema: "af.pipeline-proposal/1".into(),
+        root: pipeline.name.clone(),
+        definitions: BTreeMap::from([(pipeline.name.clone(), toml::to_string(&pipeline).unwrap())]),
+    };
+    for error in [
+        f.compiler
+            .check_proposal_structure(&f.cas, &f.task, &proposal)
+            .unwrap_err(),
+        f.compiler
+            .check_pipeline_proposal(&f.cas, &f.task, &proposal)
+            .unwrap_err(),
+    ] {
+        assert!(
+            error.contains("generated pipeline cannot list remote checks")
+                && error.contains("generated/remote-gate")
+                && error.contains("gate")
+                && error.contains("kernel"),
+            "{error}"
+        );
+    }
+    assert!(!f.compiler.pipelines.contains_key(&pipeline.name));
+}
+
+#[test]
 fn proposal_feedback_uses_full_effective_binding_independence_without_installing_a_plan() {
     use review_core::task::pipeline::*;
     use review_core::task::planning::PipelineProposalV1;
