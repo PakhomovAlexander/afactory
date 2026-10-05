@@ -40,7 +40,7 @@ clap = { version = "4.5.60", features = ["derive", "wrap_help", "env", "string"]
 clap_complete = { version = "4.5.60", features = ["unstable-dynamic"] }
 clap_mangen = "0.3.3"
 toml_edit = "0.25"
-minisign-verify = "0.2.5"
+minisign-verify = "0.3.0"
 nix = { version = "0.31.3", default-features = false, features = ["fs", "signal", "user"] }
 portable-pty = { version = "0.9.0", default-features = false }
 
