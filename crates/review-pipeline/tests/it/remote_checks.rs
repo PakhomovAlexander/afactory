@@ -1,4 +1,4 @@
-//! Remote Checks (ADR-0139), credential-free and offline: a real `git` pushes to a local bare
+//! Remote Checks (ADR-0140), credential-free and offline: a real `git` pushes to a local bare
 //! repository named as the mapping's `push_url`, and a fake `gh` on the executor's PATH serves
 //! the recorded GitHub API documents under `fixtures/remote-checks/github/`, simulating the
 //! pull request, its merge ref and its jobs' logs in that bare repository.

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:remote-check-evidence:1",
   "title": "af/RemoteCheckEvidence@1 payload",
-  "description": "Every remote fact one remote check's decision used (ADR-0139), recorded once: replay reads this document and never asks the remote again. `refused` means nothing was written to the remote for the check; `published` means the gate branches (and perhaps the pull request) exist but no job decided it; `observed` means the required jobs of the declared workflow's `pull_request` run for that pull request and head commit decided it, after the pull request and its merge ref were read back. No job log, push URL or mapping path appears here; a kept diagnostic is redacted and bounded.",
+  "description": "Every remote fact one remote check's decision used (ADR-0140), recorded once: replay reads this document and never asks the remote again. `refused` means nothing was written to the remote for the check; `published` means the gate branches (and perhaps the pull request) exist but no job decided it; `observed` means the required jobs of the declared workflow's `pull_request` run for that pull request and head commit decided it, after the pull request and its merge ref were read back. No job log, push URL or mapping path appears here; a kept diagnostic is redacted and bounded.",
   "type": "object",
   "additionalProperties": false,
   "required": [

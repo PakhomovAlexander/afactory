@@ -238,5 +238,5 @@ future readers need.
   sweep](0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
 - [0136 — Remove a registered Provider by ID](0136-remove-a-registered-provider-by-id.md)
 - [0138 — The repository pins its newest release](0138-the-repository-pins-its-newest-release.md)
-- [0139 — Run a declared check through a gate pull
-  request](0139-run-a-declared-check-through-a-gate-pull-request.md)
+- [0140 — Run a declared check through a gate pull
+  request](0140-run-a-declared-check-through-a-gate-pull-request.md)

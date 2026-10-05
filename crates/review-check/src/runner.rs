@@ -30,7 +30,7 @@ pub struct CheckDefinition {
     pub command: Command,
     /// A required check blocks the gate. Optional checks are recorded and reported, never gating.
     pub required: bool,
-    /// The same check run by a remote executor (ADR-0139). Committed policy only declares it;
+    /// The same check run by a remote executor (ADR-0140). Committed policy only declares it;
     /// an operator's machine-local mapping selects it. Absent, a definition serializes exactly
     /// as it did before the table existed.
     #[serde(
@@ -76,7 +76,7 @@ pub struct CheckResult {
     pub stderr: Option<String>,
     pub required: bool,
     /// The `af/RemoteCheckEvidence@1` artifact a remote result was derived from. A result that
-    /// carries it is the second shape (ADR-0139): no program, exit code, arguments or `stderr`,
+    /// carries it is the second shape (ADR-0140): no program, exit code, arguments or `stderr`,
     /// and as `stdout` only the log excerpt of remote jobs that did not succeed; a local result
     /// never carries it.
     #[serde(

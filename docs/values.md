@@ -192,4 +192,4 @@ exactly two `af-gate/<task-id>/` branches built from Task Snapshots and opens on
 request between them, so the repository's own CI can run that check. It never force-pushes,
 writes another ref, merges, marks ready, closes, comments or deletes; committed policy cannot
 ask for it; and delivery still never commits, pushes or opens a pull request
-([ADR-0139](adr/0139-run-a-declared-check-through-a-gate-pull-request.md)).
+([ADR-0140](adr/0140-run-a-declared-check-through-a-gate-pull-request.md)).

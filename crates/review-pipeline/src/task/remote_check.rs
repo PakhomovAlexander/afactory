@@ -1,4 +1,4 @@
-//! Remote Checks (ADR-0139): the seam between the code check operator and a remote executor.
+//! Remote Checks (ADR-0140): the seam between the code check operator and a remote executor.
 //!
 //! The check operator partitions a Check node's checks, runs the local ones first, and calls
 //! [`github_pr::run`] once with the candidate Snapshot, the remote phase's deadline and the
@@ -27,7 +27,7 @@ pub use mapping::{GithubPrTarget, MAPPING_KNOB, RemoteCheckMapping};
 
 /// Resolves a Task ID to the Task's durable identity in its Store, the owner every gate commit
 /// names. The coordinator supplies it; the identity must survive resume and differ between
-/// Stores (ADR-0139 records which one).
+/// Stores (ADR-0140 records which one).
 pub type OwnerResolver = dyn Fn(&str) -> Result<String, String> + Send + Sync;
 
 /// Machine-local Remote Check configuration the coordinator hands the code domain. Committed

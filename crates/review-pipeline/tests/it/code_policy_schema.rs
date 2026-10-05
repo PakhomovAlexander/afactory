@@ -304,7 +304,7 @@ fn measures_and_objectives_round_trip_and_refuse_alike() {
     }
 }
 
-/// A check's optional `remote` table (ADR-0139): every accepted shape round-trips through the
+/// A check's optional `remote` table (ADR-0140): every accepted shape round-trips through the
 /// schema as declared, a policy without it is captured without the field, and every shape
 /// either side refuses the other refuses too.
 #[test]

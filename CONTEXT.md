@@ -91,7 +91,7 @@ its command: in RC1, the declared workflow's `pull_request` run on GitHub Action
 request. It passes only when every required job of that run's latest attempt succeeded and the
 kernel read back that GitHub tested exactly the checked Snapshot's tree; every refusal or
 inconclusive state is `not_run` with a named reason. Its record is one
-`af/RemoteCheckEvidence@1` ([ADR-0139](docs/adr/0139-run-a-declared-check-through-a-gate-pull-request.md)).
+`af/RemoteCheckEvidence@1` ([ADR-0140](docs/adr/0140-run-a-declared-check-through-a-gate-pull-request.md)).
 _Avoid_: "green CI" — a CI conclusion nobody bound to the Snapshot is not a Remote Check. Nor
 "remote policy": committed policy only declares the `remote` table; it never selects it.
 

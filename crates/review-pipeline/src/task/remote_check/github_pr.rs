@@ -1,4 +1,4 @@
-//! The `github-pr` executor (ADR-0139 §3.4): two `af-gate/<task-id>/` branches built from
+//! The `github-pr` executor (ADR-0140 §3.4): two `af-gate/<task-id>/` branches built from
 //! Snapshots, one draft pull request between them, and a bounded wait on the declared
 //! workflow's `pull_request` run for that pull request and head commit.
 //!
@@ -72,7 +72,7 @@ pub struct RemotePhase<'a> {
 
 const PR_TITLE_PREFIX: &str = "af gate: ";
 const PR_BODY: &str = "Opened by af on an operator's machine to run this repository's declared \
-checks against an exact Task Snapshot (ADR-0139). It is not for review or merge: af never marks \
+checks against an exact Task Snapshot (ADR-0140). It is not for review or merge: af never marks \
 it ready, merges, closes or comments on it. Close it and delete its two af-gate branches when the \
 Task no longer needs them.";
 const WAIT_SLICE: Duration = Duration::from_millis(50);

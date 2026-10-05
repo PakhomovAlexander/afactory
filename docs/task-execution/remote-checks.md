@@ -3,7 +3,7 @@
 A Remote Check hands a declared code check to the repository's own GitHub Actions workflow
 through a draft gate pull request, and binds the result to the exact Snapshot under check, so a
 host too small to build the project can still hold a real Gate
-([ADR-0139](../adr/0139-run-a-declared-check-through-a-gate-pull-request.md)). The design and its
+([ADR-0140](../adr/0140-run-a-declared-check-through-a-gate-pull-request.md)). The design and its
 fixed requirements are in [`docs/design/remote-checks.md`](../design/remote-checks.md).
 
 ## 1. Declare the check

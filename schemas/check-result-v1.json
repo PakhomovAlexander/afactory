@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:review-kernel:schema:check-result:1",
   "title": "CheckResult@1 payload",
-  "description": "One execution of one check, recorded per attempt. Each execution is its own immutable artifact, so a later run never erases an earlier one and 'the checks were green' always names the execution it describes. Two distinct shapes exist: a local result records the command that ran; a remote result (ADR-0139) carries `remote`, the `af/RemoteCheckEvidence@1` artifact its status derives from, and no program, exit code, arguments or `stderr`; its `stdout`, present only when the check did not pass, is the bounded log excerpt of the remote jobs that did not succeed. A mixture of the two is refused.",
+  "description": "One execution of one check, recorded per attempt. Each execution is its own immutable artifact, so a later run never erases an earlier one and 'the checks were green' always names the execution it describes. Two distinct shapes exist: a local result records the command that ran; a remote result (ADR-0140) carries `remote`, the `af/RemoteCheckEvidence@1` artifact its status derives from, and no program, exit code, arguments or `stderr`; its `stdout`, present only when the check did not pass, is the bounded log excerpt of the remote jobs that did not succeed. A mixture of the two is refused.",
   "type": "object",
   "additionalProperties": false,
   "required": ["name", "status", "args"],
@@ -45,7 +45,7 @@
       "default": true
     },
     "remote": {
-      "description": "The `af/RemoteCheckEvidence@1` artifact a remote executor's result derives from (ADR-0139). Present only on a remote result.",
+      "description": "The `af/RemoteCheckEvidence@1` artifact a remote executor's result derives from (ADR-0140). Present only on a remote result.",
       "$ref": "#/$defs/digest"
     }
   },
