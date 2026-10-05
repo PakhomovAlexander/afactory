@@ -825,4 +825,94 @@ mod tests {
                 .is_err()
         );
     }
+
+    #[test]
+    fn malformed_truncated_and_recommented_signatures_never_authorize_a_decision() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let policy = DeveloperPolicy {
+            schema: "af.task-developers/1".into(),
+            keys: BTreeMap::from([("owner".into(), key.pk.to_box().unwrap().into_string())]),
+        };
+        let request = AuthorizationRequest {
+            schema: "af.task-plan-authorization/1".into(),
+            task_revision_id: format!("sha256:{}", "1".repeat(64)),
+            plan_id: format!("sha256:{}", "2".repeat(64)),
+            policy_id: format!("sha256:{}", "3".repeat(64)),
+            developer: "owner".into(),
+            decision: PlanDecisionKindV1::Approved,
+            reason: "Reviewed the exact graph".into(),
+            valid_until_unix_ms: 10000,
+        };
+        let valid = minisign::sign(
+            Some(&key.pk),
+            &key.sk,
+            &request.signing_bytes().unwrap()[..],
+            Some("reviewed exact Task plan"),
+            None,
+        )
+        .unwrap()
+        .into_string();
+        let lines: Vec<&str> = valid.lines().collect();
+        assert_eq!(lines.len(), 4, "{valid}");
+        assert!(lines[2].starts_with("trusted comment: "), "{valid}");
+        let developer = SignedTaskDeveloper {
+            cas: &cas,
+            policy: &policy,
+            submitted: None,
+        };
+        let verify = |signature: String| {
+            developer
+                .verify(&SignedAuthorization {
+                    schema: "af.signed-task-authorization/1".into(),
+                    request: request.clone(),
+                    signature,
+                })
+                .map(|_| ())
+                .unwrap_err()
+        };
+
+        // The undamaged signature passes the signature check and fails only later, on the
+        // revision this empty store does not hold.
+        assert_eq!(
+            verify(valid.clone()),
+            cas.get_json(&request.task_revision_id)
+                .unwrap_err()
+                .to_string()
+        );
+
+        let short = &lines[1][..lines[1].len() - 4];
+        for (case, signature) in [
+            (
+                "not base64",
+                format!(
+                    "{}\nnot base64 at all!\n{}\n{}\n",
+                    lines[0], lines[2], lines[3]
+                ),
+            ),
+            (
+                "wrong length",
+                format!("{}\n{short}\n{}\n{}\n", lines[0], lines[2], lines[3]),
+            ),
+            ("cut after comment", format!("{}\n", lines[0])),
+            (
+                "cut mid-signature",
+                format!("{}\n{}", lines[0], &lines[1][..lines[1].len() / 2]),
+            ),
+        ] {
+            assert_eq!(
+                verify(signature),
+                "Invalid encoding in minisign data",
+                "{case}"
+            );
+        }
+        assert_eq!(
+            verify(format!(
+                "{}\n{}\ntrusted comment: timestamp:0\tedited\n{}\n",
+                lines[0], lines[1], lines[3]
+            )),
+            "Developer signature does not authorize these exact bytes"
+        );
+    }
 }

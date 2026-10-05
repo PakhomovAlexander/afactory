@@ -553,6 +553,94 @@ fn every_release_must_carry_a_valid_signature_when_the_build_has_a_key() {
     assert_eq!(status["release_key"], "environment");
 }
 
+/// Rewrite the `SHA256SUMS.minisig` that `Sandbox::sign` produced for `version` with `damage`.
+fn damage_signature(sandbox: &Sandbox, version: &str, damage: &str) {
+    let path = sandbox.release_dir(version).join("SHA256SUMS.minisig");
+    let text = std::fs::read_to_string(&path).unwrap();
+    // untrusted comment, signature, trusted comment, global signature
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 4, "{text}");
+    assert!(lines[2].starts_with("trusted comment: "), "{text}");
+    let edited_comment = "trusted comment: timestamp:0\tfile:SHA256SUMS\tedited";
+    assert_ne!(lines[2], edited_comment);
+    let damaged = match damage {
+        "not base64" => format!(
+            "{}\nnot base64 at all!\n{}\n{}\n",
+            lines[0], lines[2], lines[3]
+        ),
+        // Valid base64 that decodes to fewer bytes than a signature has.
+        "wrong length" => format!(
+            "{}\n{}\n{}\n{}\n",
+            lines[0],
+            &lines[1][..lines[1].len() - 4],
+            lines[2],
+            lines[3]
+        ),
+        "cut after the untrusted comment" => format!("{}\n", lines[0]),
+        "cut mid-signature" => format!("{}\n{}", lines[0], &lines[1][..lines[1].len() / 2]),
+        // Still parses, but the global signature covers the original comment.
+        "trusted comment edited" => format!(
+            "{}\n{}\n{edited_comment}\n{}\n",
+            lines[0], lines[1], lines[3]
+        ),
+        other => panic!("unknown damage {other}"),
+    };
+    write(&path, &damaged);
+}
+
+#[test]
+fn a_malformed_truncated_or_recommented_signature_is_refused_and_installs_nothing() {
+    let keys = tempfile::tempdir().unwrap();
+    let signer = Signer::new(keys.path());
+    let sandbox = Sandbox::new().with_key(&signer);
+    let undecodable = ["SHA256SUMS.minisig of", "Invalid encoding in minisign data"];
+    let unverified = [
+        "does not verify against the release key",
+        "signature verification failed",
+    ];
+    for (version, damage, reason) in [
+        ("0.8.1", "not base64", undecodable),
+        ("0.8.2", "wrong length", undecodable),
+        ("0.8.3", "cut after the untrusted comment", undecodable),
+        ("0.8.4", "cut mid-signature", undecodable),
+        ("0.8.5", "trusted comment edited", unverified),
+    ] {
+        // Signed by the trusted key over its own sums; only the signature file is damaged.
+        sandbox.publish(version, false);
+        sandbox.sign(version, &signer, None);
+        damage_signature(&sandbox, version, damage);
+        let refused = sandbox
+            .command(Path::new(AF))
+            .args(["self", "install", version])
+            .output()
+            .unwrap();
+        assert!(!refused.status.success(), "{damage}: installed");
+        assert!(
+            reason.iter().all(|part| err(&refused).contains(part)),
+            "{damage}: {}",
+            err(&refused)
+        );
+        assert!(
+            !sandbox.versions().join(version).exists(),
+            "{damage}: left an install or receipt behind"
+        );
+        assert!(sandbox.default_target().is_none(), "{damage}: activated");
+    }
+
+    // The same fixture, undamaged, installs: the refusals above are the damage, not the setup.
+    sandbox.publish("0.8.6", false);
+    sandbox.sign("0.8.6", &signer, None);
+    let signed = sandbox
+        .command(Path::new(AF))
+        .args(["self", "install", "0.8.6"])
+        .output()
+        .unwrap();
+    assert!(signed.status.success(), "{}", err(&signed));
+    let receipt = std::fs::read_to_string(sandbox.versions().join("0.8.6/receipt.toml")).unwrap();
+    assert!(receipt.contains("verified_by = \"minisign\""), "{receipt}");
+    assert_eq!(sandbox.default_target().as_deref(), Some("0.8.6"));
+}
+
 #[test]
 fn refresh_check_caches_the_latest_and_applies_always() {
     let newer = next_release_version();
