@@ -16,7 +16,7 @@ pub(super) fn code_domain(
         .with_remote_checks(remote_checks(state)?))
 }
 
-/// The machine-local Remote Check configuration (ADR-0136): the operator's mapping, resolved
+/// The machine-local Remote Check configuration (ADR-0139): the operator's mapping, resolved
 /// once here as the Rust toolchain mapping is, and the owner every gate commit names. Candidate
 /// commands never receive the variable or the path.
 pub(super) fn remote_checks(state: &Path) -> Result<RemoteCheckHost, String> {
@@ -48,7 +48,7 @@ fn remote_check_mapping() -> Result<Option<PathBuf>, String> {
 /// The Task's durable identity in this Store: a digest of the transition that opened its log.
 /// It survives every resume, since a log only grows, and differs between Stores, since the
 /// opening names a writer that carries 64 bits of operating-system randomness beside the PID
-/// and the Store's own clock (ADR-0136).
+/// and the Store's own clock (ADR-0139).
 fn task_owner(database: &Path, task_id: &str) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let store = EventStore::open_read_only(database).map_err(|e| e.to_string())?;

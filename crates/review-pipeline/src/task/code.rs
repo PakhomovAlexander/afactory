@@ -459,7 +459,7 @@ impl CodeTaskPolicy {
     }
 }
 
-/// The reason every declared warm kind of a remote-selected check records (ADR-0136).
+/// The reason every declared warm kind of a remote-selected check records (ADR-0139).
 const REMOTE_SKIP: &str = "remote";
 
 /// The Task's captured source for `candidate`: its root ancestor along `parent_snapshot_id`,
@@ -815,7 +815,7 @@ impl CodeTaskDomain {
         self
     }
 
-    /// Machine-local Remote Check configuration (ADR-0136): the operator's mapping, the Task
+    /// Machine-local Remote Check configuration (ADR-0139): the operator's mapping, the Task
     /// owner resolver and the executor's settings. Never captured candidate authority.
     pub fn with_remote_checks(mut self, remote: RemoteCheckHost) -> Self {
         self.remote = remote;
@@ -978,7 +978,7 @@ impl CodeTaskDomain {
     ) -> Result<(ArtifactInputV1, Vec<String>), String> {
         let source = input.inputs.get("source").ok_or("Check needs source")?;
         let (snapshot_id, snapshot, manifest) = source_snapshot(cas, source)?;
-        // Remote selection (ADR-0136) is settled before any check starts: a malformed selected
+        // Remote selection (ADR-0139) is settled before any check starts: a malformed selected
         // mapping, or a Task whose Store identity cannot be read, ends the Attempt here.
         let remote = match self.remote_selection(cas, &snapshot, names)? {
             Some((target, selected)) => {

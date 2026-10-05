@@ -1653,7 +1653,7 @@ fn start_captured(
             &cas,
             &revision_id,
             // The opening writer is what makes one Store's Task distinguishable from another
-            // Store's Task of the same file (ADR-0136 derives the gate owner from this
+            // Store's Task of the same file (ADR-0139 derives the gate owner from this
             // transition), so it carries 64 bits from the operating system, not the PID alone.
             &format!("cli-{}-{:016x}", std::process::id(), opening_nonce()),
             15_000,
@@ -2723,7 +2723,7 @@ fn cache_condition(measurement: &review_core::task::measurement::MeasurementV1) 
     }
 }
 
-/// Every remote check result of the Task's current check receipts (ADR-0136), in node and
+/// Every remote check result of the Task's current check receipts (ADR-0139), in node and
 /// check order, with the evidence document it derives from. Replay reads only the Store.
 fn remote_check_records(
     cas: &Cas,
@@ -2796,7 +2796,7 @@ fn evidence_seconds(text: &str) -> Option<i64> {
     Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
-/// The text `af task show` prints for each remote check (ADR-0136): the executor and pull
+/// The text `af task show` prints for each remote check (ADR-0139): the executor and pull
 /// request, the run and its attempt, each required job with its conclusion and duration, the
 /// unsuccessful steps, the kept log excerpt, the refusal reason, and the two commands that clean
 /// up after the gate.

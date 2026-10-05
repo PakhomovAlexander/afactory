@@ -1,4 +1,4 @@
-//! Remote Checks (ADR-0136): a declared code check that a machine may hand to a remote
+//! Remote Checks (ADR-0139): a declared code check that a machine may hand to a remote
 //! executor, and the one typed record of everything the kernel observed while it did.
 //!
 //! The declaration is committed policy and grants nothing; the operator's machine-local
@@ -162,7 +162,7 @@ fn is_conclusion(value: &str) -> bool {
     (1..=32).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
 }
 
-/// Every named reason a remote check did not pass or fail (ADR-0136 §3.6), plus the deadline
+/// Every named reason a remote check did not pass or fail (ADR-0139 §3.6), plus the deadline
 /// and cancellation every check shares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -1,4 +1,4 @@
-//! `af/RemoteCheckEvidence@1` (ADR-0136): every recorded fixture of the three states is valid
+//! `af/RemoteCheckEvidence@1` (ADR-0139): every recorded fixture of the three states is valid
 //! against the schema and the Rust validator, round-trips byte for byte, and derives the status
 //! its name states; every shape either side refuses the other refuses too.
 
@@ -201,7 +201,7 @@ fn evidence_shapes_either_side_refuses_the_other_refuses() {
 }
 
 /// `af task show --json` carries each remote check's evidence document under
-/// `remote_checks` (ADR-0136): an entry names its node, check, status and evidence artifact.
+/// `remote_checks` (ADR-0139): an entry names its node, check, status and evidence artifact.
 #[test]
 fn inspection_remote_checks_carry_the_evidence_document() {
     let inspection = schema("task-inspection-v11.json");

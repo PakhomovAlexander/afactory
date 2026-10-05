@@ -1,4 +1,4 @@
-# ADR-0136: Run a declared check through a gate pull request
+# ADR-0139: Run a declared check through a gate pull request
 
 Status: accepted, 2026-10-04. Supersedes, for operator-authorized gate branches and the gate
 pull request only, the rule that publishing is a human action

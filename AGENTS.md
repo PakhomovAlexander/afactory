@@ -4,7 +4,7 @@ This repository is **Afactory**: the `af` CLI, a multi-agent coding factory whos
 is the deterministic Review Kernel behind `af review`, and whose Task runtime runs
 implementation Tasks behind `af task`. Reviewers and implementers only ever mutate a sandbox; the
 kernel integrates; humans publish, apart from the gate branches of an operator-mapped Remote
-Check ([ADR-0136](docs/adr/0136-run-a-declared-check-through-a-gate-pull-request.md)).
+Check ([ADR-0139](docs/adr/0139-run-a-declared-check-through-a-gate-pull-request.md)).
 
 Before changing behaviour, read [`CONTEXT.md`](CONTEXT.md) for the canonical vocabulary and
 [`docs/adr/README.md`](docs/adr/README.md) for the binding decisions; [`docs/README.md`](docs/README.md)
@@ -78,7 +78,7 @@ review corpora belong in consuming repositories, not here.
   opens one draft gate pull request between them. It never force-pushes, writes another ref,
   merges, marks ready, closes, comments or deletes, and never sends a candidate that changes
   `.github/`. Committed policy never forces a remote run; delivery above is unchanged
-  ([ADR-0136](docs/adr/0136-run-a-declared-check-through-a-gate-pull-request.md)).
+  ([ADR-0139](docs/adr/0139-run-a-declared-check-through-a-gate-pull-request.md)).
 - `af onboard` is deterministic and token-free. It may atomically create only an absent `.af/`
   authority bundle; it never overwrites existing policy, invents or hand-types lock digests,
   executes Gates, accesses credentials, or publishes repository changes. Emitted authority is

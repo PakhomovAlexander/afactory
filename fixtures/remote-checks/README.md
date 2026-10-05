@@ -1,7 +1,7 @@
 # Remote Check fixtures
 
 Offline fixtures for Remote Checks
-([ADR-0136](../../docs/adr/0136-run-a-declared-check-through-a-gate-pull-request.md)). Nothing
+([ADR-0139](../../docs/adr/0139-run-a-declared-check-through-a-gate-pull-request.md)). Nothing
 here holds a credential, a push URL or a mapping path. Job logs are written by the tests that
 serve them, not recorded here.
 

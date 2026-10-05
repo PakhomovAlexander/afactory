@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:code-task-policy:1",
   "title": "Code Task policy af.code-task-policy/1",
-  "description": "The captured form of a repository's `.af/code-policy.toml`: the named checks a code Task runs against a read-only Snapshot and, optionally, the Warm Check Cache those checks may use (ADR-0131). A policy without `warm` is captured exactly as before the table existed. Optional `measures` and `objectives` declare the commands the installed `measure` operator runs and the objectives `compare` folds two Measurements under (ADR-0132); a policy without them is captured exactly as before the tables existed. A check's optional `remote` table declares the same check run by a remote executor (ADR-0136); only an operator's machine-local mapping selects it, and a policy without it is captured exactly as before the table existed.",
+  "description": "The captured form of a repository's `.af/code-policy.toml`: the named checks a code Task runs against a read-only Snapshot and, optionally, the Warm Check Cache those checks may use (ADR-0131). A policy without `warm` is captured exactly as before the table existed. Optional `measures` and `objectives` declare the commands the installed `measure` operator runs and the objectives `compare` folds two Measurements under (ADR-0132); a policy without them is captured exactly as before the tables existed. A check's optional `remote` table declares the same check run by a remote executor (ADR-0139); only an operator's machine-local mapping selects it, and a policy without it is captured exactly as before the table existed.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -315,7 +315,7 @@
       }
     },
     "remote": {
-      "description": "The same check run by a remote executor (ADR-0136). `executor` is a closed set; `workflow` is the repository path of the workflow whose `pull_request` run earns the result; `required` lists the job names, exactly as the Actions jobs API reports them for that run, that must all conclude `success`. Committed policy never forces a remote run: an operator's machine-local mapping selects it, and the check's `command` stays its local equivalent.",
+      "description": "The same check run by a remote executor (ADR-0139). `executor` is a closed set; `workflow` is the repository path of the workflow whose `pull_request` run earns the result; `required` lists the job names, exactly as the Actions jobs API reports them for that run, that must all conclude `success`. Committed policy never forces a remote run: an operator's machine-local mapping selects it, and the check's `command` stays its local equivalent.",
       "type": "object",
       "additionalProperties": false,
       "required": [

@@ -58,7 +58,7 @@ fixtures/
 | `patch-proposal-v1.json` | an atomic change set naming the exact claims it covers |
 | `run-event-v1.json` | the append-only stream envelope; `sequence` orders, never `occurred_at` |
 | `check-result-v1.json` | one execution of one check, per attempt — `not_run` is its own status; a remote result names its evidence instead of a command |
-| `remote-check-evidence-v1.json` | every remote fact one Remote Check's decision used: refused, published or observed (ADR-0136) |
+| `remote-check-evidence-v1.json` | every remote fact one Remote Check's decision used: refused, published or observed (ADR-0139) |
 | `reviewer-result-v2.json` | what one reviewer attempt returned: reports, demands, and one disposition per assigned prior Finding |
 
 The schemas are the contract; the Rust types are one view of them. `crates/review-core/tests/schema_parity.rs`

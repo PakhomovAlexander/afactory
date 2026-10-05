@@ -67,7 +67,7 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   `af-gate/<task-id>/` branches built from Snapshots and one draft pull request. Local checks
   run first; the result counts only after the merge ref reads back as the candidate tree, and
   every remote fact is one `af/RemoteCheckEvidence@1`
-  ([ADR-0136](adr/0136-run-a-declared-check-through-a-gate-pull-request.md),
+  ([ADR-0139](adr/0139-run-a-declared-check-through-a-gate-pull-request.md),
   [Remote Checks](task-execution/remote-checks.md)).
 - A report is accepted by an independent verifier, not by its author, and every report receipt
   names the source Snapshot its repository citations were resolved against. A report Task

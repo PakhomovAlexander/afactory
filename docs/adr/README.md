@@ -236,5 +236,5 @@ future readers need.
   outputs](0134-bind-any-declared-root-port-to-recorded-task-outputs.md)
 - [0135 — Collect finished Tasks behind a tombstone and a reachability
   sweep](0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
-- [0136 — Run a declared check through a gate pull
-  request](0136-run-a-declared-check-through-a-gate-pull-request.md)
+- [0139 — Run a declared check through a gate pull
+  request](0139-run-a-declared-check-through-a-gate-pull-request.md)

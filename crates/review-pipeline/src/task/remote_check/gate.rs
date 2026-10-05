@@ -1,4 +1,4 @@
-//! The kernel's private gate repository and its supervised `git`/`gh` calls (ADR-0136 §3.4).
+//! The kernel's private gate repository and its supervised `git`/`gh` calls (ADR-0139 §3.4).
 //!
 //! Gate commits are built here from Snapshot manifests in a temporary repository the kernel
 //! owns, never the operator's checkout, and every tree is read back and compared with its

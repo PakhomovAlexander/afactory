@@ -1,4 +1,4 @@
-//! The operator's machine-local Remote Check mapping (ADR-0136 §3.2): per repository, which
+//! The operator's machine-local Remote Check mapping (ADR-0139 §3.2): per repository, which
 //! declared checks this machine hands to a remote executor, and where it may push the gate
 //! branches. It is the operator's authorization, never committed policy, so nothing here is
 //! recorded: the push URL and the mapping's path stay out of every artifact, event and message.

@@ -874,7 +874,7 @@
       }
     },
     "remote_checks": {
-      "description": "Every remote check result of the Task's current check receipts (ADR-0136), with the `af/RemoteCheckEvidence@1` document its status derives from. Absent when no current receipt holds a remote result.",
+      "description": "Every remote check result of the Task's current check receipts (ADR-0139), with the `af/RemoteCheckEvidence@1` document its status derives from. Absent when no current receipt holds a remote result.",
       "type": "array",
       "minItems": 1,
       "items": {
