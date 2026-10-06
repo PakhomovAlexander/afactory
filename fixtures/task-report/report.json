@@ -1,7 +1,48 @@
 {
   "schema": "af/task-report@1",
+  "pipelines": [
+    {
+      "name": "fixture/implementation",
+      "version": "1.0.0",
+      "steps": [
+        {
+          "stage": 1,
+          "role": "implement",
+          "nodes": [
+            "root.nodes.implement"
+          ],
+          "worker": {
+            "kind": "command"
+          },
+          "checks": []
+        },
+        {
+          "stage": 2,
+          "role": "gate",
+          "nodes": [
+            "root.nodes.check"
+          ],
+          "checks": [
+            "pagination"
+          ]
+        },
+        {
+          "stage": 3,
+          "role": "evaluate",
+          "nodes": [
+            "root.nodes.evaluate"
+          ],
+          "worker": {
+            "kind": "command"
+          },
+          "checks": []
+        }
+      ]
+    }
+  ],
   "tasks": [
     {
+      "round": 1,
       "task_id": "pagination-cli",
       "kind": "implement",
       "pipeline": "fixture/implementation@1.0.0",
@@ -22,8 +63,8 @@
         ]
       },
       "chargeable_tokens": "0",
-      "wall_ms": 3090,
-      "active_ms": 1459,
+      "wall_ms": 3595,
+      "active_ms": 1808,
       "nodes": [
         {
           "node": "root.nodes.implement",
@@ -34,7 +75,7 @@
           "attempts": 2,
           "failed_attempts": 1,
           "tokens": "0",
-          "elapsed_ms": 250,
+          "elapsed_ms": 258,
           "checks": []
         },
         {
@@ -43,12 +84,12 @@
           "attempts": 1,
           "failed_attempts": 0,
           "tokens": "0",
-          "elapsed_ms": 53,
+          "elapsed_ms": 62,
           "checks": [
             {
               "name": "pagination",
               "status": "passed",
-              "elapsed_ms": 43
+              "elapsed_ms": 52
             }
           ]
         },
@@ -61,7 +102,7 @@
           "attempts": 1,
           "failed_attempts": 0,
           "tokens": "0",
-          "elapsed_ms": 94,
+          "elapsed_ms": 96,
           "checks": []
         }
       ]
@@ -73,6 +114,6 @@
     "attempts": 4,
     "failed_attempts": 1,
     "chargeable_tokens": "0",
-    "active_ms": 1459
+    "active_ms": 1808
   }
 }

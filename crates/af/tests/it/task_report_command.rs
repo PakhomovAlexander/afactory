@@ -90,24 +90,38 @@ fn assert_block_is_checked(markdown: &str) {
     assert!(passed, "{said}\n{markdown}");
     let header = markdown
         .lines()
-        .find(|line| line.starts_with("| Task |"))
+        .find(|line| line.starts_with("| Round |"))
         .unwrap();
-    let rows: Vec<&str> = markdown
+    // The round rows, then the totals row.
+    let mut rows: Vec<&str> = markdown
         .lines()
-        .skip_while(|line| !line.starts_with("| --- |"))
+        .skip_while(|line| !line.starts_with("| ---: |"))
         .skip(1)
         .take_while(|line| line.starts_with('|'))
         .collect();
+    let total = rows.pop().unwrap();
+    assert!(total.starts_with("|  | Total: "), "{markdown}");
     assert!(!rows.is_empty(), "{markdown}");
-    let totals = markdown
+    let pipelines: Vec<&str> = markdown
         .lines()
-        .find(|line| line.starts_with("**Totals:**"))
-        .unwrap();
+        .filter(|line| line.starts_with("**") && line.contains("**: "))
+        .collect();
+    assert!(!pipelines.is_empty(), "{markdown}");
     let mut without_rows = markdown.to_owned();
     for row in &rows {
         without_rows = without_rows.replace(&format!("{row}\n"), "");
     }
+    let mut without_pipelines = markdown.to_owned();
+    for line in &pipelines {
+        without_pipelines = without_pipelines.replace(&format!("{line}\n"), "");
+    }
     let placeholder = markdown.replace(&format!("{}\n", rows[0]), "| x |\n");
+    let mut cells: Vec<&str> = rows[0].split(" | ").collect();
+    cells[1] = "<!--x-->";
+    let hidden = markdown.replace(
+        &format!("{}\n", rows[0]),
+        &format!("{}\n", cells.join(" | ")),
+    );
     for (part, body) in [
         (
             "begin marker",
@@ -119,7 +133,7 @@ fn assert_block_is_checked(markdown: &str) {
         ),
         (
             "a column",
-            markdown.replace(header, &header.replace(" Wall time |", "")),
+            markdown.replace(header, &header.replace(" Findings |", "")),
         ),
         (
             "nothing: an extra column",
@@ -129,17 +143,20 @@ fn assert_block_is_checked(markdown: &str) {
             "its columns in order",
             markdown.replace(
                 header,
-                &header.replace("| Active time | Wall time |", "| Wall time | Active time |"),
+                &header.replace("| Tokens | Active |", "| Active | Tokens |"),
             ),
         ),
-        ("the Task rows", without_rows),
-        ("a whole Task row: a placeholder", placeholder),
+        ("the pipeline lines", without_pipelines),
+        ("the round rows", without_rows),
+        ("a whole round row: a placeholder", placeholder),
+        ("a visible Task cell: an HTML comment", hidden),
         (
-            "the totals line",
-            markdown.replace(&format!("{totals}\n"), ""),
+            "the totals row",
+            markdown.replace(&format!("{total}\n"), ""),
         ),
         ("the whole block", String::new()),
         ("nothing: a second block", format!("{markdown}{markdown}")),
+        ("its place outside code", format!("```\n{markdown}```\n")),
     ] {
         let (passed, said) = check_pr_report(&description(&body));
         assert!(!passed, "the check passed without {part}:\n{body}");
@@ -285,12 +302,33 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
     let markdown = stdout(&report(&repo, &state, &[task_interrupt::TASK], false));
     assert!(
         markdown.contains(&format!(
-            "<summary>{}: 2 runs, 1 failed Attempt (1 {}; ",
-            task_interrupt::TASK,
+            "<summary>Round 1 · {}: 2 runs, ",
+            task_interrupt::TASK
+        )) && markdown.contains(&format!(
+            " wall, 1 failed Attempt (1 {}; ",
             task["attempts"]["failures"][0]["class"].as_str().unwrap()
         )),
         "{markdown}"
     );
+    // The pipeline line leads, with each step's Worker and the gate's check; the round row
+    // has no review to report.
+    assert!(
+        markdown.contains(
+            "\n**fixture/implementation@1.0.0**: implement (command) → gate (pagination) → \
+             evaluate (command)\n"
+        ),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains(&format!("| 1 | {} | verified | — |", task_interrupt::TASK)),
+        "{markdown}"
+    );
+    assert_eq!(
+        value["pipelines"][0]["steps"][1],
+        serde_json::json!({"stage": 2, "role": "gate", "nodes": ["root.nodes.check"],
+            "checks": ["pagination"]})
+    );
+    assert!(task.get("findings").is_none(), "{task:#}");
     assert_block_is_checked(&markdown);
     // `AF_TASK_REPORT_FIXTURE=DIR` writes this Store's report as `fixtures/task-report` holds
     // it: the pretty JSON document and the Markdown the renderer prints for it.
@@ -467,6 +505,28 @@ fn a_provider_failure_is_counted_with_its_class_and_charge_and_the_provider_stay
     assert!(
         markdown.contains("1 failed Attempt (1 provider_failure; "),
         "{markdown}"
+    );
+    // The pipeline line names the author's Worker and leaves the Provider admission out.
+    let steps = &value["pipelines"][0]["steps"];
+    assert!(
+        steps
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step["role"] == "author" && step["worker"]["model"] == "codex-fixture-1"),
+        "{value:#}"
+    );
+    assert!(
+        !steps.to_string().contains("providers"),
+        "Provider admission is not a step: {value:#}"
+    );
+    let line = markdown
+        .lines()
+        .find(|line| line.starts_with("**"))
+        .unwrap();
+    assert!(
+        line.contains("author (codex codex-fixture-1/high)") && !line.contains("provider"),
+        "{line}"
     );
     assert_block_is_checked(&markdown);
     assert_private(
@@ -781,9 +841,9 @@ fn a_refresh_that_recovers_a_pending_attempt_is_neither_a_run_nor_active_time() 
     let markdown = stdout(&report(&repo, &state, &[task_interrupt::TASK], false));
     assert!(
         markdown.contains(&format!(
-            "<summary>{}: 2 runs, 1 failed Attempt (1 abandoned; ",
+            "<summary>Round 1 · {}: 2 runs, ",
             task_interrupt::TASK
-        )),
+        )) && markdown.contains(" wall, 1 failed Attempt (1 abandoned; "),
         "{markdown}"
     );
     assert_block_is_checked(&markdown);
@@ -1133,13 +1193,26 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
     let markdown = stdout(&report(&repo, &state, &["gc-newer", "gc-older"], false));
     let rows: Vec<&str> = markdown
         .lines()
-        .filter(|line| line.starts_with("| gc-"))
+        .filter(|line| line.contains(" | gc-"))
         .collect();
     assert_eq!(rows.len(), 2, "{markdown}");
-    assert!(rows[0].starts_with("| gc-newer | implement | fixture/plain@1.0.0 |"));
-    assert!(rows[1].starts_with("| gc-older | implement | fixture/plain@1.0.0 |"));
+    assert!(rows[0].starts_with("| 1 | gc-newer | "), "{markdown}");
+    assert!(rows[1].starts_with("| 2 | gc-older | "), "{markdown}");
+    // One pipeline line: both Tasks run the same pipeline under the same bindings.
+    assert_eq!(value["pipelines"].as_array().unwrap().len(), 1, "{value:#}");
+    assert_eq!(
+        markdown
+            .lines()
+            .filter(|line| line.starts_with("**fixture/plain@1.0.0**: "))
+            .count(),
+        1,
+        "{markdown}"
+    );
     assert!(
-        markdown.contains("**Totals:** 2 Tasks · 0 rounds · "),
+        markdown.contains(&format!(
+            "|  | Total: {} Attempts |  |  | ",
+            totals["attempts"]
+        )),
         "{markdown}"
     );
     assert_eq!(markdown.matches("<details>").count(), 2);
@@ -1191,8 +1264,210 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
     assert!(value["totals"].get("attempts").is_none(), "{value:#}");
     let markdown = stdout(&report(&repo, &state, &["gc-older", "gc-newer"], false));
     assert!(
-        markdown.contains("(collected) | unknown | unknown |"),
+        markdown
+            .lines()
+            .any(|line| line.starts_with("| 1 | gc-older | ")
+                && line.contains(" (collected) | unknown | ")),
         "{markdown}"
     );
     assert_block_is_checked(&markdown);
+}
+
+/// The findings a Task's recorded rounds wrote, read straight from the Store: each round's
+/// `FindingSet@1` entries that round saw itself, counted once per finding, by severity.
+fn recorded_findings(state: &Path, task_id: &str) -> (u64, [u64; 3]) {
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let run_id = review_store::store::task::task_run_id(task_id).unwrap();
+    let mut rounds = Vec::new();
+    for event in store.replay(&run_id).unwrap() {
+        let transition = review_store::store::task::read_task_transition(&event).unwrap();
+        if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
+            transition.change
+        {
+            let record =
+                review_store::store::task::execution::read_execution_record(&cas, &record_id)
+                    .unwrap()
+                    .record;
+            if let review_core::task::execution::TaskExecutionRecordV1::Published {
+                output_id,
+                ..
+            } = record
+            {
+                let output = cas.get_json(&output_id).unwrap();
+                for port in output["payload"]["outputs"].as_object().unwrap().values() {
+                    if port["artifact_type"] == "af/TaskReviewRound@1" {
+                        for id in port["artifact_ids"].as_array().unwrap() {
+                            if !rounds.contains(id) {
+                                rounds.push(id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut findings = std::collections::BTreeMap::new();
+    for id in &rounds {
+        let round = cas.get_json(id.as_str().unwrap()).unwrap();
+        let Some(set) = round["payload"]["finding_set_id"].as_str() else {
+            continue;
+        };
+        let set = cas.get_json(set).unwrap()["payload"].clone();
+        for finding in set["findings"].as_array().unwrap() {
+            if finding["last_seen_round"] == set["round"] {
+                findings.insert(
+                    finding["finding_id"].as_str().unwrap().to_owned(),
+                    finding["severity"].as_str().unwrap().to_owned(),
+                );
+            }
+        }
+    }
+    let count = |severity: &str| findings.values().filter(|s| *s == severity).count() as u64;
+    (
+        rounds.len() as u64,
+        [count("blocker"), count("major"), count("minor")],
+    )
+}
+
+/// A reviewed implementation whose first Snapshot both reviewers fault: the round's reduce
+/// step records the finding, the report counts it once by severity, and the row says so.
+#[test]
+fn a_review_rounds_findings_are_counted_once_by_severity_from_its_reduce_step() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, state) = task_cli::fixture_named(directory.path(), "bounded-repair");
+    let af = |args: &[&str]| {
+        Command::new(AF)
+            .current_dir(&repo)
+            .args(args)
+            .args(["--json", "--state"])
+            .arg(&state)
+            .output()
+            .unwrap()
+    };
+    stdout(&af(&["task", "plan", "--file", "ticket.json"]));
+    stdout(&af(&["task", "run", "--execute", "repair-cli"]));
+
+    let (rounds, [blocker, major, minor]) = recorded_findings(&state, "repair-cli");
+    assert_eq!(rounds, 1);
+    assert!(blocker + major + minor > 0, "the round recorded a finding");
+    let value = document(&repo, &state, &["repair-cli"]);
+    let task = &value["tasks"][0];
+    assert_eq!(task["review_rounds"], 1, "{task:#}");
+    assert_eq!(
+        task["findings"],
+        serde_json::json!({"blocker": blocker, "major": major, "minor": minor,
+            "review_ran": true, "gate_failed": false, "failed_reviewers": 0}),
+        "{task:#}"
+    );
+    let cell = [(blocker, "blocker"), (major, "major"), (minor, "minor")]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, severity)| format!("{n} {severity}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let markdown = stdout(&report(&repo, &state, &["repair-cli"], false));
+    assert!(
+        markdown
+            .lines()
+            .any(|line| line.starts_with("| 1 | repair-cli | ")
+                && line.contains(&format!(" | {cell} | "))),
+        "{markdown}"
+    );
+    // Both reviewers run in one stage of the pipeline line.
+    let steps = value["pipelines"][0]["steps"].as_array().unwrap();
+    let review = steps
+        .iter()
+        .find(|step| step["role"] == "review")
+        .unwrap_or_else(|| panic!("{value:#}"));
+    assert_eq!(review["nodes"].as_array().unwrap().len(), 2, "{value:#}");
+    assert_block_is_checked(&markdown);
+}
+
+/// Issue #191: `af task refresh` clears the execution outputs, the published review round
+/// among them, but not the round the Task recorded. A reviewed implementation finishes one
+/// round, its source is refreshed, and it runs again: the report counts the first round
+/// before and after the refresh, and both rounds after the second run.
+#[test]
+fn a_round_recorded_before_a_source_refresh_still_counts() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) =
+        crate::task_refresh::setup(root.path(), None, "implementation-reviewed", 10);
+    let af = |args: &[&str]| {
+        Command::new(AF)
+            .current_dir(&repo)
+            .args(args)
+            .args(["--json", "--state"])
+            .arg(&state)
+            .output()
+            .unwrap()
+    };
+    stdout(&af(&[
+        "task",
+        "start",
+        "--execute",
+        "--file",
+        "ticket.json",
+    ]));
+    let first = document(&repo, &state, &["issue-refresh"]);
+    assert_eq!(first["tasks"][0]["review_rounds"], 1, "{first:#}");
+    let findings = first["tasks"][0]["findings"].clone();
+    assert_eq!(findings["review_ran"], true, "{first:#}");
+
+    let mut changed = crate::task_refresh::issue();
+    changed["revision"] = serde_json::json!("v2");
+    changed["acceptance"]["empty"] = serde_json::json!("An empty input returns an empty list.");
+    let external = root.path().join("updated.toml");
+    let data: review_core::task::source::IssueInputV1 = serde_json::from_value(changed).unwrap();
+    std::fs::write(&external, toml::to_string(&data).unwrap()).unwrap();
+    stdout(&af(&[
+        "task",
+        "refresh",
+        "issue-refresh",
+        "--source-file",
+        external.to_str().unwrap(),
+    ]));
+    // The refresh cleared the outputs: the round is no longer among them.
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let execution = store
+        .task_projection(&cas, "issue-refresh")
+        .unwrap()
+        .unwrap()
+        .execution
+        .unwrap();
+    assert!(
+        execution.outputs.is_empty(),
+        "{:?}",
+        execution.outputs.keys()
+    );
+    drop(store);
+    let refreshed = document(&repo, &state, &["issue-refresh"]);
+    assert_eq!(
+        refreshed["tasks"][0]["review_rounds"], 1,
+        "the recorded round still counts: {refreshed:#}"
+    );
+    assert_eq!(refreshed["tasks"][0]["findings"], findings);
+
+    stdout(&af(&["task", "run", "--execute", "issue-refresh"]));
+    let second = document(&repo, &state, &["issue-refresh"]);
+    let task = &second["tasks"][0];
+    assert_eq!(task["review_rounds"], 2, "{task:#}");
+    let (rounds, [blocker, major, minor]) = recorded_findings(&state, "issue-refresh");
+    assert_eq!(rounds, 2);
+    assert_eq!(
+        (
+            &task["findings"]["blocker"],
+            &task["findings"]["major"],
+            &task["findings"]["minor"]
+        ),
+        (
+            &serde_json::json!(blocker),
+            &serde_json::json!(major),
+            &serde_json::json!(minor)
+        ),
+        "{task:#}"
+    );
+    assert_eq!(task["runs"], 2, "the refresh is not a run: {task:#}");
+    assert_block_is_checked(&stdout(&report(&repo, &state, &["issue-refresh"], false)));
 }

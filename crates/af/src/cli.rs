@@ -1241,13 +1241,17 @@ Without --apply nothing is written. --apply is refused while any Task's writer l
     /// Summarize what recorded Tasks cost and how they ran, for a pull request description
     #[command(
         long_about = "Summarize what one or more recorded Tasks of one Store cost and how they \
-ran: pipeline, outcome, review rounds, runs, Attempts and their failures, tokens, active and \
-wall time, and per node the Worker, Attempts, tokens, elapsed time and check results.\n\nThe \
-default output is one Markdown block, ready to paste into a pull request description, between \
-these two lines:\n\n  <!-- af-task-report:v1 -->\n  <!-- /af-task-report -->\n\n--json prints \
-one `af/task-report@1` document instead. Tasks appear in the order given. Active time is the sum of the \
-Task's runs, so waiting between runs is not counted; wall time runs from its first to its last \
-recorded event. A figure the Store does not record is shown as unknown.\n\nNever: dispatches a \
+ran: first one line per pipeline they ran, its steps in dependency order with each step's \
+Worker and the gate's checks; then one row per Task, each a round, with its outcome, review \
+findings by severity, tokens and active time, and a Total row; then per round its runs, wall \
+time, failed Attempts and per node the Worker, Attempts, tokens, elapsed time and check \
+results.\n\nThe default output is one Markdown block, ready to paste into a pull request \
+description, between these two lines:\n\n  <!-- af-task-report:v1 -->\n  \
+<!-- /af-task-report -->\n\n--json prints one `af/task-report@1` document instead. Tasks \
+appear in the order given, numbered as rounds. Active time is the sum of the Task's runs, the \
+writer leases that started an Attempt, so waiting between runs is not counted; wall time runs \
+from its first to its last recorded event. A figure the Store does not record is shown as \
+unknown.\n\nNever: dispatches a \
 Worker, contacts a Provider, writes the Store or changes a Task. Providers appear only as kind \
 and model; no Provider label, path, credential, prompt or Worker output is printed.",
         after_long_help = "Examples:\n  af task report pagination-cli\n  af task report implement-x verify-x --json"

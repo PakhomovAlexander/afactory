@@ -6,6 +6,48 @@ fn workspace() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
+fn model(provider_kind: &str, model: &str) -> Option<TaskReportWorkerV1> {
+    Some(TaskReportWorkerV1::Model {
+        provider_kind: provider_kind.into(),
+        model: model.into(),
+        effort: "high".into(),
+    })
+}
+
+fn step(
+    stage: u64,
+    role: &str,
+    nodes: &[&str],
+    worker: Option<TaskReportWorkerV1>,
+    checks: &[&str],
+) -> TaskReportStepV1 {
+    TaskReportStepV1 {
+        stage,
+        role: role.into(),
+        nodes: nodes.iter().map(|n| n.to_string()).collect(),
+        worker,
+        checks: checks.iter().map(|c| c.to_string()).collect(),
+    }
+}
+
+/// `fixture/plain@1.0.0`: an implementer bound to `model`, then a gate.
+fn plain(worker: &str) -> TaskReportPipelineV1 {
+    TaskReportPipelineV1 {
+        name: "fixture/plain".into(),
+        version: "1.0.0".into(),
+        steps: vec![
+            step(
+                1,
+                "implement",
+                &["root.nodes.implement"],
+                model("codex", worker),
+                &[],
+            ),
+            step(2, "gate", &["root.nodes.check"], None, &["pagination"]),
+        ],
+    }
+}
+
 fn node(name: &str, worker: Option<TaskReportWorkerV1>) -> TaskReportNodeV1 {
     TaskReportNodeV1 {
         node: name.into(),
@@ -23,14 +65,16 @@ fn node(name: &str, worker: Option<TaskReportWorkerV1>) -> TaskReportNodeV1 {
     }
 }
 
-fn entry(task_id: &str, model: &str) -> TaskReportEntryV1 {
+fn entry(task_id: &str, worker: &str) -> TaskReportEntryV1 {
     TaskReportEntryV1 {
+        round: 0,
         task_id: task_id.into(),
         kind: "implement".into(),
         pipeline: Some("fixture/plain@1.0.0".into()),
         outcome: "pass".into(),
         collected: false,
         review_rounds: Some(0),
+        findings: None,
         runs: 2,
         attempts: Some(TaskReportAttemptsV1 {
             total: 2,
@@ -45,15 +89,13 @@ fn entry(task_id: &str, model: &str) -> TaskReportEntryV1 {
         chargeable_tokens: DecimalU128::from(1234),
         wall_ms: 7_200_000,
         active_ms: 3_250,
-        nodes: Some(vec![node(
-            "root.nodes.implement",
-            Some(TaskReportWorkerV1::Model {
-                provider_kind: "codex".into(),
-                model: model.into(),
-                effort: "high".into(),
-            }),
-        )]),
+        nodes: Some(vec![node("root.nodes.implement", model("codex", worker))]),
     }
+}
+
+/// The report over `tasks`, which all run `fixture/plain@1.0.0` with `gpt-6-sol`.
+fn report(tasks: Vec<TaskReportEntryV1>) -> TaskReportV1 {
+    TaskReportV1::new(vec![plain("gpt-6-sol")], tasks).unwrap()
 }
 
 #[test]
@@ -69,43 +111,407 @@ fn durations_read_as_a_person_reads_them_and_never_round_up() {
     assert_eq!(duration(3_720_000), "1h 02m");
 }
 
+/// One Task of the five below: one node, whose Attempts are the Task's.
+#[allow(clippy::too_many_arguments)]
+fn round(
+    task_id: &str,
+    kind: &str,
+    pipeline: &str,
+    outcome: &str,
+    findings: Option<TaskReportFindingsV1>,
+    tokens: u128,
+    active_ms: u64,
+    wall_ms: u64,
+    runs: u64,
+    (total, failure): (u64, Option<(TaskReportFailureClassV1, u128)>),
+    node: TaskReportNodeV1,
+) -> TaskReportEntryV1 {
+    TaskReportEntryV1 {
+        round: 0,
+        task_id: task_id.into(),
+        kind: kind.into(),
+        pipeline: Some(pipeline.into()),
+        outcome: outcome.into(),
+        collected: false,
+        review_rounds: Some(u64::from(findings.is_some())),
+        findings,
+        runs,
+        attempts: Some(TaskReportAttemptsV1 {
+            total,
+            failed: u64::from(failure.is_some()),
+            failed_tokens: DecimalU128::from(failure.map_or(0, |(_, tokens)| tokens)),
+            failures: failure
+                .into_iter()
+                .map(|(class, tokens)| TaskReportFailureV1 {
+                    class,
+                    attempts: 1,
+                    tokens: DecimalU128::from(tokens),
+                })
+                .collect(),
+        }),
+        chargeable_tokens: DecimalU128::from(tokens),
+        wall_ms,
+        active_ms,
+        nodes: Some(vec![node]),
+    }
+}
+
+fn findings(major: u64, minor: u64, failed_reviewers: u64) -> Option<TaskReportFindingsV1> {
+    Some(TaskReportFindingsV1 {
+        blocker: 0,
+        major,
+        minor,
+        review_ran: true,
+        gate_failed: false,
+        failed_reviewers,
+    })
+}
+
+/// The five Tasks this branch's own work ran, shaped as a test Store would record them: four
+/// rounds of a reviewed implementation pipeline — six major and one minor finding, then a gate
+/// that failed so the review did not run, then one major finding with a reviewer whose Attempt
+/// failed, then a clean review — and a verification Task without a review. The block leads with
+/// the two pipelines in first-use order, then one row per round and the totals row.
 #[test]
-fn the_block_has_its_markers_columns_totals_and_one_details_element_per_task() {
-    let report = TaskReportV1::new(vec![
-        entry("implement-x", "gpt-6-sol"),
-        entry("verify-x", "gpt-6-sol"),
-    ])
-    .unwrap();
-    let text = markdown(&report);
-    let lines: Vec<&str> = text.lines().collect();
-    assert_eq!(lines.first(), Some(&TASK_REPORT_BEGIN));
-    assert_eq!(lines.last(), Some(&TASK_REPORT_END));
+fn five_rounds_render_their_pipelines_first_then_one_row_each_and_the_total() {
+    let reviewed = TaskReportPipelineV1 {
+        name: "afactory/implementation-reviewed".into(),
+        version: "1.0.0".into(),
+        steps: vec![
+            step(
+                1,
+                "implement",
+                &["root.nodes.implement"],
+                model("codex", "gpt-6-sol"),
+                &[],
+            ),
+            step(
+                2,
+                "gate",
+                &["root.nodes.review.nodes.checks"],
+                None,
+                &["clippy", "fmt", "test"],
+            ),
+            step(
+                3,
+                "review",
+                &[
+                    "root.nodes.review.nodes.bugs",
+                    "root.nodes.review.nodes.correctness",
+                ],
+                model("codex", "gpt-6-sol"),
+                &[],
+            ),
+            step(
+                4,
+                "evaluate",
+                &["root.nodes.evaluate"],
+                model("claude", "claude-opus-5-5"),
+                &[],
+            ),
+        ],
+    };
+    let verification = TaskReportPipelineV1 {
+        name: "afactory/verification".into(),
+        version: "1.0.0".into(),
+        steps: vec![
+            step(
+                1,
+                "gate",
+                &["root.nodes.checks"],
+                None,
+                &["clippy", "fmt", "test"],
+            ),
+            step(
+                2,
+                "evaluate",
+                &["root.nodes.evaluate"],
+                model("claude", "claude-opus-5-5"),
+                &[],
+            ),
+        ],
+    };
+    let one =
+        |name: &str, role: &str, worker, attempts, failed, tokens, elapsed_ms| TaskReportNodeV1 {
+            node: name.into(),
+            role: role.into(),
+            worker,
+            attempts,
+            failed_attempts: failed,
+            tokens: DecimalU128::from(tokens),
+            elapsed_ms: Some(elapsed_ms),
+            checks: Vec::new(),
+        };
+    let implement = "root.nodes.implement";
+    let gpt = || model("codex", "gpt-6-sol");
+    let mut gate = one(
+        "root.nodes.review.nodes.checks",
+        "check",
+        None,
+        3,
+        0,
+        98_402,
+        365_000,
+    );
+    gate.checks = vec![
+        TaskReportCheckV1 {
+            name: "fmt".into(),
+            status: TaskReportCheckStatusV1::Passed,
+            elapsed_ms: Some(2_100),
+        },
+        TaskReportCheckV1 {
+            name: "clippy".into(),
+            status: TaskReportCheckStatusV1::Failed,
+            elapsed_ms: Some(130_000),
+        },
+    ];
+    let reviewed_label = "afactory/implementation-reviewed@1.0.0";
+    let tasks = vec![
+        round(
+            "task-report-layout",
+            "implement",
+            reviewed_label,
+            "changes_requested",
+            findings(6, 1, 0),
+            412_907,
+            1_421_000,
+            3_720_000,
+            2,
+            (6, Some((TaskReportFailureClassV1::ProviderFailure, 3_120))),
+            one(implement, "implement", gpt(), 6, 1, 412_907, 1_380_000),
+        ),
+        round(
+            "task-report-layout-2",
+            "implement",
+            reviewed_label,
+            "changes_requested",
+            Some(TaskReportFindingsV1 {
+                blocker: 0,
+                major: 0,
+                minor: 0,
+                review_ran: false,
+                gate_failed: true,
+                failed_reviewers: 0,
+            }),
+            98_402,
+            365_000,
+            400_000,
+            1,
+            (3, None),
+            gate,
+        ),
+        round(
+            "task-report-layout-3",
+            "implement",
+            reviewed_label,
+            "changes_requested",
+            findings(1, 0, 1),
+            233_018,
+            912_000,
+            1_000_000,
+            1,
+            (6, Some((TaskReportFailureClassV1::ProcessFailure, 0))),
+            one(
+                "root.nodes.review.nodes.bugs",
+                "review",
+                gpt(),
+                6,
+                1,
+                233_018,
+                900_000,
+            ),
+        ),
+        round(
+            "task-report-layout-4",
+            "implement",
+            reviewed_label,
+            "pass",
+            findings(0, 0, 0),
+            201_555,
+            750_000,
+            800_000,
+            1,
+            (5, None),
+            one(implement, "implement", gpt(), 5, 0, 201_555, 700_000),
+        ),
+        round(
+            "verify-task-report-layout",
+            "verify",
+            "afactory/verification@1.0.0",
+            "verified",
+            None,
+            41_230,
+            242_000,
+            250_000,
+            1,
+            (2, None),
+            one(
+                "root.nodes.evaluate",
+                "evaluate",
+                model("claude", "claude-opus-5-5"),
+                2,
+                0,
+                41_230,
+                240_000,
+            ),
+        ),
+    ];
+    let report = TaskReportV1::new(vec![reviewed, verification], tasks).unwrap();
+    let expected = "\
+<!-- af-task-report:v1 -->
+### af task report
+
+**afactory/implementation-reviewed@1.0.0**: implement (codex gpt-6-sol/high) → gate (clippy, fmt, test) → review (bugs, correctness: codex gpt-6-sol/high) → evaluate (claude claude-opus-5-5/high)
+
+**afactory/verification@1.0.0**: gate (clippy, fmt, test) → evaluate (claude claude-opus-5-5/high)
+
+| Round | Task | Outcome | Findings | Tokens | Active |
+| ---: | --- | --- | --- | ---: | ---: |
+| 1 | task-report-layout | changes_requested | 6 major, 1 minor | 412,907 | 23m 41s |
+| 2 | task-report-layout-2 | changes_requested | gate failed | 98,402 | 6m 05s |
+| 3 | task-report-layout-3 | changes_requested | 1 major; 1 reviewer failed | 233,018 | 15m 12s |
+| 4 | task-report-layout-4 | pass | none | 201,555 | 12m 30s |
+| 5 | verify-task-report-layout | verified | — | 41,230 | 4m 02s |
+|  | Total: 22 Attempts (2 failed) |  |  | 987,112 | 1h 01m |
+
+<details>
+<summary>Round 1 · task-report-layout: 2 runs, 1h 02m wall, 1 failed Attempt (1 provider_failure; 3,120 tokens)</summary>
+
+| Node | Role | Worker | Attempts | Tokens | Elapsed | Checks |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| root.nodes.implement | implement | codex gpt-6-sol/high | 6 (1 failed) | 412,907 | 23m 00s | - |
+
+</details>
+
+<details>
+<summary>Round 2 · task-report-layout-2: 1 run, 6m 40s wall, no failed Attempt</summary>
+
+| Node | Role | Worker | Attempts | Tokens | Elapsed | Checks |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| root.nodes.review.nodes.checks | check | - | 3 | 98,402 | 6m 05s | fmt passed 2.1s, clippy failed 2m 10s |
+
+</details>
+
+<details>
+<summary>Round 3 · task-report-layout-3: 1 run, 16m 40s wall, 1 failed Attempt (1 process_failure; 0 tokens)</summary>
+
+| Node | Role | Worker | Attempts | Tokens | Elapsed | Checks |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| root.nodes.review.nodes.bugs | review | codex gpt-6-sol/high | 6 (1 failed) | 233,018 | 15m 00s | - |
+
+</details>
+
+<details>
+<summary>Round 4 · task-report-layout-4: 1 run, 13m 20s wall, no failed Attempt</summary>
+
+| Node | Role | Worker | Attempts | Tokens | Elapsed | Checks |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| root.nodes.implement | implement | codex gpt-6-sol/high | 5 | 201,555 | 11m 40s | - |
+
+</details>
+
+<details>
+<summary>Round 5 · verify-task-report-layout: 1 run, 4m 10s wall, no failed Attempt</summary>
+
+| Node | Role | Worker | Attempts | Tokens | Elapsed | Checks |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| root.nodes.evaluate | evaluate | claude claude-opus-5-5/high | 2 | 41,230 | 4m 00s | - |
+
+</details>
+<!-- /af-task-report -->
+";
+    assert_eq!(markdown(&report), expected);
+    let json = serde_json::to_value(&report).unwrap();
     assert_eq!(
-        lines[3],
-        "| Task | Kind | Pipeline | Outcome | Rounds | Attempts | Tokens | Active time | Wall time |"
+        json["pipelines"][0]["steps"][2]["nodes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
     );
-    assert!(
-        text.contains(
-            "| implement-x | implement | fixture/plain@1.0.0 | pass | 0 | 2 (1 failed) | 1,234 | 3.2s | 2h 00m |"
-        ),
-        "{text}"
+    assert_eq!(json["tasks"][4]["round"], 5);
+    assert!(json["tasks"][4].get("findings").is_none());
+    assert_eq!(
+        json["tasks"][1]["findings"],
+        serde_json::json!({"blocker": 0, "major": 0, "minor": 0, "review_ran": false,
+            "gate_failed": true, "failed_reviewers": 0})
     );
-    assert!(
-        text.contains(
-            "**Totals:** 2 Tasks · 0 rounds · 4 Attempts (2 failed) · 2,468 tokens · 6.5s active"
-        ),
-        "{text}"
+}
+
+#[test]
+fn a_findings_cell_says_what_the_review_recorded() {
+    let cell = |findings: Option<TaskReportFindingsV1>, collected: bool| {
+        let mut task = entry("a", "gpt-6-sol");
+        task.findings = findings;
+        task.collected = collected;
+        findings_cell(&task)
+    };
+    let ran = |blocker, major, minor, failed_reviewers| {
+        Some(TaskReportFindingsV1 {
+            blocker,
+            major,
+            minor,
+            review_ran: true,
+            gate_failed: false,
+            failed_reviewers,
+        })
+    };
+    assert_eq!(cell(ran(0, 6, 1, 0), false), "6 major, 1 minor");
+    assert_eq!(cell(ran(2, 0, 3, 0), false), "2 blocker, 3 minor");
+    assert_eq!(cell(ran(0, 0, 0, 0), false), "none");
+    assert_eq!(cell(ran(0, 0, 0, 2), false), "none; 2 reviewers failed");
+    assert_eq!(cell(ran(1, 0, 0, 1), false), "1 blocker; 1 reviewer failed");
+    let not_ran = |gate_failed| {
+        Some(TaskReportFindingsV1 {
+            blocker: 0,
+            major: 0,
+            minor: 0,
+            review_ran: false,
+            gate_failed,
+            failed_reviewers: 0,
+        })
+    };
+    assert_eq!(cell(not_ran(true), false), "gate failed");
+    assert_eq!(cell(not_ran(false), false), "not run");
+    assert_eq!(cell(None, false), "—");
+    assert_eq!(cell(None, true), "unknown");
+}
+
+#[test]
+fn a_stage_of_several_steps_names_each_steps_nodes() {
+    let pipeline = TaskReportPipelineV1 {
+        name: "fixture/split".into(),
+        version: "2".into(),
+        steps: vec![
+            step(
+                1,
+                "review",
+                &["root.nodes.bugs"],
+                model("codex", "gpt-6-sol"),
+                &[],
+            ),
+            step(
+                1,
+                "review",
+                &["root.nodes.correctness"],
+                model("claude", "claude-opus-5-5"),
+                &[],
+            ),
+            step(2, "gate", &["root.nodes.a", "root.nodes.b"], None, &["fmt"]),
+        ],
+    };
+    assert_eq!(
+        pipeline_line(&pipeline),
+        "**fixture/split@2**: review (bugs: codex gpt-6-sol/high) + review (correctness: \
+         claude claude-opus-5-5/high) → gate (a, b: fmt)"
     );
-    assert_eq!(text.matches("<details>").count(), 2);
-    assert!(
-        text.contains(
-            "<summary>implement-x: 2 runs, 1 failed Attempt (1 provider_failure; 34 tokens)</summary>"
-        ),
-        "{text}"
-    );
-    assert!(
-        text.contains("| root.nodes.implement | implement | codex gpt-6-sol/high | 2 (1 failed) | 1,234 | 1m 05s | pagination passed 840ms |"),
-        "{text}"
+    let empty = TaskReportPipelineV1 {
+        steps: Vec::new(),
+        ..pipeline
+    };
+    assert_eq!(
+        pipeline_line(&empty),
+        "**fixture/split@2**: no Worker or check step"
     );
 }
 
@@ -136,7 +542,7 @@ fn table_cells(line: &str) -> Vec<String> {
 fn recorded_text_cannot_break_a_cell_or_open_markup() {
     let mut task = entry("a", "gpt-6-sol");
     task.outcome = "m|<script>\u{1b}[31m\u{202e}".into();
-    let text = markdown(&TaskReportV1::new(vec![task]).unwrap());
+    let text = markdown(&report(vec![task]));
     assert!(!text.contains("<script>"), "{text}");
     assert!(
         !text.contains('\u{1b}') && !text.contains('\u{202e}'),
@@ -151,8 +557,11 @@ fn a_backslash_before_a_pipe_stays_in_its_cell() {
     let mut task = entry("a", "gpt-6-sol");
     task.outcome = "m\\|x".into();
     task.nodes.as_mut().unwrap()[0].checks.clear();
-    let text = markdown(&TaskReportV1::new(vec![task]).unwrap());
-    let row = text.lines().find(|line| line.starts_with("| a |")).unwrap();
+    let text = markdown(&report(vec![task]));
+    let row = text
+        .lines()
+        .find(|line| line.starts_with("| 1 | a |"))
+        .unwrap();
     assert_eq!(table_cells(row).len(), TASK_REPORT_COLUMNS.len(), "{row}");
     assert!(row.contains("| m&#92;&#124;x |"), "{row}");
     assert_eq!(cell("m\\|x"), "m&#92;&#124;x");
@@ -175,10 +584,13 @@ fn token_counts_read_with_thousands_separators_in_markdown_only() {
     task.nodes.as_mut().unwrap()[0].tokens = DecimalU128::from(205_295);
     task.attempts.as_mut().unwrap().failed_tokens = DecimalU128::from(12_345);
     task.attempts.as_mut().unwrap().failures[0].tokens = DecimalU128::from(12_345);
-    let report = TaskReportV1::new(vec![task]).unwrap();
+    let report = report(vec![task]);
     let text = markdown(&report);
-    assert!(text.contains("| 2 (1 failed) | 205,295 | 3.2s |"), "{text}");
-    assert!(text.contains("· 205,295 tokens ·"), "{text}");
+    assert!(text.contains("| — | 205,295 | 3.2s |"), "{text}");
+    assert!(
+        text.contains("| Total: 2 Attempts (1 failed) |  |  | 205,295 | 3.2s |"),
+        "{text}"
+    );
     assert!(
         text.contains("(1 provider_failure; 12,345 tokens)"),
         "{text}"
@@ -192,21 +604,32 @@ fn token_counts_read_with_thousands_separators_in_markdown_only() {
     assert_eq!(json["totals"]["chargeable_tokens"], "205295");
 }
 
-/// Every value of the shared table is copied unchanged into both forms when it is a model
-/// identity; any other value leaves both forms exactly as an `unknown` model does.
+/// Every value of the shared table is copied unchanged into both forms, in the pipeline line
+/// and in the node breakdown, when it is a model identity; any other value leaves both forms
+/// exactly as an `unknown` model does.
 #[test]
 fn only_a_model_identity_is_copied_into_the_report() {
-    let unknown = TaskReportV1::new(vec![entry("a", TASK_REPORT_UNKNOWN_MODEL)]).unwrap();
+    let with =
+        |model: &str| TaskReportV1::new(vec![plain(model)], vec![entry("a", model)]).unwrap();
+    let unknown = with(TASK_REPORT_UNKNOWN_MODEL);
     for (recorded, identity) in TASK_REPORT_MODEL_CASES {
         let shown = report_model(recorded);
-        let report = TaskReportV1::new(vec![entry("a", &shown)]).unwrap();
+        let report = with(&shown);
         let text = markdown(&report);
         let json = serde_json::to_value(&report).unwrap();
         if identity {
             assert_eq!(shown, recorded);
             assert_eq!(json["tasks"][0]["nodes"][0]["worker"]["model"], recorded);
+            assert_eq!(
+                json["pipelines"][0]["steps"][0]["worker"]["model"],
+                recorded
+            );
             assert!(
                 text.contains(&format!("| codex {recorded}/high |")),
+                "{text}"
+            );
+            assert!(
+                text.contains(&format!("implement (codex {recorded}/high) →")),
                 "{text}"
             );
         } else {
@@ -264,22 +687,97 @@ fn a_refresh_that_recovers_a_pending_attempt_is_not_a_run() {
     assert_eq!(tally_runs(&[]), None);
 }
 
+/// Issue #191: only a started Attempt makes a lease a run. `af task start --execute` (epoch 1)
+/// starts and settles every Attempt, and its writer dies before publishing; `af task run`
+/// (epoch 2) resumes after all Attempts finished, publishes the selected results and finishes
+/// the Task. The resume began no Attempt, so it is not a run and its span is not active time.
+#[test]
+fn a_resume_after_every_attempt_finished_is_not_a_run() {
+    use review_core::task::execution::TaskExecutionRecordV1 as Record;
+    let id = || "attempt-1".to_owned();
+    let digest = || format!("sha256:{}", "a".repeat(64));
+    assert_eq!(
+        record_mark(Some(&Record::Started { attempt_id: id() })),
+        Mark::Work
+    );
+    for record in [
+        Record::Invocation {
+            invocation_id: digest(),
+        },
+        Record::Settled {
+            attempt_id: id(),
+            charged_tokens: 10,
+            result: TaskAttemptResultV1::Succeeded {
+                output_id: digest(),
+            },
+            raw_artifact_ids: Vec::new(),
+            usage_id: None,
+        },
+        Record::Published {
+            output_id: digest(),
+            attempt_id: Some(id()),
+        },
+        Record::Released {
+            attempt_id: id(),
+            reason: "recovered".into(),
+        },
+        Record::Settled {
+            attempt_id: id(),
+            charged_tokens: 0,
+            result: TaskAttemptResultV1::Abandoned {
+                diagnostic_id: digest(),
+            },
+            raw_artifact_ids: Vec::new(),
+            usage_id: None,
+        },
+    ] {
+        assert_eq!(record_mark(Some(&record)), Mark::Other, "{record:?}");
+    }
+    // A collected Task's records are gone: each recorded execution still counts.
+    assert_eq!(record_mark(None), Mark::Work);
+
+    let started = record_mark(Some(&Record::Started { attempt_id: id() }));
+    let settled = record_mark(Some(&Record::Settled {
+        attempt_id: id(),
+        charged_tokens: 10,
+        result: TaskAttemptResultV1::Succeeded {
+            output_id: digest(),
+        },
+        raw_artifact_ids: Vec::new(),
+        usage_id: None,
+    }));
+    let published = record_mark(Some(&Record::Published {
+        output_id: digest(),
+        attempt_id: Some(id()),
+    }));
+    let events = [
+        (1, 1_000, Mark::Other),
+        (1, 1_010, started),
+        (1, 1_600, settled),
+        (2, 50_000, Mark::Other),
+        (2, 50_020, published),
+        (2, 50_900, Mark::Other),
+    ];
+    assert_eq!(
+        tally_runs(&events),
+        Some(EventTimes {
+            runs: 1,
+            wall_ms: 49_900,
+            active_ms: 600,
+        })
+    );
+}
+
 /// One node ran an Attempt under the plan before `af task refresh` and two under the plan
 /// after it, which binds its slot to another Worker: each Worker gets a row with only its own
 /// Attempts, failures and tokens.
 #[test]
 fn a_node_refreshed_onto_another_worker_charges_each_worker_its_own_attempts() {
-    let model = |provider_kind: &str, model: &str| {
-        Some(TaskReportWorkerV1::Model {
-            provider_kind: provider_kind.into(),
-            model: model.into(),
-            effort: "high".into(),
-        })
-    };
     let attempt = |node: &str, worker, failure, tokens| CountedAttempt {
         node: node.into(),
         role: "implement".into(),
         worker,
+        reviewer: false,
         failure,
         tokens,
         elapsed_ms: Some(1_000),
@@ -347,7 +845,7 @@ fn a_node_refreshed_onto_another_worker_charges_each_worker_its_own_attempts() {
         ..summary
     });
     task.nodes = Some(nodes);
-    let text = markdown(&TaskReportV1::new(vec![task]).unwrap());
+    let text = markdown(&report(vec![task]));
     assert!(
         text.contains(
             "| root.nodes.implement | implement | codex gpt-6-sol/high | 1 (1 failed) | 205,295 |"
@@ -357,6 +855,64 @@ fn a_node_refreshed_onto_another_worker_charges_each_worker_its_own_attempts() {
     assert!(
         text.contains("| root.nodes.implement | implement | claude claude-opus-5-5/high | 2 (1 failed) | 40,007 |"),
         "{text}"
+    );
+}
+
+/// A reviewer whose Attempts failed counts once however often it failed; a check that failed
+/// is a failed gate only while no reviewer began.
+#[test]
+fn reviewer_attempts_say_whether_the_review_ran_and_how_many_reviewers_failed() {
+    let attempt = |node: &str, reviewer, failed: bool, check: Option<TaskReportCheckStatusV1>| {
+        CountedAttempt {
+            node: node.into(),
+            role: if reviewer { "review" } else { "check" }.into(),
+            worker: None,
+            reviewer,
+            failure: failed.then_some(TaskReportFailureClassV1::ProcessFailure),
+            tokens: 0,
+            elapsed_ms: None,
+            checks: check
+                .map(|status| TaskReportCheckV1 {
+                    name: "test".into(),
+                    status,
+                    elapsed_ms: None,
+                })
+                .into_iter()
+                .collect(),
+        }
+    };
+    let failed_gate = [attempt(
+        "root.nodes.checks",
+        false,
+        false,
+        Some(TaskReportCheckStatusV1::Failed),
+    )];
+    assert_eq!(
+        ReviewAttempts::of(&failed_gate),
+        ReviewAttempts {
+            reviewers: false,
+            failed_reviewers: 0,
+            check_failed: true,
+        }
+    );
+    let reviewed = [
+        attempt(
+            "root.nodes.checks",
+            false,
+            false,
+            Some(TaskReportCheckStatusV1::Passed),
+        ),
+        attempt("root.nodes.bugs", true, true, None),
+        attempt("root.nodes.bugs", true, true, None),
+        attempt("root.nodes.correctness", true, false, None),
+    ];
+    assert_eq!(
+        ReviewAttempts::of(&reviewed),
+        ReviewAttempts {
+            reviewers: true,
+            failed_reviewers: 1,
+            check_failed: false,
+        }
     );
 }
 
@@ -371,15 +927,17 @@ fn unknown_figures_are_written_as_unknown_never_as_zero() {
     let mut untimed = entry("new", "gpt-6-sol");
     untimed.nodes.as_mut().unwrap()[0].elapsed_ms = None;
     untimed.nodes.as_mut().unwrap()[0].checks[0].elapsed_ms = None;
-    let text = markdown(&TaskReportV1::new(vec![collected, untimed]).unwrap());
+    let text = markdown(&report(vec![collected, untimed]));
     assert!(
-        text.contains(
-            "| old | implement | unknown | pass (collected) | unknown | unknown | 1,234 |"
-        ),
+        text.contains("| 1 | old | pass (collected) | unknown | 1,234 | 3.2s |"),
         "{text}"
     );
     assert!(
-        text.contains("**Totals:** 2 Tasks · unknown rounds · unknown Attempts · 2,468 tokens"),
+        text.contains("|  | Total: unknown Attempts |  |  | 2,468 | 6.5s |"),
+        "{text}"
+    );
+    assert!(
+        text.contains("<summary>Round 1 · old: 2 runs, 2h 00m wall</summary>"),
         "{text}"
     );
     assert!(

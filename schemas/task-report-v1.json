@@ -2,13 +2,16 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-report:1",
   "title": "af/task-report@1",
-  "description": "What `af task report --json` prints (ADR-0142): what recorded Tasks cost and how they ran, read from one Store and never estimated. A figure the Store does not record is absent, never zero or null. Tasks appear in the order the command named them. A Worker is named only by Provider kind, model and effort: every object is closed, so no Provider registry label or principal, path, credential, prompt or Worker output can appear. Totals are the sums of the Tasks' figures; a sum is absent when any Task does not record its part.",
+  "description": "What `af task report --json` prints (ADR-0142): what recorded Tasks cost and how they ran, read from one Store and never estimated. A figure the Store does not record is absent, never zero or null. Tasks appear in the order the command named them, each numbered by its position (its round), and `pipelines` lists the distinct pipelines their current plans run, in first-use order. A Worker is named only by Provider kind, model and effort: every object is closed, so no Provider registry label or principal, path, credential, prompt or Worker output can appear. Totals are the sums of the Tasks' figures; a sum is absent when any Task does not record its part.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "tasks", "totals"],
+  "required": ["schema", "pipelines", "tasks", "totals"],
   "properties": {
-    "schema": {
-      "const": "af/task-report@1"
+    "schema": { "const": "af/task-report@1" },
+    "pipelines": {
+      "description": "Each distinct pipeline the Tasks' current plans run, in the order a Task first names it. Two entries share a `name@version` only when the Tasks' plans bind it differently.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/pipeline" }
     },
     "tasks": {
       "type": "array",
@@ -23,9 +26,7 @@
       "minimum": 0,
       "maximum": 9007199254740991
     },
-    "tokens": {
-      "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
-    },
+    "tokens": { "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128" },
     "model": {
       "description": "A model identity, copied only when it is one. An allow-list: 1 to 96 characters from `A-Z a-z 0-9 ._:+-` plus at most one `/`; the first character and the first character after the `/` alphanumeric; no `..`; no `:` directly before the `/` (so no `://`); no drive-letter prefix such as `C:`; and neither side of the `/` a home, auth or state directory name (`home`, `users`, `root`, `tmp`, `var`, `private`, `state`, `auth`, `auth.*`, in any case). Any other recorded value may be a path, a URL or an account (an email address has an `@`) and is reported as `unknown`.",
       "type": "string",
@@ -36,10 +37,113 @@
       "maxLength": 4096,
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*(\\.[A-Za-z0-9][A-Za-z0-9_-]*)*$"
     },
+    "pipeline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "steps"],
+      "properties": {
+        "name": { "$ref": "urn:af:schema:task-contracts:1#/$defs/package" },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^\\S+$"
+        },
+        "steps": {
+          "description": "Every node of the plan's compiled graph that runs a Worker, and every check node (the gate), in dependency order. Kernel bookkeeping nodes and Provider admission are left out.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/step" }
+        }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "role", "nodes", "checks"],
+      "properties": {
+        "stage": {
+          "description": "The step's position in dependency order, from 1; steps of one stage run in parallel.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "role": {
+          "description": "The Worker slot's role (`implement`, `review`, `evaluate`, ...), or `gate` for a check node.",
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "nodes": {
+          "description": "The qualified nodes of the step, in compiled order: nodes of one stage, role, Worker and check list form one step.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/node" }
+        },
+        "worker": {
+          "description": "The Worker the plan binds the step's slot to. Absent for a gate.",
+          "$ref": "#/$defs/worker"
+        },
+        "checks": {
+          "description": "A gate's checks, local and remote, in name order; empty for a Worker step.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "urn:af:schema:task-contracts:1#/$defs/name" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "role": { "const": "gate" } } },
+          "then": {
+            "properties": { "checks": { "minItems": 1 } },
+            "not": { "required": ["worker"] }
+          },
+          "else": { "properties": { "checks": { "maxItems": 0 } } }
+        }
+      ]
+    },
+    "findings": {
+      "description": "What the Task's review recorded. Absent for a Task whose plan has no review and for a collected Task.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["blocker", "major", "minor", "review_ran", "gate_failed", "failed_reviewers"],
+      "properties": {
+        "blocker": {
+          "description": "Findings by severity, each counted once: the entries of the `FindingSet@1` each recorded review round's reduce step wrote whose `last_seen_round` is that round, a finding seen in several rounds of the Task counted once.",
+          "$ref": "#/$defs/count"
+        },
+        "major": { "$ref": "#/$defs/count" },
+        "minor": { "$ref": "#/$defs/count" },
+        "review_ran": {
+          "description": "A reviewer Attempt began, or a recorded round wrote its findings.",
+          "type": "boolean"
+        },
+        "gate_failed": {
+          "description": "A check the Task recorded failed and the review did not run.",
+          "type": "boolean"
+        },
+        "failed_reviewers": {
+          "description": "Reviewer nodes with at least one failed Attempt.",
+          "$ref": "#/$defs/count"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "review_ran": { "const": false } } },
+          "then": {
+            "properties": {
+              "blocker": { "const": 0 },
+              "major": { "const": 0 },
+              "minor": { "const": 0 },
+              "failed_reviewers": { "const": 0 }
+            }
+          },
+          "else": { "properties": { "gate_failed": { "const": false } } }
+        }
+      ]
+    },
     "task": {
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "round",
         "task_id",
         "kind",
         "outcome",
@@ -50,12 +154,14 @@
         "active_ms"
       ],
       "properties": {
-        "task_id": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        "round": {
+          "description": "The Task's 1-based position in the report: its row of the round table.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         },
-        "kind": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
-        },
+        "task_id": { "$ref": "urn:af:schema:task-contracts:1#/$defs/name" },
+        "kind": { "$ref": "urn:af:schema:task-contracts:1#/$defs/package" },
         "pipeline": {
           "description": "The current plan's root Pipeline as `name@version`. Absent before a plan exists and for a collected Task.",
           "type": "string",
@@ -70,11 +176,12 @@
           "type": "boolean"
         },
         "review_rounds": {
-          "description": "Recorded Review Rounds. Absent for a collected Task.",
+          "description": "Every Review Round the Task published, read from its log, so a round published before `af task refresh` cleared the execution outputs still counts. Absent for a collected Task.",
           "$ref": "#/$defs/count"
         },
+        "findings": { "$ref": "#/$defs/findings" },
         "runs": {
-          "description": "Writer leases during which the Task executed work: `af task start --execute` and every `af task run` that resumed it. A lease that only settled or released an earlier writer's Attempts, as `af task refresh` does, is not a run.",
+          "description": "Writer leases in which an Attempt of the Task started: `af task start --execute` and every `af task run` that resumed it with new work. A lease that only settled or released an earlier writer's Attempts, as `af task refresh` does, or only published already selected results and finished the Task, is not a run.",
           "$ref": "#/$defs/count"
         },
         "attempts": { "$ref": "#/$defs/attempts" },
@@ -84,7 +191,7 @@
           "$ref": "#/$defs/count"
         },
         "active_ms": {
-          "description": "The sum of the runs' spans, each from its first to its last event: time spent waiting between runs is not counted. Never above `wall_ms`.",
+          "description": "The sum of the runs' spans, each from its first to its last event: time spent waiting between runs, and a lease that started no Attempt, is not counted. Never above `wall_ms`.",
           "$ref": "#/$defs/count"
         },
         "nodes": {
@@ -96,7 +203,11 @@
       "allOf": [
         {
           "if": { "properties": { "collected": { "const": true } } },
-          "then": { "not": { "anyOf": [{ "required": ["attempts"] }, { "required": ["nodes"] }] } }
+          "then": {
+            "not": {
+              "anyOf": [{ "required": ["attempts"] }, { "required": ["nodes"] }, { "required": ["findings"] }]
+            }
+          }
         }
       ]
     },
@@ -185,9 +296,7 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["kind"],
-          "properties": {
-            "kind": { "const": "command" }
-          }
+          "properties": { "kind": { "const": "command" } }
         },
         {
           "type": "object",
@@ -195,13 +304,9 @@
           "required": ["kind", "provider_kind", "model", "effort"],
           "properties": {
             "kind": { "const": "model" },
-            "provider_kind": {
-              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
-            },
+            "provider_kind": { "$ref": "urn:af:schema:task-contracts:1#/$defs/name" },
             "model": { "$ref": "#/$defs/model" },
-            "effort": {
-              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
-            }
+            "effort": { "$ref": "urn:af:schema:task-contracts:1#/$defs/name" }
           }
         }
       ]
@@ -211,9 +316,7 @@
       "additionalProperties": false,
       "required": ["name", "status"],
       "properties": {
-        "name": {
-          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
-        },
+        "name": { "$ref": "urn:af:schema:task-contracts:1#/$defs/name" },
         "status": { "enum": ["passed", "failed", "not_run"] },
         "elapsed_ms": {
           "description": "The check's recorded span; absent when it never started or recorded none.",

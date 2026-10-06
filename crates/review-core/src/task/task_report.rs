@@ -16,20 +16,13 @@ pub const TASK_REPORT_V1: &str = "af/task-report@1";
 pub const TASK_REPORT_BEGIN: &str = "<!-- af-task-report:v1 -->";
 /// The last line of that block.
 pub const TASK_REPORT_END: &str = "<!-- /af-task-report -->";
-/// The summary table's columns, in order: `scripts/check-pr-report.py` requires every one.
-pub const TASK_REPORT_COLUMNS: [&str; 9] = [
-    "Task",
-    "Kind",
-    "Pipeline",
-    "Outcome",
-    "Rounds",
-    "Attempts",
-    "Tokens",
-    "Active time",
-    "Wall time",
-];
-/// The totals line starts with this text.
-pub const TASK_REPORT_TOTALS: &str = "**Totals:**";
+/// The round table's columns, in order: `scripts/check-pr-report.py` requires every one.
+pub const TASK_REPORT_COLUMNS: [&str; 6] =
+    ["Round", "Task", "Outcome", "Findings", "Tokens", "Active"];
+/// The Task cell of the round table's last row, the totals row, starts with this text.
+pub const TASK_REPORT_TOTAL: &str = "Total:";
+/// The role a check node's step has in a pipeline line.
+pub const TASK_REPORT_GATE_ROLE: &str = "gate";
 /// The model the report names in place of a recorded value that is not a model identity.
 pub const TASK_REPORT_UNKNOWN_MODEL: &str = "unknown";
 /// The longest model identity the report copies.
@@ -138,14 +131,75 @@ pub const TASK_REPORT_MODEL_CASES: [(&str, bool); 51] = [
 pub struct TaskReportV1 {
     /// Always [`TASK_REPORT_V1`].
     pub schema: String,
+    /// Each distinct pipeline the reported Tasks' current plans run, in first-use order.
+    pub pipelines: Vec<TaskReportPipelineV1>,
     /// One entry per requested Task, in the order the command named them.
     pub tasks: Vec<TaskReportEntryV1>,
     pub totals: TaskReportTotalsV1,
 }
 
+/// One pipeline as a plan binds it: its steps in dependency order, each with its Worker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskReportPipelineV1 {
+    pub name: String,
+    pub version: String,
+    /// Every node that runs a Worker, and every check node (the gate), of the plan's compiled
+    /// graph, in dependency order. Kernel bookkeeping nodes and Provider admission are left out.
+    pub steps: Vec<TaskReportStepV1>,
+}
+
+impl TaskReportPipelineV1 {
+    /// `name@version`, as a Task entry names its pipeline.
+    pub fn label(&self) -> String {
+        format!("{}@{}", self.name, self.version)
+    }
+}
+
+/// One step of a pipeline: the nodes of one role, Worker and check list that run in parallel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskReportStepV1 {
+    /// The step's position in dependency order, from 1. Steps of one stage run in parallel.
+    pub stage: u64,
+    /// The Worker slot's role, or [`TASK_REPORT_GATE_ROLE`] for a check node.
+    pub role: String,
+    /// The qualified nodes of the step, in compiled order.
+    pub nodes: Vec<String>,
+    /// The Worker the plan binds the step's slot to; absent for a gate.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub worker: Option<TaskReportWorkerV1>,
+    /// The checks a gate runs, local and remote, in name order; empty for a Worker step.
+    pub checks: Vec<String>,
+}
+
+/// What a Task's review recorded. Absent for a Task whose plan has no review and for a
+/// collected Task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskReportFindingsV1 {
+    /// Findings by severity, each counted once: the entries of the `FindingSet@1` each recorded
+    /// review round's reduce step wrote whose `last_seen_round` is that round.
+    pub blocker: u64,
+    pub major: u64,
+    pub minor: u64,
+    /// A reviewer Attempt began.
+    pub review_ran: bool,
+    /// A check failed and no reviewer Attempt began.
+    pub gate_failed: bool,
+    /// Reviewer nodes with at least one failed Attempt.
+    pub failed_reviewers: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskReportEntryV1 {
+    /// The Task's 1-based position in the report: its row of the round table.
+    pub round: u64,
     pub task_id: String,
     pub kind: String,
     /// The root Pipeline of the current plan as `name@version`; absent before a plan exists
@@ -167,8 +221,14 @@ pub struct TaskReportEntryV1 {
         deserialize_with = "super::present_option"
     )]
     pub review_rounds: Option<u64>,
-    /// Writer leases during which the Task executed work: `af task start --execute` and every
-    /// `af task run` that resumed it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub findings: Option<TaskReportFindingsV1>,
+    /// Writer leases in which an Attempt of the Task started: `af task start --execute` and
+    /// every `af task run` that resumed it with new work.
     pub runs: u64,
     #[serde(
         default,
@@ -402,9 +462,18 @@ impl TaskReportTotalsV1 {
 }
 
 impl TaskReportV1 {
-    pub fn new(tasks: Vec<TaskReportEntryV1>) -> Result<Self, String> {
+    /// The report over `tasks` in this order, each numbered by its position, with the distinct
+    /// `pipelines` their plans run in first-use order.
+    pub fn new(
+        pipelines: Vec<TaskReportPipelineV1>,
+        mut tasks: Vec<TaskReportEntryV1>,
+    ) -> Result<Self, String> {
+        for (index, task) in tasks.iter_mut().enumerate() {
+            task.round = u64::try_from(index + 1).map_err(|e| e.to_string())?;
+        }
         let report = Self {
             schema: TASK_REPORT_V1.into(),
+            pipelines,
             totals: TaskReportTotalsV1::of(&tasks)?,
             tasks,
         };
@@ -422,16 +491,125 @@ impl TaskReportV1 {
             "Task report needs at least one Task",
         )?;
         let mut seen = std::collections::BTreeSet::new();
-        for task in &self.tasks {
+        for (index, task) in self.tasks.iter().enumerate() {
             task.validate()?;
             require(
                 seen.insert(task.task_id.as_str()),
                 "Task report names a Task twice",
             )?;
+            require(
+                usize::try_from(task.round).is_ok_and(|round| round == index + 1),
+                "Task report rounds are the Tasks' positions, from 1",
+            )?;
         }
+        for (index, pipeline) in self.pipelines.iter().enumerate() {
+            pipeline.validate()?;
+            require(
+                !self.pipelines[..index].contains(pipeline),
+                "Task report lists a pipeline twice",
+            )?;
+        }
+        // Every pipeline a Task names is listed, every listed one is used, in first-use order.
+        let mut used: Vec<&str> = Vec::new();
+        for task in &self.tasks {
+            if let Some(label) = task.pipeline.as_deref()
+                && !used.contains(&label)
+            {
+                used.push(label);
+            }
+        }
+        let labels = self
+            .pipelines
+            .iter()
+            .map(TaskReportPipelineV1::label)
+            .collect::<Vec<_>>();
+        let mut listed: Vec<&str> = Vec::new();
+        for label in &labels {
+            if !listed.contains(&label.as_str()) {
+                listed.push(label);
+            }
+        }
+        require(
+            listed == used,
+            "Task report pipelines are the Tasks' pipelines, in first-use order",
+        )?;
         require(
             self.totals == TaskReportTotalsV1::of(&self.tasks)?,
             "Task report totals must be the sums of its Tasks",
+        )
+    }
+}
+
+impl TaskReportPipelineV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            is_package_name(&self.name)
+                && !self.version.is_empty()
+                && self.version.len() <= 128
+                && !self.version.chars().any(char::is_whitespace),
+            "Task report pipeline needs its name and version",
+        )?;
+        let mut stage = 0u64;
+        for step in &self.steps {
+            require(
+                step.stage == stage || step.stage == stage + 1,
+                "Task report pipeline stages count up from 1",
+            )?;
+            stage = step.stage;
+            require(
+                is_name(&step.role)
+                    && !step.nodes.is_empty()
+                    && step
+                        .nodes
+                        .iter()
+                        .all(|node| node.len() <= 4096 && node.split('.').all(is_name)),
+                "Task report pipeline step needs its role and nodes",
+            )?;
+            if let Some(TaskReportWorkerV1::Model {
+                provider_kind,
+                model,
+                effort,
+            }) = &step.worker
+            {
+                require(
+                    is_name(provider_kind) && is_model_identity(model) && is_name(effort),
+                    "Task report Worker names its Provider kind, a model identity and effort",
+                )?;
+            }
+            require(
+                step.checks.iter().all(|check| is_name(check))
+                    && step.checks.windows(2).all(|pair| pair[0] < pair[1]),
+                "Task report gate lists distinct check names in name order",
+            )?;
+            require(
+                (step.role == TASK_REPORT_GATE_ROLE) != step.checks.is_empty()
+                    && (step.role != TASK_REPORT_GATE_ROLE || step.worker.is_none()),
+                "Task report gate lists its checks and has no Worker",
+            )?;
+        }
+        Ok(())
+    }
+}
+
+impl TaskReportFindingsV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            [self.blocker, self.major, self.minor, self.failed_reviewers]
+                .into_iter()
+                .all(safe_number),
+            "Task report finding counts are bounded",
+        )?;
+        require(
+            self.review_ran || self.blocker + self.major + self.minor == 0,
+            "Task report findings need a review that ran",
+        )?;
+        require(
+            !(self.gate_failed && self.review_ran),
+            "Task report gate failure means the review did not run",
+        )?;
+        require(
+            self.review_ran || self.failed_reviewers == 0,
+            "Task report failed reviewers began an Attempt",
         )
     }
 }
@@ -465,9 +643,13 @@ impl TaskReportEntryV1 {
             "Task report times are bounded and active time never exceeds wall time",
         )?;
         require(
-            !self.collected || self.nodes.is_none() && self.attempts.is_none(),
+            !self.collected
+                || self.nodes.is_none() && self.attempts.is_none() && self.findings.is_none(),
             "A collected Task records no Attempts",
         )?;
+        if let Some(findings) = &self.findings {
+            findings.validate()?;
+        }
         if let Some(attempts) = &self.attempts {
             attempts.validate()?;
         }
@@ -557,14 +739,44 @@ impl TaskReportNodeV1 {
 mod tests {
     use super::*;
 
+    fn plain() -> TaskReportPipelineV1 {
+        TaskReportPipelineV1 {
+            name: "fixture/plain".into(),
+            version: "1.0.0".into(),
+            steps: vec![
+                TaskReportStepV1 {
+                    stage: 1,
+                    role: "implement".into(),
+                    nodes: vec!["root.nodes.implement".into()],
+                    worker: Some(TaskReportWorkerV1::Command {}),
+                    checks: vec![],
+                },
+                TaskReportStepV1 {
+                    stage: 2,
+                    role: TASK_REPORT_GATE_ROLE.into(),
+                    nodes: vec!["root.nodes.check".into()],
+                    worker: None,
+                    checks: vec!["fmt".into(), "test".into()],
+                },
+            ],
+        }
+    }
+
+    /// The report over `tasks`, which all run `fixture/plain@1.0.0`.
+    fn with_tasks(tasks: Vec<TaskReportEntryV1>) -> Result<TaskReportV1, String> {
+        TaskReportV1::new(vec![plain()], tasks)
+    }
+
     fn entry(task_id: &str, attempts: Option<(u64, u64)>) -> TaskReportEntryV1 {
         TaskReportEntryV1 {
+            round: 0,
             task_id: task_id.into(),
             kind: "implement".into(),
             pipeline: Some("fixture/plain@1.0.0".into()),
             outcome: "pass".into(),
             collected: false,
             review_rounds: Some(1),
+            findings: None,
             runs: 2,
             attempts: attempts.map(|(total, failed)| TaskReportAttemptsV1 {
                 total,
@@ -602,8 +814,7 @@ mod tests {
 
     #[test]
     fn totals_sum_known_parts_and_lose_a_part_any_task_does_not_record() {
-        let report =
-            TaskReportV1::new(vec![entry("a", Some((3, 1))), entry("b", Some((2, 0)))]).unwrap();
+        let report = with_tasks(vec![entry("a", Some((3, 1))), entry("b", Some((2, 0)))]).unwrap();
         assert_eq!(report.totals.tasks, 2);
         assert_eq!(report.totals.attempts, Some(5));
         assert_eq!(report.totals.failed_attempts, Some(1));
@@ -614,7 +825,7 @@ mod tests {
         let mut unknown = entry("c", None);
         unknown.nodes = None;
         unknown.review_rounds = None;
-        let report = TaskReportV1::new(vec![entry("a", Some((3, 1))), unknown]).unwrap();
+        let report = with_tasks(vec![entry("a", Some((3, 1))), unknown]).unwrap();
         assert_eq!(
             report.totals.attempts, None,
             "an unknown part is never zero"
@@ -625,23 +836,126 @@ mod tests {
 
     #[test]
     fn a_report_refuses_inconsistent_figures() {
-        assert!(TaskReportV1::new(vec![]).is_err());
-        assert!(TaskReportV1::new(vec![entry("a", None), entry("a", None)]).is_err());
-        let mut report = TaskReportV1::new(vec![entry("a", Some((3, 1)))]).unwrap();
+        assert!(with_tasks(vec![]).is_err());
+        assert!(with_tasks(vec![entry("a", None), entry("a", None)]).is_err());
+        let mut report = with_tasks(vec![entry("a", Some((3, 1)))]).unwrap();
         report.totals.active_ms += 1;
         assert!(report.validate().is_err(), "totals are the sums");
         let mut longer = entry("a", None);
         longer.active_ms = longer.wall_ms + 1;
-        assert!(TaskReportV1::new(vec![longer]).is_err());
+        assert!(with_tasks(vec![longer]).is_err());
         let mut collected = entry("a", Some((1, 0)));
         collected.collected = true;
-        assert!(TaskReportV1::new(vec![collected]).is_err());
+        assert!(with_tasks(vec![collected]).is_err());
         let mut classes = entry("a", Some((3, 1)));
         classes.attempts.as_mut().unwrap().failed = 2;
-        assert!(TaskReportV1::new(vec![classes]).is_err());
+        assert!(with_tasks(vec![classes]).is_err());
         let mut pipeline = entry("a", None);
         pipeline.pipeline = Some("no-version".into());
-        assert!(TaskReportV1::new(vec![pipeline]).is_err());
+        assert!(with_tasks(vec![pipeline]).is_err());
+    }
+
+    #[test]
+    fn rounds_are_positions_and_pipelines_are_the_tasks_own_in_first_use_order() {
+        let report = with_tasks(vec![entry("a", None), entry("b", None)]).unwrap();
+        assert_eq!(
+            report.tasks.iter().map(|t| t.round).collect::<Vec<_>>(),
+            [1, 2]
+        );
+        let mut renumbered = report.clone();
+        renumbered.tasks[1].round = 1;
+        assert!(renumbered.validate().is_err(), "a round is a position");
+        assert!(
+            TaskReportV1::new(vec![], vec![entry("a", None)]).is_err(),
+            "a Task's pipeline is listed"
+        );
+        assert!(
+            TaskReportV1::new(vec![plain(), plain()], vec![entry("a", None)]).is_err(),
+            "a pipeline is listed once"
+        );
+        let mut other = plain();
+        other.name = "fixture/other".into();
+        assert!(
+            TaskReportV1::new(vec![plain(), other.clone()], vec![entry("a", None)]).is_err(),
+            "a listed pipeline is used"
+        );
+        let mut second = entry("b", None);
+        second.pipeline = Some("fixture/other@1.0.0".into());
+        assert!(
+            TaskReportV1::new(
+                vec![other.clone(), plain()],
+                vec![entry("a", None), second.clone()]
+            )
+            .is_err(),
+            "pipelines are in first-use order"
+        );
+        TaskReportV1::new(vec![plain(), other], vec![entry("a", None), second]).unwrap();
+
+        let step = |edit: &dyn Fn(&mut TaskReportPipelineV1)| {
+            let mut pipeline = plain();
+            edit(&mut pipeline);
+            TaskReportV1::new(vec![pipeline], vec![entry("a", None)])
+        };
+        assert!(step(&|p| p.steps[1].stage = 3).is_err(), "a skipped stage");
+        assert!(
+            step(&|p| p.steps[0].stage = 2).is_err(),
+            "stages start at 1"
+        );
+        assert!(
+            step(&|p| p.steps[1].checks.clear()).is_err(),
+            "a gate lists checks"
+        );
+        assert!(
+            step(&|p| p.steps[1].checks.reverse()).is_err(),
+            "checks in name order"
+        );
+        assert!(
+            step(&|p| p.steps[0].checks = vec!["fmt".into()]).is_err(),
+            "only a gate lists checks"
+        );
+        assert!(
+            step(&|p| p.steps[0].nodes.clear()).is_err(),
+            "a step has nodes"
+        );
+        assert!(
+            step(&|p| p.steps[0].worker = Some(TaskReportWorkerV1::Model {
+                provider_kind: "codex".into(),
+                model: "/home/x/.codex".into(),
+                effort: "high".into(),
+            }))
+            .is_err(),
+            "a path as a model"
+        );
+        step(&|p| p.steps[1].stage = 1).unwrap();
+    }
+
+    #[test]
+    fn findings_need_a_review_that_ran_and_a_failed_gate_means_it_did_not() {
+        let findings = |review_ran, gate_failed, major| TaskReportFindingsV1 {
+            blocker: 0,
+            major,
+            minor: 0,
+            review_ran,
+            gate_failed,
+            failed_reviewers: 0,
+        };
+        for (value, valid) in [
+            (findings(true, false, 6), true),
+            (findings(true, false, 0), true),
+            (findings(false, true, 0), true),
+            (findings(false, false, 0), true),
+            (findings(false, false, 1), false),
+            (findings(true, true, 0), false),
+        ] {
+            let mut task = entry("a", None);
+            task.findings = Some(value.clone());
+            assert_eq!(with_tasks(vec![task]).is_ok(), valid, "{value:?}");
+        }
+        let mut collected = entry("a", None);
+        collected.collected = true;
+        collected.nodes = None;
+        collected.findings = Some(findings(true, false, 1));
+        assert!(with_tasks(vec![collected]).is_err());
     }
 
     #[test]
@@ -692,7 +1006,7 @@ mod tests {
         other.failed_attempts = 0;
         task.nodes.as_mut().unwrap().push(other.clone());
         assert!(
-            TaskReportV1::new(vec![task.clone()]).is_err(),
+            with_tasks(vec![task.clone()]).is_err(),
             "the same node under the same Worker twice"
         );
         other.worker = Some(TaskReportWorkerV1::Model {
@@ -701,14 +1015,14 @@ mod tests {
             effort: "high".into(),
         });
         task.nodes.as_mut().unwrap()[1] = other;
-        TaskReportV1::new(vec![task.clone()]).unwrap();
+        with_tasks(vec![task.clone()]).unwrap();
         let mut path = task;
         path.nodes.as_mut().unwrap()[1].worker = Some(TaskReportWorkerV1::Model {
             provider_kind: "claude".into(),
             model: "/home/fixture/.claude".into(),
             effort: "high".into(),
         });
-        assert!(TaskReportV1::new(vec![path]).is_err(), "a path as a model");
+        assert!(with_tasks(vec![path]).is_err(), "a path as a model");
     }
 
     #[test]

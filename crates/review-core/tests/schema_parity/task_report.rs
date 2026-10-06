@@ -29,12 +29,21 @@ fn report() -> TaskReportV1 {
         ],
     };
     let task = TaskReportEntryV1 {
+        round: 0,
         task_id: "implement-x".into(),
         kind: "implement".into(),
         pipeline: Some("builtin/implement@1.2.0".into()),
         outcome: "changes_requested".into(),
         collected: false,
         review_rounds: Some(2),
+        findings: Some(TaskReportFindingsV1 {
+            blocker: 1,
+            major: 6,
+            minor: 1,
+            review_ran: true,
+            gate_failed: false,
+            failed_reviewers: 1,
+        }),
         runs: 3,
         attempts: Some(TaskReportAttemptsV1 {
             total: 4,
@@ -75,12 +84,14 @@ fn report() -> TaskReportV1 {
         ]),
     };
     let collected = TaskReportEntryV1 {
+        round: 0,
         task_id: "verify-x".into(),
         kind: "review".into(),
         pipeline: None,
         outcome: "pass".into(),
         collected: true,
         review_rounds: None,
+        findings: None,
         runs: 1,
         attempts: None,
         chargeable_tokens: DecimalU128::from(5),
@@ -88,7 +99,56 @@ fn report() -> TaskReportV1 {
         active_ms: 10,
         nodes: None,
     };
-    TaskReportV1::new(vec![task, collected]).unwrap()
+    let step = |stage, role: &str, nodes: &[&str], worker, checks: &[&str]| TaskReportStepV1 {
+        stage,
+        role: role.into(),
+        nodes: nodes.iter().map(|n| n.to_string()).collect(),
+        worker,
+        checks: checks.iter().map(|c| c.to_string()).collect(),
+    };
+    let pipeline = TaskReportPipelineV1 {
+        name: "builtin/implement".into(),
+        version: "1.2.0".into(),
+        steps: vec![
+            step(
+                1,
+                "implement",
+                &["root.nodes.implement"],
+                Some(TaskReportWorkerV1::Model {
+                    provider_kind: "codex".into(),
+                    model: "gpt-6-sol".into(),
+                    effort: "high".into(),
+                }),
+                &[],
+            ),
+            step(
+                2,
+                "gate",
+                &["root.nodes.check"],
+                None,
+                &["lint", "pagination"],
+            ),
+            step(
+                3,
+                "review",
+                &["root.nodes.bugs", "root.nodes.correctness"],
+                Some(TaskReportWorkerV1::Model {
+                    provider_kind: "claude".into(),
+                    model: "claude-opus-5-5".into(),
+                    effort: "high".into(),
+                }),
+                &[],
+            ),
+            step(
+                4,
+                "evaluate",
+                &["root.nodes.evaluate"],
+                Some(TaskReportWorkerV1::Command {}),
+                &[],
+            ),
+        ],
+    };
+    TaskReportV1::new(vec![pipeline], vec![task, collected]).unwrap()
 }
 
 #[test]
@@ -152,6 +212,68 @@ fn task_report_document_and_schema_agree_in_both_directions() {
         "a path as the model",
     );
     invalid(&|v| v["tasks"] = json!([]), "no Task");
+    invalid(
+        &|v| {
+            v.as_object_mut().unwrap().remove("pipelines");
+        },
+        "no pipelines",
+    );
+    invalid(
+        &|v| {
+            v["tasks"][0].as_object_mut().unwrap().remove("round");
+        },
+        "a Task without its round",
+    );
+    invalid(&|v| v["tasks"][0]["round"] = json!(0), "round 0");
+    let review = "/pipelines/0/steps/2";
+    invalid(
+        &|v| v.pointer_mut(review).unwrap()["nodes"] = json!([]),
+        "a step without nodes",
+    );
+    invalid(
+        &|v| v.pointer_mut(review).unwrap()["provider"] = json!("codex-personal"),
+        "a Provider label on a step",
+    );
+    invalid(
+        &|v| v.pointer_mut(review).unwrap()["worker"]["model"] = json!("C:/secrets/key"),
+        "a path as a step's model",
+    );
+    invalid(
+        &|v| v.pointer_mut(review).unwrap()["checks"] = json!(["fmt"]),
+        "checks on a Worker step",
+    );
+    invalid(
+        &|v| v.pointer_mut("/pipelines/0/steps/1").unwrap()["checks"] = json!([]),
+        "a gate without checks",
+    );
+    invalid(
+        &|v| v.pointer_mut("/pipelines/0/steps/1").unwrap()["worker"] = json!({"kind": "command"}),
+        "a gate with a Worker",
+    );
+    invalid(
+        &|v| v["pipelines"][0]["steps"][0]["stage"] = json!(0),
+        "stage 0",
+    );
+    invalid(
+        &|v| v["tasks"][0]["findings"]["review_ran"] = json!(false),
+        "findings without a review that ran",
+    );
+    invalid(
+        &|v| v["tasks"][0]["findings"]["gate_failed"] = json!(true),
+        "a failed gate beside a review that ran",
+    );
+    invalid(
+        &|v| v["tasks"][0]["findings"]["critical"] = json!(1),
+        "a severity the reduce step does not record",
+    );
+    invalid(
+        &|v| v["tasks"][1]["findings"] = v["tasks"][0]["findings"].clone(),
+        "findings on a collected Task",
+    );
+    invalid(
+        &|v| v["tasks"][0]["findings"] = Value::Null,
+        "null findings",
+    );
     invalid(
         &|v| v["schema"] = json!("af/task-report@2"),
         "another schema",
