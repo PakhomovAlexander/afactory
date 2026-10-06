@@ -846,6 +846,7 @@ impl TaskOperatorHost for CampaignReviewTaskHost<'_, '_> {
                 raw_artifact_ids: vec![],
                 usage_id: None,
                 feedback_id: None,
+                unknown_usage_cause: None,
             }
         };
         if self

@@ -112,6 +112,7 @@ impl WorkerModelAdapter for DomainModel {
             usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(
                 if count == 0 { 17 } else { 23 },
             )),
+            native_failure: None,
         }
     }
 }

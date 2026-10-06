@@ -1,6 +1,7 @@
 # ADR-0142: Carry the `af task report` of its Tasks in every pull request
 
-**Status:** accepted (2026-10-06)
+**Status:** accepted (2026-10-06); its Tokens cells amended in place before release by
+[ADR-0143](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md).
 
 ## Context
 
@@ -170,7 +171,9 @@ per-Task cost columns answers neither.
    3. one table whose header is exactly the six columns Round, Task, Outcome, Findings, Tokens
       and Active, in that order, with one row per Task in the order given, and a last row whose
       Task cell is `Total: N Attempts` (with `(M failed)` when any failed), whose Tokens and
-      Active cells are the totals and whose other cells are empty. The Findings cell reads
+      Active cells are the totals and whose other cells are empty. A Tokens cell is the charged
+      total, followed by `(+N unknown)` when N of its Attempts reported no usage and were charged
+      zero (ADR-0143). The Findings cell reads
       `6 major, 1 minor` (the nonzero counts, blocker, major, minor), `none` when the review ran
       and its complete rounds found nothing, `unknown` when it ran but its counts are unknown (a
       recorded round has no complete finding set, or none was recorded yet), `gate failed` when
@@ -178,8 +181,9 @@ per-Task cost columns answers neither.
       has begun, `—` for a Task without a review and `unknown` for a collected one, followed by
       `; N reviewer(s) failed` when a reviewer's Attempt failed;
    4. per round a collapsed `<details>` element whose summary is `Round N · TASK_ID` with its
-      runs, wall time and failed Attempts by reason class, holding the per-node table (Node,
-      Role, Worker, Attempts, Tokens, Elapsed, Checks).
+      runs, wall time and failed Attempts by reason class, and the causes of any unknown usage
+      (`1 Attempt's usage unknown (capacity)`), holding the per-node table (Node, Role, Worker,
+      Attempts, Tokens, Elapsed, Checks), whose Tokens cell reads like the round's.
 
    Token counts carry thousands separators (`205,295`) in the Markdown only. It renders on
    GitHub and reads as plain text in a terminal. The `v1` in the marker is the contract's
@@ -190,7 +194,8 @@ per-Task cost columns answers neither.
    with the same figures: tokens as exact decimal text, times in milliseconds; a `pipelines`
    array (name, version, and steps with stage, role, nodes, Worker kind and model, and check
    names); and per Task its `round` and its `findings` (`blocker`, `major`, `minor`,
-   `review_ran`, `gate_failed`, `failed_reviewers`). The three counts are present together, or
+   `review_ran`, `gate_failed`, `failed_reviewers`), and the `unknown_usage` counts behind a
+   `(+N unknown)` cell (ADR-0143). The three finding counts are present together, or
    absent together when they are unknown, which only a review that ran allows.
 6. **Privacy.** The report names a Provider only by kind, model and effort. It never contains a
    Provider registry ID or label, a principal, an auth directory, a state directory, a home path,

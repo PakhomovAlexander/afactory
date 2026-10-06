@@ -283,6 +283,7 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
             },
             raw_artifact_ids: vec![],
             usage_id: Some(id.clone()),
+            unknown_usage: None,
         },
         TaskExecutionRecordV1::Settled {
             attempt_id: attempt_id.clone(),
@@ -293,6 +294,7 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
             },
             raw_artifact_ids: vec![id.clone()],
             usage_id: None,
+            unknown_usage: None,
         },
         TaskExecutionRecordV1::Settled {
             attempt_id: attempt_id.clone(),
@@ -302,6 +304,7 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
             },
             raw_artifact_ids: vec![],
             usage_id: None,
+            unknown_usage: None,
         },
         TaskExecutionRecordV1::UsageObserved {
             charged_tokens: 12,

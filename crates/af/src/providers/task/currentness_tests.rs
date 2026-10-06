@@ -140,6 +140,7 @@ impl WorkerModelAdapter for Recording {
             usage: None,
             usage_observation: None,
             raw_artifact_ids: vec![],
+            native_failure: None,
         }
     }
 }

@@ -502,6 +502,7 @@ fn owned_common_attempt_overrun_can_publish_facts_and_seal_without_new_dispatch(
                 },
                 usage_id: None,
                 raw_artifact_ids: vec![],
+                unknown_usage: None,
             },
             &f.authority,
         )
@@ -631,6 +632,7 @@ fn owned_pending_and_false_completion_refused_without_event() {
                 },
                 usage_id: None,
                 raw_artifact_ids: vec![],
+                unknown_usage: None,
             },
             &f.authority,
         )
@@ -794,6 +796,7 @@ fn owned_selected_output_without_publication_becomes_failed_and_cannot_publish_a
                 },
                 usage_id: None,
                 raw_artifact_ids: vec![],
+                unknown_usage: None,
             },
             &f.authority,
         )
@@ -847,6 +850,7 @@ fn owned_registration_handoff_preserves_original_attempt_scopes_and_historical_r
                 },
                 usage_id: None,
                 raw_artifact_ids: vec![],
+                unknown_usage: None,
             },
             &f.authority,
         )
@@ -1030,6 +1034,7 @@ fn owned_canonical_receipt_is_fenced_by_parent_seal_but_recorded_selection_repla
                     },
                     usage_id: None,
                     raw_artifact_ids: vec![],
+                    unknown_usage: None,
                 },
                 &f.authority,
             )

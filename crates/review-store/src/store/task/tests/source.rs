@@ -165,6 +165,7 @@ fn source_refresh_is_atomic_invalidates_approval_and_retains_paid_and_late_usage
                 },
                 raw_artifact_ids: vec![],
                 usage_id: None,
+                unknown_usage: None,
             },
             &f.authority,
         )
@@ -392,6 +393,7 @@ fn source_refresh_records_changed_input_when_a_valid_plan_can_no_longer_fit() {
                 },
                 raw_artifact_ids: vec![],
                 usage_id: None,
+                unknown_usage: None,
             },
             &f.authority,
         )

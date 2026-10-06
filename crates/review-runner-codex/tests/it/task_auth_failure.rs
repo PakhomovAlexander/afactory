@@ -252,3 +252,70 @@ fn model_text_about_revoked_credentials_cannot_replace_a_network_failure() {
         output.as_bytes()
     );
 }
+
+/// Issue #165 (ADR-0143): tool use and then `turn.failed` with `Selected model is at capacity`
+/// reports no usage. The Attempt names the classified cause, never the bare exit status, and
+/// the raw Provider message stays out of the diagnostic; an unclassified failure event is
+/// named as such. Neither invents usage.
+#[test]
+fn a_failure_event_without_usage_names_its_classified_cause() {
+    use review_runner::native_failure::NativeFailureKind;
+    for (message, diagnostic, kind) in [
+        (
+            "Selected model is at capacity. Please try a different model.",
+            "Codex Worker failed: Provider model at capacity (capacity); transport: ",
+            NativeFailureKind::Capacity,
+        ),
+        (
+            "something unexpected happened",
+            "Codex Worker failed: Provider returned an unclassified failure (unknown); transport: ",
+            NativeFailureKind::Unknown,
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        let output = [
+            serde_json::json!({"type":"thread.started","thread_id":"fixture"}),
+            serde_json::json!({"type":"item.completed","item":{"type":"command_execution",
+                "command":"ls","aggregated_output":"","exit_code":0,"status":"completed"}}),
+            serde_json::json!({"type":"turn.failed","error":{"message":message}}),
+        ]
+        .map(|event| event.to_string())
+        .join("\n");
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{}'\nexit 1\n",
+                output.replace('\'', "'\\''")
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter =
+            CodexTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            Duration::from_secs(5),
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        let error = returned.message.unwrap_err();
+        assert!(error.starts_with(diagnostic), "{error}");
+        assert!(!error.contains(message), "{error}");
+        assert!(returned.usage.is_none(), "no usage was reported");
+        assert!(returned.usage_observation.is_none());
+        assert_eq!(returned.native_failure, Some(kind));
+        assert_eq!(
+            kind.unknown_usage_cause().as_str(),
+            if kind == NativeFailureKind::Capacity {
+                "capacity"
+            } else {
+                "unreported"
+            }
+        );
+    }
+}

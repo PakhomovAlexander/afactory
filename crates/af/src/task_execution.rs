@@ -2280,6 +2280,13 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
             "chargeable_tokens":task.execution.as_ref().map_or(0,|e| e.budget.committed_tokens()).to_string(),
             "derived_snapshot_id":result.as_ref().and_then(|r| r.outputs.get("snapshot")).and_then(|o| o.snapshot_id.as_ref()),
             "delivery":delivery_view(&cas, &task)?}))
+        .map(|mut entry| {
+            let unknown = unknown_usage(&task).values().sum::<u64>();
+            if unknown > 0 {
+                entry["unknown_usage_attempts"] = json!(unknown);
+            }
+            entry
+        })
     }).map_err(|e| e.to_string())?.into_iter().collect::<Result<Vec<_>, String>>()?;
     let collected = store
         .collected_tasks()
@@ -2500,6 +2507,9 @@ fn present_with_format(
         if let Some(id) = &state.plan_id {
             println!("Plan {id}");
         }
+        if let Some(line) = unknown_usage_line(&state) {
+            println!("{line}");
+        }
         // One line per bound output, through the same sanitizer the preview uses: a referenced
         // Task ID is untrusted display data wherever it is printed. A port bound from several
         // outputs prints one line per output (ADR-0134).
@@ -2574,6 +2584,52 @@ fn present_with_format(
         TaskAcceptanceV1::Unsatisfied => 3,
         TaskAcceptanceV1::Inconclusive => 4,
     }))
+}
+
+/// The Task's settled Attempts whose usage is unknown, by cause (ADR-0143): no usage was
+/// reported, so each was charged zero.
+fn unknown_usage(
+    state: &TaskProjection,
+) -> BTreeMap<review_core::task::usage::TaskUnknownUsageCauseV1, u64> {
+    let mut causes = BTreeMap::new();
+    for attempt in state
+        .execution
+        .iter()
+        .flat_map(|execution| execution.attempt_accounting())
+    {
+        if let Some(cause) = attempt.unknown_usage {
+            *causes.entry(cause).or_default() += 1;
+        }
+    }
+    causes
+}
+
+/// `tokens 1200 (+1 unknown: capacity)`: the line `af task show` adds when an Attempt's usage
+/// is unknown, so the charged total never reads as the whole spend. None when every usage is
+/// known.
+fn unknown_usage_line(state: &TaskProjection) -> Option<String> {
+    let causes = unknown_usage(state);
+    let unknown = causes.values().sum::<u64>();
+    (unknown > 0).then(|| {
+        let causes = causes
+            .iter()
+            .map(|(cause, n)| {
+                if *n == unknown {
+                    cause.label().to_owned()
+                } else {
+                    format!("{n} {}", cause.label())
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "tokens {} (+{unknown} unknown: {causes})",
+            state
+                .execution
+                .as_ref()
+                .map_or(0, |e| e.budget.committed_tokens())
+        )
+    })
 }
 
 /// The outcome `af task show` states on its first line: the result's domain conclusion, or the
@@ -3035,6 +3091,10 @@ fn inspection(
     };
     let mut value = json!({"schema":"af/task-inspection@11","task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
+    let unknown = unknown_usage(&state).values().sum::<u64>();
+    if unknown > 0 {
+        value["unknown_usage_attempts"] = json!(unknown);
+    }
     if let Some(selection) = selection::recorded(cas, &state.revision)? {
         value["selection"] = selection;
     }

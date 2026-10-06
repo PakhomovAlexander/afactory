@@ -188,7 +188,7 @@ fn killed_review_resumes_original_task_after_real_lease_expiry_with_one_bounded_
     let before_review = store.replay("campaign-timing").unwrap();
     assert!(!before_review.iter().any(|e| e.event_type.is_run_report()));
     let rows = store.task_attempt_wall(&task_run).unwrap();
-    let observed_floor = rows
+    let reported = rows
         .iter()
         .filter(|row| row.attempt_id == interrupted.attempt_id)
         .filter_map(|row| {
@@ -197,9 +197,14 @@ fn killed_review_resumes_original_task_after_real_lease_expiry_with_one_bounded_
                 .map(|usage| usage.chargeable_tokens.get())
         })
         .max()
-        .unwrap_or(0)
-        .max(interrupted.charged_tokens);
-    let expected_recovery_charge = observed_floor.max(u128::from(interrupted.reservation.tokens));
+        .or((interrupted.charged_tokens > 0).then_some(interrupted.charged_tokens));
+    // Reported usage keeps the reservation floor; an Attempt killed before any report settles
+    // at zero with its usage unknown (ADR-0143).
+    let expected_recovery_charge = reported.map_or(0, |observed| {
+        observed
+            .max(interrupted.charged_tokens)
+            .max(u128::from(interrupted.reservation.tokens))
+    });
     let lease_until = original.lease_until_unix_ms();
     assert!(now_ms() < lease_until);
     // Prove the real writer used the unchanged fifteen-second lease, including any heartbeat.
@@ -248,6 +253,12 @@ fn killed_review_resumes_original_task_after_real_lease_expiry_with_one_bounded_
     assert_eq!(old.reservation, interrupted.reservation);
     assert_eq!(old.invocation_id, interrupted.invocation_id);
     assert_eq!(old.charged_tokens, expected_recovery_charge);
+    assert_eq!(
+        old.unknown_usage,
+        reported
+            .is_none()
+            .then_some(review_core::task::usage::TaskUnknownUsageCauseV1::LeaseExpired)
+    );
     let Some(TaskAttemptResultV1::Abandoned { diagnostic_id }) = &old.result else {
         panic!("missing common disappearance recovery: {:?}", old.result)
     };

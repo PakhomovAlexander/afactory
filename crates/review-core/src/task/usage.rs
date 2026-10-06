@@ -84,6 +84,67 @@ pub const TASK_TOKEN_USAGE_V3: &str = "af/TaskTokenUsage@3";
 
 pub const TASK_USAGE_OBSERVATION_V1: &str = "af/TaskUsageObservation@1";
 
+/// Why an Attempt ended without a usage report, as far as af knows (ADR-0143). Such an Attempt
+/// is charged zero and its usage is recorded as unknown, never estimated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskUnknownUsageCauseV1 {
+    /// The Provider's model was at capacity or overloaded.
+    Capacity,
+    /// The Provider's quota or rate limit was reached.
+    RateLimit,
+    /// The Provider refused or lacked credentials.
+    Authentication,
+    /// The Provider's model was unavailable.
+    ModelUnavailable,
+    /// A network request to the Provider failed.
+    Network,
+    /// The writer lease expired, so its successor recovered the Attempt; a writer is fenced only
+    /// by a successor that took its expired lease.
+    LeaseExpired,
+    /// af stopped the Attempt: an operator interruption or a lost heartbeat.
+    Interrupted,
+    /// Nothing better is known: the Provider reported no usage.
+    Unreported,
+}
+
+impl TaskUnknownUsageCauseV1 {
+    /// The cause as its record spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Capacity => "capacity",
+            Self::RateLimit => "rate_limit",
+            Self::Authentication => "authentication",
+            Self::ModelUnavailable => "model_unavailable",
+            Self::Network => "network",
+            Self::LeaseExpired => "lease_expired",
+            Self::Interrupted => "interrupted",
+            Self::Unreported => "unreported",
+        }
+    }
+
+    /// The cause as a person reads it: `capacity`, `lease expired`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Capacity => "capacity",
+            Self::RateLimit => "rate limit",
+            Self::Authentication => "authentication",
+            Self::ModelUnavailable => "model unavailable",
+            Self::Network => "network",
+            Self::LeaseExpired => "lease expired",
+            Self::Interrupted => "interrupted",
+            Self::Unreported => "unreported",
+        }
+    }
+}
+
+/// The marker a settlement carries when its Attempt's usage is unknown: it was charged zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskUnknownUsageV1 {
+    pub cause: TaskUnknownUsageCauseV1,
+}
+
 /// Native counters and their unambiguous billing floor, independent of the common charged
 /// amount. Incomplete reporting never grants another reservation or enlarges any limit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

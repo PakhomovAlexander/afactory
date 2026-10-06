@@ -17,7 +17,7 @@ use review_core::task::runtime::{
     TASK_RUNTIME_EVIDENCE_V1, TaskRuntimeEvidenceV1, TaskRuntimeSpanKindV1,
 };
 use review_core::task::task_report::*;
-use review_core::task::usage::DecimalU128;
+use review_core::task::usage::{DecimalU128, TaskUnknownUsageCauseV1};
 use review_core::task::verification::{TASK_CHECK_RECEIPT_V1, TaskCheckReceiptV1};
 use review_graph::task::{CompiledNode, CompiledOperator, ReviewOperation};
 use review_store::store::task::execution::TaskAttemptAccounting;
@@ -130,6 +130,8 @@ fn entry(
                 failed: 0,
                 failed_tokens: DecimalU128::default(),
                 failures: Vec::new(),
+                unknown_usage: 0,
+                unknown_usage_causes: Vec::new(),
             },
             Vec::new(),
             ReviewAttempts::default(),
@@ -594,6 +596,7 @@ fn attempts(
             reviewer,
             failure: failure_class(cas, attempt)?,
             tokens: attempt.charged_tokens,
+            unknown_usage: attempt.unknown_usage,
             elapsed_ms: walls.get(&attempt.attempt_id).copied().or_else(|| {
                 attempt
                     .started_unix_ms
@@ -617,6 +620,8 @@ struct CountedAttempt {
     reviewer: bool,
     failure: Option<TaskReportFailureClassV1>,
     tokens: u128,
+    /// Why its usage is unknown, when no usage was reported (ADR-0143).
+    unknown_usage: Option<TaskUnknownUsageCauseV1>,
     elapsed_ms: Option<u64>,
     checks: Vec<TaskReportCheckV1>,
 }
@@ -629,8 +634,12 @@ fn tally_attempts(
     counted: Vec<CountedAttempt>,
 ) -> Result<(TaskReportAttemptsV1, Vec<TaskReportNodeV1>), String> {
     let mut failures: BTreeMap<TaskReportFailureClassV1, (u64, u128)> = BTreeMap::new();
+    let mut unknown: BTreeMap<TaskUnknownUsageCauseV1, u64> = BTreeMap::new();
     let mut nodes: Vec<TaskReportNodeV1> = Vec::new();
     for attempt in counted {
+        if let Some(cause) = attempt.unknown_usage {
+            *unknown.entry(cause).or_default() += 1;
+        }
         if let Some(class) = attempt.failure {
             let entry = failures.entry(class).or_default();
             entry.0 += 1;
@@ -653,6 +662,7 @@ fn tally_attempts(
                     tokens: DecimalU128::default(),
                     elapsed_ms: Some(0),
                     checks: Vec::new(),
+                    unknown_usage: 0,
                 });
                 nodes.len() - 1
             }
@@ -660,6 +670,7 @@ fn tally_attempts(
         let row = &mut nodes[index];
         row.attempts += 1;
         row.failed_attempts += u64::from(attempt.failure.is_some());
+        row.unknown_usage += u64::from(attempt.unknown_usage.is_some());
         row.tokens = DecimalU128::from(
             row.tokens
                 .get()
@@ -677,6 +688,11 @@ fn tally_attempts(
     let failed_tokens = failures.values().map(|(_, tokens)| tokens).sum::<u128>();
     Ok((
         TaskReportAttemptsV1 {
+            unknown_usage: unknown.values().sum(),
+            unknown_usage_causes: unknown
+                .into_iter()
+                .map(|(cause, attempts)| TaskReportUnknownUsageV1 { cause, attempts })
+                .collect(),
             total: 0,
             failed,
             failed_tokens: DecimalU128::from(failed_tokens),
@@ -886,7 +902,10 @@ pub(crate) fn markdown(report: &TaskReportV1) -> String {
             cell(&task.task_id),
             cell(&outcome),
             findings_cell(task),
-            thousands(task.chargeable_tokens.get()),
+            tokens_cell(
+                task.chargeable_tokens.get(),
+                task.attempts.as_ref().map_or(0, |a| a.unknown_usage),
+            ),
             duration(task.active_ms),
         ]));
     }
@@ -903,7 +922,7 @@ pub(crate) fn markdown(report: &TaskReportV1) -> String {
         ),
         String::new(),
         String::new(),
-        thousands(totals.chargeable_tokens.get()),
+        tokens_cell(totals.chargeable_tokens.get(), totals.unknown_usage),
         duration(totals.active_ms),
     ]));
     for task in &report.tasks {
@@ -939,7 +958,7 @@ pub(crate) fn markdown(report: &TaskReportV1) -> String {
                         node.role.clone(),
                         worker_label(node.worker.as_ref()),
                         attempts_cell(Some(node.attempts), Some(node.failed_attempts)),
-                        thousands(node.tokens.get()),
+                        tokens_cell(node.tokens.get(), node.unknown_usage),
                         node.elapsed_ms.map_or_else(|| UNKNOWN.into(), duration),
                         if checks.is_empty() {
                             "-".into()
@@ -1083,6 +1102,26 @@ fn details_summary(task: &TaskReportEntryV1) -> String {
                 thousands(attempts.failed_tokens.get())
             ));
         }
+        // Name why usage is unknown, so `(+N unknown)` is never read as a free Attempt.
+        if attempts.unknown_usage > 0 {
+            let causes = attempts
+                .unknown_usage_causes
+                .iter()
+                .map(|u| {
+                    if u.attempts == attempts.unknown_usage {
+                        u.cause.label().to_owned()
+                    } else {
+                        format!("{} {}", u.attempts, u.cause.label())
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            summary.push_str(&format!(
+                ", {} {} usage unknown ({causes})",
+                attempts.unknown_usage,
+                plural(attempts.unknown_usage, "Attempt's", "Attempts'")
+            ));
+        }
     }
     summary
 }
@@ -1126,6 +1165,16 @@ fn duration(ms: u64) -> String {
         1_000..60_000 => format!("{}.{}s", ms / 1_000, ms % 1_000 / 100),
         60_000..3_600_000 => format!("{}m {:02}s", ms / 60_000, ms % 60_000 / 1_000),
         _ => format!("{}h {:02}m", ms / 3_600_000, ms % 3_600_000 / 60_000),
+    }
+}
+
+/// A Tokens cell: the charged total, then `(+N unknown)` when N Attempts reported no usage and
+/// were charged zero (ADR-0143), so the total never reads as their spend.
+fn tokens_cell(charged: u128, unknown: u64) -> String {
+    if unknown == 0 {
+        thousands(charged)
+    } else {
+        format!("{} (+{unknown} unknown)", thousands(charged))
     }
 }
 

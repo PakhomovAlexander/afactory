@@ -150,6 +150,9 @@ pub(crate) struct Stage {
     pub(crate) wall_ms: Option<u64>,
     /// The charge its settled Attempts recorded, when one settled.
     pub(crate) tokens: Option<u128>,
+    /// Its settled Attempts whose usage is unknown: no usage was reported, so each was charged
+    /// zero (ADR-0143) and `tokens` is not their spend.
+    pub(crate) unknown: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,6 +186,7 @@ struct Track {
     failed: bool,
     settled: u64,
     tokens: u128,
+    unknown: u64,
 }
 
 /// The stages of a Task's plan in graph order, from an `af task explain --json` document.
@@ -203,7 +207,7 @@ pub(crate) fn stages(
     let mut observed: BTreeMap<String, u128> = BTreeMap::new();
     // Each settled Attempt's node and the charge its settlement names; summed after the scan,
     // since a usage observation may arrive after the settlement it raises.
-    let mut settled_charges: BTreeMap<String, (String, u128)> = BTreeMap::new();
+    let mut settled_charges: BTreeMap<String, (String, u128, bool)> = BTreeMap::new();
     // The event sequence that recorded each execution record, to tell a report's outcome from
     // records written after it.
     let mut sequence_of: BTreeMap<&str, u64> = BTreeMap::new();
@@ -272,7 +276,8 @@ pub(crate) fn stages(
                 let charged = text(&record["charged_tokens"])?;
                 let charged: u128 = charged.parse().map_err(|_| "a charge is not decimal")?;
                 if let Some(attempt) = attempt {
-                    settled_charges.insert(attempt.to_owned(), (node.clone(), charged));
+                    let unknown = record["unknown_usage"].is_object();
+                    settled_charges.insert(attempt.to_owned(), (node.clone(), charged, unknown));
                 }
                 let succeeded = record["result"]["kind"] == "succeeded";
                 // The latest settlement decides: a newer failure after an earlier success is a
@@ -287,10 +292,12 @@ pub(crate) fn stages(
             _ => {}
         }
     }
-    for (attempt, (node, charged)) in &settled_charges {
+    for (attempt, (node, charged, unknown)) in &settled_charges {
         let charged = (*charged).max(observed.get(attempt).copied().unwrap_or(0));
         let track = tracks.entry(node.clone()).or_default();
         track.tokens = track.tokens.saturating_add(charged);
+        // A later observation that charged it makes its usage known.
+        track.unknown += u64::from(*unknown && charged == 0);
     }
     // The last whole-Round report of the current plan: every compiled node with its outcome,
     // including a failure before any Attempt and a suppressed branch.
@@ -373,6 +380,7 @@ pub(crate) fn stages(
             max_attempts: allowance.as_u64(),
             wall_ms: walls.get(node).copied(),
             tokens: (track.settled > 0).then_some(track.tokens),
+            unknown: track.unknown,
         });
     }
     Ok(stages)
@@ -586,6 +594,8 @@ struct Summary {
     /// old outcome.
     outcome: Option<String>,
     chargeable: Option<String>,
+    /// Attempts whose usage is unknown (ADR-0143), from that same read.
+    unknown: u64,
     acceptance: Option<String>,
     /// The Task's current plan, which `r` confirms.
     plan_id: Option<String>,
@@ -612,6 +622,7 @@ fn summary_of(document: &Value, stages: &[Stage]) -> Summary {
             Value::Number(n) => Some(n.to_string()),
             _ => None,
         },
+        unknown: document["unknown_usage_attempts"].as_u64().unwrap_or(0),
         acceptance: document["result"]["acceptance"].as_str().map(str::to_owned),
         plan_id: document["plan_id"].as_str().map(str::to_owned),
         started: span_of(document).map(|(first, _)| first),
@@ -890,6 +901,10 @@ impl Detail {
         rows.push(Row::blank());
         let tokens = |key: &str| component(document, key).map_or("-".to_owned(), |n| n.to_string());
         let chargeable = document["chargeable_tokens"].as_str().unwrap_or("-");
+        let chargeable = format!(
+            "{chargeable}{}",
+            unknown_suffix(document["unknown_usage_attempts"].as_u64().unwrap_or(0))
+        );
         rows.push(Row::plain(format!(
             "TOKENS  chargeable {chargeable}  input {}  output {}  cache read {}  reasoning {}",
             tokens("input_tokens"),
@@ -959,10 +974,22 @@ pub(crate) fn change_artifact(change: &Value) -> Option<&str> {
         .filter(|id| review_core::is_digest(id))
 }
 
+/// ` (+N unknown)` after a charged total when N Attempts' usage is unknown, so the total never
+/// reads as their spend (ADR-0143); empty when every usage is known.
+pub(crate) fn unknown_suffix(unknown: u64) -> String {
+    if unknown == 0 {
+        String::new()
+    } else {
+        format!(" (+{unknown} unknown)")
+    }
+}
+
 fn stage_row(stage: &Stage) -> Row {
     let name = clip(&stage_name(&stage.node), STAGE);
     let wall = stage.wall_ms.map_or(String::new(), duration);
-    let tokens = stage.tokens.map_or(String::new(), |n| format!("{n} tok"));
+    let tokens = stage.tokens.map_or(String::new(), |n| {
+        format!("{n} tok{}", unknown_suffix(stage.unknown))
+    });
     let bound = stage
         .max_attempts
         .map_or("-".to_owned(), |max| max.to_string());
@@ -1397,8 +1424,13 @@ fn folder_row(task: &Listed) -> Row {
         .ok()
         .and_then(|summary| summary.chargeable.as_deref());
     let tokens = inspected.or(listed).unwrap_or("-");
+    let unknown = match &task.summary {
+        Ok(summary) => summary.unknown,
+        Err(_) => task.entry["unknown_usage_attempts"].as_u64().unwrap_or(0),
+    };
+    let unknown = unknown_suffix(unknown);
     let line = format!(
-        "    {:<24} {:<18} {:>4}  {tokens} tok",
+        "    {:<24} {:<18} {:>4}  {tokens} tok{unknown}",
         task.task_id,
         task.outcome(),
         task.percent()

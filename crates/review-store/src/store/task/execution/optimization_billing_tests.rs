@@ -45,6 +45,7 @@ fn optimization_does_not_treat_a_native_reservation_floor_as_complete_billing() 
         }),
         raw_artifact_ids: vec![],
         usage_id: Some(put_usage(json!({"chargeable_tokens":"100"}))),
+        unknown_usage: None,
     };
     assert!(!accounting.billing_complete(&cas, true).unwrap());
     accounting.usage_id = Some(put_usage(json!({"chargeable_tokens":"0"})));

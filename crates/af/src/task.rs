@@ -1758,8 +1758,13 @@ fn print_task_list(
             ),
             None => String::new(),
         };
+        // Unknown usage is never shown as spend: `1200 tokens (+1 unknown)` (ADR-0143).
+        let unknown = match task["unknown_usage_attempts"].as_u64() {
+            Some(n) if n > 0 => format!(" (+{n} unknown)"),
+            _ => String::new(),
+        };
         println!(
-            "{}  {:<10} {:>8} tokens  {state}{sizes}",
+            "{}  {:<10} {:>8} tokens{unknown}  {state}{sizes}",
             task["task_id"].as_str().unwrap_or("-"),
             task["outcome"].as_str().unwrap_or("incomplete"),
             task["chargeable_tokens"].as_str().unwrap_or("-"),

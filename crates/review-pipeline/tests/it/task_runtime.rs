@@ -24,6 +24,8 @@ mod publication;
 mod reservation;
 #[path = "task_runtime/retry.rs"]
 mod retry;
+#[path = "task_runtime/unknown_usage.rs"]
+mod unknown_usage;
 #[path = "task_runtime/usage_observation.rs"]
 mod usage_observation;
 #[path = "task_runtime/usage_recovery.rs"]
@@ -89,6 +91,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
                 raw_artifact_ids: vec![cas.put(&reply).unwrap()],
                 message: Ok(reply),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(1)),
+                native_failure: None,
             }
         }
     }
@@ -1355,6 +1358,7 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(
                     cost,
                 )),
+                native_failure: None,
             }
         }
     }
@@ -1521,6 +1525,7 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(
                     if first { 20 } else { 30 },
                 )),
+                native_failure: None,
             }
         }
     }

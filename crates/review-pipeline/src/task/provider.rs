@@ -117,6 +117,7 @@ impl ProviderTaskDomain<'_> {
                     raw_artifact_ids: vec![],
                     usage_id: None,
                     feedback_id: None,
+                    unknown_usage_cause: None,
                 };
             }
         };
@@ -179,6 +180,9 @@ impl ProviderTaskDomain<'_> {
             raw_artifact_ids: returned.raw_artifact_ids,
             usage_id: None,
             feedback_id: None,
+            unknown_usage_cause: returned
+                .native_failure
+                .map(review_runner::native_failure::NativeFailureKind::unknown_usage_cause),
         }
     }
 }

@@ -60,7 +60,8 @@
             "attempts": 1,
             "tokens": "0"
           }
-        ]
+        ],
+        "unknown_usage": 0
       },
       "chargeable_tokens": "0",
       "wall_ms": 3595,
@@ -75,6 +76,7 @@
           "attempts": 2,
           "failed_attempts": 1,
           "tokens": "0",
+          "unknown_usage": 0,
           "elapsed_ms": 258,
           "checks": []
         },
@@ -84,6 +86,7 @@
           "attempts": 1,
           "failed_attempts": 0,
           "tokens": "0",
+          "unknown_usage": 0,
           "elapsed_ms": 62,
           "checks": [
             {
@@ -102,6 +105,7 @@
           "attempts": 1,
           "failed_attempts": 0,
           "tokens": "0",
+          "unknown_usage": 0,
           "elapsed_ms": 96,
           "checks": []
         }
@@ -114,6 +118,7 @@
     "attempts": 4,
     "failed_attempts": 1,
     "chargeable_tokens": "0",
+    "unknown_usage": 0,
     "active_ms": 1808
   }
 }

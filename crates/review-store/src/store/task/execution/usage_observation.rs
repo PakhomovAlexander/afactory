@@ -32,6 +32,7 @@ pub(super) fn validate(
     attempt: &RecordedAttempt,
     charged_tokens: u128,
     raw_artifact_ids: &[String],
+    unknown_usage: bool,
 ) -> Result<(), StoreError> {
     let mut seen = false;
     for id in raw_artifact_ids {
@@ -63,12 +64,17 @@ pub(super) fn validate(
                 "Task usage observation differs from its admitted Attempt/context",
             ));
         }
+        // An incomplete observation that reported no counter at all is no usage report: such
+        // an Attempt settles as unknown usage at zero (ADR-0143). One that reported any counter
+        // keeps the reservation floor.
+        let unreported = unknown_usage && observation.reported_usage.is_none();
         if charged_tokens
             < observation
                 .reported_usage
                 .as_ref()
                 .map_or(0, |u| u.chargeable_tokens.get())
             || (!observation.charge_complete
+                && !unreported
                 && charged_tokens < u128::from(attempt.reservation.tokens))
         {
             return Err(conflict(

@@ -384,6 +384,7 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
             usage_observation: None,
             raw_artifact_ids: vec![],
+            native_failure: None,
         };
         let refused = || {
             refuse(concat!(

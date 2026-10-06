@@ -4,7 +4,9 @@ Date: 2026-09-12
 Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): readers
 for historical `RunReport` versions and raw provenance. Task Review provenance is
 `TaskReviewAttemptProvenance@2` with a `TaskTokenUsage@3` usage artifact, whatever the width of
-its counters.
+its counters. Superseded in part by
+[ADR-0143](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md): unknown
+Review usage is charged zero and recorded as unknown, not charged the original reservation.
 
 ## Context
 

@@ -62,6 +62,7 @@ fn node(name: &str, worker: Option<TaskReportWorkerV1>) -> TaskReportNodeV1 {
             status: TaskReportCheckStatusV1::Passed,
             elapsed_ms: Some(840),
         }],
+        unknown_usage: 0,
     }
 }
 
@@ -85,6 +86,8 @@ fn entry(task_id: &str, worker: &str) -> TaskReportEntryV1 {
                 attempts: 1,
                 tokens: DecimalU128::from(34),
             }],
+            unknown_usage: 0,
+            unknown_usage_causes: Vec::new(),
         }),
         chargeable_tokens: DecimalU128::from(1234),
         wall_ms: 7_200_000,
@@ -148,6 +151,8 @@ fn round(
                     tokens: DecimalU128::from(tokens),
                 })
                 .collect(),
+            unknown_usage: 0,
+            unknown_usage_causes: Vec::new(),
         }),
         chargeable_tokens: DecimalU128::from(tokens),
         wall_ms,
@@ -241,6 +246,7 @@ fn five_rounds_render_their_pipelines_first_then_one_row_each_and_the_total() {
             tokens: DecimalU128::from(tokens),
             elapsed_ms: Some(elapsed_ms),
             checks: Vec::new(),
+            unknown_usage: 0,
         };
     let implement = "root.nodes.implement";
     let gpt = || model("codex", "gpt-6-sol");
@@ -814,6 +820,7 @@ fn a_resume_after_every_attempt_finished_is_not_a_run() {
             },
             raw_artifact_ids: Vec::new(),
             usage_id: None,
+            unknown_usage: None,
         },
         Record::Published {
             output_id: digest(),
@@ -831,6 +838,7 @@ fn a_resume_after_every_attempt_finished_is_not_a_run() {
             },
             raw_artifact_ids: Vec::new(),
             usage_id: None,
+            unknown_usage: None,
         },
     ] {
         assert_eq!(record_mark(Some(&record)), Mark::Other, "{record:?}");
@@ -847,6 +855,7 @@ fn a_resume_after_every_attempt_finished_is_not_a_run() {
         },
         raw_artifact_ids: Vec::new(),
         usage_id: None,
+        unknown_usage: None,
     }));
     let published = record_mark(Some(&Record::Published {
         output_id: digest(),
@@ -884,6 +893,7 @@ fn a_node_refreshed_onto_another_worker_charges_each_worker_its_own_attempts() {
         tokens,
         elapsed_ms: Some(1_000),
         checks: Vec::new(),
+        unknown_usage: None,
     };
     let (summary, nodes) = tally_attempts(vec![
         attempt(
@@ -960,6 +970,109 @@ fn a_node_refreshed_onto_another_worker_charges_each_worker_its_own_attempts() {
     );
 }
 
+/// ADR-0143: Attempts whose usage is unknown are tallied by cause and on their node, and every
+/// Tokens cell they touch reads the charged total followed by `(+N unknown)`; the round's
+/// details name the causes. A Task whose usage is all known renders exactly as before.
+#[test]
+fn unknown_usage_reads_as_unknown_beside_the_charged_total_never_as_spend() {
+    use review_core::task::usage::TaskUnknownUsageCauseV1 as Cause;
+    let attempt = |worker, failure, tokens, unknown_usage| CountedAttempt {
+        unknown_usage,
+        node: "root.nodes.implement".into(),
+        role: "implement".into(),
+        worker,
+        reviewer: false,
+        failure,
+        tokens,
+        elapsed_ms: Some(1_000),
+        checks: Vec::new(),
+    };
+    let failed = Some(TaskReportFailureClassV1::ProviderFailure);
+    let (summary, nodes) = tally_attempts(vec![
+        attempt(
+            model("codex", "gpt-6-sol"),
+            failed,
+            0,
+            Some(Cause::Capacity),
+        ),
+        attempt(
+            model("codex", "gpt-6-sol"),
+            Some(TaskReportFailureClassV1::Abandoned),
+            0,
+            Some(Cause::LeaseExpired),
+        ),
+        attempt(
+            model("codex", "gpt-6-sol"),
+            failed,
+            0,
+            Some(Cause::Capacity),
+        ),
+        attempt(model("codex", "gpt-6-sol"), None, 205_295, None),
+    ])
+    .unwrap();
+    assert_eq!(summary.unknown_usage, 3);
+    assert_eq!(
+        summary.unknown_usage_causes,
+        [
+            TaskReportUnknownUsageV1 {
+                cause: Cause::Capacity,
+                attempts: 2,
+            },
+            TaskReportUnknownUsageV1 {
+                cause: Cause::LeaseExpired,
+                attempts: 1,
+            },
+        ]
+    );
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].unknown_usage, 3);
+    assert_eq!(nodes[0].tokens.get(), 205_295);
+    let mut task = entry("a", "gpt-6-sol");
+    task.attempts = Some(TaskReportAttemptsV1 {
+        total: 4,
+        ..summary
+    });
+    task.chargeable_tokens = DecimalU128::from(205_295);
+    task.nodes = Some(nodes);
+    let text = markdown(&report(vec![task.clone()]));
+    assert!(
+        text.contains("| 1 | a | pass | — | 205,295 (+3 unknown) | 3.2s |"),
+        "{text}"
+    );
+    assert!(
+        text.contains("|  | Total: 4 Attempts (3 failed) |  |  | 205,295 (+3 unknown) | 3.2s |"),
+        "{text}"
+    );
+    assert!(
+        text.contains("| 4 (3 failed) | 205,295 (+3 unknown) |"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "; 0 tokens), 3 Attempts' usage unknown (2 capacity, 1 lease expired)</summary>"
+        ),
+        "{text}"
+    );
+    // One cause is named alone, and one Attempt reads in the singular.
+    let mut single = task;
+    let attempts = single.attempts.as_mut().unwrap();
+    attempts.unknown_usage = 1;
+    attempts.unknown_usage_causes = vec![TaskReportUnknownUsageV1 {
+        cause: Cause::Capacity,
+        attempts: 1,
+    }];
+    single.nodes.as_mut().unwrap()[0].unknown_usage = 1;
+    let text = markdown(&report(vec![single]));
+    assert!(
+        text.contains(", 1 Attempt's usage unknown (capacity)</summary>"),
+        "{text}"
+    );
+    assert!(text.contains(" | 205,295 (+1 unknown) | "), "{text}");
+    // All usage known: no suffix and no cause.
+    let known = markdown(&report(vec![entry("b", "gpt-6-sol")]));
+    assert!(!known.contains("unknown"), "{known}");
+}
+
 /// A reviewer whose Attempts failed counts once however often it failed; a check that failed
 /// is a failed gate only while no reviewer began.
 #[test]
@@ -981,6 +1094,7 @@ fn reviewer_attempts_say_whether_the_review_ran_and_how_many_reviewers_failed() 
                 })
                 .into_iter()
                 .collect(),
+            unknown_usage: None,
         }
     };
     let failed_gate = [attempt(

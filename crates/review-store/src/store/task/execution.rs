@@ -68,6 +68,10 @@ pub struct TaskAttemptAccounting {
     pub context_id: Option<String>,
     pub raw_artifact_ids: Vec<String>,
     pub usage_id: Option<String>,
+    /// Why this settled Attempt's usage is unknown: no usage was reported, so it was charged
+    /// zero (ADR-0143). None for every Attempt whose usage is known, including one a later
+    /// observation charged after it settled.
+    pub unknown_usage: Option<task::usage::TaskUnknownUsageCauseV1>,
 }
 
 impl TaskAttemptAccounting {
@@ -522,6 +526,13 @@ impl TaskExecutionProjection {
                         Some(TaskExecutionRecordV1::Settled { usage_id, .. }) => usage_id.clone(),
                         _ => None,
                     },
+                    unknown_usage: match &attempt.settlement {
+                        Some(TaskExecutionRecordV1::Settled {
+                            unknown_usage: Some(unknown),
+                            ..
+                        }) if ledger.is_none_or(|row| row.charged == 0) => Some(unknown.cause),
+                        _ => None,
+                    },
                 }
             })
             .collect()
@@ -874,6 +885,7 @@ impl TaskProjection {
                     attempt,
                     *charged_tokens,
                     raw_artifact_ids,
+                    false,
                 )?;
                 execution
                     .budget
@@ -1053,6 +1065,7 @@ impl TaskProjection {
                 charged_tokens,
                 result,
                 raw_artifact_ids,
+                unknown_usage,
                 ..
             } => {
                 let attempt = execution
@@ -1063,6 +1076,18 @@ impl TaskProjection {
                 if !attempt.started || attempt.released || attempt.settlement.is_some() {
                     return Err(conflict("Task settlement has no unsettled started Attempt"));
                 }
+                // Unknown usage means nothing was reported: an Attempt whose usage was observed
+                // is charged what was observed, never zero (ADR-0143).
+                if unknown_usage.is_some()
+                    && execution
+                        .ledger
+                        .attempt(&AttemptId(attempt_id.clone()))
+                        .is_some_and(|a| a.charged > 0)
+                {
+                    return Err(conflict(
+                        "A Task Attempt with observed usage cannot settle as unknown",
+                    ));
+                }
                 usage_observation::validate(
                     cas,
                     &self.task_id,
@@ -1070,6 +1095,7 @@ impl TaskProjection {
                     &attempt,
                     *charged_tokens,
                     raw_artifact_ids,
+                    unknown_usage.is_some(),
                 )?;
                 if let TaskAttemptResultV1::Succeeded { output_id } = result {
                     let out = output(cas, output_id)?;
@@ -1089,10 +1115,11 @@ impl TaskProjection {
                     execution.verify_output(cas, &out)?;
                 }
                 if matches!(result, TaskAttemptResultV1::Abandoned { .. })
+                    && unknown_usage.is_none()
                     && *charged_tokens < u128::from(attempt.reservation.tokens)
                 {
                     return Err(conflict(
-                        "Abandoned Task work retains its full reserved charge",
+                        "Abandoned Task work with reported usage retains its full reserved charge",
                     ));
                 }
                 // Preserve the original terminal receipt for exact replay. The common
@@ -1231,18 +1258,29 @@ impl EventStore {
                 return Err(conflict("Current writer still owns this Task Attempt"));
             }
             let record = if attempt.started {
+                let ledger_charge = execution
+                    .ledger
+                    .attempt(&AttemptId(id.clone()))
+                    .map_or(0, |a| a.charged);
+                let observation =
+                    self.task_attempt_usage_observation(&task_run_id(&lease.task_id)?, id)?;
+                // Usage was reported when the lost writer retained counters, an observation
+                // with counters or an observed charge. Otherwise it is unknown: the Attempt is
+                // charged zero, never its reservation (ADR-0143).
+                let reported = walls
+                    .iter()
+                    .any(|w| &w.attempt_id == id && w.usage.is_some())
+                    || ledger_charge > 0
+                    || observation
+                        .as_ref()
+                        .is_some_and(|o| o.reported_usage.is_some());
                 let observed = walls
                     .iter()
                     .filter(|w| &w.attempt_id == id)
                     .filter_map(|w| w.usage.as_ref().map(|u| u.chargeable_tokens.get()))
                     .max()
                     .unwrap_or(0)
-                    .max(
-                        execution
-                            .ledger
-                            .attempt(&AttemptId(id.clone()))
-                            .map_or(0, |a| a.charged),
-                    );
+                    .max(ledger_charge);
                 let diagnostic_id = cas.put_json(&json!({"schema":"af.task-diagnostic/1", "reason":"previous Task writer disappeared", "attempt_id":id})).map_err(|e| StoreError::Artifact(e.to_string()))?;
                 let usage_id = walls
                     .iter()
@@ -1264,8 +1302,7 @@ impl EventStore {
                         .map_err(|error| StoreError::Artifact(error.to_string()))
                     })
                     .transpose()?;
-                let raw_artifact_ids = self
-                    .task_attempt_usage_observation(&task_run_id(&lease.task_id)?, id)?
+                let raw_artifact_ids = observation
                     .map(|observation| {
                         usage_observation::capture_task_usage_observation(
                             cas,
@@ -1286,10 +1323,17 @@ impl EventStore {
                     .collect();
                 TaskExecutionRecordV1::Settled {
                     attempt_id: id.clone(),
-                    charged_tokens: observed.max(u128::from(attempt.reservation.tokens)),
+                    charged_tokens: if reported {
+                        observed.max(u128::from(attempt.reservation.tokens))
+                    } else {
+                        0
+                    },
                     result: TaskAttemptResultV1::Abandoned { diagnostic_id },
                     raw_artifact_ids,
                     usage_id,
+                    unknown_usage: (!reported).then_some(task::usage::TaskUnknownUsageV1 {
+                        cause: task::usage::TaskUnknownUsageCauseV1::LeaseExpired,
+                    }),
                 }
             } else {
                 TaskExecutionRecordV1::Released {

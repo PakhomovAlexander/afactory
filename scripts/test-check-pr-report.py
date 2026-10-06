@@ -16,6 +16,7 @@ SCRIPT = ROOT / 'scripts' / 'check-pr-report.py'
 BLOCK = (ROOT / 'fixtures' / 'task-report' / 'report.md').read_text(encoding='utf-8')
 TEMPLATE = (ROOT / '.github' / 'PULL_REQUEST_TEMPLATE.md').read_text(encoding='utf-8')
 HOW = 'af task report TASK_ID'
+COLUMNS = ['Round', 'Task', 'Outcome', 'Findings', 'Tokens', 'Active']
 
 
 def description(block):
@@ -80,6 +81,16 @@ def main():
         return ''.join(prefix + line if line.strip() else line
                        for line in text.splitlines(keepends=True))
 
+    def with_unknown_usage(block):
+        """The block with `(+1 unknown)` after the first round row's and the totals row's
+        Tokens, as the renderer prints a charged total beside unknown usage (ADR-0143)."""
+        tokens = COLUMNS.index('Tokens')
+        row = cells_with(tokens, round_cells[tokens] + ' (+1 unknown)')
+        totals = [cell.strip() for cell in total.strip().strip('|').split('|')]
+        totals[tokens] += ' (+1 unknown)'
+        return block.replace(rows[0] + '\n', row + '\n').replace(
+            total, '| ' + ' | '.join(totals) + ' |')
+
     unknown_pipeline = '**unknown pipeline**: not retained'
     # Four-space-indented lines right after a block that ends a paragraph are code.
     four = indented(BLOCK, '    ')
@@ -107,6 +118,9 @@ def main():
             '```markdown\n' + BLOCK + '```\n\n' + BLOCK)),
         'a fence that only mentions backticks in its text': event(description(
             'Run `af task report` and paste ``` its output:\n\n' + BLOCK)),
+        # A Tokens cell with Attempts whose usage is unknown (ADR-0143), in a round row and in
+        # the totals row.
+        'Tokens cells with unknown usage': event(description(with_unknown_usage(BLOCK))),
         # The line the renderer prints for a Task whose plan is not retained.
         'the unknown-pipeline line': event(description(BLOCK.replace(
             pipeline, unknown_pipeline))),

@@ -79,6 +79,7 @@ fn captured_retry_policy_checks_durable_failures_before_any_new_reservation() {
                 },
                 raw_artifact_ids: vec![],
                 usage_id: None,
+                unknown_usage: None,
             },
             &f.authority,
         )
@@ -114,6 +115,7 @@ fn selected_work_recovers_publication_instead_of_reserving_another_paid_attempt(
                 },
                 raw_artifact_ids: vec![],
                 usage_id: None,
+                unknown_usage: None,
             },
             &f.authority,
         )

@@ -53,6 +53,7 @@ impl WorkerModelAdapter for Model {
             } else {
                 Ok(b"OK".to_vec())
             },
+            native_failure: None,
         }
     }
 }

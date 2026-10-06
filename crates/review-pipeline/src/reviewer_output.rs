@@ -40,8 +40,8 @@ pub(super) struct CapturedReviewerResult {
 }
 
 /// Capture one Task-hosted Review Attempt's reply against its exact Task Review context.
-/// `usage_known` is false when the provider reported no usage and the charge is the
-/// reservation.
+/// `usage_known` is false when the provider reported no usage: the charge is zero and the
+/// usage unknown (ADR-0143).
 pub(super) fn capture_task_result(
     cas: &Cas,
     authority: &RoundAuthority,

@@ -12,6 +12,7 @@ pub enum NativeFailureKind {
     AuthRefreshFailed,
     AuthRejected,
     Quota,
+    Capacity,
     ModelUnavailable,
     Network,
     Unknown,
@@ -42,9 +43,29 @@ impl NativeFailureKind {
             Self::AuthRefreshFailed => "Provider credential refresh failed (auth_refresh_failed)",
             Self::AuthRejected => "Provider authentication was rejected (auth_rejected)",
             Self::Quota => "Provider quota or rate limit was reached (quota)",
+            Self::Capacity => "Provider model at capacity (capacity)",
             Self::ModelUnavailable => "Provider model is unavailable (model_unavailable)",
             Self::Network => "Provider network request failed (network)",
             Self::Unknown => "Provider returned an unclassified failure (unknown)",
+        }
+    }
+
+    /// Why an Attempt that ended with this failure and no usage report has unknown usage
+    /// (ADR-0143). An unclassified failure tells nothing better than an absent report.
+    pub fn unknown_usage_cause(self) -> review_core::task::usage::TaskUnknownUsageCauseV1 {
+        use review_core::task::usage::TaskUnknownUsageCauseV1 as Cause;
+        match self {
+            Self::AuthMissing
+            | Self::AuthRevoked
+            | Self::AuthExpired
+            | Self::AuthRefreshContended
+            | Self::AuthRefreshFailed
+            | Self::AuthRejected => Cause::Authentication,
+            Self::Quota => Cause::RateLimit,
+            Self::Capacity => Cause::Capacity,
+            Self::ModelUnavailable => Cause::ModelUnavailable,
+            Self::Network => Cause::Network,
+            Self::Unknown => Cause::Unreported,
         }
     }
 
@@ -197,6 +218,15 @@ pub fn classify_native_failure(message: &str) -> NativeFailureKind {
         return Quota;
     }
     if contains(&[
+        "at capacity",
+        "over capacity",
+        "capacity exceeded",
+        "overloaded",
+        "server_is_overloaded",
+    ]) {
+        return Capacity;
+    }
+    if contains(&[
         "model_not_found",
         "model unavailable",
         "model is unavailable",
@@ -278,6 +308,11 @@ mod tests {
             ("Failed to refresh OAuth token: HTTP 429 rate limit", Quota),
             ("model_not_found", ModelUnavailable),
             ("model access denied", ModelUnavailable),
+            (
+                "Selected model is at capacity. Please try a different model.",
+                Capacity,
+            ),
+            ("API Error: 529 overloaded_error", Capacity),
             ("HTTP 403 forbidden", Unknown),
             ("Worker failed with status 1", Unknown),
         ] {

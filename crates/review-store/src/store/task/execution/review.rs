@@ -436,7 +436,9 @@ fn validate_attempt_provenance(
     context: &TaskReviewContextV1,
     context_id: &str,
     producer: &review_core::Producer,
-    reserved_tokens: u64,
+    // What a provenance without a usage report records: zero for an Attempt that settled with
+    // unknown usage (ADR-0143), and its reservation for one settled before that existed.
+    unreported_charge: u128,
     committed_tokens: u128,
 ) -> Result<(), StoreError> {
     let frame = cas
@@ -490,9 +492,9 @@ fn validate_attempt_provenance(
                 "Task Review provenance changed its reported usage",
             ));
         }
-    } else if provenance.charged_tokens.get() != u128::from(reserved_tokens) {
+    } else if provenance.charged_tokens.get() != unreported_charge {
         return Err(conflict(
-            "Unknown Review usage must retain its full reservation",
+            "Review usage without a report must record the charge its settlement made",
         ));
     }
     Ok(())
@@ -791,7 +793,17 @@ pub(super) fn selected_review_event(
             node_id: node_id.clone(),
             attempt_id: attempt_id.clone(),
         },
-        recorded.reservation.tokens,
+        if matches!(
+            &recorded.settlement,
+            Some(TaskExecutionRecordV1::Settled {
+                unknown_usage: Some(_),
+                ..
+            })
+        ) {
+            0
+        } else {
+            u128::from(recorded.reservation.tokens)
+        },
         selected.expect("selected Attempt checked above").charged,
     )?;
     let result = envelope(cas, result_envelope_id, result_type)?;

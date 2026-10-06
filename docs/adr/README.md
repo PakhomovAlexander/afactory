@@ -249,3 +249,5 @@ future readers need.
   registered](0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)
 - [0142 — Carry the `af task report` of its Tasks in every pull
   request](0142-carry-the-af-task-report-in-every-pull-request.md)
+- [0143 — Charge zero and record unknown usage when no usage is
+  reported](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)

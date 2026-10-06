@@ -416,6 +416,7 @@ impl review_pipeline::task::TaskOperatorHost for AdmissionOnly {
             raw_artifact_ids: vec![],
             usage_id: None,
             feedback_id: None,
+            unknown_usage_cause: None,
         }
     }
 }

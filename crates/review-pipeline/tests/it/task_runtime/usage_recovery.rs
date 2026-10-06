@@ -79,6 +79,7 @@ impl WorkerModelAdapter for OutageModel {
                 message: Err("model output CAS publication failed".into()),
                 raw_artifact_ids: vec![],
                 usage: Some(usage),
+                native_failure: None,
             }
         } else {
             ModelWorkerReturn {
@@ -86,6 +87,7 @@ impl WorkerModelAdapter for OutageModel {
                 message: Ok(b"OK".to_vec()),
                 raw_artifact_ids: vec![cas.put(b"OK").unwrap()],
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(7)),
+                native_failure: None,
             }
         }
     }

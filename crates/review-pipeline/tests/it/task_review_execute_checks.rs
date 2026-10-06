@@ -136,6 +136,7 @@ impl WorkerModelAdapter for Uix {
             raw_artifact_ids: vec![cas.put(&reply).unwrap()],
             message: Ok(reply),
             usage: Some(TaskTokenUsageV3::charge_only(1)),
+            native_failure: None,
         }
     }
 }

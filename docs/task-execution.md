@@ -33,6 +33,10 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   ([ADR-0049](adr/0049-run-task-workers-through-shared-durable-attempts.md),
   [ADR-0066](adr/0066-reserve-task-attempts-before-binding-exact-context.md),
   [ADR-0068](adr/0068-retain-inflight-task-usage-in-the-common-budget.md)).
+- An Attempt whose Provider reported no usage settles at zero with its usage recorded as unknown
+  and its cause, never at its reservation or an estimate: it releases its reservation, adds to no
+  budget and still counts against the Attempt limits, and every report shows it as unknown
+  ([ADR-0143](adr/0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)).
 - Result construction determines failed execution before acceptance: passing receipts cannot
   make incomplete work Satisfied, and genuine negative verification remains Unsatisfied with its
   evidence ([ADR-0093](adr/0093-derive-code-task-acceptance-from-execution-and-evidence.md)).
