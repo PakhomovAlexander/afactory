@@ -176,6 +176,49 @@ fn man_pages_render_for_every_command_and_topic() {
     assert!(root.contains("review"));
 }
 
+/// `af task report` says what it prints, what it never does, and its selectors, in `--help`, in
+/// `af help task report` and in its man page (ADR-0142).
+#[test]
+fn task_report_help_and_man_page_describe_the_command() {
+    for help in [
+        af(&["task", "report", "--help"]),
+        af(&["help", "task", "report"]),
+    ] {
+        assert!(help.status.success(), "{}", err(&help));
+        let text = out(&help);
+        for needle in [
+            "Usage: af task report",
+            "<TASK_ID>...",
+            "<!-- af-task-report:v1 -->",
+            "<!-- /af-task-report -->",
+            "af/task-report@1",
+            "Never:",
+            "--repo <DIR>",
+            "--state <DIR>",
+            "--json",
+            "af task report pagination-cli",
+        ] {
+            assert!(text.contains(needle), "`{needle}` missing:\n{text}");
+        }
+    }
+    let task = out(&af(&["task", "--help"]));
+    assert!(
+        task.lines()
+            .any(|line| line.trim_start().starts_with("report ")),
+        "{task}"
+    );
+    let missing = af(&["task", "report"]);
+    assert_eq!(missing.status.code(), Some(2), "a Task ID is required");
+
+    let dir = tempfile::tempdir().unwrap();
+    let man = af(&["self", "man", dir.path().to_str().unwrap()]);
+    assert!(man.status.success(), "{}", err(&man));
+    let page = std::fs::read_to_string(dir.path().join("af-task-report.1")).unwrap();
+    assert!(page.contains("af\\-task\\-report") || page.contains("af-task-report"));
+    assert!(page.contains("TASK_ID"), "{page}");
+    assert!(page.contains("Never"), "{page}");
+}
+
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();

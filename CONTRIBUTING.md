@@ -90,6 +90,16 @@ Either is fine; the prefixes are used but not required. Domain terms keep their 
 
 ## Pull requests
 
+- Every change is made through af Tasks: an implementation pipeline makes it and a
+  verification pipeline checks it. The pull request description carries the `af task report`
+  of those Tasks
+  ([ADR-0142](docs/adr/0142-carry-the-af-task-report-in-every-pull-request.md)): run
+  `af task report TASK_ID...` from the repository (with the same `--state` if you used one)
+  and paste its whole output, both markers included, into the template's `af task report`
+  section. It is read-only and names Providers only by kind and model. The `PR report`
+  workflow refuses a description without exactly one well-formed block; Dependabot and
+  `release/` pull requests are exempt. `python3 scripts/check-pr-report.py --body FILE`
+  runs the same check locally.
 - One topic per PR. Split unrelated fixes even when they are small.
 - `make check` passes; say so in the PR template checklist.
 - A user-visible change adds its own note, `changelog.d/<topic>.md` (see

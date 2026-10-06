@@ -230,6 +230,82 @@ show` print it as `collected <time>`, and `task output` and `task deliver` refus
 between Tasks: `--apply` is refused while any Task's writer lease is live. If it stops midway,
 rerun it; the next run finishes the removal.
 
+## Report what Tasks cost
+
+`af task report TASK_ID...` summarizes what one or more Tasks of one Store cost and how they ran,
+as one Markdown block for a pull request description
+([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)). It takes the same
+`--repo` and `--state` selectors as `task show`, reports the Tasks in the order given, and refuses
+an unknown Task ID by name without printing anything else. It only reads the Store: no Worker
+runs, no Provider is contacted, nothing is written.
+
+```sh
+af task report pagination-cli
+af task report implement-x verify-x --json
+```
+
+The block leads with one line per pipeline the Tasks ran: `**name@version**:` and its steps in
+dependency order, each named by its role with its Worker in parentheses (`codex
+gpt-6-sol/high`, or `command`), the gate with its check names, and parallel steps of one role
+grouped (`review (bugs, correctness: codex gpt-6-sol/high)`); Provider admission is left out.
+A Task whose plan is no longer retained (it was collected) or that never reached planning names
+no pipeline, and one line `**unknown pipeline**: not retained` stands for all such Tasks.
+Then each Task is a round, numbered in the order given, with one row: its outcome as `task show`
+states it, its review findings, chargeable tokens and active time. **Findings** counts what the
+Task's review rounds recorded, by severity (`6 major, 1 minor`), each finding once as the round's
+reduce step wrote it; it reads `none` when the reviewers ran and their complete rounds found
+nothing, `unknown` when the review ran but a round has no complete finding set (a required
+reviewer's result is missing, say) or none was recorded yet, `gate failed` when a check failed and
+the review did not run, and `—` for a Task without a review, followed by `; N reviewer(s)
+failed` when a reviewer's Attempt failed. A round recorded before a `task
+refresh` still counts. A last `Total:` row sums Attempts (with how many failed), tokens and
+active time. **Active time** is the sum of the Task's runs, each from its first event to its
+last: a run is `task start --execute` or one `task run` that started an Attempt, so a Task that
+waited a day before it was resumed shows that day in its wall time only, and neither a `task
+refresh`, even when it settles an Attempt an interrupted run left pending, nor a resume that only
+publishes an already selected result is a run. **Wall time** runs from the Task's first recorded
+event to its last. Each round then has a collapsed `<details>` element with its runs, wall time
+and failed Attempts by reason class (`provider_failure`, `process_failure`, …) with the tokens
+charged to them, and its nodes: role, Worker, Attempts, tokens, elapsed time and the checks the
+gate ran with their durations. Each Attempt counts toward the Worker of the plan it ran under, so
+a node that a refresh bound to another Worker has one row per Worker. Token counts read with
+thousands separators (`205,295`). A figure the Store does not record reads `unknown`; nothing is
+estimated. For a Task resumed once after an interrupt it prints:
+
+```markdown
+<!-- af-task-report:v1 -->
+### af task report
+
+**fixture/implementation@1.0.0**: implement (command) → gate (pagination) → evaluate (command)
+
+| Round | Task | Outcome | Findings | Tokens | Active |
+| ---: | --- | --- | --- | ---: | ---: |
+| 1 | pagination-cli | verified | — | 0 | 1.8s |
+|  | Total: 4 Attempts (1 failed) |  |  | 0 | 1.8s |
+
+<details>
+<summary>Round 1 · pagination-cli: 2 runs, 3.5s wall, 1 failed Attempt (1 process_failure; 0 tokens)</summary>
+
+| Node | Role | Worker | Attempts | Tokens | Elapsed | Checks |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| root.nodes.implement | implement | command | 2 (1 failed) | 0 | 258ms | - |
+| root.nodes.check | check | - | 1 | 0 | 62ms | pagination passed 52ms |
+| root.nodes.evaluate | evaluate | command | 1 | 0 | 96ms | - |
+
+</details>
+<!-- /af-task-report -->
+```
+
+Paste the whole block, both markers included, as plain text: the `PR report` check does not
+count a block inside a code fence or indented as code, including one indented four spaces right
+after a heading, a thematic break, a fence, an HTML block or a list item. Providers appear only as kind, model and effort,
+and a recorded model that is not a model identity (a path or a URL, say) reads `unknown`: the
+report never carries a Provider label, a path, a credential, a prompt or Worker output.
+`--json` prints the same figures as one
+[`af/task-report@1`](../schemas/task-report-v1.json) document, with exact decimal tokens and
+times in milliseconds, the `pipelines` with their steps, and each Task's `round` and `findings`;
+an unknown figure is absent there.
+
 ## Troubleshooting
 
 | Symptom | Meaning and action |

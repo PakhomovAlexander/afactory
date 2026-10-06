@@ -38,12 +38,12 @@ fn git(repo: &Path, args: &[&str]) {
 fn write(path: &Path, value: &Value) {
     std::fs::write(path, serde_json::to_vec_pretty(value).unwrap()).unwrap();
 }
-fn issue() -> Value {
+pub(crate) fn issue() -> Value {
     json!({"schema":"af.issue-input/1","id":"10042","key":"AF-42","revision":"v1",
     "summary":"Implement offset and limit pagination","description":"Preserve the input values.",
     "acceptance":{"bounds":"Reject negative or noninteger bounds."}})
 }
-fn setup(
+pub(crate) fn setup(
     root: &Path,
     key: Option<&minisign::KeyPair>,
     template: &str,

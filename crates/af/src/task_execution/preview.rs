@@ -39,7 +39,20 @@ fn line(out: &mut String, value: &str) {
         writeln!(out, "{}", std::str::from_utf8(chunk).expect("ASCII")).unwrap();
     }
 }
-fn package_label(cas: &Cas, plan: &ExecutionPlanV1, name: &str) -> Result<String, String> {
+pub(super) fn package_label(
+    cas: &Cas,
+    plan: &ExecutionPlanV1,
+    name: &str,
+) -> Result<String, String> {
+    let (name, version) = package_name_version(cas, plan, name)?;
+    Ok(format!("{name}@{version}"))
+}
+/// A captured package's name and version, as sanitized display text.
+pub(super) fn package_name_version(
+    cas: &Cas,
+    plan: &ExecutionPlanV1,
+    name: &str,
+) -> Result<(String, String), String> {
     let dependency = plan
         .dependencies
         .get(name)
@@ -52,7 +65,7 @@ fn package_label(cas: &Cas, plan: &ExecutionPlanV1, name: &str) -> Result<String
     let version = package["version"]
         .as_str()
         .ok_or("Preview package version missing")?;
-    Ok(format!("{}@{}", text(name), text(version)))
+    Ok((text(name), text(version)))
 }
 fn worker(node: &CompiledNode) -> Option<&str> {
     match &node.operator {

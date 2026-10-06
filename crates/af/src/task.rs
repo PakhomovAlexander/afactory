@@ -996,6 +996,27 @@ pub(super) fn show(options: InspectOptions) -> Result<(), String> {
     Err(format!("Task `{task_id}` was not found"))
 }
 
+/// `af task report` (ADR-0142): one Markdown block, or one `af/task-report@1` document, over
+/// the named Tasks of one Store. Read-only; nothing is printed unless every Task is found.
+pub(super) fn report(options: InspectOptions, task_ids: &[String]) -> Result<(), String> {
+    for task_id in task_ids {
+        validate_task_id(task_id).map_err(|error| format!("`{task_id}`: {error}"))?;
+    }
+    let repository = std::fs::canonicalize(&options.repo)
+        .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
+    let state = resolve_task_state(&options.state, &repository)?;
+    let report = super::task_execution::task_report::read(&state, task_ids)?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string(&report).map_err(|error| error.to_string())?
+        );
+    } else {
+        print!("{}", super::task_execution::task_report::markdown(&report));
+    }
+    Ok(())
+}
+
 fn resolve_delivery_path(
     requested: &Path,
     repository: &Path,

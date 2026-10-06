@@ -14,6 +14,13 @@ maps the rest of the documentation. Use the pinned Rust toolchain (`rust-toolcha
 test or review pass. Project-specific pipelines, reviewer packages, Campaign state, and captured
 review corpora belong in consuming repositories, not here.
 
+- Every change to this repository is made through af Tasks: an implementation pipeline makes
+  it and a verification pipeline checks it. Its pull request description carries the `af task
+  report` of those Tasks, the block between `<!-- af-task-report:v1 -->` and
+  `<!-- /af-task-report -->` that `af task report TASK_ID...` prints; the `PR report` check
+  refuses a description without exactly one well-formed block, apart from Dependabot and
+  `release/` pull requests
+  ([ADR-0142](docs/adr/0142-carry-the-af-task-report-in-every-pull-request.md)).
 - Product rebranding must not rename `review.kernel/*` artifact types, persisted events, or
   established Review Kernel domain terms until a separate accepted migration ADR supersedes this
   rule. Releases are cut only through `make release` and the release workflow; a lock pins the

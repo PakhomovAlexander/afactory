@@ -4,19 +4,19 @@ use super::*;
 use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
 use std::os::unix::fs::PermissionsExt;
 
-struct Fixture {
-    _root: tempfile::TempDir,
-    repo: PathBuf,
-    state: PathBuf,
-    home: PathBuf,
-    path: std::ffi::OsString,
+pub(crate) struct Fixture {
+    pub(crate) _root: tempfile::TempDir,
+    pub(crate) repo: PathBuf,
+    pub(crate) state: PathBuf,
+    pub(crate) home: PathBuf,
+    pub(crate) path: std::ffi::OsString,
     catalog: Value,
 }
 
 impl Fixture {
     /// `explicit` declares a wider catalog admission cost; otherwise the catalog omits it and
     /// the Task gets the fixed default allowance.
-    fn new(explicit: bool, actual: u64, tokens: u64) -> Self {
+    pub(crate) fn new(explicit: bool, actual: u64, tokens: u64) -> Self {
         let root = tempfile::tempdir().unwrap();
         let (repo, state) = setup(root.path());
         let home = root.path().join("home");
@@ -129,7 +129,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
         }
     }
 
-    fn cli(&self, args: &[&str]) -> std::process::Output {
+    pub(crate) fn cli(&self, args: &[&str]) -> std::process::Output {
         Command::new(env!("CARGO_BIN_EXE_af"))
             .current_dir(&self.repo)
             .env("HOME", &self.home)

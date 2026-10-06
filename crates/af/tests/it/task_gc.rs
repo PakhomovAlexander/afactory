@@ -68,7 +68,7 @@ fn text(repo: &Path, state: &Path, args: &[&str]) -> String {
 }
 
 /// The fixture pins its package digests from the copied tree, as `task_input_bindings.rs` does.
-fn fixture(root: &Path) -> (PathBuf, PathBuf) {
+pub(crate) fn fixture(root: &Path) -> (PathBuf, PathBuf) {
     let (repo, state) = task_cli::fixture_named(root, "bound-inputs");
     let path = repo.join(".af/task-catalog.toml");
     let source = std::fs::read_to_string(&path).unwrap();
@@ -105,7 +105,7 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf) {
     (repo, state)
 }
 
-fn start(repo: &Path, state: &Path, file: &str) -> Value {
+pub(crate) fn start(repo: &Path, state: &Path, file: &str) -> Value {
     let done = json_of(
         repo,
         state,
@@ -119,7 +119,7 @@ fn start(repo: &Path, state: &Path, file: &str) -> Value {
 }
 
 /// Every file below `root` with its bytes: a preview must leave all of them as they were.
-fn tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+pub(crate) fn tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(directory) = stack.pop() {
