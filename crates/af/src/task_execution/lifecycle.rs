@@ -14,7 +14,9 @@ pub(super) fn run<T>(
     let cancellation = AtomicBool::new(false);
     crate::interrupt::note_task(lease.task_id());
     crate::interrupt::forwarding(&cancellation, || {
+        crate::interrupt::check()?;
         with_lifecycle(&shared, cas, lease, &cancellation, |owner| {
+            crate::interrupt::check()?;
             #[cfg(test)]
             let _marker = TestOwner::new();
             work(&shared, owner, &cancellation)
