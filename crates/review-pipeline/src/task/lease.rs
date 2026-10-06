@@ -59,7 +59,11 @@ fn now_ms() -> Result<u64, String> {
         .as_millis() as u64)
 }
 
-fn renew_if_due(store: &mut EventStore, cas: &Cas, lease: &TaskLease) -> Result<(), String> {
+pub(super) fn renew_if_due(
+    store: &mut EventStore,
+    cas: &Cas,
+    lease: &TaskLease,
+) -> Result<(), String> {
     let lease_until = store.task_lease_state(lease).map_err(|e| e.to_string())?;
     if lease_until < now_ms()?.saturating_add(RENEW_BELOW_MS) {
         store
@@ -219,7 +223,14 @@ pub fn with_heartbeat_controlled<T>(
                         }
                         Err(TryLockError::WouldBlock) => {}
                     }
+                    // The caller may have renewed at report entry since this retry loop
+                    // began. Observe the exact current writer again before acting on reserve
+                    // or expiry; this read grants no renewal or publication authority.
+                    lease_until = own.task_lease_state(lease).map_err(|e| e.to_string())?;
                     let now = now_ms()?;
+                    if lease_until >= now.saturating_add(RENEW_BELOW_MS) {
+                        break;
+                    }
                     if lease_until <= now.saturating_add(RESERVE_FLOOR_MS) {
                         // Too little lease is left for another wait on the write lock to commit
                         // before expiry: fail while this writer still holds authority.

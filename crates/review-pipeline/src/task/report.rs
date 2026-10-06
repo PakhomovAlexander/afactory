@@ -13,9 +13,12 @@ impl TaskRuntime<'_, '_> {
         report: &RunReport,
         phase_id: Option<&str>,
     ) -> Result<String, String> {
-        // Keep ordinary shared-connection renewals outside pure report capture.
-        // The emergency independent connection still preserves expiry safety and exact-prefix refusal.
+        // Service a due renewal before freezing the report prefix. Back-to-back captures can
+        // otherwise miss every heartbeat try-lock window even when each hold is short.
+        // The ordinary fenced renewal validates the full projection; report state is read
+        // afresh afterwards. Nothing renews through this guard after prefix capture.
         let mut store = self.store.lock().expect("Task Store");
+        lease::renew_if_due(&mut store, self.cas, &self.lease)?;
         let state = store
             .task_projection(self.cas, self.lease.task_id())
             .map_err(|e| e.to_string())?
@@ -113,3 +116,7 @@ impl TaskRuntime<'_, '_> {
         Ok(id)
     }
 }
+
+#[cfg(test)]
+#[path = "report_tests.rs"]
+mod tests;
