@@ -377,6 +377,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
     }
 
     pub fn finish(&self, result_id: &str) -> Result<(), String> {
+        control::check(self.cancellation)?;
         self.store
             .lock()
             .expect("Task Store")

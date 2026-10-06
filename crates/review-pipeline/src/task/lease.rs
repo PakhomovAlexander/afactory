@@ -81,7 +81,9 @@ fn renew_through_own(
     match own.renew_task_lease(cas, lease, LEASE_MS) {
         Ok(_) => Ok(Ok(())),
         Err(error) => {
-            let lease_until = own.task_lease_state(lease).map_err(|e| e.to_string())?;
+            let lease_until = own.task_lease_state(lease).map_err(|observed| {
+                format!("renewal failed: {error}; lease observation failed: {observed}")
+            })?;
             Ok(Err((error.to_string(), lease_until)))
         }
     }
