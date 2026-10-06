@@ -18,6 +18,7 @@ impl TaskRuntime<'_, '_> {
         // The ordinary fenced renewal validates the full projection; report state is read
         // afresh afterwards. Nothing renews through this guard after prefix capture.
         let mut store = self.store.lock().expect("Task Store");
+        let _hold = ReportHold::new(report.outcomes.len());
         lease::renew_if_due(&mut store, self.cas, &self.lease)?;
         let state = store
             .task_projection(self.cas, self.lease.task_id())
@@ -120,3 +121,40 @@ impl TaskRuntime<'_, '_> {
 #[cfg(test)]
 #[path = "report_tests.rs"]
 mod tests;
+
+// Isolated diagnostic branch only: no authority, TTL or validation changes.
+struct ReportHold {
+    started: std::time::Instant,
+    nodes: usize,
+}
+impl ReportHold {
+    fn new(nodes: usize) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            nodes,
+        }
+    }
+}
+impl Drop for ReportHold {
+    fn drop(&mut self) {
+        if std::env::var_os("AF_REPORT_LOAD").is_some() {
+            eprintln!(
+                "REPORT_HOLD {}",
+                serde_json::json!({"nodes": self.nodes, "hold_us": self.started.elapsed().as_micros()})
+            );
+        }
+    }
+}
+impl TaskRuntime<'_, '_> {
+    #[doc(hidden)]
+    pub fn diagnostic_report_capture(&self, report: &RunReport) -> Result<String, String> {
+        self.capture_run_report(report, None)
+    }
+    #[doc(hidden)]
+    pub fn diagnostic_report_session(
+        &self,
+        work: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        lease::with_heartbeat(&self.store, self.cas, &self.lease, work)
+    }
+}

@@ -31,6 +31,9 @@ mod usage_recovery;
 #[path = "task_runtime/wide_usage.rs"]
 mod wide_usage;
 
+#[path = "task_runtime/report_load.rs"]
+mod report_load;
+
 include!("../support/task_runtime_fixture.rs");
 
 #[test]
