@@ -1,0 +1,30 @@
+name: Lease1696 diagnostic binary
+on:
+  push:
+    branches: ["af-gate/lease-1696/diagnostic-build"]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 3d848dc532ddb28c6de7e09cc30d1d6b42813b33
+      - run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+      - name: Build exact diagnostic candidate
+        run: |
+          cargo build --locked -p af --bin af
+          mkdir diagnostic
+          cp target/debug/af diagnostic/af
+          git rev-parse HEAD > diagnostic/SOURCE_SHA
+          diagnostic/af --version --json > diagnostic/version.json
+          (cd diagnostic && sha256sum af > SHA256SUMS)
+          tar czf diagnostic.tar.gz diagnostic
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: lease1696-linux-x64-3d848dc5
+          path: diagnostic.tar.gz
+          retention-days: 7
+          if-no-files-found: error
