@@ -301,9 +301,9 @@ fn finish_incomplete(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_planner(
-    cas: &Cas,
-    store: review_store::SharedEventStore<'_>,
+fn run_planner<'store>(
+    cas: &'store Cas,
+    store: review_store::SharedEventStore<'store>,
     lease: &TaskLease,
     authority: &RunAuthority,
     compiler: &TaskPlanCompiler,

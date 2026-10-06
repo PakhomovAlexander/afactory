@@ -2010,9 +2010,9 @@ fn captured_domain(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute(
-    cas: &Cas,
-    store: review_store::SharedEventStore<'_>,
+fn execute<'store>(
+    cas: &'store Cas,
+    store: review_store::SharedEventStore<'store>,
     lease: &TaskLease,
     authority: &CapturedTaskAuthority<'_>,
     host: &CapturedTaskHost<'_>,

@@ -4,11 +4,15 @@ use review_pipeline::task::lease::{HeartbeatScope, with_lifecycle};
 use review_store::SharedEventStore;
 use std::sync::atomic::AtomicBool;
 
-pub(super) fn run<T>(
-    cas: &Cas,
-    store: &mut EventStore,
+pub(super) fn run<'store, T>(
+    cas: &'store Cas,
+    store: &'store mut EventStore,
     lease: &TaskLease,
-    work: impl FnOnce(&SharedEventStore<'_>, &HeartbeatScope<'_, '_>, &AtomicBool) -> Result<T, String>,
+    work: impl FnOnce(
+        &SharedEventStore<'store>,
+        &HeartbeatScope<'_, 'store>,
+        &AtomicBool,
+    ) -> Result<T, String>,
 ) -> Result<T, String> {
     let shared = SharedEventStore::new(store);
     let cancellation = AtomicBool::new(false);
