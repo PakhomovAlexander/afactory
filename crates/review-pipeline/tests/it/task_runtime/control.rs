@@ -34,6 +34,11 @@ fn precancelled_runtime_records_no_new_invocation_or_attempt() {
         runtime.execute().unwrap_err(),
         "Task has no execution to report"
     );
+    assert_eq!(
+        runtime.finish("unread-result").unwrap_err(),
+        "Task execution was cancelled by its host",
+        "cancellation fences finalization before result admission"
+    );
     assert!(
         runtime.projection().unwrap().execution.is_none(),
         "no invocation or budget mutation exists to report"
