@@ -141,8 +141,13 @@ impl Drop for ReportHold {
 impl TaskRuntime<'_, '_> {
     #[doc(hidden)]
     pub fn diagnostic_report_capture(&self, report: &RunReport) -> Result<String, String> {
-        lease::with_heartbeat(&self.store, self.cas, &self.lease, || {
-            self.capture_run_report(report, None)
-        })
+        self.capture_run_report(report, None)
+    }
+    #[doc(hidden)]
+    pub fn diagnostic_report_session(
+        &self,
+        work: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        lease::with_heartbeat(&self.store, self.cas, &self.lease, work)
     }
 }

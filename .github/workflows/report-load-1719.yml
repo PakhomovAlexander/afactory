@@ -11,7 +11,7 @@ jobs:
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       CARGO_INCREMENTAL: 0
-      CARGO_TARGET_DIR: ${{ runner.temp }}/report-load-target
+      CARGO_TARGET_DIR: /tmp/report-load-1719-target
       RUSTC_WRAPPER: sccache
       SCCACHE_GHA_ENABLED: "true"
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-fuse-ld=lld'

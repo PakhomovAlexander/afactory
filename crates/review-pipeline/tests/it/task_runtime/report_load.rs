@@ -58,6 +58,7 @@ fn report_lock_load_measurement() {
             .count(),
         requested
     );
+    let session_result = runtime.diagnostic_report_session(|| {
     for sample in 0..repetitions {
         // Fresh diagnostics on genuine failed nodes: avoid measuring only CAS cache hits.
         for (node, outcome) in &mut report.outcomes {
@@ -78,4 +79,10 @@ fn report_lock_load_measurement() {
             json!({"failed_nodes":requested,"sample":sample,"error":result.err()})
         );
     }
+    Ok(())
+    });
+    eprintln!(
+        "REPORT_SESSION_END {}",
+        json!({"error":session_result.err()})
+    );
 }
