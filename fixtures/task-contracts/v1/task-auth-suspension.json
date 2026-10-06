@@ -1,0 +1,34 @@
+{
+  "task_id": "jira-AF-42",
+  "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+  "plan_id": "sha256:000000000000000000000000000000000000000000000000000000000000000d",
+  "deadline_unix_ms": 1800000000000,
+  "failures": [
+    {
+      "attempt_id": "01AAAAAAAAAAAAAAAAAAAAAAAA",
+      "node": "root.providers.admit0",
+      "reservation_id": "reservation:0",
+      "charged_tokens": "4096",
+      "failure": "auth_revoked"
+    }
+  ],
+  "contexts": {
+    "sha256:000000000000000000000000000000000000000000000000000000000000000e": {
+      "binding": {
+        "context": {
+          "provider": "personal",
+          "provider_kind": "codex",
+          "principal_id": "sha256:000000000000000000000000000000000000000000000000000000000000000f"
+        },
+        "model": "codex-fixture-1",
+        "effort": "high",
+        "invocation_policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+      },
+      "generation": 1
+    }
+  },
+  "participant": {
+    "requester_ref": "requester-1",
+    "coordinator_ref": "coordinator-1"
+  }
+}

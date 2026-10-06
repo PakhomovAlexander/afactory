@@ -70,6 +70,7 @@ impl WorkerModelAdapter for OutageModel {
                 ..Default::default()
             };
             ModelWorkerReturn {
+                native_failure: None,
                 usage_observation: self.incomplete.then(|| {
                     review_core::task::usage::TaskUsageObservationV1 {
                         reported_usage: Some(usage.clone()),
@@ -82,6 +83,7 @@ impl WorkerModelAdapter for OutageModel {
             }
         } else {
             ModelWorkerReturn {
+                native_failure: None,
                 usage_observation: None,
                 message: Ok(b"OK".to_vec()),
                 raw_artifact_ids: vec![cas.put(b"OK").unwrap()],

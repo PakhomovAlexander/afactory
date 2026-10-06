@@ -2108,6 +2108,7 @@ impl TaskOperatorHost for CodeTaskDomain {
             _ => Err("Code operator requires its captured Worker or domain adapter".into()),
         })();
         TaskWorkOutput {
+            auth_failure: None,
             usage_observation: None,
             usage: None,
             outputs,

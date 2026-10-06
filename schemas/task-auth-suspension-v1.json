@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-auth-suspension:1",
+  "title": "af/TaskAuthSuspension@1",
+  "description": "Why one admitted running Task stopped on a native authentication failure before terminalization (ADR-0141). It binds the exact Task revision, plan and original deadline, retains each failed Attempt's exact accounting identity, and names every auth context the Task still requires with the recovery generation it joined. It carries no native text, URL, code, token, account identity or credential. The Store checks the failed Attempts against its ledger and the bindings against the captured plan.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "task_revision_id",
+    "plan_id",
+    "deadline_unix_ms",
+    "failures",
+    "contexts"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "task_revision_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "deadline_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "failures": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "attempt_id",
+          "node",
+          "reservation_id",
+          "charged_tokens",
+          "failure"
+        ],
+        "properties": {
+          "attempt_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9]{26}$"
+          },
+          "node": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"
+          },
+          "reservation_id": {
+            "type": "string",
+            "pattern": "^reservation:[0-9]{1,20}$"
+          },
+          "charged_tokens": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]{0,38})$"
+          },
+          "failure": {
+            "$ref": "#/$defs/failure"
+          }
+        }
+      }
+    },
+    "contexts": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "propertyNames": {
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "binding",
+          "generation"
+        ],
+        "properties": {
+          "binding": {
+            "$ref": "#/$defs/binding"
+          },
+          "generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        }
+      }
+    },
+    "participant": {
+      "$ref": "#/$defs/participant"
+    }
+  },
+  "$defs": {
+    "failure": {
+      "enum": [
+        "auth_missing",
+        "auth_revoked",
+        "auth_expired",
+        "auth_refresh_contended",
+        "auth_refresh_failed",
+        "auth_rejected"
+      ]
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "provider_kind",
+        "principal_id"
+      ],
+      "properties": {
+        "provider": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+        },
+        "provider_kind": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+        },
+        "principal_id": {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*[^\\u0000-\\u001f\\u007f-\\u009f\\s][^\\u0000-\\u001f\\u007f-\\u009f]*$"
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "context",
+        "model",
+        "effort",
+        "invocation_policy_id"
+      ],
+      "properties": {
+        "context": {
+          "$ref": "#/$defs/context"
+        },
+        "model": {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*[^\\u0000-\\u001f\\u007f-\\u009f\\s][^\\u0000-\\u001f\\u007f-\\u009f]*$"
+        },
+        "effort": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+        },
+        "invocation_policy_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requester_ref",
+        "coordinator_ref"
+      ],
+      "properties": {
+        "requester_ref": {
+          "$ref": "#/$defs/opaqueRef"
+        },
+        "coordinator_ref": {
+          "$ref": "#/$defs/opaqueRef"
+        }
+      }
+    },
+    "opaqueRef": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@-]*$"
+    }
+  }
+}

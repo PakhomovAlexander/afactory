@@ -1067,3 +1067,99 @@ fn captured_integration_allowance_is_dormant_and_cannot_collide_or_add_paid_work
     null["review_integration"] = serde_json::Value::Null;
     assert!(serde_json::from_value::<review_graph::task::CompiledTask>(null).is_err());
 }
+
+#[test]
+fn a_captured_auth_recovery_allowance_is_a_dormant_bounded_node_beside_admission() {
+    use review_core::task::auth_recovery::{AUTH_RECOVERY_NODE, AuthRecoveryAllowanceV1};
+    use review_core::task::plan::{EffectiveWorkerBindingV1, WorkerExecutionV1};
+    use review_graph::task::{CompiledOperator, OperatorAttemptCost};
+    let (task, pipelines, signatures) = fixture();
+    let mut graph = compile_task(
+        &task,
+        "builtin/document",
+        &CompileContext {
+            slot_workers: BTreeMap::new(),
+            acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
+            pipelines: &pipelines,
+            signatures: &signatures,
+            max_nodes: 64,
+            max_depth: 4,
+        },
+    )
+    .unwrap();
+    let allowance = AuthRecoveryAllowanceV1 {
+        probes: 2,
+        tokens_per_probe: 13,
+        wall_ms_per_probe: 14,
+    };
+    let unchanged = graph.clone();
+    // Without a Provider admission there is no paid capability to recover.
+    assert!(graph.install_auth_recovery(&allowance).is_err());
+    assert_eq!(graph, unchanged);
+    assert!(
+        serde_json::to_value(&graph)
+            .unwrap()
+            .get("auth_recovery")
+            .is_none(),
+        "existing captures keep their exact bytes"
+    );
+    let CompiledOperator::Primitive {
+        operator: TaskOperatorV1::Worker { slot },
+        ..
+    } = &graph.nodes["root.nodes.write"].operator
+    else {
+        panic!("fixture Worker")
+    };
+    let bindings = BTreeMap::from([(
+        slot.clone(),
+        EffectiveWorkerBindingV1 {
+            package_digest: "a".repeat(64),
+            package_artifact_id: "b".repeat(64),
+            invocation_policy_id: "c".repeat(64),
+            execution: WorkerExecutionV1::Model {
+                provider: "personal".into(),
+                provider_kind: "fixture".into(),
+                principal_id: "fixture-principal".into(),
+                model: "fixture-model".into(),
+                effort: "high".into(),
+            },
+        },
+    )]);
+    graph
+        .install_provider_admission(
+            &bindings,
+            &OperatorAttemptCost {
+                tokens: 11,
+                wall_ms: 12,
+            },
+        )
+        .unwrap();
+    graph.install_auth_recovery(&allowance).unwrap();
+    assert!(graph.install_auth_recovery(&allowance).is_err());
+    assert_eq!(graph.auth_recovery.as_ref(), Some(&allowance));
+    assert!(!graph.nodes.contains_key(AUTH_RECOVERY_NODE));
+    assert_eq!(
+        graph.allowances["root.providers.admit0"].max_attempts, 3,
+        "each captured probe permits one admission Attempt after a verified resume"
+    );
+    let allowances = graph.execution_allowances().unwrap();
+    let recovery = &allowances[AUTH_RECOVERY_NODE];
+    assert_eq!(
+        (
+            recovery.tokens_per_attempt,
+            recovery.wall_ms_per_attempt,
+            recovery.max_attempts,
+            recovery.verification_attempts
+        ),
+        (13, 14, 2, 0)
+    );
+    let value = serde_json::to_value(&graph).unwrap();
+    assert_eq!(
+        value["auth_recovery"],
+        serde_json::json!({"probes":2,"tokens_per_probe":13,"wall_ms_per_probe":14})
+    );
+    let mut invalid = value;
+    invalid["auth_recovery"]["probes"] = serde_json::json!(0);
+    let parsed: review_graph::task::CompiledTask = serde_json::from_value(invalid).unwrap();
+    assert!(parsed.execution_allowances().is_err());
+}

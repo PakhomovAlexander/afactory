@@ -1,6 +1,7 @@
 //! One Task dispatcher over the existing graph scheduler and common Store. Domain handlers
 //! supply typed operations; they do not schedule children or create their own Attempt budgets.
 
+mod auth;
 pub mod campaign_review;
 pub mod code;
 pub(crate) mod control;
@@ -15,6 +16,7 @@ mod owned;
 pub mod planning;
 pub mod provider;
 mod provider_admissions;
+pub mod recovery;
 pub mod remote_check;
 pub use provider_admissions::TaskProviderAdmissionReport;
 mod report;
@@ -59,6 +61,9 @@ pub struct TaskWorkOutput {
     pub raw_artifact_ids: Vec<String>,
     pub usage_id: Option<String>,
     pub feedback_id: Option<String>,
+    /// The closed authentication class of a failed paid operation (ADR-0141). Only a typed
+    /// native failure sets it; diagnostic prose and model output never do.
+    pub auth_failure: Option<review_core::task::auth_recovery::TaskAuthFailureV1>,
 }
 
 pub trait TaskOperatorHost: Sync {
@@ -177,6 +182,8 @@ pub struct TaskRuntime<'store, 'host> {
     pending_outputs: Mutex<BTreeMap<String, (String, Option<String>)>>,
     failures: Mutex<BTreeMap<String, NodeFailureClass>>,
     publication_failures: Mutex<BTreeSet<String>>,
+    auth_stop: Mutex<auth::AuthStop>,
+    auth_participant: Option<review_core::task::auth_recovery::TaskAuthParticipantV1>,
 }
 
 fn envelope(cas: &Cas, id: &str) -> Result<ArtifactEnvelope, String> {
@@ -282,6 +289,8 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             pending_outputs: Mutex::new(BTreeMap::new()),
             failures: Mutex::new(BTreeMap::new()),
             publication_failures: Mutex::new(BTreeSet::new()),
+            auth_stop: Mutex::new(auth::AuthStop::default()),
+            auth_participant: None,
         })
     }
 
@@ -325,6 +334,10 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             || self.graph.run(self),
         )?;
         self.record_run_report(&report)?;
+        // An auth failure suspends the Task before any result can be assembled (ADR-0141).
+        if self.suspend_for_auth()? {
+            return Ok(report);
+        }
         if !self
             .publication_failures
             .lock()
@@ -450,12 +463,16 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
     }
 
     fn prepare(&self, input: &TaskInvocationV1) -> Result<PreparedTaskAttempt, String> {
+        self.auth_halted()?;
         let attempt = self
             .store
             .lock()
             .expect("Task Store")
             .reserve_task_attempt(self.cas, &self.lease, &input.node, self.authority)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                self.note_store_error(&e);
+                e.to_string()
+            })?;
         // Release the Store lock before pure host capture; it may read shared domain evidence.
         let context = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.host.prepare_context(
@@ -477,7 +494,10 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
                     &context_id,
                     self.authority,
                 )
-                .map_err(|e| e.to_string())
+                .map_err(|e| {
+                    self.note_store_error(&e);
+                    e.to_string()
+                })
         });
         if result.is_err() {
             // Failure is recorded in the RunReport. Release uses a bounded stable reason,
@@ -592,6 +612,7 @@ impl TaskRuntime<'_, '_> {
             .ok_or("Task invocation is not recorded")?;
         // Replaying an already selected result above is factual recovery. Every new operation,
         // including a pure installed operation, still requires current dispatch authority.
+        self.auth_halted()?;
         control::check(self.cancellation)?;
         self.check_node_authority(&node.id, true)?;
         let resolved = state.resolve_node(&node.id).map_err(|e| e.to_string())?;
@@ -633,8 +654,16 @@ impl TaskRuntime<'_, '_> {
             return Ok(artifact_map(&values));
         }
         let allowance = resolved.allowance.as_ref();
+        // Provider admission is one paid probe per run. Admission Attempts a plan's captured
+        // auth recovery adds are spent only after a verified resume, never as in-run retries.
+        let attempts = match compiled.operator {
+            CompiledOperator::ProviderAdmission { .. } => {
+                allowance.map_or(1, |a| a.max_attempts.min(1))
+            }
+            _ => allowance.map_or(1, |a| a.max_attempts),
+        };
         let mut last_error = String::new();
-        for index in 0..allowance.map_or(1, |a| a.max_attempts) {
+        for index in 0..attempts {
             control::check(self.cancellation)?;
             let attempt = if allowance.is_some() {
                 Some(if index == 0 {
@@ -657,6 +686,7 @@ impl TaskRuntime<'_, '_> {
                     self.authority,
                 );
                 if let Err(error) = start {
+                    self.note_store_error(&error);
                     let _ = self.store.lock().expect("Task Store").release_task_attempt(
                         self.cas,
                         &self.lease,
@@ -672,6 +702,7 @@ impl TaskRuntime<'_, '_> {
                 self.execute_host(input, attempt.as_ref())
             }))
             .unwrap_or_else(|_| TaskWorkOutput {
+                auth_failure: None,
                 usage_observation: None,
                 usage: None,
                 outputs: Err("Task operator panicked".into()),
@@ -836,6 +867,7 @@ impl TaskRuntime<'_, '_> {
             if let Err(error) = control::check(self.cancellation) {
                 result.outputs = Err(error);
             }
+            let auth_failure = result.auth_failure.filter(|_| attempt.is_some());
             let mut produced = result.outputs.and_then(|values| {
                 self.record_output(input_id, input, values.clone(), attempt.as_ref())
                     .map(|id| (id, values))
@@ -890,7 +922,17 @@ impl TaskRuntime<'_, '_> {
                     );
                     return Ok(artifact_map(&values));
                 }
-                Err(error) => last_error = error,
+                Err(error) => {
+                    if let (Some(kind), Some(attempt)) = (auth_failure, &attempt) {
+                        if !Self::auth_retry_in_run(kind, index + 1, attempts) {
+                            // The settled Attempt keeps its exact charge; stop retrying a
+                            // context that cannot authenticate and suspend after this run.
+                            self.note_auth_failure(attempt.id(), &node.id, kind);
+                            return Err(error);
+                        }
+                    }
+                    last_error = error;
+                }
             }
         }
         if allowance.is_some() {
@@ -989,11 +1031,15 @@ impl Dispatch for TaskRuntime<'_, '_> {
             self.check_node_authority(&node.id, false)?;
         } else {
             control::check(self.cancellation)?;
+            self.auth_halted()?;
             self.store
                 .lock()
                 .expect("Task Store")
                 .record_task_invocation(self.cas, &self.lease, &id, self.authority)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| {
+                    self.note_store_error(&e);
+                    e.to_string()
+                })?;
         }
         let published = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.host.commit_domain_invocation(self.cas, &id, &input)

@@ -136,6 +136,7 @@ impl WorkerModelAdapter for Recording {
     ) -> ModelWorkerReturn {
         self.reached.store(true, Ordering::SeqCst);
         ModelWorkerReturn {
+            native_failure: None,
             message: Ok(b"{}".to_vec()),
             usage: None,
             usage_observation: None,
@@ -309,7 +310,9 @@ fn a_recheck_whose_cli_cannot_start_is_an_environment_failure_not_an_identity_on
 }
 
 /// A CLI that answered — another account, or no login — has started, so it is never diagnosed
-/// as an installation failure, even when it knows nothing about `--version`.
+/// as an installation failure, even when it knows nothing about `--version`. Another account is
+/// an identity refusal; no signed-in account is a missing login (ADR-0141), never an account
+/// change and never permission to log in.
 #[test]
 fn a_recheck_that_the_cli_answered_stays_an_identity_refusal() {
     let codex_other_account = r#"if [ "$1" = app-server ]; then
@@ -327,9 +330,20 @@ exit 64"#;
   exit 1
 fi
 exit 64"#;
-    for (kind, body) in [
-        (ProviderKind::Codex, codex_other_account),
-        (ProviderKind::Claude, claude_logged_out),
+    let codex_logged_out = r#"if [ "$1" = app-server ]; then
+  while read -r line; do
+    case "$line" in
+      *'"id":1'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+      *'"id":2'*) printf '%s\n' '{"id":2,"result":{"account":null}}' ;;
+    esac
+  done
+  exit 0
+fi
+exit 64"#;
+    for (kind, body, logged_out) in [
+        (ProviderKind::Codex, codex_other_account, false),
+        (ProviderKind::Claude, claude_logged_out, true),
+        (ProviderKind::Codex, codex_logged_out, true),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let (program, spec) = fixture(kind, directory.path(), body);
@@ -338,8 +352,12 @@ exit 64"#;
             &AtomicBool::new(false),
         );
         assert!(
-            matches!(checked, Err(Recheck::NotCurrent)),
-            "an answering {} CLI was diagnosed as uninstalled",
+            if logged_out {
+                matches!(checked, Err(Recheck::LoggedOut))
+            } else {
+                matches!(checked, Err(Recheck::NotCurrent))
+            },
+            "an answering {} CLI was diagnosed as uninstalled or misclassified",
             kind.name()
         );
     }

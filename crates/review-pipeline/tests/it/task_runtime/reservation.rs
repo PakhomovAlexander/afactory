@@ -58,6 +58,7 @@ impl TaskOperatorHost for IdentityHost {
             .unwrap()
             .0;
         TaskWorkOutput {
+            auth_failure: None,
             usage_observation: None,
             usage: None,
             outputs: Ok(BTreeMap::from([(

@@ -66,6 +66,7 @@ impl WorkerModelAdapter for Model {
             usage.input_tokens = Some((u128::from(u64::MAX) + 20).into());
         }
         ModelWorkerReturn {
+            native_failure: None,
             usage_observation: None,
             message: Ok(message.as_bytes().to_vec()),
             usage: Some(usage),
@@ -1114,6 +1115,7 @@ fn incomplete_billing_on_captured_reviewers_never_publishes_a_selected_result() 
                 11
             });
             ModelWorkerReturn {
+                native_failure: None,
                 usage_observation: (call > 0).then(|| {
                     review_core::task::usage::TaskUsageObservationV1 {
                         reported_usage: Some(usage.clone()),

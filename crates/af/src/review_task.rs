@@ -409,6 +409,7 @@ impl review_pipeline::task::TaskOperatorHost for AdmissionOnly {
         _cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> review_pipeline::task::TaskWorkOutput {
         review_pipeline::task::TaskWorkOutput {
+            auth_failure: None,
             usage_observation: None,
             usage: None,
             outputs: Err("Installed Review plan admission cannot execute work".into()),

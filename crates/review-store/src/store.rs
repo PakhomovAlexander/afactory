@@ -59,6 +59,11 @@ pub enum StoreError {
         task_id: String,
         collected_unix_ms: u64,
     },
+    /// A newer Provider auth failure, probe or claim changed the recovery generation this
+    /// write depended on (ADR-0141). Nothing was written; the dependent work stays suspended.
+    AuthRecoveryInvalidated(String),
+    /// Recovery stays blocked pending a human decision for this closed reason (ADR-0141).
+    AuthRecoveryBlocked(review_core::task::auth_recovery::TaskAuthBlockV1),
 }
 
 impl std::fmt::Display for StoreError {
@@ -85,6 +90,17 @@ impl std::fmt::Display for StoreError {
                 f,
                 "Task `{task_id}` was collected {}",
                 review_core::task::collection::collected_time(*collected_unix_ms)
+            ),
+            StoreError::AuthRecoveryInvalidated(what) => {
+                write!(f, "Provider auth recovery invalidated: {what}")
+            }
+            StoreError::AuthRecoveryBlocked(reason) => write!(
+                f,
+                "Provider auth recovery is blocked ({}); it needs an explicit decision",
+                serde_json::to_value(reason)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_default()
             ),
         }
     }
@@ -292,6 +308,16 @@ impl EventStore {
                  ON events (run_id, type, sequence DESC);
              CREATE INDEX IF NOT EXISTS events_by_causation_type_sequence
                  ON events (run_id, causation_id, type, sequence);
+             CREATE TABLE IF NOT EXISTS provider_auth_recovery (
+                 context_key TEXT    NOT NULL,
+                 sequence    INTEGER NOT NULL,
+                 payload     TEXT    NOT NULL,
+                 PRIMARY KEY (context_key, sequence)
+             );
+             CREATE TABLE IF NOT EXISTS task_continuation (
+                 predecessor_task_id TEXT NOT NULL PRIMARY KEY,
+                 successor_task_id   TEXT NOT NULL UNIQUE
+             );
              CREATE TABLE IF NOT EXISTS attempt_wall (
                  run_id             TEXT    NOT NULL,
                  attempt_id         TEXT    NOT NULL,

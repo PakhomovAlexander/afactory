@@ -479,6 +479,7 @@ fn recording_resume_compares_review_round_inside_the_write_transaction() {
     let run = task_run_id(lease.task_id()).unwrap();
     let permit = WritePermit {
         bound_tasks: vec![],
+        recovery: None,
         run_id: run.clone(),
         first: state.next_sequence,
         payloads: vec![value],

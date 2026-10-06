@@ -104,6 +104,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
     ) -> Result<ModelWorkerReturn, Unstarted> {
         if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
             return Ok(ModelWorkerReturn {
+                native_failure: None,
                 usage_observation: None,
                 message: Err("Worker invocation was cancelled before starting".into()),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
@@ -114,6 +115,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             Ok(schema) => schema,
             Err(error) => {
                 return Ok(ModelWorkerReturn {
+                    native_failure: None,
                     usage_observation: None,
                     message: Err(error),
                     usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
@@ -225,7 +227,13 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         } else {
             Err(format!("Claude Worker failed with {:?}", capture.status))
         };
+        let native_failure = if success {
+            None
+        } else {
+            failure.filter(|kind| *kind != NativeFailureKind::Unknown)
+        };
         let returned = ModelWorkerReturn {
+            native_failure,
             usage_observation: accounting.observation,
             message,
             usage: accounting.usage,

@@ -102,6 +102,44 @@ pub enum TaskChangeV1 {
     DeliveryRecorded {
         record_id: String,
     },
+    /// Suspend running work on a native authentication failure before terminalization
+    /// (ADR-0141). Every Attempt is already settled or released; nothing is refunded.
+    AuthSuspended {
+        suspension_id: String,
+    },
+    /// Reserve one paid verification probe on this Task's own ledger, under the plan's
+    /// captured recovery allowance. It grants no business dispatch.
+    AuthProbeReserved {
+        context_key: String,
+        generation: u64,
+        attempt_id: String,
+        reservation_id: String,
+        reserved_tokens: u64,
+        deadline_unix_ms: u64,
+    },
+    AuthProbeStarted {
+        attempt_id: String,
+    },
+    AuthProbeReleased {
+        attempt_id: String,
+        reason: String,
+    },
+    /// The exact cumulative charge of one started probe, recorded as decimal text.
+    AuthProbeSettled {
+        attempt_id: String,
+        charged_tokens: super::usage::DecimalU128,
+        outcome: super::auth_recovery::TaskAuthProbeOutcomeV1,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "super::present_option"
+        )]
+        usage_id: Option<String>,
+    },
+    /// Leave the auth pause under a claim bound to every verified generation it requires.
+    AuthResumeClaimed {
+        claim_id: String,
+    },
     /// The tombstone of `af task gc --apply` (ADR-0135): the last event a Task log ever holds.
     /// It carries the Task's retained summary inline and references no artifact, so every
     /// object only this Task reached becomes unreachable. Its writer is the collector, at an
@@ -109,6 +147,10 @@ pub enum TaskChangeV1 {
     TaskCollected {
         collected: super::collection::TaskCollectedV1,
     },
+}
+
+fn attempt(id: &str) -> bool {
+    id.len() == 26 && id.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,7 +189,13 @@ impl TaskTransitionV1 {
                 plan_id, waiting, ..
             } => require(
                 plan_id.is_some() != waiting.is_some()
-                    && *waiting != Some(TaskWaitingReasonV1::NeedsPlanReview),
+                    && !matches!(
+                        waiting,
+                        Some(
+                            TaskWaitingReasonV1::NeedsPlanReview
+                                | TaskWaitingReasonV1::NeedsProviderAuth
+                        )
+                    ),
                 "Source refresh needs a plan or an unresolved reason; approval waiting is derived from the plan",
             ),
             TaskChangeV1::Opened {
@@ -173,6 +221,40 @@ impl TaskTransitionV1 {
             TaskChangeV1::ApprovalRevoked { reason, .. } => require(
                 !reason.trim().is_empty() && reason.chars().count() <= 65536,
                 "Revocation needs a bounded reason",
+            ),
+            TaskChangeV1::AuthProbeReserved {
+                context_key,
+                generation,
+                attempt_id,
+                reservation_id,
+                reserved_tokens,
+                deadline_unix_ms,
+            } => require(
+                is_digest(context_key)
+                    && *generation > 0
+                    && safe_number(*generation)
+                    && attempt(attempt_id)
+                    && reservation_id
+                        .strip_prefix("reservation:")
+                        .is_some_and(|n| {
+                            !n.is_empty() && n.len() <= 20 && n.bytes().all(|b| b.is_ascii_digit())
+                        })
+                    && *reserved_tokens > 0
+                    && safe_number(*reserved_tokens)
+                    && *deadline_unix_ms > self.now_unix_ms
+                    && safe_number(*deadline_unix_ms),
+                "Invalid auth recovery probe reservation",
+            ),
+            TaskChangeV1::AuthProbeStarted { attempt_id } => {
+                require(attempt(attempt_id), "Invalid auth recovery probe")
+            }
+            TaskChangeV1::AuthProbeReleased { attempt_id, reason } => require(
+                attempt(attempt_id) && !reason.trim().is_empty() && reason.chars().count() <= 1024,
+                "Auth recovery probe release needs a bounded reason",
+            ),
+            TaskChangeV1::AuthProbeSettled { attempt_id, .. } => require(
+                attempt(attempt_id),
+                "Invalid auth recovery probe settlement",
             ),
             TaskChangeV1::TaskCollected { collected } => {
                 collected.validate()?;
@@ -231,6 +313,11 @@ impl TaskTransitionV1 {
             TaskChangeV1::RunReported { report_id } => vec![report_id],
             TaskChangeV1::ExecutionRecorded { record_id }
             | TaskChangeV1::DeliveryRecorded { record_id } => vec![record_id],
+            TaskChangeV1::AuthSuspended { suspension_id } => vec![suspension_id],
+            TaskChangeV1::AuthResumeClaimed { claim_id } => vec![claim_id],
+            TaskChangeV1::AuthProbeSettled { usage_id, .. } => {
+                usage_id.iter().map(String::as_str).collect()
+            }
             _ => Vec::new(),
         }
     }

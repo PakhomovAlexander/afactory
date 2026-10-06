@@ -34,6 +34,10 @@ fn authentication_failure_survives_missing_usage_without_retaining_challenges() 
             None,
             &[],
         );
+        assert_eq!(
+            returned.auth_failure(),
+            Some(review_core::task::auth_recovery::TaskAuthFailureV1::AuthRevoked)
+        );
         let error = returned.message.unwrap_err();
         assert!(error.contains("revoked"), "{error}");
         assert_eq!(returned.usage.is_some(), malformed_usage);
@@ -87,6 +91,7 @@ fn non_auth_native_failures_keep_their_evidence_and_classification() {
             None,
             &[],
         );
+        assert_eq!(returned.auth_failure(), None, "never a login request");
         let error = returned.message.unwrap_err();
         assert!(error.contains(expected), "{error}");
         assert!(!error.contains("(auth_"), "{error}");

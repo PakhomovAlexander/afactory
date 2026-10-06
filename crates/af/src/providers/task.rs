@@ -17,6 +17,18 @@ pub struct TaskProviderIdentity {
 }
 impl TaskProviderIdentity {
     pub fn probe(provider: &str, expected_kind: &str) -> Result<Self, String> {
+        Self::probe_auth_or(provider, expected_kind)?
+    }
+
+    /// The same token-free identity proof, telling a client that answered "no signed-in
+    /// account" (`Ok(None)`) apart from every other failure. It never logs in (ADR-0141).
+    pub fn probe_auth(provider: &str, expected_kind: &str) -> Result<Option<Self>, String> {
+        Ok(Self::probe_auth_or(provider, expected_kind)?.ok())
+    }
+
+    /// One identity observation: the identity, or the message of a client that answered it
+    /// has no signed-in account. Every other failure is the outer error.
+    fn probe_auth_or(provider: &str, expected_kind: &str) -> Result<Result<Self, String>, String> {
         let spec = configured_spec(provider)?;
         if spec.kind.name() != expected_kind || spec.auth_dir.is_none() {
             return Err("Task Provider binding differs from its configured implementation".into());
@@ -25,20 +37,27 @@ impl TaskProviderIdentity {
         let program = locate_cli(&spec).map_err(|failure| admission_refusal(&failure))?;
         let probe_path = sanitized_path();
         let cancelled = AtomicBool::new(false);
-        let (principal_id, auth_method) = observe_identity(
-            &program,
-            &spec,
-            &probe_path,
-            &cancelled,
-            None,
-        )
-        .map_err(|failure| {
-            match cli_cannot_start(&program, &spec, &probe_path, &cancelled, None, &failure) {
-                Some(installation) => admission_refusal(&installation),
-                None => failure.message,
-            }
-        })?;
-        Ok(Self {
+        let (principal_id, auth_method) =
+            match observe_identity(&program, &spec, &probe_path, &cancelled, None) {
+                Ok(identity) => identity,
+                Err(failure) if failure.logged_out => return Ok(Err(failure.message)),
+                Err(failure) => {
+                    return Err(
+                        match cli_cannot_start(
+                            &program,
+                            &spec,
+                            &probe_path,
+                            &cancelled,
+                            None,
+                            &failure,
+                        ) {
+                            Some(installation) => admission_refusal(&installation),
+                            None => failure.message,
+                        },
+                    );
+                }
+            };
+        Ok(Ok(Self {
             spec,
             program,
             principal_id,
@@ -46,8 +65,9 @@ impl TaskProviderIdentity {
             probe_path,
             home: std::env::var_os("HOME"),
             user: std::env::var_os("USER"),
-        })
+        }))
     }
+
     pub fn execution(&self, model: &str, effort: &str) -> Result<WorkerExecutionV1, String> {
         // Bare family aliases are mutable selectors, not exact plan identities.
         if model.len() > 256
@@ -176,6 +196,9 @@ impl TaskProviderIdentity {
             Some(deadline),
         )
         .map_err(|failure| {
+            if failure.logged_out {
+                return Recheck::LoggedOut;
+            }
             match cli_cannot_start(
                 &self.program,
                 &self.spec,
@@ -200,6 +223,9 @@ impl TaskProviderIdentity {
 enum Recheck {
     /// The captured Provider identity is no longer current or could not be verified.
     NotCurrent,
+    /// The native client answered that no account is signed in: a missing login, which
+    /// suspends the Task for recovery instead of failing it (ADR-0141).
+    LoggedOut,
     /// The Provider's CLI cannot start: an environment failure, not the model's or the login's.
     CliCannotStart(CliInstallationFailure),
 }
@@ -210,6 +236,9 @@ struct IdentityFailure {
     /// The CLI gave no answer af recognizes, and af did not give up waiting for one: it may not
     /// start at all. A CLI that answered — logged out, another account — never is.
     cli_silent: bool,
+    /// The CLI answered that no account is signed in. Only this answer is a missing login
+    /// (ADR-0141); another account, a malformed answer or silence never is.
+    logged_out: bool,
 }
 
 impl IdentityFailure {
@@ -217,6 +246,14 @@ impl IdentityFailure {
         Self {
             message: message.into(),
             cli_silent: false,
+            logged_out: false,
+        }
+    }
+
+    fn logged_out(message: impl Into<String>) -> Self {
+        Self {
+            logged_out: true,
+            ..Self::answered(message)
         }
     }
 }
@@ -276,17 +313,28 @@ fn observe_identity(
                 |message| IdentityFailure {
                     cli_silent: !probe_gave_up(&message),
                     message,
+                    logged_out: false,
                 },
             )?;
             if !output.status.success() {
+                // A logged-out Claude client answers its status with `loggedIn: false`
+                // and a failing exit status.
+                let logged_out = serde_json::from_str::<serde_json::Value>(&output.stdout)
+                    .is_ok_and(|status| status["loggedIn"] == false);
                 return Err(IdentityFailure {
                     message: "Claude account identity probe failed".into(),
                     cli_silent: !status_answered(spec.kind, &output.stdout),
+                    logged_out,
                 });
             }
             let status: serde_json::Value = serde_json::from_str(&output.stdout).map_err(|_| {
                 IdentityFailure::answered("Claude account identity response is invalid")
             })?;
+            if status["loggedIn"] == false {
+                return Err(IdentityFailure::logged_out(
+                    "Claude Task binding requires a first-party authenticated account identity",
+                ));
+            }
             let principal = claude_principal(&status).map_err(IdentityFailure::answered)?;
             Ok((principal, status["authMethod"].as_str().unwrap().into()))
         }
@@ -304,7 +352,16 @@ fn observe_identity(
             .map_err(|message| IdentityFailure {
                 cli_silent: !answered && !probe_gave_up(&message),
                 message,
+                logged_out: false,
             })?;
+            if response.get("error").is_none()
+                && response["result"].is_object()
+                && response["result"]["account"].is_null()
+            {
+                return Err(IdentityFailure::logged_out(
+                    "Codex Task binding requires an authenticated account with identity proof",
+                ));
+            }
             let principal = codex_principal(&response).map_err(IdentityFailure::answered)?;
             Ok((principal, "chatgpt".into()))
         }
@@ -380,6 +437,7 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
         let refuse = |reason: &str| ModelWorkerReturn {
+            native_failure: None,
             message: Err(reason.into()),
             usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
             usage_observation: None,
@@ -414,6 +472,14 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
                 Err(_) if !is_executable(&identity.program) => continue,
                 Err(Recheck::CliCannotStart(failure)) => {
                     return refuse(&environment_failure(&failure));
+                }
+                // Nothing was sent: the closed classification alone suspends the Task.
+                Err(Recheck::LoggedOut) => {
+                    let missing = review_runner::native_failure::NativeFailureKind::AuthMissing;
+                    return ModelWorkerReturn {
+                        native_failure: Some(missing),
+                        ..refuse(missing.diagnostic())
+                    };
                 }
                 Err(Recheck::NotCurrent) => return refused(),
             }

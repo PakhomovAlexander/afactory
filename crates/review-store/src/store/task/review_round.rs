@@ -166,6 +166,9 @@ pub(super) fn fence_for_transition(
         | TaskChangeV1::PlanAdmitted { .. }
         | TaskChangeV1::PlanDecided { .. }
         | TaskChangeV1::RecordingResumed { .. }
+        | TaskChangeV1::AuthProbeReserved { .. }
+        | TaskChangeV1::AuthProbeStarted { .. }
+        | TaskChangeV1::AuthResumeClaimed { .. }
         | TaskChangeV1::Resumed {} => {}
         TaskChangeV1::LeaseTaken { .. }
         | TaskChangeV1::LeaseRenewed { .. }
@@ -176,6 +179,9 @@ pub(super) fn fence_for_transition(
         | TaskChangeV1::RunReported { .. }
         | TaskChangeV1::DeliveryRecorded { .. }
         | TaskChangeV1::AdoptionObservationRecorded { .. }
+        | TaskChangeV1::AuthSuspended { .. }
+        | TaskChangeV1::AuthProbeReleased { .. }
+        | TaskChangeV1::AuthProbeSettled { .. }
         | TaskChangeV1::TaskCollected { .. } => return Ok(None),
     }
     state

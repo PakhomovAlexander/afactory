@@ -387,6 +387,26 @@ fn matches_context(session: &Session, spec: &ProviderSpec) -> Result<(), String>
     Ok(())
 }
 
+/// Whether this exact private login session of a configured Provider completed as
+/// `authenticated_unverified` (ADR-0141). Task recovery records only the opaque recovery ID; the
+/// session never held a challenge, code or credential, and completion verifies nothing.
+pub(crate) fn completed_login(provider: &str, recovery_id: &str) -> Result<bool, String> {
+    if !opaque(recovery_id) {
+        return Err("invalid recovery ID".into());
+    }
+    let spec = configured_spec(provider)?;
+    let auth = spec
+        .auth_dir
+        .as_deref()
+        .ok_or("Provider has no explicit auth context")?;
+    let storage = Storage::open(auth, spec.kind, false)?;
+    let Some(session) = storage.read()? else {
+        return Ok(false);
+    };
+    matches_context(&session, &spec)?;
+    Ok(session.recovery_id == recovery_id && session.state == State::AuthenticatedUnverified)
+}
+
 pub fn status(id: &str, kind: &str, auth: &Path) -> Result<i32, String> {
     let spec = resolve(id, kind, auth, false)?;
     let auth = spec.auth_dir.as_deref().expect("explicit auth context");

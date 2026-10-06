@@ -3,6 +3,8 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "task_document/auth_recovery.rs"]
+mod auth_recovery;
 #[path = "task_document/provider_admission.rs"]
 mod provider_admission;
 

@@ -75,6 +75,7 @@ impl TaskOperatorHost for PlanningTaskDomain<'_> {
             return super::control::refused(error);
         }
         TaskWorkOutput {
+            auth_failure: None,
             usage_observation: None,
             usage: None,
             outputs: if attempt.is_some() {

@@ -146,6 +146,9 @@ pub(super) fn start(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// `recover` verifies a planning run suspended on Provider authentication before continuing it
+/// (ADR-0141); the caller already reported a missing login without binding any Model.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn resume(
     cas: Cas,
     mut store: EventStore,
@@ -155,15 +158,32 @@ pub(super) fn resume(
     plan: ExecutionPlanV1,
     graph: CompiledTask,
     json: bool,
+    recover: bool,
 ) -> Result<i32, String> {
-    let adapters = bind_models(
+    let bound = bind_models(
         &cas,
         &mut compiler,
         &authority,
         &state.revision_id,
         PLANNER_PIPELINE,
-    )?;
-    compiler.validate_plan(&cas, &state.revision, &plan)?;
+    )
+    .and_then(|adapters| {
+        compiler.validate_plan(&cas, &state.revision, &plan)?;
+        Ok(adapters)
+    });
+    let adapters = match bound {
+        Ok(adapters) => adapters,
+        Err(_) if recover => {
+            return auth_recovery::blocked(
+                &cas,
+                &mut store,
+                &state.task_id,
+                review_core::task::auth_recovery::TaskAuthBlockV1::BindingChanged,
+                json,
+            );
+        }
+        Err(error) => return Err(error),
+    };
     let developer = developer::host(&cas, &authority, None);
     let trusted = developer::DecisionAuthority {
         compiler: &compiler,
@@ -177,6 +197,17 @@ pub(super) fn resume(
             15_000,
         )
         .map_err(|e| e.to_string())?;
+    if recover {
+        let models = model_bindings(&plan, &graph, &adapters)?;
+        let step = auth_recovery::verify(&cas, &mut store, &lease, &trusted, &models);
+        if !matches!(
+            step,
+            Ok(review_pipeline::task::recovery::AuthRecoveryStep::Resumed { .. })
+        ) {
+            release(&cas, &mut store, &lease, step.map(|_| ()))?;
+            return auth_recovery::present(&cas, &store, &state.task_id, json);
+        }
+    }
     let outcome = (|| {
         confirm_current_plan(&cas, &store, &state.task_id, state.plan_id.as_deref())?;
         store
@@ -208,6 +239,9 @@ pub(super) fn resume(
         )
     })();
     release(&cas, &mut store, &lease, outcome)?;
+    if recover {
+        return auth_recovery::present(&cas, &store, &state.task_id, json);
+    }
     present(&cas, &store, &state.task_id, json, true)
 }
 

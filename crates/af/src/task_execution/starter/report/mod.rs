@@ -327,6 +327,7 @@ pub(super) fn files() -> Result<BTreeMap<String, Vec<u8>>, String> {
     let catalog = TaskCatalog {
         schema: "af.task-catalog/2".into(),
         provider_admission: None,
+        provider_recovery: None,
         code_policy: None,
         document_policy: None,
         report_policy: Some(".af/report-policy.toml".into()),

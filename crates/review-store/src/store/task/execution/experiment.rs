@@ -999,6 +999,7 @@ mod derived_package_tests {
                 experimental_slots: BTreeMap::new(),
                 review_integration: None,
                 token_scopes: BTreeMap::new(),
+                auth_recovery: None,
             };
             let compiled_graph_id = cas
                 .put_artifact(

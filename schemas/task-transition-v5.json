@@ -188,7 +188,8 @@
                 "needs_input",
                 "needs_human",
                 "needs_plan_review",
-                "needs_resources"
+                "needs_resources",
+                "needs_provider_auth"
               ]
             }
           }
@@ -474,6 +475,191 @@
             },
             "collected": {
               "$ref": "urn:af:schema:task-collected:1"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "suspension_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "auth_suspended"
+            },
+            "suspension_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "context_key",
+            "generation",
+            "attempt_id",
+            "reservation_id",
+            "reserved_tokens",
+            "deadline_unix_ms"
+          ],
+          "properties": {
+            "kind": {
+              "const": "auth_probe_reserved"
+            },
+            "context_key": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "attempt_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9]{26}$"
+            },
+            "reservation_id": {
+              "type": "string",
+              "pattern": "^reservation:[0-9]{1,20}$"
+            },
+            "reserved_tokens": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "deadline_unix_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "attempt_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "auth_probe_started"
+            },
+            "attempt_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9]{26}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "attempt_id",
+            "reason"
+          ],
+          "properties": {
+            "kind": {
+              "const": "auth_probe_released"
+            },
+            "attempt_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9]{26}$"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "attempt_id",
+            "charged_tokens",
+            "outcome"
+          ],
+          "properties": {
+            "kind": {
+              "const": "auth_probe_settled"
+            },
+            "attempt_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9]{26}$"
+            },
+            "charged_tokens": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]{0,38})$"
+            },
+            "outcome": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "enum": [
+                        "acknowledged",
+                        "failed",
+                        "abandoned"
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "failure"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "auth_failed"
+                    },
+                    "failure": {
+                      "enum": [
+                        "auth_missing",
+                        "auth_revoked",
+                        "auth_expired",
+                        "auth_refresh_contended",
+                        "auth_refresh_failed",
+                        "auth_rejected"
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "usage_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "claim_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "auth_resume_claimed"
+            },
+            "claim_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
             }
           }
         }

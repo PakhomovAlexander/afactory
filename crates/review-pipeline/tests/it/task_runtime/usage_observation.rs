@@ -42,6 +42,7 @@ impl WorkerModelAdapter for Model {
             .observed
             .map_or_else(|| usage.clone(), TaskTokenUsageV3::charge_only);
         ModelWorkerReturn {
+            native_failure: None,
             usage_observation: (call >= self.fail_at).then_some(TaskUsageObservationV1 {
                 reported_usage: Some(observed),
                 charge_complete: self.complete,

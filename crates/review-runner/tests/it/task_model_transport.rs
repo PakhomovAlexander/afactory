@@ -119,6 +119,7 @@ impl WorkerModelAdapter for NativeModel<'_> {
         assert_eq!(timeout, TIMEOUT);
         assert_eq!(access, WorkerAccess::ExecuteChecks);
         ModelWorkerReturn {
+            native_failure: None,
             usage_observation: None,
             message: if self.failed {
                 Err("reported Provider failure".into())

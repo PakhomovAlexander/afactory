@@ -138,6 +138,30 @@ requirements and never execution authority; resume reads captured input without 
 An explicit source refresh creates a new Task revision when selected fields change, invalidates
 its affected plan approval and retains the original execution allowance and all prior spend.
 
+**Auth Suspension**:
+The pause of an admitted running Task on a closed native authentication failure, recorded before
+any result is assembled. It keeps each failed Attempt's exact charge and names every auth context
+the Task still requires with its Recovery Generation. Only a Resume Claim leaves it
+([ADR-0141](docs/adr/0141-recover-runtime-provider-auth-on-the-original-task-ledger.md)).
+_Avoid_: "login required" for quota, model or network failures; they never suspend a Task.
+
+**Recovery Generation**:
+One numbered episode of an auth context's append-only recovery log. Concurrent failures share it;
+a failure after verification opens the next. A login only records `authenticated`; only a paid
+probe on a Task's own ledger, acknowledged within its reservation, verifies it.
+_Avoid_: treating a successful login or an "authenticated" status as a verified generation.
+
+**Resume Claim**:
+The durable claim that continues one suspended Task once every required context is verified under
+its current generation. Every later dispatch rechecks those generations in its write transaction.
+_Avoid_: a plain resume; it cannot leave an Auth Suspension.
+
+**Task Continuation**:
+The explicit link from a new successor Task to a finished, unsatisfied predecessor. It carries the
+predecessor's exact charge and original limits; the successor fits in what they left and needs its
+own plan confirmation. The predecessor is never reopened.
+_Avoid_: "rerun" or "reopen" a finished Task.
+
 ### What is reviewed
 
 **Snapshot**:

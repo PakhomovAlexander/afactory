@@ -344,6 +344,7 @@ fn review_round_write_fence_compares_other_campaign_changes_inside_transaction()
     let run = task_run_id(lease.task_id()).unwrap();
     let permit = WritePermit {
         bound_tasks: vec![],
+        recovery: None,
         run_id: run.clone(),
         first: state.next_sequence,
         payloads: vec![value],

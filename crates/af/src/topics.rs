@@ -110,6 +110,9 @@ const EXIT_CODES: &str = "\
   4    incomplete — the run ended without a verdict (budget, timeout, missing coverage)
   10   outdated — `af self update --check`: a newer release exists
 
+A Task suspended on Provider authentication (`needs_provider_auth`) exits 3 from `af task run`,
+`af task show` and `af task recover`: the private host or a human must act before it continues.
+
 `af provider` classifies its own refusals, so 3 and above name a Provider condition there:
 
   3    human action required — a login is needed; af prints the exact command a human runs at a

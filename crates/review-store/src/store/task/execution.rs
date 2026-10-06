@@ -481,6 +481,27 @@ impl TaskExecutionProjection {
         })
     }
 
+    /// The deterministic identity of the next auth verification probe in this Task's namespace.
+    pub(super) fn dispatch_auth_probe(&mut self) -> String {
+        self.ledger
+            .dispatch(review_core::task::auth_recovery::AUTH_RECOVERY_NODE)
+            .0
+    }
+
+    /// Retain a probe's exact charge in the common Attempt ledger; a probe is never selected.
+    pub(super) fn charge_auth_probe(
+        &mut self,
+        attempt_id: &str,
+        charge: u128,
+    ) -> Result<(), StoreError> {
+        self.ledger
+            .charge_exact(&AttemptId(attempt_id.into()), charge)
+            .map_err(conflict)?;
+        self.ledger
+            .fence(review_core::task::auth_recovery::AUTH_RECOVERY_NODE);
+        Ok(())
+    }
+
     pub fn pending_attempts(&self) -> Vec<String> {
         self.attempts
             .iter()
@@ -1193,7 +1214,9 @@ impl EventStore {
         cas: &Cas,
         lease: &TaskLease,
     ) -> Result<(), StoreError> {
-        self.recover_task_attempts_at(cas, lease, now()?)
+        self.recover_task_attempts_at(cas, lease, now()?)?;
+        // A lost writer's verification probe is settled the same way (ADR-0141).
+        self.recover_task_auth_probes(cas, lease)
     }
 
     pub(super) fn recover_task_attempts_at(

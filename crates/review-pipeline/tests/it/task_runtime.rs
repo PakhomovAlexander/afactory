@@ -14,6 +14,8 @@ use review_store::store::task::execution::PreparedTaskAttempt;
 use review_store::{Cas, EventStore};
 use serde_json::json;
 
+#[path = "task_runtime/auth_recovery.rs"]
+mod auth_recovery;
 #[path = "task_runtime/control.rs"]
 mod control;
 #[path = "task_runtime/output_admission.rs"]
@@ -85,6 +87,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             }))
             .unwrap();
             ModelWorkerReturn {
+                native_failure: None,
                 usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&reply).unwrap()],
                 message: Ok(reply),
@@ -1349,6 +1352,7 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
                 (serde_json::to_vec(&json!({"schema":"af.worker-reply/1","outputs":{"output":[{"outcome":"passed","text":"Checked document"}]}})).unwrap(),11)
             };
             ModelWorkerReturn {
+                native_failure: None,
                 usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&bytes).unwrap()],
                 message: Ok(bytes),
@@ -1515,6 +1519,7 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
                 serde_json::to_vec(&json!({"schema":"af.worker-reply/1","outputs":{"output":[{"outcome":"passed","text":"A checked migration guide"}]}})).unwrap()
             };
             ModelWorkerReturn {
+                native_failure: None,
                 usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&message).unwrap()],
                 message: Ok(message),

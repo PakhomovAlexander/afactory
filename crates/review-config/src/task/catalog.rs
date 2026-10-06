@@ -167,6 +167,7 @@ pub struct TaskPlanCompiler {
     acceptance_outputs: BTreeMap<String, String>,
     independence: IndependencePolicyV1,
     provider_admission: Option<review_graph::task::OperatorAttemptCost>,
+    auth_recovery: Option<review_core::task::auth_recovery::AuthRecoveryAllowanceV1>,
     preparation_roots: BTreeSet<String>,
     experimental_slots: BTreeMap<String, review_graph::task::ExperimentalSlotTemplateV1>,
     /// Installed domain artifact types that establish authorship independently of a
@@ -343,6 +344,27 @@ impl TaskPlanCompiler {
         self
     }
 
+    /// Capture a bounded Provider auth recovery allowance beside the paid admission
+    /// (ADR-0141). It is part of the compiled graph, so the plan's approval covers it; without
+    /// it a login cannot create a verification or retry allowance.
+    pub fn with_auth_recovery(
+        mut self,
+        allowance: review_core::task::auth_recovery::AuthRecoveryAllowanceV1,
+    ) -> Result<Self, String> {
+        allowance.validate()?;
+        if self.provider_admission.is_none() {
+            return Err("Auth recovery needs a captured Provider admission".into());
+        }
+        self.auth_recovery = Some(allowance);
+        Ok(self)
+    }
+
+    pub fn auth_recovery(
+        &self,
+    ) -> Option<&review_core::task::auth_recovery::AuthRecoveryAllowanceV1> {
+        self.auth_recovery.as_ref()
+    }
+
     /// Install a protected dynamic slot from trusted Task-kind policy. Pipeline or Worker bytes
     /// cannot call this method; recompilation retains the same slot artifact and parent.
     pub fn with_experimental_slot(
@@ -444,6 +466,7 @@ impl TaskPlanCompiler {
             acceptance_outputs,
             independence,
             provider_admission: None,
+            auth_recovery: None,
             preparation_roots: BTreeSet::new(),
             experimental_slots: BTreeMap::new(),
             authored_artifacts: BTreeSet::new(),
@@ -882,6 +905,16 @@ impl TaskPlanCompiler {
         let bindings = self.effective_bindings(cas, &graph)?;
         if let Some(cost) = &self.provider_admission {
             graph.install_provider_admission(&bindings, cost)?;
+            if let Some(recovery) = &self.auth_recovery
+                && graph.nodes.values().any(|n| {
+                    matches!(
+                        n.operator,
+                        review_graph::task::CompiledOperator::ProviderAdmission { .. }
+                    )
+                })
+            {
+                graph.install_auth_recovery(recovery)?;
+            }
         }
         self.compiled_resources(&graph, limits, now_unix_ms)
     }
@@ -1112,6 +1145,18 @@ impl TaskPlanCompiler {
             .collect();
         if let Some(cost) = &self.provider_admission {
             graph.require_provider_admission(&bindings, cost, &task.limits)?;
+            // A graph with no Model binding has no admission and nothing to recover.
+            if let Some(recovery) = &self.auth_recovery
+                && graph.nodes.values().any(|n| {
+                    matches!(
+                        n.operator,
+                        review_graph::task::CompiledOperator::ProviderAdmission { .. }
+                    )
+                })
+            {
+                graph.install_auth_recovery(recovery)?;
+                graph.budget(task.limits.clone())?;
+            }
         }
         let graph_value = serde_json::to_value(&graph).map_err(|e| e.to_string())?;
         let compiled_graph_id = if let Some(recorded) = recorded_graph {

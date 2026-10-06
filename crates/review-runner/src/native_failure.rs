@@ -30,6 +30,21 @@ impl NativeFailureKind {
         )
     }
 
+    /// The closed Task recovery class of an authentication failure. Quota, model, network
+    /// and unknown failures have none: they never suspend a Task for login (ADR-0141).
+    pub fn task_auth_failure(self) -> Option<review_core::task::auth_recovery::TaskAuthFailureV1> {
+        use review_core::task::auth_recovery::TaskAuthFailureV1 as Auth;
+        match self {
+            Self::AuthMissing => Some(Auth::AuthMissing),
+            Self::AuthRevoked => Some(Auth::AuthRevoked),
+            Self::AuthExpired => Some(Auth::AuthExpired),
+            Self::AuthRefreshContended => Some(Auth::AuthRefreshContended),
+            Self::AuthRefreshFailed => Some(Auth::AuthRefreshFailed),
+            Self::AuthRejected => Some(Auth::AuthRejected),
+            Self::Quota | Self::ModelUnavailable | Self::Network | Self::Unknown => None,
+        }
+    }
+
     /// A closed allowlist: no native text, account identity, URL, code or token is copied.
     pub fn diagnostic(self) -> &'static str {
         match self {

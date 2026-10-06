@@ -1179,6 +1179,7 @@ impl TaskOperatorHost for ReviewTaskDomain {
             }
         };
         TaskWorkOutput {
+            auth_failure: None,
             usage_observation: None,
             usage: None,
             outputs,

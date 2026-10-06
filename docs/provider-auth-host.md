@@ -2,8 +2,11 @@
 
 This is the explicit host integration for browser-only Provider setup and reauthentication
 ([ADR-0137](adr/0137-permit-provider-logins-through-private-host-capabilities.md), refined by
-[ADR-0139](adr/0139-deliver-native-login-challenges-to-a-verified-private-requester.md)). It partially
-implements issue #122. It does not yet suspend, verify or continue an executing/terminal Task.
+[ADR-0139](adr/0139-deliver-native-login-challenges-to-a-verified-private-requester.md)). Runtime
+recovery of a Task whose Provider stopped authenticating is the separate
+[Provider auth recovery](task-execution/auth-recovery.md) flow
+([ADR-0141](adr/0141-recover-runtime-provider-auth-on-the-original-task-ledger.md)); a login here
+never verifies, resumes or continues a Task by itself.
 
 ## Boundary and supported environments
 
@@ -264,6 +267,39 @@ af never restores a secret challenge from disk or trusts a stale PID. The live p
 private pipes survive agent-turn interruption, **not a VM restart**. Credentials remain in the
 same native auth directory, with the same Provider ID. Native account changes remain subject to
 existing Task identity fences.
+
+## Recovering a suspended Task
+
+A coordinator that starts Task work records its participation, so recovery outcomes come back
+to the right conversation ([Provider auth recovery](task-execution/auth-recovery.md)):
+
+```text
+af task run TASK_ID --execute --requester-ref REQUESTER --coordinator-ref COORDINATOR --json
+```
+
+Exit code 3 with `phase.reason: needs_provider_auth` means the Task is suspended on a native
+authentication failure. Then:
+
+1. Run `af task recover TASK_ID --json`. `login_required` lists the Providers needing a private
+   login under `login`; no paid call was made when the status reported no signed-in account,
+   and a stale "authenticated" status was disproved by one bounded probe on the Task's ledger.
+2. Run the private login above for each listed Provider. Do not tell the human to run commands;
+   they only use their browser. A completed login is `authenticated_unverified` and grants
+   nothing by itself.
+3. Run `af task recover TASK_ID --login-ref RECOVERY_ID --json` with the completed login's
+   recovery ID. Recovery verifies with one paid probe within the plan's captured allowance and,
+   once every required Provider is verified, continues the same Task to its result.
+4. Deliver each entry of `notifications` to its own `coordinator_ref` only, then acknowledge it
+   with `af task recover TASK_ID --acknowledge SEQUENCE --context CONTEXT_KEY
+   --coordinator-ref COORDINATOR --delivery-ref MESSAGE_REF`. Never forward another
+   coordinator's outcome, and never resend an outcome that was acknowledged.
+5. `blocked` names a closed reason (`deadline_expired`, `authority_changed`, `binding_changed`,
+   `allowance_missing`, `allowance_exhausted`, `budget_breached`). Ask the human for the decision
+   it needs; recovery never extends a deadline, approves a plan or switches accounts. A finished
+   Task continues only through `af task continue`.
+
+If the host is interrupted, run `af task recover` again: a claimed resume is finished, never
+repeated, and a lost probe is settled at its full reservation.
 
 ## Verified provider surfaces and limitations
 

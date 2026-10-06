@@ -814,6 +814,7 @@ impl TaskOperatorHost for DocumentTaskDomain {
             _ => Err("Document Worker requires its captured host".into()),
         })();
         TaskWorkOutput {
+            auth_failure: None,
             usage_observation: None,
             usage: None,
             outputs,

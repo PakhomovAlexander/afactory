@@ -39,6 +39,11 @@ fn refresh_contention_survives_missing_usage_without_retaining_challenges() {
             None,
             &[],
         );
+        // The typed class, not the diagnostic prose, is what suspends a Task (ADR-0141).
+        assert_eq!(
+            returned.auth_failure(),
+            Some(review_core::task::auth_recovery::TaskAuthFailureV1::AuthRefreshContended)
+        );
         let error = returned.message.unwrap_err();
         assert!(error.contains("refresh contention"), "{error}");
         assert!(!returned.usage_observation.unwrap().charge_complete);
@@ -95,6 +100,8 @@ fn non_auth_native_failures_keep_their_evidence_and_classification() {
             None,
             &[],
         );
+        assert!(returned.native_failure.is_some_and(|kind| !kind.is_auth()));
+        assert_eq!(returned.auth_failure(), None, "never a login request");
         let error = returned.message.unwrap_err();
         assert!(error.contains(expected), "{error}");
         assert!(!error.contains("(auth_"), "{error}");
@@ -135,6 +142,7 @@ fn successful_output_about_authentication_is_not_classified_as_failure() {
         None,
         &[],
     );
+    assert_eq!(returned.native_failure, None);
     assert_eq!(returned.message.unwrap(), message.as_bytes());
     assert_eq!(
         cas.get(&returned.raw_artifact_ids[0]).unwrap(),
@@ -243,6 +251,7 @@ fn model_text_about_revoked_credentials_cannot_replace_a_network_failure() {
             None,
             &[],
         );
+        assert_eq!(returned.auth_failure(), None, "model text chose no class");
         let error = returned.message.unwrap_err();
         assert!(error.contains("(network)"), "{error}");
         assert!(!error.contains("(auth_"), "{error}");

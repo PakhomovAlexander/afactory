@@ -219,6 +219,14 @@ pub struct CompiledTask {
     /// Aggregate caps for exact nodes or bounded child groups, charged by the common ledger.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub token_scopes: BTreeMap<String, review_attempt::task_budget::TaskTokenScope>,
+    /// Bounded Provider auth verification probes captured by the approved plan (ADR-0141).
+    /// Absent, a login cannot create a retry allowance for this Task.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub auth_recovery: Option<review_core::task::auth_recovery::AuthRecoveryAllowanceV1>,
 }
 
 impl CompiledTask {
@@ -253,6 +261,42 @@ impl CompiledTask {
     ) -> Result<(), String> {
         self.install_provider_admission(bindings, cost)?;
         self.budget(limits.clone())?;
+        Ok(())
+    }
+
+    /// Capture a bounded recovery verification allowance beside the installed Provider
+    /// admission. Its dormant node draws on the same Task tokens, Attempts and deadline as
+    /// every Worker, never on the protected verification reserve (ADR-0141).
+    pub fn install_auth_recovery(
+        &mut self,
+        allowance: &review_core::task::auth_recovery::AuthRecoveryAllowanceV1,
+    ) -> Result<(), String> {
+        allowance.validate()?;
+        if self.auth_recovery.is_some()
+            || !self
+                .nodes
+                .values()
+                .any(|node| matches!(node.operator, CompiledOperator::ProviderAdmission { .. }))
+        {
+            return Err(
+                "Auth recovery is captured once, beside an installed Provider admission".into(),
+            );
+        }
+        // Each verified generation may let a resumed run spend one more admission Attempt.
+        // The approved plan captures these bounded Attempts; a login cannot add one.
+        for (name, node) in &self.nodes {
+            if matches!(node.operator, CompiledOperator::ProviderAdmission { .. }) {
+                let admission = self
+                    .allowances
+                    .get_mut(name)
+                    .ok_or("Provider admission has no captured allowance")?;
+                admission.max_attempts = admission
+                    .max_attempts
+                    .checked_add(allowance.probes)
+                    .ok_or("Provider admission Attempt overflow")?;
+            }
+        }
+        self.auth_recovery = Some(allowance.clone());
         Ok(())
     }
 
@@ -775,6 +819,7 @@ fn compile_structure_mode(
             experimental_slots: BTreeMap::new(),
             review_integration: None,
             token_scopes: BTreeMap::new(),
+            auth_recovery: None,
         },
     };
     let mut root_inputs = BTreeMap::new();
@@ -2056,6 +2101,26 @@ impl CompiledTask {
                     .is_some()
             {
                 return Err("Dormant Integration node collides with the Round graph".into());
+            }
+        }
+        if let Some(recovery) = &self.auth_recovery {
+            use review_core::task::auth_recovery::AUTH_RECOVERY_NODE;
+            recovery.validate()?;
+            if self.nodes.contains_key(AUTH_RECOVERY_NODE)
+                || self.owned_children.contains_key(AUTH_RECOVERY_NODE)
+                || allowances
+                    .insert(
+                        AUTH_RECOVERY_NODE.into(),
+                        NodeAllowance {
+                            tokens_per_attempt: recovery.tokens_per_probe,
+                            wall_ms_per_attempt: recovery.wall_ms_per_probe,
+                            max_attempts: recovery.probes,
+                            verification_attempts: 0,
+                        },
+                    )
+                    .is_some()
+            {
+                return Err("Dormant auth recovery node collides with the Task graph".into());
             }
         }
         Ok(allowances)

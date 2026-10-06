@@ -223,6 +223,7 @@ pub fn compile_campaign_review(
         experimental_slots: BTreeMap::new(),
         review_integration: None,
         token_scopes: BTreeMap::new(),
+        auth_recovery: None,
     };
     graph.nodes.insert(
         "root.inputs".into(),

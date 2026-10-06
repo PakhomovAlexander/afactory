@@ -346,6 +346,7 @@ impl CampaignReviewTaskHost<'_, '_> {
             Ok(outputs)
         })();
         TaskWorkOutput {
+            auth_failure: None,
             usage_observation: None,
             usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
             outputs,

@@ -1074,6 +1074,7 @@ impl TaskOperatorHost for ReportTaskDomain {
             _ => Err("Report Worker requires its captured host".into()),
         })();
         TaskWorkOutput {
+            auth_failure: None,
             usage_observation: None,
             usage: None,
             outputs,

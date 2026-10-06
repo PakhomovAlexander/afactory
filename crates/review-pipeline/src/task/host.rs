@@ -851,6 +851,7 @@ impl<'a> CapturedTaskHost<'a> {
         let mut token_usage = None;
         let mut usage_observation = None;
         let mut feedback_code = None;
+        let mut auth_failure = None;
         let outputs = (|| {
             let (context, _) = worker.contract.read_context(cas, attempt.context_id())?;
             if context.invocation != *input {
@@ -933,6 +934,7 @@ impl<'a> CapturedTaskHost<'a> {
             };
             raw_artifact_ids = result.raw_artifact_ids;
             feedback_code = result.feedback_code;
+            auth_failure = result.auth_failure;
             charged_tokens = result
                 .usage
                 .as_ref()
@@ -1062,6 +1064,7 @@ impl<'a> CapturedTaskHost<'a> {
             None
         };
         TaskWorkOutput {
+            auth_failure: auth_failure.filter(|_| outputs.is_err()),
             usage_observation,
             usage: token_usage,
             outputs,
@@ -1123,6 +1126,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
                 self.worker_execute(cas, input, attempt, &worker, cancellation)
             }
             (Some(_), None) => TaskWorkOutput {
+                auth_failure: None,
                 usage_observation: None,
                 usage: None,
                 outputs: Err("Worker has no durably started Attempt".into()),

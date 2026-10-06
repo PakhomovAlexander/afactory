@@ -528,5 +528,50 @@
       "github:nobody"
     ],
     "expected_content_id": "sha256:7732bb0aa8db2ea755c46e90c939d50e5ee24cba44833fc469a124943d7e5fe3"
+  },
+  {
+    "contract": "task-auth-suspension",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "pointer": "/access_token",
+    "op": "add",
+    "value": "x",
+    "expected_content_id": "sha256:4342c87924aace8286f85d73cbfb8cc2426d9cedbca6bcb2aa9755bcd1967624"
+  },
+  {
+    "contract": "task-auth-suspension",
+    "why": "quota is not an authentication failure",
+    "layer": "shape",
+    "pointer": "/failures/0/failure",
+    "op": "replace",
+    "value": "quota",
+    "expected_content_id": "sha256:a30b42ba331b53646ea8a3921dca5dc2e790a7a4b93f1f31c155ec4f489aa986"
+  },
+  {
+    "contract": "task-auth-suspension",
+    "why": "a coordinator reference is an opaque name, never a URL",
+    "layer": "shape",
+    "pointer": "/participant/coordinator_ref",
+    "op": "replace",
+    "value": "https://chat.example/1",
+    "expected_content_id": "sha256:b25bf996e4c6ef08dc635e3279779fdc9dbeb767aa0beef6f6554c51ed9bbcc2"
+  },
+  {
+    "contract": "task-auth-resume-claim",
+    "why": "a claim covers at least one verified context",
+    "layer": "shape",
+    "pointer": "/contexts",
+    "op": "replace",
+    "value": {},
+    "expected_content_id": "sha256:55c5dc946a0d75c9a51517f1b689b9a9c71bc62778b372035f3aaa22dc6913a0"
+  },
+  {
+    "contract": "task-continuation",
+    "why": "a continuation retains exact decimal accounting",
+    "layer": "shape",
+    "pointer": "/predecessor_chargeable_tokens",
+    "op": "replace",
+    "value": 600,
+    "expected_content_id": "sha256:f66c5f6d66c7268ff0eccac644514a00cc4dd8cc9615a29b3005c3fb9c520f93"
   }
 ]

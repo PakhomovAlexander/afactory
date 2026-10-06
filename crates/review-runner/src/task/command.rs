@@ -31,6 +31,7 @@ pub fn invoke_command(
             access,
         ),
         Err(error) => ModelWorkerReturn {
+            native_failure: None,
             message: Err(error),
             usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
             usage_observation: None,
@@ -48,6 +49,7 @@ pub fn invoke_command(
         Err(error) => (Err(error), Some(TaskFeedbackCodeV1::ProcessFailure)),
     };
     WorkerReturn {
+        auth_failure: None,
         reply,
         feedback_code,
         usage: returned.usage,
@@ -96,6 +98,7 @@ pub fn invoke_command_bytes(
         Err(error) => Err(error.to_string()),
     };
     ModelWorkerReturn {
+        native_failure: None,
         message,
         usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
         usage_observation: None,

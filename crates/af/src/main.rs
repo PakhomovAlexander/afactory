@@ -696,6 +696,7 @@ fn campaign_labels_beneath(root: &Path) -> Vec<String> {
 
 fn task_review_options(args: cli::RunArgs, plan_only: bool) -> task_execution::StartOptions {
     task_execution::StartOptions {
+        participant: None,
         file: args.task_file.expect("Task file path was checked"),
         bindings: args.bindings,
         source_bindings: None,
@@ -1158,19 +1159,23 @@ fn main() {
                     authority,
                     uncommitted,
                     timeout_secs,
+                    participant,
                     json,
-                } => task_execution::start(task_execution::StartOptions {
-                    file,
-                    bindings,
-                    source_bindings,
-                    repo,
-                    state,
-                    authority,
-                    uncommitted,
-                    json,
-                    plan_only: !execute,
-                    timeout_secs,
-                    optimization_history: None,
+                } => participant.participant().and_then(|participant| {
+                    task_execution::start(task_execution::StartOptions {
+                        file,
+                        bindings,
+                        source_bindings,
+                        repo,
+                        state,
+                        authority,
+                        uncommitted,
+                        json,
+                        plan_only: !execute,
+                        timeout_secs,
+                        optimization_history: None,
+                        participant,
+                    })
                 }),
                 cli::TaskCommand::Plan {
                     file,
@@ -1193,6 +1198,7 @@ fn main() {
                     plan_only: true,
                     timeout_secs: None,
                     optimization_history: None,
+                    participant: None,
                 }),
                 cli::TaskCommand::DecisionPayload {
                     task_id,
@@ -1252,14 +1258,59 @@ fn main() {
                     task_id,
                     confirm_plan,
                     execute,
+                    participant,
                     inspect,
-                } => task_execution::run(
+                } => participant.participant().and_then(|participant| {
+                    task_execution::run_mode(
+                        &task_id,
+                        &inspect.repo,
+                        inspect.state.as_deref(),
+                        inspect.json,
+                        confirm_plan.as_deref(),
+                        execute,
+                        task_execution::RunMode::Run { participant },
+                    )
+                }),
+                cli::TaskCommand::Recover {
+                    task_id,
+                    login_ref,
+                    acknowledge,
+                    context,
+                    coordinator_ref,
+                    delivery_ref,
+                    inspect,
+                } => match acknowledge {
+                    Some(sequence) => task_execution::auth_recovery::acknowledge(
+                        &task_id,
+                        &inspect,
+                        context.as_deref().unwrap_or_default(),
+                        sequence,
+                        coordinator_ref.as_deref().unwrap_or_default(),
+                        delivery_ref.as_deref().unwrap_or_default(),
+                    ),
+                    // Recovery continues an already-admitted plan; it never needs --execute.
+                    None => task_execution::run_mode(
+                        &task_id,
+                        &inspect.repo,
+                        inspect.state.as_deref(),
+                        inspect.json,
+                        None,
+                        true,
+                        task_execution::RunMode::Recover {
+                            login_ref: login_ref.as_deref(),
+                        },
+                    ),
+                },
+                cli::TaskCommand::Continue {
+                    task_id,
+                    successor,
+                    confirm_result,
+                    inspect,
+                } => task_execution::auth_recovery::continue_task(
                     &task_id,
-                    &inspect.repo,
-                    inspect.state.as_deref(),
-                    inspect.json,
-                    confirm_plan.as_deref(),
-                    execute,
+                    &successor,
+                    &confirm_result,
+                    &inspect,
                 ),
                 cli::TaskCommand::Output {
                     task_id,
@@ -1463,7 +1514,12 @@ fn runs_task_work(command: &cli::Command) -> bool {
         cli::Command::Provider { command } => matches!(command, cli::ProviderCommand::Doctor(_)),
         cli::Command::Task { command } => matches!(
             command,
-            cli::TaskCommand::Start { execute: true, .. } | cli::TaskCommand::Run { .. }
+            cli::TaskCommand::Start { execute: true, .. }
+                | cli::TaskCommand::Run { .. }
+                | cli::TaskCommand::Recover {
+                    acknowledge: None,
+                    ..
+                }
         ),
         _ => false,
     }

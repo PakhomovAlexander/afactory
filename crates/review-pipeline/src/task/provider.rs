@@ -110,6 +110,7 @@ impl ProviderTaskDomain<'_> {
             Ok(value) => value,
             Err(error) => {
                 return TaskWorkOutput {
+                    auth_failure: None,
                     usage_observation: None,
                     usage: None,
                     outputs: Err(error),
@@ -133,6 +134,7 @@ impl ProviderTaskDomain<'_> {
             .usage
             .as_ref()
             .map(|usage| usage.chargeable_tokens.get());
+        let auth_failure = returned.auth_failure();
         let outputs = (|| {
             let message = returned.message?;
             if message.len() > 64
@@ -172,6 +174,7 @@ impl ProviderTaskDomain<'_> {
             )]))
         })();
         TaskWorkOutput {
+            auth_failure: auth_failure.filter(|_| outputs.is_err()),
             usage_observation: returned.usage_observation,
             usage: returned.usage,
             outputs,

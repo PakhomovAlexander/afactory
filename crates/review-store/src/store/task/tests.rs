@@ -1,6 +1,7 @@
 use super::*;
 use review_core::Producer;
 use review_core::task::plan::PlanDependencyV1;
+mod auth_recovery;
 mod collection;
 mod lease;
 mod owned;
@@ -62,6 +63,7 @@ struct Authority {
     output_allowed: bool,
     retry_allowed: bool,
     corrupt_during_output: Option<std::path::PathBuf>,
+    result_allowed: bool,
 }
 
 impl TaskAuthority for Authority {
@@ -144,7 +146,11 @@ impl TaskAuthority for Authority {
         }
     }
     fn validate_result(&self, _: &Cas, _: &TaskRevisionV1, _: &TaskResultV1) -> Result<(), String> {
-        Err("No execution receipts exist in this lifecycle fixture".into())
+        if self.result_allowed {
+            Ok(())
+        } else {
+            Err("No execution receipts exist in this lifecycle fixture".into())
+        }
     }
     fn validate_output(
         &self,
@@ -291,6 +297,7 @@ impl Fixture {
             output_allowed: true,
             retry_allowed: true,
             corrupt_during_output: None,
+            result_allowed: false,
         };
         Self {
             _dir: dir,
@@ -790,6 +797,7 @@ fn lease_takeover_fences_old_writer_and_sequence_comparison_is_atomic() {
         review_round: None,
         review_prefix: None,
         bound_tasks: vec![],
+        recovery: None,
     };
     let mut second = EventStore::open(&f.path).unwrap();
     second

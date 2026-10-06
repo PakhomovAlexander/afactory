@@ -1,6 +1,6 @@
 //! Shared language-neutral fixture expansion and typed round-trips; no runtime admission.
 use review_core::task::{
-    TaskPhaseV1, TaskResultV1, TaskRevisionV1,
+    TaskPhaseV1, TaskResultV1, TaskRevisionV1, auth_recovery,
     pipeline::PipelineDefinitionV1,
     plan::{ExecutionPlanV1, PlanDecisionV1},
     review::{RepairAssessmentV1, ReviewHistoryV1, VerificationContinuationV1},
@@ -26,6 +26,9 @@ pub fn typed_round_trip(contract: &str, value: Value) -> Result<Value, String> {
         "review-history" => check!(ReviewHistoryV1),
         "verification-continuation" => check!(VerificationContinuationV1),
         "repair-assessment" => check!(RepairAssessmentV1),
+        "task-auth-suspension" => check!(auth_recovery::TaskAuthSuspensionV1),
+        "task-auth-resume-claim" => check!(auth_recovery::TaskAuthResumeClaimV1),
+        "task-continuation" => check!(auth_recovery::TaskContinuationV1),
         _ => panic!("unregistered Task contract: {contract}"),
     }
 }

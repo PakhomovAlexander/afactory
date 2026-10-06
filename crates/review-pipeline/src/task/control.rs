@@ -11,6 +11,7 @@ pub(crate) fn check(cancellation: Option<&AtomicBool>) -> Result<(), String> {
 }
 pub(crate) fn refused(message: impl Into<String>) -> TaskWorkOutput {
     TaskWorkOutput {
+        auth_failure: None,
         usage_observation: None,
         usage: None,
         outputs: Err(message.into()),

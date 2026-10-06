@@ -390,6 +390,8 @@ pub struct WorkerReturn {
     pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
     pub raw_artifact_ids: Vec<String>,
     pub feedback_code: Option<TaskFeedbackCodeV1>,
+    /// The typed authentication class of a failed native call (ADR-0141).
+    pub auth_failure: Option<review_core::task::auth_recovery::TaskAuthFailureV1>,
 }
 
 /// Provider framing is separate from the Worker's business contract. A model adapter returns
@@ -402,6 +404,9 @@ pub struct ModelWorkerReturn {
     pub message: Result<Vec<u8>, String>,
     pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
     pub raw_artifact_ids: Vec<String>,
+    /// A closed native failure class established from the protocol or process status, never
+    /// from model text. Only its authentication classes can suspend a Task (ADR-0141).
+    pub native_failure: Option<crate::native_failure::NativeFailureKind>,
 }
 
 /// The return of a native program that could not be started at all. It received no input and
@@ -501,7 +506,15 @@ impl ModelWorkerReturn {
             message: Err(error.to_string()),
             usage: None,
             raw_artifact_ids: vec![],
+            native_failure: None,
         }
+    }
+
+    /// The closed authentication class of this return, when it failed authentication.
+    pub fn auth_failure(&self) -> Option<review_core::task::auth_recovery::TaskAuthFailureV1> {
+        self.native_failure
+            .and_then(crate::native_failure::NativeFailureKind::task_auth_failure)
+            .filter(|_| self.message.is_err())
     }
 }
 
@@ -523,6 +536,7 @@ pub fn invoke_model(
         Ok((_, bytes)) => bytes,
         Err(error) => {
             return WorkerReturn {
+                auth_failure: None,
                 usage_observation: None,
                 reply: Err(error),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
@@ -532,6 +546,7 @@ pub fn invoke_model(
         }
     };
     let returned = adapter.invoke(cas, workdir, bytes, timeout, access, cancellation, &[]);
+    let auth_failure = returned.auth_failure();
     let (reply, feedback_code) = match returned.message {
         Ok(bytes) => {
             let reply = contract.validate_reply(&bytes);
@@ -543,6 +558,7 @@ pub fn invoke_model(
         Err(error) => (Err(error), Some(TaskFeedbackCodeV1::ProviderFailure)),
     };
     WorkerReturn {
+        auth_failure,
         usage_observation: returned.usage_observation,
         reply,
         usage: returned.usage,

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-continuation:1",
+  "title": "af/TaskContinuation@1",
+  "description": "The explicit link from a successor Task's revision provenance to its finished, unsatisfied predecessor (ADR-0141). It retains the predecessor's exact chargeable tokens, begun Attempts and original limits; the successor's limits must fit in what remains, with no later deadline, and its plan needs its own approval. A finished Task is continued at most once and is never reopened.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "predecessor_task_id",
+    "predecessor_revision_id",
+    "predecessor_plan_id",
+    "predecessor_result_id",
+    "predecessor_chargeable_tokens",
+    "predecessor_begun_attempts",
+    "original_limits",
+    "reason"
+  ],
+  "properties": {
+    "predecessor_task_id": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "predecessor_revision_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "predecessor_plan_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "predecessor_result_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "predecessor_chargeable_tokens": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,38})$"
+    },
+    "predecessor_begun_attempts": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "original_limits": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/limits"
+    },
+    "reason": {
+      "const": "provider_auth"
+    }
+  }
+}

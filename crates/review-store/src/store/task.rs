@@ -22,6 +22,7 @@ use crate::{Cas, content_id, validate_envelope};
 #[cfg(test)]
 mod tests;
 
+pub mod auth_recovery;
 pub mod collection;
 mod delivery;
 pub use delivery::validate_optimization_delivery;
@@ -59,9 +60,10 @@ fn now() -> Result<u64, StoreError> {
     Ok(millis)
 }
 
-/// Every port's artifact identity, then the one provenance record no port carries that a Task
+/// Every port's artifact identity, then the provenance records no port carries that a Task
 /// revision keeps across selection and source refresh: the `af/TaskInputBindings@1` record a
-/// Task file's `inputs` table produced (ADR-0117). Nothing else is preserved, so a revision
+/// Task file's `inputs` table produced (ADR-0117) and the `af/TaskContinuation@1` link of a
+/// successor to its finished predecessor (ADR-0141). Nothing else is preserved, so a revision
 /// whose adapter recorded some other observation keeps byte for byte the list it had.
 ///
 /// Both the adapter that writes a revision and the Store that validates a refreshed one derive
@@ -78,7 +80,10 @@ pub fn revision_provenance_inputs(cas: &Cas, revision: &TaskRevisionV1) -> Vec<S
             continue;
         }
         let found = cas.get_optional_artifact(id).ok().flatten();
-        let record = found.is_some_and(|e| e.artifact_type == TASK_INPUT_BINDINGS_V1);
+        let record = found.is_some_and(|e| {
+            e.artifact_type == TASK_INPUT_BINDINGS_V1
+                || e.artifact_type == task::auth_recovery::TASK_CONTINUATION_V1
+        });
         if record {
             ids.push(id.clone());
         }
@@ -324,6 +329,7 @@ pub struct TaskProjection {
     )>,
     pub run_reports: Vec<String>,
     pub review_handoffs: Vec<(String, task::review_handoff::TaskReviewHandoffV1)>,
+    pub auth: auth_recovery::TaskAuthProjection,
 }
 
 /// The light optimizer's final DAG node can only know trial accounting. After every Attempt has
@@ -421,6 +427,8 @@ pub(super) struct WritePermit {
     /// The Tasks an opening Task's bindings name: none may have been collected by the time the
     /// opening is written, and the check runs under the writer lock collection uses (ADR-0135).
     bound_tasks: Vec<String>,
+    /// Provider auth recovery rows and generation fences published atomically (ADR-0141).
+    recovery: Option<auth_recovery::RecoveryWrite>,
 }
 
 impl WritePermit {
@@ -467,6 +475,9 @@ impl WritePermit {
                      binding was resolved"
                 )));
             }
+        }
+        if let Some(recovery) = &self.recovery {
+            recovery.publish(connection)?;
         }
         Ok(())
     }
@@ -737,6 +748,28 @@ fn references(
         TaskChangeV1::RunReported { report_id } => {
             refs.extend(report::references(cas, report_id)?);
         }
+        TaskChangeV1::AuthSuspended { suspension_id } => {
+            let value: task::auth_recovery::TaskAuthSuspensionV1 = payload(
+                cas,
+                suspension_id,
+                task::auth_recovery::TASK_AUTH_SUSPENSION_V1,
+            )?;
+            refs.extend([suspension_id.clone(), value.task_revision_id, value.plan_id]);
+        }
+        TaskChangeV1::AuthResumeClaimed { claim_id } => {
+            let value: task::auth_recovery::TaskAuthResumeClaimV1 = payload(
+                cas,
+                claim_id,
+                task::auth_recovery::TASK_AUTH_RESUME_CLAIM_V1,
+            )?;
+            refs.extend([claim_id.clone(), value.suspension_id]);
+        }
+        TaskChangeV1::AuthProbeSettled {
+            usage_id: Some(usage_id),
+            ..
+        } => {
+            refs.insert(usage_id.clone());
+        }
         TaskChangeV1::Opened { revision_id, .. } => {
             revision_references(cas, revision_id, &mut refs)?;
         }
@@ -942,6 +975,14 @@ impl TaskProjection {
                 TaskChangeV1::RunReported { report_id } => {
                     self.apply_run_report(cas, report_id)?;
                 }
+                TaskChangeV1::AuthSuspended { .. }
+                | TaskChangeV1::AuthProbeReserved { .. }
+                | TaskChangeV1::AuthProbeStarted { .. }
+                | TaskChangeV1::AuthProbeReleased { .. }
+                | TaskChangeV1::AuthProbeSettled { .. }
+                | TaskChangeV1::AuthResumeClaimed { .. } => {
+                    self.apply_auth(cas, &transition.change, transition.now_unix_ms)?;
+                }
                 TaskChangeV1::Opened { .. } | TaskChangeV1::LeaseTaken { .. } => {
                     return Err(conflict("Task already exists"));
                 }
@@ -965,6 +1006,7 @@ impl TaskProjection {
                         .execution
                         .as_ref()
                         .is_some_and(|e| !e.pending_attempts().is_empty())
+                        || self.auth.pending_probes().next().is_some()
                     {
                         return Err(conflict(
                             "Cannot release a Task lease with pending Attempts",
@@ -1091,10 +1133,24 @@ impl TaskProjection {
                             "Plan waiting is derived from a persisted proposal",
                         ));
                     }
+                    if *reason == TaskWaitingReasonV1::NeedsProviderAuth {
+                        return Err(conflict(
+                            "Provider auth waiting is derived from a persisted suspension",
+                        ));
+                    }
                     self.resume_phase = Some(self.phase.clone());
                     self.phase = TaskPhaseV1::Waiting { reason: *reason };
                 }
                 TaskChangeV1::Resumed {} => {
+                    if self.phase
+                        == (TaskPhaseV1::Waiting {
+                            reason: TaskWaitingReasonV1::NeedsProviderAuth,
+                        })
+                    {
+                        return Err(conflict(
+                            "Provider auth suspension resumes only through a verified claim",
+                        ));
+                    }
                     let prior = self
                         .resume_phase
                         .take()
@@ -1126,6 +1182,7 @@ impl TaskProjection {
                         .execution
                         .as_ref()
                         .is_some_and(|execution| !execution.pending_attempts().is_empty())
+                        || self.auth.pending_probes().next().is_some()
                     {
                         return Err(conflict(
                             "Task must settle or release every pending Attempt before finishing",
@@ -1251,6 +1308,7 @@ impl TaskProjection {
                 }
             }
         }
+        self.reconcile_auth();
         self.last_time = transition.now_unix_ms;
         self.next_sequence = event.sequence + 1;
         Ok(())
@@ -1537,6 +1595,7 @@ impl EventStore {
                     adoption_observations: Vec::new(),
                     run_reports: Vec::new(),
                     review_handoffs: Vec::new(),
+                    auth: auth_recovery::TaskAuthProjection::default(),
                 });
             } else {
                 return Err(conflict("Task transition precedes genesis"));
@@ -1583,6 +1642,27 @@ impl EventStore {
         owned_prefix: Option<(u64, Option<(String, u64)>)>,
         state: Option<TaskProjection>,
     ) -> Result<RunEvent, StoreError> {
+        self.append_task_transition_checked(cas, task_id, transition, owned_prefix, state, None)
+    }
+
+    /// As above, with recovery-log rows and fences published in the same transaction. Without
+    /// an explicit recovery write, a claimed Task's new effects still carry the dispatch fence.
+    fn append_task_transition_checked(
+        &mut self,
+        cas: &Cas,
+        task_id: &str,
+        transition: TaskTransitionV1,
+        owned_prefix: Option<(u64, Option<(String, u64)>)>,
+        state: Option<TaskProjection>,
+        recovery: Option<auth_recovery::RecoveryWrite>,
+    ) -> Result<RunEvent, StoreError> {
+        let recovery = match (&recovery, &transition.change) {
+            (Some(_), _) => recovery,
+            (None, TaskChangeV1::Opened { revision_id, .. }) if state.is_none() => {
+                self.continuation_write(cas, &revision(cas, revision_id)?)?
+            }
+            (None, _) => self.auth_dispatch_fence(cas, &transition, state.as_ref())?,
+        };
         let mut transition = transition;
         if let Some(state) = &state {
             // Stamped before it is persisted, so the log stays monotonic and replays unchanged.
@@ -1676,6 +1756,7 @@ impl EventStore {
             review_round,
             review_prefix: owned_prefix.and_then(|(_, prefix)| prefix),
             bound_tasks,
+            recovery,
         };
         self.append_batch_inner(&run_id, cas, &[event], Some(&permit), None)?
             .pop()

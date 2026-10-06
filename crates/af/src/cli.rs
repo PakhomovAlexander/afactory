@@ -1030,6 +1030,8 @@ pub(crate) enum TaskCommand {
         /// Positive wall-clock budget for the whole Task
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..), help_heading = "Budget")]
         timeout_secs: Option<u64>,
+        #[command(flatten)]
+        participant: TaskParticipantArgs,
         /// One JSON document on stdout instead of text
         #[arg(long, help_heading = "Output")]
         json: bool,
@@ -1121,6 +1123,71 @@ pub(crate) enum TaskCommand {
         /// Explicit automation opt-in: run the current plan without preview confirmation
         #[arg(long)]
         execute: bool,
+        #[command(flatten)]
+        participant: TaskParticipantArgs,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Verify a Task suspended on Provider authentication and continue it
+    #[command(
+        long_about = "Verify a Task that stopped on a native Provider authentication failure, \
+then continue the same Task under its original plan, limits and deadline.\n\nA Provider that \
+reports no signed-in account returns the `login_required` state with no paid call; the \
+coordinator's private host completes the official login (`af provider auth begin`). An \
+authenticated status earns one bounded verification probe, charged to the Task's own ledger \
+under the plan's captured `provider_recovery` allowance. Only an acknowledged probe within its \
+reservation verifies a context, and only once every required context is verified does the \
+original work continue, exactly once. A login alone verifies nothing and grants no plan, \
+publication or account-switch authority.\n\nDocuments are `af/task-auth-recovery@1`; exit \
+code 3 means a human or the private host must act (sign in, or decide on a blocked Task).",
+        after_long_help = "Examples:\n  af task recover TASK_ID --json\n  af task recover TASK_ID --login-ref RECOVERY_ID --json\n  af task recover TASK_ID --acknowledge 7 --context sha256:... --coordinator-ref chat-1 --delivery-ref message-9 --json"
+    )]
+    Recover {
+        /// Task id
+        task_id: String,
+        /// Join a completed private login (`af provider auth`) by its recovery ID; it verifies
+        /// nothing by itself
+        #[arg(long, value_name = "RECOVERY_ID", conflicts_with = "acknowledge")]
+        login_ref: Option<String>,
+        /// Record that this outcome sequence was delivered to its own coordinator
+        #[arg(
+            long,
+            value_name = "SEQUENCE",
+            requires_all = ["context", "coordinator_ref", "delivery_ref"]
+        )]
+        acknowledge: Option<u64>,
+        /// The auth context key of the acknowledged outcome
+        #[arg(long, value_name = "CONTEXT_KEY", requires = "acknowledge")]
+        context: Option<String>,
+        /// The opaque coordinator reference that delivered the outcome
+        #[arg(long, value_name = "REF", requires = "acknowledge")]
+        coordinator_ref: Option<String>,
+        /// The opaque reference of the delivered private message
+        #[arg(long, value_name = "REF", requires = "acknowledge")]
+        delivery_ref: Option<String>,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Open an explicitly linked successor of a finished, unsatisfied Task
+    #[command(
+        long_about = "Open a new Task that continues a finished, unsatisfied predecessor, for \
+example one that ended on a Provider authentication failure before recovery existed.\n\nThe \
+predecessor is never reopened or rewritten. The successor keeps its request, acceptance and \
+authority, carries an `af/TaskContinuation@1` link with the predecessor's exact charge, and its \
+limits are what the original limits left, with the original deadline. It stops at plan \
+preview: run it with `af task run SUCCESSOR --confirm-plan PLAN_ID`. Each finished Task is \
+continued at most once.",
+        after_long_help = "Examples:\n  af task continue TASK_ID --task-id TASK_ID-2 --confirm-result sha256:... --json"
+    )]
+    Continue {
+        /// The finished predecessor Task
+        task_id: String,
+        /// The new successor's Task ID
+        #[arg(long = "task-id", value_name = "TASK_ID")]
+        successor: String,
+        /// Repeat the predecessor's recorded result ID to confirm the link
+        #[arg(long, value_name = "RESULT_ID")]
+        confirm_result: String,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
@@ -1238,6 +1305,45 @@ Without --apply nothing is written. --apply is refused while any Task's writer l
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
+}
+
+/// Opaque host references an auth suspension of this Task reports to (ADR-0141).
+#[derive(Debug, Args, Clone)]
+pub(crate) struct TaskParticipantArgs {
+    /// Opaque reference of the human who requested this work
+    #[arg(
+        long,
+        value_name = "REF",
+        requires = "coordinator_ref",
+        help_heading = "Recovery"
+    )]
+    pub(crate) requester_ref: Option<String>,
+    /// Opaque reference of the private coordinator that receives this Task's recovery outcomes
+    #[arg(
+        long,
+        value_name = "REF",
+        requires = "requester_ref",
+        help_heading = "Recovery"
+    )]
+    pub(crate) coordinator_ref: Option<String>,
+}
+
+impl TaskParticipantArgs {
+    pub(crate) fn participant(
+        &self,
+    ) -> Result<Option<review_core::task::auth_recovery::TaskAuthParticipantV1>, String> {
+        let (Some(requester_ref), Some(coordinator_ref)) =
+            (&self.requester_ref, &self.coordinator_ref)
+        else {
+            return Ok(None);
+        };
+        let participant = review_core::task::auth_recovery::TaskAuthParticipantV1 {
+            requester_ref: requester_ref.clone(),
+            coordinator_ref: coordinator_ref.clone(),
+        };
+        participant.validate()?;
+        Ok(Some(participant))
+    }
 }
 
 #[derive(Debug, Args, Clone)]

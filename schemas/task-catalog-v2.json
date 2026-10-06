@@ -208,6 +208,33 @@
           "maximum": 9007199254740991
         }
       }
+    },
+    "provider_recovery": {
+      "description": "Bounded Provider auth verification probes every plan of this catalog captures (ADR-0141). Probes draw on the Task's own tokens, Attempts and deadline, never on its verification reserve; each also permits one more Provider admission Attempt after a verified resume. Absent, a login cannot create a recovery or retry allowance.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "probes",
+        "tokens_per_probe",
+        "wall_ms_per_probe"
+      ],
+      "properties": {
+        "probes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "tokens_per_probe": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "wall_ms_per_probe": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
     }
   },
   "anyOf": [

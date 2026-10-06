@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-auth-resume-claim:1",
+  "title": "af/TaskAuthResumeClaim@1",
+  "description": "The durable claim that continues one auth-suspended Task (ADR-0141). It names the exact suspension, revision and plan, and for every still-required context the verified generation and the recovery-log sequence of its verification. Dispatch after the claim is fenced on those generations; a newer failure invalidates it. Possessing this value grants nothing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "suspension_id",
+    "task_revision_id",
+    "plan_id",
+    "contexts"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    },
+    "suspension_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "task_revision_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "contexts": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "propertyNames": {
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "generation",
+          "verified_sequence"
+        ],
+        "properties": {
+          "generation": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "verified_sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
+      }
+    }
+  }
+}

@@ -37,6 +37,7 @@ use review_store::store::task::{TaskLease, TaskProjection};
 use review_store::{Cas, EventStore, validate_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+pub(crate) mod auth_recovery;
 mod bindings;
 pub(crate) mod catalog;
 pub(crate) mod collection;
@@ -69,6 +70,9 @@ pub(super) struct StartOptions {
     /// Pre-captured by the token-free `self optimize` adapter. Ordinary Task files leave this
     /// absent and may instead name a project-contained deterministic fixture.
     pub optimization_history: Option<review_core::task::optimization::OptimizationHistoryV1>,
+    /// The opaque requester and coordinator an auth suspension of this Task reports to
+    /// (ADR-0141). Never inferred from whoever later completes a login.
+    pub participant: Option<review_core::task::auth_recovery::TaskAuthParticipantV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +173,14 @@ struct TaskCatalog {
         deserialize_with = "present_option"
     )]
     provider_admission: Option<review_graph::task::OperatorAttemptCost>,
+    /// Bounded Provider auth verification probes every plan of this catalog captures
+    /// (ADR-0141). Absent, a login cannot create a recovery or retry allowance.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    provider_recovery: Option<review_core::task::auth_recovery::AuthRecoveryAllowanceV1>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -259,6 +271,14 @@ struct CapturedPackage {
 struct RunAuthority {
     schema: String,
     provider_admission: review_graph::task::OperatorAttemptCost,
+    /// The captured catalog's recovery allowance. Omitted when the catalog has none, so every
+    /// earlier capture keeps its exact policy identity.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    provider_recovery: Option<review_core::task::auth_recovery::AuthRecoveryAllowanceV1>,
     engine_id: String,
     #[serde(
         default,
@@ -507,6 +527,7 @@ fn capture_authority(
     let bytes = captured_file(cas, manifest, ".af/task-catalog.toml")?;
     let mut catalog: TaskCatalog = parse(Path::new(".af/task-catalog.toml"), &bytes)?;
     let provider_admission = provider_admission::catalog_cost(&catalog)?;
+    let provider_recovery = provider_admission::catalog_recovery(&catalog)?;
     let import_locks = catalog::restore_imports(cas, manifest, &mut catalog)?;
     if catalog.packages.is_empty()
         || catalog.packages.len() > 128
@@ -681,6 +702,7 @@ fn capture_authority(
     let authority = RunAuthority {
         schema: provider_admission::RUN_AUTHORITY_SCHEMA.into(),
         provider_admission,
+        provider_recovery,
         engine_id,
         code_policy_id: code_policy_id.clone(),
         document_policy_id,
@@ -743,6 +765,7 @@ fn restore_compiler(
     cas.verify(&authority.catalog_id)
         .map_err(|e| e.to_string())?;
     let admission_cost = provider_admission::restore_cost(cas, authority)?;
+    let recovery = provider_admission::restore_recovery(cas, authority)?;
     if let Some(local) = &authority.local_bindings_id {
         cas.verify(local).map_err(|e| e.to_string())?;
     }
@@ -836,7 +859,11 @@ fn restore_compiler(
             )?;
         }
     }
-    Ok(compiler.with_provider_admission(admission_cost))
+    let compiler = compiler.with_provider_admission(admission_cost);
+    match recovery {
+        Some(recovery) => compiler.with_auth_recovery(recovery),
+        None => Ok(compiler),
+    }
 }
 
 fn bind_models(
@@ -959,6 +986,7 @@ pub(crate) fn plan_tree_preview_at(
     let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
     let state = scratch.path().join("state");
     let options = StartOptions {
+        participant: None,
         file: file.to_path_buf(),
         bindings: None,
         source_bindings: None,
@@ -1669,7 +1697,15 @@ fn start_captured(
         store
             .admit_task_plan(&cas, &lease, &trusted)
             .map_err(|e| e.to_string())?;
-        execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
+        execute(
+            &cas,
+            &mut store,
+            &lease,
+            &trusted,
+            &host,
+            &domain,
+            options.participant.clone(),
+        )?;
         Ok(())
     })();
     release(&cas, &mut store, &lease, outcome)?;
@@ -1999,10 +2035,16 @@ fn execute(
     authority: &CapturedTaskAuthority<'_>,
     host: &CapturedTaskHost<'_>,
     domain: &dyn TaskDomain,
+    participant: Option<review_core::task::auth_recovery::TaskAuthParticipantV1>,
 ) -> Result<(), String> {
     let cancellation = std::sync::atomic::AtomicBool::new(false);
-    let runtime = TaskRuntime::new(store, cas, lease.clone(), authority, host)?
+    let mut runtime = TaskRuntime::new(store, cas, lease.clone(), authority, host)?
         .with_cancellation(&cancellation);
+    if let Some(participant) = participant {
+        runtime = runtime.with_auth_participant(participant);
+    }
+    // A typed auth failure suspends the Task before terminalization (ADR-0141); the waiting
+    // check below then leaves it unfinished for `af task recover`.
     crate::interrupt::note_task(lease.task_id());
     let report = crate::interrupt::forwarding(&cancellation, || runtime.execute());
     // Interrupted work is neither assembled nor finished: the lease is released and the Task
@@ -2045,13 +2087,24 @@ fn confirm_current_plan(
     Ok(())
 }
 
-pub(super) fn run(
+/// What `run_mode` does once the captured plan and authority are restored.
+pub(super) enum RunMode<'a> {
+    /// `af task run`: execute or resume ordinary work.
+    Run {
+        participant: Option<review_core::task::auth_recovery::TaskAuthParticipantV1>,
+    },
+    /// `af task recover`: verify a Provider auth suspension, then continue the same Task.
+    Recover { login_ref: Option<&'a str> },
+}
+
+pub(super) fn run_mode(
     id: &str,
     repo: &Path,
     state: Option<&Path>,
     json: bool,
     confirm_plan: Option<&str>,
     execute_now: bool,
+    mode: RunMode<'_>,
 ) -> Result<i32, String> {
     let (_, state) = state_path(repo, state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
@@ -2081,8 +2134,20 @@ pub(super) fn run(
         }
         return Err("Confirm the captured plan with --confirm-plan PLAN_ID (or explicitly opt into --execute automation)".into());
     }
+    let recovering = matches!(mode, RunMode::Recover { .. });
     if matches!(projection.phase, TaskPhaseV1::Finished { .. }) {
+        if recovering {
+            return auth_recovery::present(&cas, &store, id, json);
+        }
         return present(&cas, &store, id, json, false);
+    }
+    let suspended = projection.auth.active_suspension().is_some();
+    if suspended && !recovering {
+        // A suspended Task continues only after verification; `run` spends nothing here.
+        return auth_recovery::present(&cas, &store, id, json);
+    }
+    if recovering && !suspended && projection.auth.active_claim().is_none() {
+        return auth_recovery::present(&cas, &store, id, json);
     }
     if projection.plan_id.is_none() {
         present(&cas, &store, id, json, true)?;
@@ -2104,9 +2169,16 @@ pub(super) fn run(
     )?;
     let graph: CompiledTask = artifact(&cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
     compiler = restore_experimental_slots(compiler, &graph)?;
+    if let RunMode::Recover { login_ref } = &mode
+        && suspended
+        && let Some(code) =
+            auth_recovery::before_binding(&cas, &mut store, &projection, *login_ref, json)?
+    {
+        return Ok(code);
+    }
     if plan.preparation.is_some() {
         return planning::resume(
-            cas, store, authority, compiler, projection, plan, graph, json,
+            cas, store, authority, compiler, projection, plan, graph, json, recovering,
         );
     }
     let adapters = bind_models(
@@ -2119,8 +2191,32 @@ pub(super) fn run(
             .get("root")
             .ok_or("Task has no captured root Pipeline")?
             .pipeline,
-    )?;
-    compiler.validate_plan(&cas, &projection.revision, &plan)?;
+    );
+    let adapters = match (adapters, recovering) {
+        (Ok(adapters), _) => adapters,
+        (Err(_), true) => {
+            return auth_recovery::blocked(
+                &cas,
+                &mut store,
+                id,
+                review_core::task::auth_recovery::TaskAuthBlockV1::BindingChanged,
+                json,
+            );
+        }
+        (Err(error), false) => return Err(error),
+    };
+    if let Err(error) = compiler.validate_plan(&cas, &projection.revision, &plan) {
+        if recovering {
+            return auth_recovery::blocked(
+                &cas,
+                &mut store,
+                id,
+                review_core::task::auth_recovery::TaskAuthBlockV1::BindingChanged,
+                json,
+            );
+        }
+        return Err(error);
+    }
     let verification = projection
         .revision
         .acceptance
@@ -2175,6 +2271,26 @@ pub(super) fn run(
     let lease = store
         .take_task_lease(&cas, id, &format!("cli-{}", std::process::id()), 15_000)
         .map_err(|e| e.to_string())?;
+    let participant = match &mode {
+        RunMode::Run { participant } => participant.clone(),
+        // A re-suspension reports to the same participation the Task already recorded.
+        RunMode::Recover { .. } => projection
+            .auth
+            .suspensions
+            .last()
+            .and_then(|(_, suspension)| suspension.participant.clone()),
+    };
+    if recovering {
+        let step = auth_recovery::verify(&cas, &mut store, &lease, &trusted, &models);
+        let resumed = matches!(
+            step,
+            Ok(review_pipeline::task::recovery::AuthRecoveryStep::Resumed { .. })
+        );
+        if !resumed {
+            release(&cas, &mut store, &lease, step.map(|_| ()))?;
+            return auth_recovery::present(&cas, &store, id, json);
+        }
+    }
     let outcome = (|| {
         confirm_current_plan(&cas, &store, id, projection.plan_id.as_deref())?;
         store
@@ -2193,11 +2309,22 @@ pub(super) fn run(
                 .admit_task_plan(&cas, &lease, &trusted)
                 .map_err(|e| e.to_string())?;
         }
-        execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
+        execute(
+            &cas,
+            &mut store,
+            &lease,
+            &trusted,
+            &host,
+            &domain,
+            participant.clone(),
+        )?;
         Ok(())
     })();
     release(&cas, &mut store, &lease, outcome)?;
-    present(&cas, &store, id, json, false)
+    match mode {
+        RunMode::Run { .. } => present(&cas, &store, id, json, false),
+        RunMode::Recover { .. } => auth_recovery::present(&cas, &store, id, json),
+    }
 }
 
 pub(super) fn explain(
@@ -2442,6 +2569,7 @@ pub(crate) fn recorded_artifact(state: &Path, id: &str) -> Result<serde_json::Va
 #[cfg(test)]
 pub(crate) fn run_silently(file: &Path, repo: &Path, state: &Path) -> Result<i32, String> {
     let options = StartOptions {
+        participant: None,
         file: file.to_path_buf(),
         bindings: None,
         source_bindings: None,
@@ -2501,6 +2629,7 @@ fn present_with_format(
                         TaskWaitingReasonV1::NeedsResources => "needs-resources",
                         TaskWaitingReasonV1::NeedsInput => "needs-input",
                         TaskWaitingReasonV1::NeedsHuman => "needs-human",
+                        TaskWaitingReasonV1::NeedsProviderAuth => "needs-provider-auth",
                     },
                     _ => "planned",
                 },
@@ -2571,13 +2700,16 @@ fn present_with_format(
             _ => 4,
         }));
     }
-    let pending = if state.phase
-        == (TaskPhaseV1::Waiting {
+    let pending = match state.phase {
+        TaskPhaseV1::Waiting {
             reason: TaskWaitingReasonV1::NeedsHuman,
-        }) {
-        4
-    } else {
-        0
+        } => 4,
+        // Suspended on Provider authentication: the private host or a human must act
+        // (ADR-0141); `af task recover` reports and continues it.
+        TaskPhaseV1::Waiting {
+            reason: TaskWaitingReasonV1::NeedsProviderAuth,
+        } => 3,
+        _ => 0,
     };
     Ok(result.map_or(pending, |r| match r.acceptance {
         TaskAcceptanceV1::Satisfied => 0,
@@ -3405,6 +3537,7 @@ mod tree_preview_tests {
         // `af task plan --file` records the Task, and `af task explain --tree` prints this.
         let state = root.join("state");
         let options = StartOptions {
+            participant: None,
             file: file.clone(),
             bindings: None,
             source_bindings: None,
@@ -3589,6 +3722,7 @@ mod remote_check_line_tests {
         std::fs::write(&file, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
         let owner = |state: &Path| {
             start(StartOptions {
+                participant: None,
                 file: file.clone(),
                 bindings: None,
                 source_bindings: None,

@@ -245,3 +245,5 @@ future readers need.
 - [0140 — Run a declared check through a gate pull
   request](0140-run-a-declared-check-through-a-gate-pull-request.md) (amended 2026-10-05: [the
   pipeline chooses](0140-run-a-declared-check-through-a-gate-pull-request.md#amendment-2026-10-05-the-pipeline-chooses))
+- [0141 — Recover runtime Provider authentication on the original Task
+  ledger](0141-recover-runtime-provider-auth-on-the-original-task-ledger.md)

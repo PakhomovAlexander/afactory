@@ -132,6 +132,7 @@ impl WorkerModelAdapter for Uix {
             "outputs":{"result":[{"reports":[],"benchmark_demands":[],"dispositions":[]}]}});
         let reply = serde_json::to_vec(&reply).unwrap();
         ModelWorkerReturn {
+            native_failure: None,
             usage_observation: None,
             raw_artifact_ids: vec![cas.put(&reply).unwrap()],
             message: Ok(reply),

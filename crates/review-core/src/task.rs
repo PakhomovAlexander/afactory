@@ -3,6 +3,7 @@
 //! Validation here establishes shape and local invariants. Compilation establishes graph
 //! compatibility; the Store establishes identity, authority and legal transitions.
 
+pub mod auth_recovery;
 pub mod campaign_review;
 pub mod collection;
 pub mod delivery;
@@ -391,6 +392,9 @@ pub enum TaskWaitingReasonV1 {
     NeedsInput,
     NeedsHuman,
     NeedsPlanReview,
+    /// Suspended on a native authentication failure (ADR-0141). Only a resume claim under a
+    /// verified recovery generation leaves this pause; a plain resume cannot.
+    NeedsProviderAuth,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

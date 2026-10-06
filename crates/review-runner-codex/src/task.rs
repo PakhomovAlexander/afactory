@@ -91,6 +91,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
     ) -> Result<ModelWorkerReturn, Unstarted> {
         if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
             return Ok(ModelWorkerReturn {
+                native_failure: None,
                 usage_observation: None,
                 message: Err("Worker invocation was cancelled before starting".into()),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
@@ -177,6 +178,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             },
         );
         let mut returned = ModelWorkerReturn {
+            native_failure: None,
             usage_observation: None,
             message: Err("Codex Worker framing failed".into()),
             usage: None,
@@ -185,6 +187,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         returned.usage = events.reported_usage();
         returned.usage_observation = events.observation();
         if !capture.status.as_ref().is_ok_and(|status| status.success()) || events.error.is_some() {
+            returned.native_failure = failure.filter(|kind| *kind != NativeFailureKind::Unknown);
             returned.message = Err(
                 if let Some(kind) = failure.filter(|kind| *kind != NativeFailureKind::Unknown) {
                     let mut message = format!(

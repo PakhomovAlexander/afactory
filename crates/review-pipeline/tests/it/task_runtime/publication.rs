@@ -185,6 +185,7 @@ fn publication_recovers(before_attempt: bool) {
             assert!(request["inputs"]["input"].is_array());
             let bytes = serde_json::to_vec(&json!({"schema":"af.worker-reply/1","outputs":{"output":[{"outcome":"passed","text":"Checked document"}]}})).unwrap();
             ModelWorkerReturn {
+                native_failure: None,
                 usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&bytes).unwrap()],
                 message: Ok(bytes),

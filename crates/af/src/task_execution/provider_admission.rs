@@ -36,6 +36,30 @@ pub(super) fn catalog_cost(catalog: &TaskCatalog) -> Result<OperatorAttemptCost,
     Ok(cost.clone())
 }
 
+/// A catalog's captured auth recovery allowance (ADR-0141); absent means none.
+pub(super) fn catalog_recovery(
+    catalog: &TaskCatalog,
+) -> Result<Option<review_core::task::auth_recovery::AuthRecoveryAllowanceV1>, String> {
+    if let Some(recovery) = &catalog.provider_recovery {
+        recovery.validate()?;
+    }
+    Ok(catalog.provider_recovery.clone())
+}
+
+/// Restoration re-parses the captured catalog: a run authority cannot widen or invent the
+/// recovery allowance its catalog captured.
+pub(super) fn restore_recovery(
+    cas: &Cas,
+    authority: &RunAuthority,
+) -> Result<Option<review_core::task::auth_recovery::AuthRecoveryAllowanceV1>, String> {
+    let bytes = cas.get(&authority.catalog_id).map_err(|e| e.to_string())?;
+    let catalog: TaskCatalog = super::parse(std::path::Path::new("catalog.toml"), &bytes)?;
+    if catalog_recovery(&catalog)? != authority.provider_recovery {
+        return Err("Provider recovery allowance differs from its captured catalog".into());
+    }
+    Ok(authority.provider_recovery.clone())
+}
+
 pub(super) fn restore_cost(
     cas: &Cas,
     authority: &RunAuthority,

@@ -1112,6 +1112,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
     let catalog = TaskCatalog {
         schema: "af.task-catalog/2".into(),
         provider_admission: None,
+        provider_recovery: None,
         code_policy: Some(".af/code-policy.toml".into()),
         document_policy: None,
         report_policy: None,

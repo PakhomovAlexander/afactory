@@ -757,6 +757,7 @@ pub(crate) fn run(mut options: Options) -> Result<i32, String> {
     serde_json::to_writer(&mut temporary, &file).map_err(|error| error.to_string())?;
     temporary.flush().map_err(|error| error.to_string())?;
     task_execution::start(task_execution::StartOptions {
+        participant: None,
         file: temporary.path().to_path_buf(),
         bindings: None,
         source_bindings: None,

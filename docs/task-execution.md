@@ -62,6 +62,13 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   arithmetic. Neither invokes a Provider, and an evaluator gated on a comparison cannot change
   it ([ADR-0132](adr/0132-measure-and-compare-source-candidates-in-the-kernel.md),
   [experiments](task-execution/experiments.md)).
+- A native authentication failure suspends the Task before terminalization instead of failing
+  it. Verification is a bounded probe on the Task's own ledger under the plan's captured
+  `provider_recovery` allowance; a login alone verifies nothing, every required auth context must
+  be verified before the original work continues, and a finished Task continues only through an
+  explicitly linked successor
+  ([ADR-0141](adr/0141-recover-runtime-provider-auth-on-the-original-task-ledger.md),
+  [Provider auth recovery](task-execution/auth-recovery.md)).
 - A declared check may also run as a Remote Check: a pipeline's check node lists it in
   `remote_checks`, and the kernel hands it to the repository's `pull_request` workflow through
   two `af-gate/<task-id>/` branches built from Snapshots and one draft pull request. The
@@ -135,6 +142,7 @@ What it never grants:
 | Inspection and listing | [`task-inspection-v11`](../schemas/task-inspection-v11.json), [`task-list-entry-v2`](../schemas/task-list-entry-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json) |
 | Run diagnostics and delivery | [`task-run-report-v2`](../schemas/task-run-report-v2.json), [`task-diagnostic-v1`](../schemas/task-diagnostic-v1.json), [`task-delivery-record-v1`](../schemas/task-delivery-record-v1.json) |
 | Store hygiene ([ADR-0135](adr/0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)) | `crates/review-store/src/store/task/collection.rs`, [`task-collected-v1`](../schemas/task-collected-v1.json), [`task-collected-inspection-v1`](../schemas/task-collected-inspection-v1.json), [`task-gc-v1`](../schemas/task-gc-v1.json) |
+| Provider auth recovery ([ADR-0141](adr/0141-recover-runtime-provider-auth-on-the-original-task-ledger.md)) | `crates/review-core/src/task/auth_recovery.rs`, `crates/review-store/src/store/task/auth_recovery.rs`, [`task-auth-suspension-v1`](../schemas/task-auth-suspension-v1.json), [`task-auth-resume-claim-v1`](../schemas/task-auth-resume-claim-v1.json), [`task-continuation-v1`](../schemas/task-continuation-v1.json), [`provider-auth-recovery-event-v1`](../schemas/provider-auth-recovery-event-v1.json), [`task-auth-recovery-v1`](../schemas/task-auth-recovery-v1.json) |
 | Review accounting | [`review-report-v4`](../schemas/review-report-v4.json) |
 | Executable credential-free fixtures | `fixtures/task-runtime/` (`pagination`, `review`, `review-v2`, `embedded-review`, `bounded-repair`) |
 
@@ -145,6 +153,7 @@ Start with the Task-file walkthrough, then follow the composition pages in order
 - [Task file](task-execution/task-file.md) — plan, explain, run, show, list and deliver a captured Task; state outside the checkout; exit codes.
 - [Task input bindings](task-execution/task-inputs.md) — the `inputs` table that binds a root port to a recorded Task's output, its plan-time resolution, and where it is implemented.
 - [Model bindings](task-execution/model-bindings.md) — native Claude/Codex Workers, Provider registry labels, token-free identity capture, paid capability admission, usage retention and cancellation.
+- [Provider auth recovery](task-execution/auth-recovery.md) — runtime auth suspension, paid verification on the Task's own ledger, resume claims, coordinator notifications and linked continuation of a finished Task.
 - [Local bindings](task-execution/local-bindings.md) — per-developer `af.task-bindings/1` files that replace Workers without weakening policy.
 - [Selection](task-execution/selection.md) — choosing a captured Pipeline before any Planner call; fallback, ranking and persisted refusal reasons.
 - [Generated plans](task-execution/generated-plans.md) — the fixed Planner, bounded compiler repair and exact signed developer approval.

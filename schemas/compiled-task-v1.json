@@ -124,6 +124,33 @@
         }
       }
     },
+    "auth_recovery": {
+      "$comment": "Bounded Provider auth verification probes captured by the approved plan (ADR-0141). Absent, a login cannot create a retry allowance.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "probes",
+        "tokens_per_probe",
+        "wall_ms_per_probe"
+      ],
+      "properties": {
+        "probes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "tokens_per_probe": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "wall_ms_per_probe": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
     "review_integration": {
       "type": "object",
       "additionalProperties": false,

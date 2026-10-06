@@ -1,0 +1,278 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:provider-auth-recovery-event:1",
+  "title": "af/ProviderAuthRecoveryEvent@1",
+  "description": "One row of an auth context's append-only recovery log in the Task Store (ADR-0141). Failures share the open generation; a failure after verification opens the next. A Stage 1 login is recorded only as an opaque `authenticated` reference and verifies nothing; only a paid probe whose exact charge fits its reservation records `verified`. Outcomes name the participating Task and its own opaque coordinator, and `notified` acknowledges one delivery by that coordinator. No row carries native text, a URL, a code, a token or a credential.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "context_key",
+    "context",
+    "generation",
+    "now_unix_ms",
+    "change"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/ProviderAuthRecoveryEvent@1"
+    },
+    "context_key": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "context": {
+      "$ref": "urn:af:schema:task-auth-suspension:1#/$defs/context"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "now_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "change": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "task_id",
+            "suspension_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "failed"
+            },
+            "task_id": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            },
+            "suspension_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "failure": {
+              "$ref": "urn:af:schema:task-auth-suspension:1#/$defs/failure"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "login_ref"
+          ],
+          "properties": {
+            "kind": {
+              "const": "authenticated"
+            },
+            "login_ref": {
+              "$ref": "urn:af:schema:task-auth-suspension:1#/$defs/opaqueRef"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "task_id",
+            "attempt_id",
+            "outcome",
+            "overrun"
+          ],
+          "properties": {
+            "kind": {
+              "const": "probe_failed"
+            },
+            "task_id": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            },
+            "attempt_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9]{26}$"
+            },
+            "outcome": {
+              "$ref": "#/$defs/probeOutcome"
+            },
+            "overrun": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "task_id",
+            "attempt_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "verified"
+            },
+            "task_id": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            },
+            "attempt_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9]{26}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "task_id",
+            "suspension_id",
+            "outcome"
+          ],
+          "properties": {
+            "kind": {
+              "const": "outcome"
+            },
+            "task_id": {
+              "type": "string",
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+            },
+            "suspension_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "outcome": {
+              "$ref": "#/$defs/outcome"
+            },
+            "participant": {
+              "$ref": "urn:af:schema:task-auth-suspension:1#/$defs/participant"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "outcome_sequence",
+            "coordinator_ref",
+            "delivery_ref"
+          ],
+          "properties": {
+            "kind": {
+              "const": "notified"
+            },
+            "outcome_sequence": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "coordinator_ref": {
+              "$ref": "urn:af:schema:task-auth-suspension:1#/$defs/opaqueRef"
+            },
+            "delivery_ref": {
+              "$ref": "urn:af:schema:task-auth-suspension:1#/$defs/opaqueRef"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "probeOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "acknowledged",
+                "failed",
+                "abandoned"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "failure"
+          ],
+          "properties": {
+            "kind": {
+              "const": "auth_failed"
+            },
+            "failure": {
+              "$ref": "urn:af:schema:task-auth-suspension:1#/$defs/failure"
+            }
+          }
+        }
+      ]
+    },
+    "block": {
+      "enum": [
+        "deadline_expired",
+        "authority_changed",
+        "binding_changed",
+        "allowance_missing",
+        "allowance_exhausted",
+        "budget_breached"
+      ]
+    },
+    "outcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "resumed",
+                "login_required",
+                "verification_failed"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "properties": {
+            "kind": {
+              "const": "blocked"
+            },
+            "reason": {
+              "$ref": "#/$defs/block"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
