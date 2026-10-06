@@ -47,6 +47,8 @@ mod input_bindings;
 mod input_file;
 mod inspection;
 mod issue;
+#[cfg(test)]
+mod lease_lifecycle_tests;
 mod planning;
 mod preview;
 mod provider_admission;
@@ -2176,6 +2178,8 @@ pub(super) fn run(
         .take_task_lease(&cas, id, &format!("cli-{}", std::process::id()), 15_000)
         .map_err(|e| e.to_string())?;
     let outcome = (|| {
+        #[cfg(test)]
+        lease_lifecycle_tests::after_acquire()?;
         confirm_current_plan(&cas, &store, id, projection.plan_id.as_deref())?;
         store
             .recover_task_attempts(&cas, &lease)
