@@ -1,0 +1,47 @@
+name: Review1719 exact source gates
+on:
+  push:
+    branches: ["af-gate/review-1719/executor"]
+permissions:
+  contents: read
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 3d848dc532ddb28c6de7e09cc30d1d6b42813b33
+          persist-credentials: false
+      - name: Verify exact source
+        run: |
+          test "$(git rev-parse HEAD)" = 3d848dc532ddb28c6de7e09cc30d1d6b42813b33
+          test "$(git rev-parse HEAD^{tree})" = 3bbc267645b35c36c043902848d267f46f2513a2
+          test -z "$(git status --porcelain)"
+          echo 'REVIEW1719 base=5ab2fd6420d4c7ddab8867e321d53bec99b2e44d head=3d848dc532ddb28c6de7e09cc30d1d6b42813b33 tree=3bbc267645b35c36c043902848d267f46f2513a2'
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
+      - uses: ./.github/actions/cargo-cache
+      - name: Install pinned test runner
+        run: bash scripts/install-nextest.sh
+      - name: Install linker
+        run: sudo apt-get install -y --no-install-recommends lld
+      - name: Required markdownlint
+        run: npx --yes markdownlint-cli2@0.22.1 '**/*.md'
+      - name: Required kernel-verify
+        env:
+          CARGO_INCREMENTAL: 0
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: sccache
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-fuse-ld=lld'
+          AF_GATE_TARGET_DIR: ${{ runner.temp }}/review1719-target
+        run: bash scripts/verify.sh
+      - name: Verify unchanged source
+        run: |
+          git status --porcelain
+          git diff --stat
+          test "$(git rev-parse HEAD)" = 3d848dc532ddb28c6de7e09cc30d1d6b42813b33
+          test -z "$(git status --porcelain)"
