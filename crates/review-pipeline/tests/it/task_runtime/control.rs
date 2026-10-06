@@ -592,3 +592,76 @@ fn cancellation_between_successful_work_and_selection_retains_spend_but_refuses_
         Some(TaskAttemptResultV1::Failed { .. })
     ));
 }
+
+#[test]
+fn lifecycle_precancellation_never_calls_work_or_renews() {
+    let mut f = Fixture::new(SUCCESS);
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "writer", 15_000)
+        .unwrap();
+    let run = review_store::store::task::task_run_id(&f.task.task_id).unwrap();
+    let before = f.store.len(&run).unwrap();
+    let cancellation = AtomicBool::new(true);
+    let shared = review_store::SharedEventStore::new(&mut f.store);
+    let result: Result<(), String> = review_pipeline::task::lease::with_lifecycle(
+        &shared,
+        &f.cas,
+        &lease,
+        &cancellation,
+        |_| {
+            panic!("cancelled lifecycle dispatched work");
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(shared.lock().unwrap().len(&run).unwrap(), before);
+}
+
+#[test]
+fn lifecycle_work_error_and_panic_join_before_releasing_the_writer() {
+    for panic in [false, true] {
+        let mut f = Fixture::new(SUCCESS);
+        let lease = f
+            .store
+            .open_task(&f.cas, &f.revision_id, "writer", 15_000)
+            .unwrap();
+        let cancellation = AtomicBool::new(false);
+        let shared = review_store::SharedEventStore::new(&mut f.store);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            review_pipeline::task::lease::with_lifecycle(
+                &shared,
+                &f.cas,
+                &lease,
+                &cancellation,
+                |owner| {
+                    owner.check()?;
+                    calls.fetch_add(1, Ordering::AcqRel);
+                    assert!(!panic, "controlled lifecycle panic");
+                    Err::<(), _>("controlled lifecycle error".into())
+                },
+            )
+        }));
+        assert_eq!(
+            calls.load(Ordering::Acquire),
+            1,
+            "callbacks are never retried"
+        );
+        if panic {
+            assert!(outcome.is_err());
+        } else {
+            assert_eq!(outcome.unwrap().unwrap_err(), "controlled lifecycle error");
+        }
+        shared
+            .lock()
+            .unwrap()
+            .release_task_lease(&f.cas, &lease)
+            .unwrap();
+        let successor = shared
+            .lock()
+            .unwrap()
+            .take_task_lease(&f.cas, &f.task.task_id, "successor", 15_000)
+            .unwrap();
+        assert!(shared.lock().unwrap().task_lease_state(&successor).is_ok());
+    }
+}

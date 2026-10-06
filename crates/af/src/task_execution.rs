@@ -49,6 +49,7 @@ mod inspection;
 mod issue;
 #[cfg(test)]
 mod lease_lifecycle_tests;
+mod lifecycle;
 mod planning;
 mod preview;
 mod provider_admission;
@@ -1661,19 +1662,33 @@ fn start_captured(
             15_000,
         )
         .map_err(|e| e.to_string())?;
-    let outcome = (|| {
-        store
+    let outcome = lifecycle::run(&cas, &mut store, &lease, |shared, owner, cancellation| {
+        owner.check()?;
+        shared
+            .lock()
+            .expect("Task Store")
             .propose_task_plan(&cas, &lease, &plan_id, &trusted)
             .map_err(|e| e.to_string())?;
         if options.plan_only {
             return Ok(());
         }
-        store
+        owner.check()?;
+        shared
+            .lock()
+            .expect("Task Store")
             .admit_task_plan(&cas, &lease, &trusted)
             .map_err(|e| e.to_string())?;
-        execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
-        Ok(())
-    })();
+        execute(
+            &cas,
+            shared.clone(),
+            &lease,
+            &trusted,
+            &host,
+            &domain,
+            owner,
+            cancellation,
+        )
+    });
     release(&cas, &mut store, &lease, outcome)?;
     if presentation == Presentation::Silent {
         return Ok(0);
@@ -1994,19 +2009,21 @@ fn captured_domain(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute(
     cas: &Cas,
-    store: &mut EventStore,
+    store: review_store::SharedEventStore<'_>,
     lease: &TaskLease,
     authority: &CapturedTaskAuthority<'_>,
     host: &CapturedTaskHost<'_>,
     domain: &dyn TaskDomain,
+    owner: &review_pipeline::task::lease::HeartbeatScope<'_, '_>,
+    cancellation: &std::sync::atomic::AtomicBool,
 ) -> Result<(), String> {
-    let cancellation = std::sync::atomic::AtomicBool::new(false);
-    let runtime = TaskRuntime::new(store, cas, lease.clone(), authority, host)?
-        .with_cancellation(&cancellation);
-    crate::interrupt::note_task(lease.task_id());
-    let report = crate::interrupt::forwarding(&cancellation, || runtime.execute());
+    owner.check()?;
+    let runtime = TaskRuntime::with_store(store, cas, lease.clone(), authority, host)?
+        .with_cancellation(cancellation);
+    let report = runtime.execute_in_lifecycle(owner);
     // Interrupted work is neither assembled nor finished: the lease is released and the Task
     // stays resumable with `af task run` (ADR-0129).
     crate::interrupt::check()?;
@@ -2015,6 +2032,7 @@ fn execute(
     if matches!(projection.phase, TaskPhaseV1::Waiting { .. }) {
         return Ok(());
     }
+    owner.check()?;
     let result = domain.assemble_result(cas, &projection, &report)?;
     let result_id = cas
         .put_artifact(
@@ -2177,29 +2195,53 @@ pub(super) fn run(
     let lease = store
         .take_task_lease(&cas, id, &format!("cli-{}", std::process::id()), 15_000)
         .map_err(|e| e.to_string())?;
-    let outcome = (|| {
+    let outcome = lifecycle::run(&cas, &mut store, &lease, |shared, owner, cancellation| {
         #[cfg(test)]
         lease_lifecycle_tests::after_acquire()?;
-        confirm_current_plan(&cas, &store, id, projection.plan_id.as_deref())?;
-        store
+        owner.check()?;
+        confirm_current_plan(
+            &cas,
+            &shared.lock().expect("Task Store"),
+            id,
+            projection.plan_id.as_deref(),
+        )?;
+        owner.check()?;
+        shared
+            .lock()
+            .expect("Task Store")
             .recover_task_attempts(&cas, &lease)
             .map_err(|e| e.to_string())?;
         if projection
             .waiting_for_domain_publication(&cas)
             .map_err(|e| e.to_string())?
         {
-            store
+            owner.check()?;
+            shared
+                .lock()
+                .expect("Task Store")
                 .resume_task(&cas, &lease, &trusted)
                 .map_err(|e| e.to_string())?;
         }
         if !projection.admitted {
-            store
+            owner.check()?;
+            shared
+                .lock()
+                .expect("Task Store")
                 .admit_task_plan(&cas, &lease, &trusted)
                 .map_err(|e| e.to_string())?;
         }
-        execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
+        execute(
+            &cas,
+            shared.clone(),
+            &lease,
+            &trusted,
+            &host,
+            &domain,
+            owner,
+            cancellation,
+        )?;
         Ok(())
-    })();
+    });
     release(&cas, &mut store, &lease, outcome)?;
     present(&cas, &store, id, json, false)
 }

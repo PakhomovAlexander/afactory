@@ -1,0 +1,39 @@
+//! One heartbeat spans CLI preparation, runtime construction and result publication.
+use super::*;
+use review_pipeline::task::lease::{HeartbeatScope, with_lifecycle};
+use review_store::SharedEventStore;
+use std::sync::atomic::AtomicBool;
+
+pub(super) fn run<T>(
+    cas: &Cas,
+    store: &mut EventStore,
+    lease: &TaskLease,
+    work: impl FnOnce(&SharedEventStore<'_>, &HeartbeatScope<'_, '_>, &AtomicBool) -> Result<T, String>,
+) -> Result<T, String> {
+    let shared = SharedEventStore::new(store);
+    let cancellation = AtomicBool::new(false);
+    crate::interrupt::note_task(lease.task_id());
+    crate::interrupt::forwarding(&cancellation, || {
+        with_lifecycle(&shared, cas, lease, &cancellation, |owner| {
+            #[cfg(test)]
+            let _marker = TestOwner::new();
+            work(&shared, owner, &cancellation)
+        })
+    })
+}
+
+#[cfg(test)]
+struct TestOwner;
+#[cfg(test)]
+impl TestOwner {
+    fn new() -> Self {
+        lease_lifecycle_tests::LIFECYCLE_ACTIVE.with(|value| assert!(!value.replace(true)));
+        Self
+    }
+}
+#[cfg(test)]
+impl Drop for TestOwner {
+    fn drop(&mut self) {
+        lease_lifecycle_tests::LIFECYCLE_ACTIVE.with(|value| value.set(false));
+    }
+}

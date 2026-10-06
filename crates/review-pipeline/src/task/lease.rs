@@ -87,6 +87,46 @@ fn renew_through_own(
     }
 }
 
+/// Proof of a scoped heartbeat owner. It grants no Store or effect authority and cannot
+/// outlive the closure that owns and joins the heartbeat.
+pub struct HeartbeatScope<'a, 'store> {
+    store: &'a Mutex<&'store mut EventStore>,
+    lease: &'a TaskLease,
+    cancellation: &'a AtomicBool,
+}
+
+impl HeartbeatScope<'_, '_> {
+    pub fn check(&self) -> Result<(), String> {
+        super::control::check(Some(self.cancellation))
+    }
+
+    pub(crate) fn covers(&self, store: &Mutex<&mut EventStore>, lease: &TaskLease) -> bool {
+        std::ptr::eq(self.store, store)
+            && self.lease.task_id() == lease.task_id()
+            && self.lease.epoch() == lease.epoch()
+    }
+}
+
+pub fn with_lifecycle<'a, 'store, T>(
+    store: &'a Mutex<&'store mut EventStore>,
+    cas: &Cas,
+    lease: &'a TaskLease,
+    cancellation: &'a AtomicBool,
+    work: impl FnOnce(&HeartbeatScope<'a, 'store>) -> Result<T, String>,
+) -> Result<T, String> {
+    with_heartbeat_controlled(store, cas, lease, Some(cancellation), || {
+        let owner = HeartbeatScope {
+            store,
+            lease,
+            cancellation,
+        };
+        owner.check()?;
+        let result = work(&owner)?;
+        owner.check()?;
+        Ok(result)
+    })
+}
+
 pub fn with_heartbeat<T>(
     store: &Mutex<&mut EventStore>,
     cas: &Cas,
@@ -103,6 +143,7 @@ pub fn with_heartbeat_controlled<T>(
     cancellation: Option<&AtomicBool>,
     work: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
+    super::control::check(cancellation)?;
     let own = {
         let mut shared = store.lock().expect("Task Store");
         // Enter with a full lease while no work can hold the Store yet. A lease that cannot be

@@ -2,8 +2,9 @@
 use super::*;
 use std::process::Command;
 
+type Barrier = Box<dyn FnOnce() -> Result<(), String>>;
 thread_local! {
-    pub(super) static AFTER_ACQUIRE: std::cell::RefCell<Option<Box<dyn FnOnce() -> Result<(), String>>>> = const { std::cell::RefCell::new(None) };
+    pub(super) static AFTER_ACQUIRE: std::cell::RefCell<Option<Barrier>> = const { std::cell::RefCell::new(None) };
 }
 
 pub(super) fn after_acquire() -> Result<(), String> {
@@ -12,8 +13,7 @@ pub(super) fn after_acquire() -> Result<(), String> {
         .map_or(Ok(()), |hook| hook())
 }
 
-#[test]
-fn public_run_starts_heartbeat_before_confirming_the_plan() {
+fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let root = tempfile::tempdir().unwrap();
     starter::init(root.path(), "project", "document", None, true).unwrap();
     let repo = root.path().join("project");
@@ -48,6 +48,12 @@ fn public_run_starts_heartbeat_before_confirming_the_plan() {
         optimization_history: None,
     })
     .unwrap();
+    (root, repo, state)
+}
+
+#[test]
+fn public_run_starts_heartbeat_before_confirming_the_plan() {
+    let (_root, repo, state) = fixture();
     let observed_state = state.clone();
     AFTER_ACQUIRE.with(|hook| {
         *hook.borrow_mut() = Some(Box::new(move || {
@@ -91,4 +97,29 @@ fn public_run_starts_heartbeat_before_confirming_the_plan() {
 
 thread_local! {
     pub(super) static LIFECYCLE_ACTIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[test]
+fn preparation_error_stops_owner_and_releases_lease_without_work() {
+    let (_root, repo, state) = fixture();
+    AFTER_ACQUIRE.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(|| Err("preparation barrier refused".into())))
+    });
+    let error = run("release-notes", &repo, Some(&state), true, None, true).unwrap_err();
+    assert!(error.contains("preparation barrier refused"));
+    assert!(!LIFECYCLE_ACTIVE.with(|active| active.get()));
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    let mut store = EventStore::open(state.join("events.sqlite")).unwrap();
+    let successor = store
+        .take_task_lease(&cas, "release-notes", "successor-after-error", 15_000)
+        .unwrap();
+    assert!(store.task_lease_state(&successor).is_ok());
+    let projection = store
+        .task_projection(&cas, "release-notes")
+        .unwrap()
+        .unwrap();
+    assert!(
+        !projection.admitted,
+        "failed preparation cannot admit or dispatch"
+    );
 }
