@@ -122,17 +122,19 @@ settles the Attempts a dead writer left pending, which is recovery, not work.
    - **Model identity.** A recorded model may be a path, a URL or an account, so the report
      copies it only when it passes one allow-list rule,
      `review_core::task::task_report::is_model_identity`: at most 96 characters; only
-     `A-Z a-z 0-9 ._:@+-` and at most one `/`; the first character, and the first character
-     after the `/`, alphanumeric; no `..`; no `:` directly before the `/`, so no `://`; no
-     drive-letter prefix such as `C:`; and, as a further refusal, neither side of the `/` the
-     name of a home, auth or state directory (`home`, `users`, `root`, `tmp`, `var`, `private`,
-     `state`, `auth`, `auth.*`, in any case). Anything else is `unknown` in both forms. The
+     `A-Z a-z 0-9 ._:+-` and at most one `/`, so no `@` and no email address; the first
+     character, and the first character after the `/`, alphanumeric; no `..`; no `:` directly
+     before the `/`, so no `://`; no drive-letter prefix such as `C:`; and, as a further
+     refusal, neither side of the `/` the name of a home, auth or state directory (`home`,
+     `users`, `root`, `tmp`, `var`, `private`, `state`, `auth`, `auth.*`, in any case). Anything
+     else is `unknown` in both forms. The
      schema's `model` pattern states the same rule, and the document's validation applies it;
      the Rust rule's unit test, the renderer's test of both forms, and a schema parity test
      that holds the pattern to the Rust rule all judge one table, `TASK_REPORT_MODEL_CASES`.
      It accepts `gpt-6-sol/high`, `claude-opus-5-5`, `gpt-5.3-codex-spark` and
      `us.anthropic.claude-opus-5-5-v1:0`, and refuses `file:///etc/passwd`, `C:/secrets/key`,
-     `C:\key`, `/etc/x`, `~/x`, `a//b`, `a/b/c`, `../x` and the empty value.
+     `C:\key`, `/etc/x`, `~/x`, `a//b`, `a/b/c`, `../x`, `alice@example.com`, `model@host` and
+     the empty value.
 7. **The check.** `.github/workflows/pr-report.yml` runs on `pull_request_target` (`opened`,
    `edited`, `synchronize`, `reopened`, `ready_for_review`) with `contents: read`. It runs only
    trusted code: `pull_request_target` runs the workflow as the base branch holds it, the job
@@ -147,12 +149,14 @@ settles the Attempts a dead writer left pending, which is recovery, not work.
    Every other pull request passes only when its description holds exactly one well-formed
    block: both markers in order; the summary table header equal to the nine v1 columns, exactly
    and in order; a separator row of that width; at least one Task row; and the totals line. The
-   checker splits a row as GitHub does (a backslash escapes the next character), and a Task row
-   has exactly nine cells and nonempty Task, Kind, Pipeline and Outcome cells. Each missing or
-   malformed part fails with its own message — a missing column, an extra column and reordered
-   columns each have theirs, as do a one-cell placeholder, a short or long row, an empty
-   required cell and a separator of the wrong width — and every failure says how to produce the
-   block with `af task report`.
+   checker splits a row as GitHub does (a backslash escapes the next character), and every
+   non-blank line after the separator, up to the first blank line, is a Task row whether or not
+   it starts or ends with `|`, since GitHub renders both forms as rows. A Task row has exactly
+   nine cells and nonempty Task, Kind, Pipeline and Outcome cells. Each missing or malformed
+   part fails with its own message — a missing column, an extra column and reordered columns
+   each have theirs, as do a one-cell placeholder, a short or long row (named by its line), an
+   empty required cell and a separator of the wrong width — and every failure says how to
+   produce the block with `af task report`.
    `scripts/test-check-pr-report.py`, run by `make check`, accepts the checked-in block the real
    renderer printed for a test Store (`fixtures/task-report/`), and the renderer's own tests
    require it still prints that block, so the checker and the renderer cannot drift apart.

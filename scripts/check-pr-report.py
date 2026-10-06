@@ -10,8 +10,10 @@ checks that a well-formed block is there.
 A pull request opened by Dependabot, or from a `release/` branch, is exempt. Anything else
 passes only with exactly one block: the begin marker, then the end marker, and between them
 the summary table header with exactly the nine v1 columns in order, a separator row of that
-width, at least one Task row, and the totals line. A Task row has exactly nine cells, and its
-Task, Kind, Pipeline and Outcome cells are not empty.
+width, at least one Task row, and the totals line. Every non-blank line after the separator, up
+to the first blank line, is a Task row, with or without its outer `|` (GitHub renders both as
+rows). A Task row has exactly nine cells, and its Task, Kind, Pipeline and Outcome cells are not
+empty.
 
 The workflow runs this script as the base branch holds it, on `pull_request_target`, so a pull
 request can change neither the check nor the workflow that runs it (ADR-0142).
@@ -41,18 +43,18 @@ HOW = ('Run `af task report TASK_ID...` for the af Tasks that made this change (
        'markers included, into the "af task report" section of the description.')
 
 
-def cells(line):
-    """The cells of one Markdown table row, or None for a line that is not one.
+def split(line):
+    """The cells of `line` as GitHub splits a table row, whether or not it has its outer `|`,
+    and whether a trailing `|` closed the last one.
 
-    As GitHub splits a row: a backslash escapes the character after it, so `\\|` stays inside
-    its cell, and every other `|` ends one.
+    A backslash escapes the character after it, so `\\|` stays inside its cell, and every
+    other `|` ends one; a leading `|` opens the first cell and a trailing `|` closes the last.
     """
     line = line.strip()
-    if not line.startswith('|') or len(line) < 2:
-        return None
-    found, cell, n = [], '', 1
+    found, cell, n, closed = [], '', 0, False
     while n < len(line):
         char = line[n]
+        closed = char == '|'
         if char == '\\' and n + 1 < len(line):
             cell += line[n:n + 2]
             n += 2
@@ -63,9 +65,21 @@ def cells(line):
         else:
             cell += char
         n += 1
-    if cell.strip():
+    if not closed:
+        found.append(cell.strip())
+    if line.startswith('|') and found:
+        found.pop(0)
+    return found, closed
+
+
+def cells(line):
+    """The cells of one Markdown table row written with both outer `|`, or None for any other
+    line."""
+    line = line.strip()
+    if not line.startswith('|') or len(line) < 2:
         return None
-    return found
+    row, closed = split(line)
+    return row if closed else None
 
 
 def plural(n, one, many):
@@ -128,21 +142,22 @@ def problems(body):
                      f', but the header has {width}: one `| --- |` per column')
         separator = False
     else:
+        # GitHub renders every line up to the first blank one as a row, outer `|` or not.
         for line in block[header + 2:]:
-            row = cells(line)
-            if row is None:
+            if not line.strip():
                 break
-            rows.append(row)
+            rows.append((line.strip(), split(line)[0]))
     if separator and not rows:
         found.append('the summary table has no Task row')
     required = [(COLUMNS.index(column), column) for column in REQUIRED]
-    for number, row in enumerate(rows, 1):
+    for number, (line, row) in enumerate(rows, 1):
         if len(row) == 1 and width > 1:
             found.append(f'Task row {number} of the summary table is a one-cell placeholder '
-                         f'(`| {row[0]} |`), not a Task row with {width} cells')
+                         f'(`{line}`), not a Task row with {width} cells')
         elif len(row) != width:
             found.append(f'Task row {number} of the summary table has '
-                         f'{plural(len(row), "cell", "cells")}, but the header has {width}')
+                         f'{plural(len(row), "cell", "cells")}, but the header has {width}: '
+                         f'`{line}`')
         else:
             empty = [column for index, column in required if not row[index]]
             if empty:

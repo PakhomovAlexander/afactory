@@ -482,15 +482,17 @@ fn a_provider_failure_is_counted_with_its_class_and_charge_and_the_provider_stay
     );
 }
 
-/// A model value that is a path or a URL is recorded in the plan as the Worker's model, and the
-/// author's Attempt under it fails at the Provider. The report names that Worker's model
-/// `unknown` in both forms and carries the value in neither: a path into the machine's home and
-/// auth directory, a `file://` URL and a drive-letter path, each versioned as the kernel
-/// requires of a model ID it binds. The last two passed the denylist this rule replaced.
+/// A model value that is a path, a URL or an account is recorded in the plan as the Worker's
+/// model, and the author's Attempt under it fails at the Provider. The report names that
+/// Worker's model `unknown` in both forms and carries the value in neither: a path into the
+/// machine's home and auth directory, a `file://` URL, a drive-letter path and an email address
+/// before a model name, each versioned as the kernel requires of a model ID it binds. The URL
+/// and the drive-letter path passed the denylist this rule replaced; the email address passed
+/// the rule while it allowed `@`.
 #[test]
 fn a_path_valued_model_is_reported_as_unknown_even_on_a_failed_attempt() {
     type Spell = fn(&Path) -> String;
-    let cases: [(Spell, &[&str]); 3] = [
+    let cases: [(Spell, &[&str]); 4] = [
         (
             |home| format!("{}/.codex/models/gpt-6-sol", home.to_str().unwrap()),
             &[".codex", "models/gpt-6-sol"],
@@ -500,6 +502,10 @@ fn a_path_valued_model_is_reported_as_unknown_even_on_a_failed_attempt() {
             &["file:", "/etc/codex", "codex/gpt-6-sol"],
         ),
         (|_| "C:/secrets/gpt-6-sol".to_owned(), &["C:/", "secrets"]),
+        (
+            |_| "alice@example.com/gpt-6-sol".to_owned(),
+            &["alice@example.com", "alice", "@example.com"],
+        ),
     ];
     for (spell, parts) in cases {
         let (f, _) = failed_provider_task(|home| Some(spell(home)));

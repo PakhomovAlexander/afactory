@@ -27,9 +27,9 @@
       "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
     },
     "model": {
-      "description": "A model identity, copied only when it is one. An allow-list: 1 to 96 characters from `A-Z a-z 0-9 ._:@+-` plus at most one `/`; the first character and the first character after the `/` alphanumeric; no `..`; no `:` directly before the `/` (so no `://`); no drive-letter prefix such as `C:`; and neither side of the `/` a home, auth or state directory name (`home`, `users`, `root`, `tmp`, `var`, `private`, `state`, `auth`, `auth.*`, in any case). Any other recorded value may be a path, a URL or an account and is reported as `unknown`.",
+      "description": "A model identity, copied only when it is one. An allow-list: 1 to 96 characters from `A-Z a-z 0-9 ._:+-` plus at most one `/`; the first character and the first character after the `/` alphanumeric; no `..`; no `:` directly before the `/` (so no `://`); no drive-letter prefix such as `C:`; and neither side of the `/` a home, auth or state directory name (`home`, `users`, `root`, `tmp`, `var`, `private`, `state`, `auth`, `auth.*`, in any case). Any other recorded value may be a path, a URL or an account (an email address has an `@`) and is reported as `unknown`.",
       "type": "string",
-      "pattern": "^(?=.{1,96}$)(?![A-Za-z]:)(?!.*\\.\\.)(?!.*:/)(?!(?:[^/]*/)?(?:[Hh][Oo][Mm][Ee]|[Uu][Ss][Ee][Rr][Ss]|[Rr][Oo][Oo][Tt]|[Tt][Mm][Pp]|[Vv][Aa][Rr]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]|[Ss][Tt][Aa][Tt][Ee]|[Aa][Uu][Tt][Hh](?:[._-][^/]*)?)(?:/|$))[A-Za-z0-9][A-Za-z0-9._:@+-]*(?:/[A-Za-z0-9][A-Za-z0-9._:@+-]*)?$"
+      "pattern": "^(?=.{1,96}$)(?![A-Za-z]:)(?!.*\\.\\.)(?!.*:/)(?!(?:[^/]*/)?(?:[Hh][Oo][Mm][Ee]|[Uu][Ss][Ee][Rr][Ss]|[Rr][Oo][Oo][Tt]|[Tt][Mm][Pp]|[Vv][Aa][Rr]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]|[Ss][Tt][Aa][Tt][Ee]|[Aa][Uu][Tt][Hh](?:[._-][^/]*)?)(?:/|$))[A-Za-z0-9][A-Za-z0-9._:+-]*(?:/[A-Za-z0-9][A-Za-z0-9._:+-]*)?$"
     },
     "node": {
       "type": "string",

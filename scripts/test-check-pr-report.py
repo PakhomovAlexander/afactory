@@ -61,6 +61,14 @@ def main():
         """The block with its first Task row replaced by `row`."""
         return BLOCK.replace(rows[0] + '\n', row + '\n')
 
+    def after_row(row):
+        """The block with `row` added after its first Task row."""
+        return BLOCK.replace(rows[0] + '\n', rows[0] + '\n' + row + '\n')
+
+    # GitHub renders a line without its leading or trailing `|` as a row of the table too.
+    unopened_short = ' | '.join(task_cells[:-1]) + ' |'
+    unclosed_short = '| ' + ' | '.join(task_cells[:-1])
+
     passing = {
         'the renderer fixture': event(description(BLOCK)),
         'CRLF line endings': event(description(BLOCK).replace('\n', '\r\n')),
@@ -73,6 +81,10 @@ def main():
         'an encoded pipe in a cell': event(description(with_row(
             '| ' + ' | '.join([task_cells[0], task_cells[1], 'a&#124;b'] + task_cells[3:])
             + ' |'))),
+        'a nine-cell row without outer pipes': event(description(with_row(
+            ' | '.join(task_cells)))),
+        'a nine-cell row without outer pipes after a row': event(description(after_row(
+            ' | '.join(task_cells)))),
     }
     for case, payload in passing.items():
         code, said = check(payload)
@@ -123,6 +135,17 @@ def main():
         'an unescaped pipe in a cell': (event(description(with_row(
             '| ' + ' | '.join([task_cells[0], task_cells[1], 'a|b'] + task_cells[3:]) + ' |'))),
             'has 10 cells'),
+        'a short row without a leading pipe after a valid row': (
+            event(description(after_row(unopened_short))),
+            'Task row 2 of the summary table has 8 cells, but the header has 9: `'
+            + unopened_short.strip() + '`'),
+        'a short row without a trailing pipe after a valid row': (
+            event(description(after_row(unclosed_short))),
+            'Task row 2 of the summary table has 8 cells, but the header has 9: `'
+            + unclosed_short.strip() + '`'),
+        'a one-cell line after a valid row': (event(description(after_row('stray text'))),
+                                              'Task row 2 of the summary table is a one-cell '
+                                              'placeholder (`stray text`)'),
         'a Dependabot-like name': (event('', 'dependabot'), 'no af task report block'),
         'a branch that only mentions release': (event('', branch='af/release/notes'),
                                                 'no af task report block'),

@@ -42,11 +42,12 @@ const PRIVATE_SEGMENTS: [&str; 8] = [
 ];
 
 /// Whether `model` is a model identity the report may copy. The rule is an allow-list:
-/// 1 to [`TASK_REPORT_MODEL_MAX`] characters from `A-Z a-z 0-9 ._:@+-` plus at most one `/`;
+/// 1 to [`TASK_REPORT_MODEL_MAX`] characters from `A-Z a-z 0-9 ._:+-` plus at most one `/`;
 /// the first character, and the first character after the `/`, alphanumeric; no `..`; no `:`
 /// directly before the `/` (so no `://`); no drive-letter prefix such as `C:`; and neither
-/// side of the `/` a name of a home, auth or state directory. Anything else may be a path, a
-/// URL or an account and is reported as [`TASK_REPORT_UNKNOWN_MODEL`].
+/// side of the `/` a name of a home, auth or state directory. Anything else, including any
+/// value with an `@` such as an email address, may be a path, a URL or an account and is
+/// reported as [`TASK_REPORT_UNKNOWN_MODEL`].
 /// `schemas/task-report-v1.json` states the same rule as the model's pattern, and
 /// [`TASK_REPORT_MODEL_CASES`] is the table both are held to.
 pub fn is_model_identity(model: &str) -> bool {
@@ -59,7 +60,7 @@ pub fn is_model_identity(model: &str) -> bool {
     (1..=TASK_REPORT_MODEL_MAX).contains(&bytes.len())
         && bytes
             .iter()
-            .all(|b| b.is_ascii_alphanumeric() || b"._:@+-/".contains(b))
+            .all(|b| b.is_ascii_alphanumeric() || b"._:+-/".contains(b))
         && bytes.iter().filter(|&&b| b == b'/').count() <= 1
         && !model.contains("..")
         && !model.contains(":/")
@@ -78,14 +79,13 @@ pub fn is_model_identity(model: &str) -> bool {
 /// each value and whether it is a model identity. Lengths at and beyond
 /// [`TASK_REPORT_MODEL_MAX`] are tested beside it.
 #[doc(hidden)]
-pub const TASK_REPORT_MODEL_CASES: [(&str, bool); 49] = [
+pub const TASK_REPORT_MODEL_CASES: [(&str, bool); 51] = [
     ("gpt-6-sol/high", true),
     ("claude-opus-5-5", true),
     ("gpt-5.3-codex-spark", true),
     ("us.anthropic.claude-opus-5-5-v1:0", true),
     ("codex-fixture-1", true),
     ("anthropic/claude-3.5", true),
-    ("meta-llama/Llama-3-70b@latest", true),
     ("gpt-4o+tools", true),
     ("org:team/model-1", true),
     ("o1:2024", true),
@@ -126,6 +126,9 @@ pub const TASK_REPORT_MODEL_CASES: [(&str, bool); 49] = [
     ("m&#124;x", false),
     ("<b>m-1", false),
     ("fixture@example.invalid\n", false),
+    ("alice@example.com", false),
+    ("model@host", false),
+    ("meta-llama/Llama-3-70b@latest", false),
     ("gpt\u{202e}", false),
     ("gpt-6-sol%2Fhigh", false),
 ];
@@ -654,6 +657,8 @@ mod tests {
             .map(|(model, _)| *model)
             .collect::<Vec<_>>();
         for model in [
+            "alice@example.com",
+            "model@host",
             "file:///etc/passwd",
             "C:/secrets/key",
             "C:\\key",
