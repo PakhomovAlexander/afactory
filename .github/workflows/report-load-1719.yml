@@ -1,7 +1,7 @@
 name: Report lock load evidence1719
 on:
   push:
-    branches: ["af-gate/review-1719/report-load"]
+    branches: ["af-gate/review-1719/report-entry"]
 permissions:
   contents: read
 jobs:
