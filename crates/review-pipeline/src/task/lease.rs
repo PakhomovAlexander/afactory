@@ -89,6 +89,9 @@ fn renew_through_own(
     }
 }
 
+/// Stable host-cancellation diagnostic shared by the CLI interrupt adapter.
+pub const CANCELLED: &str = "Task execution was cancelled by its host";
+
 /// Proof of a scoped heartbeat owner. It grants no Store or effect authority and cannot
 /// outlive the closure that owns and joins the heartbeat.
 pub struct HeartbeatScope<'a, 'store> {
@@ -102,12 +105,18 @@ impl HeartbeatScope<'_, '_> {
         super::control::check(Some(self.cancellation))
     }
 
-    pub(crate) fn covers(&self, store: &Mutex<&mut EventStore>, lease: &TaskLease) -> bool {
+    pub(crate) fn covers(
+        &self,
+        store: &Mutex<&mut EventStore>,
+        lease: &TaskLease,
+        cancellation: Option<&AtomicBool>,
+    ) -> bool {
         std::ptr::eq(
             std::ptr::from_ref(self.store).cast::<()>(),
             std::ptr::from_ref(store).cast::<()>(),
         ) && self.lease.task_id() == lease.task_id()
             && self.lease.epoch() == lease.epoch()
+            && cancellation.is_some_and(|flag| std::ptr::eq(self.cancellation, flag))
     }
 }
 
@@ -125,9 +134,9 @@ pub fn with_lifecycle<'a, 'store, T>(
             cancellation,
         };
         owner.check()?;
-        let result = work(&owner)?;
-        owner.check()?;
-        Ok(result)
+        // No effect follows work: preserve an already-committed result if a host
+        // interrupt arrives afterwards. Heartbeat failures still propagate on join.
+        work(&owner)
     })
 }
 

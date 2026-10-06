@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) fn check(cancellation: Option<&AtomicBool>) -> Result<(), String> {
     if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
-        Err("Task execution was cancelled by its host".into())
+        Err(super::lease::CANCELLED.into())
     } else {
         Ok(())
     }

@@ -26,6 +26,15 @@ pub(super) fn run<'store, T>(
             work(&shared, owner, &cancellation)
         })
     })
+    .map_err(|error| {
+        if error == review_pipeline::task::lease::CANCELLED
+            && crate::interrupt::received().is_some()
+        {
+            crate::interrupt::INTERRUPTED.into()
+        } else {
+            error
+        }
+    })
 }
 
 #[cfg(test)]

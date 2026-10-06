@@ -332,7 +332,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         &self,
         owner: &lease::HeartbeatScope<'_, '_>,
     ) -> Result<RunReport, String> {
-        if !owner.covers(&self.store, &self.lease) {
+        if !owner.covers(&self.store, &self.lease, self.cancellation) {
             return Err("Task runtime does not belong to this heartbeat lifecycle".into());
         }
         owner.check()?;

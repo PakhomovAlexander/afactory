@@ -673,3 +673,72 @@ fn lifecycle_work_error_and_panic_join_before_releasing_the_writer() {
         assert!(shared.lock().unwrap().task_lease_state(&successor).is_ok());
     }
 }
+
+#[test]
+fn lifecycle_rejects_missing_or_unrelated_cancellation_before_dispatch() {
+    for unrelated in [false, true] {
+        let mut f = Fixture::new(SUCCESS);
+        let host = CapturedTaskHost::capture_with_models(
+            &f.cas,
+            &f.compiler,
+            &f.task,
+            &f.plan,
+            f.graph.clone(),
+            &EmptyTaskEnvironment,
+            &DocumentDomain,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
+        let lease = f
+            .store
+            .open_task(&f.cas, &f.revision_id, "writer", 60_000)
+            .unwrap();
+        f.store
+            .propose_task_plan(&f.cas, &lease, &f.plan_id, &authority)
+            .unwrap();
+        f.store.admit_task_plan(&f.cas, &lease, &authority).unwrap();
+        let flag = AtomicBool::new(false);
+        let other = AtomicBool::new(false);
+        let shared = review_store::SharedEventStore::new(&mut f.store);
+        review_pipeline::task::lease::with_lifecycle(&shared, &f.cas, &lease, &flag, |owner| {
+            let mut runtime =
+                TaskRuntime::with_store(shared.clone(), &f.cas, lease.clone(), &authority, &host)?;
+            if unrelated {
+                runtime = runtime.with_cancellation(&other);
+            }
+            assert_eq!(
+                runtime.execute_in_lifecycle(owner).unwrap_err(),
+                "Task runtime does not belong to this heartbeat lifecycle"
+            );
+            assert!(runtime.projection()?.execution.is_none());
+            let runtime = runtime.with_cancellation(&flag);
+            flag.store(true, Ordering::Release);
+            assert_eq!(
+                runtime.execute_in_lifecycle(owner).unwrap_err(),
+                review_pipeline::task::lease::CANCELLED
+            );
+            assert!(runtime.projection()?.execution.is_none());
+            Ok(())
+        })
+        .unwrap();
+    }
+}
+
+#[test]
+fn lifecycle_preserves_completed_work_when_cancellation_arrives_after_effects() {
+    let mut f = Fixture::new(SUCCESS);
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "writer", 60_000)
+        .unwrap();
+    let flag = AtomicBool::new(false);
+    let shared = review_store::SharedEventStore::new(&mut f.store);
+    let result =
+        review_pipeline::task::lease::with_lifecycle(&shared, &f.cas, &lease, &flag, |owner| {
+            owner.check()?;
+            flag.store(true, Ordering::Release);
+            Ok("already committed")
+        });
+    assert_eq!(result.unwrap(), "already committed");
+}
