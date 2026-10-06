@@ -29,10 +29,18 @@ fn renewal_during_context_callback_never_redispatches_it_and_takeover_is_closed(
         let mut other = f.store.reopen(std::time::Duration::from_secs(1)).unwrap();
         let cas = Cas::open_existing(f._dir.path().join("cas")).unwrap();
         let old = lease.clone();
+        let reserved_for_release = reserved.clone();
         HOOK.with(|hook| {
             *hook.borrow_mut() = Some(Box::new(move || {
                 if takeover {
-                    other.recover_task_attempts(&cas, &old).unwrap();
+                    other
+                        .release_reserved_task_attempt(
+                            &cas,
+                            &old,
+                            &reserved_for_release,
+                            "callback takeover fixture",
+                        )
+                        .unwrap();
                     other.release_task_lease(&cas, &old).unwrap();
                     other
                         .take_task_lease(&cas, old.task_id(), "successor", 15_000)
