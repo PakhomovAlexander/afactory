@@ -18,7 +18,7 @@ review-process = { path = "../review-process" }
 review-store = { path = "../review-store" }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
-jsonschema = { version = "0.57.0", default-features = false }
+jsonschema = { version = "0.58.4", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.27.0"

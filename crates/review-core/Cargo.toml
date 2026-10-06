@@ -14,14 +14,14 @@ doctest = false
 
 [dependencies]
 base64 = "0.23.1"
-num-bigint = "0.4.8"
+num-bigint = "0.5.1"
 num-integer = "0.1.47"
 num-traits = "0.2.19"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 
 [dev-dependencies]
-jsonschema = { version = "0.57.0", default-features = false }
+jsonschema = { version = "0.58.4", default-features = false }
 
 [lints]
 workspace = true
