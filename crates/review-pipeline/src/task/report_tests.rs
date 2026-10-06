@@ -23,7 +23,7 @@ include!(concat!(
     "/tests/support/task_runtime_fixture.rs"
 ));
 
-fn with_report(test: impl FnOnce(&TaskRuntime<'_, '_>, &RunReport)) {
+fn with_report(entry_ms: u64, test: impl FnOnce(&mut TaskRuntime<'_, '_>, &RunReport)) {
     let mut f = Fixture::new(SUCCESS);
     let host = CapturedTaskHost::capture_with_models(
         &f.cas,
@@ -45,23 +45,27 @@ fn with_report(test: impl FnOnce(&TaskRuntime<'_, '_>, &RunReport)) {
         .propose_task_plan(&f.cas, &lease, &f.plan_id, &authority)
         .unwrap();
     f.store.admit_task_plan(&f.cas, &lease, &authority).unwrap();
-    let runtime = TaskRuntime::new(&mut f.store, &f.cas, lease, &authority, &host).unwrap();
-    let report = runtime.execute().unwrap();
+    let report = {
+        let runtime =
+            TaskRuntime::new(&mut f.store, &f.cas, lease.clone(), &authority, &host).unwrap();
+        runtime.execute().unwrap()
+    };
     assert!(report.complete());
-    // execute's heartbeat has joined. Direct report capture below cannot be rescued by a
-    // scheduler-dependent heartbeat tick; entry timing is set by a real fenced renewal.
-    test(&runtime, &report);
+    // execute's heartbeat has joined. Release and reacquire through the production API
+    // to set entry timing: renewal correctly refuses to shorten an existing expiry.
+    f.store.release_task_lease(&f.cas, &lease).unwrap();
+    let lease = f
+        .store
+        .take_task_lease(&f.cas, &f.task.task_id, "report-entry-next", entry_ms)
+        .unwrap();
+    let mut runtime = TaskRuntime::new(&mut f.store, &f.cas, lease, &authority, &host).unwrap();
+    // Direct capture cannot be rescued by a scheduler-dependent heartbeat tick.
+    test(&mut runtime, &report);
 }
 
 #[test]
 fn due_report_entry_renews_before_prefix_without_reexecuting_or_recharging() {
-    with_report(|runtime, report| {
-        runtime
-            .store
-            .lock()
-            .unwrap()
-            .renew_task_lease(runtime.cas, &runtime.lease, 8_000)
-            .unwrap();
+    with_report(8_000, |runtime, report| {
         let before = runtime.projection().unwrap();
         let before_execution = before.execution.as_ref().unwrap();
         let before_expiry = runtime
@@ -120,13 +124,7 @@ fn due_report_entry_renews_before_prefix_without_reexecuting_or_recharging() {
 
 #[test]
 fn report_entry_with_full_lease_does_not_renew_or_change_accounting() {
-    with_report(|runtime, report| {
-        runtime
-            .store
-            .lock()
-            .unwrap()
-            .renew_task_lease(runtime.cas, &runtime.lease, 60_000)
-            .unwrap();
+    with_report(60_000, |runtime, report| {
         let before = runtime.projection().unwrap();
         let expiry = runtime
             .store
@@ -159,12 +157,16 @@ fn report_entry_with_full_lease_does_not_renew_or_change_accounting() {
 #[test]
 fn report_entry_refuses_released_replaced_and_expired_writers_without_append() {
     for mode in ["released", "replaced", "expired"] {
-        with_report(|runtime, report| {
+        with_report(60_000, |runtime, report| {
             let successor = {
                 let mut store = runtime.store.lock().unwrap();
                 if mode == "expired" {
                     store
-                        .renew_task_lease(runtime.cas, &runtime.lease, 1)
+                        .release_task_lease(runtime.cas, &runtime.lease)
+                        .unwrap();
+                    // Install only a genuine capability returned by the fenced Store API.
+                    runtime.lease = store
+                        .take_task_lease(runtime.cas, runtime.lease.task_id(), "expiring", 1)
                         .unwrap();
                     // Wait for the actual lease boundary, not an arbitrary scheduling sleep.
                     let stop = std::time::Instant::now() + std::time::Duration::from_secs(1);
