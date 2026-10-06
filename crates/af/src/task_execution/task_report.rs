@@ -242,14 +242,21 @@ impl ReviewAttempts {
 /// earlier rounds' findings, so a round contributes only the entries it saw itself
 /// (`last_seen_round` is the set's round), and a finding seen in several rounds of the Task is
 /// counted once, at the severity its last round recorded.
+///
+/// The counts are unknown when the review ran but a recorded round has no complete
+/// `FindingSet@1` (its gather was incomplete, say a required reviewer's result is missing), or
+/// it recorded no round yet: what that round would have found is not in the Store, so it never
+/// reads as no findings.
 fn findings(
     cas: &Cas,
     rounds: &[TaskReviewRoundV1],
     review: &ReviewAttempts,
 ) -> Result<TaskReportFindingsV1, String> {
     let mut seen: BTreeMap<String, Severity> = BTreeMap::new();
+    let mut complete = true;
     for round in rounds {
         let Some(id) = &round.finding_set_id else {
+            complete = false;
             continue;
         };
         let set: FindingSetV1 = artifact(cas, id, review_core::contract::FINDING_SET_V1)?;
@@ -260,8 +267,14 @@ fn findings(
             }
         }
     }
-    let count = |severity| seen.values().filter(|s| **s == severity).count() as u64;
-    let review_ran = review.reviewers || rounds.iter().any(|r| r.finding_set_id.is_some());
+    // A round that admitted a reviewer's result ran, complete or not.
+    let review_ran = review.reviewers
+        || rounds
+            .iter()
+            .any(|r| r.finding_set_id.is_some() || !r.selected_results.is_empty());
+    // Before the review runs every count is zero; once it ran, only complete rounds count.
+    let known = !review_ran || complete && !rounds.is_empty();
+    let count = |severity| known.then(|| seen.values().filter(|s| **s == severity).count() as u64);
     Ok(TaskReportFindingsV1 {
         blocker: count(Severity::Blocker),
         major: count(Severity::Major),
@@ -836,7 +849,8 @@ fn report_model(model: &str) -> String {
     }
 }
 
-/// The Markdown block: the markers, a heading, one line per pipeline, the round table with its
+/// The Markdown block: the markers, a heading, one line per pipeline (and one
+/// `**unknown pipeline**: not retained` line for Tasks that name none), the round table with its
 /// totals row, and each round's node breakdown in a collapsed `<details>` element. Every
 /// recorded value is sanitized display text, so recorded data can neither break the table nor
 /// carry markup.
@@ -851,6 +865,12 @@ pub(crate) fn markdown(report: &TaskReportV1) -> String {
     line("");
     for pipeline in &report.pipelines {
         line(&pipeline_line(pipeline));
+        line("");
+    }
+    // A Task whose plan was collected, or that never reached planning, names no pipeline: one
+    // line says so, so the block still leads with a pipeline line.
+    if report.tasks.iter().any(|task| task.pipeline.is_none()) {
+        line(TASK_REPORT_UNKNOWN_PIPELINE);
         line("");
     }
     line(&raw_row(TASK_REPORT_COLUMNS.iter().map(|c| c.to_string())));
@@ -990,31 +1010,41 @@ fn pipeline_line(pipeline: &TaskReportPipelineV1) -> String {
 }
 
 /// The Findings cell: counts by severity (`6 major, 1 minor`), `none` when the review ran and
-/// found nothing, `gate failed` when a check failed and the review did not run, `not run` when
-/// it has not run, `—` for a Task without a review and `unknown` for a collected one; then
+/// its complete rounds found nothing, `unknown` when it ran but a round has no complete finding
+/// set, `gate failed` when a check failed and the review did not run, `not run` when it has not
+/// run, `—` for a Task without a review and `unknown` for a collected one; then
 /// `; N reviewer(s) failed` when a reviewer's Attempt failed.
 fn findings_cell(task: &TaskReportEntryV1) -> String {
     let Some(findings) = &task.findings else {
         return if task.collected { UNKNOWN } else { "—" }.into();
     };
+    let counts = [
+        (findings.blocker, "blocker"),
+        (findings.major, "major"),
+        (findings.minor, "minor"),
+    ]
+    .into_iter()
+    .map(|(n, severity)| n.map(|n| (n, severity)))
+    .collect::<Option<Vec<_>>>();
     let mut text = if findings.gate_failed {
         "gate failed".to_owned()
     } else if !findings.review_ran {
         "not run".to_owned()
     } else {
-        let counts = [
-            (findings.blocker, "blocker"),
-            (findings.major, "major"),
-            (findings.minor, "minor"),
-        ]
-        .into_iter()
-        .filter(|(n, _)| *n > 0)
-        .map(|(n, severity)| format!("{n} {severity}"))
-        .collect::<Vec<_>>();
-        if counts.is_empty() {
-            "none".to_owned()
-        } else {
-            counts.join(", ")
+        match counts {
+            None => UNKNOWN.to_owned(),
+            Some(counts) => {
+                let counts = counts
+                    .into_iter()
+                    .filter(|(n, _)| *n > 0)
+                    .map(|(n, severity)| format!("{n} {severity}"))
+                    .collect::<Vec<_>>();
+                if counts.is_empty() {
+                    "none".to_owned()
+                } else {
+                    counts.join(", ")
+                }
+            }
         }
     };
     if findings.failed_reviewers > 0 {

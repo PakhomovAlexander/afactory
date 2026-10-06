@@ -158,9 +158,9 @@ fn round(
 
 fn findings(major: u64, minor: u64, failed_reviewers: u64) -> Option<TaskReportFindingsV1> {
     Some(TaskReportFindingsV1 {
-        blocker: 0,
-        major,
-        minor,
+        blocker: Some(0),
+        major: Some(major),
+        minor: Some(minor),
         review_ran: true,
         gate_failed: false,
         failed_reviewers,
@@ -286,9 +286,9 @@ fn five_rounds_render_their_pipelines_first_then_one_row_each_and_the_total() {
             reviewed_label,
             "changes_requested",
             Some(TaskReportFindingsV1 {
-                blocker: 0,
-                major: 0,
-                minor: 0,
+                blocker: Some(0),
+                major: Some(0),
+                minor: Some(0),
                 review_ran: false,
                 gate_failed: true,
                 failed_reviewers: 0,
@@ -448,9 +448,9 @@ fn a_findings_cell_says_what_the_review_recorded() {
     };
     let ran = |blocker, major, minor, failed_reviewers| {
         Some(TaskReportFindingsV1 {
-            blocker,
-            major,
-            minor,
+            blocker: Some(blocker),
+            major: Some(major),
+            minor: Some(minor),
             review_ran: true,
             gate_failed: false,
             failed_reviewers,
@@ -463,9 +463,9 @@ fn a_findings_cell_says_what_the_review_recorded() {
     assert_eq!(cell(ran(1, 0, 0, 1), false), "1 blocker; 1 reviewer failed");
     let not_ran = |gate_failed| {
         Some(TaskReportFindingsV1 {
-            blocker: 0,
-            major: 0,
-            minor: 0,
+            blocker: Some(0),
+            major: Some(0),
+            minor: Some(0),
             review_ran: false,
             gate_failed,
             failed_reviewers: 0,
@@ -475,6 +475,108 @@ fn a_findings_cell_says_what_the_review_recorded() {
     assert_eq!(cell(not_ran(false), false), "not run");
     assert_eq!(cell(None, false), "—");
     assert_eq!(cell(None, true), "unknown");
+    // The review ran but a round has no complete finding set: unknown, never `none`.
+    let incomplete = |failed_reviewers| {
+        Some(TaskReportFindingsV1 {
+            blocker: None,
+            major: None,
+            minor: None,
+            review_ran: true,
+            gate_failed: false,
+            failed_reviewers,
+        })
+    };
+    assert_eq!(cell(incomplete(0), false), "unknown");
+    assert_eq!(cell(incomplete(1), false), "unknown; 1 reviewer failed");
+}
+
+/// A round whose gather was incomplete: the `bugs` reviewer's result was admitted, its
+/// sibling `correctness` is missing, so the reduce step wrote no finding set.
+fn incomplete_round() -> TaskReviewRoundV1 {
+    use review_core::task::pipeline::ReceiptOutcomeV1;
+    use review_core::task::review::ReviewConclusionV1;
+    let digest = |n: u8| format!("sha256:{}", format!("{n:02x}").repeat(32));
+    let round = TaskReviewRoundV1 {
+        invocation: review_core::task::execution::TaskInvocationV1 {
+            plan_id: digest(1),
+            node: "root.nodes.reduce".into(),
+            inputs: BTreeMap::new(),
+        },
+        policy_id: digest(2),
+        subject_id: digest(3),
+        snapshot_id: digest(4),
+        round: 1,
+        outcome: ReceiptOutcomeV1::Inconclusive,
+        conclusion: ReviewConclusionV1::Incomplete,
+        selected_results: BTreeMap::from([("bugs".to_owned(), digest(5))]),
+        missing_reviewers: BTreeSet::from(["correctness".to_owned()]),
+        finding_set_id: None,
+        demand_set_id: None,
+    };
+    round.validate().unwrap();
+    round
+}
+
+/// A review that ran without a complete finding set for every recorded round has unknown
+/// counts, in the document and in the cell: an incomplete round never reads as `none`.
+#[test]
+fn an_incomplete_round_reports_unknown_findings_never_none() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let reviewed = ReviewAttempts {
+        reviewers: true,
+        failed_reviewers: 1,
+        check_failed: false,
+    };
+    let unknown = TaskReportFindingsV1 {
+        blocker: None,
+        major: None,
+        minor: None,
+        review_ran: true,
+        gate_failed: false,
+        failed_reviewers: 1,
+    };
+    // The admitted reviewer result alone says the review ran.
+    for review in [reviewed.clone(), ReviewAttempts::default()] {
+        let failed_reviewers = review.failed_reviewers;
+        assert_eq!(
+            super::findings(&cas, &[incomplete_round()], &review).unwrap(),
+            TaskReportFindingsV1 {
+                failed_reviewers,
+                ..unknown.clone()
+            }
+        );
+    }
+    // Reviewers began but no round was recorded yet: unknown too.
+    assert_eq!(super::findings(&cas, &[], &reviewed).unwrap(), unknown);
+    // Before any review ran, nothing was found.
+    assert_eq!(
+        super::findings(&cas, &[], &ReviewAttempts::default()).unwrap(),
+        TaskReportFindingsV1 {
+            blocker: Some(0),
+            major: Some(0),
+            minor: Some(0),
+            review_ran: false,
+            gate_failed: false,
+            failed_reviewers: 0,
+        }
+    );
+
+    let mut task = entry("incomplete", "gpt-6-sol");
+    task.review_rounds = Some(1);
+    task.findings = Some(super::findings(&cas, &[incomplete_round()], &reviewed).unwrap());
+    let report = report(vec![task]);
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(
+        json["tasks"][0]["findings"],
+        serde_json::json!({"review_ran": true, "gate_failed": false, "failed_reviewers": 1}),
+        "the counts are absent, unknown"
+    );
+    let text = markdown(&report);
+    assert!(
+        text.contains("| 1 | incomplete | pass | unknown; 1 reviewer failed | 1,234 | 3.2s |"),
+        "{text}"
+    );
 }
 
 #[test]
@@ -948,6 +1050,52 @@ fn unknown_figures_are_written_as_unknown_never_as_zero() {
         text.contains("| 1,234 | unknown | pagination passed unknown |"),
         "{text}"
     );
+}
+
+/// A Task that names no pipeline, collected or never planned, still leads the block with a
+/// pipeline line: `**unknown pipeline**: not retained`, once, after the known pipelines.
+#[test]
+fn a_task_without_a_retained_plan_gets_the_unknown_pipeline_line_once() {
+    let collected = |id: &str| {
+        let mut task = entry(id, "gpt-6-sol");
+        task.collected = true;
+        task.attempts = None;
+        task.nodes = None;
+        task.review_rounds = None;
+        task.pipeline = None;
+        task
+    };
+    let only = markdown(
+        &TaskReportV1::new(Vec::new(), vec![collected("old"), collected("older")]).unwrap(),
+    );
+    assert_eq!(
+        only.lines()
+            .filter(|line| line.starts_with("**"))
+            .collect::<Vec<_>>(),
+        [TASK_REPORT_UNKNOWN_PIPELINE],
+        "{only}"
+    );
+    assert!(
+        only.contains(&format!(
+            "### af task report\n\n{TASK_REPORT_UNKNOWN_PIPELINE}\n\n| Round |"
+        )),
+        "{only}"
+    );
+    let mixed = markdown(&report(vec![collected("old"), entry("new", "gpt-6-sol")]));
+    assert_eq!(
+        mixed
+            .lines()
+            .filter(|line| line.starts_with("**"))
+            .collect::<Vec<_>>(),
+        [
+            "**fixture/plain@1.0.0**: implement (codex gpt-6-sol/high) → gate (pagination)",
+            TASK_REPORT_UNKNOWN_PIPELINE
+        ],
+        "{mixed}"
+    );
+    // Every Task names its pipeline: no unknown line.
+    let known = markdown(&report(vec![entry("new", "gpt-6-sol")]));
+    assert!(!known.contains(TASK_REPORT_UNKNOWN_PIPELINE), "{known}");
 }
 
 /// The checked-in fixture pair `scripts/test-check-pr-report.py` checks: the Markdown is this

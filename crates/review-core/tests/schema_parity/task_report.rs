@@ -37,9 +37,9 @@ fn report() -> TaskReportV1 {
         collected: false,
         review_rounds: Some(2),
         findings: Some(TaskReportFindingsV1 {
-            blocker: 1,
-            major: 6,
-            minor: 1,
+            blocker: Some(1),
+            major: Some(6),
+            minor: Some(1),
             review_ran: true,
             gate_failed: false,
             failed_reviewers: 1,
@@ -274,6 +274,41 @@ fn task_report_document_and_schema_agree_in_both_directions() {
         &|v| v["tasks"][0]["findings"] = Value::Null,
         "null findings",
     );
+    invalid(
+        &|v| v["tasks"][0]["findings"]["minor"] = Value::Null,
+        "null for an unknown count",
+    );
+    invalid(
+        &|v| {
+            v["tasks"][0]["findings"]
+                .as_object_mut()
+                .unwrap()
+                .remove("minor");
+        },
+        "one count unknown beside known ones",
+    );
+    let unknown_counts = |v: &mut Value| {
+        let findings = v["tasks"][0]["findings"].as_object_mut().unwrap();
+        for severity in ["blocker", "major", "minor"] {
+            findings.remove(severity);
+        }
+    };
+    invalid(
+        &|v| {
+            unknown_counts(v);
+            v["tasks"][0]["findings"]["review_ran"] = json!(false);
+            v["tasks"][0]["findings"]["failed_reviewers"] = json!(0);
+        },
+        "unknown counts without a review that ran",
+    );
+    // An incomplete round: the review ran, its counts are unknown.
+    let mut incomplete = value.clone();
+    unknown_counts(&mut incomplete);
+    assert_valid("task-report-v1.json", &incomplete);
+    let parsed: TaskReportV1 = serde_json::from_value(incomplete.clone()).unwrap();
+    parsed.validate().unwrap();
+    assert_eq!(parsed.tasks[0].findings.as_ref().unwrap().major, None);
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), incomplete);
     invalid(
         &|v| v["schema"] = json!("af/task-report@2"),
         "another schema",

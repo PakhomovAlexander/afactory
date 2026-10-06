@@ -21,6 +21,10 @@ pub const TASK_REPORT_COLUMNS: [&str; 6] =
     ["Round", "Task", "Outcome", "Findings", "Tokens", "Active"];
 /// The Task cell of the round table's last row, the totals row, starts with this text.
 pub const TASK_REPORT_TOTAL: &str = "Total:";
+/// The pipeline line printed, once, when a reported Task names no pipeline: its plan was
+/// collected or it never reached planning. `scripts/check-pr-report.py` accepts it as a pipeline
+/// line.
+pub const TASK_REPORT_UNKNOWN_PIPELINE: &str = "**unknown pipeline**: not retained";
 /// The role a check node's step has in a pipeline line.
 pub const TASK_REPORT_GATE_ROLE: &str = "gate";
 /// The model the report names in place of a recorded value that is not a model identity.
@@ -183,11 +187,29 @@ pub struct TaskReportStepV1 {
 #[serde(deny_unknown_fields)]
 pub struct TaskReportFindingsV1 {
     /// Findings by severity, each counted once: the entries of the `FindingSet@1` each recorded
-    /// review round's reduce step wrote whose `last_seen_round` is that round.
-    pub blocker: u64,
-    pub major: u64,
-    pub minor: u64,
-    /// A reviewer Attempt began.
+    /// review round's reduce step wrote whose `last_seen_round` is that round. All three are
+    /// absent, unknown, when the review ran but a round it recorded has no complete
+    /// `FindingSet@1`, or it recorded no round: an incomplete round never reads as no findings.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub blocker: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub major: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub minor: Option<u64>,
+    /// A reviewer Attempt began, or a recorded round wrote its findings or admitted a
+    /// reviewer's result.
     pub review_ran: bool,
     /// A check failed and no reviewer Attempt began.
     pub gate_failed: bool,
@@ -593,14 +615,21 @@ impl TaskReportPipelineV1 {
 
 impl TaskReportFindingsV1 {
     pub fn validate(&self) -> Result<(), String> {
+        let counts = [self.blocker, self.major, self.minor];
         require(
-            [self.blocker, self.major, self.minor, self.failed_reviewers]
+            counts
                 .into_iter()
+                .flatten()
+                .chain([self.failed_reviewers])
                 .all(safe_number),
             "Task report finding counts are bounded",
         )?;
         require(
-            self.review_ran || self.blocker + self.major + self.minor == 0,
+            counts.iter().all(Option::is_some) || counts.iter().all(Option::is_none),
+            "Task report finding counts are all known or all unknown",
+        )?;
+        require(
+            self.review_ran || counts.iter().all(|count| *count == Some(0)),
             "Task report findings need a review that ran",
         )?;
         require(
@@ -931,21 +960,30 @@ mod tests {
 
     #[test]
     fn findings_need_a_review_that_ran_and_a_failed_gate_means_it_did_not() {
-        let findings = |review_ran, gate_failed, major| TaskReportFindingsV1 {
-            blocker: 0,
+        let findings = |review_ran, gate_failed, major: Option<u64>| TaskReportFindingsV1 {
+            blocker: major.map(|_| 0),
             major,
-            minor: 0,
+            minor: major.map(|_| 0),
             review_ran,
             gate_failed,
             failed_reviewers: 0,
         };
+        let partly_known = TaskReportFindingsV1 {
+            minor: None,
+            ..findings(true, false, Some(1))
+        };
         for (value, valid) in [
-            (findings(true, false, 6), true),
-            (findings(true, false, 0), true),
-            (findings(false, true, 0), true),
-            (findings(false, false, 0), true),
-            (findings(false, false, 1), false),
-            (findings(true, true, 0), false),
+            (findings(true, false, Some(6)), true),
+            (findings(true, false, Some(0)), true),
+            (findings(false, true, Some(0)), true),
+            (findings(false, false, Some(0)), true),
+            (findings(false, false, Some(1)), false),
+            (findings(true, true, Some(0)), false),
+            // An incomplete round: the review ran, its counts are unknown.
+            (findings(true, false, None), true),
+            (findings(false, false, None), false),
+            (findings(false, true, None), false),
+            (partly_known, false),
         ] {
             let mut task = entry("a", None);
             task.findings = Some(value.clone());
@@ -954,7 +992,7 @@ mod tests {
         let mut collected = entry("a", None);
         collected.collected = true;
         collected.nodes = None;
-        collected.findings = Some(findings(true, false, 1));
+        collected.findings = Some(findings(true, false, Some(1)));
         assert!(with_tasks(vec![collected]).is_err());
     }
 

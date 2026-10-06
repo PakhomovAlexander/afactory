@@ -109,7 +109,11 @@ per-Task cost columns answers neither.
      `last_seen_round` is the set's own round. Each finding is counted once, by `finding_id`,
      at the `severity` the last round that saw it recorded, and the counts are by severity:
      blocker, major, minor. The review **ran** when a reviewer Attempt began or a round wrote
-     its findings; the **gate failed** when a check result the Task recorded failed and the
+     its findings or admitted a reviewer's result. Once it ran, the counts are known only when
+     every round the Task recorded is complete and it recorded at least one: a round whose
+     gather was incomplete (a required reviewer's result is missing, say) wrote no finding set,
+     so what it would have found is not in the Store, and the counts are unknown, never zero.
+     The **gate failed** when a check result the Task recorded failed and the
      review did not run; a **failed reviewer** is a reviewer node with at least one failed
      Attempt. A reviewer node is a Review frontend's reviewer or scatter node, or a Worker node
      whose result a review reduce step reads. A Task whose plan has no review step, records no
@@ -159,16 +163,20 @@ per-Task cost columns answers neither.
       nodes or shares its stage, as the renderer's test of five rounds prints:
       `**afactory/implementation-reviewed@1.0.0**: implement (codex gpt-6-sol/high) → gate
       (clippy, fmt, test) → review (bugs, correctness: codex gpt-6-sol/high) → evaluate (claude
-      claude-opus-5-5/high)`;
+      claude-opus-5-5/high)`. After them, when a reported Task names no pipeline because its plan
+      is no longer retained (it was collected) or it never reached planning, the one line
+      `**unknown pipeline**: not retained`, printed once however many such Tasks there are, so
+      a block always leads with a pipeline line;
    3. one table whose header is exactly the six columns Round, Task, Outcome, Findings, Tokens
       and Active, in that order, with one row per Task in the order given, and a last row whose
       Task cell is `Total: N Attempts` (with `(M failed)` when any failed), whose Tokens and
       Active cells are the totals and whose other cells are empty. The Findings cell reads
       `6 major, 1 minor` (the nonzero counts, blocker, major, minor), `none` when the review ran
-      and found nothing, `gate failed` when the gate failed and the review did not run, `not
-      run` when the plan reviews but no reviewer has begun, `—` for a Task without a review and
-      `unknown` for a collected one, followed by `; N reviewer(s) failed` when a reviewer's
-      Attempt failed;
+      and its complete rounds found nothing, `unknown` when it ran but its counts are unknown (a
+      recorded round has no complete finding set, or none was recorded yet), `gate failed` when
+      the gate failed and the review did not run, `not run` when the plan reviews but no reviewer
+      has begun, `—` for a Task without a review and `unknown` for a collected one, followed by
+      `; N reviewer(s) failed` when a reviewer's Attempt failed;
    4. per round a collapsed `<details>` element whose summary is `Round N · TASK_ID` with its
       runs, wall time and failed Attempts by reason class, holding the per-node table (Node,
       Role, Worker, Attempts, Tokens, Elapsed, Checks).
@@ -182,7 +190,8 @@ per-Task cost columns answers neither.
    with the same figures: tokens as exact decimal text, times in milliseconds; a `pipelines`
    array (name, version, and steps with stage, role, nodes, Worker kind and model, and check
    names); and per Task its `round` and its `findings` (`blocker`, `major`, `minor`,
-   `review_ran`, `gate_failed`, `failed_reviewers`).
+   `review_ran`, `gate_failed`, `failed_reviewers`). The three counts are present together, or
+   absent together when they are unknown, which only a review that ran allows.
 6. **Privacy.** The report names a Provider only by kind, model and effort. It never contains a
    Provider registry ID or label, a principal, an auth directory, a state directory, a home path,
    a credential, a prompt or Worker output. Every object of the document is closed, so the schema
@@ -218,29 +227,36 @@ per-Task cost columns answers neither.
    that judges it; a change to either applies from the pull requests after it merges. A pull
    request opened by `dependabot[bot]`, or from a `release/` branch, is exempt — neither is made
    by an af Task.
-   Every other pull request passes only when its description holds exactly one well-formed
-   block: both markers in order; at least one pipeline line (`**name@version**:` followed by
-   its steps) before the table; the table header equal to the six v1 columns, exactly and in
-   order; a separator row of that width; at least one round row; and a last row whose Task cell
-   starts with `Total:`. The checker splits a row as GitHub does (a backslash escapes the next
-   character), and every non-blank line after the separator, up to the first blank line, is a
-   row whether or not it starts or ends with `|`, since GitHub renders both forms as rows. Every
-   row has exactly six cells, and every row before the `Total:` row is a round row with nonempty
-   Round, Task and Outcome cells. A cell is nonempty only when it has visible content once its
-   HTML comments, closed or left open, are removed, so `<!--x-->` fills no cell (issue #191).
-   A marker counts only outside code (issue #191): a marker line inside a fenced code block
-   (opened by ```` ``` ```` or `~~~` of any length, with any info string, and closed by a fence
-   of the same character at least as long, or left open to the end) or in an indented code
-   block (four columns of indent after a blank line, an HTML comment block not being one) is
-   text, and a description whose only block is shown as code fails with a message saying the
-   block is inside a code block. Each missing or malformed part fails with its own message — a
-   missing pipeline line, a missing column, an extra column and reordered columns each have
-   theirs, as do a one-cell placeholder, a short or long row (named by its line), an empty
-   required cell, a missing or misplaced `Total:` row, a separator of the wrong width and a
-   block inside code — and every failure says how to produce the block with `af task report`.
-   `scripts/test-check-pr-report.py`, run by `make check`, accepts the checked-in block the real
-   renderer printed for a test Store (`fixtures/task-report/`), and the renderer's own tests
-   require it still prints that block, so the checker and the renderer cannot drift apart.
+   Every other pull request passes only when its description holds exactly one well-formed block:
+   both markers in order; at least one pipeline line (`**name@version**:` followed by its steps,
+   or exactly `**unknown pipeline**: not retained`) before the table; the table header equal to
+   the six v1 columns, exactly and in order; a separator row of that width; at least one round
+   row; and a last row whose Task cell starts with `Total:`. The checker splits a row as GitHub
+   does (a backslash escapes the next character), and every non-blank line after the separator,
+   up to the first blank line, is a row whether or not it starts or ends with `|`, since GitHub
+   renders both forms as rows. Every row has exactly six cells, and every row before the `Total:`
+   row is a round row with nonempty Round, Task and Outcome cells. A cell is nonempty only when
+   it has visible content once its HTML comments, closed or left open, are removed, so `<!--x-->`
+   fills no cell (issue #191). A marker counts only outside code (issue #191): a marker line
+   inside a fenced code block (opened by ```` ``` ```` or `~~~` of any length, with any info
+   string, and closed by a fence of the same character at least as long, or left open to the end)
+   or in an indented code block is text. A line is indented code when it has four columns of
+   indent and does not continue a paragraph: after a blank line, and also right after an ATX or
+   setext heading, a thematic break, a fenced code block, an HTML block or a list item, each of
+   which ends a paragraph, so a block indented under the description's `## af task report`
+   heading with no blank line between is code. A line inside an HTML block, such as the
+   template's multi-line comment, is not; a fence opened inside an HTML block other than a
+   comment still counts, and a list item is not modelled as a container, so a line indented under
+   one counts as code — both the stricter reading. A description whose only block is shown as
+   code fails with a message saying the block is inside a code block. Each missing or malformed
+   part fails with its own message — a missing pipeline line, a missing column, an extra column
+   and reordered columns each have theirs, as do a one-cell placeholder, a short or long row
+   (named by its line), an empty required cell, a missing or misplaced `Total:` row, a separator
+   of the wrong width and a block inside code — and every failure says how to produce the block
+   with `af task report`. `scripts/test-check-pr-report.py`, run by `make check`, accepts the
+   checked-in block the real renderer printed for a test Store (`fixtures/task-report/`), and the
+   renderer's own tests require it still prints that block, so the checker and the renderer
+   cannot drift apart.
 
 ## Consequences
 
@@ -263,7 +279,10 @@ per-Task cost columns answers neither.
   line shows the Task's current plan, so a pipeline a Task left by a refresh is not listed.
 - Findings are the reduce step's, so two reviewers that report one problem count once, and a
   finding an earlier round recorded counts only in a round that saw it again. A round that did
-  not complete wrote no finding set: its reviewers' raw results are not counted.
+  not complete wrote no finding set: its reviewers' raw results are not counted, and the Task's
+  findings read `unknown` rather than `none`.
+- A report of only collected Tasks still leads with a pipeline line, `**unknown pipeline**: not
+  retained`, so the check accepts it.
 - A run that only finishes what an earlier run settled is not a run, so a Task resumed only to
   publish reports one run fewer and less active time than the leases it took.
 - Once released, adding a column, renaming a marker or changing the `Total:` row is a contract

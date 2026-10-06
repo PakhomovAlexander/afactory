@@ -1,11 +1,14 @@
 //! `af task report` end to end (ADR-0142), over Stores the existing fixtures build: a Task
-//! interrupted and resumed once, a document Task whose model Worker fails at its Provider, and
-//! two Tasks of one Store. Every `--json` document validates against
+//! interrupted and resumed once, a document Task whose model Worker fails at its Provider, two
+//! Tasks of one Store (one of them later collected, and reported alone), and two Tasks under two
+//! pipelines, one whose review round recorded a major and a minor finding. Every `--json` document validates against
 //! `schemas/task-report-v1.json`, every Markdown block passes `scripts/check-pr-report.py`, and
 //! neither carries a Provider label, a path or an account the Store or the machine holds.
 
 use nix::sys::signal::Signal;
-use review_core::task::task_report::is_model_identity;
+use review_core::task::task_report::{
+    TASK_REPORT_BEGIN, TASK_REPORT_UNKNOWN_PIPELINE, is_model_identity,
+};
 use review_store::{Cas, EventStore};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -1270,7 +1273,28 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
                 && line.contains(" (collected) | unknown | ")),
         "{markdown}"
     );
+    let pipelines = |markdown: &str| -> Vec<String> {
+        markdown
+            .lines()
+            .filter(|line| line.starts_with("**"))
+            .map(str::to_owned)
+            .collect()
+    };
+    // The collected Task's plan is gone: one line says its pipeline is not retained.
+    assert_eq!(pipelines(&markdown).len(), 2, "{markdown}");
+    assert!(pipelines(&markdown)[0].starts_with("**fixture/plain@1.0.0**: "));
+    assert_eq!(pipelines(&markdown)[1], TASK_REPORT_UNKNOWN_PIPELINE);
     assert_block_is_checked(&markdown);
+
+    // Only the collected Task: the block still leads with a pipeline line, and the real
+    // checker accepts it.
+    let value = document(&repo, &state, &["gc-older"]);
+    assert_eq!(value["pipelines"], serde_json::json!([]), "{value:#}");
+    let only = stdout(&report(&repo, &state, &["gc-older"], false));
+    assert_eq!(pipelines(&only), [TASK_REPORT_UNKNOWN_PIPELINE], "{only}");
+    let (passed, said) = check_pr_report(&description(&only));
+    assert!(passed, "{said}\n{only}");
+    assert_block_is_checked(&only);
 }
 
 /// The findings a Task's recorded rounds wrote, read straight from the Store: each round's
@@ -1470,4 +1494,216 @@ fn a_round_recorded_before_a_source_refresh_still_counts() {
     );
     assert_eq!(task["runs"], 2, "the refresh is not a run: {task:#}");
     assert_block_is_checked(&stdout(&report(&repo, &state, &["issue-refresh"], false)));
+}
+
+/// A duration as the renderer writes it (ADR-0142): `850ms`, `3.2s`, `4m 05s`, `1h 02m`.
+fn duration(ms: u64) -> String {
+    match ms {
+        0..1_000 => format!("{ms}ms"),
+        1_000..60_000 => format!("{}.{}s", ms / 1_000, ms % 1_000 / 100),
+        60_000..3_600_000 => format!("{}m {:02}s", ms / 60_000, ms % 60_000 / 1_000),
+        _ => format!("{}h {:02}m", ms / 3_600_000, ms % 3_600_000 / 60_000),
+    }
+}
+
+/// A token count as the renderer writes it, with thousands separators: `205,295`.
+fn thousands(decimal: &str) -> String {
+    let mut out = String::new();
+    for (index, digit) in decimal.chars().enumerate() {
+        if index > 0 && (decimal.len() - index) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// The cells of the round table's rows, the totals row last.
+fn round_table(markdown: &str) -> Vec<Vec<String>> {
+    markdown
+        .lines()
+        .skip_while(|line| !line.starts_with("| ---: |"))
+        .skip(1)
+        .take_while(|line| line.starts_with('|'))
+        .map(|line| {
+            line[1..line.len() - 1]
+                .split(" | ")
+                .map(|cell| cell.trim().to_owned())
+                .collect()
+        })
+        .collect()
+}
+
+/// The layout over a real Store: a reviewed implementation whose one round records a major and
+/// a minor finding, and a Task on another pipeline without a review. The block leads with the
+/// two pipeline lines in first-use order, then one row per Task with its round, outcome,
+/// findings, tokens and active time, and the `Total:` row; the real checker accepts it.
+#[test]
+fn two_pipelines_lead_the_block_in_first_use_order_above_one_row_per_round() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = task_gc::fixture(root.path());
+    // The `bugs` reviewer reports two findings of two severities, and the gate lets both through
+    // so the round completes and the Task finishes.
+    let worker = repo.join(".af/task-packages/fixture/bugs/worker.py");
+    let script = std::fs::read_to_string(&worker).unwrap();
+    let reports = "'reports':[{'severity':'major','file':'pagination.py','line':1,\
+        'title':'Reject negative offset','body':'A negative offset slices from the end.',\
+        'fix':'Raise ValueError for a negative offset.','confidence':0.99},\
+        {'severity':'minor','file':'pagination.py','line':2,'title':'Name the default limit',\
+        'body':'The default limit 2 is unexplained.','fix':'Name it.','confidence':0.9}]";
+    assert!(script.contains("'reports':[]"), "{script}");
+    std::fs::write(&worker, script.replace("'reports':[]", reports)).unwrap();
+    let catalog_path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    catalog["review"]["gate"] = toml::Value::String("blocker".into());
+    for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
+        let package = repo.join(pin["path"].as_str().unwrap());
+        pin["digest"] =
+            toml::Value::String(review_config::lock::package_digest(name, &package).unwrap());
+    }
+    std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+    for args in [
+        ["add", "-A"].as_slice(),
+        [
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "two findings",
+        ]
+        .as_slice(),
+    ] {
+        let output = Command::new("git")
+            .current_dir(&repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let started = Command::new(AF)
+        .current_dir(&repo)
+        .args([
+            "task",
+            "start",
+            "--execute",
+            "--file",
+            "base.json",
+            "--json",
+        ])
+        .arg("--state")
+        .arg(&state)
+        .output()
+        .unwrap();
+    stdout(&started);
+    task_gc::start(&repo, &state, "gc-older.json");
+
+    let (rounds, severities) = recorded_findings(&state, "chain-base");
+    assert_eq!(
+        (rounds, severities),
+        (1, [0, 1, 1]),
+        "the round's reduce step"
+    );
+    let ids = ["chain-base", "gc-older"];
+    let value = document(&repo, &state, &ids);
+    let labels: Vec<String> = value["pipelines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            format!(
+                "{}@{}",
+                p["name"].as_str().unwrap(),
+                p["version"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(
+        labels,
+        ["fixture/implementation@1.0.0", "fixture/plain@1.0.0"],
+        "{value:#}"
+    );
+    let markdown = stdout(&report(&repo, &state, &ids, false));
+    let lines: Vec<&str> = markdown.lines().collect();
+    assert_eq!(lines[..3], [TASK_REPORT_BEGIN, "### af task report", ""]);
+    assert!(
+        lines[3].starts_with("**fixture/implementation@1.0.0**: implement (command) → "),
+        "{markdown}"
+    );
+    assert!(
+        lines[3].contains("review (bugs, correctness: command)"),
+        "{markdown}"
+    );
+    assert_eq!(
+        lines[5],
+        "**fixture/plain@1.0.0**: implement (command) → gate (pagination) → evaluate (command)",
+        "{markdown}"
+    );
+    assert_eq!(
+        lines[7],
+        "| Round | Task | Outcome | Findings | Tokens | Active |"
+    );
+
+    let tasks = value["tasks"].as_array().unwrap();
+    let table = round_table(&markdown);
+    assert_eq!(table.len(), 3, "{markdown}");
+    for (index, (row, task)) in table.iter().zip(tasks).enumerate() {
+        assert_eq!(
+            *row,
+            [
+                (index + 1).to_string(),
+                ids[index].to_owned(),
+                task["outcome"].as_str().unwrap().to_owned(),
+                ["1 major, 1 minor", "—"][index].to_owned(),
+                thousands(task["chargeable_tokens"].as_str().unwrap()),
+                duration(task["active_ms"].as_u64().unwrap()),
+            ],
+            "{markdown}"
+        );
+    }
+    assert_eq!(
+        tasks[0]["findings"],
+        serde_json::json!({"blocker": 0, "major": 1, "minor": 1, "review_ran": true,
+            "gate_failed": false, "failed_reviewers": 0}),
+        "{value:#}"
+    );
+    assert!(tasks[1].get("findings").is_none(), "{value:#}");
+    let totals = &value["totals"];
+    let attempts = totals["attempts"].as_u64().unwrap();
+    assert_eq!(totals["failed_attempts"], 0, "{value:#}");
+    assert_eq!(
+        table[2],
+        [
+            String::new(),
+            format!("Total: {attempts} Attempts"),
+            String::new(),
+            String::new(),
+            thousands(totals["chargeable_tokens"].as_str().unwrap()),
+            duration(totals["active_ms"].as_u64().unwrap()),
+        ],
+        "{markdown}"
+    );
+    assert_block_is_checked(&markdown);
+
+    // First-use order follows the order the Tasks are named.
+    let reversed = stdout(&report(&repo, &state, &["gc-older", "chain-base"], false));
+    let pipelines: Vec<&str> = reversed
+        .lines()
+        .filter(|line| line.starts_with("**"))
+        .map(|line| line.split("**: ").next().unwrap())
+        .collect();
+    assert_eq!(
+        pipelines,
+        ["**fixture/plain@1.0.0", "**fixture/implementation@1.0.0"],
+        "{reversed}"
+    );
+    assert_block_is_checked(&reversed);
 }

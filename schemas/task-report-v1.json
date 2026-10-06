@@ -103,16 +103,21 @@
       "description": "What the Task's review recorded. Absent for a Task whose plan has no review and for a collected Task.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["blocker", "major", "minor", "review_ran", "gate_failed", "failed_reviewers"],
+      "required": ["review_ran", "gate_failed", "failed_reviewers"],
+      "dependentRequired": {
+        "blocker": ["major", "minor"],
+        "major": ["blocker", "minor"],
+        "minor": ["blocker", "major"]
+      },
       "properties": {
         "blocker": {
-          "description": "Findings by severity, each counted once: the entries of the `FindingSet@1` each recorded review round's reduce step wrote whose `last_seen_round` is that round, a finding seen in several rounds of the Task counted once.",
+          "description": "Findings by severity, each counted once: the entries of the `FindingSet@1` each recorded review round's reduce step wrote whose `last_seen_round` is that round, a finding seen in several rounds of the Task counted once. The three counts are present together, or absent together when they are unknown: the review ran but a round it recorded has no complete `FindingSet@1` (a required reviewer's result is missing, say), or it recorded no round yet.",
           "$ref": "#/$defs/count"
         },
         "major": { "$ref": "#/$defs/count" },
         "minor": { "$ref": "#/$defs/count" },
         "review_ran": {
-          "description": "A reviewer Attempt began, or a recorded round wrote its findings.",
+          "description": "A reviewer Attempt began, or a recorded round wrote its findings or admitted a reviewer's result.",
           "type": "boolean"
         },
         "gate_failed": {
@@ -128,6 +133,7 @@
         {
           "if": { "properties": { "review_ran": { "const": false } } },
           "then": {
+            "required": ["blocker", "major", "minor"],
             "properties": {
               "blocker": { "const": 0 },
               "major": { "const": 0 },

@@ -23,6 +23,12 @@ def description(block):
             + '\n## Checklist\n\n- [x] `make check` passes locally.\n')
 
 
+def right_after(lead, block):
+    """A description whose `block` follows `lead` with no blank line between."""
+    return ('## What\n\nPaginate the listing.\n\n' + lead + block
+            + '\n## Checklist\n\n- [x] `make check` passes locally.\n')
+
+
 def event(body, author='contributor', branch='af/paginate'):
     return {'action': 'edited', 'pull_request': {
         'body': body, 'user': {'login': author}, 'head': {'ref': branch}}}
@@ -74,6 +80,10 @@ def main():
         return ''.join(prefix + line if line.strip() else line
                        for line in text.splitlines(keepends=True))
 
+    unknown_pipeline = '**unknown pipeline**: not retained'
+    # Four-space-indented lines right after a block that ends a paragraph are code.
+    four = indented(BLOCK, '    ')
+
     # GitHub renders a line without its leading or trailing `|` as a row of the table too.
     unopened_short = ' | '.join(round_cells[:-1]) + ' |'
     unclosed_short = '| ' + ' | '.join(round_cells[:-1])
@@ -97,6 +107,18 @@ def main():
             '```markdown\n' + BLOCK + '```\n\n' + BLOCK)),
         'a fence that only mentions backticks in its text': event(description(
             'Run `af task report` and paste ``` its output:\n\n' + BLOCK)),
+        # The line the renderer prints for a Task whose plan is not retained.
+        'the unknown-pipeline line': event(description(BLOCK.replace(
+            pipeline, unknown_pipeline))),
+        'the unknown-pipeline line beside a pipeline line': event(description(BLOCK.replace(
+            pipeline + '\n', pipeline + '\n\n' + unknown_pipeline + '\n'))),
+        # A line indented inside an HTML block is not code; the block ends at a blank line.
+        'an indented line inside an HTML block': event(description(
+            '<div>\n    an indented note\n</div>\n\n' + BLOCK)),
+        # An ordered item that does not start at 1 cannot interrupt a paragraph, so the block
+        # right after it is a paragraph line, not a list item's: it still counts.
+        'the block after a paragraph line that reads like an item': event(right_after(
+            'The Tasks ran in\n2024. These are they:\n\n', BLOCK)),
     }
     for case, payload in passing.items():
         code, said = check(payload)
@@ -183,6 +205,28 @@ def main():
                                            inside_code),
         'the block indented by a tab': (event(description(indented(BLOCK, '\t'))),
                                         inside_code),
+        # A heading, a thematic break, a fence, an HTML block and a list item each end a
+        # paragraph: an indented block right after one, with no blank line, is code.
+        'the block indented right after an ATX heading': (event(right_after(
+            '## af task report\n', four)), inside_code),
+        'the block indented right after a setext heading': (event(right_after(
+            'af task report\n==============\n', four)), inside_code),
+        'the block indented right after a setext heading under a dash line': (event(right_after(
+            'af task report\n---\n', four)), inside_code),
+        'the block indented right after a thematic break': (event(right_after(
+            'Above.\n\n* * *\n', four)), inside_code),
+        'the block indented right after a fenced code block': (event(right_after(
+            '```sh\naf task report T1\n```\n', four)), inside_code),
+        'the block indented right after a one-line HTML block': (event(right_after(
+            '<pre>af task report T1</pre>\n', four)), inside_code),
+        'the block indented right after a comment that interrupts a paragraph': (event(
+            right_after('Paste below.\n<!-- the report -->\n', four)), inside_code),
+        'the block indented right after a list item': (event(right_after(
+            '- [x] Made through af Tasks.\n', four)), inside_code),
+        'the block indented right after an item that interrupts a paragraph': (event(
+            right_after('The Tasks:\n1. implement\n', four)), inside_code),
+        'an unknown-pipeline line that says something else': (event(description(
+            BLOCK.replace(pipeline, '**unknown pipeline**: collected'))), 'no pipeline line'),
         'a Dependabot-like name': (event('', 'dependabot'), 'no af task report block'),
         'a branch that only mentions release': (event('', branch='af/release/notes'),
                                                 'no af task report block'),

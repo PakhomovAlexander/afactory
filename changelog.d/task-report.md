@@ -4,9 +4,11 @@
   (`schemas/task-report-v1.json`). The block leads with one line per pipeline the Tasks ran, its
   steps in dependency order with each step's Worker by Provider kind and model and the gate's
   check names, parallel steps of one role grouped
-  (`review (bugs, correctness: codex gpt-6-sol/high)`); then one row per Task, each a round,
-  with its outcome, its review findings by severity (`6 major, 1 minor`, `none`, `gate failed`,
-  or `—` without a review, and how many reviewers failed), tokens with thousands separators
+  (`review (bugs, correctness: codex gpt-6-sol/high)`), and `**unknown pipeline**: not
+  retained` once for Tasks whose plan was collected or never made; then one row per Task, each
+  a round, with its outcome, its review findings by severity (`6 major, 1 minor`, `none`,
+  `unknown` when a round has no complete finding set, `gate failed`, or `—` without a review,
+  and how many reviewers failed), tokens with thousands separators
   (`205,295`) and active time, and a `Total:` row of Attempts (failed), tokens and active time;
   then per round its runs, wall time, failed Attempts by reason class and charged tokens, and per
   node the Worker, Attempts, tokens, elapsed time and check results. Findings are counted once
@@ -27,6 +29,7 @@
   six round-table columns Round, Task, Outcome, Findings, Tokens and Active in order, at least
   one round row and a last `Total:` row; placeholder, short and long rows (with or without their
   outer `|`), a Round, Task or Outcome cell that is empty or holds only an HTML comment, a
-  separator row of the wrong width, and a block inside a code fence or indented as code fail —
+  separator row of the wrong width, and a block inside a code fence or indented as code, even
+  right after a heading, a thematic break, a fence, an HTML block or a list item, fail —
   apart from Dependabot and `release/` pull requests
   ([ADR-0142](docs/adr/0142-carry-the-af-task-report-in-every-pull-request.md)).

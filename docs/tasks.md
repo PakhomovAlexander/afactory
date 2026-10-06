@@ -248,12 +248,16 @@ The block leads with one line per pipeline the Tasks ran: `**name@version**:` an
 dependency order, each named by its role with its Worker in parentheses (`codex
 gpt-6-sol/high`, or `command`), the gate with its check names, and parallel steps of one role
 grouped (`review (bugs, correctness: codex gpt-6-sol/high)`); Provider admission is left out.
+A Task whose plan is no longer retained (it was collected) or that never reached planning names
+no pipeline, and one line `**unknown pipeline**: not retained` stands for all such Tasks.
 Then each Task is a round, numbered in the order given, with one row: its outcome as `task show`
 states it, its review findings, chargeable tokens and active time. **Findings** counts what the
 Task's review rounds recorded, by severity (`6 major, 1 minor`), each finding once as the round's
-reduce step wrote it; it reads `none` when the reviewers ran and found nothing, `gate failed`
-when a check failed and the review did not run, and `—` for a Task without a review, followed by
-`; N reviewer(s) failed` when a reviewer's Attempt failed. A round recorded before a `task
+reduce step wrote it; it reads `none` when the reviewers ran and their complete rounds found
+nothing, `unknown` when the review ran but a round has no complete finding set (a required
+reviewer's result is missing, say) or none was recorded yet, `gate failed` when a check failed and
+the review did not run, and `—` for a Task without a review, followed by `; N reviewer(s)
+failed` when a reviewer's Attempt failed. A round recorded before a `task
 refresh` still counts. A last `Total:` row sums Attempts (with how many failed), tokens and
 active time. **Active time** is the sum of the Task's runs, each from its first event to its
 last: a run is `task start --execute` or one `task run` that started an Attempt, so a Task that
@@ -293,7 +297,8 @@ estimated. For a Task resumed once after an interrupt it prints:
 ```
 
 Paste the whole block, both markers included, as plain text: the `PR report` check does not
-count a block inside a code fence or indented as code. Providers appear only as kind, model and effort,
+count a block inside a code fence or indented as code, including one indented four spaces right
+after a heading, a thematic break, a fence, an HTML block or a list item. Providers appear only as kind, model and effort,
 and a recorded model that is not a model identity (a path or a URL, say) reads `unknown`: the
 report never carries a Provider label, a path, a credential, a prompt or Worker output.
 `--json` prints the same figures as one

@@ -9,13 +9,15 @@ checks that a well-formed block is there.
 
 A pull request opened by Dependabot, or from a `release/` branch, is exempt. Anything else
 passes only with exactly one block: the begin marker, then the end marker, and between them at
-least one pipeline line (`**name@version**: ` and its steps), then the round table: a header
-with exactly the six v1 columns in order, a separator row of that width, at least one round
-row, and a last row whose Task cell starts with `Total:`. Every non-blank line after the
-separator, up to the first blank line, is a row, with or without its outer `|` (GitHub renders
-both as rows), and has exactly six cells; a round row's Round, Task and Outcome cells have
-visible content once HTML comments are removed. A marker inside a fenced (``` or ~~~) or an
-indented code block is text, not a marker: a block shown as code does not count.
+least one pipeline line (`**name@version**: ` and its steps, or `**unknown pipeline**: not
+retained` for a Task whose plan is not retained), then the round table: a header with exactly
+the six v1 columns in order, a separator row of that width, at least one round row, and a last
+row whose Task cell starts with `Total:`. Every non-blank line after the separator, up to the
+first blank line, is a row, with or without its outer `|` (GitHub renders both as rows), and
+has exactly six cells; a round row's Round, Task and Outcome cells have visible content once
+HTML comments are removed. A marker inside a fenced (``` or ~~~) or an indented code block is
+text, not a marker: a block shown as code does not count, including one indented right after a
+heading, a thematic break, a fence, an HTML block or a list item, which end a paragraph.
 
 The workflow runs this script as the base branch holds it, on `pull_request_target`, so a pull
 request can change neither the check nor the workflow that runs it (ADR-0142).
@@ -42,9 +44,35 @@ REQUIRED = ['Round', 'Task', 'Outcome']
 TOTAL = 'Total:'
 # A pipeline line: `**name@version**: ` and at least one visible character of its steps.
 PIPELINE = re.compile(r'^\*\*[^*\s]+@[^*\s]+\*\*: +\S')
+# The pipeline line `af task report` prints for a Task whose plan is no longer retained (it was
+# collected) or that never reached planning.
+UNKNOWN_PIPELINE = '**unknown pipeline**: not retained'
 # An HTML comment, or one left open to the end of the cell: neither is visible.
 COMMENT = re.compile(r'<!--.*?(?:-->|$)', re.DOTALL)
 FENCE = re.compile(r'^ {0,3}(`{3,}|~{3,})(.*)$')
+# The blocks that end a paragraph (CommonMark 0.31): an ATX heading, a setext heading's
+# underline, a thematic break and a list item; fences and HTML blocks are matched apart.
+ATX = re.compile(r'^ {0,3}#{1,6}(?:[ \t]|$)')
+SETEXT = re.compile(r'^ {0,3}(?:=+|-+)[ \t]*$')
+THEMATIC = re.compile(r'^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$')
+LIST_ITEM = re.compile(r'^ {0,3}([-+*]|(\d{1,9})[.)])(?:[ \t]+(\S?)|$)')
+# HTML block starts (CommonMark 4.6), matched on a line indented at most three columns: raw
+# text (type 1), a comment (2), a processing instruction (3), a declaration (4), CDATA (5), a
+# block-level tag (6) and any other lone tag (7). Types 6 and 7 end at a blank line.
+HTML_RAW = re.compile(r'<(script|pre|style|textarea)(?:[ \t>]|$)', re.IGNORECASE)
+HTML_BLOCK = re.compile(
+    r'</?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd'
+    r'|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset'
+    r'|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol'
+    r'|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr'
+    r'|track|ul)(?:[ \t]|/?>|$)', re.IGNORECASE)
+HTML_TAG = re.compile(
+    r'(?:<[A-Za-z][A-Za-z0-9-]*(?:[ \t]+[A-Za-z_:][\w.:-]*(?:[ \t]*=[ \t]*(?:[^ \t"\'=<>`]+'
+    r'|\'[^\']*\'|"[^"]*"))?)*[ \t]*/?>|</[A-Za-z][A-Za-z0-9-]*[ \t]*>)[ \t]*$')
+# A closing tag of a type 1 name, which is not a type 7 block either.
+RAW_CLOSE = re.compile(r'</(?:script|pre|style|textarea)(?![A-Za-z0-9-])', re.IGNORECASE)
+# The end condition of an HTML block that ends at a blank line.
+BLANK = ''
 EXEMPT_AUTHORS = {'dependabot[bot]'}
 EXEMPT_BRANCH_PREFIX = 'release/'
 HOW = ('Run `af task report TASK_ID...` for the af Tasks that made this change (from the '
@@ -104,12 +132,51 @@ def is_separator(row):
     return bool(row) and all(cell and set(cell) <= set(':-') and '-' in cell for cell in row)
 
 
+def html_block(text, paragraph):
+    """The HTML block the stripped line `text` opens, as (opener length, end condition), or
+    None. The end condition is the text whose line ends the block, searched after the opener,
+    or BLANK for a block that ends at a blank line. A type 7 block, any other lone tag, cannot
+    interrupt a paragraph (CommonMark 4.6)."""
+    for opener, end in (('<!--', '-->'), ('<?', '?>'), ('<![CDATA[', ']]>')):
+        if text.startswith(opener):
+            return len(opener), end
+    if match := HTML_RAW.match(text):
+        return 1, f'</{match.group(1).lower()}>'
+    if re.match(r'<![A-Za-z]', text):
+        return 2, '>'
+    if HTML_BLOCK.match(text) or (not paragraph and HTML_TAG.match(text)
+                                  and not RAW_CLOSE.match(text)):
+        return 1, BLANK
+    return None
+
+
+def ends_paragraph(line, paragraph):
+    """Whether `line`, indented at most three columns, is a block after which no paragraph is
+    open: an ATX heading, a setext heading's underline (only under a paragraph), a thematic
+    break, or a list item. A list item interrupts a paragraph only when it has text and, if
+    ordered, starts at 1; otherwise its line continues the paragraph."""
+    if ATX.match(line) or THEMATIC.match(line) or (paragraph and SETEXT.match(line)):
+        return True
+    item = LIST_ITEM.match(line)
+    if not item:
+        return False
+    return not paragraph or bool(item.group(3)) and (item.group(2) is None
+                                                     or int(item.group(2)) == 1)
+
+
 def code_lines(lines):
     """The indexes of the lines GitHub renders as code: inside a fenced code block, its fences
     included, or in an indented code block (four columns of indent, not continuing a paragraph).
-    An HTML comment that spans lines, as the pull request template's guidance does, is neither.
+
+    An ATX or setext heading, a thematic break, a fenced code block, an HTML block and a list
+    item each end a paragraph, so a line indented four columns right after one, with no blank
+    line between, is code. A line inside an HTML block, such as the multi-line comment of the
+    pull request template's guidance, is not code however far it is indented; a fence opened
+    inside an HTML block other than a comment still counts as code, the stricter reading. List
+    items are not modelled as containers: a line indented under one counts as code, again the
+    stricter reading.
     """
-    code, fence, comment, paragraph = set(), None, False, False
+    code, fence, html, paragraph = set(), None, None, False
     for n, line in enumerate(lines):
         if fence:
             code.add(n)
@@ -118,13 +185,18 @@ def code_lines(lines):
                     and len(closing.group(1)) >= len(fence) and not closing.group(2).strip()):
                 fence = None
             continue
-        if comment:
-            comment = '-->' not in line
-            continue
-        indent = len(line) - len(line.lstrip(' \t'))
-        columns = len(line[:indent].expandtabs(4))
         opening = FENCE.match(line)
-        if opening and not (opening.group(1)[0] == '`' and '`' in opening.group(2)):
+        opening = opening if opening and not (
+            opening.group(1)[0] == '`' and '`' in opening.group(2)) else None
+        if html is not None and not (opening and html != '-->'):
+            if html == BLANK and not line.strip():
+                html = None
+            elif html != BLANK and html in line.lower():
+                html = None
+            paragraph = False
+            continue
+        html = None
+        if opening:
             fence = opening.group(1)
             code.add(n)
             paragraph = False
@@ -132,15 +204,26 @@ def code_lines(lines):
         if not line.strip():
             paragraph = False
             continue
-        if columns >= 4 and not paragraph:
-            code.add(n)
+        indent = len(line) - len(line.lstrip(' \t'))
+        if len(line[:indent].expandtabs(4)) >= 4:
+            if not paragraph:
+                code.add(n)
             continue
-        if columns < 4 and line.lstrip().startswith('<!--'):
-            comment = '-->' not in line[line.index('<!--') + 4:]
+        text = line.strip()
+        if block := html_block(text, paragraph):
+            opener, end = block
+            if end == BLANK or end not in text[opener:].lower():
+                html = end
             paragraph = False
             continue
-        paragraph = True
+        paragraph = not ends_paragraph(line, paragraph)
     return code
+
+
+def is_pipeline_line(line):
+    """Whether `line` is a pipeline line: `**name@version**: ` and its steps, or the line the
+    renderer prints for a Task whose plan is not retained."""
+    return bool(PIPELINE.match(line.strip())) or line.strip() == UNKNOWN_PIPELINE
 
 
 def problems(body):
@@ -173,7 +256,7 @@ def problems(body):
             header = n
             break
     found = []
-    if not any(PIPELINE.match(line.strip()) for line in block[:header]):
+    if not any(is_pipeline_line(line) for line in block[:header]):
         found.append('the af task report block has no pipeline line before its round table: '
                      'expected a line like `**name@version**: implement (...) → gate (...)`')
     if header is None:
