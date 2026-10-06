@@ -81,10 +81,54 @@ fn renew_through_own(
     match own.renew_task_lease(cas, lease, LEASE_MS) {
         Ok(_) => Ok(Ok(())),
         Err(error) => {
-            let lease_until = own.task_lease_state(lease).map_err(|e| e.to_string())?;
+            let lease_until = own.task_lease_state(lease).map_err(|observed| {
+                format!("renewal failed: {error}; lease observation failed: {observed}")
+            })?;
             Ok(Err((error.to_string(), lease_until)))
         }
     }
+}
+
+/// Proof of a scoped heartbeat owner. It grants no Store or effect authority and cannot
+/// outlive the closure that owns and joins the heartbeat.
+pub struct HeartbeatScope<'a, 'store> {
+    store: &'a Mutex<&'store mut EventStore>,
+    lease: &'a TaskLease,
+    cancellation: &'a AtomicBool,
+}
+
+impl HeartbeatScope<'_, '_> {
+    pub fn check(&self) -> Result<(), String> {
+        super::control::check(Some(self.cancellation))
+    }
+
+    pub(crate) fn covers(&self, store: &Mutex<&mut EventStore>, lease: &TaskLease) -> bool {
+        std::ptr::eq(
+            std::ptr::from_ref(self.store).cast::<()>(),
+            std::ptr::from_ref(store).cast::<()>(),
+        ) && self.lease.task_id() == lease.task_id()
+            && self.lease.epoch() == lease.epoch()
+    }
+}
+
+pub fn with_lifecycle<'a, 'store, T>(
+    store: &'a Mutex<&'store mut EventStore>,
+    cas: &Cas,
+    lease: &'a TaskLease,
+    cancellation: &'a AtomicBool,
+    work: impl FnOnce(&HeartbeatScope<'a, 'store>) -> Result<T, String>,
+) -> Result<T, String> {
+    with_heartbeat_controlled(store, cas, lease, Some(cancellation), || {
+        let owner = HeartbeatScope {
+            store,
+            lease,
+            cancellation,
+        };
+        owner.check()?;
+        let result = work(&owner)?;
+        owner.check()?;
+        Ok(result)
+    })
 }
 
 pub fn with_heartbeat<T>(
@@ -103,6 +147,7 @@ pub fn with_heartbeat_controlled<T>(
     cancellation: Option<&AtomicBool>,
     work: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
+    super::control::check(cancellation)?;
     let own = {
         let mut shared = store.lock().expect("Task Store");
         // Enter with a full lease while no work can hold the Store yet. A lease that cannot be

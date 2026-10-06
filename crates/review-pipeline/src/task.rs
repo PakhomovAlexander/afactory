@@ -317,13 +317,36 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         if self.integration.is_some() {
             return Err("Activated Integration runtime can execute only its captured phase".into());
         }
-        let report = lease::with_heartbeat_controlled(
+        lease::with_heartbeat_controlled(
             &self.store,
             self.cas,
             &self.lease,
             self.cancellation,
-            || self.graph.run(self),
-        )?;
+            || self.execute_guarded(),
+        )
+    }
+
+    /// Reuse a live outer lifecycle owner; never start a second heartbeat. All Store,
+    /// captured-plan and effect checks remain on the ordinary execution path.
+    pub fn execute_in_lifecycle(
+        &self,
+        owner: &lease::HeartbeatScope<'_, '_>,
+    ) -> Result<RunReport, String> {
+        if !owner.covers(&self.store, &self.lease) {
+            return Err("Task runtime does not belong to this heartbeat lifecycle".into());
+        }
+        owner.check()?;
+        let report = self.execute_guarded()?;
+        owner.check()?;
+        Ok(report)
+    }
+
+    fn execute_guarded(&self) -> Result<RunReport, String> {
+        if self.integration.is_some() {
+            return Err("Activated Integration runtime can execute only its captured phase".into());
+        }
+        control::check(self.cancellation)?;
+        let report = self.graph.run(self)?;
         self.record_run_report(&report)?;
         if !self
             .publication_failures
@@ -354,6 +377,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
     }
 
     pub fn finish(&self, result_id: &str) -> Result<(), String> {
+        control::check(self.cancellation)?;
         self.store
             .lock()
             .expect("Task Store")

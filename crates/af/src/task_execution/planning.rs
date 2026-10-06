@@ -120,20 +120,35 @@ pub(super) fn start(
             15_000,
         )
         .map_err(|e| e.to_string())?;
-    let outcome = (|| {
-        store
+    let outcome = lifecycle::run(&cas, &mut store, &lease, |shared, owner, cancellation| {
+        shared
+            .lock()
+            .expect("Task Store")
             .propose_task_plan(&cas, &lease, &plan_id, &trusted)
             .map_err(|e| e.to_string())?;
         if options.plan_only {
             return Ok(());
         }
-        store
+        owner.check()?;
+        shared
+            .lock()
+            .expect("Task Store")
             .admit_task_plan(&cas, &lease, &trusted)
             .map_err(|e| e.to_string())?;
         run_planner(
-            &cas, &mut store, &lease, &authority, &compiler, &revision, &plan, &graph, &adapters,
+            &cas,
+            shared.clone(),
+            &lease,
+            &authority,
+            &compiler,
+            &revision,
+            &plan,
+            &graph,
+            &adapters,
+            owner,
+            cancellation,
         )
-    })();
+    });
     release(&cas, &mut store, &lease, outcome)?;
     present_with_advisory(
         &cas,
@@ -177,27 +192,41 @@ pub(super) fn resume(
             15_000,
         )
         .map_err(|e| e.to_string())?;
-    let outcome = (|| {
-        confirm_current_plan(&cas, &store, &state.task_id, state.plan_id.as_deref())?;
-        store
+    let outcome = lifecycle::run(&cas, &mut store, &lease, |shared, owner, cancellation| {
+        confirm_current_plan(
+            &cas,
+            &shared.lock().expect("Task Store"),
+            &state.task_id,
+            state.plan_id.as_deref(),
+        )?;
+        owner.check()?;
+        shared
+            .lock()
+            .expect("Task Store")
             .recover_task_attempts(&cas, &lease)
             .map_err(|e| e.to_string())?;
         if state
             .waiting_for_domain_publication(&cas)
             .map_err(|e| e.to_string())?
         {
-            store
+            owner.check()?;
+            shared
+                .lock()
+                .expect("Task Store")
                 .resume_task(&cas, &lease, &trusted)
                 .map_err(|e| e.to_string())?;
         }
         if !state.admitted {
-            store
+            owner.check()?;
+            shared
+                .lock()
+                .expect("Task Store")
                 .admit_task_plan(&cas, &lease, &trusted)
                 .map_err(|e| e.to_string())?;
         }
         run_planner(
             &cas,
-            &mut store,
+            shared.clone(),
             &lease,
             &authority,
             &compiler,
@@ -205,8 +234,10 @@ pub(super) fn resume(
             &plan,
             &graph,
             &adapters,
+            owner,
+            cancellation,
         )
-    })();
+    });
     release(&cas, &mut store, &lease, outcome)?;
     present(&cas, &store, &state.task_id, json, true)
 }
@@ -270,9 +301,9 @@ fn finish_incomplete(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_planner(
-    cas: &Cas,
-    store: &mut EventStore,
+fn run_planner<'store>(
+    cas: &'store Cas,
+    store: review_store::SharedEventStore<'store>,
     lease: &TaskLease,
     authority: &RunAuthority,
     compiler: &TaskPlanCompiler,
@@ -280,6 +311,8 @@ fn run_planner(
     plan: &ExecutionPlanV1,
     graph: &CompiledTask,
     adapters: &BTreeMap<String, Box<dyn review_runner::task::WorkerModelAdapter>>,
+    owner: &review_pipeline::task::lease::HeartbeatScope<'_, '_>,
+    cancellation: &std::sync::atomic::AtomicBool,
 ) -> Result<(), String> {
     let inner = PlanningTaskDomain {
         compiler,
@@ -320,12 +353,11 @@ fn run_planner(
     };
     let developer = developer::host(cas, authority, None);
     let trusted = CapturedTaskAuthority::new(compiler, &host, developer.as_ref());
-    let cancellation = std::sync::atomic::AtomicBool::new(false);
+    owner.check()?;
     let state = {
-        let runtime = TaskRuntime::new(store, cas, lease.clone(), &trusted, &host)?
-            .with_cancellation(&cancellation);
-        crate::interrupt::note_task(lease.task_id());
-        let report = crate::interrupt::forwarding(&cancellation, || runtime.execute());
+        let runtime = TaskRuntime::with_store(store.clone(), cas, lease.clone(), &trusted, &host)?
+            .with_cancellation(cancellation);
+        let report = runtime.execute_in_lifecycle(owner);
         // An interrupted planner is not finished as incomplete; it resumes (ADR-0129).
         crate::interrupt::check()?;
         let _report = report?;
@@ -376,14 +408,18 @@ fn run_planner(
             compiler: &compiler,
             developer: developer.as_ref(),
         };
+        owner.check()?;
         store
+            .lock()
+            .expect("Task Store")
             .complete_task_planning(cas, lease, &revision_id, &generated_id, &decision)
             .map_err(|e| e.to_string())?;
         Ok::<(), String>(())
     })();
     if let Err(error) = admission {
-        let runtime = TaskRuntime::new(store, cas, lease.clone(), &trusted, &host)?
-            .with_cancellation(&cancellation);
+        owner.check()?;
+        let runtime = TaskRuntime::with_store(store.clone(), cas, lease.clone(), &trusted, &host)?
+            .with_cancellation(cancellation);
         finish_incomplete(
             cas,
             &runtime,

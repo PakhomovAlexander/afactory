@@ -3,6 +3,8 @@ use review_core::Producer;
 use review_core::task::plan::PlanDependencyV1;
 mod collection;
 mod lease;
+mod lease_callback;
+mod lease_timestamp;
 mod owned;
 mod planning;
 mod recording;
@@ -111,6 +113,7 @@ impl TaskAuthority for Authority {
         _: &crate::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
+        lease_callback::during_context();
         Ok(())
     }
     fn validate_plan(
