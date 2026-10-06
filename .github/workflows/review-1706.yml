@@ -35,7 +35,7 @@ jobs:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: sccache
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-fuse-ld=lld'
-          AF_GATE_TARGET_DIR: 4{{ runner.temp }}/review1706-target
+          AF_GATE_TARGET_DIR: ${{ runner.temp }}/review1706-target
         run: bash scripts/verify.sh
       - name: Verify unchanged source
         run: |
