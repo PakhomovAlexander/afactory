@@ -30,6 +30,7 @@ pub mod review_handoff;
 pub mod review_integration;
 pub mod runtime;
 pub mod source;
+pub mod task_report;
 pub mod usage;
 pub mod verification;
 

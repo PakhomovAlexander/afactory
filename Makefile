@@ -49,8 +49,10 @@ release-check:
 	$(CI_STEP) af-pin-tests python3 scripts/test-af-pin.py
 	$(CI_STEP) af-pin python3 scripts/af-pin.py --check
 
-# Offline advisory orchestration checks against the native inspection fixture.
+# Offline advisory orchestration checks against the native inspection fixture, and the pull
+# request description check against the `af task report` renderer's fixture (ADR-0142).
 preflight-check:
 	$(CI_STEP) task-preflight python3 scripts/test-task-preflight.py
 	$(CI_STEP) nextest-gate python3 scripts/test-nextest-gate.py
 	$(CI_STEP) provider-auth-host python3 scripts/test-provider-auth-host.py
+	$(CI_STEP) pr-report python3 scripts/test-check-pr-report.py

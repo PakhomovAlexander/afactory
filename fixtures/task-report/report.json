@@ -1,0 +1,78 @@
+{
+  "schema": "af/task-report@1",
+  "tasks": [
+    {
+      "task_id": "pagination-cli",
+      "kind": "implement",
+      "pipeline": "fixture/implementation@1.0.0",
+      "outcome": "verified",
+      "collected": false,
+      "review_rounds": 0,
+      "runs": 2,
+      "attempts": {
+        "total": 4,
+        "failed": 1,
+        "failed_tokens": "0",
+        "failures": [
+          {
+            "class": "process_failure",
+            "attempts": 1,
+            "tokens": "0"
+          }
+        ]
+      },
+      "chargeable_tokens": "0",
+      "wall_ms": 3132,
+      "active_ms": 1492,
+      "nodes": [
+        {
+          "node": "root.nodes.implement",
+          "role": "implement",
+          "worker": {
+            "kind": "command"
+          },
+          "attempts": 2,
+          "failed_attempts": 1,
+          "tokens": "0",
+          "elapsed_ms": 217,
+          "checks": []
+        },
+        {
+          "node": "root.nodes.check",
+          "role": "check",
+          "attempts": 1,
+          "failed_attempts": 0,
+          "tokens": "0",
+          "elapsed_ms": 56,
+          "checks": [
+            {
+              "name": "pagination",
+              "status": "passed",
+              "elapsed_ms": 46
+            }
+          ]
+        },
+        {
+          "node": "root.nodes.evaluate",
+          "role": "evaluate",
+          "worker": {
+            "kind": "command"
+          },
+          "attempts": 1,
+          "failed_attempts": 0,
+          "tokens": "0",
+          "elapsed_ms": 101,
+          "checks": []
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "tasks": 1,
+    "review_rounds": 0,
+    "attempts": 4,
+    "failed_attempts": 1,
+    "chargeable_tokens": "0",
+    "active_ms": 1492
+  }
+}

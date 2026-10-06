@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[path = "task_document/provider_admission.rs"]
-mod provider_admission;
+pub(crate) mod provider_admission;
 
 fn af(repo: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_af"))

@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-report:1",
+  "title": "af/task-report@1",
+  "description": "What `af task report --json` prints (ADR-0142): what recorded Tasks cost and how they ran, read from one Store and never estimated. A figure the Store does not record is absent, never zero or null. Tasks appear in the order the command named them. A Worker is named only by Provider kind, model and effort: every object is closed, so no Provider registry label or principal, path, credential, prompt or Worker output can appear. Totals are the sums of the Tasks' figures; a sum is absent when any Task does not record its part.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "tasks", "totals"],
+  "properties": {
+    "schema": {
+      "const": "af/task-report@1"
+    },
+    "tasks": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/task" }
+    },
+    "totals": { "$ref": "#/$defs/totals" }
+  },
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "tokens": {
+      "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
+    },
+    "node": {
+      "type": "string",
+      "maxLength": 4096,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*(\\.[A-Za-z0-9][A-Za-z0-9_-]*)*$"
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "kind",
+        "outcome",
+        "collected",
+        "runs",
+        "chargeable_tokens",
+        "wall_ms",
+        "active_ms"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "kind": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+        },
+        "pipeline": {
+          "description": "The current plan's root Pipeline as `name@version`. Absent before a plan exists and for a collected Task.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(/[A-Za-z0-9][A-Za-z0-9_-]{0,127})*@\\S+$"
+        },
+        "outcome": {
+          "description": "The outcome `af task show` states: the result's domain conclusion (`pass`, `changes_requested`, `incomplete`, ...), or for an unfinished Task its phase (`planned`, `needs-plan-review`, ...).",
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/text"
+        },
+        "collected": {
+          "description": "The Task was collected by `af task gc --apply` (ADR-0135): only its retained summary and its event times remain, so it carries neither `attempts` nor `nodes`.",
+          "type": "boolean"
+        },
+        "review_rounds": {
+          "description": "Recorded Review Rounds. Absent for a collected Task.",
+          "$ref": "#/$defs/count"
+        },
+        "runs": {
+          "description": "Writer leases during which the Task executed work: `af task start --execute` and every `af task run` that resumed it.",
+          "$ref": "#/$defs/count"
+        },
+        "attempts": { "$ref": "#/$defs/attempts" },
+        "chargeable_tokens": { "$ref": "#/$defs/tokens" },
+        "wall_ms": {
+          "description": "From the Task's first to its last recorded event; a collection tombstone is not the Task's event.",
+          "$ref": "#/$defs/count"
+        },
+        "active_ms": {
+          "description": "The sum of the runs' spans, each from its first to its last event: time spent waiting between runs is not counted. Never above `wall_ms`.",
+          "$ref": "#/$defs/count"
+        },
+        "nodes": {
+          "description": "Every node that began an Attempt, in the order its first Attempt began.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/node_report" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "collected": { "const": true } } },
+          "then": { "not": { "anyOf": [{ "required": ["attempts"] }, { "required": ["nodes"] }] } }
+        }
+      ]
+    },
+    "attempts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "failed", "failed_tokens", "failures"],
+      "properties": {
+        "total": {
+          "description": "Attempts begun, as `af task show` counts them.",
+          "$ref": "#/$defs/count"
+        },
+        "failed": { "$ref": "#/$defs/count" },
+        "failed_tokens": {
+          "description": "Tokens charged to the failed Attempts.",
+          "$ref": "#/$defs/tokens"
+        },
+        "failures": {
+          "description": "The failed Attempts by reason class, in class order.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/failure" }
+        }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["class", "attempts", "tokens"],
+      "properties": {
+        "class": {
+          "description": "The failed Attempt's typed retry feedback code; `abandoned` for an Attempt recovery settled; `unclassified` for a failure that recorded no feedback.",
+          "enum": [
+            "provider_failure",
+            "process_failure",
+            "invalid_output_contract",
+            "output_admission_rejected",
+            "context_rejected",
+            "compiler_rejected",
+            "abandoned",
+            "unclassified"
+          ]
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "tokens": { "$ref": "#/$defs/tokens" }
+      }
+    },
+    "node_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "role", "attempts", "failed_attempts", "tokens", "checks"],
+      "properties": {
+        "node": { "$ref": "#/$defs/node" },
+        "role": {
+          "description": "The Worker slot's role, or the kernel operation of a node without a Worker (`check`, `seal`, `provider_admission`, ...).",
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "worker": {
+          "description": "The Worker the node's slot was bound to in the Attempt's plan. Absent for a kernel node.",
+          "$ref": "#/$defs/worker"
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "failed_attempts": { "$ref": "#/$defs/count" },
+        "tokens": { "$ref": "#/$defs/tokens" },
+        "elapsed_ms": {
+          "description": "The node's Attempts' elapsed time, from their attempt walls or their start and settlement records. Absent unless every Attempt recorded it.",
+          "$ref": "#/$defs/count"
+        },
+        "checks": {
+          "description": "Every check result the node's Attempts published, in Attempt order.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/check" }
+        }
+      }
+    },
+    "worker": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "command" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "provider_kind", "model", "effort"],
+          "properties": {
+            "kind": { "const": "model" },
+            "provider_kind": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+            },
+            "model": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/text"
+            },
+            "effort": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+            }
+          }
+        }
+      ]
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "status"],
+      "properties": {
+        "name": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "status": { "enum": ["passed", "failed", "not_run"] },
+        "elapsed_ms": {
+          "description": "The check's recorded span; absent when it never started or recorded none.",
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tasks", "chargeable_tokens", "active_ms"],
+      "properties": {
+        "tasks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "review_rounds": { "$ref": "#/$defs/count" },
+        "attempts": { "$ref": "#/$defs/count" },
+        "failed_attempts": { "$ref": "#/$defs/count" },
+        "chargeable_tokens": { "$ref": "#/$defs/tokens" },
+        "active_ms": { "$ref": "#/$defs/count" }
+      }
+    }
+  }
+}

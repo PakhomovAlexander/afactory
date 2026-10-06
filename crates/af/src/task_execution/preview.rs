@@ -39,7 +39,11 @@ fn line(out: &mut String, value: &str) {
         writeln!(out, "{}", std::str::from_utf8(chunk).expect("ASCII")).unwrap();
     }
 }
-fn package_label(cas: &Cas, plan: &ExecutionPlanV1, name: &str) -> Result<String, String> {
+pub(super) fn package_label(
+    cas: &Cas,
+    plan: &ExecutionPlanV1,
+    name: &str,
+) -> Result<String, String> {
     let dependency = plan
         .dependencies
         .get(name)

@@ -9,7 +9,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-const TASK: &str = "pagination-cli";
+pub(crate) const TASK: &str = "pagination-cli";
 
 fn alive(pid: u32) -> bool {
     #[cfg(target_os = "linux")]
@@ -80,7 +80,7 @@ fn commit_fixture(repo: &Path) {
 
 /// The implementer starts a long-running child and waits on it, unless `resume` exists. Its
 /// own attempt deadline is far beyond the interrupt, so only the interrupt can stop it.
-fn long_running_implementer(repo: &Path, ready: &Path, resume: &Path) {
+pub(crate) fn long_running_implementer(repo: &Path, ready: &Path, resume: &Path) {
     let package = repo.join(".af/task-packages/fixture/implementer");
     let worker = package.join("worker.py");
     let original = std::fs::read_to_string(&worker).unwrap();
@@ -163,7 +163,7 @@ const START_EXECUTE: &[&str] = &[
 
 /// Start the Task, wait until its Worker and the Worker's child run, send `signals` to af and
 /// return af's output once it exited and no Worker process is left.
-fn interrupt_running_worker(
+pub(crate) fn interrupt_running_worker(
     repo: &Path,
     state: &Path,
     ready: &Path,

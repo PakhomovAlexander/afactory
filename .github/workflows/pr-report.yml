@@ -1,0 +1,26 @@
+# Every change is made through af Tasks, and its pull request description carries their
+# `af task report` block (ADR-0142). This reads the event payload GitHub hands the job and
+# nothing else: no API call, no token. Dependabot and `release/` pull requests are exempt.
+name: PR report
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-report-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    name: af task report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check the af task report block in the description
+        run: python3 scripts/check-pr-report.py --event "$GITHUB_EVENT_PATH"

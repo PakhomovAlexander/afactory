@@ -47,6 +47,7 @@ mod task_refresh;
 mod task_remote_checks;
 mod task_repair;
 mod task_report;
+mod task_report_command;
 mod task_research_chain;
 mod task_selection;
 mod task_starters;

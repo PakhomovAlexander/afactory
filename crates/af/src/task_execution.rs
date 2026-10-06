@@ -54,6 +54,7 @@ pub(super) mod refresh;
 mod selection;
 pub(crate) mod starter;
 mod task_file_home;
+pub(super) mod task_report;
 
 pub(super) struct StartOptions {
     pub file: PathBuf,
@@ -2494,18 +2495,7 @@ fn present_with_format(
         println!(
             "Task {}: {}",
             state.task_id,
-            result.as_ref().map_or(
-                match &state.phase {
-                    TaskPhaseV1::Waiting { reason } => match reason {
-                        TaskWaitingReasonV1::NeedsPlanReview => "needs-plan-review",
-                        TaskWaitingReasonV1::NeedsResources => "needs-resources",
-                        TaskWaitingReasonV1::NeedsInput => "needs-input",
-                        TaskWaitingReasonV1::NeedsHuman => "needs-human",
-                    },
-                    _ => "planned",
-                },
-                |r| r.domain_conclusion.as_str()
-            )
+            outcome_label(&state.phase, result.as_ref())
         );
         if let Some(id) = &state.plan_id {
             println!("Plan {id}");
@@ -2584,6 +2574,23 @@ fn present_with_format(
         TaskAcceptanceV1::Unsatisfied => 3,
         TaskAcceptanceV1::Inconclusive => 4,
     }))
+}
+
+/// The outcome `af task show` states on its first line: the result's domain conclusion, or the
+/// phase of a Task without a result. `af task report` states it the same way.
+fn outcome_label<'a>(phase: &TaskPhaseV1, result: Option<&'a TaskResultV1>) -> &'a str {
+    result.map_or(
+        match phase {
+            TaskPhaseV1::Waiting { reason } => match reason {
+                TaskWaitingReasonV1::NeedsPlanReview => "needs-plan-review",
+                TaskWaitingReasonV1::NeedsResources => "needs-resources",
+                TaskWaitingReasonV1::NeedsInput => "needs-input",
+                TaskWaitingReasonV1::NeedsHuman => "needs-human",
+            },
+            _ => "planned",
+        },
+        |r| r.domain_conclusion.as_str(),
+    )
 }
 
 /// One line per recorded Measurement and per recorded comparison (ADR-0132), in node order: a

@@ -230,6 +230,60 @@ show` print it as `collected <time>`, and `task output` and `task deliver` refus
 between Tasks: `--apply` is refused while any Task's writer lease is live. If it stops midway,
 rerun it; the next run finishes the removal.
 
+## Report what Tasks cost
+
+`af task report TASK_ID...` summarizes what one or more Tasks of one Store cost and how they ran,
+as one Markdown block for a pull request description
+([ADR-0142](adr/0142-carry-the-af-task-report-in-every-pull-request.md)). It takes the same
+`--repo` and `--state` selectors as `task show`, reports the Tasks in the order given, and refuses
+an unknown Task ID by name without printing anything else. It only reads the Store: no Worker
+runs, no Provider is contacted, nothing is written.
+
+```sh
+af task report pagination-cli
+af task report implement-x verify-x --json
+```
+
+Each Task gets one row: kind, pipeline as `name@version`, the outcome `task show` states, review
+rounds, Attempts with how many failed, chargeable tokens, and two times. **Wall time** runs from
+the Task's first recorded event to its last. **Active time** is the sum of its runs, each from its
+first event to its last: a run is `task start --execute` or one `task run`, so a Task that waited
+a day before it was resumed shows that day in its wall time only. A totals line follows, then each
+Task's nodes in a collapsed `<details>` element: role, Worker (`codex gpt-6-sol/high`, or
+`command`), Attempts, tokens, elapsed time and the checks the gate ran with their durations, and
+the reason class of each failed Attempt (`provider_failure`, `process_failure`, …) with the
+tokens charged to it. A figure the Store does not record reads `unknown`; nothing is estimated.
+For a Task resumed once after an interrupt it prints:
+
+```markdown
+<!-- af-task-report:v1 -->
+### af task report
+
+| Task | Kind | Pipeline | Outcome | Rounds | Attempts | Tokens | Active time | Wall time |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| pagination-cli | implement | fixture/implementation@1.0.0 | verified | 0 | 4 (1 failed) | 0 | 1.4s | 3.1s |
+
+**Totals:** 1 Task · 0 rounds · 4 Attempts (1 failed) · 0 tokens · 1.4s active
+
+<details>
+<summary>pagination-cli: 2 runs, 1 failed Attempt (1 process_failure; 0 tokens)</summary>
+
+| Node | Role | Worker | Attempts | Tokens | Elapsed | Checks |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| root.nodes.implement | implement | command | 2 (1 failed) | 0 | 217ms | - |
+| root.nodes.check | check | - | 1 | 0 | 56ms | pagination passed 46ms |
+| root.nodes.evaluate | evaluate | command | 1 | 0 | 101ms | - |
+
+</details>
+<!-- /af-task-report -->
+```
+
+Paste the whole block, both markers included. Providers appear only as kind, model and effort:
+the report never carries a Provider label, a path, a credential, a prompt or Worker output.
+`--json` prints the same figures as one
+[`af/task-report@1`](../schemas/task-report-v1.json) document, with exact decimal tokens and
+times in milliseconds; an unknown figure is absent there.
+
 ## Troubleshooting
 
 | Symptom | Meaning and action |

@@ -1356,6 +1356,11 @@ fn main() {
                         .and_then(task::show)
                         .map(|()| 0)
                 }
+                cli::TaskCommand::Report { task_ids, inspect } => {
+                    task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
+                        .and_then(|options| task::report(options, &task_ids))
+                        .map(|()| 0)
+                }
             },
         ),
         cli::Command::Config { command } => (

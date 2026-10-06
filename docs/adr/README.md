@@ -247,3 +247,5 @@ future readers need.
   pipeline chooses](0140-run-a-declared-check-through-a-gate-pull-request.md#amendment-2026-10-05-the-pipeline-chooses))
 - [0141 — List a logged-out default context only until its kind is
   registered](0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)
+- [0142 — Carry the `af task report` of its Tasks in every pull
+  request](0142-carry-the-af-task-report-in-every-pull-request.md)
