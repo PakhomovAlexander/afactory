@@ -1766,16 +1766,26 @@ impl EventStore {
         lease: &TaskLease,
         lease_ms: u64,
     ) -> Result<RunEvent, StoreError> {
+        // Validation is not bounded by the SQLite busy timeout. Do not spend the new
+        // lease while loading its authority; validate once, then timestamp the append.
+        // The old expiry and exact prefix are still checked in the write transaction.
+        let state = self.task_projection(cas, lease.task_id())?;
         let time = now()?;
-        self.task_change(
+        self.append_task_transition_from_state(
             cas,
-            lease,
-            TaskChangeV1::LeaseRenewed {
-                lease_until_unix_ms: time
-                    .checked_add(lease_ms)
-                    .ok_or_else(|| conflict("Task lease overflow"))?,
+            lease.task_id(),
+            TaskTransitionV1 {
+                writer: lease.writer.clone(),
+                epoch: lease.epoch,
+                now_unix_ms: time,
+                change: TaskChangeV1::LeaseRenewed {
+                    lease_until_unix_ms: time
+                        .checked_add(lease_ms)
+                        .ok_or_else(|| conflict("Task lease overflow"))?,
+                },
             },
-            time,
+            None,
+            state,
         )
     }
 
