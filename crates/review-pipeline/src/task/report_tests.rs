@@ -18,10 +18,7 @@ use review_core::task::report::TaskRunReportV1;
 use review_graph::RunReport;
 
 // Reuse the exact admitted command Task fixture, not a manufactured projection.
-include!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/support/task_runtime_fixture.rs"
-));
+include!("../../tests/support/task_runtime_fixture.rs");
 
 fn with_report(entry_ms: u64, test: impl FnOnce(&mut TaskRuntime<'_, '_>, &RunReport)) {
     let mut f = Fixture::new(SUCCESS);
