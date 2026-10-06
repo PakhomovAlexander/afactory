@@ -16,6 +16,7 @@ impl TaskRuntime<'_, '_> {
         // Keep ordinary shared-connection renewals outside pure report capture.
         // The emergency independent connection still preserves expiry safety and exact-prefix refusal.
         let mut store = self.store.lock().expect("Task Store");
+        let _hold = ReportHold::new(report.outcomes.len());
         let state = store
             .task_projection(self.cas, self.lease.task_id())
             .map_err(|e| e.to_string())?
@@ -111,5 +112,37 @@ impl TaskRuntime<'_, '_> {
             .record_task_run_report(self.cas, &self.lease, &id)
             .map_err(|e| e.to_string())?;
         Ok(id)
+    }
+}
+
+// Isolated diagnostic branch only: no authority, TTL or validation changes.
+struct ReportHold {
+    started: std::time::Instant,
+    nodes: usize,
+}
+impl ReportHold {
+    fn new(nodes: usize) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            nodes,
+        }
+    }
+}
+impl Drop for ReportHold {
+    fn drop(&mut self) {
+        if std::env::var_os("AF_REPORT_LOAD").is_some() {
+            eprintln!(
+                "REPORT_HOLD {}",
+                serde_json::json!({"nodes": self.nodes, "hold_us": self.started.elapsed().as_micros()})
+            );
+        }
+    }
+}
+impl TaskRuntime<'_, '_> {
+    #[doc(hidden)]
+    pub fn diagnostic_report_capture(&self, report: &RunReport) -> Result<String, String> {
+        lease::with_heartbeat(&self.store, self.cas, &self.lease, || {
+            self.capture_run_report(report, None)
+        })
     }
 }

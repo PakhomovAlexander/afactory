@@ -883,6 +883,9 @@ impl Fixture {
         )
     }
     fn with_model_instructions(script: &str, model: bool, instructions: &str) -> Self {
+        Self::with_load_nodes(script, model, instructions, 1)
+    }
+    fn with_load_nodes(script: &str, model: bool, instructions: &str, load_nodes: usize) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
@@ -890,12 +893,24 @@ impl Fixture {
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
             .join("fixtures/task-contracts/v1");
-        let pipeline: PipelineDefinitionV1 =
+        let mut pipeline: PipelineDefinitionV1 =
             serde_json::from_slice(&std::fs::read(root.join("pipeline-definition.json")).unwrap())
                 .unwrap();
         let mut task: TaskRevisionV1 =
             serde_json::from_slice(&std::fs::read(root.join("task-revision.json")).unwrap())
                 .unwrap();
+        if load_nodes > 1 {
+            let template = pipeline.nodes[0].clone();
+            for i in 1..load_nodes {
+                let mut node = template.clone();
+                node.id = format!("write{i}");
+                pipeline.nodes.push(node);
+            }
+            pipeline.max_attempts = load_nodes as u32 + 1;
+            pipeline.max_parallel = 4;
+            pipeline.slots.get_mut("author").unwrap().max_attempts = 1;
+            task.limits.max_attempts = load_nodes as u32 + 2;
+        }
         let policy = cas
             .put_json(&json!({"fixture":"trusted kind and invocation policy"}))
             .unwrap();
@@ -919,7 +934,11 @@ impl Fixture {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64
-            + 60_000;
+            + if std::env::var_os("AF_REPORT_LOAD").is_some() {
+                3_000_000
+            } else {
+                60_000
+            };
         task.limits.verification.wall_ms = 5000;
         if model {
             task.limits.tokens = 5000;
@@ -1692,3 +1711,6 @@ fn failed_command_and_schema_refusal_exhaust_bounded_attempts_without_publishing
         assert!(execution.pending_attempts().is_empty());
     }
 }
+
+#[path = "task_runtime/report_load.rs"]
+mod report_load;

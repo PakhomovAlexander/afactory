@@ -78,8 +78,16 @@ fn renew_through_own(
     cas: &Cas,
     lease: &TaskLease,
 ) -> Result<Result<(), (String, u64)>, String> {
+    if std::env::var_os("AF_REPORT_LOAD").is_some() {
+        eprintln!("REPORT_OWN_RENEW_ATTEMPT");
+    }
     match own.renew_task_lease(cas, lease, LEASE_MS) {
-        Ok(_) => Ok(Ok(())),
+        Ok(_) => {
+            if std::env::var_os("AF_REPORT_LOAD").is_some() {
+                eprintln!("REPORT_OWN_RENEW_SUCCESS");
+            }
+            Ok(Ok(()))
+        }
         Err(error) => {
             let lease_until = own.task_lease_state(lease).map_err(|observed| {
                 format!("renewal failed: {error}; lease observation failed: {observed}")
