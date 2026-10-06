@@ -223,11 +223,29 @@ pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> Provid
         providers.extend(specs[providers.len()..].iter().map(unprobed_status));
     }
     cross_reference_logged_in_siblings(&mut providers);
+    drop_unused_ambient_contexts(&mut providers);
     ProviderInventory {
         providers,
         registry,
         warning,
     }
+}
+
+/// Leave out a CLI's default context that has no login once a Provider of its kind is registered:
+/// the operator has set up the logins they use, and the default directory is one they do not.
+/// Before one is registered, the row and its `auth login` fix are how a new machine starts, and a
+/// default context with a login stays, since it is a login the operator may register (ADR-0141).
+fn drop_unused_ambient_contexts(providers: &mut Vec<ProviderStatus>) {
+    let registered: BTreeSet<String> = providers
+        .iter()
+        .filter(|provider| !is_ambient_candidate(provider))
+        .map(|provider| provider.kind.clone())
+        .collect();
+    providers.retain(|provider| {
+        !(is_ambient_candidate(provider)
+            && provider.status == "not authenticated"
+            && registered.contains(&provider.kind))
+    });
 }
 
 /// Point each logged-out context at the same-kind contexts on this machine that are logged in.
@@ -1020,7 +1038,8 @@ fn validate_removable_id(id: &str) -> Result<(), String> {
     Err(format!(
         "`{id}` is an ambient discovery label, not a registry entry, so there is nothing to \
          remove; it is listed while the directory the {cli} CLI uses by default ({selector}, or \
-         {default}) is not the auth directory of a registered Provider"
+         {default}) is not the auth directory of a registered Provider, and, once a {cli} \
+         Provider is registered, only while that directory holds a login"
     ))
 }
 
@@ -4830,6 +4849,14 @@ fn normalize_claude_plan(value: &str) -> Option<&'static str> {
     }
 }
 
+/// Whether `codex login status` said it has no login: its whole answer is the CLI's logged-out
+/// line, nothing more. A logged-out default context is left out of the listing once its kind is
+/// registered (ADR-0141), so any other output, including an error that mentions "not logged in"
+/// or prints that line beside a diagnostic, stays a failed probe, which is listed.
+fn codex_reports_logged_out(captured: &str) -> bool {
+    captured.trim().eq_ignore_ascii_case("not logged in")
+}
+
 fn parse_codex_status(success: bool, stdout: &str) -> (String, String, String) {
     if let Some(auth_type) = stdout
         .lines()
@@ -4848,7 +4875,7 @@ fn parse_codex_status(success: bool, stdout: &str) -> (String, String, String) {
             String::new(),
         );
     }
-    if stdout.to_ascii_lowercase().contains("not logged in") {
+    if codex_reports_logged_out(stdout) {
         return (
             "not authenticated".to_string(),
             "-".to_string(),
@@ -6022,6 +6049,16 @@ auth_dir = "{}"
             include_str!("../tests/fixtures/providers/codex-0.149.0-logged-out.txt"),
         );
         assert_eq!(status, "not authenticated");
+        // The phrase inside an error, or the line beside a diagnostic, is a failed probe, not a
+        // logout.
+        for error in [
+            "Error: cannot determine whether user is not logged in\n",
+            "Error: failed to read auth store\nNot logged in\n",
+            "Not logged in\nError: status backend failed\n",
+        ] {
+            assert_eq!(parse_codex_status(false, error).0, "unavailable", "{error}");
+            assert_eq!(parse_codex_status(true, error).0, "unknown", "{error}");
+        }
         assert_eq!(parse_claude_status(true, "{}").0, "unknown");
         assert_eq!(parse_codex_status(true, "changed output").0, "unknown");
         assert_eq!(
@@ -6088,6 +6125,52 @@ auth_dir = "{}"
             chmod_fix(Path::new("/profiles/claude personal;work"), "go-w"),
             "chmod go-w -- '/profiles/claude personal;work'"
         );
+    }
+
+    #[test]
+    fn a_logged_out_default_context_is_left_out_once_its_kind_is_registered() {
+        fn status(id: &str, kind: &str, ambient: bool, status: &str) -> ProviderStatus {
+            ProviderStatus {
+                id: id.to_string(),
+                kind: kind.to_string(),
+                auth_context: "-".to_string(),
+                source: if ambient {
+                    "ambient CLI candidate; unstable local context label".to_string()
+                } else {
+                    "registry".to_string()
+                },
+                status: status.to_string(),
+                auth_type: "-".to_string(),
+                subscription: "-".to_string(),
+                limits: Vec::new(),
+                usage: UsageState::NotRequested,
+                detail: String::new(),
+            }
+        }
+        let ids = |providers: &[ProviderStatus]| -> Vec<String> {
+            providers
+                .iter()
+                .map(|provider| provider.id.clone())
+                .collect()
+        };
+        let mut providers = vec![
+            status("claude-ambient", "claude", true, "not authenticated"),
+            status("claude-personal", "claude", false, "not authenticated"),
+            status("codex-ambient", "codex", true, "not authenticated"),
+        ];
+        drop_unused_ambient_contexts(&mut providers);
+        // No Codex Provider is registered: its default context is how setup starts. A registered
+        // Provider stays whatever its login.
+        assert_eq!(ids(&providers), ["claude-personal", "codex-ambient"]);
+        // A default context with a login stays: it is a login the operator may register.
+        let mut providers = vec![
+            status("claude-ambient", "claude", true, "authenticated"),
+            status("claude-work", "claude", false, "authenticated"),
+            status("codex-ambient", "codex", true, "unavailable"),
+            status("codex-main", "codex", false, "authenticated"),
+        ];
+        drop_unused_ambient_contexts(&mut providers);
+        assert_eq!(ids(&providers).len(), 4);
     }
 
     #[test]

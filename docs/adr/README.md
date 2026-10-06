@@ -245,3 +245,5 @@ future readers need.
 - [0140 — Run a declared check through a gate pull
   request](0140-run-a-declared-check-through-a-gate-pull-request.md) (amended 2026-10-05: [the
   pipeline chooses](0140-run-a-declared-check-through-a-gate-pull-request.md#amendment-2026-10-05-the-pipeline-chooses))
+- [0141 — List a logged-out default context only until its kind is
+  registered](0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)
