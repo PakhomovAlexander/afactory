@@ -118,10 +118,6 @@ impl TaskRuntime<'_, '_> {
     }
 }
 
-#[cfg(test)]
-#[path = "report_tests.rs"]
-mod tests;
-
 // Isolated diagnostic branch only: no authority, TTL or validation changes.
 struct ReportHold {
     started: std::time::Instant,
@@ -158,3 +154,7 @@ impl TaskRuntime<'_, '_> {
         lease::with_heartbeat(&self.store, self.cas, &self.lease, work)
     }
 }
+
+#[cfg(test)]
+#[path = "report_tests.rs"]
+mod tests;
