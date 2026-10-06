@@ -101,8 +101,10 @@ impl HeartbeatScope<'_, '_> {
     }
 
     pub(crate) fn covers(&self, store: &Mutex<&mut EventStore>, lease: &TaskLease) -> bool {
-        std::ptr::eq(self.store, store)
-            && self.lease.task_id() == lease.task_id()
+        std::ptr::eq(
+            std::ptr::from_ref(self.store).cast::<()>(),
+            std::ptr::from_ref(store).cast::<()>(),
+        ) && self.lease.task_id() == lease.task_id()
             && self.lease.epoch() == lease.epoch()
     }
 }
