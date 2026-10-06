@@ -13,7 +13,13 @@ impl TaskRuntime<'_, '_> {
         report: &RunReport,
         phase_id: Option<&str>,
     ) -> Result<String, String> {
-        let state = self.projection()?;
+        // Keep ordinary shared-connection renewals outside pure report capture.
+        // The emergency independent connection still preserves expiry safety and exact-prefix refusal.
+        let mut store = self.store.lock().expect("Task Store");
+        let state = store
+            .task_projection(self.cas, self.lease.task_id())
+            .map_err(|e| e.to_string())?
+            .ok_or("Unknown Task")?;
         let execution = state
             .execution
             .as_ref()
@@ -101,9 +107,7 @@ impl TaskRuntime<'_, '_> {
             )
             .map_err(|e| e.to_string())?
             .0;
-        self.store
-            .lock()
-            .expect("Task Store")
+        store
             .record_task_run_report(self.cas, &self.lease, &id)
             .map_err(|e| e.to_string())?;
         Ok(id)

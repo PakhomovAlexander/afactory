@@ -32,6 +32,7 @@ fn renewal_during_context_callback_never_redispatches_it_and_takeover_is_closed(
         HOOK.with(|hook| {
             *hook.borrow_mut() = Some(Box::new(move || {
                 if takeover {
+                    other.recover_task_attempts(&cas, &old).unwrap();
                     other.release_task_lease(&cas, &old).unwrap();
                     other
                         .take_task_lease(&cas, old.task_id(), "successor", 15_000)
