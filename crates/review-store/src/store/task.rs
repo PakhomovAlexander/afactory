@@ -42,6 +42,10 @@ fn conflict(message: impl Into<String>) -> StoreError {
     StoreError::Conflict(message.into())
 }
 fn now() -> Result<u64, StoreError> {
+    #[cfg(test)]
+    if let Some(time) = TEST_CLOCK.with(|clock| clock.get()) {
+        return Ok(time);
+    }
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -381,6 +385,8 @@ fn valid_exact_optimization_result_refinement(
 
 #[cfg(test)]
 thread_local! {
+    static TEST_CLOCK: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    static AFTER_PROJECTION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     static PROJECTION_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static REVIEW_REPLAY_LOADS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
@@ -1550,6 +1556,10 @@ impl EventStore {
             state.artifact_refs = verified;
         }
         *self.task_cache.borrow_mut() = state.clone();
+        #[cfg(test)]
+        if let Some(after) = AFTER_PROJECTION.with(|hook| hook.borrow_mut().take()) {
+            after();
+        }
         Ok(state)
     }
 
