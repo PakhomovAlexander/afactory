@@ -769,8 +769,17 @@ fn a_released_reservation_is_no_attempt_and_an_observed_charge_counts() {
         "usage_id": "sha256:ee", "raw_artifact_ids": []}}));
     assert_eq!(stage(&state, &late, "implement").tokens, Some(100));
     // A settlement with unknown usage (ADR-0143) reads as unknown beside the charge, never as
-    // spend; a later observation that charges it makes it known.
+    // spend; a later observation makes it known, even one that reported 0 tokens.
     let mut unknown = done.clone();
+    // Replay refuses an unknown settlement after any observation of its Attempt, so the
+    // unknown case records none.
+    unknown["execution_records"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|entry| {
+            entry["record"]["kind"] != "usage_observed"
+                || entry["record"]["attempt_id"] != attempt.as_str()
+        });
     for entry in unknown["execution_records"].as_array_mut().unwrap() {
         if entry["record"]["kind"] == "settled" && entry["record"]["attempt_id"] == attempt.as_str()
         {
@@ -782,6 +791,17 @@ fn a_released_reservation_is_no_attempt_and_an_observed_charge_counts() {
     assert_eq!((implement.tokens, implement.unknown), (Some(0), 1));
     let row = stage_row(&implement).text();
     assert!(row.contains("0 tok (+1 unknown)"), "{row}");
+    let mut zero = unknown.clone();
+    zero["execution_records"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"artifact_id": "sha256:ab",
+        "record": {"kind": "usage_observed", "attempt_id": attempt, "charged_tokens": "0",
+        "usage_id": "sha256:ee", "raw_artifact_ids": []}}));
+    let implement = stage(&state, &zero, "implement");
+    assert_eq!((implement.tokens, implement.unknown), (Some(0), 0));
+    let row = stage_row(&implement).text();
+    assert!(!row.contains("unknown"), "{row}");
     unknown["execution_records"]
         .as_array_mut()
         .unwrap()

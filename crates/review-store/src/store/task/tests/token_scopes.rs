@@ -1,4 +1,5 @@
 use super::*;
+use crate::store::task::execution::{PreparedTaskAttempt, TaskAttemptAccounting};
 use review_attempt::task_budget::TaskTokenScope;
 use review_core::task::execution::{TaskAttemptResultV1, TaskExecutionRecordV1};
 use review_graph::task::CompiledTask;
@@ -327,4 +328,146 @@ fn unknown_usage_is_refused_once_usage_was_observed() {
         .settle_task_attempt(&f.cas, &lease, unknown, &f.authority)
         .unwrap_err();
     assert!(error.to_string().contains("observed usage"), "{error}");
+}
+
+/// A started Attempt of the execution fixture, with the lease that owns it.
+fn started_attempt(f: &mut Fixture) -> (TaskLease, PreparedTaskAttempt) {
+    let lease = f.open();
+    f.propose(&lease);
+    f.store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    f.record_execution_inputs(&lease);
+    let context = f
+        .cas
+        .put_json(&json!({"context":"zero usage fixture"}))
+        .unwrap();
+    let attempt = f
+        .store
+        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .unwrap();
+    f.store
+        .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+        .unwrap();
+    (lease, attempt)
+}
+
+fn observe_zero(f: &mut Fixture, lease: &TaskLease, attempt: &PreparedTaskAttempt) {
+    let usage_id = f.cas.put_json(&json!({"provider":"zero"})).unwrap();
+    f.store
+        .observe_task_usage(
+            &f.cas,
+            lease,
+            TaskExecutionRecordV1::UsageObserved {
+                attempt_id: attempt.id().into(),
+                charged_tokens: 0,
+                usage_id,
+                raw_artifact_ids: vec![],
+            },
+        )
+        .unwrap();
+}
+
+fn settled_unknown(f: &Fixture, attempt: &PreparedTaskAttempt) -> TaskExecutionRecordV1 {
+    TaskExecutionRecordV1::Settled {
+        attempt_id: attempt.id().into(),
+        charged_tokens: 0,
+        result: TaskAttemptResultV1::Failed {
+            diagnostic_id: f.cas.put_json(&json!({"failure":"capacity"})).unwrap(),
+            feedback_id: None,
+        },
+        raw_artifact_ids: vec![],
+        usage_id: None,
+        unknown_usage: Some(review_core::task::usage::TaskUnknownUsageV1 {
+            cause: review_core::task::usage::TaskUnknownUsageCauseV1::Capacity,
+        }),
+    }
+}
+
+fn accounting(f: &Fixture, attempt: &PreparedTaskAttempt) -> TaskAttemptAccounting {
+    f.state()
+        .execution
+        .as_ref()
+        .unwrap()
+        .attempt_accounting()
+        .into_iter()
+        .find(|row| row.attempt_id == attempt.id())
+        .unwrap()
+}
+
+/// A usage observation that reported 0 tokens is still a usage report: the Attempt's usage is
+/// known, so it cannot then settle as unknown (ADR-0143).
+#[test]
+fn a_zero_token_observation_refuses_a_later_unknown_settlement() {
+    let mut f = Fixture::new(false).with_execution_graph();
+    let (lease, attempt) = started_attempt(&mut f);
+    observe_zero(&mut f, &lease, &attempt);
+    let unknown = settled_unknown(&f, &attempt);
+    let error = f
+        .store
+        .settle_task_attempt(&f.cas, &lease, unknown, &f.authority)
+        .unwrap_err();
+    assert!(error.to_string().contains("observed usage"), "{error}");
+}
+
+/// An observation recorded after an unknown settlement makes the usage known, even when it
+/// reported 0 tokens: the Attempt is known at charge 0, never shown as unknown, and replay
+/// after reopening agrees.
+#[test]
+fn a_zero_token_observation_after_an_unknown_settlement_makes_usage_known() {
+    let mut f = Fixture::new(false).with_execution_graph();
+    let (lease, attempt) = started_attempt(&mut f);
+    let unknown = settled_unknown(&f, &attempt);
+    f.store
+        .settle_task_attempt(&f.cas, &lease, unknown, &f.authority)
+        .unwrap();
+    assert_eq!(
+        accounting(&f, &attempt).unknown_usage,
+        Some(review_core::task::usage::TaskUnknownUsageCauseV1::Capacity)
+    );
+    observe_zero(&mut f, &lease, &attempt);
+    f.store = EventStore::open(&f.path).unwrap();
+    let row = accounting(&f, &attempt);
+    assert_eq!(row.charged_tokens, 0);
+    assert_eq!(row.unknown_usage, None);
+}
+
+/// Recovery of an Attempt whose lost writer recorded a 0-token observation settles it as
+/// reported usage, not as unknown, which replay would refuse.
+#[test]
+fn recovery_after_a_zero_token_observation_settles_reported_usage() {
+    let mut f = Fixture::new(false).with_execution_graph();
+    let (lease, attempt) = started_attempt(&mut f);
+    observe_zero(&mut f, &lease, &attempt);
+    let time = f.state().lease_until + 1;
+    f.store
+        .append_task_transition(
+            &f.cas,
+            &lease.task_id,
+            TaskTransitionV1 {
+                writer: "writer-2".into(),
+                epoch: 2,
+                now_unix_ms: time,
+                change: TaskChangeV1::LeaseTaken {
+                    lease_until_unix_ms: time + 10000,
+                },
+            },
+        )
+        .unwrap();
+    let next = TaskLease {
+        task_id: lease.task_id.clone(),
+        writer: "writer-2".into(),
+        epoch: 2,
+    };
+    f.store
+        .recover_task_attempts_at(&f.cas, &next, time)
+        .unwrap();
+    f.store = EventStore::open(&f.path).unwrap();
+    let row = accounting(&f, &attempt);
+    assert_eq!(row.unknown_usage, None);
+    assert_eq!(
+        row.charged_tokens,
+        u128::from(attempt.reservation().tokens),
+        "reported usage of abandoned work keeps its reservation floor"
+    );
 }

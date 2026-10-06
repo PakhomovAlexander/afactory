@@ -34,9 +34,11 @@ whose usage was reported are charged exactly as before.
    `Settled` execution record carries `unknown_usage: { cause }`. This covers the Codex and
    Claude Task runners (a Claude result envelope without a `usage` object reports nothing),
    Provider admission probes, Task-hosted review Attempts, recovery of an Attempt whose writer
-   lease expired, and interrupted Attempts. An Attempt with any reported counter, an observed charge or a retained
-   wall usage is "reported": it is charged as before, including the reservation floor of a
-   reported but incomplete bill (ADR-0079, ADR-0125). An Attempt with no Provider, such as a
+   lease expired, and interrupted Attempts. An Attempt with any reported counter, a recorded
+   usage observation (even one of 0 tokens) or a retained wall usage is "reported": it is
+   charged as before, including the reservation floor of a reported but incomplete bill
+   (ADR-0079, ADR-0125). Whether usage was reported is its own fact, never read from the charged
+   amount: a reported 0 is known, not unknown. An Attempt with no Provider, such as a
    command Worker, keeps its known zero and is not unknown.
 2. **The cause** is what af knows, a closed `TaskUnknownUsageCauseV1`: the classified native
    failure (`capacity`, `rate_limit`, `authentication`, `model_unavailable`, `network`),
@@ -49,8 +51,9 @@ whose usage was reported are charged exactly as before.
    `unknown_usage` object. A record that carries it has `charged_tokens` `"0"` and no
    `usage_id`; the type and the schema both refuse anything else. Every record written before
    has no such field, keeps its bytes, and is read with the charge it recorded: nothing is
-   rewritten. Replay refuses an unknown settlement for an Attempt with an observed charge, and
-   admits an abandoned settlement below its reservation only with the marker. A Task-hosted
+   rewritten. Replay refuses an unknown settlement for an Attempt with any usage observation,
+   one that reported 0 tokens included, and admits an abandoned settlement below its
+   reservation only with the marker. A Task-hosted
    review provenance without a usage report records the zero charge its settlement carries.
 4. **Budgets.** The unknown Attempt's reservation is released and nothing is added to the Task's,
    node's or verification reserve's charged tokens, so a capacity failure no longer exhausts a
@@ -70,8 +73,14 @@ whose usage was reported are charged exactly as before.
    `(+N unknown)` when N of its Attempts' usage is unknown; the round's `<summary>` names the
    causes (`1 Attempt's usage unknown (capacity)`); and the `af/task-report@1` document carries
    `unknown_usage` counts on the Task's attempts, each node and the totals, with the causes by
-   count. `scripts/check-pr-report.py` needs no change: it checks the table's shape, not a
-   Tokens cell's text.
+   count. `af task gc --apply` keeps the count: `af/TaskCollected@1` gains the optional
+   `unknown_usage_attempts` in place under the same clause of ADR-0113 (absent when none), so
+   `af task list`, `af task show` and `af task report` still print a collected Task's tokens
+   with `(+N unknown)`; its `af/task-report@1` entry carries the count as
+   `collected_unknown_usage`, which the totals include, and its round's `<summary>` reads
+   `1 Attempt's usage unknown` without causes, which the tombstone does not keep.
+   `scripts/check-pr-report.py` needs no change: it checks the table's shape, not a Tokens
+   cell's text.
 
 ## Considered options
 
@@ -96,4 +105,4 @@ whose usage was reported are charged exactly as before.
 - A Task that ran under earlier releases keeps the charges it recorded, reservation-priced ones
   included; only new settlements carry the marker.
 - A late usage observation for an Attempt that settled as unknown raises its charge as before,
-  and reporting then counts that Attempt as known.
+  and reporting then counts that Attempt as known, even when the observation reported 0 tokens.

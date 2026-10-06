@@ -11,5 +11,7 @@
   the bare exit status. `af task show`, `af task list`, the browser's Tasks and Workers panes and
   `af task report` show such usage as unknown, never as 0 spend: a Tokens cell reads
   `1,200 (+1 unknown)`, the round's details name the cause, and the JSON documents carry the
-  count. Stores written by earlier releases read as before, with their recorded charges
+  count. A usage observation, even one that reports 0 tokens, makes an Attempt's usage known,
+  and `af task gc --apply` keeps the count in the collected Task's `af/TaskCollected@1`
+  tombstone, so a collected Task still lists and reports `(+N unknown)`. Stores written by earlier releases read as before, with their recorded charges
   ([ADR-0143](docs/adr/0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)).

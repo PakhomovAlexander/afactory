@@ -46,6 +46,10 @@ struct RecordedAttempt {
     settled_unix_ms: Option<u64>,
     released: bool,
     settlement: Option<TaskExecutionRecordV1>,
+    /// A `UsageObserved` record names this Attempt, so its usage was reported, even when it
+    /// reported 0 tokens: whether usage is known is its own fact, never read from the charge
+    /// (ADR-0143).
+    usage_observed: bool,
 }
 
 /// Read-only accounting from the common ledger. The effective charge includes observations
@@ -70,7 +74,7 @@ pub struct TaskAttemptAccounting {
     pub usage_id: Option<String>,
     /// Why this settled Attempt's usage is unknown: no usage was reported, so it was charged
     /// zero (ADR-0143). None for every Attempt whose usage is known, including one a later
-    /// observation charged after it settled.
+    /// observation reported after it settled, even one that reported 0 tokens.
     pub unknown_usage: Option<task::usage::TaskUnknownUsageCauseV1>,
 }
 
@@ -530,7 +534,7 @@ impl TaskExecutionProjection {
                         Some(TaskExecutionRecordV1::Settled {
                             unknown_usage: Some(unknown),
                             ..
-                        }) if ledger.is_none_or(|row| row.charged == 0) => Some(unknown.cause),
+                        }) if !attempt.usage_observed => Some(unknown.cause),
                         _ => None,
                     },
                 }
@@ -901,6 +905,11 @@ impl TaskProjection {
                     .ledger
                     .charge_exact(&id, charged)
                     .map_err(conflict)?;
+                execution
+                    .attempts
+                    .get_mut(attempt_id)
+                    .expect("known Attempt")
+                    .usage_observed = true;
             }
             TaskExecutionRecordV1::Invocation { invocation_id } => {
                 let input = invocation(cas, invocation_id)?;
@@ -990,6 +999,7 @@ impl TaskProjection {
                         settled_unix_ms: None,
                         released: false,
                         settlement: None,
+                        usage_observed: false,
                     },
                 );
             }
@@ -1076,14 +1086,9 @@ impl TaskProjection {
                 if !attempt.started || attempt.released || attempt.settlement.is_some() {
                     return Err(conflict("Task settlement has no unsettled started Attempt"));
                 }
-                // Unknown usage means nothing was reported: an Attempt whose usage was observed
-                // is charged what was observed, never zero (ADR-0143).
-                if unknown_usage.is_some()
-                    && execution
-                        .ledger
-                        .attempt(&AttemptId(attempt_id.clone()))
-                        .is_some_and(|a| a.charged > 0)
-                {
+                // Unknown usage means nothing was reported: an Attempt with any usage
+                // observation, one that reported 0 tokens included, has known usage (ADR-0143).
+                if unknown_usage.is_some() && attempt.usage_observed {
                     return Err(conflict(
                         "A Task Attempt with observed usage cannot settle as unknown",
                     ));
@@ -1265,11 +1270,13 @@ impl EventStore {
                 let observation =
                     self.task_attempt_usage_observation(&task_run_id(&lease.task_id)?, id)?;
                 // Usage was reported when the lost writer retained counters, an observation
-                // with counters or an observed charge. Otherwise it is unknown: the Attempt is
-                // charged zero, never its reservation (ADR-0143).
+                // with counters or a recorded usage observation, even one of 0 tokens.
+                // Otherwise it is unknown: the Attempt is charged zero, never its reservation
+                // (ADR-0143).
                 let reported = walls
                     .iter()
                     .any(|w| &w.attempt_id == id && w.usage.is_some())
+                    || attempt.usage_observed
                     || ledger_charge > 0
                     || observation
                         .as_ref()

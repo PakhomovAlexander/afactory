@@ -65,6 +65,7 @@ fn report() -> TaskReportV1 {
             unknown_usage: 0,
             unknown_usage_causes: Vec::new(),
         }),
+        collected_unknown_usage: 0,
         chargeable_tokens: DecimalU128::from(u128::MAX / 2),
         wall_ms: 60_000,
         active_ms: 20_000,
@@ -97,6 +98,7 @@ fn report() -> TaskReportV1 {
         findings: None,
         runs: 1,
         attempts: None,
+        collected_unknown_usage: 1,
         chargeable_tokens: DecimalU128::from(5),
         wall_ms: 10,
         active_ms: 10,
@@ -197,6 +199,17 @@ fn task_report_document_and_schema_agree_in_both_directions() {
     invalid(
         &|v| v["tasks"][1]["attempts"] = v["tasks"][0]["attempts"].clone(),
         "Attempts on a collected Task",
+    );
+    // ADR-0143: a collected Task keeps its unknown-usage count; a Task that records its
+    // Attempts states it there instead.
+    assert_eq!(value["tasks"][1]["collected_unknown_usage"], 1);
+    invalid(
+        &|v| v["tasks"][0]["collected_unknown_usage"] = json!(1),
+        "a retained unknown-usage count on an uncollected Task",
+    );
+    invalid(
+        &|v| v["tasks"][1]["collected_unknown_usage"] = json!(-1),
+        "a negative retained unknown-usage count",
     );
     invalid(
         &|v| v["tasks"][0]["attempts"]["failures"][0]["class"] = json!("timeout"),
@@ -359,7 +372,8 @@ fn the_model_pattern_and_the_rust_rule_agree() {
 
 /// ADR-0143: Attempts whose usage is unknown are counted on the Task's attempts, by cause, on
 /// each node and in the totals; the counts must add up, and the schema knows only the closed
-/// causes. The collected Task records no Attempts, so the totals count the other Task's.
+/// causes. The collected Task records no Attempts; the totals add the count its tombstone
+/// retained to the other Task's.
 #[test]
 fn unknown_usage_counts_add_up_and_carry_closed_causes() {
     use review_core::task::usage::TaskUnknownUsageCauseV1 as Cause;
@@ -382,7 +396,7 @@ fn unknown_usage_counts_add_up_and_carry_closed_causes() {
     tasks[0].nodes.as_mut().unwrap()[0].unknown_usage = 2;
     let pipelines = report().pipelines;
     let unknown = TaskReportV1::new(pipelines, tasks).unwrap();
-    assert_eq!(unknown.totals.unknown_usage, 2);
+    assert_eq!(unknown.totals.unknown_usage, 3);
     let value = serde_json::to_value(&unknown).unwrap();
     assert_valid("task-report-v1.json", &value);
     assert_eq!(
@@ -422,8 +436,8 @@ fn unknown_usage_counts_add_up_and_carry_closed_causes() {
         "nodes that do not add up",
     );
     refused(
-        &|v| v["totals"]["unknown_usage"] = json!(0),
-        "totals that are not the sum",
+        &|v| v["totals"]["unknown_usage"] = json!(2),
+        "totals without the collected Task's retained count",
     );
     refused(
         &|v| {

@@ -356,6 +356,8 @@ struct Reservation {
     charged: u128,
     /// Its settlement recorded unknown usage (ADR-0143).
     unknown: bool,
+    /// A usage observation names it: its usage was reported, even as 0 tokens.
+    observed: bool,
 }
 
 /// A recorded plan as the pane reads it: `{"graph": <compiled graph>, "bindings": <the plan's
@@ -479,6 +481,7 @@ pub(crate) fn tally(
                         settled: None,
                         charged: 0,
                         unknown: false,
+                        observed: false,
                     };
                     reservations.insert(attempt.to_owned(), reservation);
                 }
@@ -498,6 +501,8 @@ pub(crate) fn tally(
                 if kind == "settled" {
                     reservation.settled = Some(record["result"]["kind"] == "succeeded");
                     reservation.unknown = record["unknown_usage"].is_object();
+                } else {
+                    reservation.observed = true;
                 }
             }
             _ => {}
@@ -516,8 +521,8 @@ pub(crate) fn tally(
             Some(false) => tally.failed += 1,
         }
         tally.tokens = tally.tokens.saturating_add(reservation.charged);
-        // A later observation that charged it makes its usage known.
-        tally.unknown += u64::from(reservation.unknown && reservation.charged == 0);
+        // A usage observation makes its usage known, even one that reported 0 tokens.
+        tally.unknown += u64::from(reservation.unknown && !reservation.observed);
     }
     let mut walled = BTreeSet::new();
     for wall in tasks::array(&document["attempt_walls"]) {

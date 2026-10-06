@@ -680,9 +680,9 @@ fn attempts_are_attributed_through_the_recorded_plan_never_by_name() {
 }
 
 /// ADR-0143: an Attempt settled with unknown usage is counted as unknown beside the charge,
-/// never as spend, unless a later observation charged it.
+/// never as spend, unless a later observation reported its usage, even as 0 tokens.
 #[test]
-fn unknown_usage_reads_beside_the_charge_until_an_observation_charges_it() {
+fn unknown_usage_reads_beside_the_charge_until_an_observation_reports_it() {
     let unknown = |attempt: &str| {
         let mut entry = settled(attempt, "0", "failed");
         entry["record"]["unknown_usage"] = json!({"cause": "capacity"});
@@ -699,6 +699,9 @@ fn unknown_usage_reads_beside_the_charge_until_an_observation_charges_it() {
             reserved("late", "inv"),
             unknown("late"),
             record("usage_observed", "late", json!({"charged_tokens": "3"})),
+            reserved("zero", "inv"),
+            unknown("zero"),
+            record("usage_observed", "zero", json!({"charged_tokens": "0"})),
         ],
         "attempt_walls": []
     });

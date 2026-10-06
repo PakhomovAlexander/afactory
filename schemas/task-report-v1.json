@@ -191,6 +191,12 @@
           "$ref": "#/$defs/count"
         },
         "attempts": { "$ref": "#/$defs/attempts" },
+        "collected_unknown_usage": {
+          "description": "A collected Task's Attempts whose usage was unknown, as its `af/TaskCollected@1` tombstone retained the count (ADR-0143): the Tokens cell reads `(+N unknown)` after the charged total. Absent when none, and on a Task that records its Attempts, whose `attempts.unknown_usage` states it.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
         "chargeable_tokens": { "$ref": "#/$defs/tokens" },
         "wall_ms": {
           "description": "From the Task's first to its last recorded event; a collection tombstone is not the Task's event.",
@@ -213,7 +219,8 @@
             "not": {
               "anyOf": [{ "required": ["attempts"] }, { "required": ["nodes"] }, { "required": ["findings"] }]
             }
-          }
+          },
+          "else": { "not": { "required": ["collected_unknown_usage"] } }
         }
       ]
     },
@@ -384,7 +391,7 @@
         "failed_attempts": { "$ref": "#/$defs/count" },
         "chargeable_tokens": { "$ref": "#/$defs/tokens" },
         "unknown_usage": {
-          "description": "Attempts whose usage is unknown, over every Task that records its Attempts (ADR-0143).",
+          "description": "Attempts whose usage is unknown, over every Task: those its Attempts record, or a collected Task's retained count (ADR-0143).",
           "$ref": "#/$defs/count"
         },
         "active_ms": { "$ref": "#/$defs/count" }

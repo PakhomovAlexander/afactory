@@ -258,6 +258,11 @@ pub struct TaskReportEntryV1 {
         deserialize_with = "super::present_option"
     )]
     pub attempts: Option<TaskReportAttemptsV1>,
+    /// A collected Task's Attempts whose usage was unknown, as its tombstone retained the count
+    /// (ADR-0143); absent when none and for a Task that records its Attempts, whose
+    /// `attempts.unknown_usage` states it.
+    #[serde(default, skip_serializing_if = "super::is_zero")]
+    pub collected_unknown_usage: u64,
     pub chargeable_tokens: DecimalU128,
     /// From the Task's first to its last recorded event, the tombstone excluded.
     pub wall_ms: u64,
@@ -454,7 +459,8 @@ pub struct TaskReportTotalsV1 {
     )]
     pub failed_attempts: Option<u64>,
     pub chargeable_tokens: DecimalU128,
-    /// Attempts whose usage is unknown, over every Task that records its Attempts (ADR-0143).
+    /// Attempts whose usage is unknown, over every Task: those its Attempts record, or a
+    /// collected Task's retained count (ADR-0143).
     pub unknown_usage: u64,
     pub active_ms: u64,
 }
@@ -484,7 +490,7 @@ impl TaskReportTotalsV1 {
                 .checked_add(task.chargeable_tokens.get())
                 .ok_or("Task report total overflow")?;
             unknown = unknown
-                .checked_add(task.attempts.as_ref().map_or(0, |a| a.unknown_usage))
+                .checked_add(task.unknown_usage())
                 .ok_or("Task report total overflow")?;
             active = active
                 .checked_add(task.active_ms)
@@ -667,6 +673,14 @@ impl TaskReportFindingsV1 {
 }
 
 impl TaskReportEntryV1 {
+    /// Its Attempts whose usage is unknown: those its Attempts record, or for a collected Task
+    /// the count its tombstone retained.
+    pub fn unknown_usage(&self) -> u64 {
+        self.attempts
+            .as_ref()
+            .map_or(self.collected_unknown_usage, |a| a.unknown_usage)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         require(
             is_name(&self.task_id) && is_package_name(&self.kind),
@@ -698,6 +712,11 @@ impl TaskReportEntryV1 {
             !self.collected
                 || self.nodes.is_none() && self.attempts.is_none() && self.findings.is_none(),
             "A collected Task records no Attempts",
+        )?;
+        require(
+            (self.collected || self.collected_unknown_usage == 0)
+                && safe_number(self.collected_unknown_usage),
+            "Only a collected Task retains a bounded unknown-usage count",
         )?;
         if let Some(findings) = &self.findings {
             findings.validate()?;
@@ -877,6 +896,7 @@ mod tests {
                 unknown_usage: 0,
                 unknown_usage_causes: Vec::new(),
             }),
+            collected_unknown_usage: 0,
             chargeable_tokens: DecimalU128::from(100),
             wall_ms: 5_000,
             active_ms: 3_000,

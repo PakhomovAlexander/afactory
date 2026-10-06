@@ -76,6 +76,11 @@ pub(super) fn safe_number(value: u64) -> bool {
     value <= crate::json::SAFE_INTEGER_MAX as u64
 }
 
+/// `skip_serializing_if` for a count that is absent when zero.
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
 /// Optional properties allow omission, not JSON null. Keep serde admission aligned with
 /// the wire schema before the value is canonicalized and receives an identity.
 pub fn present_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>

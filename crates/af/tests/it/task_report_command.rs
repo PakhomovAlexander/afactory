@@ -700,6 +700,112 @@ fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
     );
 }
 
+/// ADR-0143 after `af task gc --apply`: the author's first Codex call fails at capacity with no
+/// usage report and its retry succeeds, so the Task completes with one Attempt whose usage is
+/// unknown. Collected, its tombstone keeps that count, and `af task list`, `af task show` and
+/// `af task report` still show `(+1 unknown)` beside the tokens, never a bare charge; the
+/// report block still passes the pull request check.
+#[test]
+fn a_collected_task_keeps_its_unknown_usage_count() {
+    let (f, done) = failed_provider_task_with(
+        |_| None,
+        concat!(
+            " kind='author'; r=json.loads(request)\n",
+            " if not os.path.exists(home+'/capacity'): open(home+'/capacity','w').close();",
+            " print(json.dumps({'type':'turn.failed','error':{'message':",
+            "'Selected model is at capacity. Please try a different model.'}})); sys.exit(1)\n",
+        ),
+    );
+    assert_eq!(done["phase"]["kind"], "finished", "{done:#}");
+    let before: Value =
+        serde_json::from_slice(&f.cli(&["task", "show", "release-notes"]).stdout).unwrap();
+    assert_eq!(before["unknown_usage_attempts"], 1, "{before:#}");
+    let tokens = before["chargeable_tokens"].as_str().unwrap().to_owned();
+    let listed = fixture_text(&f, &["task", "list"]);
+    assert!(
+        listed.contains(&format!("{tokens} tokens (+1 unknown)")),
+        "{listed}"
+    );
+
+    // The preview names the count the tombstone will keep.
+    let preview: Value = serde_json::from_slice(
+        &f.cli(&["task", "gc", "--older-than", "0", "--keep", "0"])
+            .stdout,
+    )
+    .unwrap();
+    schemas::valid(&schemas::validator("task-gc-v1.json"), &preview);
+    assert_eq!(
+        preview["tasks"][0]["unknown_usage_attempts"], 1,
+        "{preview:#}"
+    );
+    let collected = f.cli(&["task", "gc", "--older-than", "0", "--keep", "0", "--apply"]);
+    let collected: Value = serde_json::from_slice(&collected.stdout).unwrap();
+    assert_eq!(
+        collected["applied"]["tombstoned"],
+        serde_json::json!(["release-notes"]),
+        "{collected:#}"
+    );
+    schemas::valid(&schemas::validator("task-gc-v1.json"), &collected);
+
+    // `af task list`: the tombstone keeps the count, in both forms.
+    let listed = fixture_text(&f, &["task", "list"]);
+    let row = listed
+        .lines()
+        .find(|line| line.starts_with("release-notes"))
+        .unwrap();
+    assert!(
+        row.contains(&format!("{tokens} tokens (+1 unknown)")),
+        "{row}"
+    );
+    assert!(row.contains("collected "), "{row}");
+    let listed: Value = serde_json::from_slice(&f.cli(&["task", "list"]).stdout).unwrap();
+    let entry = &listed["tasks"][0];
+    schemas::valid(&schemas::validator("task-list-entry-v2.json"), entry);
+    assert_eq!(entry["unknown_usage_attempts"], 1, "{entry:#}");
+    assert_eq!(entry["collected"]["unknown_usage_attempts"], 1, "{entry:#}");
+    schemas::valid(
+        &schemas::validator("task-collected-v1.json"),
+        &entry["collected"],
+    );
+
+    // `af task show`: the collected summary names the unknown usage beside the tokens.
+    let shown = fixture_text(&f, &["task", "show", "release-notes"]);
+    assert!(
+        shown.contains(&format!("chargeable tokens: {tokens} (+1 unknown)")),
+        "{shown}"
+    );
+
+    // `af task report`: the document carries the retained count, the block shows it.
+    let value: Value = serde_json::from_str(&fixture_report(&f, true)).unwrap();
+    let task = &value["tasks"][0];
+    assert_eq!(task["collected"], true);
+    assert!(task.get("attempts").is_none(), "{task:#}");
+    assert_eq!(task["collected_unknown_usage"], 1, "{task:#}");
+    assert_eq!(value["totals"]["unknown_usage"], 1);
+    let markdown = fixture_report(&f, false);
+    let cell = format!(" | {} (+1 unknown) | ", thousands(&tokens));
+    let round = markdown
+        .lines()
+        .find(|line| line.starts_with("| 1 | release-notes |"))
+        .unwrap();
+    assert!(round.contains(" (collected) | "), "{round}");
+    assert!(round.contains(&cell), "{round}");
+    let total = markdown
+        .lines()
+        .find(|line| line.starts_with("|  | Total: "))
+        .unwrap();
+    assert!(total.contains(&cell), "{total}");
+    assert!(
+        markdown.contains(", 1 Attempt's usage unknown</summary>"),
+        "{markdown}"
+    );
+    assert_block_is_checked(&markdown);
+    assert_private(
+        &[&markdown, &value.to_string()],
+        &["Selected model", "codex-personal", f.home.to_str().unwrap()],
+    );
+}
+
 /// A model value that is a path, a URL or an account is recorded in the plan as the Worker's
 /// model, and the author's Attempt under it fails at the Provider. The report names that
 /// Worker's model `unknown` in both forms and carries the value in neither: a path into the

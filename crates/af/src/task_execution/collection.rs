@@ -93,7 +93,7 @@ pub(super) fn footprint(footprint: &TaskFootprint) -> Value {
 }
 
 fn candidate(task: &CollectionCandidate) -> Value {
-    json!({
+    let mut candidate = json!({
         "task_id": task.task_id,
         "kind": task.kind,
         "outcome": task.outcome,
@@ -102,7 +102,12 @@ fn candidate(task: &CollectionCandidate) -> Value {
         "disposition": task.disposition,
         "sizes": footprint(&task.footprint),
         "collected_bytes": task.collected_bytes,
-    })
+    });
+    // Unknown usage is never shown as spend (ADR-0143); this is the count a tombstone keeps.
+    if task.unknown_usage_attempts > 0 {
+        candidate["unknown_usage_attempts"] = json!(task.unknown_usage_attempts);
+    }
+    candidate
 }
 
 /// The `af/task-gc@1` document.
@@ -215,9 +220,10 @@ fn text(plan: &CollectionPlan, outcome: Option<&CollectionOutcome>) -> String {
 }
 
 /// The `af/task-list-entry@2` of a collected Task: its retained summary, the result its log
-/// named, and `collected`; nothing artifact-backed.
+/// named, and `collected`; nothing artifact-backed. The unknown-usage count is the tombstone's,
+/// so the collected Task still lists `(+N unknown)` (ADR-0143).
 pub(super) fn list_entry(task: &CollectedTask) -> Value {
-    json!({
+    let mut entry = json!({
         "schema": "af/task-list-entry@2",
         "task_id": task.collected.task_id,
         "kind": task.collected.kind,
@@ -227,7 +233,11 @@ pub(super) fn list_entry(task: &CollectedTask) -> Value {
         "derived_snapshot_id": null,
         "delivery": null,
         "collected": task.collected,
-    })
+    });
+    if task.collected.unknown_usage_attempts > 0 {
+        entry["unknown_usage_attempts"] = json!(task.collected.unknown_usage_attempts);
+    }
+    entry
 }
 
 /// The `af/task-collected-inspection@1` document `af task show --json` prints for a collected
@@ -260,7 +270,15 @@ pub(super) fn present(task: &CollectedTask, json_output: bool) -> Result<(), Str
     println!("  revision: {}", collected.revision_id);
     println!("  result: {}", task.result_id);
     println!("  outcome: {}", collected.outcome);
-    println!("  chargeable tokens: {}", collected.chargeable_tokens);
+    // Unknown usage is never shown as spend, even after collection (ADR-0143).
+    let unknown = match collected.unknown_usage_attempts {
+        0 => String::new(),
+        n => format!(" (+{n} unknown)"),
+    };
+    println!(
+        "  chargeable tokens: {}{unknown}",
+        collected.chargeable_tokens
+    );
     println!(
         "  last event: {}",
         collected_time(collected.last_event_unix_ms)

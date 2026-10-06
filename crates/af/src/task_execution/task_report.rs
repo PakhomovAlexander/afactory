@@ -75,6 +75,7 @@ fn entry(
             findings: None,
             runs: times.runs,
             attempts: None,
+            collected_unknown_usage: summary.unknown_usage_attempts,
             chargeable_tokens: DecimalU128::from(
                 summary
                     .chargeable_tokens
@@ -153,6 +154,7 @@ fn entry(
         findings,
         runs: times.runs,
         attempts: Some(attempts),
+        collected_unknown_usage: 0,
         chargeable_tokens: DecimalU128::from(
             state
                 .execution
@@ -902,10 +904,7 @@ pub(crate) fn markdown(report: &TaskReportV1) -> String {
             cell(&task.task_id),
             cell(&outcome),
             findings_cell(task),
-            tokens_cell(
-                task.chargeable_tokens.get(),
-                task.attempts.as_ref().map_or(0, |a| a.unknown_usage),
-            ),
+            tokens_cell(task.chargeable_tokens.get(), task.unknown_usage()),
             duration(task.active_ms),
         ]));
     }
@@ -1122,6 +1121,13 @@ fn details_summary(task: &TaskReportEntryV1) -> String {
                 plural(attempts.unknown_usage, "Attempt's", "Attempts'")
             ));
         }
+    } else if task.collected_unknown_usage > 0 {
+        // A collected Task kept the count but not the causes.
+        summary.push_str(&format!(
+            ", {} {} usage unknown",
+            task.collected_unknown_usage,
+            plural(task.collected_unknown_usage, "Attempt's", "Attempts'")
+        ));
     }
     summary
 }

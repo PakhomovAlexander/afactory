@@ -238,8 +238,9 @@ unfinished, holding a writer lease or bound by another Task's `inputs`. It write
 `--apply` it writes one tombstone per collected Task and removes every object no remaining Task
 or Campaign record reaches
 ([ADR-0135](adr/0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)). A
-collected Task keeps its ID, kind, revision, outcome, spend and times: `task list` and `task
-show` print it as `collected <time>`, and `task output` and `task deliver` refuse it. Run it
+collected Task keeps its ID, kind, revision, outcome, spend, how many of its Attempts' usage was
+unknown, and times: `task list` and `task show` print it as `collected <time>`, still with
+`(+N unknown)` beside its tokens, and `task output` and `task deliver` refuse it. Run it
 between Tasks: `--apply` is refused while any Task's writer lease is live. If it stops midway,
 rerun it; the next run finishes the removal.
 
@@ -267,7 +268,7 @@ Then each Task is a round, numbered in the order given, with one row: its outcom
 states it, its review findings, chargeable tokens and active time. A Tokens cell, in a round, the
 `Total:` row or a node, is the charged total followed by `(+N unknown)` when N of its Attempts
 reported no usage, and the round's details name their causes
-(`1 Attempt's usage unknown (capacity)`). **Findings** counts what the
+(`1 Attempt's usage unknown (capacity)`); a collected Task keeps the count, not the causes. **Findings** counts what the
 Task's review rounds recorded, by severity (`6 major, 1 minor`), each finding once as the round's
 reduce step wrote it; it reads `none` when the reviewers ran and their complete rounds found
 nothing, `unknown` when the review ran but a round has no complete finding set (a required

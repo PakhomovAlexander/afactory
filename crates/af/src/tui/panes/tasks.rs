@@ -203,7 +203,8 @@ pub(crate) fn stages(
     // The current plan's Attempts, by id, and the node each ran.
     let mut attempts: BTreeMap<String, String> = BTreeMap::new();
     // The highest charge recorded for each Attempt: a usage observation may exceed the charge
-    // its settlement names, and the Store keeps the higher one.
+    // its settlement names, and the Store keeps the higher one. An Attempt with an entry here
+    // reported its usage, even 0 tokens.
     let mut observed: BTreeMap<String, u128> = BTreeMap::new();
     // Each settled Attempt's node and the charge its settlement names; summed after the scan,
     // since a usage observation may arrive after the settlement it raises.
@@ -293,11 +294,12 @@ pub(crate) fn stages(
         }
     }
     for (attempt, (node, charged, unknown)) in &settled_charges {
-        let charged = (*charged).max(observed.get(attempt).copied().unwrap_or(0));
+        let seen = observed.get(attempt).copied();
+        let charged = (*charged).max(seen.unwrap_or(0));
         let track = tracks.entry(node.clone()).or_default();
         track.tokens = track.tokens.saturating_add(charged);
-        // A later observation that charged it makes its usage known.
-        track.unknown += u64::from(*unknown && charged == 0);
+        // A usage observation makes its usage known, even one that reported 0 tokens.
+        track.unknown += u64::from(*unknown && seen.is_none());
     }
     // The last whole-Round report of the current plan: every compiled node with its outcome,
     // including a failure before any Attempt and a suppressed branch.
