@@ -33,7 +33,7 @@ pub const TASK_REPORT_TOTALS: &str = "**Totals:**";
 /// The model the report names in place of a recorded value that is not a model identity.
 pub const TASK_REPORT_UNKNOWN_MODEL: &str = "unknown";
 /// The longest model identity the report copies.
-pub const TASK_REPORT_MODEL_MAX: usize = 128;
+pub const TASK_REPORT_MODEL_MAX: usize = 96;
 
 /// Path segments that name a home, account or state directory, compared case-insensitively.
 /// `auth` also covers a segment that starts with `auth.`, `auth_` or `auth-` (`auth.json`).
@@ -41,28 +41,94 @@ const PRIVATE_SEGMENTS: [&str; 8] = [
     "home", "users", "root", "tmp", "var", "private", "state", "auth",
 ];
 
-/// Whether `model` looks like a model identity the report may copy: 1 to
-/// [`TASK_REPORT_MODEL_MAX`] letters, digits and `._:/@+-`, not starting with `/` (nor `~`,
-/// which is not in that alphabet), without `..`, and with no `/`-separated segment that is
-/// hidden (starts with `.`) or names a home, auth or state directory. Anything else may be a
-/// path or an account and is reported as [`TASK_REPORT_UNKNOWN_MODEL`].
-/// `schemas/task-report-v1.json` states the same rule as the model's pattern.
+/// Whether `model` is a model identity the report may copy. The rule is an allow-list:
+/// 1 to [`TASK_REPORT_MODEL_MAX`] characters from `A-Z a-z 0-9 ._:@+-` plus at most one `/`;
+/// the first character, and the first character after the `/`, alphanumeric; no `..`; no `:`
+/// directly before the `/` (so no `://`); no drive-letter prefix such as `C:`; and neither
+/// side of the `/` a name of a home, auth or state directory. Anything else may be a path, a
+/// URL or an account and is reported as [`TASK_REPORT_UNKNOWN_MODEL`].
+/// `schemas/task-report-v1.json` states the same rule as the model's pattern, and
+/// [`TASK_REPORT_MODEL_CASES`] is the table both are held to.
 pub fn is_model_identity(model: &str) -> bool {
-    (1..=TASK_REPORT_MODEL_MAX).contains(&model.len())
-        && model
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._:/@+-".contains(&b))
-        && !model.starts_with('/')
+    let bytes = model.as_bytes();
+    let starts_alphanumeric = |part: &str| {
+        part.bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphanumeric())
+    };
+    (1..=TASK_REPORT_MODEL_MAX).contains(&bytes.len())
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || b"._:@+-/".contains(b))
+        && bytes.iter().filter(|&&b| b == b'/').count() <= 1
         && !model.contains("..")
-        && model.split('/').all(|segment| {
-            let segment = segment.to_ascii_lowercase();
-            !segment.starts_with('.')
-                && !PRIVATE_SEGMENTS.contains(&segment.as_str())
+        && !model.contains(":/")
+        && !(bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+        && model.split('/').all(|part| {
+            let part = part.to_ascii_lowercase();
+            starts_alphanumeric(&part)
+                && !PRIVATE_SEGMENTS.contains(&part.as_str())
                 && !["auth.", "auth_", "auth-"]
                     .iter()
-                    .any(|prefix| segment.starts_with(prefix))
+                    .any(|prefix| part.starts_with(prefix))
         })
 }
+
+/// The table [`is_model_identity`] and the schema's model pattern are both tested against:
+/// each value and whether it is a model identity. Lengths at and beyond
+/// [`TASK_REPORT_MODEL_MAX`] are tested beside it.
+#[doc(hidden)]
+pub const TASK_REPORT_MODEL_CASES: [(&str, bool); 49] = [
+    ("gpt-6-sol/high", true),
+    ("claude-opus-5-5", true),
+    ("gpt-5.3-codex-spark", true),
+    ("us.anthropic.claude-opus-5-5-v1:0", true),
+    ("codex-fixture-1", true),
+    ("anthropic/claude-3.5", true),
+    ("meta-llama/Llama-3-70b@latest", true),
+    ("gpt-4o+tools", true),
+    ("org:team/model-1", true),
+    ("o1:2024", true),
+    ("authors/model", true),
+    ("statesman-1", true),
+    ("unknown", true),
+    ("file:///etc/passwd", false),
+    ("C:/secrets/key", false),
+    ("C:\\key", false),
+    ("C:\\\\key", false),
+    ("/etc/x", false),
+    ("~/x", false),
+    ("a//b", false),
+    ("a/b/c", false),
+    ("../x", false),
+    ("", false),
+    ("c:model-1", false),
+    ("C:", false),
+    ("https://example.invalid/m-1", false),
+    ("a:/b", false),
+    ("a/", false),
+    ("/", false),
+    ("-x", false),
+    (".hidden", false),
+    ("a/.codex", false),
+    ("a/-b", false),
+    ("m..1", false),
+    ("models/../secret", false),
+    ("home/fixture", false),
+    ("fixture/HOME", false),
+    ("Users/fixture", false),
+    ("providers/State", false),
+    ("provider/auth.json", false),
+    ("provider/AUTH-dir", false),
+    ("codex auth", false),
+    ("m|x", false),
+    ("m\\|x", false),
+    ("m&#124;x", false),
+    ("<b>m-1", false),
+    ("fixture@example.invalid\n", false),
+    ("gpt\u{202e}", false),
+    ("gpt-6-sol%2Fhigh", false),
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -577,44 +643,40 @@ mod tests {
 
     #[test]
     fn a_model_is_copied_only_when_it_looks_like_a_model_identity() {
+        for (model, identity) in TASK_REPORT_MODEL_CASES {
+            assert_eq!(is_model_identity(model), identity, "{model:?}");
+        }
+        assert!(is_model_identity(&"m".repeat(TASK_REPORT_MODEL_MAX)));
+        assert!(!is_model_identity(&"m".repeat(TASK_REPORT_MODEL_MAX + 1)));
+        let rejected = TASK_REPORT_MODEL_CASES
+            .iter()
+            .filter(|(_, identity)| !identity)
+            .map(|(model, _)| *model)
+            .collect::<Vec<_>>();
         for model in [
-            "gpt-6-sol",
-            "codex-fixture-1",
-            "claude-opus-5-5",
-            "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-            "anthropic/claude-3.5",
-            "meta-llama/Llama-3-70b@latest",
-            "gpt-4o+tools",
-            "unknown",
-            &"m".repeat(TASK_REPORT_MODEL_MAX),
+            "file:///etc/passwd",
+            "C:/secrets/key",
+            "C:\\key",
+            "C:\\\\key",
+            "/etc/x",
+            "~/x",
+            "a//b",
+            "a/b/c",
+            "../x",
+            "",
         ] {
-            assert!(is_model_identity(model), "{model}");
+            assert!(rejected.contains(&model), "{model:?} is in the table");
         }
         for model in [
-            "",
-            "/Users/fixture/.codex/auth.json",
-            "/home/fixture/model",
-            "~/.codex",
-            "~fixture",
-            "models/../secret",
-            "..",
-            "home/fixture/model",
-            "Users/fixture/model",
-            "fixture/.codex",
-            ".af/state",
-            "var/folders/x/T/af-state",
-            "providers/STATE/events",
-            "provider/auth.json",
-            "models/Auth",
-            "codex auth",
-            "m\\|x",
-            "m|x",
-            "C:\\Users\\fixture",
-            "fixture@example.invalid\n",
-            "gpt\u{202e}",
-            &"m".repeat(TASK_REPORT_MODEL_MAX + 1),
+            "gpt-6-sol/high",
+            "claude-opus-5-5",
+            "gpt-5.3-codex-spark",
+            "us.anthropic.claude-opus-5-5-v1:0",
         ] {
-            assert!(!is_model_identity(model), "{model:?}");
+            assert!(
+                TASK_REPORT_MODEL_CASES.contains(&(model, true)),
+                "{model:?} is in the table"
+            );
         }
     }
 

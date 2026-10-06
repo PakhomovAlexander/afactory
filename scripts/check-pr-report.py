@@ -9,9 +9,9 @@ checks that a well-formed block is there.
 
 A pull request opened by Dependabot, or from a `release/` branch, is exempt. Anything else
 passes only with exactly one block: the begin marker, then the end marker, and between them
-the summary table header with every column, a separator row of the header's width, at least
-one Task row, and the totals line. A Task row has exactly the header's number of cells, and
-its Task, Kind, Pipeline and Outcome cells are not empty.
+the summary table header with exactly the nine v1 columns in order, a separator row of that
+width, at least one Task row, and the totals line. A Task row has exactly nine cells, and its
+Task, Kind, Pipeline and Outcome cells are not empty.
 
 The workflow runs this script as the base branch holds it, on `pull_request_target`, so a pull
 request can change neither the check nor the workflow that runs it (ADR-0142).
@@ -20,6 +20,7 @@ request can change neither the check nor the workflow that runs it (ADR-0142).
     check-pr-report.py --body FILE         a description on its own, as a local check
 """
 import argparse
+from collections import Counter
 import json
 import os
 from pathlib import Path
@@ -27,6 +28,7 @@ import sys
 
 BEGIN = '<!-- af-task-report:v1 -->'
 END = '<!-- /af-task-report -->'
+# The v1 summary header, exactly and in this order (ADR-0142).
 COLUMNS = ['Task', 'Kind', 'Pipeline', 'Outcome', 'Rounds', 'Attempts', 'Tokens',
            'Active time', 'Wall time']
 # The cells every Task row fills: the row names its Task and says what it was.
@@ -102,11 +104,20 @@ def problems(body):
                 + ', '.join(COLUMNS)]
     found = []
     names = cells(block[header])
-    width = len(names)
-    missing = [column for column in COLUMNS if column not in names]
-    if missing:
-        found.append('the summary table is missing the column'
-                     + ('s ' if len(missing) > 1 else ' ') + ', '.join(missing))
+    width = len(COLUMNS)
+    if names != COLUMNS:
+        missing = list((Counter(COLUMNS) - Counter(names)).elements())
+        extra = list((Counter(names) - Counter(COLUMNS)).elements())
+        if missing:
+            found.append('the summary table is missing the column'
+                         + ('s ' if len(missing) > 1 else ' ') + ', '.join(missing))
+        if extra:
+            found.append('the summary table has the extra column'
+                         + ('s ' if len(extra) > 1 else ' ') + ', '.join(extra)
+                         + f': the v1 header has exactly {width}')
+        if not missing and not extra:
+            found.append('the summary table columns are out of order: the v1 header is '
+                         + ' | '.join(COLUMNS))
     rows = []
     below = cells(block[header + 1]) if header + 1 < len(block) else None
     separator = is_separator(below)
@@ -124,7 +135,7 @@ def problems(body):
             rows.append(row)
     if separator and not rows:
         found.append('the summary table has no Task row')
-    required = [(names.index(column), column) for column in REQUIRED if column in names]
+    required = [(COLUMNS.index(column), column) for column in REQUIRED]
     for number, row in enumerate(rows, 1):
         if len(row) == 1 and width > 1:
             found.append(f'Task row {number} of the summary table is a one-cell placeholder '

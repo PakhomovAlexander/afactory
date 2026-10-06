@@ -282,7 +282,7 @@ For a Task resumed once after an interrupt it prints:
 ```
 
 Paste the whole block, both markers included. Providers appear only as kind, model and effort,
-and a recorded model that does not look like a model identity (a path, say) reads `unknown`: the
+and a recorded model that is not a model identity (a path or a URL, say) reads `unknown`: the
 report never carries a Provider label, a path, a credential, a prompt or Worker output.
 `--json` prints the same figures as one
 [`af/task-report@1`](../schemas/task-report-v1.json) document, with exact decimal tokens and

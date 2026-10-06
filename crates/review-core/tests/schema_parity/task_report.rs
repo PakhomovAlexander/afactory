@@ -169,40 +169,16 @@ fn the_checked_in_fixture_is_a_valid_document() {
         .unwrap();
 }
 
-/// The schema's model pattern and `is_model_identity` draw the same line, value by value.
+/// The schema's model pattern and `is_model_identity` draw the same line on the one table
+/// both are held to, `TASK_REPORT_MODEL_CASES`, and at the length bound.
 #[test]
 fn the_model_pattern_and_the_rust_rule_agree() {
     let value = serde_json::to_value(report()).unwrap();
     let long = "m".repeat(TASK_REPORT_MODEL_MAX);
     let longer = "m".repeat(TASK_REPORT_MODEL_MAX + 1);
-    for model in [
-        "gpt-6-sol",
-        "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-        "anthropic/claude-3.5",
-        "meta-llama/Llama-3-70b@latest",
-        "gpt-4o+tools",
-        "authors/model",
-        "statesman-1",
-        TASK_REPORT_UNKNOWN_MODEL,
-        &long,
-        "",
-        &longer,
-        "/Users/fixture/.codex/auth.json",
-        "~/.codex",
-        "models/../secret",
-        "home/fixture/model",
-        "fixture/HOME",
-        "fixture/.codex",
-        ".af",
-        "var/folders/x/T/af-state",
-        "providers/State/events",
-        "provider/auth.json",
-        "provider/AUTH-dir",
-        "codex auth",
-        "m\\|x",
-        "C:\\Users\\fixture",
-        "gpt\u{202e}",
-    ] {
+    let lengths = [(long.as_str(), true), (longer.as_str(), false)];
+    for (model, identity) in TASK_REPORT_MODEL_CASES.into_iter().chain(lengths) {
+        assert_eq!(is_model_identity(model), identity, "the table on {model:?}");
         let mut changed = value.clone();
         changed.pointer_mut("/tasks/0/nodes/0/worker").unwrap()["model"] = json!(model);
         assert_eq!(

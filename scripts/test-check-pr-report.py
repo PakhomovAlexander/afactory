@@ -91,6 +91,14 @@ def main():
             begin + '\n', '').replace(end + '\n', '') + begin + '\n')), 'comes before'),
         'a missing column': (event(description(BLOCK.replace(
             header, header.replace(' Active time |', '')))), 'missing the column Active time'),
+        'an extra column': (event(description(BLOCK.replace(header, header + ' Cost |'))),
+                            'has the extra column Cost: the v1 header has exactly 9'),
+        'reordered columns': (event(description(BLOCK.replace(header, header.replace(
+            '| Active time | Wall time |', '| Wall time | Active time |')))),
+            'the summary table columns are out of order'),
+        'a repeated column': (event(description(BLOCK.replace(
+            header, header.replace(' Rounds |', ' Kind |')))),
+            'missing the column Rounds'),
         'a missing table': (event(description(BLOCK.replace(header + '\n', ''))),
                             'no summary table'),
         'an empty table': (event(description(empty_table)), 'has no Task row'),
@@ -126,7 +134,8 @@ def main():
         assert expected in said, f'{case}: expected {expected!r} in:\n{said}'
         assert HOW in said, f'{case} does not say how to produce the block:\n{said}'
         messages[case] = said
-    distinct = ['a missing block', 'a missing end marker', 'a missing column', 'an empty table',
+    distinct = ['a missing block', 'a missing end marker', 'a missing column', 'an extra column',
+                'reordered columns', 'an empty table',
                 'two blocks', 'a missing totals line', 'a one-cell placeholder row',
                 'a short row', 'an empty Task cell', 'a separator of the wrong width']
     assert len({messages[case] for case in distinct}) == len(distinct), \

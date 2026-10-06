@@ -192,27 +192,33 @@ fn token_counts_read_with_thousands_separators_in_markdown_only() {
     assert_eq!(json["totals"]["chargeable_tokens"], "205295");
 }
 
+/// Every value of the shared table is copied unchanged into both forms when it is a model
+/// identity; any other value leaves both forms exactly as an `unknown` model does.
 #[test]
 fn only_a_model_identity_is_copied_into_the_report() {
-    assert_eq!(report_model("gpt-6-sol"), "gpt-6-sol");
-    assert_eq!(report_model("anthropic/claude-3.5"), "anthropic/claude-3.5");
-    for private in [
-        "/Users/fixture/.codex/auth.json",
-        "~/.claude",
-        "home/fixture/model",
-        "fixture/.af/state",
-        "codex-personal fixture@example.invalid",
-        "m\\|x",
-    ] {
-        assert_eq!(
-            report_model(private),
-            TASK_REPORT_UNKNOWN_MODEL,
-            "{private}"
-        );
+    let unknown = TaskReportV1::new(vec![entry("a", TASK_REPORT_UNKNOWN_MODEL)]).unwrap();
+    for (recorded, identity) in TASK_REPORT_MODEL_CASES {
+        let shown = report_model(recorded);
+        let report = TaskReportV1::new(vec![entry("a", &shown)]).unwrap();
+        let text = markdown(&report);
+        let json = serde_json::to_value(&report).unwrap();
+        if identity {
+            assert_eq!(shown, recorded);
+            assert_eq!(json["tasks"][0]["nodes"][0]["worker"]["model"], recorded);
+            assert!(
+                text.contains(&format!("| codex {recorded}/high |")),
+                "{text}"
+            );
+        } else {
+            assert_eq!(shown, TASK_REPORT_UNKNOWN_MODEL, "{recorded:?}");
+            assert_eq!(text, markdown(&unknown), "{recorded:?}");
+            assert_eq!(
+                json,
+                serde_json::to_value(&unknown).unwrap(),
+                "{recorded:?}"
+            );
+        }
     }
-    let text =
-        markdown(&TaskReportV1::new(vec![entry("a", &report_model("/home/x/.codex"))]).unwrap());
-    assert!(text.contains("| codex unknown/high |"), "{text}");
 }
 
 /// `af task start --execute` (epoch 1) is interrupted with an Attempt pending, `af task

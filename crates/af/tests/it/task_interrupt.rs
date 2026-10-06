@@ -50,7 +50,7 @@ impl Drop for GroupGuard {
     }
 }
 
-fn commit_fixture(repo: &Path) {
+pub(crate) fn commit_fixture(repo: &Path) {
     let path = repo.join(".af/task-catalog.toml");
     let mut catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();

@@ -5,6 +5,7 @@
 //! neither carries a Provider label, a path or an account the Store or the machine holds.
 
 use nix::sys::signal::Signal;
+use review_core::task::task_report::is_model_identity;
 use review_store::{Cas, EventStore};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -119,6 +120,17 @@ fn assert_block_is_checked(markdown: &str) {
         (
             "a column",
             markdown.replace(header, &header.replace(" Wall time |", "")),
+        ),
+        (
+            "nothing: an extra column",
+            markdown.replace(header, &format!("{header} Cost |")),
+        ),
+        (
+            "its columns in order",
+            markdown.replace(
+                header,
+                &header.replace("| Active time | Wall time |", "| Wall time | Active time |"),
+            ),
         ),
         ("the Task rows", without_rows),
         ("a whole Task row: a placeholder", placeholder),
@@ -470,62 +482,73 @@ fn a_provider_failure_is_counted_with_its_class_and_charge_and_the_provider_stay
     );
 }
 
-/// A model value that is a path into the machine's home and auth directory is recorded in the
-/// plan as the Worker's model, and the author's Attempt under it fails at the Provider. The
-/// report names that Worker's model `unknown` in both forms and carries the path in neither.
+/// A model value that is a path or a URL is recorded in the plan as the Worker's model, and the
+/// author's Attempt under it fails at the Provider. The report names that Worker's model
+/// `unknown` in both forms and carries the value in neither: a path into the machine's home and
+/// auth directory, a `file://` URL and a drive-letter path, each versioned as the kernel
+/// requires of a model ID it binds. The last two passed the denylist this rule replaced.
 #[test]
 fn a_path_valued_model_is_reported_as_unknown_even_on_a_failed_attempt() {
-    // Spelled under the fixture's own home and auth directory, which the machine holds, and
-    // versioned as the kernel requires of a model ID it binds.
-    let path = |home: &Path| format!("{}/.codex/models/gpt-6-sol", home.to_str().unwrap());
-    let (f, _) = failed_provider_task(|home| Some(path(home)));
-    let model = path(&f.home);
-    let relative = model.trim_start_matches('/').to_owned();
-    // The plan really binds the path: the report is what keeps it out.
-    let cas = Cas::open_existing(f.state.join("cas")).unwrap();
-    let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
-    let projection = store
-        .task_projection(&cas, "release-notes")
-        .unwrap()
-        .unwrap();
-    let plan = cas
-        .get_json(projection.plan_id.as_deref().unwrap())
-        .unwrap();
-    assert!(plan.to_string().contains(&model), "{plan}");
-    drop(store);
+    type Spell = fn(&Path) -> String;
+    let cases: [(Spell, &[&str]); 3] = [
+        (
+            |home| format!("{}/.codex/models/gpt-6-sol", home.to_str().unwrap()),
+            &[".codex", "models/gpt-6-sol"],
+        ),
+        (
+            |_| "file:///etc/codex/gpt-6-sol".to_owned(),
+            &["file:", "/etc/codex", "codex/gpt-6-sol"],
+        ),
+        (|_| "C:/secrets/gpt-6-sol".to_owned(), &["C:/", "secrets"]),
+    ];
+    for (spell, parts) in cases {
+        let (f, _) = failed_provider_task(|home| Some(spell(home)));
+        let model = spell(&f.home);
+        assert!(!is_model_identity(&model), "{model}");
+        let relative = model.trim_start_matches('/').to_owned();
+        // The plan really binds the value: the report is what keeps it out.
+        let cas = Cas::open_existing(f.state.join("cas")).unwrap();
+        let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+        let projection = store
+            .task_projection(&cas, "release-notes")
+            .unwrap()
+            .unwrap();
+        let plan = cas
+            .get_json(projection.plan_id.as_deref().unwrap())
+            .unwrap();
+        assert!(plan.to_string().contains(&model), "{plan}");
+        drop(store);
 
-    let value: Value = serde_json::from_str(&fixture_report(&f, true)).unwrap();
-    let task = &value["tasks"][0];
-    assert_eq!(
-        task["attempts"]["failures"][0]["class"], "provider_failure",
-        "{task:#}"
-    );
-    let author = task["nodes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|node| node["node"] == "root.nodes.author")
-        .unwrap();
-    assert_eq!(author["failed_attempts"], 1, "{author:#}");
-    assert_eq!(
-        author["worker"],
-        serde_json::json!({"kind":"model","provider_kind":"codex","model":"unknown","effort":"high"})
-    );
-    let markdown = fixture_report(&f, false);
-    assert!(markdown.contains("| codex unknown/high |"), "{markdown}");
-    assert_block_is_checked(&markdown);
-    assert_private(
-        &[&markdown, &value.to_string()],
-        &[
-            &model,
-            &relative,
-            ".codex",
-            "models/gpt-6-sol",
+        let value: Value = serde_json::from_str(&fixture_report(&f, true)).unwrap();
+        let task = &value["tasks"][0];
+        assert_eq!(
+            task["attempts"]["failures"][0]["class"], "provider_failure",
+            "{task:#}"
+        );
+        let author = task["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["node"] == "root.nodes.author")
+            .unwrap();
+        assert_eq!(author["failed_attempts"], 1, "{author:#}");
+        assert_eq!(
+            author["worker"],
+            serde_json::json!({"kind":"model","provider_kind":"codex","model":"unknown","effort":"high"})
+        );
+        let markdown = fixture_report(&f, false);
+        assert!(markdown.contains("| codex unknown/high |"), "{markdown}");
+        assert_block_is_checked(&markdown);
+        let mut forbidden = vec![
+            model.as_str(),
+            relative.as_str(),
             "codex-personal",
             f.home.to_str().unwrap(),
             f.state.to_str().unwrap(),
-        ],
-    );
+        ];
+        forbidden.extend_from_slice(parts);
+        assert_private(&[&markdown, &value.to_string()], &forbidden);
+    }
 }
 
 /// Kills the Worker's process group when the test ends, however it ends.
@@ -536,6 +559,92 @@ impl Drop for WorkerGroup {
     }
 }
 
+/// `af task start --file ticket.json --execute`, killed outright once its Worker has written
+/// its process ID, the leader of its process group, to `ready`: nothing settles that Worker's
+/// Attempt, and the Worker's group is killed with it.
+fn start_and_kill(af: &dyn Fn(&[&str]) -> Command, ready: &Path) {
+    use std::time::{Duration, Instant};
+    let mut af = af(&[
+        "task",
+        "start",
+        "--file",
+        "ticket.json",
+        "--execute",
+        "--json",
+    ])
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(60);
+    let leader = loop {
+        if let Some(pid) = std::fs::read_to_string(ready)
+            .ok()
+            .and_then(|text| text.split_whitespace().next()?.parse::<i32>().ok())
+        {
+            break pid;
+        }
+        if af.try_wait().unwrap().is_some() {
+            let out = af.wait_with_output().unwrap();
+            panic!(
+                "Worker did not start: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        assert!(Instant::now() < until, "Worker readiness deadline");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let _group = WorkerGroup(leader);
+    af.kill().unwrap();
+    af.wait().unwrap();
+}
+
+/// `af task refresh` of the interrupted Task, once the dead writer's lease has expired.
+fn refresh_once_the_lease_expires(af: &dyn Fn(&[&str]) -> Command) {
+    use std::time::{Duration, Instant};
+    let until = Instant::now() + Duration::from_secs(60);
+    loop {
+        let refreshed = af(&["task", "refresh", task_interrupt::TASK, "--json"])
+            .output()
+            .unwrap();
+        if refreshed.status.success() {
+            break;
+        }
+        let said = String::from_utf8_lossy(&refreshed.stderr);
+        assert!(said.contains("active writer"), "{said}");
+        assert!(
+            Instant::now() < until,
+            "the dead writer's lease never expired"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// The interrupted Task's writer leases in order: (epoch, first event, last event, refreshed
+/// the source, recorded an execution).
+fn writer_leases(store: &EventStore) -> Vec<(u64, u64, u64, bool, bool)> {
+    use review_core::task::event::TaskChangeV1;
+    let run_id = review_store::store::task::task_run_id(task_interrupt::TASK).unwrap();
+    let mut epochs: Vec<(u64, u64, u64, bool, bool)> = Vec::new();
+    for event in store.replay(&run_id).unwrap() {
+        let transition = review_store::store::task::read_task_transition(&event).unwrap();
+        let time = transition.now_unix_ms;
+        let index = match epochs.iter().position(|e| e.0 == transition.epoch) {
+            Some(index) => index,
+            None => {
+                epochs.push((transition.epoch, time, time, false, false));
+                epochs.len() - 1
+            }
+        };
+        let epoch = &mut epochs[index];
+        epoch.1 = epoch.1.min(time);
+        epoch.2 = epoch.2.max(time);
+        epoch.3 |= matches!(transition.change, TaskChangeV1::SourceRefreshed { .. });
+        epoch.4 |= matches!(transition.change, TaskChangeV1::ExecutionRecorded { .. });
+    }
+    epochs
+}
+
 /// `af task start --execute` dies while its implementer's Attempt runs, leaving that Attempt
 /// pending; `af task refresh` over a changed issue settles it as abandoned and refreshes the
 /// source; `af task run` finishes. The refresh is not a run and its lease time is not active
@@ -543,8 +652,6 @@ impl Drop for WorkerGroup {
 /// refresh, are charged to the Worker each plan bound.
 #[test]
 fn a_refresh_that_recovers_a_pending_attempt_is_neither_a_run_nor_active_time() {
-    use review_core::task::event::TaskChangeV1;
-    use std::time::{Duration, Instant};
     let directory = tempfile::tempdir().unwrap();
     let (repo, state) = task_cli::fixture_named(directory.path(), "pagination");
     let issue = |description: &str| {
@@ -581,44 +688,16 @@ fn a_refresh_that_recovers_a_pending_attempt_is_neither_a_run_nor_active_time() 
     task_interrupt::long_running_implementer(&repo, &ready, &resume);
 
     // Kill af outright while the implementer runs: nothing settles its Attempt.
-    let mut af = Command::new(AF)
-        .current_dir(&repo)
-        .args([
-            "task",
-            "start",
-            "--file",
-            "ticket.json",
-            "--execute",
-            "--json",
-        ])
-        .arg("--state")
-        .arg(&state)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    let until = Instant::now() + Duration::from_secs(60);
-    let leader = loop {
-        if let Some(pid) = std::fs::read_to_string(&ready)
-            .ok()
-            .and_then(|text| text.split_whitespace().next()?.parse::<i32>().ok())
-        {
-            break pid;
-        }
-        if af.try_wait().unwrap().is_some() {
-            let out = af.wait_with_output().unwrap();
-            panic!(
-                "Worker did not start: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
-        assert!(Instant::now() < until, "Worker readiness deadline");
-        std::thread::sleep(Duration::from_millis(10));
+    let af = |args: &[&str]| {
+        let mut command = Command::new(AF);
+        command
+            .current_dir(&repo)
+            .args(args)
+            .arg("--state")
+            .arg(&state);
+        command
     };
-    let _group = WorkerGroup(leader);
-    af.kill().unwrap();
-    af.wait().unwrap();
-    drop(_group);
+    start_and_kill(&af, &ready);
 
     // Refresh over a changed issue once the dead writer's lease has expired.
     std::fs::write(
@@ -626,33 +705,11 @@ fn a_refresh_that_recovers_a_pending_attempt_is_neither_a_run_nor_active_time() 
         issue("Preserve every input value, including an empty list."),
     )
     .unwrap();
-    let until = Instant::now() + Duration::from_secs(60);
-    loop {
-        let refreshed = Command::new(AF)
-            .current_dir(&repo)
-            .args(["task", "refresh", task_interrupt::TASK, "--json", "--state"])
-            .arg(&state)
-            .output()
-            .unwrap();
-        if refreshed.status.success() {
-            break;
-        }
-        let said = String::from_utf8_lossy(&refreshed.stderr);
-        assert!(said.contains("active writer"), "{said}");
-        assert!(
-            Instant::now() < until,
-            "the dead writer's lease never expired"
-        );
-        std::thread::sleep(Duration::from_millis(250));
-    }
+    refresh_once_the_lease_expires(&af);
     std::fs::write(&resume, b"").unwrap();
     // The refreshed plan is new, so the run confirms it with `--execute`.
     stdout(
-        &Command::new(AF)
-            .current_dir(&repo)
-            .args(["task", "run", "--execute", task_interrupt::TASK, "--json"])
-            .arg("--state")
-            .arg(&state)
+        &af(&["task", "run", "--execute", task_interrupt::TASK, "--json"])
             .output()
             .unwrap(),
     );
@@ -661,24 +718,7 @@ fn a_refresh_that_recovers_a_pending_attempt_is_neither_a_run_nor_active_time() 
     // Attempt and refreshed the source, and the run.
     let cas = Cas::open_existing(state.join("cas")).unwrap();
     let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
-    let run_id = review_store::store::task::task_run_id(task_interrupt::TASK).unwrap();
-    let mut epochs: Vec<(u64, u64, u64, bool, bool)> = Vec::new();
-    for event in store.replay(&run_id).unwrap() {
-        let transition = review_store::store::task::read_task_transition(&event).unwrap();
-        let time = transition.now_unix_ms;
-        let index = match epochs.iter().position(|e| e.0 == transition.epoch) {
-            Some(index) => index,
-            None => {
-                epochs.push((transition.epoch, time, time, false, false));
-                epochs.len() - 1
-            }
-        };
-        let epoch = &mut epochs[index];
-        epoch.1 = epoch.1.min(time);
-        epoch.2 = epoch.2.max(time);
-        epoch.3 |= matches!(transition.change, TaskChangeV1::SourceRefreshed { .. });
-        epoch.4 |= matches!(transition.change, TaskChangeV1::ExecutionRecorded { .. });
-    }
+    let epochs = writer_leases(&store);
     assert_eq!(epochs.len(), 3, "{epochs:?}");
     assert!(
         epochs[1].3 && epochs[1].4,
@@ -741,6 +781,302 @@ fn a_refresh_that_recovers_a_pending_attempt_is_neither_a_run_nor_active_time() 
         "{markdown}"
     );
     assert_block_is_checked(&markdown);
+}
+
+/// A local Codex substitute: it answers the account probe and the Provider admission call, and
+/// holds every other call until it is killed, first writing its process ID and process group to
+/// the path its home names as `ready-path`.
+const HOLDING_CODEX: &str = r#"#!/usr/bin/python3 -B
+import json,os,sys,time
+home=os.environ['CODEX_HOME']
+if sys.argv[1:2]==['app-server']:
+ for line in sys.stdin:
+  request=json.loads(line)
+  if request.get('id')==1: print(json.dumps({'id':1,'result':{}}),flush=True)
+  if request.get('id')==2: print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':'fixture@example.invalid'}}}),flush=True)
+ sys.exit(0)
+request=sys.stdin.read()
+if request!='Reply with exactly: OK\n':
+ ready=open(home+'/ready-path').read()
+ open(ready+'.tmp','w').write('%d %d' % (os.getpid(), os.getpgrp()))
+ os.rename(ready+'.tmp',ready)
+ time.sleep(120)
+ sys.exit(1)
+usage={'input_tokens':16331,'cached_input_tokens':10624,'output_tokens':5,'reasoning_output_tokens':0,'cache_write_input_tokens':0}
+if '-o' in sys.argv:
+ with open(sys.argv[sys.argv.index('-o')+1],'w') as f: f.write('OK')
+print(json.dumps({'type':'thread.started','thread_id':'synthetic-admission'}))
+print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'OK'}}))
+print(json.dumps({'type':'turn.completed','usage':usage}))
+"#;
+
+/// `af task refresh` really binds a node to another Worker between two of its Attempts. The
+/// Task prefers `fixture/model-implementation`, whose `implement` node is a Codex model Worker,
+/// and falls back to selecting another pipeline. `af task start --execute` dies while that
+/// Worker's Attempt runs; the Provider is then removed from the machine, so the refresh that
+/// settles the pending Attempt as abandoned can no longer bind the model pipeline and selects
+/// `fixture/implementation`, whose `implement` node is a command Worker; `af task run` finishes
+/// under it. The report charges each Attempt to the Worker its own plan bound: one row for the
+/// model Worker with the abandoned Attempt, one for the command Worker with the Attempt that
+/// finished.
+#[test]
+fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own_worker() {
+    use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+    use review_core::task::pipeline::PipelineDefinitionV1;
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let (repo, state) = task_cli::fixture_named(root, "pagination");
+    let home = root.join("home");
+    let bin = root.join("bin");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir(&bin).unwrap();
+    let ready = root.join("worker-ready");
+    std::fs::write(home.join("ready-path"), ready.to_str().unwrap()).unwrap();
+    std::fs::write(bin.join("codex"), HOLDING_CODEX).unwrap();
+    std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let providers = home.join("providers.toml");
+    std::fs::write(
+        &providers,
+        toml::to_string(&serde_json::json!({"version": 1, "providers": [
+            {"id": "codex-personal", "kind": "codex", "auth_dir": home}]}))
+        .unwrap(),
+    )
+    .unwrap();
+
+    // `fixture/model-implementer` is the fixture's implementer bound to a Codex model, and
+    // `fixture/model-implementation` the fixture's pipeline with that Worker in its slot.
+    let packages = repo.join(".af/task-packages/fixture");
+    task_cli::copy_tree(
+        &packages.join("implementer"),
+        &packages.join("model-implementer"),
+    );
+    std::fs::remove_file(packages.join("model-implementer/worker.py")).unwrap();
+    let manifest = packages.join("model-implementer/worker.toml");
+    let mut worker: TaskWorkerManifest =
+        toml::from_str(&std::fs::read_to_string(&manifest).unwrap()).unwrap();
+    worker.name = "fixture/model-implementer".into();
+    worker.runner = TaskWorkerRunner::Model {
+        provider_kind: "codex".into(),
+        model: "codex-fixture-1".into(),
+        effort: "high".into(),
+    };
+    worker.signature.attempt.as_mut().unwrap().tokens = 16384;
+    worker.signature.attempt.as_mut().unwrap().wall_ms = 180000;
+    std::fs::write(&manifest, toml::to_string(&worker).unwrap()).unwrap();
+    let definition = packages.join("implementation/pipeline.toml");
+    let mut command: PipelineDefinitionV1 =
+        toml::from_str(&std::fs::read_to_string(&definition).unwrap()).unwrap();
+    // The abandoned Attempt keeps its charge, so the finishing run needs a second implementer
+    // Attempt within the slot and pipeline limits.
+    command.slots.get_mut("implementer").unwrap().max_attempts = 2;
+    command.max_attempts = 4;
+    std::fs::write(&definition, toml::to_string(&command).unwrap()).unwrap();
+    let mut model = command.clone();
+    model.name = "fixture/model-implementation".into();
+    model.slots.get_mut("implementer").unwrap().worker = "fixture/model-implementer".into();
+    std::fs::create_dir(packages.join("model-implementation")).unwrap();
+    std::fs::write(
+        packages.join("model-implementation/pipeline.toml"),
+        toml::to_string(&model).unwrap(),
+    )
+    .unwrap();
+    let catalog_path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    for name in ["model-implementer", "model-implementation"] {
+        catalog["packages"].as_table_mut().unwrap().insert(
+            format!("fixture/{name}"),
+            toml::Value::try_from(serde_json::json!({"version": "1.0.0", "digest": "",
+                "path": format!(".af/task-packages/fixture/{name}")}))
+            .unwrap(),
+        );
+    }
+    catalog.as_table_mut().unwrap().insert(
+        "providers".into(),
+        toml::Value::try_from(serde_json::json!({"fixture/model-implementer": "codex-personal"}))
+            .unwrap(),
+    );
+    catalog.as_table_mut().unwrap().insert(
+        "provider_admission".into(),
+        toml::Value::try_from(serde_json::json!({"tokens": 32768, "wall_ms": 45000})).unwrap(),
+    );
+    std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+    let issue = |description: &str| {
+        serde_json::json!({"schema":"af.issue-input/1","id":"10042","key":"AF-42",
+            "revision":"v1","summary":"Implement offset and limit pagination",
+            "description":description,
+            "acceptance":{"bounds":"Reject negative or noninteger bounds."}})
+        .to_string()
+    };
+    std::fs::write(repo.join("issue.json"), issue("Preserve the input values.")).unwrap();
+    let ticket_path = repo.join("ticket.json");
+    let mut ticket: Value =
+        serde_json::from_str(&std::fs::read_to_string(&ticket_path).unwrap()).unwrap();
+    ticket["issue"] = serde_json::json!({"kind": "local", "path": "issue.json"});
+    ticket["pipeline"] =
+        serde_json::json!({"name": "fixture/model-implementation", "fallback": "select"});
+    ticket["limits"]["tokens"] = 100000.into();
+    ticket["limits"]["max_attempts"] = 8.into();
+    ticket["limits"]["wall_ms"] = 300000.into();
+    std::fs::write(&ticket_path, serde_json::to_vec_pretty(&ticket).unwrap()).unwrap();
+    task_interrupt::commit_fixture(&repo);
+
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let af = |args: &[&str]| {
+        let mut command = Command::new(AF);
+        command
+            .current_dir(&repo)
+            .env("HOME", &home)
+            .env("USER", "fixture")
+            .env("PATH", &path)
+            .env("AF_PROVIDERS_FILE", &providers)
+            .args(args)
+            .arg("--state")
+            .arg(&state);
+        command
+    };
+    start_and_kill(&af, &ready);
+    let held = std::fs::read_to_string(&ready).unwrap();
+    let ids: Vec<&str> = held.split_whitespace().collect();
+    assert_eq!(
+        ids[0], ids[1],
+        "the model Worker leads its own process group"
+    );
+
+    // The Provider is gone from this machine, and the issue changed.
+    std::fs::write(
+        &providers,
+        toml::to_string(&serde_json::json!({"version": 1, "providers": []})).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        repo.join("issue.json"),
+        issue("Preserve every input value, including an empty list."),
+    )
+    .unwrap();
+    refresh_once_the_lease_expires(&af);
+    stdout(
+        &af(&["task", "run", "--execute", task_interrupt::TASK, "--json"])
+            .output()
+            .unwrap(),
+    );
+
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let epochs = writer_leases(&store);
+    assert_eq!(epochs.len(), 3, "start, refresh and run: {epochs:?}");
+    let projection = store
+        .task_projection(&cas, task_interrupt::TASK)
+        .unwrap()
+        .unwrap();
+    let accounting = projection.execution.as_ref().unwrap().attempt_accounting();
+    let implementer: Vec<_> = accounting
+        .iter()
+        .filter(|a| a.started && a.reservation.node == "root.nodes.implement")
+        .collect();
+    assert_eq!(implementer.len(), 2, "{accounting:#?}");
+    let bound = |plan_id: &str| -> Value {
+        let plan = cas.get_json(plan_id).unwrap();
+        plan["payload"]["bindings"]["root.slots.implementer"]["execution"].clone()
+    };
+    // Each Attempt ran under its own plan: the model Worker's before the refresh, abandoned,
+    // and the command Worker's after it.
+    let attempt = |kind: &str| {
+        *implementer
+            .iter()
+            .find(|a| bound(&a.plan_id)["kind"] == kind)
+            .unwrap_or_else(|| panic!("no implementer Attempt under a {kind} Worker"))
+    };
+    let (under_model, under_command) = (attempt("model"), attempt("command"));
+    assert_eq!(bound(&under_model.plan_id)["model"], "codex-fixture-1");
+    assert!(matches!(
+        under_model.result,
+        Some(review_core::task::execution::TaskAttemptResultV1::Abandoned { .. })
+    ));
+    assert!(matches!(
+        under_command.result,
+        Some(review_core::task::execution::TaskAttemptResultV1::Succeeded { .. })
+    ));
+    assert_eq!(
+        projection.plan_id.as_deref(),
+        Some(under_command.plan_id.as_str()),
+        "the refresh selected the command Worker's plan"
+    );
+    drop(store);
+
+    let value = document(&repo, &state, &[task_interrupt::TASK]);
+    let task = &value["tasks"][0];
+    assert_eq!(task["pipeline"], "fixture/implementation@1.0.0", "{task:#}");
+    assert_eq!(task["runs"], 2, "the refresh is not a run: {task:#}");
+    let rows: Vec<&Value> = task["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node["node"] == "root.nodes.implement")
+        .collect();
+    assert_eq!(
+        rows.len(),
+        2,
+        "one row per Worker the node was bound to: {task:#}"
+    );
+    let row = |kind: &str| {
+        *rows
+            .iter()
+            .find(|row| row["worker"]["kind"] == kind)
+            .unwrap()
+    };
+    let (model_row, command_row) = (row("model"), row("command"));
+    assert_eq!(
+        model_row["worker"],
+        serde_json::json!({"kind":"model","provider_kind":"codex","model":"codex-fixture-1","effort":"high"})
+    );
+    assert_eq!(model_row["attempts"], 1, "{model_row:#}");
+    assert_eq!(model_row["failed_attempts"], 1, "{model_row:#}");
+    assert_eq!(model_row["tokens"], under_model.charged_tokens.to_string());
+    assert_eq!(command_row["attempts"], 1, "{command_row:#}");
+    assert_eq!(command_row["failed_attempts"], 0, "{command_row:#}");
+    assert_eq!(
+        command_row["tokens"],
+        under_command.charged_tokens.to_string()
+    );
+    assert_eq!(
+        task["attempts"]["failures"],
+        serde_json::json!([{
+            "class": "abandoned",
+            "attempts": 1,
+            "tokens": under_model.charged_tokens.to_string(),
+        }])
+    );
+    let markdown = stdout(&report(&repo, &state, &[task_interrupt::TASK], false));
+    let lines: Vec<&str> = markdown
+        .lines()
+        .filter(|line| line.starts_with("| root.nodes.implement |"))
+        .collect();
+    assert_eq!(lines.len(), 2, "{markdown}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("| codex codex-fixture-1/high | 1 (1 failed) |")),
+        "{markdown}"
+    );
+    assert!(
+        lines.iter().any(|line| line.contains("| command | 1 |")),
+        "{markdown}"
+    );
+    assert_block_is_checked(&markdown);
+    assert_private(
+        &[&markdown, &value.to_string()],
+        &[
+            "codex-personal",
+            "fixture@example.invalid",
+            home.to_str().unwrap(),
+            state.to_str().unwrap(),
+        ],
+    );
 }
 
 #[test]
