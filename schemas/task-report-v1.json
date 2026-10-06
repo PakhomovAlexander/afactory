@@ -26,6 +26,11 @@
     "tokens": {
       "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
     },
+    "model": {
+      "description": "A model identity, copied only when it looks like one: 1 to 128 letters, digits and `._:/@+-`, not starting with `/` or `~`, without `..`, and with no `/`-separated segment that is hidden (starts with `.`) or names a home, auth or state directory (`home`, `users`, `root`, `tmp`, `var`, `private`, `state`, `auth`, `auth.*`, in any case). Any other recorded value may be a path or an account and is reported as `unknown`.",
+      "type": "string",
+      "pattern": "^(?!/)(?!.*\\.\\.)(?!(?:.*/)?\\.)(?!(?:.*/)?(?:[Hh][Oo][Mm][Ee]|[Uu][Ss][Ee][Rr][Ss]|[Rr][Oo][Oo][Tt]|[Tt][Mm][Pp]|[Vv][Aa][Rr]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee]|[Ss][Tt][Aa][Tt][Ee]|[Aa][Uu][Tt][Hh](?:[._-][^/]*)?)(?:/|$))[A-Za-z0-9._:/@+-]{1,128}$"
+    },
     "node": {
       "type": "string",
       "maxLength": 4096,
@@ -69,7 +74,7 @@
           "$ref": "#/$defs/count"
         },
         "runs": {
-          "description": "Writer leases during which the Task executed work: `af task start --execute` and every `af task run` that resumed it.",
+          "description": "Writer leases during which the Task executed work: `af task start --execute` and every `af task run` that resumed it. A lease that only settled or released an earlier writer's Attempts, as `af task refresh` does, is not a run.",
           "$ref": "#/$defs/count"
         },
         "attempts": { "$ref": "#/$defs/attempts" },
@@ -83,7 +88,7 @@
           "$ref": "#/$defs/count"
         },
         "nodes": {
-          "description": "Every node that began an Attempt, in the order its first Attempt began.",
+          "description": "Every node that began an Attempt, in the order its first Attempt began: one entry per node and Worker binding, so a node whose Attempts ran under plans that bound it to different Workers (after `af task refresh`) has one entry per Worker, each with its own Attempts and tokens.",
           "type": "array",
           "items": { "$ref": "#/$defs/node_report" }
         }
@@ -153,7 +158,7 @@
           "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
         },
         "worker": {
-          "description": "The Worker the node's slot was bound to in the Attempt's plan. Absent for a kernel node.",
+          "description": "The Worker the node's slot was bound to in the plans of this entry's Attempts. Absent for a kernel node.",
           "$ref": "#/$defs/worker"
         },
         "attempts": {
@@ -193,9 +198,7 @@
             "provider_kind": {
               "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
             },
-            "model": {
-              "$ref": "urn:af:schema:task-contracts:1#/$defs/text"
-            },
+            "model": { "$ref": "#/$defs/model" },
             "effort": {
               "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
             }

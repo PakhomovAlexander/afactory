@@ -30,6 +30,39 @@ pub const TASK_REPORT_COLUMNS: [&str; 9] = [
 ];
 /// The totals line starts with this text.
 pub const TASK_REPORT_TOTALS: &str = "**Totals:**";
+/// The model the report names in place of a recorded value that is not a model identity.
+pub const TASK_REPORT_UNKNOWN_MODEL: &str = "unknown";
+/// The longest model identity the report copies.
+pub const TASK_REPORT_MODEL_MAX: usize = 128;
+
+/// Path segments that name a home, account or state directory, compared case-insensitively.
+/// `auth` also covers a segment that starts with `auth.`, `auth_` or `auth-` (`auth.json`).
+const PRIVATE_SEGMENTS: [&str; 8] = [
+    "home", "users", "root", "tmp", "var", "private", "state", "auth",
+];
+
+/// Whether `model` looks like a model identity the report may copy: 1 to
+/// [`TASK_REPORT_MODEL_MAX`] letters, digits and `._:/@+-`, not starting with `/` (nor `~`,
+/// which is not in that alphabet), without `..`, and with no `/`-separated segment that is
+/// hidden (starts with `.`) or names a home, auth or state directory. Anything else may be a
+/// path or an account and is reported as [`TASK_REPORT_UNKNOWN_MODEL`].
+/// `schemas/task-report-v1.json` states the same rule as the model's pattern.
+pub fn is_model_identity(model: &str) -> bool {
+    (1..=TASK_REPORT_MODEL_MAX).contains(&model.len())
+        && model
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._:/@+-".contains(&b))
+        && !model.starts_with('/')
+        && !model.contains("..")
+        && model.split('/').all(|segment| {
+            let segment = segment.to_ascii_lowercase();
+            !segment.starts_with('.')
+                && !PRIVATE_SEGMENTS.contains(&segment.as_str())
+                && !["auth.", "auth_", "auth-"]
+                    .iter()
+                    .any(|prefix| segment.starts_with(prefix))
+        })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -151,7 +184,9 @@ impl From<super::feedback::TaskFeedbackCodeV1> for TaskReportFailureClassV1 {
     }
 }
 
-/// One node that began at least one Attempt.
+/// One node that began at least one Attempt, under one Worker binding: a node whose Attempts
+/// ran under plans that bound it to different Workers (after `af task refresh`) has one entry
+/// per Worker, so no Attempt is charged to a Worker it did not use.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskReportNodeV1 {
@@ -159,7 +194,8 @@ pub struct TaskReportNodeV1 {
     pub node: String,
     /// The Worker slot's role, or the kernel operation a Worker-less node performs.
     pub role: String,
-    /// The Worker the node's slot is bound to; absent for a kernel node.
+    /// The Worker the node's slot was bound to in the plans its Attempts ran under; absent for a
+    /// kernel node.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -181,7 +217,9 @@ pub struct TaskReportNodeV1 {
 }
 
 /// A Worker as the report may name it: a command, or a model by Provider kind, model and
-/// effort. The machine-local Provider label and the principal are never part of it.
+/// effort. The machine-local Provider label and the principal are never part of it, and a
+/// model value that is not a model identity ([`is_model_identity`]) is
+/// [`TASK_REPORT_UNKNOWN_MODEL`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskReportWorkerV1 {
@@ -365,13 +403,15 @@ impl TaskReportEntryV1 {
             attempts.validate()?;
         }
         if let Some(nodes) = &self.nodes {
-            let mut seen = std::collections::BTreeSet::new();
+            let mut seen = Vec::new();
             for node in nodes {
                 node.validate()?;
+                let key = (node.node.as_str(), node.role.as_str(), node.worker.as_ref());
                 require(
-                    seen.insert(node.node.as_str()),
-                    "Task report lists a node twice",
+                    !seen.contains(&key),
+                    "Task report lists a node under one Worker twice",
                 )?;
+                seen.push(key);
             }
             if let Some(attempts) = &self.attempts {
                 require(
@@ -433,8 +473,8 @@ impl TaskReportNodeV1 {
         }) = &self.worker
         {
             require(
-                is_name(provider_kind) && !model.trim().is_empty() && is_name(effort),
-                "Task report Worker names its Provider kind, model and effort",
+                is_name(provider_kind) && is_model_identity(model) && is_name(effort),
+                "Task report Worker names its Provider kind, a model identity and effort",
             )?;
         }
         for check in &self.checks {
@@ -533,6 +573,75 @@ mod tests {
         let mut pipeline = entry("a", None);
         pipeline.pipeline = Some("no-version".into());
         assert!(TaskReportV1::new(vec![pipeline]).is_err());
+    }
+
+    #[test]
+    fn a_model_is_copied_only_when_it_looks_like_a_model_identity() {
+        for model in [
+            "gpt-6-sol",
+            "codex-fixture-1",
+            "claude-opus-5-5",
+            "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "anthropic/claude-3.5",
+            "meta-llama/Llama-3-70b@latest",
+            "gpt-4o+tools",
+            "unknown",
+            &"m".repeat(TASK_REPORT_MODEL_MAX),
+        ] {
+            assert!(is_model_identity(model), "{model}");
+        }
+        for model in [
+            "",
+            "/Users/fixture/.codex/auth.json",
+            "/home/fixture/model",
+            "~/.codex",
+            "~fixture",
+            "models/../secret",
+            "..",
+            "home/fixture/model",
+            "Users/fixture/model",
+            "fixture/.codex",
+            ".af/state",
+            "var/folders/x/T/af-state",
+            "providers/STATE/events",
+            "provider/auth.json",
+            "models/Auth",
+            "codex auth",
+            "m\\|x",
+            "m|x",
+            "C:\\Users\\fixture",
+            "fixture@example.invalid\n",
+            "gpt\u{202e}",
+            &"m".repeat(TASK_REPORT_MODEL_MAX + 1),
+        ] {
+            assert!(!is_model_identity(model), "{model:?}");
+        }
+    }
+
+    #[test]
+    fn a_node_may_appear_once_per_worker_binding() {
+        let mut task = entry("a", Some((3, 1)));
+        let mut other = task.nodes.as_ref().unwrap()[0].clone();
+        other.failed_attempts = 0;
+        task.nodes.as_mut().unwrap().push(other.clone());
+        assert!(
+            TaskReportV1::new(vec![task.clone()]).is_err(),
+            "the same node under the same Worker twice"
+        );
+        other.worker = Some(TaskReportWorkerV1::Model {
+            provider_kind: "claude".into(),
+            model: "claude-opus-5-5".into(),
+            effort: "high".into(),
+        });
+        task.nodes.as_mut().unwrap()[1] = other;
+        TaskReportV1::new(vec![task.clone()]).unwrap();
+        let mut path = task;
+        path.nodes.as_mut().unwrap()[1].worker = Some(TaskReportWorkerV1::Model {
+            provider_kind: "claude".into(),
+            model: "/home/fixture/.claude".into(),
+            effort: "high".into(),
+        });
+        assert!(TaskReportV1::new(vec![path]).is_err(), "a path as a model");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! `af/task-report@1` (ADR-0142): the Rust document and the published schema agree, the
 //! checked-in fixture a test Store printed is valid, and the closed shape refuses a Provider
 //! label, a principal, a null for an unknown figure and Attempts on a collected Task.
-use super::{assert_invalid, assert_valid, workspace_root};
+use super::{assert_invalid, assert_valid, validator, workspace_root};
 use review_core::task::task_report::*;
 use review_core::task::usage::DecimalU128;
 use serde_json::{Value, json};
@@ -147,6 +147,10 @@ fn task_report_document_and_schema_agree_in_both_directions() {
         &|v| v["tasks"][0]["pipeline"] = json!("builtin/implement"),
         "a Pipeline without its version",
     );
+    invalid(
+        &|v| v.pointer_mut(worker).unwrap()["model"] = json!("/Users/fixture/.codex/auth.json"),
+        "a path as the model",
+    );
     invalid(&|v| v["tasks"] = json!([]), "no Task");
     invalid(
         &|v| v["schema"] = json!("af/task-report@2"),
@@ -163,4 +167,56 @@ fn the_checked_in_fixture_is_a_valid_document() {
         .unwrap()
         .validate()
         .unwrap();
+}
+
+/// The schema's model pattern and `is_model_identity` draw the same line, value by value.
+#[test]
+fn the_model_pattern_and_the_rust_rule_agree() {
+    let value = serde_json::to_value(report()).unwrap();
+    let long = "m".repeat(TASK_REPORT_MODEL_MAX);
+    let longer = "m".repeat(TASK_REPORT_MODEL_MAX + 1);
+    for model in [
+        "gpt-6-sol",
+        "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "anthropic/claude-3.5",
+        "meta-llama/Llama-3-70b@latest",
+        "gpt-4o+tools",
+        "authors/model",
+        "statesman-1",
+        TASK_REPORT_UNKNOWN_MODEL,
+        &long,
+        "",
+        &longer,
+        "/Users/fixture/.codex/auth.json",
+        "~/.codex",
+        "models/../secret",
+        "home/fixture/model",
+        "fixture/HOME",
+        "fixture/.codex",
+        ".af",
+        "var/folders/x/T/af-state",
+        "providers/State/events",
+        "provider/auth.json",
+        "provider/AUTH-dir",
+        "codex auth",
+        "m\\|x",
+        "C:\\Users\\fixture",
+        "gpt\u{202e}",
+    ] {
+        let mut changed = value.clone();
+        changed.pointer_mut("/tasks/0/nodes/0/worker").unwrap()["model"] = json!(model);
+        assert_eq!(
+            validator("task-report-v1.json").is_valid(&changed),
+            is_model_identity(model),
+            "the schema and the Rust rule disagree on {model:?}"
+        );
+        assert_eq!(
+            serde_json::from_value::<TaskReportV1>(changed)
+                .unwrap()
+                .validate()
+                .is_ok(),
+            is_model_identity(model),
+            "{model:?}"
+        );
+    }
 }

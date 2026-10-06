@@ -248,11 +248,14 @@ Each Task gets one row: kind, pipeline as `name@version`, the outcome `task show
 rounds, Attempts with how many failed, chargeable tokens, and two times. **Wall time** runs from
 the Task's first recorded event to its last. **Active time** is the sum of its runs, each from its
 first event to its last: a run is `task start --execute` or one `task run`, so a Task that waited
-a day before it was resumed shows that day in its wall time only. A totals line follows, then each
+a day before it was resumed shows that day in its wall time only. A `task refresh` is not a run,
+even when it settles an Attempt an interrupted run left pending. A totals line follows, then each
 Task's nodes in a collapsed `<details>` element: role, Worker (`codex gpt-6-sol/high`, or
 `command`), Attempts, tokens, elapsed time and the checks the gate ran with their durations, and
 the reason class of each failed Attempt (`provider_failure`, `process_failure`, …) with the
-tokens charged to it. A figure the Store does not record reads `unknown`; nothing is estimated.
+tokens charged to it. Each Attempt counts toward the Worker of the plan it ran under, so a node
+that a refresh bound to another Worker has one row per Worker. Token counts read with thousands
+separators (`205,295`). A figure the Store does not record reads `unknown`; nothing is estimated.
 For a Task resumed once after an interrupt it prints:
 
 ```markdown
@@ -261,7 +264,7 @@ For a Task resumed once after an interrupt it prints:
 
 | Task | Kind | Pipeline | Outcome | Rounds | Attempts | Tokens | Active time | Wall time |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| pagination-cli | implement | fixture/implementation@1.0.0 | verified | 0 | 4 (1 failed) | 0 | 1.4s | 3.1s |
+| pagination-cli | implement | fixture/implementation@1.0.0 | verified | 0 | 4 (1 failed) | 0 | 1.4s | 3.0s |
 
 **Totals:** 1 Task · 0 rounds · 4 Attempts (1 failed) · 0 tokens · 1.4s active
 
@@ -270,16 +273,17 @@ For a Task resumed once after an interrupt it prints:
 
 | Node | Role | Worker | Attempts | Tokens | Elapsed | Checks |
 | --- | --- | --- | ---: | ---: | ---: | --- |
-| root.nodes.implement | implement | command | 2 (1 failed) | 0 | 217ms | - |
-| root.nodes.check | check | - | 1 | 0 | 56ms | pagination passed 46ms |
-| root.nodes.evaluate | evaluate | command | 1 | 0 | 101ms | - |
+| root.nodes.implement | implement | command | 2 (1 failed) | 0 | 250ms | - |
+| root.nodes.check | check | - | 1 | 0 | 53ms | pagination passed 43ms |
+| root.nodes.evaluate | evaluate | command | 1 | 0 | 94ms | - |
 
 </details>
 <!-- /af-task-report -->
 ```
 
-Paste the whole block, both markers included. Providers appear only as kind, model and effort:
-the report never carries a Provider label, a path, a credential, a prompt or Worker output.
+Paste the whole block, both markers included. Providers appear only as kind, model and effort,
+and a recorded model that does not look like a model identity (a path, say) reads `unknown`: the
+report never carries a Provider label, a path, a credential, a prompt or Worker output.
 `--json` prints the same figures as one
 [`af/task-report@1`](../schemas/task-report-v1.json) document, with exact decimal tokens and
 times in milliseconds; an unknown figure is absent there.

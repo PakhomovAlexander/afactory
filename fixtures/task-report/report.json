@@ -22,8 +22,8 @@
         ]
       },
       "chargeable_tokens": "0",
-      "wall_ms": 3132,
-      "active_ms": 1492,
+      "wall_ms": 3090,
+      "active_ms": 1459,
       "nodes": [
         {
           "node": "root.nodes.implement",
@@ -34,7 +34,7 @@
           "attempts": 2,
           "failed_attempts": 1,
           "tokens": "0",
-          "elapsed_ms": 217,
+          "elapsed_ms": 250,
           "checks": []
         },
         {
@@ -43,12 +43,12 @@
           "attempts": 1,
           "failed_attempts": 0,
           "tokens": "0",
-          "elapsed_ms": 56,
+          "elapsed_ms": 53,
           "checks": [
             {
               "name": "pagination",
               "status": "passed",
-              "elapsed_ms": 46
+              "elapsed_ms": 43
             }
           ]
         },
@@ -61,7 +61,7 @@
           "attempts": 1,
           "failed_attempts": 0,
           "tokens": "0",
-          "elapsed_ms": 101,
+          "elapsed_ms": 94,
           "checks": []
         }
       ]
@@ -73,6 +73,6 @@
     "attempts": 4,
     "failed_attempts": 1,
     "chargeable_tokens": "0",
-    "active_ms": 1492
+    "active_ms": 1459
   }
 }

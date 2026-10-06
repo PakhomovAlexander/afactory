@@ -249,3 +249,5 @@ future readers need.
   registered](0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)
 - [0142 — Carry the `af task report` of its Tasks in every pull
   request](0142-carry-the-af-task-report-in-every-pull-request.md)
+- [0143 — Judge the pull request report with trusted code and per-Attempt
+  figures](0143-judge-the-pull-request-report-with-trusted-code-and-per-attempt-figures.md)

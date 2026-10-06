@@ -9,7 +9,12 @@ checks that a well-formed block is there.
 
 A pull request opened by Dependabot, or from a `release/` branch, is exempt. Anything else
 passes only with exactly one block: the begin marker, then the end marker, and between them
-the summary table header with every column, at least one Task row, and the totals line.
+the summary table header with every column, a separator row of the header's width, at least
+one Task row, and the totals line. A Task row has exactly the header's number of cells, and
+its Task, Kind, Pipeline and Outcome cells are not empty.
+
+The workflow runs this script as the base branch holds it, on `pull_request_target`, so a pull
+request can change neither the check nor the workflow that runs it (ADR-0142).
 
     check-pr-report.py [--event PATH]      the event payload (default: $GITHUB_EVENT_PATH)
     check-pr-report.py --body FILE         a description on its own, as a local check
@@ -24,6 +29,8 @@ BEGIN = '<!-- af-task-report:v1 -->'
 END = '<!-- /af-task-report -->'
 COLUMNS = ['Task', 'Kind', 'Pipeline', 'Outcome', 'Rounds', 'Attempts', 'Tokens',
            'Active time', 'Wall time']
+# The cells every Task row fills: the row names its Task and says what it was.
+REQUIRED = ['Task', 'Kind', 'Pipeline', 'Outcome']
 TOTALS = '**Totals:**'
 EXEMPT_AUTHORS = {'dependabot[bot]'}
 EXEMPT_BRANCH_PREFIX = 'release/'
@@ -33,11 +40,34 @@ HOW = ('Run `af task report TASK_ID...` for the af Tasks that made this change (
 
 
 def cells(line):
-    """The cells of one Markdown table row, or None for a line that is not one."""
+    """The cells of one Markdown table row, or None for a line that is not one.
+
+    As GitHub splits a row: a backslash escapes the character after it, so `\\|` stays inside
+    its cell, and every other `|` ends one.
+    """
     line = line.strip()
-    if not line.startswith('|') or not line.endswith('|') or len(line) < 2:
+    if not line.startswith('|') or len(line) < 2:
         return None
-    return [cell.strip() for cell in line[1:-1].split('|')]
+    found, cell, n = [], '', 1
+    while n < len(line):
+        char = line[n]
+        if char == '\\' and n + 1 < len(line):
+            cell += line[n:n + 2]
+            n += 2
+            continue
+        if char == '|':
+            found.append(cell.strip())
+            cell = ''
+        else:
+            cell += char
+        n += 1
+    if cell.strip():
+        return None
+    return found
+
+
+def plural(n, one, many):
+    return f'{n} {one if n == 1 else many}'
 
 
 def is_separator(row):
@@ -71,22 +101,42 @@ def problems(body):
         return ['the af task report block has no summary table: expected a header row with '
                 + ', '.join(COLUMNS)]
     found = []
-    missing = [column for column in COLUMNS if column not in cells(block[header])]
+    names = cells(block[header])
+    width = len(names)
+    missing = [column for column in COLUMNS if column not in names]
     if missing:
         found.append('the summary table is missing the column'
                      + ('s ' if len(missing) > 1 else ' ') + ', '.join(missing))
     rows = []
-    separator = header + 1 < len(block) and is_separator(cells(block[header + 1]))
+    below = cells(block[header + 1]) if header + 1 < len(block) else None
+    separator = is_separator(below)
     if not separator:
         found.append('the summary table header is not followed by its `| --- |` separator row')
+    elif len(below) != width:
+        found.append(f'the summary table separator row has {plural(len(below), "cell", "cells")}'
+                     f', but the header has {width}: one `| --- |` per column')
+        separator = False
     else:
         for line in block[header + 2:]:
             row = cells(line)
             if row is None:
                 break
             rows.append(row)
-    if separator and not any(any(cell for cell in row) for row in rows):
+    if separator and not rows:
         found.append('the summary table has no Task row')
+    required = [(names.index(column), column) for column in REQUIRED if column in names]
+    for number, row in enumerate(rows, 1):
+        if len(row) == 1 and width > 1:
+            found.append(f'Task row {number} of the summary table is a one-cell placeholder '
+                         f'(`| {row[0]} |`), not a Task row with {width} cells')
+        elif len(row) != width:
+            found.append(f'Task row {number} of the summary table has '
+                         f'{plural(len(row), "cell", "cells")}, but the header has {width}')
+        else:
+            empty = [column for index, column in required if not row[index]]
+            if empty:
+                found.append(f'Task row {number} of the summary table has an empty '
+                             + ', '.join(empty) + (' cell' if len(empty) == 1 else ' cells'))
     if not any(line.strip().startswith(TOTALS) for line in block[header:]):
         found.append(f'the af task report block has no totals line starting with `{TOTALS}`')
     return found

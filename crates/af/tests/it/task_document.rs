@@ -22,7 +22,7 @@ fn success(output: std::process::Output) -> Value {
     );
     serde_json::from_slice(&output.stdout).unwrap()
 }
-fn commit(repo: &Path) {
+pub(crate) fn commit(repo: &Path) {
     for args in [
         vec!["add", "-A"],
         vec!["commit", "-qm", "captured document definitions"],

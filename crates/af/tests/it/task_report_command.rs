@@ -12,7 +12,7 @@ use std::process::{Command, Output};
 
 use crate::schemas;
 use crate::task_document::provider_admission::Fixture;
-use crate::{task_cli, task_gc, task_interrupt};
+use crate::{task_cli, task_document, task_gc, task_interrupt};
 
 const AF: &str = env!("CARGO_BIN_EXE_af");
 
@@ -106,6 +106,7 @@ fn assert_block_is_checked(markdown: &str) {
     for row in &rows {
         without_rows = without_rows.replace(&format!("{row}\n"), "");
     }
+    let placeholder = markdown.replace(&format!("{}\n", rows[0]), "| x |\n");
     for (part, body) in [
         (
             "begin marker",
@@ -120,6 +121,7 @@ fn assert_block_is_checked(markdown: &str) {
             markdown.replace(header, &header.replace(" Wall time |", "")),
         ),
         ("the Task rows", without_rows),
+        ("a whole Task row: a placeholder", placeholder),
         (
             "the totals line",
             markdown.replace(&format!("{totals}\n"), ""),
@@ -299,9 +301,36 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
     assert_eq!(store_files(&state), before, "the report wrote nothing");
 }
 
-#[test]
-fn a_provider_failure_is_counted_with_its_class_and_charge_and_the_provider_stays_private() {
+/// The document Task of the Provider admission fixture, whose author's Provider fails its call.
+/// The author's Worker binds the model `model` spells from the fixture's home directory, or the
+/// fixture's `codex-fixture-1` when it spells none. Returns the fixture and what `af task run
+/// --execute` printed.
+fn failed_provider_task(model: impl FnOnce(&Path) -> Option<String>) -> (Fixture, Value) {
     let f = Fixture::new(true, 5712, 49152);
+    if let Some(model) = model(&f.home) {
+        let catalog_path = f.repo.join(".af/task-catalog.toml");
+        let mut catalog: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+        let package = f.repo.join(
+            catalog["packages"]["builtin/document-author"]["path"]
+                .as_str()
+                .unwrap(),
+        );
+        let manifest = package.join("worker.toml");
+        let original = std::fs::read_to_string(&manifest).unwrap();
+        let fixture_model = "model = \"codex-fixture-1\"";
+        assert_eq!(original.matches(fixture_model).count(), 1, "{original}");
+        std::fs::write(
+            &manifest,
+            original.replace(fixture_model, &format!("model = {model:?}")),
+        )
+        .unwrap();
+        catalog["packages"]["builtin/document-author"]["digest"] = toml::Value::String(
+            review_config::lock::package_digest("builtin/document-author", &package).unwrap(),
+        );
+        std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+        task_document::commit(&f.repo);
+    }
     // The fixture's native Codex answers the capability probe and then fails the author's call.
     let codex = f._root.path().join("bin/codex");
     let native = std::fs::read_to_string(&codex).unwrap();
@@ -329,23 +358,36 @@ fn a_provider_failure_is_counted_with_its_class_and_charge_and_the_provider_stay
             String::from_utf8_lossy(&ran.stderr)
         )
     });
+    (f, done)
+}
 
-    let run = |json: bool| {
-        let mut command = Command::new(AF);
-        command
-            .current_dir(&f.repo)
-            .env("HOME", &f.home)
-            .env("PATH", &f.path)
-            .env("AF_PROVIDERS_FILE", f.home.join("providers.toml"))
-            .args(["task", "report", "release-notes", "--state"])
-            .arg(&f.state);
-        if json {
-            command.arg("--json");
-        }
-        stdout(&command.output().unwrap())
-    };
+/// `af task report` over the fixture's document Task: the `--json` document, validated against
+/// the published schema, or the Markdown block.
+fn fixture_report(f: &Fixture, json: bool) -> String {
+    let mut command = Command::new(AF);
+    command
+        .current_dir(&f.repo)
+        .env("HOME", &f.home)
+        .env("PATH", &f.path)
+        .env("AF_PROVIDERS_FILE", f.home.join("providers.toml"))
+        .args(["task", "report", "release-notes", "--state"])
+        .arg(&f.state);
+    if json {
+        command.arg("--json");
+    }
+    let text = stdout(&command.output().unwrap());
+    if json {
+        let value: Value = serde_json::from_str(&text).unwrap();
+        schemas::valid(&schemas::validator("task-report-v1.json"), &value);
+    }
+    text
+}
+
+#[test]
+fn a_provider_failure_is_counted_with_its_class_and_charge_and_the_provider_stays_private() {
+    let (f, done) = failed_provider_task(|_| None);
+    let run = |json: bool| fixture_report(&f, json);
     let value: Value = serde_json::from_str(&run(true)).unwrap();
-    schemas::valid(&schemas::validator("task-report-v1.json"), &value);
     let task = &value["tasks"][0];
     assert_eq!(task["kind"], "release-note");
     assert_eq!(task["runs"], 1);
@@ -426,6 +468,279 @@ fn a_provider_failure_is_counted_with_its_class_and_charge_and_the_provider_stay
             f.state.to_str().unwrap(),
         ],
     );
+}
+
+/// A model value that is a path into the machine's home and auth directory is recorded in the
+/// plan as the Worker's model, and the author's Attempt under it fails at the Provider. The
+/// report names that Worker's model `unknown` in both forms and carries the path in neither.
+#[test]
+fn a_path_valued_model_is_reported_as_unknown_even_on_a_failed_attempt() {
+    // Spelled under the fixture's own home and auth directory, which the machine holds, and
+    // versioned as the kernel requires of a model ID it binds.
+    let path = |home: &Path| format!("{}/.codex/models/gpt-6-sol", home.to_str().unwrap());
+    let (f, _) = failed_provider_task(|home| Some(path(home)));
+    let model = path(&f.home);
+    let relative = model.trim_start_matches('/').to_owned();
+    // The plan really binds the path: the report is what keeps it out.
+    let cas = Cas::open_existing(f.state.join("cas")).unwrap();
+    let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+    let projection = store
+        .task_projection(&cas, "release-notes")
+        .unwrap()
+        .unwrap();
+    let plan = cas
+        .get_json(projection.plan_id.as_deref().unwrap())
+        .unwrap();
+    assert!(plan.to_string().contains(&model), "{plan}");
+    drop(store);
+
+    let value: Value = serde_json::from_str(&fixture_report(&f, true)).unwrap();
+    let task = &value["tasks"][0];
+    assert_eq!(
+        task["attempts"]["failures"][0]["class"], "provider_failure",
+        "{task:#}"
+    );
+    let author = task["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["node"] == "root.nodes.author")
+        .unwrap();
+    assert_eq!(author["failed_attempts"], 1, "{author:#}");
+    assert_eq!(
+        author["worker"],
+        serde_json::json!({"kind":"model","provider_kind":"codex","model":"unknown","effort":"high"})
+    );
+    let markdown = fixture_report(&f, false);
+    assert!(markdown.contains("| codex unknown/high |"), "{markdown}");
+    assert_block_is_checked(&markdown);
+    assert_private(
+        &[&markdown, &value.to_string()],
+        &[
+            &model,
+            &relative,
+            ".codex",
+            "models/gpt-6-sol",
+            "codex-personal",
+            f.home.to_str().unwrap(),
+            f.state.to_str().unwrap(),
+        ],
+    );
+}
+
+/// Kills the Worker's process group when the test ends, however it ends.
+struct WorkerGroup(i32);
+impl Drop for WorkerGroup {
+    fn drop(&mut self) {
+        let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(self.0), Signal::SIGKILL);
+    }
+}
+
+/// `af task start --execute` dies while its implementer's Attempt runs, leaving that Attempt
+/// pending; `af task refresh` over a changed issue settles it as abandoned and refreshes the
+/// source; `af task run` finishes. The refresh is not a run and its lease time is not active
+/// time, and the implementer's Attempts, which ran under the plans before and after the
+/// refresh, are charged to the Worker each plan bound.
+#[test]
+fn a_refresh_that_recovers_a_pending_attempt_is_neither_a_run_nor_active_time() {
+    use review_core::task::event::TaskChangeV1;
+    use std::time::{Duration, Instant};
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, state) = task_cli::fixture_named(directory.path(), "pagination");
+    let issue = |description: &str| {
+        serde_json::json!({"schema":"af.issue-input/1","id":"10042","key":"AF-42",
+            "revision":"v1","summary":"Implement offset and limit pagination",
+            "description":description,
+            "acceptance":{"bounds":"Reject negative or noninteger bounds."}})
+        .to_string()
+    };
+    std::fs::write(repo.join("issue.json"), issue("Preserve the input values.")).unwrap();
+    let ticket = repo.join("ticket.json");
+    let original = std::fs::read_to_string(&ticket).unwrap();
+    let schema = "\"schema\": \"af.task-file/1\",\n";
+    assert_eq!(original.matches(schema).count(), 1);
+    // The dead writer's lease runs out before the refresh, and the refreshed plan still needs
+    // the deadline for its declared Attempts.
+    let wall = "\"wall_ms\": 60000,";
+    assert_eq!(original.matches(wall).count(), 1);
+    std::fs::write(
+        &ticket,
+        original
+            .replacen(
+                schema,
+                &format!(
+                    "{schema}  \"issue\": {{\"kind\": \"local\", \"path\": \"issue.json\"}},\n"
+                ),
+                1,
+            )
+            .replacen(wall, "\"wall_ms\": 300000,", 1),
+    )
+    .unwrap();
+    let ready = directory.path().join("worker-ready");
+    let resume = directory.path().join("worker-resume");
+    task_interrupt::long_running_implementer(&repo, &ready, &resume);
+
+    // Kill af outright while the implementer runs: nothing settles its Attempt.
+    let mut af = Command::new(AF)
+        .current_dir(&repo)
+        .args([
+            "task",
+            "start",
+            "--file",
+            "ticket.json",
+            "--execute",
+            "--json",
+        ])
+        .arg("--state")
+        .arg(&state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let until = Instant::now() + Duration::from_secs(60);
+    let leader = loop {
+        if let Some(pid) = std::fs::read_to_string(&ready)
+            .ok()
+            .and_then(|text| text.split_whitespace().next()?.parse::<i32>().ok())
+        {
+            break pid;
+        }
+        if af.try_wait().unwrap().is_some() {
+            let out = af.wait_with_output().unwrap();
+            panic!(
+                "Worker did not start: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        assert!(Instant::now() < until, "Worker readiness deadline");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let _group = WorkerGroup(leader);
+    af.kill().unwrap();
+    af.wait().unwrap();
+    drop(_group);
+
+    // Refresh over a changed issue once the dead writer's lease has expired.
+    std::fs::write(
+        repo.join("issue.json"),
+        issue("Preserve every input value, including an empty list."),
+    )
+    .unwrap();
+    let until = Instant::now() + Duration::from_secs(60);
+    loop {
+        let refreshed = Command::new(AF)
+            .current_dir(&repo)
+            .args(["task", "refresh", task_interrupt::TASK, "--json", "--state"])
+            .arg(&state)
+            .output()
+            .unwrap();
+        if refreshed.status.success() {
+            break;
+        }
+        let said = String::from_utf8_lossy(&refreshed.stderr);
+        assert!(said.contains("active writer"), "{said}");
+        assert!(
+            Instant::now() < until,
+            "the dead writer's lease never expired"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    std::fs::write(&resume, b"").unwrap();
+    // The refreshed plan is new, so the run confirms it with `--execute`.
+    stdout(
+        &Command::new(AF)
+            .current_dir(&repo)
+            .args(["task", "run", "--execute", task_interrupt::TASK, "--json"])
+            .arg("--state")
+            .arg(&state)
+            .output()
+            .unwrap(),
+    );
+
+    // The log has three writer leases: the start, the refresh that recovered the pending
+    // Attempt and refreshed the source, and the run.
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let run_id = review_store::store::task::task_run_id(task_interrupt::TASK).unwrap();
+    let mut epochs: Vec<(u64, u64, u64, bool, bool)> = Vec::new();
+    for event in store.replay(&run_id).unwrap() {
+        let transition = review_store::store::task::read_task_transition(&event).unwrap();
+        let time = transition.now_unix_ms;
+        let index = match epochs.iter().position(|e| e.0 == transition.epoch) {
+            Some(index) => index,
+            None => {
+                epochs.push((transition.epoch, time, time, false, false));
+                epochs.len() - 1
+            }
+        };
+        let epoch = &mut epochs[index];
+        epoch.1 = epoch.1.min(time);
+        epoch.2 = epoch.2.max(time);
+        epoch.3 |= matches!(transition.change, TaskChangeV1::SourceRefreshed { .. });
+        epoch.4 |= matches!(transition.change, TaskChangeV1::ExecutionRecorded { .. });
+    }
+    assert_eq!(epochs.len(), 3, "{epochs:?}");
+    assert!(
+        epochs[1].3 && epochs[1].4,
+        "the refresh recovered the pending Attempt: {epochs:?}"
+    );
+    let accounting = store
+        .task_projection(&cas, task_interrupt::TASK)
+        .unwrap()
+        .unwrap()
+        .execution
+        .unwrap()
+        .attempt_accounting();
+    let implementer: Vec<_> = accounting
+        .iter()
+        .filter(|a| a.started && a.reservation.node == "root.nodes.implement")
+        .collect();
+    assert_eq!(implementer.len(), 2);
+    assert_ne!(
+        implementer[0].plan_id, implementer[1].plan_id,
+        "the implementer ran under the plans before and after the refresh"
+    );
+    drop(store);
+
+    let value = document(&repo, &state, &[task_interrupt::TASK]);
+    let task = &value["tasks"][0];
+    assert_eq!(task["runs"], 2, "the refresh is not a run: {task:#}");
+    assert_eq!(
+        task["active_ms"].as_u64().unwrap(),
+        (epochs[0].2 - epochs[0].1) + (epochs[2].2 - epochs[2].1),
+        "the refresh's lease time is not active time: {task:#} {epochs:?}"
+    );
+    assert_eq!(
+        task["attempts"]["failures"],
+        serde_json::json!([{
+            "class": "abandoned",
+            "attempts": 1,
+            "tokens": implementer[0].charged_tokens.to_string(),
+        }])
+    );
+    let rows: Vec<&Value> = task["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node["node"] == "root.nodes.implement")
+        .collect();
+    assert_eq!(rows.len(), 1, "both plans bind the same Worker: {task:#}");
+    assert_eq!(rows[0]["worker"]["kind"], "command");
+    assert_eq!(rows[0]["attempts"], 2);
+    assert_eq!(rows[0]["failed_attempts"], 1);
+    assert_eq!(
+        rows[0]["tokens"],
+        (implementer[0].charged_tokens + implementer[1].charged_tokens).to_string()
+    );
+    let markdown = stdout(&report(&repo, &state, &[task_interrupt::TASK], false));
+    assert!(
+        markdown.contains(&format!(
+            "<summary>{}: 2 runs, 1 failed Attempt (1 abandoned; ",
+            task_interrupt::TASK
+        )),
+        "{markdown}"
+    );
+    assert_block_is_checked(&markdown);
 }
 
 #[test]

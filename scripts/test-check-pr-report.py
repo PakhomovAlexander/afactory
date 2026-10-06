@@ -54,12 +54,25 @@ def main():
     empty_table = BLOCK
     for row in rows:
         empty_table = empty_table.replace(row + '\n', '')
+    separator = line_starting(BLOCK, '| --- |')
+    task_cells = rows[0][2:-2].split(' | ')
+
+    def with_row(row):
+        """The block with its first Task row replaced by `row`."""
+        return BLOCK.replace(rows[0] + '\n', row + '\n')
 
     passing = {
         'the renderer fixture': event(description(BLOCK)),
         'CRLF line endings': event(description(BLOCK).replace('\n', '\r\n')),
         'a Dependabot pull request without a block': event('Bumps serde.', 'dependabot[bot]'),
         'a release pull request without a block': event(None, branch='release/0.12.0'),
+        # GitHub keeps an escaped or encoded pipe inside its cell.
+        'an escaped pipe in a cell': event(description(with_row(
+            '| ' + ' | '.join([task_cells[0], task_cells[1], 'a\\|b'] + task_cells[3:])
+            + ' |'))),
+        'an encoded pipe in a cell': event(description(with_row(
+            '| ' + ' | '.join([task_cells[0], task_cells[1], 'a&#124;b'] + task_cells[3:])
+            + ' |'))),
     }
     for case, payload in passing.items():
         code, said = check(payload)
@@ -85,6 +98,23 @@ def main():
         'a missing totals line': (event(description(BLOCK.replace(totals + '\n', ''))),
                                   'no totals line'),
         'the unfilled template': (event(TEMPLATE), 'no summary table'),
+        'a one-cell placeholder row': (event(description(with_row('| x |'))),
+                                       'Task row 1 of the summary table is a one-cell'),
+        'a short row': (event(description(with_row('| ' + ' | '.join(task_cells[:-1]) + ' |'))),
+                        'Task row 1 of the summary table has 8 cells, but the header has 9'),
+        'a long row': (event(description(with_row('| ' + ' | '.join(task_cells + ['x']) + ' |'))),
+                       'has 10 cells, but the header has 9'),
+        'an empty Task cell': (event(description(with_row(
+            '|  | ' + ' | '.join(task_cells[1:]) + ' |'))), 'has an empty Task cell'),
+        'empty Kind and Outcome cells': (event(description(with_row('| ' + ' | '.join(
+            [task_cells[0], '', task_cells[2], ''] + task_cells[4:]) + ' |'))),
+            'has an empty Kind, Outcome cells'),
+        'a separator of the wrong width': (event(description(BLOCK.replace(
+            separator, separator.replace('| --- ', '', 1)))),
+            'separator row has 8 cells, but the header has 9'),
+        'an unescaped pipe in a cell': (event(description(with_row(
+            '| ' + ' | '.join([task_cells[0], task_cells[1], 'a|b'] + task_cells[3:]) + ' |'))),
+            'has 10 cells'),
         'a Dependabot-like name': (event('', 'dependabot'), 'no af task report block'),
         'a branch that only mentions release': (event('', branch='af/release/notes'),
                                                 'no af task report block'),
@@ -97,7 +127,8 @@ def main():
         assert HOW in said, f'{case} does not say how to produce the block:\n{said}'
         messages[case] = said
     distinct = ['a missing block', 'a missing end marker', 'a missing column', 'an empty table',
-                'two blocks', 'a missing totals line']
+                'two blocks', 'a missing totals line', 'a one-cell placeholder row',
+                'a short row', 'an empty Task cell', 'a separator of the wrong width']
     assert len({messages[case] for case in distinct}) == len(distinct), \
         'each required part has its own message'
     print(f'check-pr-report: {len(passing) + 1} passing and {len(failing)} failing cases')
