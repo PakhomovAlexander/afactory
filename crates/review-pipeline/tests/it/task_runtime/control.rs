@@ -32,7 +32,7 @@ fn precancelled_runtime_records_no_new_invocation_or_attempt() {
         .with_cancellation(&cancellation);
     assert_eq!(
         runtime.execute().unwrap_err(),
-        "Task has no execution to report"
+        "Task execution was cancelled by its host"
     );
     assert_eq!(
         runtime.finish("unread-result").unwrap_err(),
@@ -112,7 +112,10 @@ fn captured_command_cancellation_retains_both_streams_and_never_retries() {
             .unwrap(),
         b"command stdout\n"
     );
-    assert!(!runtime.execute().unwrap().complete());
+    assert_eq!(
+        runtime.execute().unwrap_err(),
+        "Task execution was cancelled by its host"
+    );
     assert_eq!(
         runtime
             .projection()

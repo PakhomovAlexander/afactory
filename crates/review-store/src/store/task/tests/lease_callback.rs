@@ -37,7 +37,7 @@ fn renewal_during_context_callback_never_redispatches_it_and_takeover_is_closed(
                         .take_task_lease(&cas, old.task_id(), "successor", 15_000)
                         .unwrap();
                 } else {
-                    other.renew_task_lease(&cas, &old, 15_000).unwrap();
+                    other.renew_task_lease(&cas, &old, 2_000_000).unwrap();
                 }
             }))
         });
