@@ -25,7 +25,7 @@ TEST_THREADS="$(nproc)" make check > "$out/make-check.log" 2>&1 & check_pid=$!
 stress-ng --cpu "$(( $(nproc) * 2 ))" --timeout 900s --metrics-brief > "$out/stress.log" 2>&1 & stress_pid=$!
 (while kill -0 "$check_pid" 2>/dev/null; do date -Is; cat /proc/loadavg; free -b; sleep 5; done) > "$out/load-timeseries.txt" & monitor_pid=$!
 trap 'kill "$stress_pid" "$monitor_pid" "$check_pid" 2>/dev/null || true' EXIT
-sleep 15
+sleep 90
 probe loaded 1 20
 probe loaded 50 20
 set +e

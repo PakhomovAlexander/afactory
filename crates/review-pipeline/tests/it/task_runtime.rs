@@ -939,7 +939,10 @@ impl Fixture {
             } else {
                 60_000
             };
-        task.limits.verification.wall_ms = 5000;
+        task.limits.verification.wall_ms = 5000 * load_nodes as u64;
+        if load_nodes > 1 {
+            task.limits.verification.attempts = load_nodes as u32;
+        }
         if model {
             task.limits.tokens = 5000;
             task.limits.verification.tokens = 1000;
