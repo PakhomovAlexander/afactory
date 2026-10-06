@@ -33,8 +33,15 @@ jobs:
           git rev-parse HEAD HEAD^{tree} | tee "$RUNNER_TEMP/load-evidence/source.txt"
           git status --porcelain
           cargo test --locked -p review-pipeline --test it --no-run
-      - name: Bounded baseline and real make-check contention
-        run: timeout --signal=TERM --kill-after=20s 2400 bash scripts/report-load-1719.sh
+      - name: Full gate after compile-time include correction (no new load claim)
+        run: |
+          export AF_WORKSPACE_ROOT="$PWD" AF_GATE_NEXTEST_TARGET="$CARGO_TARGET_DIR"
+          export CARGO_BUILD_JOBS="$(nproc)" TEST_THREADS="$(nproc)"
+          set +e
+          timeout --signal=TERM --kill-after=20s 1400 make check > "$RUNNER_TEMP/load-evidence/make-check.log" 2>&1
+          rc=$?
+          echo "make_check_exit=$rc" | tee "$RUNNER_TEMP/load-evidence/make-check-exit.txt"
+          exit "$rc"
       - name: Retain raw evidence
         if: always()
         uses: actions/upload-artifact@v4
