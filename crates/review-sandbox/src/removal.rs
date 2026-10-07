@@ -241,10 +241,9 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(left, [std::ffi::OsString::from("neighbour")]);
-        // A directory that took the name after the removal is somebody else's and is refused.
-        std::fs::create_dir(parent.join("target")).unwrap();
-        assert!(remove_tree_at(&fd, OsStr::new("target"), Some(identity)).is_err());
-        assert!(parent.join("target").is_dir());
+        // A replacement made while the measured directory still exists is refused by
+        // `a_directory_that_changed_since_it_was_measured_is_left`; after the removal a file
+        // system may hand the freed inode to the next directory, so no identity check here.
     }
 
     #[test]
