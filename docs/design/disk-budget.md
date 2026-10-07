@@ -46,7 +46,8 @@ and leaves nothing in other tools' directories.
    first. It never evicts an entry in use: a held lock, a live writer lease, a running Task or
    campaign, the default or a pinned version, or the running binary.
 3. Collection runs by itself after every `af task run` and `af review run`, whatever the outcome,
-   unless the operator turns it off. It reaches every Store af made, including Stores this release
+   unless the operator turns it off. An interrupted run is not an outcome: after `Ctrl-C` af stops
+   promptly and the next run or `af storage prune --apply` collects. It reaches every Store af made, including Stores this release
    cannot read and Stores made with `--state`.
 4. Every check af runs gets a `HOME`, a `TMPDIR` and an `AF_CHECK_SCRATCH` directory that af creates
    empty before the check and removes after it. A check never needs a path outside them, and a

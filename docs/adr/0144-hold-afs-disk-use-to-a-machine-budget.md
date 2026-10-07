@@ -59,7 +59,8 @@ remote check left two branches and a draft pull request open.
    measured), warm Workspaces (held by a shared `workspace.lock` while a run clones from them),
    review campaign Stores, finished Tasks of every Task Store (collected one at a time through the
    Store's own collection, so each keeps its tombstone), Stores this release cannot replay (removed
-   whole), and installed versions. Sizes are allocated bytes, links not followed; the files a
+   whole), and installed versions. Sizes are allocated bytes, links not followed; a Store that
+   cannot be measured whole is a problem every sweep reports, never counted as empty; the files a
    reader creates (`-shm`, an empty `-wal`) never count as use. Inventory records each
    directory's identity (device and inode). Every removal the sweep, `af storage prune` and
    `af self uninstall --purge` make opens its target from a trusted anchor — the configured root
@@ -92,7 +93,9 @@ remote check left two branches and a draft pull request open.
    `af/TaskStorageSweep@1` inline (at most 256 removals and 64 failures listed, the rest counted;
    a sweep that removed nothing and failed nothing records nothing), which `af task show` prints
    as one line. Triggers: the end of every `af task run`, `af task start --execute` and `af
-   review run` whatever the outcome (when `auto_gc`; its failure is a warning), a warm check
+   review run` whatever the outcome (when `auto_gc`; its failure is a warning) — an interrupted
+   run is not an outcome: after `Ctrl-C` af stops promptly and leaves collection to the next run
+   or `af storage prune --apply`, because a sweep can wait on GitHub for gate cleanups — a warm check
    about to create a key that does not exist (budget only), the free-disk floor, and `af storage
    prune --apply`. An unchanged Task Store whose last collection
    found nothing to do before a known time is not planned again until then.
@@ -101,11 +104,16 @@ remote check left two branches and a draft pull request open.
    volume it works on: the ones holding its temporary directory and `$XDG_CACHE_HOME`. Below
    `min_free_bytes` on any measured volume — even when another could not be measured — or with a
    volume that cannot be measured at all, it sweeps once; still so, it refuses: a check is
-   `not_run` with reason `insufficient_disk: …`, a measurement fails with the typed reason
+   `not_run` with reason `insufficient_disk: …`, a remote check is refused with the typed reason
+   `insufficient_disk` before its private repository or any push, a measurement fails with the typed reason
    `insufficient_disk` without starting its command, and a Worker Attempt is released before it
    starts, charged nothing, and the run stops like an interrupted one: nothing is assembled or
    finished, and the Task stays resumable. A failed measurement never counts as room. The message
-   names the free bytes (or the measurement error), the floor, `af storage` and the knob.
+   names the free bytes (or the measurement error), the floor, `af storage` and the knob. When
+   the `[storage]` policy is invalid or af's directories cannot be resolved, no floor can guard
+   the work, so `af task run`, `af task start --execute`, `af review run` and `af provider
+   doctor` refuse to start and say why; likewise a review run that cannot hold its campaign's
+   run lock does not start, since a sweep could otherwise take its Store.
 6. **The Store registry.** A Task or review Store af opens or creates outside its default roots
    (`--state`, `--state-root`) is recorded, best effort, in `$XDG_STATE_HOME/af/stores.toml`;
    the sweep visits it and drops entries whose Store is gone.

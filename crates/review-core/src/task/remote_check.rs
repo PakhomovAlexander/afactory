@@ -202,6 +202,9 @@ pub enum RemoteCheckReasonV1 {
     DeadlineExpired,
     /// The Attempt was cancelled during the remote phase.
     Cancelled,
+    /// The machine was below its free-disk floor, so the remote phase did not start
+    /// (ADR-0144).
+    InsufficientDisk,
 }
 
 impl RemoteCheckReasonV1 {
@@ -220,6 +223,7 @@ impl RemoteCheckReasonV1 {
             Self::RemoteCheckInconclusive => "remote_check_inconclusive",
             Self::DeadlineExpired => "deadline_expired",
             Self::Cancelled => "cancelled",
+            Self::InsufficientDisk => "insufficient_disk",
         }
     }
 
@@ -245,6 +249,7 @@ impl RemoteCheckReasonV1 {
                 | Self::RemotePushRefused
                 | Self::DeadlineExpired
                 | Self::Cancelled
+                | Self::InsufficientDisk
         )
     }
 

@@ -555,6 +555,15 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
         storage::registry::record(&root, storage::registry::StoreKind::ReviewRoot);
     }
     let enumeration = enumerate_campaigns(&root, true)?;
+    // Each campaign directory's identity as enumerated: only that directory is ever removed.
+    let measured: BTreeMap<String, Option<review_sandbox::Identity>> = enumeration
+        .campaigns
+        .iter()
+        .map(|campaign| {
+            let identity = review_sandbox::Identity::of(&root.join(&campaign.state_dir)).ok();
+            (campaign.state_dir.clone(), identity)
+        })
+        .collect();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX))
@@ -586,16 +595,15 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
             "in use"
         } else if options.apply {
             let path = root.join(&campaign.state_dir);
-            if std::fs::symlink_metadata(&path)
-                .map(|metadata| metadata.file_type().is_symlink())
-                .unwrap_or(true)
-            {
+            let Some(identity) = measured.get(&campaign.state_dir).copied().flatten() else {
                 return Err(format!(
-                    "refusing to remove {}: not a plain directory",
+                    "refusing to remove {}: its identity could not be measured",
                     path.display()
                 ));
-            }
-            std::fs::remove_dir_all(&path)
+            };
+            // Through descriptors from the root, no link followed, and only while it is still
+            // the directory enumerated (ADR-0144).
+            review_sandbox::remove_beneath(&root, &path, Some(identity))
                 .map_err(|error| format!("removing {}: {error}", path.display()))?;
             reclaimed = reclaimed.saturating_add(campaign.state_bytes.unwrap_or(0));
             "removed"
@@ -1106,9 +1114,16 @@ fn main() {
     let sandbox_sweep = runs_task_work(&command)
         .then(sweep_stale_sandboxes_in_background)
         .flatten();
-    if runs_task_work(&command) {
-        // The free-disk floor and the budget step before a new warm key (ADR-0144).
-        storage::install();
+    if runs_task_work(&command)
+        && let Err(error) = storage::install()
+    {
+        // The free-disk floor and the budget step before a new warm key (ADR-0144). Without
+        // them no check or Worker may start, so work is refused rather than run unguarded.
+        eprintln!(
+            "af: the storage budget cannot be set up, so no Task or review work starts: {error}; \
+             see `af config show --origin` for [storage] and the XDG directories"
+        );
+        std::process::exit(1);
     }
     let collects_after = collects_after_run(&command);
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
@@ -3852,7 +3867,8 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     let state = options.resolved_state_dir()?;
     std::fs::create_dir_all(&state).map_err(|error| error.to_string())?;
     // Held for the whole run: no sweep and no `af review gc` removes this campaign under it.
-    let _running = storage::hold_running(&state);
+    // A run that cannot hold it does not start: unprotected, a sweep could remove its Store.
+    let _running = storage::hold_running(&state)?;
     storage::note_work_started();
     let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
     let mut store =

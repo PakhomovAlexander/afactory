@@ -311,14 +311,21 @@ pub(crate) fn campaign_in_use(state: &Path) -> Option<String> {
 
 /// Held by `af review run` for as long as it runs one campaign: while it lives, no sweep and
 /// no `af review gc` removes the campaign's state.
-pub(crate) fn hold_running(state: &Path) -> Option<nix::fcntl::Flock<std::fs::File>> {
+pub(crate) fn hold_running(state: &Path) -> Result<nix::fcntl::Flock<std::fs::File>, String> {
+    let path = state.join(RUNNING_LOCK);
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(state.join(RUNNING_LOCK))
-        .ok()?;
-    nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockSharedNonblock).ok()
+        .open(&path)
+        .map_err(|error| format!("opening {}: {error}", path.display()))?;
+    nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockSharedNonblock).map_err(|(_, errno)| {
+        format!(
+            "the campaign's run lock {} cannot be held ({errno}); a collection may be \
+                 removing this campaign, so the run does not start",
+            path.display()
+        )
+    })
 }
 
 /// Why a Store this release cannot read must stay: a lock file in it is held.
@@ -565,7 +572,18 @@ fn task_store(inventory: &mut Inventory, state: &Path) {
             return;
         }
     };
-    let allocated = review_sandbox::storage::allocated_bytes(state).unwrap_or(0);
+    // A Store that cannot be measured whole is a problem, not an empty one: its Tasks are still
+    // listed, and the remainder the Store holds is reported unknown rather than as zero.
+    let allocated = match review_sandbox::storage::allocated_bytes(state) {
+        Ok(bytes) => Some(bytes),
+        Err(error) => {
+            inventory.problems.push(Problem {
+                path: state.to_path_buf(),
+                reason: format!("cannot be measured whole: {error}"),
+            });
+            None
+        }
+    };
     let mut tasks_bytes = 0_u64;
     for task in &plan.tasks {
         if task.result_id.is_none() {
@@ -598,7 +616,7 @@ fn task_store(inventory: &mut Inventory, state: &Path) {
         kind: Kind::TaskStore,
         path: state.to_path_buf(),
         task_id: None,
-        bytes: allocated.saturating_sub(tasks_bytes),
+        bytes: allocated.map_or(0, |allocated| allocated.saturating_sub(tasks_bytes)),
         last_use_unix_ms: newest_store_write(state),
         in_use: Some("the Store is kept; its finished Tasks are collected one by one".into()),
         reason: None,
@@ -688,6 +706,14 @@ pub(crate) fn sweep(
     }
     let mut stock = inventory(roots, Detail::Stores);
     report.total_before = stock.total();
+    // What could not be measured is said with the result: a total that fits the budget is only
+    // as complete as the inventory behind it.
+    report.failures.extend(
+        stock
+            .problems
+            .iter()
+            .map(|problem| format!("measuring {}: {}", problem.path.display(), problem.reason)),
+    );
     if collection {
         collect(roots, policy, &mut stock, now, apply, &mut report);
         if apply {
@@ -1476,19 +1502,15 @@ fn faked_free_bytes() -> Option<u64> {
 
 /// Install the Storage Budget for this process's Task and review work. A machine whose
 /// `[storage]` cannot be read runs without it, and says so.
-pub(crate) fn install() {
+pub(crate) fn install() -> Result<(), String> {
     let host = policy().and_then(|policy| {
         Ok(MachineStorage {
             policy,
             roots: Roots::current()?,
         })
-    });
-    match host {
-        Ok(host) => {
-            review_pipeline::storage::install(Arc::new(host));
-        }
-        Err(error) => eprintln!("af storage: warning: the storage budget is off: {error}"),
-    }
+    })?;
+    review_pipeline::storage::install(Arc::new(host));
+    Ok(())
 }
 
 /// What `af self uninstall --purge` removes beyond af's own directories (ADR-0144): the
@@ -1501,11 +1523,16 @@ pub(crate) fn purge_outside_roots() -> Vec<String> {
     let mut lines = Vec::new();
     // The temporary roots the earlier `<temp>/.tmp*/tree` form lived below, without a trailing
     // separator, as given and resolved.
-    let temp = std::env::temp_dir();
-    let mut temps: Vec<PathBuf> = vec![temp.components().collect()];
-    if let Ok(resolved) = temp.canonicalize() {
-        temps.push(resolved);
+    let mut temps: Vec<PathBuf> = Vec::new();
+    // The temporary directory af uses now, and `/tmp`, where it lives when TMPDIR is unset.
+    for temp in [std::env::temp_dir(), PathBuf::from("/tmp")] {
+        temps.push(temp.components().collect());
+        if let Ok(resolved) = temp.canonicalize() {
+            temps.push(resolved);
+        }
     }
+    temps.sort();
+    temps.dedup();
     let temp_slugs: Vec<String> = temps
         .iter()
         .map(|path| review_runner_claude::ClaudeSessionStore::project_slug(path))

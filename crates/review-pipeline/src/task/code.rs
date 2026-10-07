@@ -1438,7 +1438,34 @@ AF_TOOLCHAIN_SNAPSHOT ",
                     })
                 })
                 .collect::<Result<_, String>>()?;
-            let outcomes = if local_failed.is_empty() {
+            // The remote phase starts nothing below the machine's free-disk floor either: its
+            // private repository and its push are work like any check's (ADR-0144).
+            let floor = if local_failed.is_empty() {
+                crate::storage::ensure_free_disk().err()
+            } else {
+                None
+            };
+            let outcomes = if let Some(refusal) = floor {
+                let base = super::remote_check::EvidenceBase {
+                    github: &target.github,
+                    snapshot_id: &snapshot_id,
+                    source_snapshot_id: &source_id,
+                };
+                requests
+                    .iter()
+                    .map(|request| {
+                        base.refused(
+                            request,
+                            RemoteCheckReasonV1::InsufficientDisk,
+                            format!(
+                                "remote check `{}` was not dispatched: {refusal}",
+                                request.name
+                            ),
+                            None,
+                        )
+                    })
+                    .collect::<Vec<RemoteCheckOutcome>>()
+            } else if local_failed.is_empty() {
                 // One clock for the whole remote phase: it ends at the earlier of the per-check
                 // wall on this timer and the Attempt's deadline.
                 let started = std::time::Instant::now();

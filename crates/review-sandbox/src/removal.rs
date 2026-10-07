@@ -97,10 +97,11 @@ pub fn open_beneath(anchor: impl AsFd, relative: &Path) -> io::Result<OwnedFd> {
 }
 
 /// Remove the directory `name` of `parent` and everything below it through descriptors: the
-/// directory is opened without following a link, compared with `expected` when given, emptied
-/// through its own descriptor (no entry below it is followed either) and then unlinked. A name
-/// that is a symlink, no directory, or another directory than `expected` is left and is an
-/// error.
+/// directory is opened without following a link and compared with `expected` when given, then
+/// claimed under a private name in `parent` and checked there by identity, emptied through its
+/// own descriptor (an entry below it, a link included, is unlinked, never followed) and unlinked
+/// under its private name. A name that is a symlink, no directory, or another directory than
+/// `expected` is left and is an error; so is a directory that changed while being claimed.
 pub fn remove_tree_at(
     parent: impl AsFd,
     name: &OsStr,
@@ -108,6 +109,7 @@ pub fn remove_tree_at(
 ) -> io::Result<()> {
     use nix::dir::Dir;
     use nix::fcntl::OFlag;
+    use nix::fcntl::renameat;
     use nix::sys::stat::Mode;
     use nix::unistd::{UnlinkatFlags, unlinkat};
 
@@ -124,8 +126,8 @@ pub fn remove_tree_at(
         Mode::empty(),
     )
     .map_err(|errno| not_followed(name, errno))?;
+    let found = Identity::of_descriptor(&directory)?;
     if let Some(expected) = expected {
-        let found = Identity::of_descriptor(&directory)?;
         if found != expected {
             return Err(io::Error::other(format!(
                 "`{}` is not the directory that was measured (device {} inode {}, now device {} \
@@ -138,11 +140,49 @@ pub fn remove_tree_at(
             )));
         }
     }
+    // Claim the directory under a private name before anything is removed: whatever takes
+    // `name` from now on is never touched. The claim is checked by identity, so a directory
+    // that took `name` between the open above and the rename is put back and left.
+    let claimed = claim_name();
+    renameat(&parent, name, &parent, claimed.as_str()).map_err(io::Error::from)?;
+    let at_claim = nix::sys::stat::fstatat(
+        &parent,
+        claimed.as_str(),
+        nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
+    )
+    .map_err(io::Error::from)?;
+    #[allow(clippy::unnecessary_cast)]
+    let claimed_identity = Identity {
+        device: at_claim.st_dev as u64,
+        inode: at_claim.st_ino as u64,
+    };
+    if claimed_identity != found {
+        // Not ours: return it to its name, unless that name was taken again meanwhile.
+        let _ = renameat(&parent, claimed.as_str(), &parent, name);
+        return Err(io::Error::other(format!(
+            "`{}` changed while it was being removed; it is left",
+            name.to_string_lossy()
+        )));
+    }
     crate::stale::remove_children_nofollow(&mut directory, 0).map_err(io::Error::from)?;
     drop(directory);
-    // Only an empty directory is ever unlinked by name: whatever took the name since holds
-    // something, and stays.
-    unlinkat(&parent, name, UnlinkatFlags::RemoveDir).map_err(io::Error::from)
+    unlinkat(&parent, claimed.as_str(), UnlinkatFlags::RemoveDir).map_err(io::Error::from)
+}
+
+/// A private name for a directory being removed: hidden, unique to this process and call, and
+/// never one a caller passes in.
+fn claim_name() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.subsec_nanos())
+        .unwrap_or(0);
+    format!(
+        ".af-removing-{}-{nanos}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 /// Remove `target`, a directory strictly below `anchor`, through descriptors: `anchor` opened as
@@ -182,6 +222,29 @@ mod tests {
         remove_beneath(&anchor, &target, Some(identity)).unwrap();
         assert!(!target.exists());
         assert!(anchor.join("a/b").is_dir());
+        // The private name it was claimed under is gone too: nothing is left beside it.
+        assert_eq!(std::fs::read_dir(anchor.join("a/b")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_directory_is_claimed_under_a_private_name_and_its_old_name_is_never_unlinked() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("parent");
+        std::fs::create_dir_all(parent.join("target/inner")).unwrap();
+        std::fs::write(parent.join("target/inner/file"), b"x").unwrap();
+        std::fs::create_dir_all(parent.join("neighbour")).unwrap();
+        let identity = Identity::of(&parent.join("target")).unwrap();
+        let fd = open_anchor(&parent).unwrap();
+        remove_tree_at(&fd, OsStr::new("target"), Some(identity)).unwrap();
+        let left: Vec<_> = std::fs::read_dir(&parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left, [std::ffi::OsString::from("neighbour")]);
+        // A directory that took the name after the removal is somebody else's and is refused.
+        std::fs::create_dir(parent.join("target")).unwrap();
+        assert!(remove_tree_at(&fd, OsStr::new("target"), Some(identity)).is_err());
+        assert!(parent.join("target").is_dir());
     }
 
     #[test]

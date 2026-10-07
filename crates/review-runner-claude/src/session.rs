@@ -371,30 +371,41 @@ pub fn is_af_attempt_directory(working_directory: &Path) -> bool {
 }
 
 /// Whether a harness project directory name is the slug of a path af created for an Attempt,
-/// a probe or a check: it names an `af-sandbox-<pid>-<random>` or `af-check-<pid>-<random>`
-/// component, or it is the earlier `<temp>/.tmp<random>/tree` form below `temp_slug`, the slug
-/// of a temporary root af used. Used only where no working directory is known any more
-/// (`af self uninstall --purge`).
+/// a probe or a check: an `af-sandbox-<pid>-<random>` or `af-check-<pid>-<random>` directory
+/// directly below one of `temp_slugs`, the slugs of the temporary roots af used (possibly with
+/// a deeper component such as `-tree` after it), or the earlier `<temp>/.tmp<random>/tree` form
+/// below one of them. The temporary root is required: a project whose path merely contains such
+/// a component elsewhere (`~/src/af-sandbox-42-demo`) is the user's, never af's. Used only
+/// where no working directory is known any more (`af self uninstall --purge`).
 pub fn is_af_project_slug(slug: &str, temp_slugs: &[String]) -> bool {
-    for prefix in AF_DIRECTORY_PREFIXES {
-        let marker = format!("-{prefix}");
-        let mut rest = slug;
-        while let Some(index) = rest.find(&marker) {
-            let after = &rest[index + marker.len()..];
-            let digits = after.bytes().take_while(u8::is_ascii_digit).count();
-            if digits > 0 && after[digits..].starts_with('-') && after.len() > digits + 1 {
-                return true;
-            }
-            rest = &rest[index + 1..];
-        }
-    }
     temp_slugs.iter().any(|temp| {
-        slug.strip_prefix(temp.as_str())
-            .and_then(|rest| rest.strip_prefix("--tmp"))
-            .and_then(|rest| rest.strip_suffix("-tree"))
-            .is_some_and(|random| {
-                !random.is_empty() && random.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        let Some(rest) = slug.strip_prefix(temp.as_str()) else {
+            return false;
+        };
+        let directory = rest.strip_prefix('-').is_some_and(|rest| {
+            AF_DIRECTORY_PREFIXES.iter().any(|prefix| {
+                rest.strip_prefix(prefix).is_some_and(|after| {
+                    let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+                    digits > 0
+                        && after[digits..].strip_prefix('-').is_some_and(|random| {
+                            random
+                                .bytes()
+                                .next()
+                                .is_some_and(|b| b.is_ascii_alphanumeric())
+                                && random
+                                    .bytes()
+                                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                        })
+                })
             })
+        });
+        directory
+            || rest
+                .strip_prefix("--tmp")
+                .and_then(|rest| rest.strip_suffix("-tree"))
+                .is_some_and(|random| {
+                    !random.is_empty() && random.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                })
     })
 }
 
@@ -636,8 +647,9 @@ mod tests {
             "/var/folders/x/T",
         ))];
         for slug in [
-            "-tmp-af-sandbox-42-Ab3xYz-tree",
-            "-private-var-folders-x-T-af-check-9-q",
+            "-var-folders-x-T-af-sandbox-42-Ab3xYz",
+            "-var-folders-x-T-af-sandbox-42-Ab3xYz-tree",
+            "-var-folders-x-T-af-check-9-q",
             "-var-folders-x-T--tmpAb3xYz-tree",
         ] {
             assert!(is_af_project_slug(slug, &temp), "{slug}");
@@ -645,8 +657,13 @@ mod tests {
         for slug in [
             "-",
             "-Users-me-src-afactory",
+            // A user's own directory that only looks like af's is never af's.
+            "-Users-alice-src-af-sandbox-42-demo",
+            "-tmp-af-sandbox-42-Ab3xYz-tree",
+            "-var-folders-x-T-sub-af-sandbox-1-a",
             "-tmp--tmpAb3xYz-tree",
-            "-tmp-af-sandbox--tree",
+            "-var-folders-x-T-af-sandbox--tree",
+            "-var-folders-x-T-af-sandbox-42-",
             "-var-folders-x-T--tmpAb3xYz-tree-more",
         ] {
             assert!(!is_af_project_slug(slug, &temp), "{slug}");

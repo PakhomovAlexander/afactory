@@ -365,6 +365,66 @@ fn a_remote_pipeline_says_it_publishes_and_then_runs_through_the_gate_pull_reque
     assert!(done.get("gate_cleanups").is_none(), "{done}");
 }
 
+/// ADR-0144: the remote phase starts nothing below the machine's free-disk floor. The
+/// implementer fills the disk once it has written its candidate; the remote check is refused
+/// with `insufficient_disk`, and no gate branch is pushed and no pull request opened.
+#[test]
+fn below_the_floor_a_remote_check_is_refused_before_any_push() {
+    let fixture = fixture();
+    fixture.map("");
+    let free = fixture.root.join("free-bytes");
+    std::fs::write(&free, "1099511627776").unwrap();
+    let implementer = fixture.repo.join(".af/task-packages/fixture/implementer");
+    std::fs::write(
+        implementer.join("worker.py"),
+        format!(
+            "import json,sys\njson.load(sys.stdin)\n\
+             open('pagination.py','w').write('def paginate(items, offset=0, limit=2):\\n    return items[offset:offset+limit]\\n')\n\
+             open({:?},'w').write('0')\n\
+             print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'report':[{{'summary':'Implemented pagination'}}]}}}}))\n",
+            free.display().to_string()
+        ),
+    )
+    .unwrap();
+    let catalog_path = fixture.repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    catalog["packages"]["fixture/implementer"]["digest"] = toml::Value::String(
+        review_config::lock::package_digest("fixture/implementer", &implementer).unwrap(),
+    );
+    std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+    git(&fixture.repo, &["add", "-A"]);
+    git(
+        &fixture.repo,
+        &["commit", "-qm", "fill the disk after implementing"],
+    );
+    fixture
+        .settings
+        .borrow_mut()
+        .push(("AF_TEST_FREE_BYTES".into(), format!("@{}", free.display())));
+    let planned = fixture.plan_json(&fixture.state, TASK, REMOTE);
+    let plan_id = planned["plan_id"].as_str().unwrap();
+    let (_, stdout, stderr) = fixture.af(
+        &fixture.state,
+        &["task", "run", TASK, "--confirm-plan", plan_id, "--json"],
+    );
+    let bytes = fixture.store_bytes(&fixture.state);
+    assert!(
+        contains(&bytes, "\"insufficient_disk\""),
+        "no refused remote check\n{stdout}\n{stderr}"
+    );
+    let branches = git(
+        &fixture.bare,
+        &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+    );
+    assert_eq!(branches, "", "nothing was pushed");
+    let calls = std::fs::read_to_string(fixture.gh_state.join("calls.log")).unwrap_or_default();
+    assert!(
+        !calls.contains("pulls"),
+        "no pull request was read or opened: {calls}"
+    );
+}
+
 /// Run the remote twin of the fixture to a satisfied result, with the recorded GitHub documents
 /// of a passing run, and return the finished Task's `--json` document.
 fn run_remote_task(fixture: &Fixture, task_id: &str) -> Value {
