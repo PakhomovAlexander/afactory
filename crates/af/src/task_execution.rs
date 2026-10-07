@@ -2007,7 +2007,6 @@ fn execute(
     domain: &dyn TaskDomain,
 ) -> Result<(), String> {
     let cancellation = std::sync::atomic::AtomicBool::new(false);
-    crate::storage::note_work_started();
     let runtime = TaskRuntime::new(store, cas, lease.clone(), authority, host)?
         .with_cancellation(&cancellation);
     crate::interrupt::note_task(lease.task_id());

@@ -54,7 +54,9 @@ pub use cache::{
 pub use check_runtime::{CONTAINER_CHECK_RUNTIME, CheckRuntime};
 pub use container::{Availability, ContainerProvider};
 #[cfg(unix)]
-pub use removal::{Identity, open_anchor, open_beneath, remove_beneath, remove_tree_at};
+pub use removal::{
+    Identity, finish_abandoned_claims, open_anchor, open_beneath, remove_beneath, remove_tree_at,
+};
 pub use seal::{MutationSet, SealedSandbox};
 pub use stale::{
     SweepReport, attempt_directory, is_af_directory_name, remove_tree_nofollow,

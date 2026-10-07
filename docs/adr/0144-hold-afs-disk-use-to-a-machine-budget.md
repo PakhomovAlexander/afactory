@@ -66,7 +66,8 @@ remote check left two branches and a draft pull request open.
    review campaign Stores, finished Tasks of every Task Store (collected one at a time through the
    Store's own collection, so each keeps its tombstone), Stores this release cannot replay (removed
    whole), and installed versions. Sizes are allocated bytes, links not followed; a Store that
-   cannot be measured whole is a problem every sweep reports, never counted as empty; the files a
+   cannot be measured whole is a problem every sweep reports, never counted as empty, and a Task
+   Store whose Tasks cannot be listed is counted whole, kept, and reported; the files a
    reader creates (`-shm`, an empty `-wal`) never count as use. Inventory records each
    directory's identity (device and inode). Every removal the sweep, `af storage prune` and
    `af self uninstall --purge` make opens its target from a trusted anchor — the configured root
@@ -78,7 +79,13 @@ remote check left two branches and a draft pull request open.
    that removal fail and be reported; it is never followed. Every removal requires that measured
    identity: a warm key is compared with the key directory its lock holds open, and a directory
    whose identity was never measured is left. Inside the removed tree a symlink is unlinked as
-   the entry it is, never followed, so a Store or campaign that holds a link can still go.
+   the entry it is, never followed, so a Store or campaign that holds a link can still go. A
+   removal first claims the measured directory under a private name (`.af-removing-<pid>-…`) in
+   its parent, checks its identity there, empties it through its descriptor, checks the claim
+   again and unlinks it. What fails part way goes back to its name for a later sweep, and a claim
+   whose process died is finished by the next sweep. POSIX has no unlink by descriptor, so a
+   directory put at that unguessable private name between the last check and the unlink could
+   still go; only an empty one can, and that residual risk is accepted.
 4. **One sweep.** Collection first, when asked: gate leftovers of finished Tasks, finished Tasks
    beyond the newest `keep_tasks` of each Store, campaigns beyond the newest `keep_campaigns`, and
    unreadable Stores, each idle at least `keep_days`. A finished Task whose remote checks pushed
@@ -99,7 +106,8 @@ remote check left two branches and a draft pull request open.
    `af/TaskStorageSweep@1` inline (at most 256 removals and 64 failures listed, the rest counted;
    a sweep that removed nothing and failed nothing records nothing), which `af task show` prints
    as one line. Triggers: the end of every `af task run`, `af task start --execute` and `af
-   review run` whatever the outcome (the budget step; collection too only when `auto_gc` is on,
+   review run` whatever the outcome, a run refused before it started work included (the budget
+   step and the retry of pending gate cleanups; collection by age too only when `auto_gc` is on,
    which it is not by default; its failure is a warning) — an interrupted
    run is not an outcome: after `Ctrl-C` af stops promptly and leaves collection to the next run
    or `af storage prune --apply`, because a sweep can wait on GitHub for gate cleanups — a warm check
@@ -107,10 +115,13 @@ remote check left two branches and a draft pull request open.
    prune --apply`. An unchanged Task Store whose last collection
    found nothing to do before a known time is not planned again until then.
 5. **The free-disk floor.** Before a check, before each measurement repetition materializes its
-   sandbox, and before a Worker or Provider-probe Attempt starts, af reads the free bytes of every
+   sandbox, and before a Worker Attempt or a provider probe starts (a probe outside a run, such
+   as a standalone `af provider status`, has no budget installed and no floor), af reads the free
+   bytes of every
    volume it works on: the ones holding its temporary directory and `$XDG_CACHE_HOME`. Below
    `min_free_bytes` on any measured volume — even when another could not be measured — or with a
-   volume that cannot be measured at all, it sweeps once; still so, it refuses: a check is
+   volume that cannot be measured at all, it sweeps once (the same sweep as after a run: the
+   budget, and collection by age only when `auto_gc` is on); still so, it refuses: a check is
    `not_run` with reason `insufficient_disk: …`, a remote check is refused with the typed reason
    `insufficient_disk` before its private repository or any push, a measurement fails with the typed reason
    `insufficient_disk` without starting its command, and a Worker Attempt is released before it
@@ -162,7 +173,8 @@ remote check left two branches and a draft pull request open.
    uses the gate's own `gh` and `git` and never names another ref. A branch or pull request that differs is left in place and named in the reason of
    a failed cleanup. The result is one `gate_cleanup` transition carrying `af/TaskGateCleanup@1`
    inline: done, or failed with its redacted reason. It never changes the Task's result; a failed
-   one is retried by the next sweep while the mapping still names the repository;
+   one is retried by every applied sweep (after every run and by `af storage prune --apply`,
+   whatever `auto_gc` says) while the mapping still names the repository;
    `keep_gate_pull_requests` keeps everything. `af self uninstall --purge`
    also removes the af-made project directories in every registered Claude config directory and
    every registered Store, and lists the gate leftovers it could not reach.

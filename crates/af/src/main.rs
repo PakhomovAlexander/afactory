@@ -3869,7 +3869,6 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     // Held for the whole run: no sweep and no `af review gc` removes this campaign under it.
     // A run that cannot hold it does not start: unprotected, a sweep could remove its Store.
     let _running = storage::hold_running(&state)?;
-    storage::note_work_started();
     let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
     let mut store =
         EventStore::open(state.join("events.sqlite")).map_err(|error| error.to_string())?;

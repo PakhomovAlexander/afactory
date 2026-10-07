@@ -4158,6 +4158,10 @@ pub(crate) struct ProbeDirectory {
 impl ProbeDirectory {
     fn new(spec: &ProviderSpec) -> Result<Self, String> {
         use std::os::unix::fs::PermissionsExt;
+        // A probe is work like any Attempt: below the machine's free-disk floor it does not
+        // start (ADR-0144). Without an installed storage host (`af provider status` outside a
+        // run) there is no floor to hold, as for every other command that is not a run.
+        review_pipeline::storage::ensure_free_disk()?;
         let unusable =
             |error: std::io::Error| format!("cannot create the probe's working directory: {error}");
         let directory = review_sandbox::attempt_directory().map_err(unusable)?;

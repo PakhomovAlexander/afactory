@@ -525,13 +525,18 @@ impl TaskBuildCacheKeyLock {
                 }
             }
         }
-        match nix::unistd::unlinkat(
+        // The key goes through the same claim as every other removal: only the directory this
+        // lock holds open is unlinked, never one that took its name since (ADR-0144).
+        let identity = crate::Identity::of_descriptor(&*self.key)
+            .map_err(|error| format!("inspecting the toolchain key: {error}"))?;
+        match crate::removal::remove_tree_at(
             &self.project,
-            self.toolchain.as_str(),
-            UnlinkatFlags::RemoveDir,
+            std::ffi::OsStr::new(self.toolchain.as_str()),
+            Some(identity),
         ) {
-            Ok(()) | Err(Errno::ENOENT) => {}
-            Err(errno) => return Err(format!("removing the toolchain key: {errno}")),
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("removing the toolchain key: {error}")),
         }
         let record = format!("{}{SIZE_SUFFIX}", self.toolchain);
         match nix::unistd::unlinkat(&self.project, record.as_str(), UnlinkatFlags::NoRemoveDir) {

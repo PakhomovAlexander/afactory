@@ -16,7 +16,7 @@ pub(crate) mod gate;
 mod hint;
 pub(crate) mod registry;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -566,6 +566,28 @@ fn task_store(inventory: &mut Inventory, state: &Path) {
     let plan = match plan {
         Ok(plan) => plan,
         Err(reason) => {
+            // Its Tasks cannot be told apart, but its bytes are still on disk: counted, kept
+            // whole (nothing in it can be collected Task by Task), and reported.
+            let bytes = match review_sandbox::storage::allocated_bytes(state) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    inventory.problems.push(Problem {
+                        path: state.to_path_buf(),
+                        reason: format!("cannot be measured whole: {error}"),
+                    });
+                    0
+                }
+            };
+            inventory.entries.push(Entry {
+                kind: Kind::TaskStore,
+                path: state.to_path_buf(),
+                task_id: None,
+                bytes,
+                last_use_unix_ms: newest_store_write(state),
+                in_use: Some(format!("its Tasks cannot be listed: {reason}")),
+                reason: None,
+                identity: None,
+            });
             inventory.problems.push(Problem {
                 path: state.to_path_buf(),
                 reason,
@@ -701,6 +723,11 @@ pub(crate) fn sweep(
         registry_dropped: Vec::new(),
         failures: Vec::new(),
     };
+    if apply {
+        // Removals a process that died left claimed under a private name are finished first,
+        // so their bytes are neither lost from the count nor left behind (ADR-0144).
+        report.failures.extend(finish_abandoned_claims(roots));
+    }
     match drop_gone_registrations(roots, apply) {
         Ok(dropped) => report.registry_dropped = dropped,
         Err(error) => report.failures.push(error),
@@ -715,8 +742,19 @@ pub(crate) fn sweep(
             .iter()
             .map(|problem| format!("measuring {}: {}", problem.path.display(), problem.reason)),
     );
+    // Gate leftovers of finished Tasks are retried by every applied sweep, whatever the budget
+    // and whether age-based collection is on: the pull request and branches are GitHub's
+    // clutter, not something the budget weighs (ADR-0144).
+    let mut retried: BTreeMap<PathBuf, Vec<gate::Attempted>> = BTreeMap::new();
+    if apply && !policy.keep_gate_pull_requests {
+        for state in &stock.task_stores {
+            let tried = gate::retry_in_store(state);
+            report.gate_cleanups.extend(tried.iter().cloned());
+            retried.insert(state.clone(), tried);
+        }
+    }
     if collection {
-        collect(roots, policy, &mut stock, now, apply, &mut report);
+        collect(roots, policy, &mut stock, now, apply, &retried, &mut report);
         if apply {
             stock = inventory(roots, Detail::Stores);
         }
@@ -729,6 +767,13 @@ pub(crate) fn sweep(
             .map(|removal| (removal.path.clone(), removal.task_id.clone()))
             .collect();
         stock = inventory(roots, Detail::Tasks);
+        // Telling Tasks apart can meet problems the Store-level look did not: said too.
+        for problem in &stock.problems {
+            let line = format!("measuring {}: {}", problem.path.display(), problem.reason);
+            if !report.failures.contains(&line) {
+                report.failures.push(line);
+            }
+        }
         if !apply {
             // A preview keeps what its collection would have taken out of the count.
             stock
@@ -785,6 +830,39 @@ pub(crate) fn sweep(
     report
 }
 
+/// Finish the removals dead processes left claimed in every directory af removes entries from:
+/// each warm project level, the Workspaces, campaigns, local reviews, Task Stores and installed
+/// versions, and the parent of every registered Store. Returns why any claim was left.
+fn finish_abandoned_claims(roots: &Roots) -> Vec<String> {
+    let mut parents: Vec<PathBuf> = real_directories(&roots.warm);
+    parents.extend([
+        roots.workspaces.clone(),
+        roots.campaigns.clone(),
+        roots.local_reviews.clone(),
+        roots.tasks.clone(),
+        roots.installs.versions.clone(),
+    ]);
+    if let Ok(registered) = registry::read(&roots.registry) {
+        parents.extend(
+            registered
+                .iter()
+                .filter_map(|entry| entry.path.parent().map(Path::to_path_buf)),
+        );
+    }
+    parents.sort();
+    parents.dedup();
+    let mut left = Vec::new();
+    for parent in parents {
+        let (_, failures) = review_sandbox::finish_abandoned_claims(&parent);
+        left.extend(
+            failures
+                .into_iter()
+                .map(|failure| format!("finishing a removal in {}: {failure}", parent.display())),
+        );
+    }
+    left
+}
+
 fn drop_gone_registrations(roots: &Roots, apply: bool) -> Result<Vec<PathBuf>, String> {
     let holds = |entry: &registry::Registered| match entry.kind {
         StoreKind::Task | StoreKind::Review => has_store(&entry.path),
@@ -815,6 +893,7 @@ fn collect(
     stock: &mut Inventory,
     now: u64,
     apply: bool,
+    retried: &BTreeMap<PathBuf, Vec<gate::Attempted>>,
     report: &mut SweepReport,
 ) {
     let idle_ms = policy.keep_days.saturating_mul(DAY_MS);
@@ -834,11 +913,9 @@ fn collect(
         {
             continue;
         }
-        let mut tried = Vec::new();
-        if apply && !policy.keep_gate_pull_requests {
-            tried = gate::retry_in_store(state);
-            report.gate_cleanups.extend(tried.iter().cloned());
-        }
+        // This sweep already retried the Store's gate leftovers; a Task whose retry did not end
+        // done stays below.
+        let tried = retried.get(state).cloned().unwrap_or_default();
         let mut kept = Vec::new();
         let collected = (|| -> Result<Vec<(String, u64)>, String> {
             let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
@@ -1153,15 +1230,6 @@ pub(crate) fn report_to_stderr(report: &SweepReport) {
     }
 }
 
-/// Whether this process started Task or review work: a command refused before any (a malformed
-/// Task file, a plan that is not confirmed) has nothing to collect after.
-static WORK_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Note that this process started Task or review work, so its run ends with the sweep.
-pub(crate) fn note_work_started() {
-    WORK_STARTED.store(true, std::sync::atomic::Ordering::Release);
-}
-
 /// The Task the run that ends with the sweep executed — its Store and its ID — when it was one.
 static RUN_TASK: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
 
@@ -1319,9 +1387,6 @@ fn record_on_task(report: &SweepReport) {
 /// `[storage] auto_gc` is on (off by default: nothing a user still has room for goes by age
 /// alone). Its failure is a warning, never the command's.
 pub(crate) fn after_run() {
-    if !WORK_STARTED.load(std::sync::atomic::Ordering::Acquire) {
-        return;
-    }
     let outcome =
         policy().and_then(|policy| Ok(sweep(&Roots::current()?, &policy, policy.auto_gc, true)));
     match outcome {
@@ -1350,7 +1415,10 @@ impl review_pipeline::storage::StorageHost for MachineStorage {
         // One sweep per process: a second refusal right after it would find nothing new.
         static SWEPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !SWEPT.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            report_to_stderr(&sweep(&self.roots, &self.policy, true, true));
+            // The same sweep as after a run: the budget, and collection by age only when the
+            // operator turned it on. A disk that is full for other reasons is not a licence to
+            // delete what af keeps by age.
+            report_to_stderr(&sweep(&self.roots, &self.policy, self.policy.auto_gc, true));
         }
         judge_floor(&volumes(), floor)
     }

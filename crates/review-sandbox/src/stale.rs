@@ -85,7 +85,7 @@ fn owner_pid(name: &str) -> Option<u32> {
 }
 
 #[cfg(unix)]
-fn process_exists(pid: u32) -> bool {
+pub(crate) fn process_exists(pid: u32) -> bool {
     use nix::errno::Errno;
     use nix::sys::signal::kill;
     use nix::unistd::Pid;
@@ -99,7 +99,7 @@ fn process_exists(pid: u32) -> bool {
 }
 
 #[cfg(not(unix))]
-fn process_exists(_pid: u32) -> bool {
+pub(crate) fn process_exists(_pid: u32) -> bool {
     true
 }
 

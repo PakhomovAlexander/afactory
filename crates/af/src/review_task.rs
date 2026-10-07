@@ -548,7 +548,6 @@ fn execute_current(
                     &NoTaskDeveloper,
                 );
                 if !closed {
-                    crate::storage::note_work_started();
                     let runtime = TaskRuntime::with_store(
                         shared.clone(),
                         cas,

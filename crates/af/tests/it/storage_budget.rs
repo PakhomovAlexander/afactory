@@ -187,6 +187,33 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
     assert!(stdout.contains("run with --apply"), "{stdout}");
 }
 
+/// ADR-0144: every `af task run` ends with the budget step, one refused before it started work
+/// included; with `auto_gc` off it evicts only while af holds more than the budget.
+#[test]
+fn a_run_refused_before_any_work_still_holds_af_to_its_budget() {
+    let machine = Machine::new();
+    let old = warm_key(&machine, '4', 600 * 1024, 3 * DAY);
+    let newer = warm_key(&machine, '5', 600 * 1024, 2 * DAY);
+    // A Task that does not exist: refused before any work, as a malformed Task file would be.
+    let refused = machine.af(
+        &machine.root,
+        &[("AF_STORAGE__MAX_BYTES", "1MiB")],
+        &["task", "run", "no-such-task", "--execute"],
+    );
+    let (stdout, stderr) = text(&refused);
+    assert!(!refused.status.success(), "{stdout}\n{stderr}");
+    assert!(!old.exists(), "the least recently used key went\n{stderr}");
+    assert!(newer.exists(), "af fits once the older key is gone");
+    // Within the budget the same refused run removes nothing.
+    let refused = machine.af(
+        &machine.root,
+        &[],
+        &["task", "run", "no-such-task", "--execute"],
+    );
+    assert!(!refused.status.success());
+    assert!(newer.exists());
+}
+
 #[test]
 fn a_repository_storage_table_changes_nothing_and_is_reported_as_ignored() {
     let machine = Machine::new();

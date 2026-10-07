@@ -164,9 +164,75 @@ pub fn remove_tree_at(
             name.to_string_lossy()
         )));
     }
-    crate::stale::remove_children_nofollow(&mut directory, 0).map_err(io::Error::from)?;
+    if let Err(errno) = crate::stale::remove_children_nofollow(&mut directory, 0) {
+        // What is left goes back to its name, so a later inventory sees it and tries again.
+        let _ = renameat(&parent, claimed.as_str(), &parent, name);
+        return Err(io::Error::from(errno));
+    }
     drop(directory);
+    // The claimed name is checked once more right before it is unlinked. POSIX has no unlink by
+    // descriptor, so a directory put at this private name in the instant between the two could
+    // still go; only an empty one can (`unlinkat` removes no other), and nothing af or a user
+    // works with is ever named like a claim (ADR-0144).
+    let still = nix::sys::stat::fstatat(
+        &parent,
+        claimed.as_str(),
+        nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
+    )
+    .map_err(io::Error::from)?;
+    #[allow(clippy::unnecessary_cast)]
+    let still = Identity {
+        device: still.st_dev as u64,
+        inode: still.st_ino as u64,
+    };
+    if still != found {
+        return Err(io::Error::other(format!(
+            "`{}` changed while it was being removed; what holds its claim is left",
+            name.to_string_lossy()
+        )));
+    }
     unlinkat(&parent, claimed.as_str(), UnlinkatFlags::RemoveDir).map_err(io::Error::from)
+}
+
+/// Whether `name` is a claim [`remove_tree_at`] makes, and the pid of the process that made it.
+fn claim_owner(name: &str) -> Option<u32> {
+    name.strip_prefix(".af-removing-")?
+        .split('-')
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Finish the removals a process that has since died left claimed in `parent`: every
+/// `.af-removing-<pid>-…` directory whose process is gone is removed through
+/// [`remove_tree_at`]. A claim of a live process is its own business and stays. Returns the
+/// names it removed and why each other one was left.
+pub fn finish_abandoned_claims(parent: &Path) -> (Vec<String>, Vec<String>) {
+    let mut removed = Vec::new();
+    let mut left = Vec::new();
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return (removed, left);
+    };
+    let Ok(anchor) = open_anchor(parent) else {
+        return (removed, left);
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(claim_owner) else {
+            continue;
+        };
+        if crate::stale::process_exists(pid) {
+            continue;
+        }
+        let Ok(identity) = Identity::of(&entry.path()) else {
+            continue;
+        };
+        match remove_tree_at(&anchor, &name, Some(identity)) {
+            Ok(()) => removed.push(name.to_string_lossy().into_owned()),
+            Err(error) => left.push(format!("{}: {error}", name.to_string_lossy())),
+        }
+    }
+    (removed, left)
 }
 
 /// A private name for a directory being removed: hidden, unique to this process and call, and
