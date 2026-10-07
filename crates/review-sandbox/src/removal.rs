@@ -220,8 +220,8 @@ fn claim_owner(name: &str) -> Option<u32> {
 /// Finish the removals a process that has since died left claimed in `parent`: every
 /// `.af-removing-<pid>-…` directory whose process is gone is removed through
 /// [`remove_tree_at`]. A claim of a live process is its own business and stays. Returns the
-/// names it removed and why each other one was left.
-pub fn finish_abandoned_claims(parent: &Path) -> (Vec<String>, Vec<String>) {
+/// names it removed with the bytes each held, and why each other one was left.
+pub fn finish_abandoned_claims(parent: &Path) -> (Vec<(String, u64)>, Vec<String>) {
     let mut removed = Vec::new();
     let mut left = Vec::new();
     let Ok(entries) = std::fs::read_dir(parent) else {
@@ -241,8 +241,9 @@ pub fn finish_abandoned_claims(parent: &Path) -> (Vec<String>, Vec<String>) {
         let Ok(identity) = Identity::of(&entry.path()) else {
             continue;
         };
+        let bytes = crate::storage::allocated_bytes(&entry.path()).unwrap_or(0);
         match remove_tree_at(&anchor, &name, Some(identity)) {
-            Ok(()) => removed.push(name.to_string_lossy().into_owned()),
+            Ok(()) => removed.push((name.to_string_lossy().into_owned(), bytes)),
             Err(error) => left.push(format!("{}: {error}", name.to_string_lossy())),
         }
     }
@@ -334,7 +335,8 @@ mod tests {
         std::fs::create_dir_all(parent.join(".af-removing-999999999-1-0/inner")).unwrap();
         std::fs::create_dir(parent.join("neighbour")).unwrap();
         let (removed, _) = finish_abandoned_claims(&parent);
-        assert_eq!(removed, [".af-removing-999999999-1-0".to_string()]);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].0, ".af-removing-999999999-1-0");
         assert!(parent.join("neighbour").is_dir());
     }
 

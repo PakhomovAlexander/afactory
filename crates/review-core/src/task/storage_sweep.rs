@@ -30,6 +30,8 @@ pub enum StorageSweepKindV1 {
     Task,
     UnreadableStore,
     Version,
+    /// A removal a process that died left claimed under a private name, finished.
+    Claim,
 }
 
 /// Which rule took an entry.
@@ -40,6 +42,8 @@ pub enum StorageSweepRuleV1 {
     Collection,
     /// Least recently used while af held more than `max_bytes`.
     Budget,
+    /// The finish of a removal a process that died left claimed.
+    Recovery,
 }
 
 /// Why the budget step stopped.

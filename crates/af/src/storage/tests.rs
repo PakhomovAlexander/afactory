@@ -441,7 +441,7 @@ fn an_entry_that_changed_since_inventory_is_refused_and_reported() {
     // Another directory now holds the name.
     std::fs::rename(&measured, layout.root.join("moved-campaign")).unwrap();
     std::fs::create_dir_all(measured.join("someone-elses")).unwrap();
-    let error = evict(&layout.roots, &policy(u64::MAX), &entry).unwrap_err();
+    let error = evict(&layout.roots, &policy(u64::MAX), &stock, &entry).unwrap_err();
     assert!(
         error.contains("not the directory that was measured"),
         "{error}"
@@ -465,7 +465,7 @@ fn a_version_made_the_default_after_inventory_is_kept() {
     // `af self` makes it the default between inventory and eviction.
     std::fs::create_dir_all(layout.roots.installs.bin.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(old.join("af"), &layout.roots.installs.bin).unwrap();
-    let error = evict(&layout.roots, &policy(1), &entry).unwrap_err();
+    let error = evict(&layout.roots, &policy(1), &stock, &entry).unwrap_err();
     assert!(error.contains("became the default version"), "{error}");
     assert!(old.join("af").is_file(), "kept");
     // A version that stays unprotected is removed under the same lock.
@@ -476,7 +476,7 @@ fn a_version_made_the_default_after_inventory_is_kept() {
         .iter()
         .find(|entry| entry.path == other)
         .unwrap();
-    evict(&layout.roots, &policy(1), entry).unwrap();
+    evict(&layout.roots, &policy(1), &stock, entry).unwrap();
     assert!(!other.exists());
 }
 
@@ -643,4 +643,28 @@ fn a_store_still_being_created_is_no_collection_failure() {
         observation(&report).is_none(),
         "nothing to record on a Task"
     );
+}
+
+#[test]
+fn a_removal_a_dead_process_left_claimed_is_finished_and_reported_by_the_sweep() {
+    let layout = layout();
+    let claim = layout.roots.campaigns.join(".af-removing-999999999-7-0");
+    std::fs::create_dir_all(claim.join("cas")).unwrap();
+    std::fs::write(claim.join("cas/object"), vec![1_u8; 64 * 1024]).unwrap();
+    let report = sweep(&layout.roots, &policy(20 << 30), false, true);
+    assert!(!claim.exists(), "the claim is finished");
+    let [removal] = report.removals.as_slice() else {
+        panic!("one removal: {:?}", report.removals);
+    };
+    assert_eq!(removal.kind, Kind::Claim);
+    assert_eq!(removal.rule, Rule::Recovery);
+    assert_eq!(removal.path, claim);
+    assert!(removal.bytes >= 64 * 1024, "{}", removal.bytes);
+    assert!(
+        report.total_before >= removal.bytes,
+        "counted in the total it had"
+    );
+    let recorded = observation(&report)
+        .unwrap_or_else(|| panic!("a sweep that removed something is recorded: {report:?}"));
+    assert_eq!(recorded.removals.len(), 1);
 }

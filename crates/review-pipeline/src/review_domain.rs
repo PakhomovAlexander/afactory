@@ -339,6 +339,33 @@ impl<'a> ReviewDomainState<'a> {
                     .remove(&identity);
             }
         }
+        // Below the machine's free-disk floor no check of this Gate starts, and nothing is
+        // prepared for them: no sandbox, no cache, no runtime (ADR-0144).
+        if let Err(refusal) = crate::storage::ensure_free_disk() {
+            let mut results = Vec::with_capacity(self.checks.len());
+            for check in &self.checks {
+                results.push(self.refused_below_floor(node_id, check, &refusal)?);
+            }
+            let decision = GateDecision::evaluate(&results);
+            let artifact = self
+                .cas
+                .put_json(&serde_json::to_value(&decision).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+            self.buffer_reviewer_event(
+                node_id,
+                NewEvent::new(
+                    EventType::GateDecisionV1,
+                    serde_json::to_value(&decision).map_err(|e| e.to_string())?,
+                )
+                .node(node_id)
+                .referencing(vec![artifact.clone()]),
+            );
+            self.gates
+                .lock()
+                .expect("gates")
+                .insert(node_id.to_string(), decision);
+            return Ok(vec![artifact]);
+        }
         let (sandbox, container, require_unchanged) = match self.gate_execution.as_ref() {
             None => {
                 // Pipeline format v2 semantics. Those Campaigns captured no Gate Execution
@@ -617,6 +644,12 @@ impl<'a> ReviewDomainState<'a> {
         let mut results = Vec::with_capacity(self.checks.len());
         for check in &self.checks {
             crate::task::control::check(cancellation)?;
+            // Read again before this check's runtime is made: an earlier check may have used
+            // the room (ADR-0144).
+            if let Err(refusal) = crate::storage::ensure_free_disk() {
+                results.push(self.refused_below_floor(node_id, check, &refusal)?);
+                continue;
+            }
             let runtime = review_sandbox::CheckRuntime::new().map_err(|e| e.to_string())?;
             let mut runner = CheckRunner::new(self.cas, sandbox.root())
                 .with_timeout(gate_remaining(self.check_timeout, deadline)?)
@@ -774,6 +807,45 @@ impl<'a> ReviewDomainState<'a> {
             .expect("gates")
             .insert(node_id.to_string(), decision);
         Ok(vec![artifact])
+    }
+
+    /// A Gate check refused below the machine's free-disk floor: `not_run` with the refusal,
+    /// recorded with its span and event like a check that ran, and nothing prepared for it.
+    fn refused_below_floor(
+        &self,
+        node_id: &str,
+        check: &review_check::CheckDefinition,
+        refusal: &str,
+    ) -> Result<review_check::CheckResult, String> {
+        let result = review_check::CheckResult::not_run(check, refusal.to_string());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis() as u64);
+        let span_id = self
+            .cas
+            .put_json(&serde_json::json!([
+                self.run_id,
+                node_id,
+                "check",
+                check.name,
+                now,
+                0
+            ]))
+            .map_err(|error| error.to_string())?;
+        self.runtime_spans
+            .lock()
+            .expect("runtime spans")
+            .entry(node_id.to_string())
+            .or_default()
+            .push(review_core::task::runtime::TaskRuntimeSpanV1 {
+                span_id,
+                kind: review_core::task::runtime::TaskRuntimeSpanKindV1::Check,
+                label: check.name.clone(),
+                started_unix_ms: now,
+                elapsed_ms: 0,
+            });
+        self.buffer_reviewer_event(node_id, check_event(&result, node_id));
+        Ok(result)
     }
 
     pub(super) fn run_slicer(&self, node: &Node) -> Result<Vec<String>, String> {

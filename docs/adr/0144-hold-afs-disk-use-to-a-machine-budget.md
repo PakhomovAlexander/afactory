@@ -84,7 +84,8 @@ remote check left two branches and a draft pull request open.
    its parent, checks its identity there, empties it through its descriptor, checks the claim
    again and unlinks it. What fails part way stays under its claim (renaming it back could
    replace whatever took the name since), and a claim whose process died is finished by the next
-   sweep, in af's roots, the temporary directory and every registered Claude config directory.
+   sweep, in af's roots, the temporary directory and every registered Claude config directory,
+   and reported like any removal (kind `claim`, rule `recovery`), counted in the sweep's totals.
    The same claimed, identity-bound removal serves a check runtime when its check ends, the crash
    sweep of `af-sandbox-*` and `af-check-*` directories, and a Claude Attempt's or probe's
    project directory, each measured when it is chosen. A campaign or Workspace is held by an
@@ -102,7 +103,8 @@ remote check left two branches and a draft pull request open.
    --apply` alike — only once a gate cleanup for it is recorded done: collection runs the cleanup
    first, and a Task whose cleanup does not end done stays for the next sweep, unless
    `keep_gate_pull_requests` keeps everything. Then the budget: while af holds more than
-   `max_bytes`, the least recently used entry goes. Never an entry in use (a held lock, a live
+   `max_bytes`, the least recently used entry goes, and what each removal freed is measured (a
+   Task's collection can free more than its own bytes), so the step stops as soon as af fits. Never an entry in use (a held lock, a live
    writer lease, a running `af review run`, the default or a pinned version, the running binary)
    and never one used within the last hour. An installed version's protection is read again
    immediately before its removal, under the versions lock `af self` holds while it changes the
@@ -132,8 +134,9 @@ remote check left two branches and a draft pull request open.
    volume that cannot be measured at all, it sweeps (every time the floor is met, since what
    became evictable since the last one may restore the room; the same sweep as after a run: the
    budget, and collection by age only when `auto_gc` is on); still so, it refuses before anything
-   is prepared for the work (a check gets no sandbox and no runtime), and once more right before a
-   check starts, after what its preparation wrote: a check is
+   is prepared for the work (a Task check, a review Gate or a post-apply check gets no sandbox, no
+   cache and no runtime), and once more right before a check or a measurement's command starts,
+   after what its preparation wrote: a check is
    `not_run` with reason `insufficient_disk: …`, a remote check is refused with the typed reason
    `insufficient_disk` before its private repository or any push, a measurement fails with the typed reason
    `insufficient_disk` without starting its command, and a Worker Attempt is released before it

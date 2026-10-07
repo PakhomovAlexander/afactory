@@ -635,6 +635,36 @@ impl IntegrationCheckSequence<'_> {
         let outcome = (|| -> Result<IntegrationChecksV1, String> {
             crate::task::control::check(cancellation)?;
             integration_remaining(self.check_timeout, deadline)?;
+            let selected: BTreeSet<_> = policy
+                .post_apply_checks
+                .iter()
+                .map(String::as_str)
+                .collect();
+            // Below the machine's free-disk floor no post-apply check starts, and nothing is
+            // prepared for them: no template, no sandbox, no runtime (ADR-0144).
+            if let Err(refusal) = crate::storage::ensure_free_disk() {
+                let mut checks = Vec::new();
+                for definition in self
+                    .checks
+                    .iter()
+                    .filter(|definition| selected.contains(definition.name.as_str()))
+                {
+                    let result = review_check::CheckResult::not_run(definition, refusal.clone());
+                    let result_artifact_id = record_integration_check(self.cas, &result)?;
+                    result_artifact_ids.push(result_artifact_id.clone());
+                    checks.push(IntegrationCheckV1 {
+                        name: result.name,
+                        passed: false,
+                        result_artifact_id,
+                    });
+                }
+                let checks = IntegrationChecksV1 {
+                    derived_snapshot_id: derived_snapshot_id.into(),
+                    checks,
+                };
+                checks.validate()?;
+                return Ok(checks);
+            }
             let template = review_sandbox::SandboxTemplate::materialize(manifest, self.cas)
                 .map_err(|error| error.to_string())?;
             let binding = self.binding;
@@ -677,11 +707,6 @@ impl IntegrationCheckSequence<'_> {
             // only bind (ADR-0144).
             let container = container.map(ContainerProvider::with_check_runtime);
             let rustup = crate::task::warm_check::RustupHome::of_kernel();
-            let selected: BTreeSet<_> = policy
-                .post_apply_checks
-                .iter()
-                .map(String::as_str)
-                .collect();
             let mut checks = Vec::new();
             for definition in self
                 .checks
@@ -689,6 +714,19 @@ impl IntegrationCheckSequence<'_> {
                 .filter(|definition| selected.contains(definition.name.as_str()))
             {
                 crate::task::control::check(cancellation)?;
+                // Read again before this check's runtime is made: an earlier check, or the
+                // sandbox, may have used the room (ADR-0144).
+                if let Err(refusal) = crate::storage::ensure_free_disk() {
+                    let result = review_check::CheckResult::not_run(definition, refusal);
+                    let result_artifact_id = record_integration_check(self.cas, &result)?;
+                    result_artifact_ids.push(result_artifact_id.clone());
+                    checks.push(IntegrationCheckV1 {
+                        name: result.name,
+                        passed: false,
+                        result_artifact_id,
+                    });
+                    continue;
+                }
                 // Each check's own HOME, TMPDIR, AF_CHECK_SCRATCH and XDG_CACHE_HOME, created
                 // empty here and removed when it ends.
                 let runtime = review_sandbox::CheckRuntime::new().map_err(|e| e.to_string())?;

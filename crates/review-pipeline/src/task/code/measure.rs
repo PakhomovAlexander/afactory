@@ -344,6 +344,26 @@ impl CodeTaskDomain {
                 "the measure Attempt's deadline ran out while its warm layer was prepared",
             ));
         }
+        // Preparation (the sandbox, a Cache Snapshot copy, a warm layer) spent disk: the floor is
+        // read again right before the command would start (ADR-0144).
+        if let Err(refusal) = crate::storage::ensure_free_disk() {
+            if let (Some(session), Some(prepared)) = (session, prepared) {
+                session.finish(prepared.key_lock, prepared.directories, None)?;
+            }
+            return Ok(Repetition::Failed(
+                MeasurementRunV1 {
+                    started_unix_ms: started,
+                    elapsed_ms: 0,
+                    exit_code: None,
+                    stdout_id: None,
+                    stderr_id: None,
+                    cache: None,
+                    metrics: BTreeMap::new(),
+                },
+                MeasurementFailureReasonV1::InsufficientDisk,
+                refusal,
+            ));
+        }
         let timeout_ms = definition.wall_ms.min(remaining);
         let runner = runner.with_timeout(Duration::from_millis(timeout_ms));
         let runner = match &prepared {

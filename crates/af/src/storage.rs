@@ -113,6 +113,9 @@ pub(crate) enum Kind {
     TaskStore,
     UnreadableStore,
     Version,
+    /// A removal a process that died left claimed under a private name: never inventoried, only
+    /// finished and reported.
+    Claim,
 }
 
 impl Kind {
@@ -135,6 +138,7 @@ impl Kind {
             Kind::TaskStore => "task_store",
             Kind::UnreadableStore => "unreadable_store",
             Kind::Version => "version",
+            Kind::Claim => "claim",
         }
     }
 
@@ -147,6 +151,7 @@ impl Kind {
             Kind::TaskStore => "Task Stores (rest)",
             Kind::UnreadableStore => "unreadable Stores",
             Kind::Version => "installed versions",
+            Kind::Claim => "finished removals",
         }
     }
 }
@@ -770,6 +775,8 @@ pub(crate) enum Rule {
     Collection,
     /// Least recently used while af held more than `max_bytes`.
     Budget,
+    /// The finish of a removal a process that died left claimed.
+    Recovery,
 }
 
 /// One entry a sweep removed, or would remove.
@@ -840,14 +847,26 @@ pub(crate) fn sweep(
     if apply {
         // Removals a process that died left claimed under a private name are finished first,
         // so their bytes are neither lost from the count nor left behind (ADR-0144).
-        report.failures.extend(finish_abandoned_claims(roots));
+        let (finished, left) = finish_abandoned_claims(roots);
+        // Bytes that were af's until this moment: counted, and said, like any removal.
+        for (path, bytes) in finished {
+            report.total_before = report.total_before.saturating_add(bytes);
+            report.removals.push(Removal {
+                kind: Kind::Claim,
+                path,
+                task_id: None,
+                bytes,
+                rule: Rule::Recovery,
+            });
+        }
+        report.failures.extend(left);
     }
     match drop_gone_registrations(roots, apply) {
         Ok(dropped) => report.registry_dropped = dropped,
         Err(error) => report.failures.push(error),
     }
     let mut stock = inventory(roots, Detail::Stores);
-    report.total_before = stock.total();
+    report.total_before = report.total_before.saturating_add(stock.total());
     // What could not be measured is said with the result: a total that fits the budget is only
     // as complete as the inventory behind it.
     report.failures.extend(
@@ -926,18 +945,22 @@ pub(crate) fn sweep(
             break;
         };
         let removed = if apply {
-            evict(roots, policy, entry)
+            evict(roots, policy, &stock, entry)
         } else {
             Ok(entry.bytes)
         };
         match removed {
-            Ok(_) => {
-                total = total.saturating_sub(entry.bytes);
+            // What the removal freed, measured: a Task's collection can free more than the
+            // Task's own bytes, and the loop stops as soon as af fits.
+            Ok(freed) => {
+                // At least what inventory measured is gone; a Task's collection may free more.
+                let freed = freed.max(entry.bytes);
+                total = total.saturating_sub(freed);
                 report.removals.push(Removal {
                     kind: entry.kind,
                     path: entry.path.clone(),
                     task_id: entry.task_id.clone(),
-                    bytes: entry.bytes,
+                    bytes: freed,
                     rule: Rule::Budget,
                 });
             }
@@ -950,8 +973,9 @@ pub(crate) fn sweep(
 
 /// Finish the removals dead processes left claimed in every directory af removes entries from:
 /// each warm project level, the Workspaces, campaigns, local reviews, Task Stores and installed
-/// versions, and the parent of every registered Store. Returns why any claim was left.
-fn finish_abandoned_claims(roots: &Roots) -> Vec<String> {
+/// versions, and the parent of every registered Store. Returns each claim it finished with its
+/// bytes, and why any claim was left.
+fn finish_abandoned_claims(roots: &Roots) -> (Vec<(PathBuf, u64)>, Vec<String>) {
     let mut parents: Vec<PathBuf> = real_directories(&roots.warm);
     parents.extend([
         roots.workspaces.clone(),
@@ -975,16 +999,22 @@ fn finish_abandoned_claims(roots: &Roots) -> Vec<String> {
     );
     parents.sort();
     parents.dedup();
+    let mut finished = Vec::new();
     let mut left = Vec::new();
     for parent in parents {
-        let (_, failures) = review_sandbox::finish_abandoned_claims(&parent);
+        let (removed, failures) = review_sandbox::finish_abandoned_claims(&parent);
+        finished.extend(
+            removed
+                .into_iter()
+                .map(|(name, bytes)| (parent.join(name), bytes)),
+        );
         left.extend(
             failures
                 .into_iter()
                 .map(|failure| format!("finishing a removal in {}: {failure}", parent.display())),
         );
     }
-    left
+    (finished, left)
 }
 
 fn drop_gone_registrations(roots: &Roots, apply: bool) -> Result<Vec<PathBuf>, String> {
@@ -1142,7 +1172,7 @@ fn collect(
             continue;
         }
         match if apply {
-            evict(roots, policy, entry)
+            evict(roots, policy, stock, entry)
         } else {
             Ok(entry.bytes)
         } {
@@ -1168,7 +1198,7 @@ fn collect(
             continue;
         }
         match if apply {
-            evict(roots, policy, entry)
+            evict(roots, policy, stock, entry)
         } else {
             Ok(entry.bytes)
         } {
@@ -1192,7 +1222,12 @@ fn collect(
 }
 
 /// Remove one entry through the rule that owns it. Returns the bytes removed.
-fn evict(roots: &Roots, policy: &StoragePolicy, entry: &Entry) -> Result<u64, String> {
+fn evict(
+    roots: &Roots,
+    policy: &StoragePolicy,
+    stock: &Inventory,
+    entry: &Entry,
+) -> Result<u64, String> {
     let failed = |error: String| format!("removing {}: {error}", entry.path.display());
     match entry.kind {
         Kind::WarmKey => {
@@ -1235,11 +1270,14 @@ fn evict(roots: &Roots, policy: &StoragePolicy, entry: &Entry) -> Result<u64, St
             }
         }
         Kind::Workspace => {
+            // Not even its lock file is touched unless it is still the measured directory.
+            still_measured(entry).map_err(failed)?;
             // Held exclusively until it is gone: no run clones from it in between.
             let _held = review_sandbox::hold_workspace_for_removal(&entry.path).map_err(failed)?;
             remove_entry(roots, entry).map_err(failed)
         }
         Kind::Campaign => {
+            still_measured(entry).map_err(failed)?;
             // Held exclusively until it is gone: no `af review run` starts on it in between.
             let _held = hold_campaign_for_removal(&entry.path).map_err(failed)?;
             remove_entry(roots, entry).map_err(failed)
@@ -1272,6 +1310,9 @@ fn evict(roots: &Roots, policy: &StoragePolicy, entry: &Entry) -> Result<u64, St
                 .task_id
                 .clone()
                 .ok_or_else(|| failed("names no Task".into()))?;
+            // Only the Store inventory reached: a path that now leads through a link, or names
+            // another Store, is left (ADR-0144).
+            stock.still_the_store(&entry.path).map_err(failed)?;
             // A Task whose gate leftovers are not cleaned up is never collected before they are.
             gate::before_collection(&entry.path, &task_id, policy.keep_gate_pull_requests)
                 .map_err(failed)?;
@@ -1279,16 +1320,41 @@ fn evict(roots: &Roots, policy: &StoragePolicy, entry: &Entry) -> Result<u64, St
                 Cas::open_existing(entry.path.join("cas")).map_err(|e| failed(e.to_string()))?;
             let mut store = EventStore::open(entry.path.join("events.sqlite"))
                 .map_err(|e| failed(e.to_string()))?;
+            let before = review_sandbox::storage::allocated_bytes(&entry.path).ok();
             let outcome = store
                 .apply_task_collection_of(&cas, &BTreeSet::from([task_id.clone()]))
                 .map_err(|e| failed(e.to_string()))?;
             if outcome.tombstoned.contains(&task_id) {
-                Ok(entry.bytes)
+                // Collection also sweeps whatever no Task reaches any more, an interrupted
+                // earlier collection's leftovers included: what the Store freed is measured.
+                let after = review_sandbox::storage::allocated_bytes(&entry.path).ok();
+                Ok(match (before, after) {
+                    (Some(before), Some(after)) => before.saturating_sub(after).max(entry.bytes),
+                    _ => entry.bytes,
+                })
             } else {
                 Err(failed(format!("Task `{task_id}` is protected now")))
             }
         }
         Kind::TaskStore => Err(failed("a Task Store is never removed whole".into())),
+        Kind::Claim => Err(failed(
+            "a claim is finished by recovery, never evicted".into(),
+        )),
+    }
+}
+
+/// Whether an entry's path still names the directory inventory measured, before anything (a
+/// lock file) is written into it. The removal checks again through descriptors.
+fn still_measured(entry: &Entry) -> Result<(), String> {
+    let measured = entry
+        .identity
+        .ok_or("its identity was not measured, so it is not removed")?;
+    match review_sandbox::Identity::of(&entry.path) {
+        Ok(now) if now == measured => Ok(()),
+        Ok(_) => {
+            Err("it is not the directory that was measured; it changed since and is left".into())
+        }
+        Err(error) => Err(format!("inspecting it: {error}")),
     }
 }
 
@@ -1337,6 +1403,7 @@ pub(crate) fn report_to_stderr(report: &SweepReport) {
             match removal.rule {
                 Rule::Collection => "collection",
                 Rule::Budget => "budget",
+                Rule::Recovery => "recovery",
             }
         );
     }
@@ -1414,6 +1481,7 @@ pub(crate) fn observation(
                 Kind::Task => StorageSweepKindV1::Task,
                 Kind::UnreadableStore => StorageSweepKindV1::UnreadableStore,
                 Kind::Version => StorageSweepKindV1::Version,
+                Kind::Claim => StorageSweepKindV1::Claim,
                 Kind::TaskStore => return None,
             };
             let path = removal.path.to_str()?.to_string();
@@ -1426,6 +1494,7 @@ pub(crate) fn observation(
                     rule: match removal.rule {
                         Rule::Collection => StorageSweepRuleV1::Collection,
                         Rule::Budget => StorageSweepRuleV1::Budget,
+                        Rule::Recovery => StorageSweepRuleV1::Recovery,
                     },
                 }
             })
@@ -2019,6 +2088,7 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
             match removal.rule {
                 Rule::Collection => "collection",
                 Rule::Budget => "budget",
+                Rule::Recovery => "recovery",
             }
         );
     }

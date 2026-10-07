@@ -62,7 +62,8 @@
               "campaign",
               "task",
               "unreadable_store",
-              "version"
+              "version",
+              "claim"
             ]
           },
           "path": {
@@ -79,7 +80,8 @@
           "rule": {
             "enum": [
               "collection",
-              "budget"
+              "budget",
+              "recovery"
             ]
           }
         }
