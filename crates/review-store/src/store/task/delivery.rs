@@ -592,6 +592,17 @@ impl EventStore {
         self.task_change(cas, lease, TaskChangeV1::GateCleanup { cleanup }, now()?)
     }
 
+    /// Record what the Storage Budget's sweep at the end of a run of this Task removed
+    /// (ADR-0144), inline: it references no artifact and changes nothing the Task concluded.
+    pub fn record_task_storage_sweep(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        sweep: review_core::task::storage_sweep::TaskStorageSweepV1,
+    ) -> Result<RunEvent, StoreError> {
+        self.task_change(cas, lease, TaskChangeV1::StorageSweep { sweep }, now()?)
+    }
+
     pub fn record_task_adoption_observation(
         &mut self,
         cas: &Cas,

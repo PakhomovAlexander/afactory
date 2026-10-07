@@ -156,18 +156,23 @@ repository's .af/af.toml cannot set it:
 
   [storage]
   max_bytes = \"20GiB\"          the budget; integer bytes or a number with B, KiB, MiB, GiB, TiB
-  min_free_bytes = \"10GiB\"     below this free space, checks and Worker Attempts are refused
-                               with insufficient_disk before any token is spent
+  min_free_bytes = \"10GiB\"     below this free space on any volume af works on, or when it
+                               cannot be measured, checks, measurement repetitions and Worker
+                               Attempts are refused with insufficient_disk before any token is
+                               spent
   auto_gc = true               collect after every `af task run` and `af review run`
   keep_days = 14               collection never takes anything used in the last keep_days
   keep_tasks = 20              newest finished Tasks kept per Store
   keep_campaigns = 20          newest review campaigns kept
-  keep_worker_transcripts = false   keep each Claude Worker Attempt's history in its config dir
+  keep_worker_transcripts = false   keep the history each Claude Worker Attempt and provider
+                                    probe leaves in its config dir
   keep_gate_pull_requests = false   leave a finished Task's gate pull request and branches open
 
 Every check gets its own empty HOME, TMPDIR, AF_CHECK_SCRATCH and XDG_CACHE_HOME, removed after
 it: write scratch files there, never to /tmp. A Store made with --state is recorded in
-$XDG_STATE_HOME/af/stores.toml so collection reaches it.";
+$XDG_STATE_HOME/af/stores.toml so collection reaches it. A Task whose gate leftovers are not
+cleaned up yet is never collected. The sweep that ends `af task run` is recorded on that Task:
+`af task show` prints its `storage sweep:` line.";
 
 const SELF_TOPIC: &str = "\
 Layout

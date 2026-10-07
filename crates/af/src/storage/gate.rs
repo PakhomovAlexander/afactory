@@ -1,11 +1,12 @@
 //! What a finished Task's remote checks left on GitHub, and its removal (ADR-0144): each draft
 //! gate pull request its evidence recorded is closed and its two `af-gate/<task-id>/` branches
-//! are deleted from the mapping's push target, with the same `gh` and `git` the gate uses.
+//! are deleted from the mapping's push target, with the same `gh` and `git` the gate uses, and
+//! only while each still equals the evidence: the recorded repository, refs and commits.
 //!
 //! The result is one `gate_cleanup` record in the Task's log, done or failed with the redacted
 //! reason. It never changes the Task's result. A failed one is tried again by the next sweep
-//! while the mapping still names the repository; `[storage] keep_gate_pull_requests` keeps
-//! everything open.
+//! while the mapping still names the repository, and collection never takes a Task whose
+//! cleanup is not done; `[storage] keep_gate_pull_requests` keeps everything open.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -21,12 +22,9 @@ use serde::Serialize;
 /// How long one cleanup may take: two GitHub calls and one push per Task.
 const CLEANUP_WALL: Duration = Duration::from_secs(120);
 
-/// What a finished Task left: the repository and the pull requests its evidence names.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Leftovers {
-    pub(crate) github: String,
-    pub(crate) pull_requests: Vec<u64>,
-}
+/// What a finished Task left: the repository, the commits and the pull requests its evidence
+/// recorded.
+pub(crate) type Leftovers = github_pr::GateEvidence;
 
 /// One cleanup a sweep tried.
 #[derive(Debug, Clone, Serialize)]
@@ -59,15 +57,28 @@ pub(crate) fn pending(cas: &Cas, state: &TaskProjection) -> Result<Option<Leftov
     let Some(first) = pushed.first() else {
         return Ok(None);
     };
-    let mut pull_requests: Vec<u64> = pushed
+    let mut ours: Vec<_> = pushed
         .iter()
         .filter(|evidence| evidence.github == first.github)
+        .collect();
+    // The latest observation last: its commits are what the branches were last pushed with.
+    ours.sort_by_key(|evidence| evidence.observed_unix_ms);
+    let latest =
+        |commit: fn(&review_core::task::remote_check::RemoteCheckEvidenceV1) -> &Option<String>| {
+            ours.iter()
+                .rev()
+                .find_map(|evidence| commit(evidence).clone())
+        };
+    let mut pull_requests: Vec<u64> = ours
+        .iter()
         .filter_map(|evidence| evidence.pull_request.as_ref().map(|pull| pull.number))
         .collect();
     pull_requests.sort_unstable();
     pull_requests.dedup();
     Ok(Some(Leftovers {
         github: first.github.clone(),
+        base_commit: latest(|evidence| &evidence.base_commit),
+        head_commit: latest(|evidence| &evidence.head_commit),
         pull_requests,
     }))
 }
@@ -95,7 +106,7 @@ fn clean(
         Ok(Some((target, mapping))) => github_pr::cleanup(
             task_id,
             &target,
-            &leftovers.pull_requests,
+            leftovers,
             mapping.as_deref(),
             &GithubPrSettings::default(),
             Instant::now() + CLEANUP_WALL,
@@ -161,7 +172,8 @@ fn summary(cleanup: &TaskGateCleanupV1) -> String {
     }
 }
 
-fn keep_gate_pull_requests() -> bool {
+/// Whether the machine keeps gate pull requests and branches (`[storage] keep_gate_pull_requests`).
+pub(crate) fn keep_gate_pull_requests() -> bool {
     super::policy().is_ok_and(|policy| policy.keep_gate_pull_requests)
 }
 
@@ -260,26 +272,62 @@ fn pending_leftovers(state: &Path) -> Vec<(String, Leftovers)> {
 }
 
 /// Before collection takes one Task: its pending leftovers go first, whatever the mapping says,
-/// so the record says why if they could not.
-pub(crate) fn before_collection(state: &Path, task_id: &str) {
-    if keep_gate_pull_requests()
-        || !pending_in_store(state)
-            .iter()
-            .any(|pending| pending == task_id)
-    {
-        return;
+/// so the record says why if they could not. `Ok` when the Task may be collected — it left
+/// nothing, its cleanup is done now, or `keep` (`[storage] keep_gate_pull_requests`) keeps
+/// everything — and otherwise why it stays; the next sweep tries again.
+pub(crate) fn before_collection(state: &Path, task_id: &str, keep: bool) -> Result<(), String> {
+    if keep {
+        return Ok(());
     }
-    let opened = (|| -> Result<(Cas, EventStore), String> {
-        Ok((
-            Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?,
-            EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?,
-        ))
-    })();
-    if let Ok((cas, mut store)) = opened
-        && let Some(cleanup) = retry_one(&cas, &mut store, task_id, true)
-    {
-        eprintln!("af: gate cleanup of Task {task_id}: {}", cleanup.summary);
+    let unknown = |error: String| {
+        format!("whether Task `{task_id}` left gate branches cannot be read ({error}); it stays")
+    };
+    // Read-only first: a Task that left nothing never opens the Store for writing here.
+    if !is_pending(state, task_id).map_err(unknown)? {
+        return Ok(());
     }
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| unknown(e.to_string()))?;
+    let mut store =
+        EventStore::open(state.join("events.sqlite")).map_err(|e| unknown(e.to_string()))?;
+    match retry_one(&cas, &mut store, task_id, true) {
+        Some(attempted) => {
+            eprintln!("af: gate cleanup of Task {task_id}: {}", attempted.summary);
+            if attempted.outcome == GateCleanupOutcomeV1::Done {
+                Ok(())
+            } else {
+                Err(stays(task_id, &attempted.summary))
+            }
+        }
+        // Another process may have finished it meanwhile; otherwise its lease is held.
+        None if !is_pending(state, task_id).map_err(unknown)? => Ok(()),
+        None => Err(stays(
+            task_id,
+            "its gate cleanup could not be tried now: a writer holds the Task's lease",
+        )),
+    }
+}
+
+/// Whether the finished Task `task_id` of the Store at `state` still has gate leftovers no done
+/// cleanup removed, read-only.
+fn is_pending(state: &Path, task_id: &str) -> Result<bool, String> {
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    match store
+        .task_projection(&cas, task_id)
+        .map_err(|e| e.to_string())?
+    {
+        Some(projection) => Ok(pending(&cas, &projection)?.is_some()),
+        None => Ok(false),
+    }
+}
+
+/// Why collection leaves a Task whose gate cleanup is not done.
+pub(crate) fn stays(task_id: &str, why: &str) -> String {
+    format!(
+        "Task `{task_id}` is not collected before its gate cleanup is done ({why}); the next \
+         sweep tries again"
+    )
 }
 
 fn retry_one(

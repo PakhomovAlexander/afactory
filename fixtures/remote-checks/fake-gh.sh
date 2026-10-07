@@ -25,11 +25,20 @@ merge_ref() {
   esac
   git --git-dir="$BARE" update-ref refs/pull/12/merge "$M"
 }
+# Like GitHub, a pull request keeps the last head and base commits it saw once a branch is
+# gone; `pull-head-sha` fakes a head another pusher moved it to.
+pull_sha() {
+  SHA=$($1)
+  if [ -n "$SHA" ]; then printf '%s\n' "$SHA" > "$STATE/last-$1"; else SHA=$(cat "$STATE/last-$1" 2>/dev/null); fi
+  printf '%s' "$SHA"
+}
 pull() {
   merge_ref
   PULL_STATE=$(cat "$STATE/pull-state" 2>/dev/null || echo open)
+  PULL_HEAD=$(pull_sha head_sha); PULL_BASE=$(pull_sha base_sha)
+  if [ -e "$STATE/pull-head-sha" ]; then PULL_HEAD=$(cat "$STATE/pull-head-sha"); fi
   printf '{"number":12,"html_url":"https://github.com/octo/gate/pull/12","state":"%s","draft":true,' "$PULL_STATE"
-  printf '"head":{"ref":"af-gate/%s/head","sha":"%s","repo":{"full_name":"octo/gate"}},"base":{"ref":"af-gate/%s/base","sha":"%s","repo":{"full_name":"octo/gate"}}}' "$TASK" "$(head_sha)" "$TASK" "$(base_sha)"
+  printf '"head":{"ref":"af-gate/%s/head","sha":"%s","repo":{"full_name":"octo/gate"}},"base":{"ref":"af-gate/%s/base","sha":"%s","repo":{"full_name":"octo/gate"}}}' "$TASK" "$PULL_HEAD" "$TASK" "$PULL_BASE"
 }
 serve() { sed -e "s/@HEAD@/$(head_sha)/g" -e "s/@TASK@/$TASK/g" "$1"; }
 case "$1" in

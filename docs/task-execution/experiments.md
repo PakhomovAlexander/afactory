@@ -88,6 +88,7 @@ and the `af/Measurement@1` is `failed` with one reason and no summary:
 | `malformed_report` | declared metrics without a well-formed report line, extra or missing keys, or a malformed value |
 | `unit_mismatch` | a reported unit differs from the declared one |
 | `source_mutated` | the command changed or added a source entry |
+| `insufficient_disk` | the machine was below its free-disk floor ([ADR-0144](../adr/0144-hold-afs-disk-use-to-a-machine-budget.md)); the repetition's sandbox was never materialized and its command never started |
 
 A passed Measurement records every repetition and, per metric including `elapsed_ms`, the exact
 `median`, `min`, `max` and `n`. The median of an even sample is the exact mean of its two

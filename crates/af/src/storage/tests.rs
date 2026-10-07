@@ -368,3 +368,269 @@ fn the_refusal_names_the_free_bytes_the_floor_af_storage_and_the_knob() {
         assert!(message.contains(needle), "{needle}: {message}");
     }
 }
+
+/// A registered Store as the registry names it: `kind = "task"` at `path`.
+fn register(layout: &Layout, paths: &[&Path]) {
+    let now = now_unix_ms();
+    let mut text = "version = 1\n".to_string();
+    for path in paths {
+        text.push_str(&format!(
+            "\n[[store]]\npath = \"{}\"\nkind = \"task\"\nfirst_use_unix_ms = {now}\nlast_use_unix_ms = {now}\n",
+            path.display(),
+        ));
+    }
+    std::fs::create_dir_all(layout.roots.registry.parent().unwrap()).unwrap();
+    std::fs::write(&layout.roots.registry, text).unwrap();
+}
+
+#[test]
+fn a_registered_store_behind_a_replaced_ancestor_is_never_followed_into_a_decoy() {
+    let layout = layout();
+    // Registered at `elsewhere/project/store`; after registration `project` is swapped for a
+    // link to a directory that holds a decoy Store under the same name.
+    let registered = layout.root.join("elsewhere/project/store");
+    let made = unreadable_store(&layout, "0000000000000007", 30 * DAY);
+    std::fs::create_dir_all(registered.parent().unwrap()).unwrap();
+    std::fs::rename(&made, &registered).unwrap();
+    register(&layout, &[&registered]);
+    let decoy_root = layout.root.join("decoy");
+    let decoy = unreadable_store(&layout, "0000000000000008", 30 * DAY);
+    std::fs::create_dir_all(&decoy_root).unwrap();
+    std::fs::rename(&decoy, decoy_root.join("store")).unwrap();
+    std::fs::rename(
+        layout.root.join("elsewhere/project"),
+        layout.root.join("elsewhere/moved"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&decoy_root, layout.root.join("elsewhere/project")).unwrap();
+
+    let report = sweep(&layout.roots, &policy(u64::MAX), true, true);
+    assert!(report.removals.is_empty(), "{report:?}");
+    assert!(
+        report.failures.iter().any(
+            |failure| failure.contains(&registered.display().to_string())
+                && failure.contains("symlink")
+        ),
+        "{:?}",
+        report.failures
+    );
+    assert!(
+        decoy_root.join("store/events.sqlite").is_file(),
+        "the decoy stays"
+    );
+    assert!(
+        layout
+            .root
+            .join("elsewhere/moved/store/events.sqlite")
+            .is_file()
+    );
+}
+
+#[test]
+fn an_entry_that_changed_since_inventory_is_refused_and_reported() {
+    let layout = layout();
+    let measured = campaign(&layout, 'e', 40 * DAY);
+    let stock = inventory(&layout.roots, Detail::Tasks);
+    let entry = stock
+        .entries
+        .iter()
+        .find(|entry| entry.path == measured)
+        .unwrap()
+        .clone();
+    assert!(entry.identity.is_some());
+    // Another directory now holds the name.
+    std::fs::rename(&measured, layout.root.join("moved-campaign")).unwrap();
+    std::fs::create_dir_all(measured.join("someone-elses")).unwrap();
+    let error = evict(&layout.roots, &policy(u64::MAX), &entry).unwrap_err();
+    assert!(
+        error.contains("not the directory that was measured"),
+        "{error}"
+    );
+    assert!(measured.join("someone-elses").is_dir());
+    assert!(layout.root.join("moved-campaign/events.sqlite").is_file());
+}
+
+#[test]
+fn a_version_made_the_default_after_inventory_is_kept() {
+    let layout = layout();
+    let old = version(&layout, "0.9.3", 5 * DAY);
+    let stock = inventory(&layout.roots, Detail::Tasks);
+    let entry = stock
+        .entries
+        .iter()
+        .find(|entry| entry.path == old)
+        .unwrap()
+        .clone();
+    assert_eq!(entry.in_use, None, "evictable when measured");
+    // `af self` makes it the default between inventory and eviction.
+    std::fs::create_dir_all(layout.roots.installs.bin.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(old.join("af"), &layout.roots.installs.bin).unwrap();
+    let error = evict(&layout.roots, &policy(1), &entry).unwrap_err();
+    assert!(error.contains("became the default version"), "{error}");
+    assert!(old.join("af").is_file(), "kept");
+    // A version that stays unprotected is removed under the same lock.
+    let other = version(&layout, "0.9.4", 5 * DAY);
+    let stock = inventory(&layout.roots, Detail::Tasks);
+    let entry = stock
+        .entries
+        .iter()
+        .find(|entry| entry.path == other)
+        .unwrap();
+    evict(&layout.roots, &policy(1), entry).unwrap();
+    assert!(!other.exists());
+}
+
+fn volume(path: &str, free: Result<u64, &str>) -> Volume {
+    Volume {
+        path: PathBuf::from(path),
+        free: free.map_err(str::to_string),
+    }
+}
+
+#[test]
+fn the_free_disk_floor_fails_closed() {
+    let floor = 10 << 30;
+    let measured = |free| volume("/tmp", Ok(free));
+    let unmeasurable = volume("/cache", Err("/cache: Permission denied (os error 13)"));
+    assert_eq!(
+        judge_floor(&[measured(11 << 30), measured(12 << 30)], floor),
+        Ok(())
+    );
+    // A measured volume below the floor refuses even when the other cannot be measured.
+    let below = judge_floor(&[measured(1 << 30), unmeasurable.clone()], floor).unwrap_err();
+    assert!(
+        below.starts_with(
+            "insufficient_disk: 1.0 GiB (1073741824 bytes) free on the volume of /tmp"
+        ),
+        "{below}"
+    );
+    assert!(below.contains("Permission denied"), "{below}");
+    // A volume that cannot be measured refuses, with its measurement error.
+    let unknown = judge_floor(&[measured(11 << 30), unmeasurable], floor).unwrap_err();
+    assert!(unknown.starts_with("insufficient_disk: "), "{unknown}");
+    assert!(unknown.contains("cannot be measured"), "{unknown}");
+    assert!(
+        unknown.contains("/cache: Permission denied (os error 13)"),
+        "{unknown}"
+    );
+    for needle in ["`af storage`", "AF_STORAGE__MIN_FREE_BYTES"] {
+        assert!(unknown.contains(needle), "{needle}: {unknown}");
+    }
+    assert!(
+        judge_floor(&[], floor).is_err(),
+        "nothing measured is never enough"
+    );
+}
+
+#[test]
+fn a_volume_behind_an_unreadable_directory_cannot_be_measured() {
+    if nix::unistd::geteuid().is_root() {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let locked = root.path().join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let measured = measure_volume(&locked.join("cache"));
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(measured.free.is_err(), "{measured:?}");
+    // One not created yet is measured where it will be.
+    let fresh = measure_volume(&root.path().join("not/yet/there"));
+    assert!(fresh.free.is_ok(), "{fresh:?}");
+    assert_eq!(fresh.path, root.path());
+}
+
+#[test]
+fn claude_project_directories_are_removed_through_their_anchor_and_links_are_left() {
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("claude");
+    let projects = config.join("projects");
+    let ours = "-private-tmp-af-sandbox-1-abc";
+    std::fs::create_dir_all(projects.join(ours)).unwrap();
+    std::fs::write(projects.join(ours).join("session.jsonl"), b"{}\n").unwrap();
+    std::fs::create_dir_all(projects.join("-")).unwrap();
+    std::fs::write(projects.join("-/mine.jsonl"), b"keep\n").unwrap();
+    let elsewhere = root.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("precious"), b"keep\n").unwrap();
+    let linked = "-private-tmp-af-sandbox-2-def";
+    std::os::unix::fs::symlink(&elsewhere, projects.join(linked)).unwrap();
+    let identity = review_sandbox::Identity::of(&projects.join(ours)).ok();
+    let (removed, failures) = remove_claude_projects(
+        &config,
+        &[
+            (ours.to_string(), identity),
+            (linked.to_string(), None),
+            ("-private-tmp-af-sandbox-3-gone".to_string(), None),
+        ],
+    );
+    assert_eq!(removed, 1);
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(failures[0].contains(linked) && failures[0].contains("symlink"));
+    assert!(!projects.join(ours).exists());
+    assert!(projects.join("-/mine.jsonl").is_file());
+    assert!(elsewhere.join("precious").is_file());
+}
+
+#[test]
+fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
+    let removal = |index: usize| Removal {
+        kind: Kind::Task,
+        path: PathBuf::from(format!("/state/store-{index}")),
+        task_id: Some(format!("task-{index}")),
+        bytes: 10,
+        rule: Rule::Collection,
+    };
+    let report = |removals: Vec<Removal>, failures: Vec<String>, applied: bool| SweepReport {
+        applied,
+        collection: true,
+        max_bytes: 100,
+        total_before: 1000,
+        total_after: 900,
+        stop: Stop::NothingEvictable,
+        removals,
+        gate_cleanups: Vec::new(),
+        registry_dropped: Vec::new(),
+        failures,
+    };
+    assert!(
+        observation(&report(vec![], vec![], true)).is_none(),
+        "nothing done"
+    );
+    assert!(
+        observation(&report(vec![removal(0)], vec![], false)).is_none(),
+        "a preview"
+    );
+    let many: Vec<Removal> = (0..300).map(removal).collect();
+    let failures: Vec<String> = (0..70).map(|index| format!("failure {index}")).collect();
+    let sweep = observation(&report(many, failures, true)).unwrap();
+    sweep.validate().unwrap();
+    assert_eq!(sweep.removals.len(), 256);
+    assert_eq!(sweep.omitted_removals, 44);
+    assert_eq!(sweep.failures.len(), 64);
+    assert_eq!(sweep.omitted_failures, 6);
+    assert_eq!(sweep.removals[0].task_id.as_deref(), Some("task-0"));
+    // A path no record can name is counted, not listed.
+    let mut odd = removal(1);
+    odd.path = PathBuf::from("/state/line\nbreak");
+    let sweep = observation(&report(vec![removal(0), odd], vec![], true)).unwrap();
+    assert_eq!(sweep.removals.len(), 1);
+    assert_eq!(sweep.omitted_removals, 1);
+}
+
+#[test]
+fn a_store_still_being_created_is_no_collection_failure() {
+    let layout = layout();
+    // A Task Store another process is creating: its log exists, its CAS not yet.
+    let creating = layout.root.join("elsewhere/creating");
+    std::fs::create_dir_all(&creating).unwrap();
+    EventStore::open(creating.join("events.sqlite")).unwrap();
+    register(&layout, &[&creating]);
+    let report = sweep(&layout.roots, &policy(u64::MAX), true, true);
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    assert!(
+        observation(&report).is_none(),
+        "nothing to record on a Task"
+    );
+}

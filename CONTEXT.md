@@ -111,8 +111,9 @@ _Avoid_: putting it in `.af/` — authority to act on a remote belongs to a pers
 The one draft pull request from `af-gate/<task-id>/head` to `af-gate/<task-id>/base` that a
 Remote Check opens, both branches being commits the kernel built from the Task's Snapshots and
 owned by that Task in its Store. Resume and repair rounds attach to it; it is not for review or
-merge. When the Task finishes, af closes it and deletes both branches, recording a `gate_cleanup`
-that never changes the Task's result
+merge. When the Task finishes, af closes it and deletes both branches, each only while it still
+equals the Task's recorded evidence, recording a `gate_cleanup` that never changes the Task's
+result; the Task is not collected before one is done
 ([ADR-0144](docs/adr/0144-hold-afs-disk-use-to-a-machine-budget.md)).
 _Avoid_: the delivery pull request — delivery still never pushes or opens one.
 
@@ -122,8 +123,9 @@ between runs: warm toolchain keys, warm Workspaces, review campaign Stores, fini
 every Task Store, Stores this release cannot read, and installed versions. Each is an entry af
 evicts whole, least recently used first, never while in use or within an hour of its last use; a
 finished Task goes through collection and keeps its tombstone. Its free-disk floor
-(`min_free_bytes`) refuses a check or a Worker Attempt with `insufficient_disk` before any
-spend. `af storage` shows it
+(`min_free_bytes`) refuses a check, a measurement repetition or a Worker Attempt with
+`insufficient_disk` before any spend, also when a volume af works on cannot be measured. The
+sweep ending `af task run` is a `storage_sweep` observation of that Task. `af storage` shows it
 ([ADR-0144](docs/adr/0144-hold-afs-disk-use-to-a-machine-budget.md)).
 _Avoid_: "cache size" — the Warm Check Cache's `max_bytes` bounds one key; the Storage Budget
 bounds everything af keeps, how many keys included.

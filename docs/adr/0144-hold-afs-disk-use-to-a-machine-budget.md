@@ -60,24 +60,47 @@ remote check left two branches and a draft pull request open.
    review campaign Stores, finished Tasks of every Task Store (collected one at a time through the
    Store's own collection, so each keeps its tombstone), Stores this release cannot replay (removed
    whole), and installed versions. Sizes are allocated bytes, links not followed; the files a
-   reader creates (`-shm`, an empty `-wal`) never count as use.
+   reader creates (`-shm`, an empty `-wal`) never count as use. Inventory records each
+   directory's identity (device and inode). Every removal the sweep, `af storage prune` and
+   `af self uninstall --purge` make opens its target from a trusted anchor — the configured root
+   as given (`$XDG_CACHE_HOME/af/…`, `$XDG_STATE_HOME/af/…`, `$XDG_DATA_HOME/af/versions`, a
+   Claude config directory's `projects`), or `/` for a Store registered elsewhere — through
+   directory descriptors, `O_NOFOLLOW | O_DIRECTORY` on every component below the anchor, and
+   removes the tree through the descriptor it reached, never through a path. A symlink below the
+   anchor, or a directory that is not the one inventory measured, makes that removal fail and be
+   reported; it is never followed.
 4. **One sweep.** Collection first, when asked: gate leftovers of finished Tasks, finished Tasks
    beyond the newest `keep_tasks` of each Store, campaigns beyond the newest `keep_campaigns`, and
-   unreadable Stores, each idle at least `keep_days`. Then the budget: while af holds more than
+   unreadable Stores, each idle at least `keep_days`. A finished Task whose remote checks pushed
+   branches or opened a pull request is collected — by the sweep, its budget step and `af task gc
+   --apply` alike — only once a gate cleanup for it is recorded done: collection runs the cleanup
+   first, and a Task whose cleanup does not end done stays for the next sweep, unless
+   `keep_gate_pull_requests` keeps everything. Then the budget: while af holds more than
    `max_bytes`, the least recently used entry goes. Never an entry in use (a held lock, a live
    writer lease, a running `af review run`, the default or a pinned version, the running binary)
-   and never one used within the last hour. It stops when the total fits or nothing else may go,
-   and says which. Every removal is reported on stderr. Triggers: the end of every `af task run`,
-   `af task start --execute` and `af review run` whatever the outcome (when `auto_gc`; its failure
-   is a warning), a warm check about to create a key that does not exist (budget only), the
-   free-disk floor, and `af storage prune --apply`. An unchanged Task Store whose last collection
+   and never one used within the last hour. An installed version's protection is read again
+   immediately before its removal, under the versions lock `af self` holds while it changes the
+   default or records a pin; one that became protected since inventory is kept and reported. It
+   stops when the total fits or nothing else may go, and says which. Every removal is reported on
+   stderr, and the sweep that ends `af task run` records its removals, failures, stop reason and
+   totals on the Task that run executed as one `storage_sweep` transition carrying
+   `af/TaskStorageSweep@1` inline (at most 256 removals and 64 failures listed, the rest counted;
+   a sweep that removed nothing and failed nothing records nothing), which `af task show` prints
+   as one line. Triggers: the end of every `af task run`, `af task start --execute` and `af
+   review run` whatever the outcome (when `auto_gc`; its failure is a warning), a warm check
+   about to create a key that does not exist (budget only), the free-disk floor, and `af storage
+   prune --apply`. An unchanged Task Store whose last collection
    found nothing to do before a known time is not planned again until then.
-5. **The free-disk floor.** Before a check and before a Worker or Provider-probe Attempt starts,
-   af reads the free bytes of the volumes holding its temporary directory and `$XDG_CACHE_HOME`.
-   Below `min_free_bytes` it sweeps once; still below, a check is `not_run` with reason
-   `insufficient_disk: …`, and a Worker Attempt is released before it starts, charged nothing,
-   and the run stops like an interrupted one: nothing is assembled or finished, and the Task stays
-   resumable. The message names the free bytes, the floor, `af storage` and the knob.
+5. **The free-disk floor.** Before a check, before each measurement repetition materializes its
+   sandbox, and before a Worker or Provider-probe Attempt starts, af reads the free bytes of every
+   volume it works on: the ones holding its temporary directory and `$XDG_CACHE_HOME`. Below
+   `min_free_bytes` on any measured volume — even when another could not be measured — or with a
+   volume that cannot be measured at all, it sweeps once; still so, it refuses: a check is
+   `not_run` with reason `insufficient_disk: …`, a measurement fails with the typed reason
+   `insufficient_disk` without starting its command, and a Worker Attempt is released before it
+   starts, charged nothing, and the run stops like an interrupted one: nothing is assembled or
+   finished, and the Task stays resumable. A failed measurement never counts as room. The message
+   names the free bytes (or the measurement error), the floor, `af storage` and the knob.
 6. **The Store registry.** A Task or review Store af opens or creates outside its default roots
    (`--state`, `--state-root`) is recorded, best effort, in `$XDG_STATE_HOME/af/stores.toml`;
    the sweep visits it and drops entries whose Store is gone.
@@ -96,17 +119,25 @@ remote check left two branches and a draft pull request open.
    kernel's `RUSTUP_HOME` (host-local only) and `RUSTUP_AUTO_INSTALL=0`. A container check sees
    the same four variables pointed at `tmpfs` mounts inside the container, so the sandbox stays its
    only bind.
-9. **What Workers and gates leave in other tools.** When a Claude Worker Attempt's or admission
-   probe's process exits, whatever the outcome, af removes `<CLAUDE_CONFIG_DIR>/projects/<slug>`
-   of its working directory — only when that directory is an `af-sandbox-*` or `af-check-*`
-   directory af made for that Attempt, never another; `keep_worker_transcripts` keeps them. When
-   a Task finishes, and before collection takes a Task, af closes each draft gate pull request its
-   evidence recorded (still between this Task's two branches) and deletes whichever of
-   `af-gate/<task-id>/{base,head}` the mapping's push target still has, with the gate's own `gh`
-   and `git`, never force and never another ref. The result is one `gate_cleanup` transition
-   carrying `af/TaskGateCleanup@1` inline: done, or failed with its redacted reason. It never
-   changes the Task's result; a failed one is retried by the next sweep while the mapping still
-   names the repository; `keep_gate_pull_requests` keeps everything. `af self uninstall --purge`
+9. **What Workers and gates leave in other tools.** Every probe that launches a provider CLI runs
+   in a fresh `af-sandbox-<pid>-<random>` directory af made for it, which the startup crash sweep
+   removes if af dies. When a Claude Worker Attempt's or probe's process exits, whatever the
+   outcome, af removes `<CLAUDE_CONFIG_DIR>/projects/<slug>` of its working directory through
+   descriptors — only when that directory is an `af-sandbox-*` or `af-check-*` directory af made
+   for that Attempt or probe, never another (`projects/-` included); `keep_worker_transcripts`
+   keeps them. When a Task finishes, and before collection takes a Task, af cleans up its gate
+   against the Task's recorded `RemoteCheckEvidenceV1`, through a mapping target that names the
+   recorded repository. It closes a recorded pull request only while it is open, its base
+   repository is the recorded one, its head and base are exactly this Task's
+   `af-gate/<task-id>/head` and `af-gate/<task-id>/base`, and its head commit is the recorded
+   head commit. It deletes a branch only while `ls-remote` on the push URL shows exactly the
+   recorded commit for it (base: the base commit, head: the latest head commit), in one atomic
+   push of the matching deletions, with the gate's own `gh` and `git`, never force and never
+   another ref. A branch or pull request that differs is left in place and named in the reason of
+   a failed cleanup. The result is one `gate_cleanup` transition carrying `af/TaskGateCleanup@1`
+   inline: done, or failed with its redacted reason. It never changes the Task's result; a failed
+   one is retried by the next sweep while the mapping still names the repository;
+   `keep_gate_pull_requests` keeps everything. `af self uninstall --purge`
    also removes the af-made project directories in every registered Claude config directory and
    every registered Store, and lists the gate leftovers it could not reach.
 
@@ -121,7 +152,17 @@ remote check left two branches and a draft pull request open.
 - Below the floor af refuses work instead of filling the disk; the debug-only
   `AF_TEST_FREE_BYTES` fakes the free bytes for fixtures, as `AF_TEST_GC_STOP_AFTER_TOMBSTONES`
   does for collection.
-- `TaskTransition@5` gains the `gate_cleanup` change and `af/task-inspection@11` the optional
-  `gate_cleanups` list; a release before this one cannot read a log that holds one.
-- Removals of a sweep are reported on stderr and in `af storage prune --json`; they are not yet
-  recorded as observations of the Task whose run triggered them.
+- `TaskTransition@5` gains the `gate_cleanup` and `storage_sweep` changes and
+  `af/task-inspection@11` the optional `gate_cleanups` and `storage_sweeps` lists; a release
+  before this one cannot read a log that holds one. `af/Measurement@1` gains the failure reason
+  `insufficient_disk`.
+- Removals of a sweep are reported on stderr and in `af storage prune --json`, and the sweep that
+  ends `af task run` records them as a `storage_sweep` observation of the Task that run
+  executed.
+- A Task whose gate cleanup keeps failing stays uncollected until one is done; a branch or pull
+  request someone else moved is never closed or deleted by af, so such a Task's cleanup is
+  finished by hand (`af task show` prints the commands) or by setting
+  `keep_gate_pull_requests`.
+- A removal never follows a link below its anchor: a Store whose registered path now leads
+  through a symlink, or an entry replaced since inventory, is reported and left for the
+  operator.

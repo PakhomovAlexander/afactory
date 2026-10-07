@@ -75,6 +75,28 @@ impl Roots {
             installs: crate::selfmgmt::paths()?,
         })
     }
+
+    /// The trusted anchors every removal starts from, as configured: an entry below one is
+    /// opened from it, every component below without following a link.
+    fn anchors(&self) -> [&Path; 6] {
+        [
+            &self.warm,
+            &self.workspaces,
+            &self.campaigns,
+            &self.local_reviews,
+            &self.tasks,
+            &self.installs.versions,
+        ]
+    }
+
+    /// The anchor `path` is removed from: the configured root it lies strictly below, or `/`
+    /// for a Store registered elsewhere, which is then opened one component at a time.
+    fn anchor_of(&self, path: &Path) -> &Path {
+        self.anchors()
+            .into_iter()
+            .find(|anchor| path.starts_with(anchor) && path != *anchor)
+            .unwrap_or(Path::new("/"))
+    }
 }
 
 /// The kinds of entry the budget counts.
@@ -144,6 +166,10 @@ pub(crate) struct Entry {
     /// For an unreadable Store: why this release cannot read it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<String>,
+    /// The directory inventory measured, by device and inode: a removal opens the entry through
+    /// descriptors and refuses any other directory found under its name.
+    #[serde(skip)]
+    pub(crate) identity: Option<review_sandbox::Identity>,
 }
 
 /// A directory the inventory could not judge: listed, never removed.
@@ -455,6 +481,7 @@ fn measure_into(
                 last_use_unix_ms,
                 in_use,
                 reason: None,
+                identity: review_sandbox::Identity::of(path).ok(),
             });
         }
         Err(error) => inventory.problems.push(Problem {
@@ -503,6 +530,7 @@ fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
             match bytes {
                 Ok(bytes) => inventory.entries.push(Entry {
                     kind: Kind::WarmKey,
+                    identity: review_sandbox::Identity::of(&key).ok(),
                     path: key,
                     task_id: None,
                     bytes,
@@ -563,6 +591,7 @@ fn task_store(inventory: &mut Inventory, state: &Path) {
             last_use_unix_ms: task.last_event_unix_ms,
             in_use,
             reason: None,
+            identity: None,
         });
     }
     inventory.entries.push(Entry {
@@ -573,6 +602,7 @@ fn task_store(inventory: &mut Inventory, state: &Path) {
         last_use_unix_ms: newest_store_write(state),
         in_use: Some("the Store is kept; its finished Tasks are collected one by one".into()),
         reason: None,
+        identity: None,
     });
     inventory.task_stores.push(state.to_path_buf());
 }
@@ -702,7 +732,7 @@ pub(crate) fn sweep(
             break;
         };
         let removed = if apply {
-            evict(roots, entry)
+            evict(roots, policy, entry)
         } else {
             Ok(entry.bytes)
         };
@@ -758,7 +788,13 @@ fn collect(
 ) {
     let idle_ms = policy.keep_days.saturating_mul(DAY_MS);
     let idle = |entry: &Entry| entry.last_use_unix_ms.saturating_add(idle_ms) <= now;
+    // A Store that went away since inventory, or one still being created that has no CAS yet,
+    // holds nothing to collect: neither is a failure.
+    let gone = |state: &Path| !has_store(state) || !state.join("cas").is_dir();
     for state in &stock.task_stores {
+        if gone(state) {
+            continue;
+        }
         // An unchanged Store whose last look found nothing to do until later is not read again.
         let hint = hint::Hint::read(roots, state);
         if hint
@@ -767,9 +803,12 @@ fn collect(
         {
             continue;
         }
+        let mut tried = Vec::new();
         if apply && !policy.keep_gate_pull_requests {
-            report.gate_cleanups.extend(gate::retry_in_store(state));
+            tried = gate::retry_in_store(state);
+            report.gate_cleanups.extend(tried.iter().cloned());
         }
+        let mut kept = Vec::new();
         let collected = (|| -> Result<Vec<(String, u64)>, String> {
             let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
             // The plan reads only; the Store's writer lock is taken only when it names a Task.
@@ -789,13 +828,36 @@ fn collect(
             if !apply || planned.is_empty() {
                 return Ok(planned);
             }
+            // Gate leftovers go first: a planned Task whose cleanup does not end done stays,
+            // and the next sweep tries again. One this sweep already tried and failed is not
+            // tried twice.
+            let mut cleared = BTreeSet::new();
             for (task_id, _) in &planned {
-                gate::before_collection(state, task_id);
+                let failed_now = tried.iter().find(|attempted| {
+                    attempted.task_id == *task_id
+                        && attempted.outcome
+                            != review_core::task::remote_check::GateCleanupOutcomeV1::Done
+                });
+                let verdict = match failed_now {
+                    Some(attempted) => Err(gate::stays(task_id, &attempted.summary)),
+                    None => gate::before_collection(state, task_id, policy.keep_gate_pull_requests),
+                };
+                match verdict {
+                    Ok(()) => {
+                        cleared.insert(task_id.clone());
+                    }
+                    Err(why) => kept.push(format!("collecting {}: {why}", state.display())),
+                }
             }
+            if cleared.is_empty() {
+                return Ok(Vec::new());
+            }
+            // Exactly the planned Tasks whose leftovers are gone: the plan already applied the
+            // age and newest rules, so a cleanup recorded just now does not make one recent.
             let mut store =
                 EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
             let outcome = store
-                .apply_task_collection(&cas, idle_ms, policy.keep_tasks, false)
+                .apply_task_collection_of(&cas, &cleared)
                 .map_err(|e| e.to_string())?;
             Ok(outcome
                 .plan
@@ -822,10 +884,12 @@ fn collect(
                     });
                 }
             }
+            Err(_) if gone(state) => {}
             Err(error) => report
                 .failures
                 .push(format!("collecting {}: {error}", state.display())),
         }
+        report.failures.extend(kept);
     }
     let mut campaigns: Vec<&Entry> = stock
         .entries
@@ -839,7 +903,7 @@ fn collect(
             continue;
         }
         match if apply {
-            evict(roots, entry)
+            evict(roots, policy, entry)
         } else {
             Ok(entry.bytes)
         } {
@@ -865,7 +929,7 @@ fn collect(
             continue;
         }
         match if apply {
-            evict(roots, entry)
+            evict(roots, policy, entry)
         } else {
             Ok(entry.bytes)
         } {
@@ -889,7 +953,7 @@ fn collect(
 }
 
 /// Remove one entry through the rule that owns it. Returns the bytes removed.
-fn evict(roots: &Roots, entry: &Entry) -> Result<u64, String> {
+fn evict(roots: &Roots, policy: &StoragePolicy, entry: &Entry) -> Result<u64, String> {
     let failed = |error: String| format!("removing {}: {error}", entry.path.display());
     match entry.kind {
         Kind::WarmKey => {
@@ -918,27 +982,45 @@ fn evict(roots: &Roots, entry: &Entry) -> Result<u64, String> {
             if review_sandbox::workspace_in_use(&entry.path) {
                 return Err(failed("a run holds it now".into()));
             }
-            remove_directory(&entry.path).map_err(failed)
+            remove_entry(roots, entry).map_err(failed)
         }
         Kind::Campaign => {
             if let Some(why) = campaign_in_use(&entry.path) {
                 return Err(failed(why));
             }
-            remove_directory(&entry.path).map_err(failed)
+            remove_entry(roots, entry).map_err(failed)
         }
         Kind::UnreadableStore => {
             if let Some(why) = unreadable_in_use(&entry.path) {
                 return Err(failed(why));
             }
-            remove_directory(&entry.path).map_err(failed)
+            remove_entry(roots, entry).map_err(failed)
         }
-        Kind::Version => remove_directory(&entry.path).map_err(failed),
+        Kind::Version => {
+            let version = entry
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| failed("names no version".into()))?;
+            // Under the lock `af self` holds while it changes the default or a pin, the
+            // protection is read again: what became the default, a pin or the running binary
+            // since inventory stays.
+            let _versions = crate::selfmgmt::try_lock_versions(&roots.installs).map_err(failed)?;
+            if let Some(why) = crate::selfmgmt::protected_now(&roots.installs, version) {
+                return Err(failed(format!(
+                    "af {version} became {why} since it was measured, so it is kept"
+                )));
+            }
+            remove_entry(roots, entry).map_err(failed)
+        }
         Kind::Task => {
             let task_id = entry
                 .task_id
                 .clone()
                 .ok_or_else(|| failed("names no Task".into()))?;
-            gate::before_collection(&entry.path, &task_id);
+            // A Task whose gate leftovers are not cleaned up is never collected before they are.
+            gate::before_collection(&entry.path, &task_id, policy.keep_gate_pull_requests)
+                .map_err(failed)?;
             let cas =
                 Cas::open_existing(entry.path.join("cas")).map_err(|e| failed(e.to_string()))?;
             let mut store = EventStore::open(entry.path.join("events.sqlite"))
@@ -956,18 +1038,28 @@ fn evict(roots: &Roots, entry: &Entry) -> Result<u64, String> {
     }
 }
 
-/// Remove a directory and everything below it without following a link. The measured bytes
-/// are what was removed.
-fn remove_directory(path: &Path) -> Result<u64, String> {
+/// Remove an entry's directory from its anchor through descriptors, never following a link
+/// below the anchor, and only when it is still the directory inventory measured. The measured
+/// bytes are what was removed.
+fn remove_entry(roots: &Roots, entry: &Entry) -> Result<u64, String> {
+    let identity = entry
+        .identity
+        .ok_or("its identity was not measured, so it is not removed")?;
+    remove_directory(roots.anchor_of(&entry.path), &entry.path, Some(identity))
+}
+
+/// Remove `path`, strictly below `anchor`, and everything below it through descriptors opened
+/// from `anchor` without following a link, refusing any directory but `identity`. The measured
+/// bytes are what was removed.
+fn remove_directory(
+    anchor: &Path,
+    path: &Path,
+    identity: Option<review_sandbox::Identity>,
+) -> Result<u64, String> {
     let bytes = review_sandbox::storage::allocated_bytes(path).unwrap_or(0);
-    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
-        return Err("has no parent directory".into());
-    };
-    if review_sandbox::remove_tree_nofollow(parent, name) {
-        Ok(bytes)
-    } else {
-        Err("could not be removed completely; the next sweep tries again".into())
-    }
+    review_sandbox::remove_beneath(anchor, path, identity)
+        .map(|()| bytes)
+        .map_err(|error| format!("{error}; it is left, and the next sweep tries again"))
 }
 
 /// Print a sweep's removals and problems to stderr, one line each.
@@ -1022,6 +1114,139 @@ pub(crate) fn note_work_started() {
     WORK_STARTED.store(true, std::sync::atomic::Ordering::Release);
 }
 
+/// The Task the run that ends with the sweep executed — its Store and its ID — when it was one.
+static RUN_TASK: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
+
+/// Note the Task this process's `af task run` (or `af task start --execute`) executes, so the
+/// sweep that ends the run records what it removed on it (ADR-0144).
+pub(crate) fn note_task_run(state: &Path, task_id: &str) {
+    *RUN_TASK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        Some((state.to_path_buf(), task_id.to_string()));
+}
+
+/// What a sweep removed and failed, as the bounded record a Task keeps: `None` for a preview,
+/// and for a sweep that removed nothing and failed nothing.
+pub(crate) fn observation(
+    report: &SweepReport,
+) -> Option<review_core::task::storage_sweep::TaskStorageSweepV1> {
+    use review_core::task::storage_sweep::{
+        MAX_SWEEP_FAILURE_BYTES, MAX_SWEEP_FAILURES, MAX_SWEEP_PATH_BYTES, MAX_SWEEP_REMOVALS,
+        StorageSweepKindV1, StorageSweepRemovalV1, StorageSweepRuleV1, StorageSweepStopV1,
+        TASK_STORAGE_SWEEP_V1, TaskStorageSweepV1,
+    };
+    if !report.applied || (report.removals.is_empty() && report.failures.is_empty()) {
+        return None;
+    }
+    let listable: Vec<StorageSweepRemovalV1> = report
+        .removals
+        .iter()
+        .filter_map(|removal| {
+            let kind = match removal.kind {
+                Kind::WarmKey => StorageSweepKindV1::WarmKey,
+                Kind::Workspace => StorageSweepKindV1::Workspace,
+                Kind::Campaign => StorageSweepKindV1::Campaign,
+                Kind::Task => StorageSweepKindV1::Task,
+                Kind::UnreadableStore => StorageSweepKindV1::UnreadableStore,
+                Kind::Version => StorageSweepKindV1::Version,
+                Kind::TaskStore => return None,
+            };
+            let path = removal.path.to_str()?.to_string();
+            (path.len() <= MAX_SWEEP_PATH_BYTES && !path.chars().any(char::is_control)).then(|| {
+                StorageSweepRemovalV1 {
+                    kind,
+                    path,
+                    task_id: removal.task_id.clone(),
+                    bytes: removal.bytes,
+                    rule: match removal.rule {
+                        Rule::Collection => StorageSweepRuleV1::Collection,
+                        Rule::Budget => StorageSweepRuleV1::Budget,
+                    },
+                }
+            })
+        })
+        .collect();
+    let removals: Vec<_> = listable.into_iter().take(MAX_SWEEP_REMOVALS).collect();
+    // Beyond the bound, or with a path no record can name: counted, not listed.
+    let omitted_removals = report.removals.len().saturating_sub(removals.len()) as u64;
+    let failures: Vec<String> = report
+        .failures
+        .iter()
+        .filter(|failure| !failure.trim().is_empty())
+        .take(MAX_SWEEP_FAILURES)
+        .map(|failure| {
+            let mut end = failure.len().min(MAX_SWEEP_FAILURE_BYTES);
+            while !failure.is_char_boundary(end) {
+                end -= 1;
+            }
+            failure[..end].to_string()
+        })
+        .collect();
+    let omitted_failures = report.failures.len().saturating_sub(MAX_SWEEP_FAILURES) as u64;
+    let sweep = TaskStorageSweepV1 {
+        schema: TASK_STORAGE_SWEEP_V1.into(),
+        omitted_removals,
+        removals,
+        omitted_failures: if failures.len() == MAX_SWEEP_FAILURES {
+            omitted_failures
+        } else {
+            0
+        },
+        failures,
+        stop: match report.stop {
+            Stop::Fits => StorageSweepStopV1::Fits,
+            Stop::NothingEvictable => StorageSweepStopV1::NothingEvictable,
+        },
+        max_bytes: report.max_bytes,
+        total_before: report.total_before,
+        total_after: report.total_after,
+    };
+    sweep.validate().is_ok().then_some(sweep)
+}
+
+/// Record the sweep that ended a Task's run as an observation of that Task, under a short lease
+/// of its own. A warning when it cannot be: the sweep is housekeeping, never the run's outcome.
+fn record_on_task(report: &SweepReport) {
+    let Some((state, task_id)) = RUN_TASK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+    else {
+        return;
+    };
+    let Some(sweep) = observation(report) else {
+        return;
+    };
+    let recorded = (|| -> Result<(), String> {
+        let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+        let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+        let lease = store
+            .take_task_lease(
+                &cas,
+                &task_id,
+                &format!("af-storage-sweep-{}", std::process::id()),
+                30_000,
+            )
+            .map_err(|e| e.to_string())?;
+        let recorded = store
+            .record_task_storage_sweep(&cas, &lease, sweep)
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+        let released = store
+            .release_task_lease(&cas, &lease)
+            .map(|_| ())
+            .map_err(|e| e.to_string());
+        recorded.and(released)
+    })();
+    if let Err(error) = recorded {
+        eprintln!(
+            "af storage: warning: the sweep after the run was not recorded on Task {task_id}: \
+             {error}"
+        );
+    }
+}
+
 /// The end of `af task run` and `af review run`, whatever the outcome of the work they started:
 /// the sweep with collection on, when `[storage] auto_gc` is. Its failure is a warning, never
 /// the command's.
@@ -1036,7 +1261,10 @@ pub(crate) fn after_run() {
         Ok(Some(sweep(&Roots::current()?, &policy, true, true)))
     });
     match outcome {
-        Ok(Some(report)) => report_to_stderr(&report),
+        Ok(Some(report)) => {
+            report_to_stderr(&report);
+            record_on_task(&report);
+        }
         Ok(None) => {}
         Err(error) => {
             eprintln!("af storage: warning: collection after the run did not run: {error}")
@@ -1052,12 +1280,8 @@ struct MachineStorage {
 
 impl review_pipeline::storage::StorageHost for MachineStorage {
     fn ensure_free_disk(&self) -> Result<(), String> {
-        let (free, volume) = match free_bytes() {
-            Ok(free) => free,
-            // A volume that cannot be measured is no evidence of a full disk.
-            Err(_) => return Ok(()),
-        };
-        if free >= self.policy.min_free_bytes {
+        let floor = self.policy.min_free_bytes;
+        if judge_floor(&volumes(), floor).is_ok() {
             return Ok(());
         }
         // One sweep per process: a second refusal right after it would find nothing new.
@@ -1065,11 +1289,7 @@ impl review_pipeline::storage::StorageHost for MachineStorage {
         if !SWEPT.swap(true, std::sync::atomic::Ordering::AcqRel) {
             report_to_stderr(&sweep(&self.roots, &self.policy, true, true));
         }
-        let (free, volume) = free_bytes().unwrap_or((free, volume));
-        if free >= self.policy.min_free_bytes {
-            return Ok(());
-        }
-        Err(refusal(free, self.policy.min_free_bytes, &volume))
+        judge_floor(&volumes(), floor)
     }
 
     fn before_new_warm_key(&self) {
@@ -1093,32 +1313,106 @@ pub(crate) fn refusal(free: u64, floor: u64, volume: &Path) -> String {
     )
 }
 
-/// The free bytes of the fuller of the two volumes af works on — the one holding the temporary
-/// directory (sandboxes, check runtimes) and the one holding `$XDG_CACHE_HOME` (warm caches) —
-/// with a path on it.
-pub(crate) fn free_bytes() -> Result<(u64, PathBuf), String> {
-    let mut volumes = vec![std::env::temp_dir()];
-    if let Ok(cache) = config::cache_home() {
-        volumes.push(cache);
+/// The refusal when the free bytes of a volume af works on cannot be measured: an unknown
+/// amount is never taken for enough.
+fn unmeasured_refusal(floor: u64, errors: &[&str]) -> String {
+    format!(
+        "{}: the free bytes af needs cannot be measured ({}), so nothing starts against the \
+         free-disk floor of {} ({floor} bytes); see `af storage`, or change the floor with \
+         [storage] min_free_bytes (AF_STORAGE__MIN_FREE_BYTES)",
+        review_pipeline::storage::INSUFFICIENT_DISK,
+        errors.join("; "),
+        human_bytes(floor)
+    )
+}
+
+/// One volume af works on: a path on it and its free bytes, or why they cannot be measured.
+#[derive(Debug, Clone)]
+pub(crate) struct Volume {
+    pub(crate) path: PathBuf,
+    pub(crate) free: Result<u64, String>,
+}
+
+/// The floor over every volume af works on: `Ok` only when every one was measured at or above
+/// `floor`. A volume below it refuses even when another could not be measured; a volume that
+/// cannot be measured refuses too, with its measurement error.
+pub(crate) fn judge_floor(volumes: &[Volume], floor: u64) -> Result<(), String> {
+    let lowest = volumes
+        .iter()
+        .filter_map(|volume| volume.free.as_ref().ok().map(|free| (*free, &volume.path)))
+        .min_by_key(|(free, _)| *free);
+    let unmeasured: Vec<&str> = volumes
+        .iter()
+        .filter_map(|volume| volume.free.as_ref().err().map(String::as_str))
+        .collect();
+    if let Some((free, path)) = lowest
+        && free < floor
+    {
+        let mut message = refusal(free, floor, path);
+        if !unmeasured.is_empty() {
+            message.push_str(&format!(
+                "; the free bytes of another volume cannot be measured either ({})",
+                unmeasured.join("; ")
+            ));
+        }
+        return Err(message);
     }
-    let mut lowest: Option<(u64, PathBuf)> = None;
-    for volume in volumes {
-        // A cache home not created yet is measured where it will be.
-        let existing = volume
-            .ancestors()
-            .find(|path| path.exists())
-            .map(Path::to_path_buf)
-            .unwrap_or(volume);
-        let free = match faked_free_bytes() {
-            Some(free) => free,
-            None => review_sandbox::storage::free_bytes(&existing)
-                .map_err(|error| format!("{}: {error}", existing.display()))?,
-        };
-        if lowest.as_ref().is_none_or(|(known, _)| free < *known) {
-            lowest = Some((free, existing));
+    if volumes.is_empty() {
+        return Err(unmeasured_refusal(floor, &["no volume to measure"]));
+    }
+    if !unmeasured.is_empty() {
+        return Err(unmeasured_refusal(floor, &unmeasured));
+    }
+    Ok(())
+}
+
+/// Every volume af works on — the one holding the temporary directory (sandboxes, check
+/// runtimes) and the one holding `$XDG_CACHE_HOME` (warm caches) — each measured.
+pub(crate) fn volumes() -> Vec<Volume> {
+    let mut volumes = vec![measure_volume(&std::env::temp_dir())];
+    volumes.push(match config::cache_home() {
+        Ok(cache) => measure_volume(&cache),
+        Err(error) => Volume {
+            path: PathBuf::from("$XDG_CACHE_HOME"),
+            free: Err(format!("the cache home cannot be named: {error}")),
+        },
+    });
+    volumes
+}
+
+/// The free bytes of the volume holding `path`. A directory not created yet is measured where
+/// it will be, at its nearest existing ancestor; any other failure is the measurement's.
+pub(crate) fn measure_volume(path: &Path) -> Volume {
+    let mut existing = path;
+    loop {
+        match std::fs::metadata(existing) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => match existing.parent() {
+                Some(parent) => existing = parent,
+                None => {
+                    return Volume {
+                        path: path.to_path_buf(),
+                        free: Err(format!("{}: {error}", path.display())),
+                    };
+                }
+            },
+            Err(error) => {
+                return Volume {
+                    path: existing.to_path_buf(),
+                    free: Err(format!("{}: {error}", existing.display())),
+                };
+            }
         }
     }
-    lowest.ok_or_else(|| "no volume to measure".to_string())
+    let free = match faked_free_bytes() {
+        Some(free) => Ok(free),
+        None => review_sandbox::storage::free_bytes(existing)
+            .map_err(|error| format!("{}: {error}", existing.display())),
+    };
+    Volume {
+        path: existing.to_path_buf(),
+        free,
+    }
 }
 
 /// Deterministic fixtures fake the free bytes, as a full disk would show them: a number, or
@@ -1188,21 +1482,28 @@ pub(crate) fn purge_outside_roots() -> Vec<String> {
                 continue;
             }
         };
-        let ours: Vec<String> = names
+        let ours: Vec<(String, Option<review_sandbox::Identity>)> = names
             .into_iter()
             .filter(|name| review_runner_claude::session::is_af_project_slug(name, &temp_slugs))
+            .map(|name| {
+                let identity =
+                    review_sandbox::Identity::of(&directory.join("projects").join(&name)).ok();
+                (name, identity)
+            })
             .collect();
-        match store.remove_projects(&ours) {
-            Ok(removed) if removed > 0 => lines.push(format!(
+        let (removed, failures) = remove_claude_projects(&directory, &ours);
+        if removed > 0 {
+            lines.push(format!(
                 "removed {removed} af Worker project director{} in {}",
                 if removed == 1 { "y" } else { "ies" },
                 directory.join("projects").display()
-            )),
-            Ok(_) => {}
-            Err(error) => lines.push(format!(
-                "left Claude history in {}: {error}",
+            ));
+        }
+        for failure in failures {
+            lines.push(format!(
+                "left Claude history in {}: {failure}",
                 directory.display()
-            )),
+            ));
         }
     }
     let Ok(roots) = Roots::current() else {
@@ -1231,13 +1532,51 @@ pub(crate) fn purge_outside_roots() -> Vec<String> {
             StoreKind::ReviewRoot => real_directories(&entry.path),
         };
         for store in stores.into_iter().filter(|path| has_store(path)) {
-            match remove_directory(&store) {
+            // Outside every root af owns: opened from `/` one component at a time, and only
+            // while it is still the directory just listed.
+            let identity = review_sandbox::Identity::of(&store).ok();
+            match remove_directory(Path::new("/"), &store, identity) {
                 Ok(_) => lines.push(format!("removed {}", store.display())),
                 Err(error) => lines.push(format!("left {}: {error}", store.display())),
             }
         }
     }
     lines
+}
+
+/// Remove the named project directories of the Claude config directory `config` through
+/// descriptors opened from its `projects` directory, the anchor: a name that is a symlink, no
+/// directory, or another directory than its listed identity is left and reported. Returns how
+/// many were removed and why each other one was left; an absent one is neither.
+pub(crate) fn remove_claude_projects(
+    config: &Path,
+    projects: &[(String, Option<review_sandbox::Identity>)],
+) -> (usize, Vec<String>) {
+    if projects.is_empty() {
+        return (0, Vec::new());
+    }
+    let anchor = match review_sandbox::open_anchor(&config.join("projects")) {
+        Ok(anchor) => anchor,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return (0, Vec::new()),
+        Err(error) => {
+            return (
+                0,
+                vec![format!(
+                    "the Claude projects directory cannot be opened: {error}"
+                )],
+            );
+        }
+    };
+    let mut removed = 0;
+    let mut failures = Vec::new();
+    for (name, identity) in projects {
+        match review_sandbox::remove_tree_at(&anchor, std::ffi::OsStr::new(name), *identity) {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => failures.push(format!("project directory {name}: {error}")),
+        }
+    }
+    (removed, failures)
 }
 
 pub(crate) fn human_bytes(bytes: u64) -> String {
@@ -1264,7 +1603,11 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
     let policy = policy()?;
     let roots = Roots::current()?;
     let stock = inventory(&roots, Detail::Tasks);
-    let free = free_bytes().ok();
+    let volumes = volumes();
+    let free = volumes
+        .iter()
+        .filter_map(|volume| volume.free.as_ref().ok().map(|free| (*free, &volume.path)))
+        .min_by_key(|(free, _)| *free);
     let mut kinds = Vec::new();
     for kind in Kind::ALL {
         let of: Vec<&Entry> = stock.entries.iter().filter(|e| e.kind == kind).collect();
@@ -1350,6 +1693,15 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
             }
         ),
         None => println!("free bytes unknown"),
+    }
+    for volume in &volumes {
+        if let Err(error) = &volume.free {
+            println!(
+                "free bytes of {} cannot be measured ({error}): checks and Worker Attempts are \
+                 refused",
+                volume.path.display()
+            );
+        }
     }
     Ok(0)
 }

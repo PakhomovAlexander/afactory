@@ -1005,6 +1005,126 @@ fn cancellation_during_the_wait_ends_the_subprocesses() {
     assert!(!alive, "the hung `gh` process {pid} still runs");
 }
 
+/// What a cleanup is handed: the repository, commits and pull request one outcome recorded.
+fn recorded(outcome: &RemoteCheckOutcome) -> github_pr::GateEvidence {
+    github_pr::GateEvidence {
+        github: outcome.evidence.github.clone(),
+        base_commit: outcome.evidence.base_commit.clone(),
+        head_commit: outcome.evidence.head_commit.clone(),
+        pull_requests: outcome
+            .evidence
+            .pull_request
+            .iter()
+            .map(|pull| pull.number)
+            .collect(),
+    }
+}
+
+/// ADR-0144: a cleanup proves ownership first. A head branch another pusher moved is left, with
+/// the pull request whose head moved with it, while the base branch that still holds the
+/// recorded commit goes; the reason names what was left.
+#[test]
+fn a_replaced_head_branch_and_its_pull_request_are_left_and_named() {
+    use review_core::task::remote_check::GateCleanupOutcomeV1;
+    let setup = setup();
+    setup.passing();
+    let candidate = setup.snapshots.candidate(&setup.cas, "version 2\n");
+    let outcome = setup.run(&candidate, OWNER);
+    expect(&outcome, RemoteCheckStateV1::Observed, None);
+    let base = setup.remote.branch("base").unwrap();
+    git(
+        &setup.remote.bare,
+        &[
+            "update-ref",
+            &format!("refs/heads/af-gate/{TASK}/head"),
+            &base,
+        ],
+    );
+    let cleanup = github_pr::cleanup(
+        TASK,
+        &setup.remote.target(),
+        &recorded(&outcome),
+        None,
+        &setup.remote.settings(),
+        Instant::now() + LIMIT,
+    );
+    cleanup.validate(TASK).unwrap();
+    assert_eq!(cleanup.outcome, GateCleanupOutcomeV1::Failed, "{cleanup:?}");
+    let reason = cleanup.reason.clone().unwrap();
+    assert!(
+        reason.contains(&format!(
+            "branch af-gate/{TASK}/head was left: it holds {base}"
+        )),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("pull request #12 was left open"),
+        "{reason}"
+    );
+    assert_eq!(setup.remote.branch("head").as_deref(), Some(base.as_str()));
+    assert!(
+        setup.remote.branch("base").is_none(),
+        "the recorded base goes"
+    );
+    let calls = setup.remote.calls();
+    assert!(!calls.contains("PATCH"), "{calls}");
+    assert!(
+        !calls.contains("--force") && !calls.contains(" +"),
+        "{calls}"
+    );
+}
+
+/// A pull request whose head commit is not the recorded one is left open; a target that names
+/// another repository than the evidence touches nothing at all.
+#[test]
+fn a_pull_request_that_moved_or_a_foreign_target_is_left() {
+    use review_core::task::remote_check::GateCleanupOutcomeV1;
+    let setup = setup();
+    setup.passing();
+    let candidate = setup.snapshots.candidate(&setup.cas, "version 2\n");
+    let outcome = setup.run(&candidate, OWNER);
+    expect(&outcome, RemoteCheckStateV1::Observed, None);
+    let mut foreign = recorded(&outcome);
+    foreign.github = "octo/other".into();
+    let untouched = github_pr::cleanup(
+        TASK,
+        &setup.remote.target(),
+        &foreign,
+        None,
+        &setup.remote.settings(),
+        Instant::now() + LIMIT,
+    );
+    assert_eq!(untouched.outcome, GateCleanupOutcomeV1::Failed);
+    assert!(
+        untouched
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("not the recorded github:octo/other"),
+        "{untouched:?}"
+    );
+    assert!(setup.remote.branch("head").is_some() && setup.remote.branch("base").is_some());
+    std::fs::write(setup.remote.state.join("pull-head-sha"), "f".repeat(40)).unwrap();
+    let cleanup = github_pr::cleanup(
+        TASK,
+        &setup.remote.target(),
+        &recorded(&outcome),
+        None,
+        &setup.remote.settings(),
+        Instant::now() + LIMIT,
+    );
+    assert_eq!(cleanup.outcome, GateCleanupOutcomeV1::Failed, "{cleanup:?}");
+    let reason = cleanup.reason.clone().unwrap();
+    assert!(
+        reason.contains(&format!(
+            "pull request #12 was left open: its head commit {} is not the recorded",
+            "f".repeat(40)
+        )),
+        "{reason}"
+    );
+    assert!(!setup.remote.calls().contains("PATCH"));
+}
+
 /// ADR-0144: a finished Task's cleanup closes its gate pull request and deletes exactly its two
 /// branches; a branch of another Task and the pull request's other state stay as they were.
 #[test]
@@ -1023,7 +1143,7 @@ fn the_cleanup_closes_the_gate_pull_request_and_deletes_only_this_tasks_branches
     let cleanup = github_pr::cleanup(
         TASK,
         &setup.remote.target(),
-        &[12],
+        &recorded(&outcome),
         None,
         &setup.remote.settings(),
         Instant::now() + LIMIT,
@@ -1046,7 +1166,7 @@ fn the_cleanup_closes_the_gate_pull_request_and_deletes_only_this_tasks_branches
     let again = github_pr::cleanup(
         TASK,
         &setup.remote.target(),
-        &[12],
+        &recorded(&outcome),
         None,
         &setup.remote.settings(),
         Instant::now() + LIMIT,
@@ -1062,16 +1182,13 @@ fn a_failed_cleanup_keeps_its_redacted_reason_and_a_retry_finishes_it() {
     let setup = setup();
     setup.passing();
     let candidate = setup.snapshots.candidate(&setup.cas, "version 2\n");
-    expect(
-        &setup.run(&candidate, OWNER),
-        RemoteCheckStateV1::Observed,
-        None,
-    );
+    let outcome = setup.run(&candidate, OWNER);
+    expect(&outcome, RemoteCheckStateV1::Observed, None);
     setup.remote.flag("refuse-close");
     let failed = github_pr::cleanup(
         TASK,
         &setup.remote.target(),
-        &[12],
+        &recorded(&outcome),
         None,
         &setup.remote.settings(),
         Instant::now() + LIMIT,
@@ -1087,7 +1204,7 @@ fn a_failed_cleanup_keeps_its_redacted_reason_and_a_retry_finishes_it() {
     let retried = github_pr::cleanup(
         TASK,
         &setup.remote.target(),
-        &[12],
+        &recorded(&outcome),
         None,
         &setup.remote.settings(),
         Instant::now() + LIMIT,

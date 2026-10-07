@@ -177,6 +177,7 @@ pub(super) fn fence_for_transition(
         | TaskChangeV1::DeliveryRecorded { .. }
         | TaskChangeV1::AdoptionObservationRecorded { .. }
         | TaskChangeV1::GateCleanup { .. }
+        | TaskChangeV1::StorageSweep { .. }
         | TaskChangeV1::TaskCollected { .. } => return Ok(None),
     }
     state

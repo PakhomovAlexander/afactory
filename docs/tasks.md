@@ -265,7 +265,12 @@ keys, warm Workspaces, review campaign Stores, the finished Tasks of every Task 
 this release cannot read, and installed versions. When af holds more, the least recently used
 entry goes first. Nothing in use goes — a held lock, a live writer lease, a running `af review
 run`, the default or a pinned version, the running binary — and nothing used within the last
-hour. A finished Task goes through the Store's own collection and keeps its tombstone.
+hour. A finished Task goes through the Store's own collection and keeps its tombstone. Every
+directory is removed through descriptors opened from its configured root (`/` for a Store
+registered elsewhere) without following a link, and only while it is still the directory the
+sweep measured; anything else is left and reported. An installed version is checked again under
+the lock `af self` holds while it changes the default or a pin, so one that became protected
+stays.
 
 `af storage` prints what af holds, per kind, against the budget, and the free bytes against
 `[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@1` document.
@@ -274,12 +279,19 @@ hour. A finished Task goes through the Store's own collection and keeps its tomb
 newest `keep_tasks` (20) of each Store, review campaigns beyond the newest `keep_campaigns` (20)
 and Stores this release cannot read, each idle at least `keep_days` (14); then it evicts until
 af fits. A Store made with `--state` is recorded in `$XDG_STATE_HOME/af/stores.toml`, so the
-sweep reaches it too.
+sweep reaches it too. A finished Task whose remote checks left gate branches or a pull request is
+collected only after its gate cleanup is done, by the sweep and by `af task gc --apply` alike;
+until then it stays and the next sweep tries again. The sweep that ends `af task run` records
+what it removed and what failed on that Task as one `storage_sweep` observation: `af task show`
+prints a `storage sweep:` line and `--json` carries `storage_sweeps`.
 
-Below the free-disk floor af does not start a check or a Worker Attempt. The check's result is
-`not_run` with reason `insufficient_disk: …`; a Worker Attempt is released before it starts and
-charged nothing, and `af task run` stops with the same message, leaving the Task to resume once
-there is room. `[storage]` is read only from the machine's layers: `/etc/af/config.toml`,
+Below the free-disk floor af does not start a check, a measurement repetition or a Worker
+Attempt. Every volume af works on counts — the one holding its temporary directory and the one
+holding `$XDG_CACHE_HOME` — and a volume whose free bytes cannot be measured refuses too, with
+the measurement error. The check's result is `not_run` with reason `insufficient_disk: …`; a
+measurement fails with reason `insufficient_disk` without starting its command; a Worker Attempt
+is released before it starts and charged nothing, and `af task run` stops with the same message,
+leaving the Task to resume once there is room. `[storage]` is read only from the machine's layers: `/etc/af/config.toml`,
 `~/.config/af/config.toml` and `AF_STORAGE__<KEY>`, for example
 `AF_STORAGE__MAX_BYTES=50GiB`. A repository's `.af/af.toml` cannot change it; `af config show`
 reports such a table as ignored. See `af help storage` for every key.

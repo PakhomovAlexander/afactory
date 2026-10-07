@@ -186,7 +186,10 @@ pub fn remove_tree_nofollow(parent: &Path, name: &std::ffi::OsStr) -> bool {
 }
 
 #[cfg(unix)]
-fn remove_children_nofollow(directory: &mut nix::dir::Dir, depth: u32) -> nix::Result<()> {
+pub(crate) fn remove_children_nofollow(
+    directory: &mut nix::dir::Dir,
+    depth: u32,
+) -> nix::Result<()> {
     use nix::dir::{Dir, Type};
     use nix::errno::Errno;
     use nix::fcntl::OFlag;

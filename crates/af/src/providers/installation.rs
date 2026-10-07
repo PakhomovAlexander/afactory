@@ -185,9 +185,13 @@ fn version_check(
     {
         return None;
     }
+    // A version check is a probe too: it runs in a directory af made for it (ADR-0144).
+    let Ok(directory) = ProbeDirectory::new(spec) else {
+        return None;
+    };
     let mut command = Command::new(program);
     command.arg(VERSION_ARGUMENT);
-    configure_probe_environment(&mut command, spec, probe_path);
+    configure_probe_environment(&mut command, spec, probe_path, directory.path());
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

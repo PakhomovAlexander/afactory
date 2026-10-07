@@ -223,6 +223,24 @@ impl CodeTaskDomain {
                 "the measure Attempt's deadline left no time to start this repetition",
             ));
         }
+        // Below the machine's free-disk floor, checked through the same Storage Budget as every
+        // other check, the repetition materializes nothing and its command never starts: the
+        // measurement fails with the typed refusal (ADR-0144).
+        if let Err(refusal) = crate::storage::ensure_free_disk() {
+            return Ok(Repetition::Failed(
+                MeasurementRunV1 {
+                    started_unix_ms: started,
+                    elapsed_ms: 0,
+                    exit_code: None,
+                    stdout_id: None,
+                    stderr_id: None,
+                    cache: None,
+                    metrics: BTreeMap::new(),
+                },
+                MeasurementFailureReasonV1::InsufficientDisk,
+                refusal,
+            ));
+        }
         let sandbox =
             Sandbox::materialize(manifest, cas, Mode::ReadOnly).map_err(|e| e.to_string())?;
         review_sandbox::admit(self.policy.isolation(), &sandbox).map_err(|e| e.to_string())?;
