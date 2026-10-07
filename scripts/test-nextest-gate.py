@@ -32,7 +32,7 @@ def main():
         (repo / 'src').mkdir(parents=True)
         (repo / 'scripts').mkdir()
         (repo / '.config').mkdir()
-        for name in ['verify.sh', 'nextest-gate.py', 'ci-step.py']:
+        for name in ['verify.sh', 'nextest-gate.py', 'ci-step.py', 'test-time-report.py']:
             shutil.copyfile(ROOT / 'scripts' / name, repo / 'scripts' / name)
         shutil.copyfile(ROOT / '.config/nextest.toml', repo / '.config/nextest.toml')
         shutil.copyfile(ROOT / 'rust-toolchain.toml', repo / 'rust-toolchain.toml')
@@ -77,6 +77,10 @@ def main():
                     selected['AF_STORE_TEST_FAIL'] = '1'
                 result = run(['bash', 'scripts/verify.sh'], repo, selected)
                 assert (result.returncode != 0) == failing
+                # The gate ends with the slow-test summary of the JUnit nextest just wrote.
+                tail = result.stdout[result.stdout.rindex('gate step timings: '):]
+                assert '\n### Test time: 2 tests in ' in tail, tail
+                assert ('\nFailed tests:\n' in tail) == failing, tail
                 assert manifest(repo) == before
                 assert not (repo / 'target').exists()
                 assert not list(target.rglob('store.toml'))
@@ -85,7 +89,7 @@ def main():
             cases = [ET.parse(p).findall('.//testcase') for p in reports]
             assert all(len(c) == 2 for c in cases), cases
             assert sorted(sum(c.find('failure') is not None for c in cs) for cs in cases) == [0, 1]
-            print('PASS: real verify entry, sealed source, 2 tests per run, external JUnit, failure propagation, config cleanup')
+            print('PASS: real verify entry, sealed source, 2 tests per run, external JUnit, failure propagation, config cleanup, test-time summary')
         finally:
             for p in paths:
                 p.chmod(0o755 if p.is_dir() else 0o644)
