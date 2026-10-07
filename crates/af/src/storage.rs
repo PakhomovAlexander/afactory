@@ -1622,9 +1622,17 @@ pub(crate) fn remove_claude_projects(
         // Only a directory measured when it was chosen is removed, and only while it is still
         // that directory.
         let Some(identity) = identity else {
-            failures.push(format!(
-                "project directory {name}: its identity was not measured, so it was left"
-            ));
+            // Nothing measured and nothing there is nothing to remove; anything there is left.
+            match nix::sys::stat::fstatat(
+                &anchor,
+                std::ffi::OsStr::new(name),
+                nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
+            ) {
+                Err(nix::errno::Errno::ENOENT) => {}
+                _ => failures.push(format!(
+                    "project directory {name}: its identity was not measured, so it was left"
+                )),
+            }
             continue;
         };
         match review_sandbox::remove_tree_at(&anchor, std::ffi::OsStr::new(name), Some(*identity)) {

@@ -556,18 +556,28 @@ fn claude_project_directories_are_removed_through_their_anchor_and_links_are_lef
     std::fs::write(elsewhere.join("precious"), b"keep\n").unwrap();
     let linked = "-private-tmp-af-sandbox-2-def";
     std::os::unix::fs::symlink(&elsewhere, projects.join(linked)).unwrap();
+    let unmeasured = "-private-tmp-af-sandbox-4-ghi";
+    std::fs::create_dir_all(projects.join(unmeasured)).unwrap();
     let identity = review_sandbox::Identity::of(&projects.join(ours)).ok();
+    // The link is measured as what its name holds, the link itself, and is still never followed.
+    let link_identity = review_sandbox::Identity::of(&projects.join(linked)).ok();
     let (removed, failures) = remove_claude_projects(
         &config,
         &[
             (ours.to_string(), identity),
-            (linked.to_string(), None),
+            (linked.to_string(), link_identity),
             ("-private-tmp-af-sandbox-3-gone".to_string(), None),
+            (unmeasured.to_string(), None),
         ],
     );
     assert_eq!(removed, 1);
-    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert_eq!(failures.len(), 2, "{failures:?}");
     assert!(failures[0].contains(linked) && failures[0].contains("symlink"));
+    assert!(failures[1].contains(unmeasured) && failures[1].contains("not measured"));
+    assert!(
+        projects.join(unmeasured).is_dir(),
+        "an unmeasured directory is left"
+    );
     assert!(!projects.join(ours).exists());
     assert!(projects.join("-/mine.jsonl").is_file());
     assert!(elsewhere.join("precious").is_file());
