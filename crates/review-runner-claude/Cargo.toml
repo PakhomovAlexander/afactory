@@ -16,6 +16,9 @@ doctest = false
 review-core = { path = "../review-core" }
 review-runner = { path = "../review-runner" }
 review-store = { path = "../review-store" }
+# Removing an Attempt's project directory goes through the sandbox's identity-bound, claimed
+# removal (ADR-0144), shared with every other removal af makes.
+review-sandbox = { path = "../review-sandbox" }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 # Session capture and its idempotent deletion open every component of the operator's harness
 # directory `O_NOFOLLOW`, which needs the same safe syscall wrappers the sandbox already uses.

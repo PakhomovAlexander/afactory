@@ -33,6 +33,15 @@ impl Identity {
         })
     }
 
+    /// The identity a `stat` reports.
+    #[allow(clippy::unnecessary_cast)]
+    pub fn of_stat(stat: &nix::sys::stat::FileStat) -> Self {
+        Self {
+            device: stat.st_dev as u64,
+            inode: stat.st_ino as u64,
+        }
+    }
+
     /// The identity of the directory or file `descriptor` holds open.
     #[allow(clippy::unnecessary_cast)]
     pub fn of_descriptor(descriptor: impl AsFd) -> io::Result<Self> {
@@ -165,9 +174,14 @@ pub fn remove_tree_at(
         )));
     }
     if let Err(errno) = crate::stale::remove_children_nofollow(&mut directory, 0) {
-        // What is left goes back to its name, so a later inventory sees it and tries again.
-        let _ = renameat(&parent, claimed.as_str(), &parent, name);
-        return Err(io::Error::from(errno));
+        // What is left stays under its claim: renaming it back could replace whatever took the
+        // old name since. Once this process has exited, a later sweep finishes the claim
+        // ([`finish_abandoned_claims`]) and reports it while it cannot.
+        return Err(io::Error::other(format!(
+            "`{}` was only partly removed ({errno}); the rest is left under `{claimed}` for a \
+             later sweep",
+            name.to_string_lossy()
+        )));
     }
     drop(directory);
     // The claimed name is checked once more right before it is unlinked. POSIX has no unlink by
@@ -290,6 +304,38 @@ mod tests {
         assert!(anchor.join("a/b").is_dir());
         // The private name it was claimed under is gone too: nothing is left beside it.
         assert_eq!(std::fs::read_dir(anchor.join("a/b")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_removal_that_fails_part_way_stays_under_its_claim_and_a_dead_owners_claim_is_finished() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("parent");
+        // Deeper than the removal walks: emptying fails part way.
+        let mut deep = parent.join("target");
+        for _ in 0..=(crate::stale::MAX_DEPTH + 1) {
+            deep = deep.join("d");
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        let identity = Identity::of(&parent.join("target")).unwrap();
+        let fd = open_anchor(&parent).unwrap();
+        let error = remove_tree_at(&fd, OsStr::new("target"), Some(identity)).unwrap_err();
+        assert!(error.to_string().contains("left under"), "{error}");
+        assert!(!parent.join("target").exists(), "it is never renamed back");
+        let claims: Vec<String> = std::fs::read_dir(&parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(claims.len(), 1, "{claims:?}");
+        assert!(claims[0].starts_with(&format!(".af-removing-{}-", std::process::id())));
+        // This process is alive: its claim is its own and stays.
+        let (removed, _) = finish_abandoned_claims(&parent);
+        assert!(removed.is_empty());
+        // A claim whose process is gone is finished; one that is not a claim is never touched.
+        std::fs::create_dir_all(parent.join(".af-removing-999999999-1-0/inner")).unwrap();
+        std::fs::create_dir(parent.join("neighbour")).unwrap();
+        let (removed, _) = finish_abandoned_claims(&parent);
+        assert_eq!(removed, [".af-removing-999999999-1-0".to_string()]);
+        assert!(parent.join("neighbour").is_dir());
     }
 
     #[test]

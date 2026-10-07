@@ -82,8 +82,17 @@ remote check left two branches and a draft pull request open.
    the entry it is, never followed, so a Store or campaign that holds a link can still go. A
    removal first claims the measured directory under a private name (`.af-removing-<pid>-…`) in
    its parent, checks its identity there, empties it through its descriptor, checks the claim
-   again and unlinks it. What fails part way goes back to its name for a later sweep, and a claim
-   whose process died is finished by the next sweep. POSIX has no unlink by descriptor, so a
+   again and unlinks it. What fails part way stays under its claim (renaming it back could
+   replace whatever took the name since), and a claim whose process died is finished by the next
+   sweep, in af's roots, the temporary directory and every registered Claude config directory.
+   The same claimed, identity-bound removal serves a check runtime when its check ends, the crash
+   sweep of `af-sandbox-*` and `af-check-*` directories, and a Claude Attempt's or probe's
+   project directory, each measured when it is chosen. A campaign or Workspace is held by an
+   exclusive lock from that look until it is gone, so no run starts on it in between. A
+   registered Store is reached from `/` one component at a time without following a link, its
+   identity recorded; collection and gate cleanup check that identity again before they open it.
+   A root that exists but cannot be listed is a problem the inventory reports, never an empty
+   one. POSIX has no unlink by descriptor, so a
    directory put at that unguessable private name between the last check and the unlink could
    still go; only an empty one can, and that residual risk is accepted.
 4. **One sweep.** Collection first, when asked: gate leftovers of finished Tasks, finished Tasks
@@ -120,8 +129,11 @@ remote check left two branches and a draft pull request open.
    bytes of every
    volume it works on: the ones holding its temporary directory and `$XDG_CACHE_HOME`. Below
    `min_free_bytes` on any measured volume — even when another could not be measured — or with a
-   volume that cannot be measured at all, it sweeps once (the same sweep as after a run: the
-   budget, and collection by age only when `auto_gc` is on); still so, it refuses: a check is
+   volume that cannot be measured at all, it sweeps (every time the floor is met, since what
+   became evictable since the last one may restore the room; the same sweep as after a run: the
+   budget, and collection by age only when `auto_gc` is on); still so, it refuses before anything
+   is prepared for the work (a check gets no sandbox and no runtime), and once more right before a
+   check starts, after what its preparation wrote: a check is
    `not_run` with reason `insufficient_disk: …`, a remote check is refused with the typed reason
    `insufficient_disk` before its private repository or any push, a measurement fails with the typed reason
    `insufficient_disk` without starting its command, and a Worker Attempt is released before it

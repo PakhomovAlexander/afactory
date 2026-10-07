@@ -69,7 +69,8 @@ pub use task_build_cache::{
 };
 pub use workspace::{
     RecordedPreparation, WORKSPACE_LOCK, WorkspaceError, WorkspaceInUse, WorkspacePreparation,
-    WorkspaceRoot, default_workspace_cache_root, prepare_workspace, workspace_id, workspace_in_use,
+    WorkspaceRoot, default_workspace_cache_root, hold_workspace_for_removal, prepare_workspace,
+    workspace_id, workspace_in_use,
 };
 
 use std::path::{Path, PathBuf};

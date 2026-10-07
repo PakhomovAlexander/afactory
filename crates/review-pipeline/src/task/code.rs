@@ -1092,9 +1092,50 @@ impl CodeTaskDomain {
                 .checks
                 .get(name)
                 .ok_or("Named check is not captured")?;
-            // Below the machine's free-disk floor the check does not start: it reports
-            // `insufficient_disk` as its result (ADR-0144).
-            let floor = crate::storage::ensure_free_disk().err();
+            // Below the machine's free-disk floor the check does not start, and nothing is
+            // prepared for it either: no sandbox, no runtime. It reports `insufficient_disk` as
+            // its result, and every declared warm kind keeps its one observation (ADR-0144).
+            if let Some(refusal) = crate::storage::ensure_free_disk().err() {
+                let observations = match session.as_mut() {
+                    Some(session) => session.skipped(cas, crate::storage::INSUFFICIENT_DISK)?,
+                    None => Vec::new(),
+                };
+                let result = CheckResult {
+                    name: name.clone(),
+                    status: CheckStatus::NotRun,
+                    exit_code: None,
+                    reason: Some(refusal),
+                    program: Some(definition.command.program.clone()),
+                    args: definition.command.args.clone(),
+                    stdout: None,
+                    stderr: None,
+                    required: definition.required,
+                    remote: None,
+                };
+                if let Some(rustup) = &rustup {
+                    let caches = observations
+                        .into_iter()
+                        .map(|observation| {
+                            observation
+                                .record(cas, [attempt.task_id(), attempt.id(), &input.node, name])
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let check = TaskRuntimeCheckV1 {
+                        name: name.clone(),
+                        outcome: TaskRuntimeCheckOutcomeV1::NotRun,
+                        rustup_home: rustup.source,
+                    };
+                    warm_evidence.push((check, None, caches));
+                }
+                if definition.required {
+                    local_failed.push(name.clone());
+                }
+                let id = cas
+                    .put_json(&serde_json::to_value(result).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+                checks.insert(name.clone(), id);
+                continue;
+            }
             let sandbox =
                 Sandbox::materialize(&manifest, cas, Mode::ReadOnly).map_err(|e| e.to_string())?;
             review_sandbox::admit(self.policy.isolation(), &sandbox).map_err(|e| e.to_string())?;
@@ -1126,7 +1167,7 @@ impl CodeTaskDomain {
                 .policy
                 .rust_toolchain
                 .as_ref()
-                .filter(|request| request.checks.contains(name) && floor.is_none())
+                .filter(|request| request.checks.contains(name))
             {
                 // Only this kernel-owned materialized root is canonicalized. Operator
                 // mapping and seed paths retain their no-follow ancestor admission.
@@ -1160,15 +1201,6 @@ impl CodeTaskDomain {
                 remaining.min(attempt.reservation().deadline_unix_ms.saturating_sub(now));
             runner = runner.with_timeout(Duration::from_millis(remaining));
             let mut prepared = match session.as_mut() {
-                // Refused below the floor: nothing is prepared, and every declared kind keeps
-                // its one observation, naming why.
-                Some(session) if floor.is_some() => Some(PreparedCheck {
-                    key_lock: None,
-                    environment: Vec::new(),
-                    directories: Vec::new(),
-                    observations: session.skipped(cas, crate::storage::INSUFFICIENT_DISK)?,
-                    refusal: None,
-                }),
                 Some(session) if remaining > 0 => Some(session.prepare(
                     cas,
                     runner.local_environment(),
@@ -1215,9 +1247,16 @@ impl CodeTaskDomain {
                         runner.with_env(key.clone(), value.clone())
                     }),
             };
-            let refusal = floor
-                .clone()
-                .or_else(|| prepared.as_ref().and_then(|p| p.refusal.clone()));
+            // Preparation (the sandbox, a private toolchain copy, a Cache Snapshot) spent disk:
+            // the floor is read again right before the check would start (ADR-0144).
+            let refusal = prepared
+                .as_ref()
+                .and_then(|p| p.refusal.clone())
+                .or_else(|| {
+                    (remaining > 0)
+                        .then(crate::storage::ensure_free_disk)
+                        .and_then(Result::err)
+                });
             let started = remaining > 0 && refusal.is_none();
             let mut exceeded: Option<Excess> = None;
             let (mut result, timing) = if started {

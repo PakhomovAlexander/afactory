@@ -31,6 +31,10 @@ pub const CONTAINER_CHECK_RUNTIME: &str = "/af-check";
 #[derive(Debug)]
 pub struct CheckRuntime {
     path: PathBuf,
+    /// The directory `new` created, by device and inode: drop removes it only while its path
+    /// still names it (ADR-0144).
+    #[cfg(unix)]
+    identity: Option<crate::Identity>,
 }
 
 impl CheckRuntime {
@@ -39,8 +43,11 @@ impl CheckRuntime {
     pub fn new() -> std::io::Result<Self> {
         let directory = stale::check_tempdir()?;
         // From here the runtime owns removal; a failure below removes what was made.
+        let path = directory.keep();
         let runtime = Self {
-            path: directory.keep(),
+            #[cfg(unix)]
+            identity: crate::Identity::of(&path).ok(),
+            path,
         };
         for (_, name) in LAYOUT {
             std::fs::create_dir(runtime.path.join(name))?;
@@ -105,9 +112,20 @@ impl Drop for CheckRuntime {
         let (Some(parent), Some(name)) = (self.path.parent(), self.path.file_name()) else {
             return;
         };
-        if !stale::remove_tree_nofollow(parent, name) {
-            // Whatever is left keeps its `af-check-<pid>-` name; the next crash sweep after this
-            // process ends removes it.
+        #[cfg(unix)]
+        let removed = match self.identity {
+            // Only the directory this runtime created goes, through the claimed, identity-bound
+            // removal every other af removal uses; one that took its path since is left.
+            Some(identity) => crate::open_anchor(parent)
+                .and_then(|anchor| crate::remove_tree_at(&anchor, name, Some(identity)))
+                .is_ok(),
+            None => false,
+        };
+        #[cfg(not(unix))]
+        let removed = stale::remove_tree_nofollow(parent, name);
+        if !removed {
+            // Whatever is left keeps its `af-check-<pid>-` name (or its claim); the next crash
+            // sweep after this process ends removes it.
             eprintln!(
                 "af: could not remove the check runtime {}; a later run removes it",
                 self.path.display()
@@ -118,6 +136,21 @@ impl Drop for CheckRuntime {
 
 #[cfg(test)]
 mod tests {
+
+    #[cfg(unix)]
+    #[test]
+    fn a_runtime_whose_path_now_names_another_directory_leaves_it() {
+        let runtime = CheckRuntime::new().unwrap();
+        let path = runtime.path().to_path_buf();
+        let aside = path.with_extension("aside");
+        std::fs::rename(&path, &aside).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("sentinel"), b"keep").unwrap();
+        drop(runtime);
+        assert!(path.join("sentinel").is_file(), "the replacement is left");
+        std::fs::remove_dir_all(&path).unwrap();
+        std::fs::remove_dir_all(&aside).unwrap();
+    }
     use super::*;
 
     #[test]

@@ -187,15 +187,49 @@ pub(crate) struct Inventory {
     pub(crate) problems: Vec<Problem>,
     /// Readable Task Stores, for collection.
     pub(crate) task_stores: Vec<PathBuf>,
+    /// Each Store's directory identity as inventory reached it, opened from `/` without
+    /// following a link: what collection and gate cleanup check again before they touch it.
+    pub(crate) store_identities: BTreeMap<PathBuf, (PathBuf, review_sandbox::Identity)>,
 }
 
 impl Inventory {
+    /// Whether the Store at `state` is still the directory inventory reached: every component
+    /// from `/` a plain directory (no link) and the same device and inode. A Store whose path
+    /// now leads through a link, or names another directory, is left (ADR-0144).
+    pub(crate) fn still_the_store(&self, state: &Path) -> Result<(), String> {
+        let (anchor, measured) = self
+            .store_identities
+            .get(state)
+            .ok_or("its identity was not measured, so it is left")?;
+        match plain_path(anchor, state) {
+            Ok(now) if now == *measured => Ok(()),
+            Ok(_) => Err("another directory holds its path since it was measured; left".into()),
+            Err(why) => Err(why),
+        }
+    }
+
     pub(crate) fn total(&self) -> u64 {
         self.entries
             .iter()
             .map(|entry| entry.bytes)
             .fold(0, u64::saturating_add)
     }
+}
+
+/// The identity of the directory `path` names, reached from `anchor` (opened as given: a
+/// configured root, or `/` for a Store registered elsewhere) one component at a time without
+/// following a link: `Err` when any component below the anchor is a link or no directory.
+fn plain_path(anchor: &Path, path: &Path) -> Result<review_sandbox::Identity, String> {
+    let relative = path
+        .strip_prefix(anchor)
+        .map_err(|_| format!("{} is not below {}", path.display(), anchor.display()))?;
+    let anchor = review_sandbox::open_anchor(anchor)
+        .map_err(|error| format!("opening {}: {error}", anchor.display()))?;
+    let directory = review_sandbox::open_beneath(&anchor, relative).map_err(|error| {
+        format!("its path cannot be followed without a link, so it is left: {error}")
+    })?;
+    review_sandbox::Identity::of_descriptor(&directory)
+        .map_err(|error| format!("inspecting it: {error}"))
 }
 
 fn is_hex_key(name: &str) -> bool {
@@ -217,6 +251,40 @@ fn real_directories(root: &Path) -> Vec<PathBuf> {
         })
         .map(|entry| entry.path())
         .collect();
+    directories.sort();
+    directories
+}
+
+/// [`real_directories`] for an inventory: a root that exists but cannot be listed, or an entry
+/// that cannot be read, is a problem the inventory reports, never a root that holds nothing. An
+/// absent root is simply empty.
+fn listed(inventory: &mut Inventory, root: &Path) -> Vec<PathBuf> {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            inventory.problems.push(Problem {
+                path: root.to_path_buf(),
+                reason: format!("cannot be listed, so what it holds is not counted: {error}"),
+            });
+            return Vec::new();
+        }
+    };
+    let mut directories = Vec::new();
+    for entry in entries {
+        match entry.and_then(|entry| {
+            std::fs::symlink_metadata(entry.path()).map(|metadata| (entry.path(), metadata))
+        }) {
+            Ok((path, metadata)) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                directories.push(path);
+            }
+            Ok(_) => {}
+            Err(error) => inventory.problems.push(Problem {
+                path: root.to_path_buf(),
+                reason: format!("an entry cannot be read, so it is not counted: {error}"),
+            }),
+        }
+    }
     directories.sort();
     directories
 }
@@ -310,6 +378,28 @@ pub(crate) fn campaign_in_use(state: &Path) -> Option<String> {
         .map(|(task, _)| format!("Task `{task}` holds a live writer lease"))
 }
 
+/// Hold the campaign at `state` exclusively for its removal: the run lock `af review run` takes
+/// shared, taken exclusive and kept through the identity-bound removal, so no run can start on
+/// it in between (ADR-0144). `Err` says why it is in use: a run holds it, or a Task of it holds
+/// a live writer lease.
+pub(crate) fn hold_campaign_for_removal(
+    state: &Path,
+) -> Result<nix::fcntl::Flock<std::fs::File>, String> {
+    let path = state.join(RUNNING_LOCK);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|error| format!("opening {}: {error}", path.display()))?;
+    let held = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
+        .map_err(|_| "a running `af review run` holds it".to_string())?;
+    if let Some((task, _)) = live_writers(state).first() {
+        return Err(format!("Task `{task}` holds a live writer lease"));
+    }
+    Ok(held)
+}
+
 /// Held by `af review run` for as long as it runs one campaign: while it lives, no sweep and
 /// no `af review gc` removes the campaign's state.
 pub(crate) fn hold_running(state: &Path) -> Result<nix::fcntl::Flock<std::fs::File>, String> {
@@ -385,7 +475,7 @@ pub(crate) enum Detail {
 pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
     let mut inventory = Inventory::default();
     warm_keys(roots, &mut inventory);
-    for path in real_directories(&roots.workspaces) {
+    for path in listed(&mut inventory, &roots.workspaces) {
         if path
             .file_name()
             .and_then(|name| name.to_str())
@@ -407,11 +497,11 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
         });
         Vec::new()
     });
-    let mut campaigns: BTreeSet<PathBuf> = real_directories(&roots.campaigns)
+    let mut campaigns: BTreeSet<PathBuf> = listed(&mut inventory, &roots.campaigns)
         .into_iter()
-        .chain(real_directories(&roots.local_reviews))
+        .chain(listed(&mut inventory, &roots.local_reviews))
         .collect();
-    let mut tasks: BTreeSet<PathBuf> = real_directories(&roots.tasks).into_iter().collect();
+    let mut tasks: BTreeSet<PathBuf> = listed(&mut inventory, &roots.tasks).into_iter().collect();
     for entry in &registered {
         match entry.kind {
             StoreKind::Task => {
@@ -420,7 +510,7 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
             StoreKind::Review => {
                 campaigns.insert(entry.path.clone());
             }
-            StoreKind::ReviewRoot => campaigns.extend(real_directories(&entry.path)),
+            StoreKind::ReviewRoot => campaigns.extend(listed(&mut inventory, &entry.path)),
         }
     }
     for path in campaigns.into_iter().filter(|path| has_store(path)) {
@@ -440,7 +530,7 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
     for path in tasks.into_iter().filter(|path| has_store(path)) {
         match written_by_another_release(&path) {
             Ok(Some(reason)) => unreadable(&mut inventory, &path, reason),
-            Ok(None) if detail == Detail::Tasks => task_store(&mut inventory, &path),
+            Ok(None) if detail == Detail::Tasks => task_store(&mut inventory, roots, &path),
             Ok(None) => {
                 measure_into(&mut inventory, Kind::TaskStore, &path, |path| {
                     (
@@ -450,7 +540,7 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
                         ),
                     )
                 });
-                inventory.task_stores.push(path);
+                record_store(&mut inventory, roots, path);
             }
             Err(reason) => inventory.problems.push(Problem { path, reason }),
         }
@@ -511,14 +601,14 @@ fn unreadable(inventory: &mut Inventory, path: &Path, reason: String) {
 }
 
 fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
-    for project in real_directories(&roots.warm) {
+    for project in listed(inventory, &roots.warm) {
         let Some(project_name) = project.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
         if !is_hex_key(project_name) {
             continue;
         }
-        for key in real_directories(&project) {
+        for key in listed(inventory, &project) {
             let Some(toolchain) = key.file_name().and_then(|name| name.to_str()) else {
                 continue;
             };
@@ -555,7 +645,31 @@ fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
     }
 }
 
-fn task_store(inventory: &mut Inventory, state: &Path) {
+/// A readable Task Store joins collection only when its path is a plain directory from `/`;
+/// one whose path leads through a link is a problem, and is left.
+fn record_store(inventory: &mut Inventory, roots: &Roots, state: PathBuf) {
+    // Below af's own root the root is the anchor, as configured; elsewhere (a registered
+    // `--state` Store, recorded resolved) every component from `/` is checked.
+    let anchor = if state.starts_with(&roots.tasks) {
+        roots.tasks.clone()
+    } else {
+        PathBuf::from("/")
+    };
+    match plain_path(&anchor, &state) {
+        Ok(identity) => {
+            inventory
+                .store_identities
+                .insert(state.clone(), (anchor, identity));
+            inventory.task_stores.push(state);
+        }
+        Err(reason) => inventory.problems.push(Problem {
+            path: state,
+            reason,
+        }),
+    }
+}
+
+fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
     let plan = Cas::open_existing(state.join("cas"))
         .map_err(|error| error.to_string())
         .and_then(|cas| {
@@ -645,7 +759,7 @@ fn task_store(inventory: &mut Inventory, state: &Path) {
         reason: None,
         identity: None,
     });
-    inventory.task_stores.push(state.to_path_buf());
+    record_store(inventory, roots, state.to_path_buf());
 }
 
 /// Which rule took an entry.
@@ -748,6 +862,10 @@ pub(crate) fn sweep(
     let mut retried: BTreeMap<PathBuf, Vec<gate::Attempted>> = BTreeMap::new();
     if apply && !policy.keep_gate_pull_requests {
         for state in &stock.task_stores {
+            if let Err(why) = stock.still_the_store(state) {
+                report.failures.push(format!("{}: {why}", state.display()));
+                continue;
+            }
             let tried = gate::retry_in_store(state);
             report.gate_cleanups.extend(tried.iter().cloned());
             retried.insert(state.clone(), tried);
@@ -849,6 +967,12 @@ fn finish_abandoned_claims(roots: &Roots) -> Vec<String> {
                 .filter_map(|entry| entry.path.parent().map(Path::to_path_buf)),
         );
     }
+    // Claude Attempt and probe histories are removed through the same claim.
+    parents.extend(
+        crate::providers::registered_claude_config_dirs()
+            .into_iter()
+            .map(|directory| directory.join("projects")),
+    );
     parents.sort();
     parents.dedup();
     let mut left = Vec::new();
@@ -901,8 +1025,15 @@ fn collect(
     // A Store that went away since inventory, or one still being created that has no CAS yet,
     // holds nothing to collect: neither is a failure.
     let gone = |state: &Path| !has_store(state) || !state.join("cas").is_dir();
-    for state in &stock.task_stores {
+    let stores = stock.task_stores.clone();
+    for state in &stores {
         if gone(state) {
+            continue;
+        }
+        if let Err(why) = stock.still_the_store(state) {
+            report
+                .failures
+                .push(format!("collecting {}: {why}", state.display()));
             continue;
         }
         // An unchanged Store whose last look found nothing to do until later is not read again.
@@ -1104,15 +1235,13 @@ fn evict(roots: &Roots, policy: &StoragePolicy, entry: &Entry) -> Result<u64, St
             }
         }
         Kind::Workspace => {
-            if review_sandbox::workspace_in_use(&entry.path) {
-                return Err(failed("a run holds it now".into()));
-            }
+            // Held exclusively until it is gone: no run clones from it in between.
+            let _held = review_sandbox::hold_workspace_for_removal(&entry.path).map_err(failed)?;
             remove_entry(roots, entry).map_err(failed)
         }
         Kind::Campaign => {
-            if let Some(why) = campaign_in_use(&entry.path) {
-                return Err(failed(why));
-            }
+            // Held exclusively until it is gone: no `af review run` starts on it in between.
+            let _held = hold_campaign_for_removal(&entry.path).map_err(failed)?;
             remove_entry(roots, entry).map_err(failed)
         }
         Kind::UnreadableStore => {
@@ -1412,14 +1541,11 @@ impl review_pipeline::storage::StorageHost for MachineStorage {
         if judge_floor(&volumes(), floor).is_ok() {
             return Ok(());
         }
-        // One sweep per process: a second refusal right after it would find nothing new.
-        static SWEPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if !SWEPT.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            // The same sweep as after a run: the budget, and collection by age only when the
-            // operator turned it on. A disk that is full for other reasons is not a licence to
-            // delete what af keeps by age.
-            report_to_stderr(&sweep(&self.roots, &self.policy, self.policy.auto_gc, true));
-        }
+        // Every time the floor is met: what became evictable since the last one (a check that
+        // finished, a key released) may restore the room. The same sweep as after a run: the
+        // budget, and collection by age only when the operator turned it on; a disk that is
+        // full for other reasons is not a licence to delete what af keeps by age.
+        report_to_stderr(&sweep(&self.roots, &self.policy, self.policy.auto_gc, true));
         judge_floor(&volumes(), floor)
     }
 

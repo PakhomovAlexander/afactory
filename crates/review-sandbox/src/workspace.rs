@@ -141,6 +141,21 @@ pub fn workspace_in_use(root: &Path) -> bool {
     nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock).is_err()
 }
 
+/// Hold the Workspace at `root` exclusively for its removal: no run can clone from it while the
+/// returned lock lives (a run holds `workspace.lock` shared while it clones). `Err` when a run
+/// holds it now. The lock is held through the identity-bound removal (ADR-0144).
+pub fn hold_workspace_for_removal(root: &Path) -> Result<nix::fcntl::Flock<std::fs::File>, String> {
+    let path = root.join(WORKSPACE_LOCK);
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|error| format!("opening {}: {error}", path.display()))?;
+    nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
+        .map_err(|_| "a run holds it now".to_string())
+}
+
 /// The machine-local root every Warm Workspace lives under: `$XDG_CACHE_HOME/af/workspaces`,
 /// or `~/.cache/af/workspaces` when the variable is unset. A relative value is refused.
 pub fn default_workspace_cache_root() -> Result<PathBuf, WorkspaceError> {

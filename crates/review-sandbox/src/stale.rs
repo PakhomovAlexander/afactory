@@ -34,7 +34,7 @@ pub(crate) const PRESERVED: &str = "preserved";
 
 /// Directories deeper than this are not walked; a sandbox tree is nowhere near it, and a bound
 /// keeps a hostile tree from exhausting the stack.
-const MAX_DEPTH: u32 = 128;
+pub(crate) const MAX_DEPTH: u32 = 128;
 
 /// A fresh, private directory for one sandbox or template, named so a later sweep can
 /// attribute it to this process.
@@ -127,6 +127,13 @@ pub fn sweep_stale_sandboxes() -> SweepReport {
 /// another process's `TMPDIR`.
 pub fn sweep_stale_sandboxes_in(root: &Path) -> SweepReport {
     let mut report = SweepReport::default();
+    // A runtime or sandbox removal a dead process left claimed is finished first (ADR-0144).
+    #[cfg(unix)]
+    {
+        let (removed, left) = crate::finish_abandoned_claims(root);
+        report.removed += removed.len();
+        report.failed += left.len();
+    }
     let Ok(entries) = std::fs::read_dir(root) else {
         return report;
     };
@@ -136,10 +143,10 @@ pub fn sweep_stale_sandboxes_in(root: &Path) -> SweepReport {
             continue;
         };
         let path = entry.path();
-        let is_directory = std::fs::symlink_metadata(&path)
-            .map(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
-            .unwrap_or(false);
-        if !is_directory {
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
             continue;
         }
         if pid == own_pid || process_exists(pid) {
@@ -150,13 +157,32 @@ pub fn sweep_stale_sandboxes_in(root: &Path) -> SweepReport {
             report.preserved += 1;
             continue;
         }
-        if remove_tree_nofollow(root, &entry.file_name()) {
+        if remove_listed(root, &entry.file_name(), &metadata) {
             report.removed += 1;
         } else {
             report.failed += 1;
         }
     }
     report
+}
+
+/// Remove the directory a sweep listed, only while its name still holds that directory: the
+/// identity the listing measured binds the claimed removal (ADR-0144).
+#[cfg(unix)]
+fn remove_listed(root: &Path, name: &std::ffi::OsStr, listed: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let identity = crate::Identity {
+        device: listed.dev(),
+        inode: listed.ino(),
+    };
+    crate::open_anchor(root)
+        .and_then(|anchor| crate::remove_tree_at(&anchor, name, Some(identity)))
+        .is_ok()
+}
+
+#[cfg(not(unix))]
+fn remove_listed(root: &Path, name: &std::ffi::OsStr, _listed: &std::fs::Metadata) -> bool {
+    remove_tree_nofollow(root, name)
 }
 
 /// Remove `<parent>/<name>` and everything below it without following a single link: every

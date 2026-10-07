@@ -447,10 +447,29 @@ impl ClaudeSessionStore {
             if slug.is_empty() || slug.contains('/') || slug == "." || slug == ".." {
                 continue;
             }
-            if remove_child_nofollow(&projects, slug, 0)
-                .map_err(|errno| format!("removing a Claude project directory: {errno}"))?
-            {
-                removed += 1;
+            // Measured now, once the Attempt has exited, and removed only while it is still
+            // that directory: claimed, checked and emptied through descriptors (ADR-0144).
+            let identity = match nix::sys::stat::fstatat(
+                &projects,
+                slug.as_str(),
+                nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
+            ) {
+                Ok(stat) => review_sandbox::Identity::of_stat(&stat),
+                Err(nix::errno::Errno::ENOENT) => continue,
+                Err(errno) => {
+                    return Err(format!("inspecting a Claude project directory: {errno}"));
+                }
+            };
+            match review_sandbox::remove_tree_at(
+                &projects,
+                std::ffi::OsStr::new(slug),
+                Some(identity),
+            ) {
+                Ok(()) => removed += 1,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!("removing a Claude project directory: {error}"));
+                }
             }
         }
         Ok(removed)
@@ -480,60 +499,6 @@ impl ClaudeSessionStore {
         names.sort();
         Ok(names)
     }
-}
-
-/// Directories deeper than this are not walked; a project directory is nowhere near it.
-const MAX_REMOVAL_DEPTH: u32 = 64;
-
-/// Remove `name` below `parent` and everything under it through descriptors opened without
-/// following a link; a link or a file at the name is unlinked as what it is. `Ok(false)` when
-/// the name is absent.
-fn remove_child_nofollow(
-    parent: &nix::dir::Dir,
-    name: &str,
-    depth: u32,
-) -> Result<bool, nix::errno::Errno> {
-    use nix::dir::{Dir, Type};
-    use nix::errno::Errno;
-    use nix::fcntl::OFlag;
-    use nix::sys::stat::{Mode as NixMode, fchmod};
-    use nix::unistd::{UnlinkatFlags, unlinkat};
-
-    if depth > MAX_REMOVAL_DEPTH {
-        return Err(Errno::ELOOP);
-    }
-    let flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY;
-    let mut directory = match Dir::openat(parent, name, flags, NixMode::empty()) {
-        Ok(directory) => directory,
-        Err(Errno::ENOENT) => return Ok(false),
-        Err(Errno::ENOTDIR | Errno::ELOOP) => {
-            unlinkat(parent, name, UnlinkatFlags::NoRemoveDir)?;
-            return Ok(true);
-        }
-        Err(errno) => return Err(errno),
-    };
-    fchmod(&directory, NixMode::S_IRWXU)?;
-    let mut entries = Vec::new();
-    for entry in directory.iter() {
-        let entry = entry?;
-        let Ok(child) = entry.file_name().to_str() else {
-            return Err(Errno::EILSEQ);
-        };
-        if child == "." || child == ".." {
-            continue;
-        }
-        entries.push((child.to_owned(), entry.file_type()));
-    }
-    for (child, kind) in entries {
-        if kind.is_some_and(|kind| kind != Type::Directory) {
-            unlinkat(&directory, child.as_str(), UnlinkatFlags::NoRemoveDir)?;
-        } else {
-            remove_child_nofollow(&directory, &child, depth + 1)?;
-        }
-    }
-    drop(directory);
-    unlinkat(parent, name, UnlinkatFlags::RemoveDir)?;
-    Ok(true)
 }
 
 /// Unlink the transcript in the exact directory the search validated. Nothing is resolved by

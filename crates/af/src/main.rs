@@ -586,9 +586,17 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
         let candidate = old_enough && !kept.contains(campaign.id.as_str());
         // A campaign a running `af review run` holds, or whose Task holds a live writer lease,
         // is never removed (ADR-0144).
-        let live = candidate
-            .then(|| storage::campaign_in_use(&root.join(&campaign.state_dir)))
-            .flatten();
+        // With --apply it is held exclusively from this look through the removal, so no run
+        // starts on it in between; a preview only looks, and writes nothing.
+        let held = (candidate && options.apply)
+            .then(|| storage::hold_campaign_for_removal(&root.join(&campaign.state_dir)));
+        let live = match &held {
+            Some(Err(why)) => Some(why.clone()),
+            Some(Ok(_)) => None,
+            None => candidate
+                .then(|| storage::campaign_in_use(&root.join(&campaign.state_dir)))
+                .flatten(),
+        };
         let action = if !candidate {
             "keep"
         } else if live.is_some() {
