@@ -25,8 +25,7 @@ use review_store::Cas;
 use serde_json::Value;
 
 use super::gate::{
-    GateRepository, GateRole, ToolError, Tools, delete_refspec, gate_message, is_ref_component,
-    push_refspec,
+    GateRepository, GateRole, ToolError, Tools, gate_message, is_ref_component, push_refspec,
 };
 use super::{EvidenceBase, GithubPrTarget, Redactor, RemoteCheckOutcome, RemoteCheckRequest};
 
@@ -263,15 +262,12 @@ fn cleanup_failures(
     let url = target.push_url.as_str();
     match repository.ls_remote(&tools, url, &[&branches[0].1, &branches[1].1]) {
         Ok(found) => {
-            let mut refspecs = Vec::new();
+            let mut deletions = Vec::new();
             for (branch, reference, recorded) in &branches {
                 match (found.get(reference.as_str()), recorded) {
                     (None, _) => {}
                     (Some(now), Some(recorded)) if now == recorded => {
-                        match delete_refspec(reference, task_id) {
-                            Ok(refspec) => refspecs.push(refspec),
-                            Err(error) => failures.push(error),
-                        }
+                        deletions.push((reference.clone(), recorded.clone()));
                     }
                     (Some(now), Some(recorded)) => failures.push(format!(
                         "branch {branch} was left: it holds {now}, not the recorded {recorded}"
@@ -282,10 +278,16 @@ fn cleanup_failures(
                     )),
                 }
             }
-            if !refspecs.is_empty()
-                && let Err(error) = repository.push(&tools, url, &refspecs)
-            {
-                failures.push(error.describe("deleting the af-gate branches"));
+            // Each deletion is bound at the server to its recorded commit, so a branch moved
+            // after the read-back above is not deleted either.
+            if !deletions.is_empty() {
+                match repository.delete(&tools, url, task_id, &deletions) {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => failures.push(error.describe(
+                        "deleting the af-gate branches (each only at its recorded commit)",
+                    )),
+                    Err(error) => failures.push(error),
+                }
             }
         }
         Err(error) => failures.push(error.describe("reading the af-gate branches")),

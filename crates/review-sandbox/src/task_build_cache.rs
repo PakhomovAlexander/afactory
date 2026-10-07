@@ -216,6 +216,11 @@ impl TaskBuildCacheKeyLock {
         &self.path
     }
 
+    /// The device and inode of the key directory this lock holds open.
+    pub fn identity(&self) -> std::io::Result<crate::Identity> {
+        crate::Identity::of_descriptor(&*self.key)
+    }
+
     /// Lock one kind below this key, waiting at most `wait`.
     pub fn lock_kind(&self, kind: &str, wait: Duration) -> Result<TaskBuildCacheLock, String> {
         lock_kind_at(Arc::clone(&self.key), &self.path, kind, wait, &self.held)

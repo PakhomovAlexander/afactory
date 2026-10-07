@@ -66,9 +66,12 @@ remote check left two branches and a draft pull request open.
    as given (`$XDG_CACHE_HOME/af/…`, `$XDG_STATE_HOME/af/…`, `$XDG_DATA_HOME/af/versions`, a
    Claude config directory's `projects`), or `/` for a Store registered elsewhere — through
    directory descriptors, `O_NOFOLLOW | O_DIRECTORY` on every component below the anchor, and
-   removes the tree through the descriptor it reached, never through a path. A symlink below the
-   anchor, or a directory that is not the one inventory measured, makes that removal fail and be
-   reported; it is never followed.
+   removes the tree through the descriptor it reached, never through a path. A symlink on the way
+   from the anchor to the target, or a directory that is not the one inventory measured, makes
+   that removal fail and be reported; it is never followed. Every removal requires that measured
+   identity: a warm key is compared with the key directory its lock holds open, and a directory
+   whose identity was never measured is left. Inside the removed tree a symlink is unlinked as
+   the entry it is, never followed, so a Store or campaign that holds a link can still go.
 4. **One sweep.** Collection first, when asked: gate leftovers of finished Tasks, finished Tasks
    beyond the newest `keep_tasks` of each Store, campaigns beyond the newest `keep_campaigns`, and
    unreadable Stores, each idle at least `keep_days`. A finished Task whose remote checks pushed
@@ -83,7 +86,9 @@ remote check left two branches and a draft pull request open.
    default or records a pin; one that became protected since inventory is kept and reported. It
    stops when the total fits or nothing else may go, and says which. Every removal is reported on
    stderr, and the sweep that ends `af task run` records its removals, failures, stop reason and
-   totals on the Task that run executed as one `storage_sweep` transition carrying
+   totals on the Task that run executed — a Task that sweep never collects or evicts, so the
+   record always has its Task; a later sweep takes it under the same rules as any other — as one
+   `storage_sweep` transition carrying
    `af/TaskStorageSweep@1` inline (at most 256 removals and 64 failures listed, the rest counted;
    a sweep that removed nothing and failed nothing records nothing), which `af task show` prints
    as one line. Triggers: the end of every `af task run`, `af task start --execute` and `af
@@ -130,10 +135,16 @@ remote check left two branches and a draft pull request open.
    recorded repository. It closes a recorded pull request only while it is open, its base
    repository is the recorded one, its head and base are exactly this Task's
    `af-gate/<task-id>/head` and `af-gate/<task-id>/base`, and its head commit is the recorded
-   head commit. It deletes a branch only while `ls-remote` on the push URL shows exactly the
-   recorded commit for it (base: the base commit, head: the latest head commit), in one atomic
-   push of the matching deletions, with the gate's own `gh` and `git`, never force and never
-   another ref. A branch or pull request that differs is left in place and named in the reason of
+   head commit, read again immediately before it is closed. GitHub has no conditional close, so a
+   pull request whose head moves in that last instant can still be closed; a close is reversible
+   and deletes nothing, and the branches are protected as follows. It deletes a branch only while
+   `ls-remote` on the push URL shows exactly the recorded commit for it (base: the base commit,
+   head: the latest head commit), in one atomic push of the matching deletions that carries
+   `--force-with-lease=<branch>:<recorded commit>` for each: the remote deletes a branch only
+   while it still holds that commit, so a branch moved after the read-back is not deleted either,
+   and neither is the other one. A lease on a deletion is a compare-and-delete, not a force: it
+   overwrites nothing, and the gate never pushes `--force`, an unbound lease or a `+` refspec. It
+   uses the gate's own `gh` and `git` and never names another ref. A branch or pull request that differs is left in place and named in the reason of
    a failed cleanup. The result is one `gate_cleanup` transition carrying `af/TaskGateCleanup@1`
    inline: done, or failed with its redacted reason. It never changes the Task's result; a failed
    one is retried by the next sweep while the mapping still names the repository;

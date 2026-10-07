@@ -3874,6 +3874,9 @@ fn probe_claude_weekly_limits(
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 
     let reader_slot = ClaudeReaderSlot::acquire()?;
+    // An af-owned working directory, dropped after the child below has exited: the CLI keys its
+    // project history by working directory, and this one's history is removed with it.
+    let directory = ProbeDirectory::new(spec)?;
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 50,
@@ -3889,7 +3892,7 @@ fn probe_claude_weekly_limits(
     let mut command = CommandBuilder::new(program.as_os_str());
     command.args(["--setting-sources", "user", "/usage"]);
     command.env_clear();
-    command.cwd("/");
+    command.cwd(directory.path().as_os_str());
     command.env("PATH", probe_path);
     if let Some(home) = std::env::var_os("HOME").filter(|value| Path::new(value).is_absolute()) {
         command.env("HOME", home);
@@ -4205,8 +4208,21 @@ impl Drop for ProbeDirectory {
         }
         slugs.sort();
         slugs.dedup();
-        let projects: Vec<_> = slugs.into_iter().map(|slug| (slug, None)).collect();
-        let (_, failures) = crate::storage::remove_claude_projects(config, &projects);
+        // Each project directory the CLI left is measured now that the probe has exited, and
+        // only that directory is removed: one replaced before its removal is left and reported.
+        let mut failures = Vec::new();
+        let mut projects = Vec::new();
+        for slug in slugs {
+            match review_sandbox::Identity::of(&config.join("projects").join(&slug)) {
+                Ok(identity) => projects.push((slug, Some(identity))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    failures.push(format!("projects/{slug} could not be measured: {error}"))
+                }
+            }
+        }
+        let (_, left) = crate::storage::remove_claude_projects(config, &projects);
+        failures.extend(left);
         for failure in failures {
             eprintln!("af: warning: the Claude history of a provider probe was left: {failure}");
         }

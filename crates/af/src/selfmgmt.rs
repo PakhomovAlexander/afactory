@@ -1646,8 +1646,8 @@ pub(crate) fn uninstall(purge: bool) -> Result<(), String> {
             .map_err(|error| format!("removing {}: {error}", paths.bin.display()))?;
         println!("removed {}", paths.bin.display());
     }
-    if paths.versions.is_dir() {
-        remove_below_parent(&paths.versions)?;
+    if let Some(identity) = measured_directory(&paths.versions)? {
+        remove_below_parent(&paths.versions, identity)?;
         println!("removed {}", paths.versions.display());
     }
     if purge {
@@ -1662,8 +1662,8 @@ pub(crate) fn uninstall(purge: bool) -> Result<(), String> {
             config::cache_home()?.join("af"),
             config::data_home()?.join("af"),
         ] {
-            if dir.exists() {
-                remove_below_parent(&dir)?;
+            if let Some(identity) = measured_directory(&dir)? {
+                remove_below_parent(&dir, identity)?;
                 println!("removed {}", dir.display());
             }
         }
@@ -1673,13 +1673,30 @@ pub(crate) fn uninstall(purge: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// The identity of the directory `dir` names when uninstall chooses it, without following a
+/// final link; `None` when nothing is there.
+fn measured_directory(dir: &Path) -> Result<Option<review_sandbox::Identity>, String> {
+    match std::fs::symlink_metadata(dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("inspecting {}: {error}", dir.display())),
+        Ok(metadata) if !metadata.is_dir() => Err(format!(
+            "{} is not a directory af made (a symlink or a file); left in place",
+            dir.display()
+        )),
+        Ok(_) => review_sandbox::Identity::of(dir)
+            .map(Some)
+            .map_err(|error| format!("inspecting {}: {error}", dir.display())),
+    }
+}
+
 /// Remove `dir` and everything below it through descriptors opened from its parent as given,
-/// never following a link below it (ADR-0144).
-fn remove_below_parent(dir: &Path) -> Result<(), String> {
+/// never following a link below it, and only while it is still the directory `identity`
+/// measured when uninstall chose it (ADR-0144).
+fn remove_below_parent(dir: &Path, identity: review_sandbox::Identity) -> Result<(), String> {
     let parent = dir
         .parent()
         .ok_or_else(|| format!("removing {}: it has no parent", dir.display()))?;
-    review_sandbox::remove_beneath(parent, dir, None)
+    review_sandbox::remove_beneath(parent, dir, Some(identity))
         .map_err(|error| format!("removing {}: {error}", dir.display()))
 }
 

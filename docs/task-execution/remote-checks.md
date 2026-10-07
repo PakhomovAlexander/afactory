@@ -179,7 +179,10 @@ them. When the Task finishes, af closes the draft gate pull request and deletes 
 the Task's recorded evidence. It closes a pull request only while it is open, its base repository
 is the recorded one, its head and base are exactly the Task's two branches and its head commit is
 the recorded head commit. It deletes a branch only while the push target shows exactly the
-recorded commit for it, in one atomic push. A branch or pull request that differs is left in
+recorded commit for it, in one atomic push that binds each deletion to that commit with
+`--force-with-lease=<branch>:<commit>`: the remote refuses the deletion of a branch that moved
+after the read-back, and the push leaves both. A lease on a deletion overwrites nothing; the gate
+never pushes `--force` or a `+` refspec. A branch or pull request that differs is left in
 place and named in the reason of a failed cleanup. It records the outcome as a `gate_cleanup` in
 the Task's log, which `af task show` prints (`gate cleanup: done; …`) and `--json` carries under
 `gate_cleanups`. A failed cleanup never changes the Task's result; the next sweep (after a run,

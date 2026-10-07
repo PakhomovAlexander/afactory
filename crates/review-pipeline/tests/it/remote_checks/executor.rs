@@ -1074,6 +1074,67 @@ fn a_replaced_head_branch_and_its_pull_request_are_left_and_named() {
     );
 }
 
+/// ADR-0144: each deletion is bound at the server to its recorded commit. A head branch another
+/// pusher moves after the cleanup read it back, right before the deletion's push, is not
+/// deleted, and the atomic push leaves the base branch too; the cleanup is recorded failed.
+#[test]
+fn a_branch_moved_between_the_read_back_and_the_push_is_not_deleted() {
+    use review_core::task::remote_check::GateCleanupOutcomeV1;
+    use std::os::unix::fs::PermissionsExt;
+    let setup = setup();
+    setup.passing();
+    let candidate = setup.snapshots.candidate(&setup.cas, "version 2\n");
+    let outcome = setup.run(&candidate, OWNER);
+    expect(&outcome, RemoteCheckStateV1::Observed, None);
+    let base = setup.remote.branch("base").unwrap();
+    assert_ne!(setup.remote.branch("head").as_deref(), Some(base.as_str()));
+    // A `git` that moves the head branch to the base commit just before any push runs: the
+    // read-back saw the recorded commit, the push meets another one.
+    let racer = tempfile::tempdir().unwrap();
+    let script = racer.path().join("git");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nPATH='{}'; export PATH\ncase \" $* \" in *\" push \"*) git --git-dir '{}' \
+             update-ref refs/heads/af-gate/{TASK}/head {base} ;; esac\nexec git \"$@\"\n",
+            std::env::var("PATH").unwrap(),
+            setup.remote.bare.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut settings = setup.remote.settings();
+    let fakes = settings.path.take().unwrap();
+    settings.path = Some(
+        std::env::join_paths(
+            std::iter::once(racer.path().to_path_buf()).chain(std::env::split_paths(&fakes)),
+        )
+        .unwrap(),
+    );
+    let cleanup = github_pr::cleanup(
+        TASK,
+        &setup.remote.target(),
+        &recorded(&outcome),
+        None,
+        &settings,
+        Instant::now() + LIMIT,
+    );
+    cleanup.validate(TASK).unwrap();
+    assert_eq!(cleanup.outcome, GateCleanupOutcomeV1::Failed, "{cleanup:?}");
+    let reason = cleanup.reason.clone().unwrap();
+    assert!(reason.contains("deleting the af-gate branches"), "{reason}");
+    assert_eq!(
+        setup.remote.branch("head").as_deref(),
+        Some(base.as_str()),
+        "the moved head branch stays"
+    );
+    assert_eq!(
+        setup.remote.branch("base").as_deref(),
+        Some(base.as_str()),
+        "the atomic push left the base branch as well"
+    );
+}
+
 /// A pull request whose head commit is not the recorded one is left open; a target that names
 /// another repository than the evidence touches nothing at all.
 #[test]

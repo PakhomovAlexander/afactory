@@ -664,6 +664,23 @@ impl GateRepository {
         self.git(tools, &args, None, false, &[]).map(|_| ())
     }
 
+    /// One atomic deletion of this Task's gate branches, each bound at the server to the commit
+    /// the gate recorded for it: `deletions` pairs a reference with that commit, and the push
+    /// carries `--force-with-lease=<reference>:<commit>` for each, so the remote deletes a
+    /// branch only while it still holds exactly that commit (ADR-0144). A lease on a deletion is
+    /// a compare-and-delete: it overwrites nothing, and a branch another pusher moved, even
+    /// between the read-back and this push, makes the whole push fail and leaves every branch.
+    pub(super) fn delete(
+        &self,
+        tools: &Tools<'_>,
+        url: &str,
+        task_id: &str,
+        deletions: &[(String, String)],
+    ) -> Result<Result<(), ToolError>, String> {
+        let args = delete_arguments(url, task_id, deletions)?;
+        Ok(self.git(tools, &args, None, false, &[]).map(|_| ()))
+    }
+
     /// Walk `tip` down to `base`: every commit has exactly one parent, the fixed identity and a
     /// head gate message of this Task and owner, and the walk ends at exactly `base`. Returns
     /// the head commits, tip first, each with the Snapshot its message names; the caller binds
@@ -741,6 +758,36 @@ pub(super) fn push_arguments(url: &str, refspecs: &[String]) -> Vec<String> {
     ];
     args.extend(refspecs.iter().cloned());
     args
+}
+
+/// The exact argument vector of a gate cleanup's deletion: one lease per deleted branch on its
+/// recorded commit, then the deletion refspecs of [`delete_refspec`]. Nothing but this Task's two
+/// branches can be named, and nothing is written, only deleted. Kept apart so a test can pin it.
+pub(super) fn delete_arguments(
+    url: &str,
+    task_id: &str,
+    deletions: &[(String, String)],
+) -> Result<Vec<String>, String> {
+    let mut leases = Vec::new();
+    let mut refspecs = Vec::new();
+    for (reference, commit) in deletions {
+        if !is_hex_object(commit) {
+            return Err("a gate cleanup deletes a branch only at a recorded commit".into());
+        }
+        refspecs.push(delete_refspec(reference, task_id)?);
+        leases.push(format!("--force-with-lease={reference}:{commit}"));
+    }
+    let mut args = vec![
+        "push".to_string(),
+        "--atomic".to_string(),
+        "--porcelain".to_string(),
+        "--no-verify".to_string(),
+    ];
+    args.extend(leases);
+    args.push("--".to_string());
+    args.push(url.to_string());
+    args.extend(refspecs);
+    Ok(args)
 }
 
 /// C-style quote a path for `git fast-import`, so any byte sequence a manifest can hold is
@@ -844,11 +891,49 @@ mod tests {
         ] {
             assert!(delete_refspec(reference, task).is_err(), "{reference}");
         }
-        let args = push_arguments("/srv/gate.git", &[":refs/heads/af-gate/t/head".into()]);
-        assert!(
-            args.iter()
-                .all(|arg| !arg.starts_with('+') && !arg.starts_with("--force"))
+        let commit = "c".repeat(40);
+        let args = delete_arguments(
+            "/srv/gate.git",
+            "t",
+            &[("refs/heads/af-gate/t/head".into(), commit.clone())],
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            [
+                "push".to_string(),
+                "--atomic".into(),
+                "--porcelain".into(),
+                "--no-verify".into(),
+                format!("--force-with-lease=refs/heads/af-gate/t/head:{commit}"),
+                "--".into(),
+                "/srv/gate.git".into(),
+                ":refs/heads/af-gate/t/head".into(),
+            ]
         );
+        // The only force-like argument is a lease bound to a recorded commit; never a bare
+        // `--force`, `-f`, an unbound lease or a `+` refspec.
+        assert!(args.iter().all(|arg| !arg.starts_with('+')
+            && arg != "--force"
+            && arg != "-f"
+            && arg != "--force-with-lease"
+            && (!arg.starts_with("--force")
+                || arg.starts_with("--force-with-lease=refs/heads/af-gate/t/"))));
+        for refused in [
+            ("refs/heads/main", commit.as_str()),
+            ("refs/heads/af-gate/t/head", "HEAD"),
+            ("refs/heads/af-gate/t/head", ""),
+        ] {
+            assert!(
+                delete_arguments(
+                    "/srv/gate.git",
+                    "t",
+                    &[(refused.0.into(), refused.1.into())]
+                )
+                .is_err(),
+                "{refused:?}"
+            );
+        }
     }
 
     #[test]

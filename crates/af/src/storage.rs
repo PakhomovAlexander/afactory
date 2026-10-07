@@ -717,6 +717,10 @@ pub(crate) fn sweep(
             entry.kind != Kind::TaskStore
                 && entry.in_use.is_none()
                 && entry.last_use_unix_ms.saturating_add(HOUR_MS) <= now
+                && !entry
+                    .task_id
+                    .as_deref()
+                    .is_some_and(|task_id| is_run_task(&entry.path, task_id))
         })
         .collect();
     candidates.sort_by(|a, b| {
@@ -818,7 +822,7 @@ fn collect(
             let planned: Vec<(String, u64)> = plan
                 .tasks
                 .iter()
-                .filter(|task| task.disposition.collects())
+                .filter(|task| task.disposition.collects() && !is_run_task(state, &task.task_id))
                 .map(|task| (task.task_id.clone(), task.footprint.exclusive_bytes))
                 .collect();
             if apply && planned.is_empty() {
@@ -974,7 +978,24 @@ fn evict(roots: &Roots, policy: &StoragePolicy, entry: &Entry) -> Result<u64, St
             )
             .map_err(failed)?
             {
-                Some(key) => key.remove_key().map_err(failed),
+                Some(key) => {
+                    // Locking reaches the key by name; only the directory inventory measured
+                    // may go. A key renamed away and replaced since is another directory.
+                    let Some(measured) = entry.identity else {
+                        return Err(failed(
+                            "its identity was not measured, so it is not removed".into(),
+                        ));
+                    };
+                    match key.identity() {
+                        Ok(locked) if locked == measured => key.remove_key().map_err(failed),
+                        Ok(_) => Err(failed(
+                            "another directory holds its name since it was measured; left in \
+                             place"
+                                .into(),
+                        )),
+                        Err(error) => Err(failed(format!("inspecting the locked key: {error}"))),
+                    }
+                }
                 None => Err(failed("a check holds it now".into())),
             }
         }
@@ -1124,6 +1145,25 @@ pub(crate) fn note_task_run(state: &Path, task_id: &str) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) =
         Some((state.to_path_buf(), task_id.to_string()));
+}
+
+/// Whether `task_id` in the Store at `state` is the Task this process's run executed. The sweep
+/// that ends the run never collects or evicts it: the sweep is recorded on that Task afterwards,
+/// and a later sweep takes it under the same rules as any other.
+fn is_run_task(state: &Path, task_id: &str) -> bool {
+    let run = RUN_TASK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+    let Some((run_state, run_task)) = run else {
+        return false;
+    };
+    if run_task != task_id {
+        return false;
+    }
+    let canonical =
+        |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    canonical(&run_state) == canonical(state)
 }
 
 /// What a sweep removed and failed, as the bounded record a Task keeps: `None` for a preview,
@@ -1534,8 +1574,17 @@ pub(crate) fn purge_outside_roots() -> Vec<String> {
         for store in stores.into_iter().filter(|path| has_store(path)) {
             // Outside every root af owns: opened from `/` one component at a time, and only
             // while it is still the directory just listed.
-            let identity = review_sandbox::Identity::of(&store).ok();
-            match remove_directory(Path::new("/"), &store, identity) {
+            let identity = match review_sandbox::Identity::of(&store) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    lines.push(format!(
+                        "left {}: its identity could not be measured: {error}",
+                        store.display()
+                    ));
+                    continue;
+                }
+            };
+            match remove_directory(Path::new("/"), &store, Some(identity)) {
                 Ok(_) => lines.push(format!("removed {}", store.display())),
                 Err(error) => lines.push(format!("left {}: {error}", store.display())),
             }
@@ -1570,7 +1619,15 @@ pub(crate) fn remove_claude_projects(
     let mut removed = 0;
     let mut failures = Vec::new();
     for (name, identity) in projects {
-        match review_sandbox::remove_tree_at(&anchor, std::ffi::OsStr::new(name), *identity) {
+        // Only a directory measured when it was chosen is removed, and only while it is still
+        // that directory.
+        let Some(identity) = identity else {
+            failures.push(format!(
+                "project directory {name}: its identity was not measured, so it was left"
+            ));
+            continue;
+        };
+        match review_sandbox::remove_tree_at(&anchor, std::ffi::OsStr::new(name), Some(*identity)) {
             Ok(()) => removed += 1,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => failures.push(format!("project directory {name}: {error}")),

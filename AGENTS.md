@@ -103,7 +103,8 @@ review corpora belong in consuming repositories, not here.
   `af-gate/<task-id>/base` and `af-gate/<task-id>/head`, built from Task Snapshots, and opens one
   draft gate pull request between them. It never force-pushes, writes another ref, merges, marks
   ready or comments, and never sends a candidate that changes `.github/`; when the Task finishes
-  it closes that pull request and deletes exactly those two branches, and nothing else
+  it closes that pull request and deletes exactly those two branches, each only while it still
+  holds the commit the gate pushed (a lease on the deletion), and nothing else
   ([ADR-0144](docs/adr/0144-hold-afs-disk-use-to-a-machine-budget.md)). The
   pipeline chooses where a check runs; the operator's machine-local mapping supplies only the
   push target, and with it the authorization. A pipeline with remote checks cannot be planned on

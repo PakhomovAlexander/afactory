@@ -33,8 +33,9 @@ impl Identity {
         })
     }
 
+    /// The identity of the directory or file `descriptor` holds open.
     #[allow(clippy::unnecessary_cast)]
-    fn of_descriptor(descriptor: impl AsFd) -> io::Result<Self> {
+    pub fn of_descriptor(descriptor: impl AsFd) -> io::Result<Self> {
         let stat = nix::sys::stat::fstat(descriptor).map_err(io::Error::from)?;
         // `std::os::unix::fs::MetadataExt` widens the same fields the same way.
         Ok(Self {
