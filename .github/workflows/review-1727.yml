@@ -1,7 +1,7 @@
-name: Review1719 exact source gates
+name: Review1727 exact source gates
 on:
   push:
-    branches: ["af-gate/review-1719/executor"]
+    branches: ["af-gate/review-1727/executor"]
 permissions:
   contents: read
 env:
@@ -13,14 +13,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 3d848dc532ddb28c6de7e09cc30d1d6b42813b33
+          ref: b6dade434cdea6928cbd9370be68b2b67e803c2e
           persist-credentials: false
       - name: Verify exact source
         run: |
-          test "$(git rev-parse HEAD)" = 3d848dc532ddb28c6de7e09cc30d1d6b42813b33
-          test "$(git rev-parse HEAD^{tree})" = 3bbc267645b35c36c043902848d267f46f2513a2
+          test "$(git rev-parse HEAD)" = b6dade434cdea6928cbd9370be68b2b67e803c2e
+          test "$(git rev-parse HEAD^{tree})" = 1cd4bc50b81246734e0e394e2f01738e2f5b9f52
           test -z "$(git status --porcelain)"
-          echo 'REVIEW1719 base=5ab2fd6420d4c7ddab8867e321d53bec99b2e44d head=3d848dc532ddb28c6de7e09cc30d1d6b42813b33 tree=3bbc267645b35c36c043902848d267f46f2513a2'
+          echo 'REVIEW1727 base=5ab2fd6420d4c7ddab8867e321d53bec99b2e44d head=b6dade434cdea6928cbd9370be68b2b67e803c2e tree=1cd4bc50b81246734e0e394e2f01738e2f5b9f52'
       - name: Install pinned Rust
         run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
@@ -37,11 +37,11 @@ jobs:
           SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: sccache
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: '-C link-arg=-fuse-ld=lld'
-          AF_GATE_TARGET_DIR: ${{ runner.temp }}/review1719-target
+          AF_GATE_TARGET_DIR: ${{ runner.temp }}/review1727-target
         run: bash scripts/verify.sh
       - name: Verify unchanged source
         run: |
           git status --porcelain
           git diff --stat
-          test "$(git rev-parse HEAD)" = 3d848dc532ddb28c6de7e09cc30d1d6b42813b33
+          test "$(git rev-parse HEAD)" = b6dade434cdea6928cbd9370be68b2b67e803c2e
           test -z "$(git status --porcelain)"
