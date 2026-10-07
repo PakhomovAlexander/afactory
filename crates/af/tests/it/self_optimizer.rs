@@ -436,9 +436,8 @@ struct CacheExperiment {
 
 /// Points the light strategy at the admitted cargo sandbox cache under the repeated latency
 /// recipe, with the ordinary evaluator checking the offline cache it receives, and commits it.
-/// `slow_baseline` makes the baseline arm sleep 3 s: only the test that measures the latency
-/// comparison asks for it, and that test runs alone.
-fn configure_cache_experiment(fixture: &LightFixture, slow_baseline: bool) -> CacheExperiment {
+/// The baseline arm sleeps 3 s, so only a test that runs alone may run its latency comparison.
+fn configure_cache_experiment(fixture: &LightFixture) -> CacheExperiment {
     let LightFixture {
         temp,
         repo,
@@ -517,20 +516,18 @@ fn configure_cache_experiment(fixture: &LightFixture, slow_baseline: bool) -> Ca
     );
     std::fs::write(&diagnose_worker, &cache_diagnose).unwrap();
     let baseline_root = repo.join(".af/optimization/optimization-check-baseline");
-    if slow_baseline {
-        let baseline_worker = baseline_root.join("worker.py");
-        let baseline_source = std::fs::read_to_string(&baseline_worker).unwrap();
-        // Make the fixture workload dominate process-startup jitter on shared CI runners.
-        // The measured comparison and its dispersion gate remain unchanged.
-        std::fs::write(
-            &baseline_worker,
-            baseline_source.replace(
-                "request = json.load(sys.stdin)",
-                "request = json.load(sys.stdin)\nimport time; time.sleep(3)",
-            ),
-        )
-        .unwrap();
-    }
+    let baseline_worker = baseline_root.join("worker.py");
+    let baseline_source = std::fs::read_to_string(&baseline_worker).unwrap();
+    // Make the fixture workload dominate process-startup jitter on shared CI runners.
+    // The measured comparison and its dispersion gate remain unchanged.
+    std::fs::write(
+        &baseline_worker,
+        baseline_source.replace(
+            "request = json.load(sys.stdin)",
+            "request = json.load(sys.stdin)\nimport time; time.sleep(3)",
+        ),
+    )
+    .unwrap();
     let ordinary_evaluator_root = repo.join(".af/task-packages/fixture/evaluator");
     let ordinary_evaluator = ordinary_evaluator_root.join("worker.py");
     let ordinary_source = std::fs::read_to_string(&ordinary_evaluator).unwrap();
@@ -557,6 +554,13 @@ fn configure_cache_experiment(fixture: &LightFixture, slow_baseline: bool) -> Ca
         diagnose_source,
         cache_diagnose,
     }
+}
+
+/// Removes the committed rust toolchain file, so every later measured arm lacks the cache
+/// toolchain identity.
+fn remove_cache_toolchain(fixture: &LightFixture) {
+    std::fs::remove_file(fixture.repo.join("rust-toolchain.toml")).unwrap();
+    commit(&fixture.repo, "exercise unknown cache toolchain");
 }
 
 #[test]
@@ -868,9 +872,10 @@ fn light_strategy_refuses_a_candidate_binding_it_cannot_install() {
 /// The one light test that measures real elapsed time, so `.config/nextest.toml` runs it alone:
 /// the cache candidate's repeated latency comparison against a baseline that sleeps 3 s, then
 /// every phase that reads that comparison's Task (`cache_task`): its replay, delivery, adoption,
-/// the ordinary Task that reuses the adopted cache, and the light adoption observed with the
-/// cache Task as evidence. The light candidate is delivered first only so that last observation
-/// has an adopted Task to attach to.
+/// the ordinary Task that reuses the adopted cache, the unknown-toolchain comparison that follows
+/// it in the same repository and Store, and the light adoption observed with the cache Task as
+/// evidence. The light candidate is delivered first only so that last observation has an
+/// adopted Task to attach to.
 #[test]
 fn light_cache_candidate_measures_real_latency_and_grounds_later_adoption_evidence() {
     let fixture = light_fixture();
@@ -882,7 +887,7 @@ fn light_cache_candidate_measures_real_latency_and_grounds_later_adoption_eviden
         cache_policy,
         diagnose_source,
         cache_diagnose,
-    } = configure_cache_experiment(&fixture, true);
+    } = configure_cache_experiment(&fixture);
     assert_ne!(diagnose_source, cache_diagnose);
     let (repo, state) = (&fixture.repo, &fixture.state);
     let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
@@ -1082,6 +1087,79 @@ fn light_cache_candidate_measures_real_latency_and_grounds_later_adoption_eviden
     );
     assert!(!cache_delivery.join(".af-cache").exists());
 
+    remove_cache_toolchain(&fixture);
+    let unknown_waiting = command_json(
+        repo,
+        state,
+        &["self", "optimize", "--strategy", "light", "--execute"],
+    );
+    assert_eq!(unknown_waiting["phase"]["reason"], "needs_plan_review");
+    let unknown_task = unknown_waiting["task_id"].as_str().unwrap();
+    approve_plan(
+        &fixture,
+        unknown_task,
+        "unknown-toolchain",
+        "prove unknown toolchain withholds cache adoption",
+        "unknown toolchain",
+    );
+    let unknown = command_json_with_env(
+        repo,
+        state,
+        &["task", "run", unknown_task, "--execute"],
+        &[
+            ("AF_CACHE_POLICY_FILE", &cache_policy),
+            ("AF_TEST_CLOCK_QUANTUM_MS", Path::new("4")),
+        ],
+    );
+    assert_eq!(
+        unknown["result"]["acceptance"], "inconclusive",
+        "{unknown:#}"
+    );
+    let unknown_comparison_id = unknown["result"]["outputs"]["comparison"]["artifact_ids"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("unknown-toolchain run omitted comparison: {unknown:#}"));
+    let unknown_comparison = cas.get_artifact(unknown_comparison_id).unwrap();
+    assert_eq!(unknown_comparison.payload["conclusion"], "inconclusive");
+    assert_eq!(
+        unknown_comparison.payload["reason"],
+        "unsupported_measurements"
+    );
+    assert!(
+        unknown_comparison.payload["trials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|trial| trial["missing_measurements"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|name| name == "cache_toolchain_identity")),
+        "unknown toolchain was not retained on every measured arm: {unknown_comparison:#?}"
+    );
+    let refused_cache_delivery = fixture.temp.path().join("unknown-cache-delivery");
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(repo)
+        .args([
+            "task",
+            "deliver",
+            unknown_task,
+            "--repo",
+            repo.to_str().unwrap(),
+            "--branch",
+            "af/unknown-cache",
+            "--worktree",
+            refused_cache_delivery.to_str().unwrap(),
+            "--confirm",
+            unknown_task,
+            "--json",
+            "--state",
+            state.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!refused_cache_delivery.exists());
+
     let observed_task = command_json(
         &delivered,
         state,
@@ -1132,99 +1210,11 @@ fn light_cache_candidate_measures_real_latency_and_grounds_later_adoption_eviden
     );
 }
 
-/// Commits the cache experiment without its rust toolchain file, so every measured arm lacks the
-/// cache toolchain identity. This verifies missing toolchain evidence, not latency: the verdict
-/// must remain inconclusive whatever the arms measure, so the baseline does not sleep.
-fn configure_unknown_cache_toolchain(fixture: &LightFixture) -> CacheExperiment {
-    let experiment = configure_cache_experiment(fixture, false);
-    std::fs::remove_file(fixture.repo.join("rust-toolchain.toml")).unwrap();
-    commit(&fixture.repo, "exercise unknown cache toolchain");
-    experiment
-}
-
-#[test]
-fn light_cache_candidate_with_an_unknown_toolchain_is_inconclusive_and_undeliverable() {
-    let fixture = light_fixture();
-    let CacheExperiment { cache_policy, .. } = configure_unknown_cache_toolchain(&fixture);
-    let (repo, state) = (&fixture.repo, &fixture.state);
-    let unknown_waiting = command_json(
-        repo,
-        state,
-        &["self", "optimize", "--strategy", "light", "--execute"],
-    );
-    assert_eq!(unknown_waiting["phase"]["reason"], "needs_plan_review");
-    let unknown_task = unknown_waiting["task_id"].as_str().unwrap();
-    approve_plan(
-        &fixture,
-        unknown_task,
-        "unknown-toolchain",
-        "prove unknown toolchain withholds cache adoption",
-        "unknown toolchain",
-    );
-    let unknown = command_json_with_env(
-        repo,
-        state,
-        &["task", "run", unknown_task, "--execute"],
-        &[
-            ("AF_CACHE_POLICY_FILE", &cache_policy),
-            ("AF_TEST_CLOCK_QUANTUM_MS", Path::new("4")),
-        ],
-    );
-    assert_eq!(
-        unknown["result"]["acceptance"], "inconclusive",
-        "{unknown:#}"
-    );
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
-    let unknown_comparison_id = unknown["result"]["outputs"]["comparison"]["artifact_ids"][0]
-        .as_str()
-        .unwrap_or_else(|| panic!("unknown-toolchain run omitted comparison: {unknown:#}"));
-    let unknown_comparison = cas.get_artifact(unknown_comparison_id).unwrap();
-    assert_eq!(unknown_comparison.payload["conclusion"], "inconclusive");
-    assert_eq!(
-        unknown_comparison.payload["reason"],
-        "unsupported_measurements"
-    );
-    assert!(
-        unknown_comparison.payload["trials"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|trial| trial["missing_measurements"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|name| name == "cache_toolchain_identity")),
-        "unknown toolchain was not retained on every measured arm: {unknown_comparison:#?}"
-    );
-    let refused_cache_delivery = fixture.temp.path().join("unknown-cache-delivery");
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
-        .current_dir(repo)
-        .args([
-            "task",
-            "deliver",
-            unknown_task,
-            "--repo",
-            repo.to_str().unwrap(),
-            "--branch",
-            "af/unknown-cache",
-            "--worktree",
-            refused_cache_delivery.to_str().unwrap(),
-            "--confirm",
-            unknown_task,
-            "--json",
-            "--state",
-            state.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(!refused_cache_delivery.exists());
-}
-
 #[test]
 fn light_strategy_refuses_an_unsupported_recipe_before_any_protected_child() {
     let fixture = light_fixture();
-    configure_unknown_cache_toolchain(&fixture);
+    configure_cache_experiment(&fixture);
+    remove_cache_toolchain(&fixture);
     let (repo, state) = (&fixture.repo, &fixture.state);
     let propose_root = repo.join(".af/optimization/optimization-light-propose");
     let propose_worker = propose_root.join("worker.py");

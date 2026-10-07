@@ -22,8 +22,10 @@ path = "junit.xml"
 # - typed_reply_never_falls_back_and_failed_outputs_keep_accounting: every case runs the
 #   adapter under a 5 s worker deadline.
 # - light_cache_candidate_measures_real_latency_and_grounds_later_adoption_evidence: measures
-#   the 8-trial latency comparison against a baseline that sleeps 3 s, plus the phases that read
-#   that comparison's Task. The other light-strategy phases measure nothing and run in parallel.
+#   the 8-trial latency comparison against a baseline that sleeps 3 s, plus the phases that
+#   follow it on the same repository and Store: those that read that comparison's Task and the
+#   unknown-toolchain comparison after it. The other light-strategy phases measure nothing and
+#   run in parallel.
 # setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask is not here: its only
 # deadline is the 15 s Codex probe that its ordinary sibling setup_owns_codex_login_* runs
 # under too. Its work takes 0.37 s run directly on a 14-core macOS host and 0.07 s in CI junit.
