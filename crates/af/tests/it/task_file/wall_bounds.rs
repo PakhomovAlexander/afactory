@@ -22,8 +22,14 @@ fn inventory(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn collect(root: &Path, path: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
         for entry in std::fs::read_dir(path).unwrap() {
             let entry = entry.unwrap();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
             if entry.file_type().unwrap().is_dir() {
                 collect(root, &entry.path(), files);
+            } else if name.ends_with(".sqlite-shm") || name.ends_with(".sqlite-wal") {
+                // What a reader of the log creates, such as the Storage Budget's sweep after the
+                // refused command (ADR-0144): no state, so not compared.
+                continue;
             } else {
                 files.insert(
                     entry.path().strip_prefix(root).unwrap().into(),
