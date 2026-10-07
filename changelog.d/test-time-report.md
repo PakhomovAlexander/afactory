@@ -9,4 +9,7 @@
   warning instead of totals; the report never changes the test step's exit status. It runs
   under Python 3.9 and reads `.config/nextest.toml` without `tomllib`. `scripts/test-time-report.py compare BASE_JUNIT... -- HEAD_JUNIT...` compares runs
   by their per-side medians and lists per-test changes of at least 1 s and added or removed
-  tests, as a Markdown table for a pull request description.
+  tests, as a Markdown table for a pull request description. `--base-nextest-config PATH` and
+  `--head-nextest-config PATH` give each side its own nextest config (each defaults to
+  `--nextest-config`, which still sets both), so each side's exclusive block counts exactly the
+  tests its own config runs alone, and the output names both configs when they differ.

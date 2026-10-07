@@ -303,6 +303,62 @@ def check_compare(tmp):
     print('PASS: compare medians, deltas, per-test changes, added and removed tests')
 
 
+def exclusive_config(path, regexes):
+    """A nextest config whose exclusive override lists exactly these test regexes."""
+    filters = '\n| '.join(f'test(/{regex}/)' for regex in regexes)
+    path.write_text(f"[[profile.ci.overrides]]\nfilter = '''\n{filters}\n'''\n"
+                    'threads-required = "num-test-threads"\npriority = 100\n', encoding='utf-8')
+    return path
+
+
+def check_compare_per_side_config(tmp):
+    # A change that splits `x::split` out of the exclusive list and adds `x::joins` to it.
+    base_config = exclusive_config(tmp / 'base-nextest.toml', ['::split$', '::stays$'])
+    head_config = exclusive_config(tmp / 'head-nextest.toml', ['::stays$', '::joins$'])
+    base = junit(tmp / 'per-side-base.xml', [
+        ('x', 'x::split', '4.000'), ('x', 'x::stays', '2.000'), ('x', 'x::joins', '1.000'),
+        ('x', 'x::never', '0.500')], wall='9.000')
+    head = junit(tmp / 'per-side-head.xml', [
+        ('x', 'x::split', '4.500'), ('x', 'x::stays', '2.250'), ('x', 'x::joins', '1.250'),
+        ('x', 'x::never', '0.500')], wall='8.000')
+    per_side = ['--base-nextest-config', base_config, '--head-nextest-config', head_config]
+    code, text, err = report('compare', *per_side, base, '--', head)
+    assert code == 0, (code, err)
+    # Base: split + stays = 6; head: stays + joins = 3.5. One list for both sides gives
+    # base 3 with the head's list, or head 6.75 with the base's.
+    assert table_row(text, 'Exclusive block') == (
+        '| Exclusive block | 6.000 s | 3.500 s | -2.500 s | -41.7% |'), text
+    assert (f"Exclusive block from each side's nextest config: base `{base_config}`, "
+            f'head `{head_config}`.\n') in text, text
+    # Each per-side option falls back to --nextest-config, alone or beside the other.
+    for args, row in [
+            (['--nextest-config', base_config, '--head-nextest-config', head_config],
+             '| Exclusive block | 6.000 s | 3.500 s | -2.500 s | -41.7% |'),
+            (['--nextest-config', head_config, '--base-nextest-config', base_config],
+             '| Exclusive block | 6.000 s | 3.500 s | -2.500 s | -41.7% |'),
+            (['--nextest-config', base_config],
+             '| Exclusive block | 6.000 s | 6.750 s | +0.750 s | +12.5% |'),
+            (['--nextest-config', head_config],
+             '| Exclusive block | 3.000 s | 3.500 s | +0.500 s | +16.7% |')]:
+        code, text, err = report('compare', *args, base, '--', head)
+        assert code == 0 and table_row(text, 'Exclusive block') == row, (args, code, err, text)
+        # The configs are named only when the sides read different ones.
+        named = "nextest config: base" in text
+        assert named == (len(args) == 4), (args, text)
+    # Without --nextest-config the other side reads the working directory's default config.
+    code, text, err = report('compare', '--head-nextest-config', head_config, base, '--', head,
+                             cwd=tmp)
+    assert code == 0, (code, err)
+    assert table_row(text, 'Exclusive block') == (
+        '| Exclusive block | unknown | 3.500 s | — | — |'), text
+    assert (f"nextest config: base `{Path('.config/nextest.toml')}`, head `{head_config}`."
+            in text), text
+    code, _, err = report('compare', '--base-nextest-config', tmp / 'absent.toml', base, '--',
+                          head)
+    assert code == 2 and 'does not exist' in err, (code, err)
+    print('PASS: compare reads each side\'s exclusive block from its own nextest config')
+
+
 FAKE_CARGO = '''
 import json, os, shutil, sys
 from pathlib import Path
@@ -491,6 +547,7 @@ def main():
         check_histogram_edges(tmp)
         check_failures_and_missing_times(tmp)
         check_compare(tmp)
+        check_compare_per_side_config(tmp)
         check_make_test_status(tmp)
     check_gate_entry_status()
     check_task_gate()

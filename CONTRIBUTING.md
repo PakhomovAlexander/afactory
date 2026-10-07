@@ -95,8 +95,17 @@ the same `TEST_THREADS`, keep a copy of each run's JUnit, then compare them:
 git switch main && make test && cp target/nextest/ci/junit.xml /tmp/base-1.xml
 # ...repeat for /tmp/base-2.xml and /tmp/base-3.xml, then on your branch:
 make test && cp target/nextest/ci/junit.xml /tmp/head-1.xml
-python3 scripts/test-time-report.py compare /tmp/base-*.xml -- /tmp/head-*.xml
+# ...repeat for /tmp/head-2.xml and /tmp/head-3.xml, then compare with each side's config:
+git show main:.config/nextest.toml > /tmp/base-nextest.toml
+python3 scripts/test-time-report.py compare \
+  --base-nextest-config /tmp/base-nextest.toml --head-nextest-config .config/nextest.toml \
+  /tmp/base-*.xml -- /tmp/head-*.xml
 ```
+
+Each side's exclusive block is computed from its own config, so a change that adds a test to
+the exclusive override or splits one out of it is measured with the list each side ran under;
+when the two configs differ, the output names both. `--nextest-config PATH` alone still sets the
+config of both sides, and each per-side option defaults to it.
 
 Run times vary between runs, so use three runs per side. The comparison takes the median of
 each total per side and prints the delta and percent change. It also lists every test whose

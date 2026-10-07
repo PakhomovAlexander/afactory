@@ -3,7 +3,8 @@
 
     test-time-report.py summary JUNIT [--nextest-config .config/nextest.toml] [--top N]
                                       [--format markdown|json]
-    test-time-report.py compare [--nextest-config PATH] BASE_JUNIT... -- HEAD_JUNIT...
+    test-time-report.py compare [--nextest-config PATH] [--base-nextest-config PATH]
+                                [--head-nextest-config PATH] BASE_JUNIT... -- HEAD_JUNIT...
 
 Times are read as the exact decimals nextest wrote and summed as decimals, so the wall time
 and test count are nextest's own and the totals carry no float drift; testcases that do not add
@@ -11,6 +12,9 @@ up to the root's declared `tests`, `failures` or `errors` are an error, not a su
 config is read with a small TOML subset reader (Python 3.9 has no tomllib). The exclusive block is
 the summed time of the tests that the config's exclusive overrides (`threads-required =
 "num-test-threads"`) match with `test(/regex/)` filters: nothing else runs while they do.
+A comparison reads each side's exclusive block from that side's own config
+(`--base-nextest-config`, `--head-nextest-config`, each `--nextest-config` unless given), so a
+change to the exclusive list is measured with the list each side ran under.
 This is a report, never a gate: it does not judge a run, and a failed test is only counted.
 """
 import argparse
@@ -493,9 +497,10 @@ def signed(value, render):
     return ('+' if value > 0 else '') + render(value)
 
 
-def compare_markdown(base_runs, head_runs, patterns):
-    base, base_tests = side(base_runs, patterns)
-    head, head_tests = side(head_runs, patterns)
+def compare_markdown(base_runs, head_runs, base_patterns, head_patterns, configs=None):
+    """`configs` is (base path, head path) when the sides read different nextest configs."""
+    base, base_tests = side(base_runs, base_patterns)
+    head, head_tests = side(head_runs, head_patterns)
     count = str
     rows = [('Wall (nextest)', 'wall_seconds', secs), ('Tests', 'tests', count),
             ('Test-seconds (summed)', 'test_seconds', secs),
@@ -503,8 +508,11 @@ def compare_markdown(base_runs, head_runs, patterns):
             ('Achieved parallelism', 'parallelism', ratio), ('Failures', 'failures', count)]
     lines = [f'### Test time: base ({counted(len(base_runs), "run")}) '
              f'vs head ({counted(len(head_runs), "run")})', '',
-             'Medians per side.', '',
-             '| Total | Base | Head | Delta | Change |', '| --- | ---: | ---: | ---: | ---: |']
+             'Medians per side.', '']
+    if configs:
+        lines += [f'Exclusive block from each side\'s nextest config: base `{configs[0]}`, '
+                  f'head `{configs[1]}`.', '']
+    lines += ['| Total | Base | Head | Delta | Change |', '| --- | ---: | ---: | ---: | ---: |']
     for label, key, render in rows:
         old, new = base[key], head[key]
         if old is None or new is None:
@@ -545,9 +553,13 @@ def parser():
     summary.add_argument('--top', type=int, default=DEFAULT_TOP)
     summary.add_argument('--format', choices=['markdown', 'json'], default='markdown')
     compare = commands.add_parser(
-        'compare', usage='%(prog)s [--nextest-config PATH] BASE_JUNIT... -- HEAD_JUNIT...',
+        'compare', usage='%(prog)s [--nextest-config PATH] [--base-nextest-config PATH] '
+        '[--head-nextest-config PATH] BASE_JUNIT... -- HEAD_JUNIT...',
         help='compare base and head runs by their medians')
-    compare.add_argument('--nextest-config', type=Path)
+    compare.add_argument('--nextest-config', type=Path,
+                         help='the nextest config of both sides unless one is given its own')
+    compare.add_argument('--base-nextest-config', type=Path)
+    compare.add_argument('--head-nextest-config', type=Path)
     compare.add_argument('base', type=Path, nargs='+')
     return top
 
@@ -565,15 +577,23 @@ def main(argv):
     if args.command == 'summary' and args.top < 0:
         parser().error('--top must not be negative')
     try:
-        patterns = exclusive_patterns(args.nextest_config or DEFAULT_CONFIG,
-                                      args.nextest_config is not None)
         if args.command == 'summary':
+            patterns = exclusive_patterns(args.nextest_config or DEFAULT_CONFIG,
+                                          args.nextest_config is not None)
             totals = summarize(read_run(args.junit), patterns)
             render = summary_json if args.format == 'json' else summary_markdown
             sys.stdout.write(render(totals, args.top))
         else:
-            sys.stdout.write(compare_markdown([read_run(p) for p in args.base],
-                                              [read_run(p) for p in head], patterns))
+            # Each side's config is its own option, else --nextest-config, else the default.
+            configs = [own or args.nextest_config
+                       for own in (args.base_nextest_config, args.head_nextest_config)]
+            base_patterns, head_patterns = [
+                exclusive_patterns(config or DEFAULT_CONFIG, config is not None)
+                for config in configs]
+            paths = [config or DEFAULT_CONFIG for config in configs]
+            sys.stdout.write(compare_markdown(
+                [read_run(p) for p in args.base], [read_run(p) for p in head],
+                base_patterns, head_patterns, paths if paths[0] != paths[1] else None))
     except ReportError as error:
         print(f'test-time-report: {error}', file=sys.stderr)
         return 2
