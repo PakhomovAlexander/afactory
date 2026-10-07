@@ -11,17 +11,32 @@ slow-timeout = { period = "120s" }
 [profile.ci.junit]
 path = "junit.xml"
 
-# Tests that assert against a fixed real-time budget (the 5 s provider probe, a 3 s observer
-# window, a 5 s worker deadline) or measure real elapsed time run alone: nothing else is
-# scheduled while they hold every test thread. That keeps them honest under any thread count
-# instead of throttling the whole suite to protect them. Highest priority runs them first.
+# Tests that assert against a fixed real-time budget or measure real elapsed time run alone:
+# nothing else is scheduled while they hold every test thread. That keeps them honest under any
+# thread count instead of throttling the whole suite to protect them. Highest priority runs them
+# first. Only such tests belong here (ADR-0124), each for the reason beside it:
+# - identity_rechecks_cancel_an_inflight_status_process: its observer must see the status
+#   process inside a 20 s window, before the probe's 30 s deadline would end it instead.
+# - codex_subscription_probe_reaps_descendants_after_an_early_exit: the probe's descendant must
+#   be gone within a 2 s window (100 polls of 20 ms).
+# - typed_reply_never_falls_back_and_failed_outputs_keep_accounting: every case runs the
+#   adapter under a 5 s worker deadline.
+# - light_cache_candidate_measures_real_latency_and_grounds_later_adoption_evidence: measures
+#   the 8-trial latency comparison against a baseline that sleeps 3 s, plus the phases that read
+#   that comparison's Task. The other light-strategy phases measure nothing and run in parallel.
+# setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask is not here: its only
+# deadline is the 15 s Codex probe that its ordinary sibling setup_owns_codex_login_* runs
+# under too. Its work takes 0.37 s run directly on a 14-core macOS host and 0.07 s in CI junit.
+# The ~14.6 s was the first launch of a freshly linked `af`, which macOS assesses before it
+# runs: this test, sorting first in this group, launched it first. Measured: a bare first
+# `af --version` 2.3 s; the test 11.2 s straight after nextest listed 49 relinked binaries, and
+# 2.0 s with `af` already launched once, ~1.6 s of which any first test of a run pays.
 [[profile.ci.overrides]]
 filter = '''
 test(/::identity_rechecks_cancel_an_inflight_status_process$/)
 | test(/::codex_subscription_probe_reaps_descendants_after_an_early_exit$/)
-| test(/setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask$/)
 | test(/typed_reply_never_falls_back_and_failed_outputs_keep_accounting$/)
-| test(/light_strategy_generates_one_candidate_without_exposing_source_to_author_workers$/)
+| test(/light_cache_candidate_measures_real_latency_and_grounds_later_adoption_evidence$/)
 '''
 threads-required = "num-test-threads"
 priority = 100
