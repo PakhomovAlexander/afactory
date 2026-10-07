@@ -25,13 +25,19 @@ use nix::dir::Dir;
 use nix::errno::Errno;
 use nix::fcntl::{AtFlags, Flock, FlockArg, OFlag};
 use nix::sys::stat::{FchmodatFlags, FileStat, Mode, SFlag};
+use nix::sys::time::TimeSpec;
 use nix::unistd::UnlinkatFlags;
 
 /// The fixed directory name below `$XDG_CACHE_HOME/af`.
 pub const TASK_BUILD_CACHE_DIRECTORY: &str = "task-build-cache";
 
-/// The lock file of the whole toolchain key, beside the kind directories.
-const KEY_LOCK: &str = "warm.lock";
+/// The lock file of the whole toolchain key, beside the kind directories. Its modification
+/// time is the key's last use: every acquisition touches it.
+pub const KEY_LOCK: &str = "warm.lock";
+
+/// The suffix of a key's size record, `<project>/<toolchain>.size`, beside the key and never
+/// below it, where every entry is the key's to count and remove.
+const SIZE_SUFFIX: &str = ".size";
 
 /// The closed set of warm kinds a key may hold. Only these names are ever locked as kinds, and
 /// only their lock files and the key's are the kernel's: anything else below a key — whatever a
@@ -146,7 +152,7 @@ pub struct TaskBuildCacheKeyLock {
     toolchain: String,
     path: PathBuf,
     held: Arc<HeldLocks>,
-    _lock: Flock<File>,
+    lock: Flock<File>,
 }
 
 /// Lock the toolchain key `<root>/<project>/<toolchain>` for exclusive use, waiting at most
@@ -162,6 +168,11 @@ pub fn lock_task_build_cache_key(
     let Some(lock) = exclusive_lock_at(&key, KEY_LOCK, wait)? else {
         return Ok(None);
     };
+    // The lock's modification time is the key's last use, read by the Storage Budget's sweep.
+    if let Err(errno) = nix::sys::stat::futimens(&*lock, &TimeSpec::UTIME_NOW, &TimeSpec::UTIME_NOW)
+    {
+        eprintln!("warm check cache diagnostic: touching the key lock: {errno}");
+    }
     let held = Arc::new(HeldLocks::default());
     held.register(KEY_LOCK, &lock)?;
     let key = TaskBuildCacheKeyLock {
@@ -170,7 +181,7 @@ pub fn lock_task_build_cache_key(
         toolchain: toolchain.to_string(),
         path,
         held,
-        _lock: lock,
+        lock,
     };
     if !private {
         // A key that is no longer a private directory is suspect state, not a mode to fix:
@@ -467,6 +478,84 @@ impl TaskBuildCacheKeyLock {
         }
         Ok(removed)
     }
+
+    /// Record `bytes` as the key's measured size, stamped with its lock's current modification
+    /// time, so the Storage Budget's sweep reuses the measurement for as long as nothing has
+    /// used the key since and measures it again once something has.
+    pub fn record_size(&self, bytes: u64) -> Result<(), String> {
+        let stat = nix::sys::stat::fstat(&*self.lock)
+            .map_err(|errno| format!("inspecting the key lock: {errno}"))?;
+        let name = format!("{}{SIZE_SUFFIX}", self.toolchain);
+        let descriptor = nix::fcntl::openat(
+            &self.project,
+            name.as_str(),
+            OFlag::O_WRONLY
+                | OFlag::O_CREAT
+                | OFlag::O_TRUNC
+                | OFlag::O_NOFOLLOW
+                | OFlag::O_CLOEXEC,
+            Mode::S_IRUSR | Mode::S_IWUSR,
+        )
+        .map_err(|errno| format!("writing the key's size record: {errno}"))?;
+        let record = format!("{bytes} {} {}\n", stat.st_mtime, stat.st_mtime_nsec);
+        nix::unistd::write(&descriptor, record.as_bytes())
+            .map_err(|errno| format!("writing the key's size record: {errno}"))?;
+        Ok(())
+    }
+
+    /// Evict the whole key: everything below it, its lock files, its size record and the key
+    /// directory itself, while this holder still holds the lock, so no check can be using any of
+    /// it. Returns the bytes removed below the key. A waiter that held the old lock file open
+    /// finds it gone from its name and the key unavailable, and runs cold.
+    pub fn remove_key(self) -> Result<u64, String> {
+        let removed: u64 = self.remove_kinds()?.iter().map(|(_, bytes)| *bytes).sum();
+        for (name, _, _) in self.held.names() {
+            match nix::unistd::unlinkat(&*self.key, name.as_c_str(), UnlinkatFlags::NoRemoveDir) {
+                Ok(()) | Err(Errno::ENOENT) => {}
+                Err(errno) => {
+                    return Err(format!(
+                        "removing the lock `{}`: {errno}",
+                        name.to_string_lossy()
+                    ));
+                }
+            }
+        }
+        match nix::unistd::unlinkat(
+            &self.project,
+            self.toolchain.as_str(),
+            UnlinkatFlags::RemoveDir,
+        ) {
+            Ok(()) | Err(Errno::ENOENT) => {}
+            Err(errno) => return Err(format!("removing the toolchain key: {errno}")),
+        }
+        let record = format!("{}{SIZE_SUFFIX}", self.toolchain);
+        match nix::unistd::unlinkat(&self.project, record.as_str(), UnlinkatFlags::NoRemoveDir) {
+            Ok(()) | Err(Errno::ENOENT) => {}
+            Err(errno) => return Err(format!("removing the key's size record: {errno}")),
+        }
+        Ok(removed)
+    }
+}
+
+/// The size recorded for `<root>/<project>/<toolchain>` by [`TaskBuildCacheKeyLock::record_size`],
+/// when it is still current: its stamp equals the key lock's modification time now.
+pub fn recorded_key_size(root: &Path, project: &str, toolchain: &str) -> Option<u64> {
+    let key = root.join(project).join(toolchain);
+    let lock = std::fs::symlink_metadata(key.join(KEY_LOCK)).ok()?;
+    let record =
+        std::fs::read_to_string(root.join(project).join(format!("{toolchain}{SIZE_SUFFIX}")))
+            .ok()?;
+    let mut fields = record.split_whitespace();
+    let bytes = fields.next()?.parse().ok()?;
+    let seconds: i64 = fields.next()?.parse().ok()?;
+    let nanos: i64 = fields.next()?.parse().ok()?;
+    use std::os::unix::fs::MetadataExt;
+    (lock.mtime() == seconds && lock.mtime_nsec() == nanos).then_some(bytes)
+}
+
+/// Whether `name` is a key's size record below a project directory.
+pub fn is_size_record(name: &str) -> bool {
+    name.strip_suffix(SIZE_SUFFIX).is_some_and(is_key)
 }
 
 impl WarmDirectory {

@@ -1092,10 +1092,15 @@ impl CodeTaskDomain {
                 .checks
                 .get(name)
                 .ok_or("Named check is not captured")?;
+            // Below the machine's free-disk floor the check does not start: it reports
+            // `insufficient_disk` as its result (ADR-0144).
+            let floor = crate::storage::ensure_free_disk().err();
             let sandbox =
                 Sandbox::materialize(&manifest, cas, Mode::ReadOnly).map_err(|e| e.to_string())?;
             review_sandbox::admit(self.policy.isolation(), &sandbox).map_err(|e| e.to_string())?;
-            let runtime = tempfile::tempdir().map_err(|e| e.to_string())?;
+            // HOME, TMPDIR, AF_CHECK_SCRATCH and XDG_CACHE_HOME live in this af-owned directory,
+            // created empty here and removed with it when the check ends.
+            let runtime = review_sandbox::CheckRuntime::new().map_err(|e| e.to_string())?;
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| e.to_string())?
@@ -1105,24 +1110,23 @@ impl CodeTaskDomain {
                 .policy
                 .check_process_wall_ms
                 .map_or(remaining, |limit| limit.min(remaining));
-            let runner = CheckRunner::new(cas, sandbox.root())
-                .with_cancellation(cancellation)
-                .with_timeout(Duration::from_millis(remaining))
-                .with_env("HOME", runtime.path().display().to_string())
-                .with_env(
-                    "XDG_CACHE_HOME",
-                    runtime.path().join("cache").display().to_string(),
-                );
+            let runner = runtime.environment().into_iter().fold(
+                CheckRunner::new(cas, sandbox.root())
+                    .with_cancellation(cancellation)
+                    .with_timeout(Duration::from_millis(remaining)),
+                |runner, (key, value)| runner.with_env(key, value),
+            );
             let mut runner = rustup
                 .iter()
                 .flat_map(RustupHome::environment)
                 .fold(runner, |runner, (key, value)| runner.with_env(key, value));
             let mut toolchain_evidence = None;
+            let mut native_digest = None;
             if let Some(request) = self
                 .policy
                 .rust_toolchain
                 .as_ref()
-                .filter(|request| request.checks.contains(name))
+                .filter(|request| request.checks.contains(name) && floor.is_none())
             {
                 // Only this kernel-owned materialized root is canonicalized. Operator
                 // mapping and seed paths retain their no-follow ancestor admission.
@@ -1141,6 +1145,7 @@ impl CodeTaskDomain {
                         "verified_release":prepared.verified_release,
                         "requested_host":request.host,"resolved_host":prepared.resolved_host,
                         "components":request.components,"materialization":"private_copy"}));
+                    native_digest = Some(prepared.content_digest.clone());
                     for (key, value) in prepared.environment {
                         runner = runner.with_env(key, value);
                     }
@@ -1155,11 +1160,21 @@ impl CodeTaskDomain {
                 remaining.min(attempt.reservation().deadline_unix_ms.saturating_sub(now));
             runner = runner.with_timeout(Duration::from_millis(remaining));
             let mut prepared = match session.as_mut() {
+                // Refused below the floor: nothing is prepared, and every declared kind keeps
+                // its one observation, naming why.
+                Some(session) if floor.is_some() => Some(PreparedCheck {
+                    key_lock: None,
+                    environment: Vec::new(),
+                    directories: Vec::new(),
+                    observations: session.skipped(cas, crate::storage::INSUFFICIENT_DISK)?,
+                    refusal: None,
+                }),
                 Some(session) if remaining > 0 => Some(session.prepare(
                     cas,
                     runner.local_environment(),
                     sandbox.root(),
                     runtime.path(),
+                    native_digest.as_deref(),
                     cancellation,
                     Duration::from_millis(remaining),
                 )?),
@@ -1200,7 +1215,9 @@ impl CodeTaskDomain {
                         runner.with_env(key.clone(), value.clone())
                     }),
             };
-            let refusal = prepared.as_ref().and_then(|p| p.refusal.clone());
+            let refusal = floor
+                .clone()
+                .or_else(|| prepared.as_ref().and_then(|p| p.refusal.clone()));
             let started = remaining > 0 && refusal.is_none();
             let mut exceeded: Option<Excess> = None;
             let (mut result, timing) = if started {

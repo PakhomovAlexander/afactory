@@ -13,6 +13,8 @@ serve them, not recorded here.
   commit and the Task ID, which the fake substitutes from its local bare repository.
 - `fake-gh.sh` is that fake `gh`, shared by `crates/review-pipeline/tests/it/remote_checks.rs`
   and `crates/af/tests/it/task_remote_checks.rs`. A test substitutes `@STATE@`, `@BARE@` and
-  `@TASK@` and writes the result onto its own PATH; it never contacts a network.
+  `@TASK@` and writes the result onto its own PATH; it never contacts a network. It closes the
+  gate pull request when asked (`PATCH`, as the cleanup of a finished Task does), and refuses to
+  while a `refuse-close` file is in its state directory.
 - `packages/` stages this repository's remote pipeline twins, their catalog pins and the
   `[checks.kernel.remote]` table for a person to install; its README says how.

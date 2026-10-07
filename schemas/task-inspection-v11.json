@@ -926,6 +926,14 @@
         }
       }
     },
+    "gate_cleanups": {
+      "description": "Every recorded attempt to close the Task's draft gate pull requests and delete its two af-gate branches (ADR-0144), in log order; absent when none was made.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "urn:af:schema:task-gate-cleanup:1"
+      }
+    },
     "experiments": {
       "type": "array",
       "minItems": 1,

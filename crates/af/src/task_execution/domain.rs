@@ -115,7 +115,7 @@ pub(super) fn remote_check_authority(
 
 /// `AF_TASK_REMOTE_CHECK_POLICY_FILE` when set (it must be absolute), otherwise
 /// `$XDG_CONFIG_HOME/af/remote-checks.toml`. No locatable configuration home is no mapping.
-fn remote_check_mapping() -> Result<Option<PathBuf>, String> {
+pub(crate) fn remote_check_mapping() -> Result<Option<PathBuf>, String> {
     if let Some(path) = std::env::var_os("AF_TASK_REMOTE_CHECK_POLICY_FILE") {
         let path = PathBuf::from(path);
         if path.as_os_str().is_empty() || !path.is_absolute() {

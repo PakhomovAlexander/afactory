@@ -31,9 +31,11 @@
 
 pub mod build_cache;
 pub mod cache;
+pub mod check_runtime;
 pub mod container;
 pub mod seal;
 pub mod stale;
+pub mod storage;
 pub mod task_build_cache;
 pub mod toolchain;
 pub mod workspace;
@@ -47,17 +49,21 @@ pub use cache::{
     CacheSnapshot, CacheSource, materialize_cache, materialize_cache_into_runtime,
     remove_materialized_caches,
 };
+pub use check_runtime::{CONTAINER_CHECK_RUNTIME, CheckRuntime};
 pub use container::{Availability, ContainerProvider};
 pub use seal::{MutationSet, SealedSandbox};
-pub use stale::{SweepReport, sweep_stale_sandboxes, sweep_stale_sandboxes_in};
+pub use stale::{
+    SweepReport, attempt_directory, is_af_directory_name, remove_tree_nofollow,
+    sweep_stale_sandboxes, sweep_stale_sandboxes_in,
+};
 pub use task_build_cache::{
-    Ensured, TaskBuildCacheKeyLock, TaskBuildCacheLock, Uninspectable, WARM_KINDS, WarmDirectory,
-    default_task_build_cache_root, directory_bytes, lock_task_build_cache,
-    lock_task_build_cache_key,
+    Ensured, KEY_LOCK, TaskBuildCacheKeyLock, TaskBuildCacheLock, Uninspectable, WARM_KINDS,
+    WarmDirectory, default_task_build_cache_root, directory_bytes, is_size_record,
+    lock_task_build_cache, lock_task_build_cache_key, recorded_key_size,
 };
 pub use workspace::{
-    RecordedPreparation, WorkspaceError, WorkspacePreparation, WorkspaceRoot,
-    default_workspace_cache_root, prepare_workspace, workspace_id,
+    RecordedPreparation, WORKSPACE_LOCK, WorkspaceError, WorkspaceInUse, WorkspacePreparation,
+    WorkspaceRoot, default_workspace_cache_root, prepare_workspace, workspace_id, workspace_in_use,
 };
 
 use std::path::{Path, PathBuf};

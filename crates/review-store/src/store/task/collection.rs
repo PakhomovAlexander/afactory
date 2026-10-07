@@ -630,13 +630,39 @@ impl EventStore {
         keep: usize,
         stop_after_tombstones: bool,
     ) -> Result<CollectionOutcome, StoreError> {
+        self.apply_collection(cas, older_than_ms, keep, None, stop_after_tombstones)
+    }
+
+    /// Collect exactly the named finished Tasks, each only when the existing rules would
+    /// collect it with no age or newest-N protection: never a running, leased or bound Task.
+    /// The Storage Budget evicts finished Tasks one at a time through this (ADR-0144), so every
+    /// eviction keeps its tombstone; a name the rules protect is left and reported by its
+    /// disposition in the returned plan.
+    pub fn apply_task_collection_of(
+        &mut self,
+        cas: &Cas,
+        task_ids: &BTreeSet<String>,
+    ) -> Result<CollectionOutcome, StoreError> {
+        self.apply_collection(cas, 0, 0, Some(task_ids), false)
+    }
+
+    fn apply_collection(
+        &mut self,
+        cas: &Cas,
+        older_than_ms: u64,
+        keep: usize,
+        only: Option<&BTreeSet<String>>,
+        stop_after_tombstones: bool,
+    ) -> Result<CollectionOutcome, StoreError> {
         let leased = std::time::SystemTime::now();
         let lock = self.store_lease()?;
         let now_unix_ms = now()?;
         let plan = self.plan_at(cas, older_than_ms, keep, now_unix_ms)?;
         refuse_live_writers(&plan.live_writers)?;
         let mut tombstoned = Vec::new();
-        for task in plan.tasks.iter().filter(|task| task.disposition.collects()) {
+        for task in plan.tasks.iter().filter(|task| {
+            task.disposition.collects() && only.is_none_or(|only| only.contains(&task.task_id))
+        }) {
             let state = self
                 .task_projection(cas, &task.task_id)?
                 .ok_or_else(|| conflict("Collected Task disappeared"))?;

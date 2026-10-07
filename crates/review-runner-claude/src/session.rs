@@ -329,6 +329,202 @@ fn open_projects(root: &Path) -> Result<Option<nix::dir::Dir>, SessionCleanupRef
         .map_err(|_| SessionCleanupRefusalV1::Unreadable)
 }
 
+/// The name prefixes af gives a directory it creates for one Attempt, a probe or a check:
+/// `af-sandbox-<pid>-<random>` and `af-check-<pid>-<random>` (`review_sandbox::stale`).
+const AF_DIRECTORY_PREFIXES: [&str; 2] = ["af-sandbox-", "af-check-"];
+
+/// Whether `name` is the name af gives such a directory: a prefix, a decimal pid, `-` and a
+/// non-empty random part.
+fn is_af_directory_name(name: &str) -> bool {
+    AF_DIRECTORY_PREFIXES.iter().any(|prefix| {
+        name.strip_prefix(prefix)
+            .and_then(|rest| rest.split_once('-'))
+            .is_some_and(|(pid, random)| {
+                !pid.is_empty()
+                    && pid.len() <= 10
+                    && pid.bytes().all(|byte| byte.is_ascii_digit())
+                    && !random.is_empty()
+            })
+    })
+}
+
+/// Whether `working_directory` is a directory af created for one Attempt alone: an absolute
+/// `…/af-sandbox-<pid>-<random>` (or `af-check-…`) directory, or the `tree` below one. No other
+/// working directory's harness history is ever af's to remove.
+pub fn is_af_attempt_directory(working_directory: &Path) -> bool {
+    if !working_directory.is_absolute() {
+        return false;
+    }
+    let name = |path: &Path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
+    };
+    match name(working_directory) {
+        Some(last) if is_af_directory_name(&last) => true,
+        Some(last) if last == "tree" => working_directory
+            .parent()
+            .and_then(name)
+            .is_some_and(|parent| is_af_directory_name(&parent)),
+        _ => false,
+    }
+}
+
+/// Whether a harness project directory name is the slug of a path af created for an Attempt,
+/// a probe or a check: it names an `af-sandbox-<pid>-<random>` or `af-check-<pid>-<random>`
+/// component, or it is the earlier `<temp>/.tmp<random>/tree` form below `temp_slug`, the slug
+/// of a temporary root af used. Used only where no working directory is known any more
+/// (`af self uninstall --purge`).
+pub fn is_af_project_slug(slug: &str, temp_slugs: &[String]) -> bool {
+    for prefix in AF_DIRECTORY_PREFIXES {
+        let marker = format!("-{prefix}");
+        let mut rest = slug;
+        while let Some(index) = rest.find(&marker) {
+            let after = &rest[index + marker.len()..];
+            let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+            if digits > 0 && after[digits..].starts_with('-') && after.len() > digits + 1 {
+                return true;
+            }
+            rest = &rest[index + 1..];
+        }
+    }
+    temp_slugs.iter().any(|temp| {
+        slug.strip_prefix(temp.as_str())
+            .and_then(|rest| rest.strip_prefix("--tmp"))
+            .and_then(|rest| rest.strip_suffix("-tree"))
+            .is_some_and(|random| {
+                !random.is_empty() && random.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            })
+    })
+}
+
+impl ClaudeSessionStore {
+    /// Remove the harness's project directory for `working_directory` — every transcript and
+    /// anything else the CLI kept for it — when that directory is one af created for this
+    /// Attempt alone ([`is_af_attempt_directory`]). Both spellings of the path count (as given
+    /// and resolved, since the harness keys by the process's working directory); nothing is
+    /// followed below the granted root. Returns how many project directories were removed.
+    pub fn remove_attempt_project(&self, working_directory: &Path) -> Result<usize, String> {
+        if !is_af_attempt_directory(working_directory) {
+            return Ok(0);
+        }
+        let mut slugs = vec![Self::project_slug(working_directory)];
+        if let Ok(resolved) = working_directory.canonicalize()
+            && is_af_attempt_directory(&resolved)
+        {
+            slugs.push(Self::project_slug(&resolved));
+        }
+        slugs.sort();
+        slugs.dedup();
+        self.remove_projects(&slugs)
+    }
+
+    /// Remove the named project directories below `projects/`, without following a link.
+    /// Absent ones are skipped. Returns how many were removed.
+    pub fn remove_projects(&self, slugs: &[String]) -> Result<usize, String> {
+        let projects = match open_projects(&self.root) {
+            Ok(Some(projects)) => projects,
+            Ok(None) => return Ok(0),
+            Err(reason) => {
+                return Err(format!(
+                    "the Claude projects directory cannot be opened safely ({reason:?})"
+                ));
+            }
+        };
+        let mut removed = 0;
+        for slug in slugs {
+            if slug.is_empty() || slug.contains('/') || slug == "." || slug == ".." {
+                continue;
+            }
+            if remove_child_nofollow(&projects, slug, 0)
+                .map_err(|errno| format!("removing a Claude project directory: {errno}"))?
+            {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Every project directory name below `projects/`, for a caller that selects af's own.
+    pub fn project_names(&self) -> Result<Vec<String>, String> {
+        let mut projects = match open_projects(&self.root) {
+            Ok(Some(projects)) => projects,
+            Ok(None) => return Ok(Vec::new()),
+            Err(reason) => {
+                return Err(format!(
+                    "the Claude projects directory cannot be opened safely ({reason:?})"
+                ));
+            }
+        };
+        let mut names = Vec::new();
+        for entry in projects.iter() {
+            let entry = entry.map_err(|errno| format!("listing Claude projects: {errno}"))?;
+            if let Ok(name) = entry.file_name().to_str()
+                && name != "."
+                && name != ".."
+            {
+                names.push(name.to_owned());
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+}
+
+/// Directories deeper than this are not walked; a project directory is nowhere near it.
+const MAX_REMOVAL_DEPTH: u32 = 64;
+
+/// Remove `name` below `parent` and everything under it through descriptors opened without
+/// following a link; a link or a file at the name is unlinked as what it is. `Ok(false)` when
+/// the name is absent.
+fn remove_child_nofollow(
+    parent: &nix::dir::Dir,
+    name: &str,
+    depth: u32,
+) -> Result<bool, nix::errno::Errno> {
+    use nix::dir::{Dir, Type};
+    use nix::errno::Errno;
+    use nix::fcntl::OFlag;
+    use nix::sys::stat::{Mode as NixMode, fchmod};
+    use nix::unistd::{UnlinkatFlags, unlinkat};
+
+    if depth > MAX_REMOVAL_DEPTH {
+        return Err(Errno::ELOOP);
+    }
+    let flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY;
+    let mut directory = match Dir::openat(parent, name, flags, NixMode::empty()) {
+        Ok(directory) => directory,
+        Err(Errno::ENOENT) => return Ok(false),
+        Err(Errno::ENOTDIR | Errno::ELOOP) => {
+            unlinkat(parent, name, UnlinkatFlags::NoRemoveDir)?;
+            return Ok(true);
+        }
+        Err(errno) => return Err(errno),
+    };
+    fchmod(&directory, NixMode::S_IRWXU)?;
+    let mut entries = Vec::new();
+    for entry in directory.iter() {
+        let entry = entry?;
+        let Ok(child) = entry.file_name().to_str() else {
+            return Err(Errno::EILSEQ);
+        };
+        if child == "." || child == ".." {
+            continue;
+        }
+        entries.push((child.to_owned(), entry.file_type()));
+    }
+    for (child, kind) in entries {
+        if kind.is_some_and(|kind| kind != Type::Directory) {
+            unlinkat(&directory, child.as_str(), UnlinkatFlags::NoRemoveDir)?;
+        } else {
+            remove_child_nofollow(&directory, &child, depth + 1)?;
+        }
+    }
+    drop(directory);
+    unlinkat(parent, name, UnlinkatFlags::RemoveDir)?;
+    Ok(true)
+}
+
 /// Unlink the transcript in the exact directory the search validated. Nothing is resolved by
 /// pathname again, so a project directory replaced between lookup and unlink cannot redirect
 /// the deletion.
@@ -409,6 +605,90 @@ fn write_no_follow(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_directory_af_made_for_an_attempt_is_an_attempt_directory() {
+        for made in [
+            "/tmp/af-sandbox-42-Ab3xYz/tree",
+            "/var/folders/x/T/af-sandbox-7-q/tree",
+            "/tmp/af-sandbox-42-Ab3xYz",
+            "/tmp/af-check-42-Ab3xYz",
+        ] {
+            assert!(is_af_attempt_directory(Path::new(made)), "{made}");
+        }
+        for other in [
+            "/",
+            "/home/me/project",
+            "/tmp/.tmpAb3xYz/tree",
+            "/tmp/af-sandbox--x/tree",
+            "/tmp/af-sandbox-42-/tree",
+            "/tmp/af-sandbox-4x2-y/tree",
+            "/tmp/af-sandbox-42-y/tree/sub",
+            "af-sandbox-42-y/tree",
+        ] {
+            assert!(!is_af_attempt_directory(Path::new(other)), "{other}");
+        }
+    }
+
+    #[test]
+    fn an_af_project_slug_names_an_af_component_or_the_earlier_temporary_form() {
+        let temp = vec![ClaudeSessionStore::project_slug(Path::new(
+            "/var/folders/x/T",
+        ))];
+        for slug in [
+            "-tmp-af-sandbox-42-Ab3xYz-tree",
+            "-private-var-folders-x-T-af-check-9-q",
+            "-var-folders-x-T--tmpAb3xYz-tree",
+        ] {
+            assert!(is_af_project_slug(slug, &temp), "{slug}");
+        }
+        for slug in [
+            "-",
+            "-Users-me-src-afactory",
+            "-tmp--tmpAb3xYz-tree",
+            "-tmp-af-sandbox--tree",
+            "-var-folders-x-T--tmpAb3xYz-tree-more",
+        ] {
+            assert!(!is_af_project_slug(slug, &temp), "{slug}");
+        }
+    }
+
+    #[test]
+    fn an_attempt_project_is_removed_and_every_other_project_is_untouched() {
+        let config = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let sandbox = temp.path().join("af-sandbox-42-Ab3xYz");
+        let tree = sandbox.join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let store = ClaudeSessionStore::new(config.path());
+        let attempt = config
+            .path()
+            .join("projects")
+            .join(ClaudeSessionStore::project_slug(&tree));
+        std::fs::create_dir_all(attempt.join("sub")).unwrap();
+        std::fs::write(attempt.join("one.jsonl"), b"{}").unwrap();
+        let other = config.path().join("projects").join("-Users-me-project");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("keep.jsonl"), b"{}").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), attempt.join("escape")).unwrap();
+        std::fs::write(outside.path().join("precious"), b"x").unwrap();
+
+        assert_eq!(store.remove_attempt_project(&tree).unwrap(), 1);
+        assert!(!attempt.exists());
+        assert!(other.join("keep.jsonl").exists());
+        assert!(outside.path().join("precious").exists());
+        // Idempotent, and never for a directory af did not make.
+        assert_eq!(store.remove_attempt_project(&tree).unwrap(), 0);
+        assert_eq!(
+            store
+                .remove_attempt_project(Path::new("/Users/me/project"))
+                .unwrap(),
+            0
+        );
+        assert!(other.exists());
+        assert_eq!(store.project_names().unwrap(), ["-Users-me-project"]);
+    }
 
     #[test]
     fn a_project_slug_is_the_pinned_harness_encoding_of_a_working_directory() {

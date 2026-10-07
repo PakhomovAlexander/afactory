@@ -89,7 +89,9 @@ impl ProviderTaskDomain<'_> {
                 return Err("Provider probe lost its exact context".into());
             }
             let model = &self.models[receipt.bindings.first().ok_or("Empty Provider bindings")?];
-            let directory = tempfile::tempdir().map_err(|e| e.to_string())?;
+            // A fresh directory af made for this probe alone, named so the Claude adapter may
+            // remove the history the CLI keeps for it (ADR-0144).
+            let directory = review_sandbox::attempt_directory().map_err(|e| e.to_string())?;
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| e.to_string())?

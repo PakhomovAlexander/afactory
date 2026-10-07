@@ -193,6 +193,28 @@ or activates a release older than 0.8.0 (the oldest supported release).",
         #[command(subcommand)]
         command: SelfCommand,
     },
+    /// Show what af keeps on this machine against its storage budget, and reclaim it
+    #[command(
+        args_conflicts_with_subcommands = true,
+        long_about = "Show what af keeps on this machine against its storage budget, and reclaim it.\n\n\
+af keeps at most `[storage] max_bytes` (20 GiB by default) between runs: warm build keys, warm \
+Workspaces, review campaign Stores, Task Stores (in the state root and registered elsewhere) and \
+installed versions. `af storage` prints, per kind, the entries, their bytes and their oldest and \
+newest use; the Stores this release cannot read, with the reason; the total against the budget; \
+and the free bytes against `[storage] min_free_bytes`, the floor below which af refuses to start a \
+check or a Worker Attempt. It reads only; `af storage prune` previews the sweep that runs after \
+every `af task run` and `af review run`, and `af storage prune --apply` performs it.\n\n\
+`[storage]` is read only from machine layers (built-in, system, user, environment); a \
+repository's `.af/af.toml` cannot change it. See `af help storage`.",
+        after_long_help = "Examples:\n  af storage\n  af storage --json | jq .total_bytes\n  af storage prune\n  af storage prune --apply\n  AF_STORAGE__MAX_BYTES=10GiB af storage prune --apply"
+    )]
+    Storage {
+        /// Machine-readable af/storage@1
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        command: Option<StorageCommand>,
+    },
     /// Print a shell completion script (values complete live from the binary)
     #[command(
         long_about = "Print a shell completion script.\n\n\
@@ -207,10 +229,10 @@ directory.",
         #[arg(value_enum)]
         shell: Shell,
     },
-    /// Explain a topic (config, layers, environment, exit-codes, json, self) or a command
+    /// Explain a topic (config, layers, environment, exit-codes, json, self, storage) or a command
     #[command(
         long_about = "Explain a topic or a command.\n\n\
-Topics: config, layers, environment, exit-codes, json, self. Anything else is treated \
+Topics: config, layers, environment, exit-codes, json, self, storage. Anything else is treated \
 as a command path, so `af help review run` equals `af review run --help`.",
         after_long_help = "Examples:\n  af help layers\n  af help exit-codes\n  af help review ledger"
     )]
@@ -1287,6 +1309,30 @@ pub(crate) struct TaskInspectArgs {
 // config · self · completions
 
 #[derive(Debug, Subcommand)]
+pub(crate) enum StorageCommand {
+    /// Preview the sweep; remove what it names only with --apply
+    #[command(
+        long_about = "Preview, and with --apply perform, the sweep that runs after every `af task \
+run` and `af review run`.\n\nCollection first: finished Tasks beyond the newest `keep_tasks` of \
+each Store, review campaigns beyond the newest `keep_campaigns`, and Stores this release cannot \
+read, each idle at least `keep_days`; and the gate pull requests and branches finished Tasks \
+left. Then the budget: while af holds more than `max_bytes`, the least recently used entry goes \
+first. Nothing in use is ever removed — a held lock, a live writer lease, a running campaign, the \
+default or a pinned version, the running binary — nor anything used within the last hour. \
+Finished Tasks go through the Store's own collection, so each keeps its tombstone.",
+        after_long_help = "Examples:\n  af storage prune\n  af storage prune --apply\n  af storage prune --apply --json"
+    )]
+    Prune {
+        /// Remove what the preview names (default: preview only)
+        #[arg(long)]
+        apply: bool,
+        /// Machine-readable af/storage-prune@1
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub(crate) enum ConfigCommand {
     /// Print the effective configuration
     Show {
@@ -1427,7 +1473,8 @@ what would be written and the one line to add to your rc file when the shell nee
     },
     /// Remove every version this receipt installed, and the default symlink
     Uninstall {
-        /// Also remove af's config, state, cache, and data directories
+        /// Also remove af's config, state, cache, and data directories, every registered Store,
+        /// and the Claude history af's Workers left in each registered Claude config directory
         #[arg(long)]
         purge: bool,
     },

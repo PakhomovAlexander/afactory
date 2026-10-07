@@ -48,6 +48,8 @@ pub(crate) struct WarmWorkspace {
     pub template: Arc<SandboxTemplate>,
     pub workspace_id: String,
     pub basis: WorkspaceBasisV1,
+    /// Keeps the workspace in use, so the Storage Budget never evicts it under this run.
+    pub _in_use: Arc<review_sandbox::WorkspaceInUse>,
 }
 
 /// The layers a node's pinned policy asks for in this Round, resolved before selection.
@@ -154,6 +156,7 @@ impl ReviewDomainState<'_> {
             template: Arc::new(prepared.template),
             workspace_id: id,
             basis: prepared.basis,
+            _in_use: Arc::new(prepared.in_use),
         };
         workspaces.insert(node_id.to_string(), workspace.clone());
         Ok(workspace)

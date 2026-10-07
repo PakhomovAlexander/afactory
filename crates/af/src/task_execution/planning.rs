@@ -322,6 +322,7 @@ fn run_planner(
     let trusted = CapturedTaskAuthority::new(compiler, &host, developer.as_ref());
     let cancellation = std::sync::atomic::AtomicBool::new(false);
     let state = {
+        crate::storage::note_work_started();
         let runtime = TaskRuntime::new(store, cas, lease.clone(), &trusted, &host)?
             .with_cancellation(&cancellation);
         crate::interrupt::note_task(lease.task_id());
@@ -382,6 +383,7 @@ fn run_planner(
         Ok::<(), String>(())
     })();
     if let Err(error) = admission {
+        crate::storage::note_work_started();
         let runtime = TaskRuntime::new(store, cas, lease.clone(), &trusted, &host)?
             .with_cancellation(&cancellation);
         finish_incomplete(

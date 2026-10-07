@@ -1218,7 +1218,7 @@ fn a_usable_container_gate_runs_its_check_through_the_container_runtime() {
         .collect::<Vec<_>>();
     assert_eq!(
         argv.len(),
-        20,
+        38,
         "unexpected container runtime argv: {argv:?}"
     );
     assert_eq!(&argv[..3], ["run", "--rm", "--name"]);
@@ -1230,21 +1230,93 @@ fn a_usable_container_gate_runs_its_check_through_the_container_runtime() {
     let (uid, gid) = argv[8].split_once(':').expect("numeric uid:gid");
     assert!(!uid.is_empty() && uid.bytes().all(|byte| byte.is_ascii_digit()));
     assert!(!gid.is_empty() && gid.bytes().all(|byte| byte.is_ascii_digit()));
+    // The check's runtime directories are container-local mounts (ADR-0144); the host's
+    // rustup home never crosses in, and the sandbox stays the only bind.
     assert_eq!(
-        &argv[9..16],
+        &argv[9..34],
         [
             "-e",
             "LC_ALL=C",
             "-e",
             "TZ=UTC",
+            "-e",
+            "HOME=/af-check/home",
+            "-e",
+            "TMPDIR=/af-check/tmp",
+            "-e",
+            "AF_CHECK_SCRATCH=/af-check/scratch",
+            "-e",
+            "XDG_CACHE_HOME=/af-check/cache",
+            "-e",
+            "RUSTUP_AUTO_INSTALL=0",
+            "--tmpfs",
+            "/af-check/home:rw,exec,mode=1777",
+            "--tmpfs",
+            "/af-check/tmp:rw,exec,mode=1777",
+            "--tmpfs",
+            "/af-check/scratch:rw,exec,mode=1777",
+            "--tmpfs",
+            "/af-check/cache:rw,exec,mode=1777",
             "--workdir",
             "/work",
             "--volume"
         ]
     );
-    assert!(argv[16].ends_with(":/work:rw"), "{:?}", argv[16]);
-    assert_eq!(argv[17], review_sandbox::container::DEFAULT_IMAGE);
-    assert_eq!(&argv[18..], ["/bin/sh", "./build.sh"]);
+    assert!(argv[34].ends_with(":/work:rw"), "{:?}", argv[34]);
+    assert_eq!(argv[35], review_sandbox::container::DEFAULT_IMAGE);
+    assert_eq!(&argv[36..], ["/bin/sh", "./build.sh"]);
+    assert_eq!(argv.iter().filter(|arg| *arg == "--volume").count(), 1);
+    assert!(!argv.iter().any(|arg| arg.starts_with("RUSTUP_HOME=")));
+}
+
+/// ADR-0144 D4: a review gate check gets the Task check's environment contract — a private
+/// HOME, TMPDIR, AF_CHECK_SCRATCH and XDG_CACHE_HOME inside one af-check runtime directory, and
+/// automatic toolchain installation off — and the directory is gone once the check ended.
+#[test]
+fn a_gate_check_runs_with_a_private_home_that_is_gone_after_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let seen = directory.path().canonicalize().unwrap().join("gate-home");
+    let probe = format!(
+        "case \\\"$HOME\\\" in */af-check-*/home) ;; *) exit 9 ;; esac; \
+         for d in \\\"$HOME\\\" \\\"$TMPDIR\\\" \\\"$AF_CHECK_SCRATCH\\\" \\\"$XDG_CACHE_HOME\\\"; do \
+         test -d \\\"$d\\\" && touch \\\"$d/w\\\" || exit 8; done; \
+         test \\\"$RUSTUP_AUTO_INSTALL\\\" = 0 || exit 7; printf '%s' \\\"$HOME\\\" > {}",
+        seen.display()
+    );
+    let reader = clean_reader();
+    let definition = gated_review(&reader, &reader, Some(TRUSTED)).replace(
+        "args = [{ value = \"./build.sh\" }]",
+        &format!("args = [{{ value = \"-c\" }}, {{ value = \"{probe}\" }}]"),
+    );
+    let (compiler, lease) = admit_source(
+        &cas,
+        &mut store,
+        &definition,
+        source(),
+        &["architecture", "performance"],
+        false,
+    );
+    let shared = SharedEventStore::new(&mut store);
+    hosted(
+        &cas,
+        &shared,
+        &compiler,
+        &lease,
+        |host| host,
+        |host, _, report| {
+            assert!(report.complete(), "{report:?}");
+            host.assemble_recorded_result(&cas).unwrap();
+        },
+    );
+    let home = std::fs::read_to_string(&seen).expect("the gate check ran and passed");
+    let home = std::path::Path::new(&home);
+    assert_eq!(home.file_name().unwrap(), "home");
+    assert!(
+        !home.parent().unwrap().exists(),
+        "the gate check's runtime outlived it"
+    );
 }
 
 /// The live container probe: a real runtime isolates the Gate's check, and the Round

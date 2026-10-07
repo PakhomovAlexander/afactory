@@ -324,6 +324,9 @@ pub struct TaskProjection {
     )>,
     pub run_reports: Vec<String>,
     pub review_handoffs: Vec<(String, task::review_handoff::TaskReviewHandoffV1)>,
+    /// Every attempt to remove the Task's gate pull requests and branches, in log order
+    /// (ADR-0144).
+    pub gate_cleanups: Vec<task::remote_check::TaskGateCleanupV1>,
 }
 
 /// The light optimizer's final DAG node can only know trial accounting. After every Attempt has
@@ -864,6 +867,7 @@ impl TaskProjection {
             | TaskChangeV1::LeaseReleased {}
             | TaskChangeV1::DeliveryRecorded { .. }
             | TaskChangeV1::AdoptionObservationRecorded { .. }
+            | TaskChangeV1::GateCleanup { .. }
             | TaskChangeV1::SourceRefreshed { .. } => true,
             TaskChangeV1::ExecutionRecorded { record_id } => matches!(
                 execution::read_execution_record(cas, record_id)?.record,
@@ -944,6 +948,16 @@ impl TaskProjection {
                 }
                 TaskChangeV1::Opened { .. } | TaskChangeV1::LeaseTaken { .. } => {
                     return Err(conflict("Task already exists"));
+                }
+                // Housekeeping after the result (ADR-0144): recorded, never part of it.
+                TaskChangeV1::GateCleanup { cleanup } => {
+                    cleanup.validate(&self.task_id).map_err(conflict)?;
+                    if !matches!(self.phase, TaskPhaseV1::Finished { .. }) {
+                        return Err(conflict(
+                            "A gate cleanup is recorded only for a finished Task",
+                        ));
+                    }
+                    self.gate_cleanups.push(cleanup.clone());
                 }
                 // A projection stops at the tombstone (ADR-0135); no transition ever applies it.
                 TaskChangeV1::TaskCollected { collected } => {
@@ -1537,6 +1551,7 @@ impl EventStore {
                     adoption_observations: Vec::new(),
                     run_reports: Vec::new(),
                     review_handoffs: Vec::new(),
+                    gate_cleanups: Vec::new(),
                 });
             } else {
                 return Err(conflict("Task transition precedes genesis"));

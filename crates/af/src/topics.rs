@@ -15,6 +15,11 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
         "Installing, updating, pinning, and removing af",
         SELF_TOPIC,
     ),
+    (
+        "storage",
+        "The disk af keeps between runs, and the [storage] table",
+        STORAGE,
+    ),
 ];
 
 pub(crate) fn find(name: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
@@ -59,7 +64,8 @@ name them.
   [defaults]  pipeline = \"review\"
 
 The user file is `~/.config/af/config.toml` (XDG on macOS too). It holds what belongs to the
-person and the machine, never to the project: the `[self]` update policy. Provider logins and
+person and the machine, never to the project: the `[self]` update policy and the `[storage]`
+budget (see `af help storage`). Provider logins and
 cache policy stay in `providers.toml` and `caches.toml` beside it.
 
 `af config show` prints the effective configuration; `--origin` names the file and line each
@@ -78,8 +84,8 @@ Lowest to highest. Tables deep-merge, scalars last-wins, arrays replace.
   environment AF_<TABLE>__<KEY>, e.g. AF_SELF__AUTO_UPDATE=never
 
 A directory layer's `.af/af.toml` merges into `af config show` for every checkout beneath it.
-`[self]` is machine-only: a directory, project or local layer that carries it is reported and
-ignored.
+`[self]` and `[storage]` are machine-only: a directory, project or local layer that carries one
+is reported and ignored.
 
 Branch-specific configuration needs no layer: `.af/` is versioned, so the project layer on a
 branch is whatever that branch commits. Each git worktree has its own `.af/` copy and its own
@@ -134,6 +140,34 @@ stderr still gets one diagnostic line, so discarding stdout never hides a refusa
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape
 change bumps the version rather than reinterpreting an old one. Nothing af prints under --json is
 affected by a TTY, colours, or the update notice (which goes to stderr, and only on a TTY).";
+
+const STORAGE: &str = "\
+af keeps a bounded amount of disk between runs (ADR-0144). One budget covers warm build keys,
+warm Workspaces, review campaign Stores, the finished Tasks of every Task Store, Stores this
+release cannot read, and installed versions. When af holds more than the budget, the least
+recently used entry goes first; nothing in use and nothing used within the last hour ever goes.
+
+  af storage                  what af holds, per kind, against the budget and the free-disk floor
+  af storage prune            preview the sweep: collection, then the budget
+  af storage prune --apply    perform it now (it also runs after every task run and review run)
+
+The [storage] table, machine layers only (built-in, system, user, AF_STORAGE__<KEY>); a
+repository's .af/af.toml cannot set it:
+
+  [storage]
+  max_bytes = \"20GiB\"          the budget; integer bytes or a number with B, KiB, MiB, GiB, TiB
+  min_free_bytes = \"10GiB\"     below this free space, checks and Worker Attempts are refused
+                               with insufficient_disk before any token is spent
+  auto_gc = true               collect after every `af task run` and `af review run`
+  keep_days = 14               collection never takes anything used in the last keep_days
+  keep_tasks = 20              newest finished Tasks kept per Store
+  keep_campaigns = 20          newest review campaigns kept
+  keep_worker_transcripts = false   keep each Claude Worker Attempt's history in its config dir
+  keep_gate_pull_requests = false   leave a finished Task's gate pull request and branches open
+
+Every check gets its own empty HOME, TMPDIR, AF_CHECK_SCRATCH and XDG_CACHE_HOME, removed after
+it: write scratch files there, never to /tmp. A Store made with --state is recorded in
+$XDG_STATE_HOME/af/stores.toml so collection reaches it.";
 
 const SELF_TOPIC: &str = "\
 Layout

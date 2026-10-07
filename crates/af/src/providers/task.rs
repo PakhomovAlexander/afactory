@@ -125,19 +125,25 @@ impl TaskProviderIdentity {
         );
         Ok(match self.spec.kind {
             ProviderKind::Claude => Box::new(
-                review_runner_claude::task::ClaudeTaskAdapter::new(&command)?.with_auth(
-                    Some(auth.into()),
-                    self.user
-                        .as_ref()
-                        .and_then(|s| s.to_str())
-                        .ok_or("Claude Provider requires USER")?
-                        .into(),
-                    self.home
-                        .as_ref()
-                        .and_then(|s| s.to_str())
-                        .ok_or("Claude Provider requires HOME")?
-                        .into(),
-                ),
+                review_runner_claude::task::ClaudeTaskAdapter::new(&command)?
+                    .with_auth(
+                        Some(auth.into()),
+                        self.user
+                            .as_ref()
+                            .and_then(|s| s.to_str())
+                            .ok_or("Claude Provider requires USER")?
+                            .into(),
+                        self.home
+                            .as_ref()
+                            .and_then(|s| s.to_str())
+                            .ok_or("Claude Provider requires HOME")?
+                            .into(),
+                    )
+                    // Each Attempt's `projects/<slug>` history goes when its process exits,
+                    // unless the machine keeps it (ADR-0144).
+                    .keeping_transcripts(
+                        crate::storage::policy().is_ok_and(|policy| policy.keep_worker_transcripts),
+                    ),
             ),
             ProviderKind::Codex => Box::new(
                 review_runner_codex::task::CodexTaskAdapter::new(&command)?

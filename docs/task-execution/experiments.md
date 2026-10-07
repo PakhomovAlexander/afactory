@@ -47,8 +47,10 @@ measure. The refusal names the node and the numbers, before any Attempt.
 ## What one repetition gets
 
 - The working directory is a fresh read-only materialization of the exact Snapshot.
-- `HOME`, `TMPDIR` and `XDG_CACHE_HOME` point into a private runtime directory that is discarded
-  after the repetition; with `warm = false`, so does `CARGO_TARGET_DIR`. The command reports the
+- `HOME`, `TMPDIR`, `AF_CHECK_SCRATCH` and `XDG_CACHE_HOME` point into a private
+  `af-check-<pid>-<random>` runtime directory that is discarded after the repetition
+  ([ADR-0144](../adr/0144-hold-afs-disk-use-to-a-machine-budget.md)); with `warm = false`, so does
+  `CARGO_TARGET_DIR`. The command reports the
   bytes it cares about itself before the directory goes.
 - With `warm = true`, `CARGO_TARGET_DIR` is the Warm Check Cache directory for the resolved
   toolchain key, under the same lock, byte bound and monitor as a check. Any other declared warm

@@ -1004,3 +1004,94 @@ fn cancellation_during_the_wait_ends_the_subprocesses() {
         .success();
     assert!(!alive, "the hung `gh` process {pid} still runs");
 }
+
+/// ADR-0144: a finished Task's cleanup closes its gate pull request and deletes exactly its two
+/// branches; a branch of another Task and the pull request's other state stay as they were.
+#[test]
+fn the_cleanup_closes_the_gate_pull_request_and_deletes_only_this_tasks_branches() {
+    use review_core::task::remote_check::GateCleanupOutcomeV1;
+    let setup = setup();
+    setup.passing();
+    let candidate = setup.snapshots.candidate(&setup.cas, "version 2\n");
+    let outcome = setup.run(&candidate, OWNER);
+    expect(&outcome, RemoteCheckStateV1::Observed, None);
+    let head = setup.remote.branch("head").unwrap();
+    git(
+        &setup.remote.bare,
+        &["update-ref", "refs/heads/af-gate/another-task/head", &head],
+    );
+    let cleanup = github_pr::cleanup(
+        TASK,
+        &setup.remote.target(),
+        &[12],
+        None,
+        &setup.remote.settings(),
+        Instant::now() + LIMIT,
+    );
+    cleanup.validate(TASK).unwrap();
+    assert_eq!(cleanup.outcome, GateCleanupOutcomeV1::Done, "{cleanup:?}");
+    assert_eq!(cleanup.pull_requests, [12]);
+    assert!(setup.remote.branch("head").is_none());
+    assert!(setup.remote.branch("base").is_none());
+    assert_eq!(
+        setup.remote.refs(),
+        format!("refs/heads/af-gate/another-task/head {head}")
+    );
+    let calls = setup.remote.calls();
+    assert!(
+        calls.contains("--method PATCH repos/octo/gate/pulls/12 -f state=closed"),
+        "{calls}"
+    );
+    // Run again on what is left: nothing to close or delete, and still done.
+    let again = github_pr::cleanup(
+        TASK,
+        &setup.remote.target(),
+        &[12],
+        None,
+        &setup.remote.settings(),
+        Instant::now() + LIMIT,
+    );
+    assert_eq!(again.outcome, GateCleanupOutcomeV1::Done, "{again:?}");
+}
+
+/// A cleanup that cannot close the pull request says why, with the push URL redacted, and a
+/// later attempt finishes it.
+#[test]
+fn a_failed_cleanup_keeps_its_redacted_reason_and_a_retry_finishes_it() {
+    use review_core::task::remote_check::GateCleanupOutcomeV1;
+    let setup = setup();
+    setup.passing();
+    let candidate = setup.snapshots.candidate(&setup.cas, "version 2\n");
+    expect(
+        &setup.run(&candidate, OWNER),
+        RemoteCheckStateV1::Observed,
+        None,
+    );
+    setup.remote.flag("refuse-close");
+    let failed = github_pr::cleanup(
+        TASK,
+        &setup.remote.target(),
+        &[12],
+        None,
+        &setup.remote.settings(),
+        Instant::now() + LIMIT,
+    );
+    failed.validate(TASK).unwrap();
+    assert_eq!(failed.outcome, GateCleanupOutcomeV1::Failed);
+    let reason = failed.reason.clone().unwrap();
+    assert!(reason.contains("closing pull request #12"), "{reason}");
+    assert!(!reason.contains(&setup.remote.push_url()), "{reason}");
+    let record = serde_json::to_string(&failed).unwrap();
+    assert!(!record.contains(&setup.remote.push_url()), "{record}");
+    std::fs::remove_file(setup.remote.state.join("refuse-close")).unwrap();
+    let retried = github_pr::cleanup(
+        TASK,
+        &setup.remote.target(),
+        &[12],
+        None,
+        &setup.remote.settings(),
+        Instant::now() + LIMIT,
+    );
+    assert_eq!(retried.outcome, GateCleanupOutcomeV1::Done, "{retried:?}");
+    assert!(setup.remote.branch("head").is_none());
+}

@@ -3,9 +3,11 @@
 //! workflow's `pull_request` run for that pull request and head commit.
 //!
 //! The executor never force-pushes, writes no ref outside this Task's two branches, and never
-//! merges, marks ready, closes, comments on or deletes anything. For a required job that did not
-//! succeed it keeps a bounded tail of the job's log, so a remote failure can be debugged where a
-//! local one is.
+//! merges, marks ready or comments on anything. For a required job that did not succeed it keeps
+//! a bounded tail of the job's log, so a remote failure can be debugged where a local one is.
+//! When the Task finishes, and when collection takes it, [`cleanup`] closes the draft gate pull
+//! requests its evidence recorded and deletes exactly its two branches (ADR-0144); nothing else
+//! is ever closed or deleted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -14,15 +16,17 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use review_core::task::remote_check::{
-    MAX_REMOTE_NAME_CHARS, MAX_REMOTE_STEPS, RemoteCheckReasonV1, RemoteCheckStateV1, RemoteJobV1,
-    RemotePullRequestV1, RemoteRunV1, RemoteStepV1,
+    GateCleanupOutcomeV1, MAX_REMOTE_DIAGNOSTIC_BYTES, MAX_REMOTE_NAME_CHARS, MAX_REMOTE_STEPS,
+    RemoteCheckReasonV1, RemoteCheckStateV1, RemoteJobV1, RemotePullRequestV1, RemoteRunV1,
+    RemoteStepV1, TASK_GATE_CLEANUP_V1, TaskGateCleanupV1,
 };
 use review_source_git::Manifest;
 use review_store::Cas;
 use serde_json::Value;
 
 use super::gate::{
-    GateRepository, GateRole, ToolError, Tools, gate_message, is_ref_component, push_refspec,
+    GateRepository, GateRole, ToolError, Tools, delete_refspec, gate_message, is_ref_component,
+    push_refspec,
 };
 use super::{EvidenceBase, GithubPrTarget, Redactor, RemoteCheckOutcome, RemoteCheckRequest};
 
@@ -71,8 +75,8 @@ pub struct RemotePhase<'a> {
 const PR_TITLE_PREFIX: &str = "af gate: ";
 const PR_BODY: &str = "Opened by af on an operator's machine to run this repository's declared \
 checks against an exact Task Snapshot (ADR-0140). It is not for review or merge: af never marks \
-it ready, merges, closes or comments on it. Close it and delete its two af-gate branches when the \
-Task no longer needs them.";
+it ready, merges or comments on it. af closes it and deletes its two af-gate branches when the \
+Task finishes (ADR-0144).";
 const WAIT_SLICE: Duration = Duration::from_millis(50);
 const MAX_PAGES: u32 = 10;
 /// The bound of the one read-back that follows an interrupted push.
@@ -81,6 +85,122 @@ const PUSH_RECOVERY: Duration = Duration::from_secs(20);
 pub const MAX_JOB_LOG_BYTES: usize = 256 * 1024;
 /// The log excerpt kept for one check, across its unsuccessful jobs.
 pub const MAX_CHECK_LOG_BYTES: usize = 1024 * 1024;
+
+/// Remove what one Task's remote checks left on GitHub (ADR-0144): close each draft gate pull
+/// request in `pull_requests` whose head and base are still this Task's two `af-gate/` branches,
+/// then delete whichever of those two branches the push target still has. Nothing else is ever
+/// closed, deleted or written. The record says what happened; a failure keeps its redacted
+/// reason and never changes the Task's result, and the caller records it either way.
+pub fn cleanup(
+    task_id: &str,
+    target: &GithubPrTarget,
+    pull_requests: &[u64],
+    mapping: Option<&Path>,
+    settings: &GithubPrSettings,
+    deadline: Instant,
+) -> TaskGateCleanupV1 {
+    let mut numbers: Vec<u64> = pull_requests.iter().copied().filter(|n| *n > 0).collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    let redactor = Redactor::new(&target.push_url, mapping);
+    let failures = cleanup_failures(task_id, target, &numbers, &redactor, settings, deadline);
+    let reason = (!failures.is_empty()).then(|| {
+        let joined = redactor.apply(&failures.join("; "));
+        let mut end = joined.len().min(MAX_REMOTE_DIAGNOSTIC_BYTES);
+        while !joined.is_char_boundary(end) {
+            end -= 1;
+        }
+        joined[..end].to_owned()
+    });
+    TaskGateCleanupV1 {
+        schema: TASK_GATE_CLEANUP_V1.into(),
+        github: target.github.clone(),
+        pull_requests: numbers,
+        branches: TaskGateCleanupV1::branches_of(task_id),
+        outcome: if reason.is_some() {
+            GateCleanupOutcomeV1::Failed
+        } else {
+            GateCleanupOutcomeV1::Done
+        },
+        reason,
+    }
+}
+
+fn cleanup_failures(
+    task_id: &str,
+    target: &GithubPrTarget,
+    numbers: &[u64],
+    redactor: &Redactor,
+    settings: &GithubPrSettings,
+    deadline: Instant,
+) -> Vec<String> {
+    if !is_ref_component(task_id) {
+        return vec![format!(
+            "Task ID {task_id:?} cannot name af-gate branches, so none was pushed for it"
+        )];
+    }
+    let tools = Tools {
+        path: settings.path.as_deref(),
+        deadline,
+        cancellation: None,
+        redactor,
+    };
+    let directory = match tempfile::tempdir() {
+        Ok(directory) => directory,
+        Err(error) => return vec![format!("creating the private repository: {error}")],
+    };
+    let repository = match GateRepository::init(&tools, directory) {
+        Ok(repository) => repository,
+        Err(error) => return vec![error.describe("creating the private repository")],
+    };
+    let mut failures = Vec::new();
+    let head = format!("af-gate/{task_id}/head");
+    let base = format!("af-gate/{task_id}/base");
+    let api = Api {
+        tools: &tools,
+        github: &target.github,
+        cwd: repository.root(),
+    };
+    for number in numbers {
+        // Only a pull request that is still this Task's gate pull request is closed.
+        match api.pull(*number) {
+            Ok(pull) if pull.head_ref != head || pull.base_ref != base => failures.push(format!(
+                "pull request #{number} is not between this Task's af-gate branches; left open"
+            )),
+            Ok(pull) if !pull.open => {}
+            Ok(_) => {
+                if let Err(error) = api.close_pull(*number) {
+                    failures.push(error.describe(&format!("closing pull request #{number}")));
+                }
+            }
+            Err(error) => {
+                failures.push(error.describe(&format!("reading pull request #{number}")));
+            }
+        }
+    }
+    let references = [format!("refs/heads/{base}"), format!("refs/heads/{head}")];
+    let url = target.push_url.as_str();
+    match repository.ls_remote(&tools, url, &[&references[0], &references[1]]) {
+        Ok(found) => {
+            let refspecs: Result<Vec<String>, String> = references
+                .iter()
+                .filter(|reference| found.contains_key(reference.as_str()))
+                .map(|reference| delete_refspec(reference, task_id))
+                .collect();
+            match refspecs {
+                Ok(refspecs) if refspecs.is_empty() => {}
+                Ok(refspecs) => {
+                    if let Err(error) = repository.push(&tools, url, &refspecs) {
+                        failures.push(error.describe("deleting the af-gate branches"));
+                    }
+                }
+                Err(error) => failures.push(error),
+            }
+        }
+        Err(error) => failures.push(error.describe("reading the af-gate branches")),
+    }
+    failures
+}
 
 /// Run the remote phase once for every remote check of one Check node. `Err` is a
 /// kernel error (a tree that did not read back, an unwritable private repository), never a
@@ -255,7 +375,8 @@ pub fn run(
     let url = phase.target.push_url.as_str();
     let delete_hint = format!(
         "another Task, or this Task ID in another Store, owns the name; delete both branches \
-         (`git push <push-url> --delete {base_branch} {head_branch}`) or rename the Task"
+         (`git push <push-url> --delete {base_branch} {head_branch}`) or rename the Task (af \
+         deletes them itself once the Task that owns them finishes)"
     );
 
     let found = match repository.ls_remote(&tools, url, &[&base_ref, &head_ref]) {
@@ -1287,6 +1408,14 @@ impl Api<'_> {
         ])?;
         parse_pull(&value, self.github)
             .ok_or_else(|| ToolError::Failed(Some("the created pull request is malformed".into())))
+    }
+
+    /// Close one pull request. Nothing else about it changes.
+    fn close_pull(&self, number: u64) -> Result<Pull, ToolError> {
+        let path = format!("repos/{}/pulls/{number}", self.github);
+        let value = self.call(&["--method", "PATCH", &path, "-f", "state=closed"])?;
+        parse_pull(&value, self.github)
+            .ok_or_else(|| ToolError::Failed(Some("the closed pull request is malformed".into())))
     }
 
     fn pull(&self, number: u64) -> Result<Pull, ToolError> {

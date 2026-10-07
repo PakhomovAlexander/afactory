@@ -30,6 +30,8 @@ struct Fixture {
     mapping: PathBuf,
     /// What `AF_TASK_REMOTE_CHECK_POLICY_FILE` holds instead of `mapping`, when a test sets it.
     mapping_setting: std::cell::RefCell<Option<std::ffi::OsString>>,
+    /// Further machine settings every command of a test runs with.
+    settings: std::cell::RefCell<Vec<(String, String)>>,
     repository_id: String,
 }
 
@@ -131,6 +133,7 @@ fn fixture() -> Fixture {
     Fixture {
         mapping: root.join("config/remote-checks.toml"),
         mapping_setting: Default::default(),
+        settings: Default::default(),
         _root: directory,
         root,
         repo,
@@ -206,6 +209,8 @@ impl Fixture {
             .env("HOME", &home)
             .env("XDG_CONFIG_HOME", home.join(".config"))
             .env("XDG_CACHE_HOME", self.root.join("cache"))
+            .env("XDG_STATE_HOME", home.join(".local/state"))
+            .env("XDG_DATA_HOME", home.join(".local/share"))
             .env(
                 "AF_TASK_REMOTE_CHECK_POLICY_FILE",
                 self.mapping_setting
@@ -217,6 +222,7 @@ impl Fixture {
             .env("PATH", path)
             .env_remove("AF_CACHE_POLICY_FILE")
             .env_remove("CARGO_TARGET_DIR")
+            .envs(self.settings.borrow().iter().cloned())
             .args(args)
             .arg("--state")
             .arg(state)
@@ -278,6 +284,11 @@ fn line<'a>(text: &'a str, prefix: &str) -> &'a str {
 fn a_remote_pipeline_says_it_publishes_and_then_runs_through_the_gate_pull_request() {
     let fixture = fixture();
     fixture.map("");
+    // What the gate published stays for this test to inspect (ADR-0144 keeps it on request).
+    fixture
+        .settings
+        .borrow_mut()
+        .push(("AF_STORAGE__KEEP_GATE_PULL_REQUESTS".into(), "true".into()));
     // The preview names the effect and the destination; confirming this plan is the consent.
     let (code, preview, stderr) = fixture.plan(&fixture.state, TASK, REMOTE);
     assert_eq!(code, 0, "{stderr}\n{preview}");
@@ -343,6 +354,148 @@ fn a_remote_pipeline_says_it_publishes_and_then_runs_through_the_gate_pull_reque
     // Nothing the kernel ran forced a push.
     let calls = std::fs::read_to_string(fixture.gh_state.join("calls.log")).unwrap();
     assert!(!calls.contains("--force") && !calls.contains(" +"));
+    // Kept on request: nothing was closed and no cleanup was recorded.
+    assert!(!calls.contains("PATCH"), "{calls}");
+    assert!(done.get("gate_cleanups").is_none(), "{done}");
+}
+
+/// Run the remote twin of the fixture to a satisfied result, with the recorded GitHub documents
+/// of a passing run, and return the finished Task's `--json` document.
+fn run_remote_task(fixture: &Fixture, task_id: &str) -> Value {
+    fixture.serve("runs-pull-request.json", "runs.json");
+    fixture.serve("jobs-success.json", "jobs-77-1.json");
+    let planned = fixture.plan_json(&fixture.state, task_id, REMOTE);
+    let plan_id = planned["plan_id"].as_str().unwrap();
+    let (code, stdout, stderr) = fixture.af(
+        &fixture.state,
+        &["task", "run", task_id, "--confirm-plan", plan_id, "--json"],
+    );
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
+    let done: Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(done["result"]["acceptance"], "satisfied", "{done}");
+    done
+}
+
+/// ADR-0144: when the Task finishes, its draft gate pull request is closed and both of its
+/// af-gate branches are deleted from the push target, recorded as one `gate_cleanup`; nothing
+/// recorded or printed holds the push URL.
+#[test]
+fn a_finished_remote_check_task_closes_its_gate_pull_request_and_deletes_its_branches() {
+    let fixture = fixture();
+    fixture.map("");
+    let done = run_remote_task(&fixture, TASK);
+    crate::schemas::valid(
+        &crate::schemas::validator("task-inspection-v11.json"),
+        &done,
+    );
+    let [cleanup] = done["gate_cleanups"].as_array().unwrap().as_slice() else {
+        panic!("one gate cleanup: {done}");
+    };
+    assert_eq!(cleanup["outcome"], "done", "{cleanup}");
+    assert_eq!(cleanup["pull_requests"], json!([12]));
+    assert_eq!(
+        cleanup["branches"],
+        json!([
+            format!("af-gate/{TASK}/base"),
+            format!("af-gate/{TASK}/head")
+        ])
+    );
+    assert_eq!(
+        git(
+            &fixture.bare,
+            &["for-each-ref", "--format=%(refname)", "refs/heads/"]
+        ),
+        "",
+        "both gate branches are gone"
+    );
+    let calls = std::fs::read_to_string(fixture.gh_state.join("calls.log")).unwrap();
+    assert!(
+        calls.contains("--method PATCH repos/octo/gate/pulls/12 -f state=closed"),
+        "{calls}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.gh_state.join("pull-state")).unwrap(),
+        "closed\n"
+    );
+    let (code, shown, stderr) = fixture.af(&fixture.state, &["task", "show", TASK]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        shown.contains(&format!(
+            "gate cleanup: done; closed pull request 12 and deleted af-gate/{TASK}/base and af-gate/{TASK}/head"
+        )),
+        "{shown}"
+    );
+    assert!(!shown.contains("gh pr close"), "{shown}");
+    let bytes = fixture.store_bytes(&fixture.state);
+    assert!(!contains(&bytes, fixture.bare.to_str().unwrap()));
+    assert!(!shown.contains(fixture.bare.to_str().unwrap()));
+}
+
+/// A cleanup `gh` refuses is recorded as failed with its reason, leaves the Task's result as it
+/// was, and the next sweep finishes it once `gh` answers again.
+#[test]
+fn a_failed_gate_cleanup_keeps_the_result_and_the_next_sweep_retries_it() {
+    let fixture = fixture();
+    fixture.map("");
+    std::fs::write(fixture.gh_state.join("refuse-close"), b"").unwrap();
+    let done = run_remote_task(&fixture, TASK);
+    let [failed] = done["gate_cleanups"].as_array().unwrap().as_slice() else {
+        panic!("one gate cleanup: {done}");
+    };
+    assert_eq!(failed["outcome"], "failed", "{failed}");
+    let reason = failed["reason"].as_str().unwrap();
+    assert!(reason.contains("closing pull request #12"), "{reason}");
+    assert!(!reason.contains(fixture.bare.to_str().unwrap()), "{reason}");
+    assert_eq!(done["result"]["acceptance"], "satisfied");
+    let (code, shown, _) = fixture.af(&fixture.state, &["task", "show", TASK]);
+    assert_eq!(code, 0);
+    assert!(shown.contains("gate cleanup: failed; "), "{shown}");
+    assert!(shown.contains("gh pr close 12 --repo octo/gate"), "{shown}");
+
+    std::fs::remove_file(fixture.gh_state.join("refuse-close")).unwrap();
+    let home = fixture.root.join("home");
+    let path = std::env::join_paths(std::iter::once(fixture.bin.clone()).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .unwrap();
+    let swept = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(&fixture.repo)
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_CACHE_HOME", fixture.root.join("cache"))
+        .env("XDG_STATE_HOME", home.join(".local/state"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("AF_TASK_REMOTE_CHECK_POLICY_FILE", &fixture.mapping)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("PATH", path)
+        .args(["storage", "prune", "--apply", "--json"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&swept.stdout);
+    assert!(swept.status.success(), "{stdout}");
+    let pruned: Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(pruned["gate_cleanups"][0]["task_id"], TASK, "{pruned}");
+    assert_eq!(pruned["gate_cleanups"][0]["outcome"], "done", "{pruned}");
+    let (code, stdout, stderr) = fixture.af(&fixture.state, &["task", "show", TASK, "--json"]);
+    assert_eq!(code, 0, "{stderr}");
+    let shown: Value = serde_json::from_str(stdout.trim()).unwrap();
+    // The run's own sweep tried again while `gh` still refused; the explicit one finished it.
+    let cleanups = shown["gate_cleanups"].as_array().unwrap();
+    assert!(cleanups.len() >= 2, "{cleanups:?}");
+    assert!(
+        cleanups[..cleanups.len() - 1]
+            .iter()
+            .all(|cleanup| cleanup["outcome"] == "failed")
+    );
+    assert_eq!(cleanups.last().unwrap()["outcome"], "done");
+    assert_eq!(shown["result"], done["result"], "the result never changed");
+    assert_eq!(
+        git(
+            &fixture.bare,
+            &["for-each-ref", "--format=%(refname)", "refs/heads/"]
+        ),
+        ""
+    );
 }
 
 #[test]

@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 168] = [
+const SCHEMAS: [&str; 169] = [
     "task-report-v1.json",
     "code-task-policy-v1.json",
     "remote-check-evidence-v1.json",
@@ -145,6 +145,7 @@ const SCHEMAS: [&str; 168] = [
     "task-contracts-v1.json",
     "task-transition-v5.json",
     "task-collected-v1.json",
+    "task-gate-cleanup-v1.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
     "legacy-review-task-policy-v4.json",
@@ -2529,6 +2530,92 @@ fn a_task_tombstone_is_one_closed_transition_referencing_no_artifact() {
     ] {
         assert!(forged.validate().is_err());
     }
+}
+
+/// ADR-0144: a `gate_cleanup` transition carries `af/TaskGateCleanup@1` inline, references no
+/// artifact, names exactly its Task's two `af-gate/` branches and keeps a reason only when it
+/// failed; the schema and the typed contract refuse the same shapes, except the Task the branches
+/// must name, which only the log that carries the record knows.
+#[test]
+fn a_gate_cleanup_is_one_closed_transition_referencing_no_artifact() {
+    use review_core::task::event::{TaskChangeV1, TaskTransitionV1};
+    use review_core::task::remote_check::{
+        GateCleanupOutcomeV1, TASK_GATE_CLEANUP_V1, TaskGateCleanupV1,
+    };
+    let done = TaskGateCleanupV1 {
+        schema: TASK_GATE_CLEANUP_V1.into(),
+        github: "octo/gate".into(),
+        pull_requests: vec![12],
+        branches: TaskGateCleanupV1::branches_of("pagination-remote"),
+        outcome: GateCleanupOutcomeV1::Done,
+        reason: None,
+    };
+    done.validate("pagination-remote").unwrap();
+    assert!(done.validate("another-task").is_err());
+    let failed = TaskGateCleanupV1 {
+        outcome: GateCleanupOutcomeV1::Failed,
+        reason: Some("closing pull request #12 failed: gh: Not Found (HTTP 404)".into()),
+        ..done.clone()
+    };
+    failed.validate("pagination-remote").unwrap();
+    for cleanup in [&done, &failed] {
+        let transition = TaskTransitionV1 {
+            writer: "cli-1".into(),
+            epoch: 2,
+            now_unix_ms: 100,
+            change: TaskChangeV1::GateCleanup {
+                cleanup: cleanup.clone(),
+            },
+        };
+        transition.validate().unwrap();
+        assert!(transition.artifact_refs().is_empty(), "references nothing");
+        let value = serde_json::to_value(&transition).unwrap();
+        assert_eq!(value["change"]["kind"], "gate_cleanup");
+        assert_valid("task-transition-v5.json", &value);
+        assert_valid("task-gate-cleanup-v1.json", &value["change"]["cleanup"]);
+        review_core::event::validate_event_payload(EventType::TaskTransitionV5, &value).unwrap();
+    }
+    let value = serde_json::to_value(TaskTransitionV1 {
+        writer: "cli-1".into(),
+        epoch: 2,
+        now_unix_ms: 100,
+        change: TaskChangeV1::GateCleanup {
+            cleanup: done.clone(),
+        },
+    })
+    .unwrap();
+    for (field, bad) in [
+        ("schema", json!("af/TaskGateCleanup@2")),
+        ("github", json!("octo")),
+        ("pull_requests", json!([0])),
+        ("pull_requests", json!([12, 12])),
+        ("branches", json!(["af-gate/x/base"])),
+        ("branches", json!(["af-gate/x/head", "af-gate/x/base"])),
+        ("branches", json!(["main", "af-gate/x/head"])),
+        ("outcome", json!("partial")),
+        ("reason", json!("a reason without a failure")),
+        ("push_url", json!("https://example.invalid/octo/gate.git")),
+    ] {
+        let mut forged = value.clone();
+        forged["change"]["cleanup"][field] = bad;
+        assert_invalid("task-transition-v5.json", &forged, field);
+        assert!(
+            review_core::event::validate_event_payload(EventType::TaskTransitionV5, &forged)
+                .is_err(),
+            "{field}"
+        );
+    }
+    let mut unexplained = value.clone();
+    unexplained["change"]["cleanup"]["outcome"] = json!("failed");
+    assert_invalid(
+        "task-transition-v5.json",
+        &unexplained,
+        "failure without reason",
+    );
+    assert!(
+        review_core::event::validate_event_payload(EventType::TaskTransitionV5, &unexplained)
+            .is_err()
+    );
 }
 
 #[test]
