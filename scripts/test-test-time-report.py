@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Exercise `test-time-report.py` through its real entry, and its wiring into `make test` and
-the Task gate with a stand-in `cargo`, offline.
+the Task gate with a stand-in `cargo`, offline. It runs under Python 3.9, the Task gate's.
 
 The summary's totals are checked exactly against `fixtures/test-time-report/`, a small nextest
-JUnit and nextest config; the wiring scenarios prove that the report never changes the test
-step's exit status, whether the JUnit is there, stale, unreadable or the script is gone.
+JUnit and nextest config; the config reader is checked on the real `.config/nextest.toml`. The
+wiring scenarios prove that the report never changes the test step's exit status, whether the
+JUnit is there, left by an earlier run, miscounted, unreadable or the script is gone.
 """
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,13 +15,21 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / 'scripts' / 'test-time-report.py'
 FIXTURE = ROOT / 'fixtures' / 'test-time-report'
 CONFIG = ['--nextest-config', str(FIXTURE / 'nextest.toml')]
 WARNING = 'warning: no test-time report'
+SPEC = importlib.util.spec_from_file_location('test_time_report', SCRIPT)
+MODULE = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(MODULE)
+# The real exclusive block (ADR-0124), as `.config/nextest.toml` lists it.
+EXCLUSIVE = ['::identity_rechecks_cancel_an_inflight_status_process$',
+             '::codex_subscription_probe_reaps_descendants_after_an_early_exit$',
+             'setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask$',
+             'typed_reply_never_falls_back_and_failed_outputs_keep_accounting$',
+             'light_strategy_generates_one_candidate_without_exposing_source_to_author_workers$']
 
 
 def report(*args, cwd=None):
@@ -35,14 +45,19 @@ def summary(*args, cwd=None):
     return out
 
 
-def junit(path, cases, wall='10.000'):
-    """Write a nextest-shaped JUnit; each case is (binary, test, time or None[, failure tag])."""
+def junit(path, cases, wall='10.000', **declared):
+    """Write a nextest-shaped JUnit; each case is (binary, test, time or None[, failure tag]).
+    The root declares nextest's counts of them unless `declared` overrides one (None omits)."""
     suites = {}
     for binary, test, seconds, *failure in cases:
         suites.setdefault(binary, []).append((test, seconds, failure))
+    counts = {'tests': len(cases), 'failures': sum(c[3:] == ('failure',) for c in cases),
+              'errors': sum(c[3:] == ('error',) for c in cases)}
+    counts.update(declared)
+    attributes = ''.join(f' {k}="{v}"' for k, v in counts.items() if v is not None)
     lines = ['<?xml version="1.0" encoding="UTF-8"?>',
-             '<testsuites name="nextest-run" tests="%d"%s>' % (
-                 len(cases), '' if wall is None else f' time="{wall}"')]
+             '<testsuites name="nextest-run"%s%s>' % (
+                 attributes, '' if wall is None else f' time="{wall}"')]
     for binary, tests in suites.items():
         lines.append(f'<testsuite name="{binary}" tests="{len(tests)}">')
         for test, seconds, failure in tests:
@@ -118,6 +133,83 @@ def check_config_lookup(tmp):
                           tmp / 'absent.toml', cwd=tmp)
     assert code == 2 and 'does not exist' in err, (code, err)
     print('PASS: default and explicit nextest config')
+
+
+def check_toml_subset():
+    real = MODULE.parse_toml((ROOT / '.config/nextest.toml').read_text(encoding='utf-8'), 'real')
+    ci = real['profile']['ci']
+    assert (ci['retries'], ci['fail-fast'], ci['junit']) == (0, False, {'path': 'junit.xml'}), ci
+    assert ci['slow-timeout'] == {'period': '120s'}, ci
+    [override] = ci['overrides']
+    assert (override['threads-required'], override['priority']) == ('num-test-threads', 100)
+    # The multi-line literal filter keeps its text byte for byte, without the leading newline.
+    assert override['filter'] == ''.join(
+        f'{"| " if i else ""}test(/{regex}/)\n' for i, regex in enumerate(EXCLUSIVE)), override
+    patterns = MODULE.exclusive_patterns(ROOT / '.config/nextest.toml', True)
+    assert [p.pattern for p in patterns] == EXCLUSIVE, patterns
+    assert patterns[0].search('task::identity_rechecks_cancel_an_inflight_status_process')
+    assert not patterns[0].search('task::identity_rechecks_cancel_an_inflight_status_process_x')
+    fixture = MODULE.parse_toml((FIXTURE / 'nextest.toml').read_text(encoding='utf-8'), 'fixture')
+    assert [o['threads-required'] for o in fixture['profile']['ci']['overrides']] == [
+        'num-test-threads', 2], fixture
+    samples = {
+        'strings': (r'a = "x\t\"\u00e9" # c' '\n' r"b = 'C:\\p'" '\n'
+                    'c = """\nl1\\\n   l2"""\n' "d = '''\nq''''' \n"),
+        'arrays': ('a = [1, -2_0, +3]\nb = [\n  "x", # c\n  \'y\',\n]\nc = []\n'
+                   'd = { x = true, "y z" = { } }\n'),
+        'tables': ('[p.q]\nk = 1\n[p]\nj = 2\n[[p.r]]\na = 1\n[[p.r]]\na = 2\n'
+                   '[p.r.s]\nb = 3\n[ "p" . t ]\n'),
+    }
+    expected = {
+        'strings': {'a': 'x\t"\u00e9', 'b': 'C:\\\\p', 'c': 'l1l2', 'd': "q''"},
+        'arrays': {'a': [1, -20, 3], 'b': ['x', 'y'], 'c': [], 'd': {'x': True, 'y z': {}}},
+        'tables': {'p': {'q': {'k': 1}, 'j': 2, 'r': [{'a': 1}, {'a': 2, 's': {'b': 3}}],
+                         't': {}}},
+    }
+    for name, text in samples.items():
+        assert MODULE.parse_toml(text, name) == expected[name], (name, text)
+    try:  # Where the standard library reads TOML (3.11+), the subset must read it the same.
+        import tomllib
+    except ImportError:
+        tomllib = None
+    if tomllib:
+        for path in [ROOT / '.config/nextest.toml', FIXTURE / 'nextest.toml']:
+            text = path.read_text(encoding='utf-8')
+            assert MODULE.parse_toml(text, path) == tomllib.loads(text), path
+        for name, text in samples.items():
+            assert tomllib.loads(text) == expected[name], name
+    # Outside the subset or not TOML at all: an error, never a guess.
+    for text in ['a = 1.5\n', 'a.b = 1\n', 'a = 1\na = 2\n', 'a = "open\n', 'a = 1 b\n',
+                 '[t]\n[t]\n', 'a = 1979-05-27\n', 'a = 01\n', 'a = "\\q"\n', '[[a]]\n[a]\n',
+                 "a = 'x\ny'\n", 'a = inf\n', "a = '''x''''''\n"]:
+        try:
+            MODULE.parse_toml(text, 'bad')
+        except MODULE.ReportError as error:
+            assert str(error).startswith('cannot read nextest config bad: line '), error
+        else:
+            raise AssertionError(f'parsed outside the subset: {text!r}')
+    print('PASS: the TOML subset reads the real .config/nextest.toml and the fixture'
+          + (', as tomllib does' if tomllib else ' without tomllib'))
+
+
+def check_declared_counts(tmp):
+    cases = [('b', 'fails', '1.000', 'failure'), ('b', 'errors', '0.500', 'error'),
+             ('b', 'passes', '0.250')]
+    consistent = junit(tmp / 'counted.xml', cases, wall='2.000')
+    assert json.loads(summary(consistent, *CONFIG, '--format', 'json'))['tests'] == 3
+    # Undeclared counts are not checked: there is nothing to disagree with.
+    undeclared = junit(tmp / 'undeclared.xml', cases, tests=None, failures=None, errors=None)
+    assert json.loads(summary(undeclared, *CONFIG, '--format', 'json'))['failures'] == 2
+    for name, declared, message in [
+            ('tests', {'tests': 4}, 'declares tests="4", its testcases count 3'),
+            ('failures', {'failures': 2}, 'declares failures="2", its testcases count 1'),
+            ('errors', {'errors': 0}, 'declares errors="0", its testcases count 1'),
+            ('garbled', {'tests': 'three'}, 'declares tests="three"')]:
+        path = junit(tmp / f'miscounted-{name}.xml', cases, wall='2.000', **declared)
+        for args in [[], ['--format', 'json']]:
+            code, out, err = report('summary', path, *CONFIG, *args)
+            assert code == 2 and not out and message in err, (name, code, out, err)
+    print('PASS: a JUnit whose testcases do not add up to its declared counts has no summary')
 
 
 def check_histogram_edges(tmp):
@@ -248,6 +340,8 @@ def project(base, *, script=True):
     tools.mkdir()
     (tools / 'cargo').write_text(f'#!{sys.executable}\n' + FAKE_CARGO)
     (tools / 'cargo').chmod(0o755)
+    # The wiring runs under the interpreter running this test, 3.9 in the Task gate.
+    (tools / 'python3').symlink_to(sys.executable)
     return repo
 
 
@@ -260,51 +354,70 @@ def environment(base, exit_code, junit_path=None):
     return env
 
 
-def make_test(*, exit_code, junit_path, script, stale):
-    """Run `make test` in a fresh project; return (result, test step record, step summary)."""
+def make_test(*, exit_code, junit_path, script, prior):
+    """Run `make test` in a fresh project; return (result, test step record, step summary).
+    `prior` is what an earlier run left where this run's JUnit goes: None, a JUnit as recent as
+    this run, or a directory that cannot be removed."""
     with tempfile.TemporaryDirectory(prefix='af test time ') as tmp:
         base = Path(tmp)
         repo = project(base, script=script)
         metrics, step_summary = base / 'metrics.jsonl', base / 'step-summary.md'
         env = environment(base, exit_code, junit_path)
         env.update(AF_CI_METRICS=str(metrics), GITHUB_STEP_SUMMARY=str(step_summary))
-        if stale:
-            old = repo / 'target/nextest/ci/junit.xml'
+        old = repo / 'target/nextest/ci/junit.xml'
+        if prior == 'junit':
             old.parent.mkdir(parents=True)
             shutil.copyfile(FIXTURE / 'junit.xml', old)
-            os.utime(old, (time.time() - 3600,) * 2)
+        elif prior == 'directory':
+            (old / 'kept').mkdir(parents=True)
         result = subprocess.run(['make', 'test'], cwd=repo, env=env, capture_output=True,
                                 text=True)
         records = [json.loads(line) for line in metrics.read_text().splitlines()]
         step = next(r for r in records if r['label'] == 'test')
         written = step_summary.read_text() if step_summary.exists() else ''
+        if prior == 'junit' and not junit_path:
+            assert not old.exists(), 'the earlier JUnit outlived the run that replaced it'
         return result, step, written
 
 
 def check_make_test_status(tmp):
     broken = tmp / 'broken.xml'
     broken.write_text('<testsuites>', encoding='utf-8')
+    miscounted = tmp / 'miscounted.xml'
+    miscounted.write_text((FIXTURE / 'junit.xml').read_text(encoding='utf-8').replace(
+        'tests="6" failures="1"', 'tests="7" failures="1"', 1), encoding='utf-8')
     scenarios = [
-        # (nextest exit, JUnit written, report script present, stale JUnit, summary expected)
-        (0, None, True, False, False), (3, None, True, False, False),
-        (0, FIXTURE / 'junit.xml', True, False, True),
-        (1, FIXTURE / 'junit.xml', True, False, True),
-        (0, broken, True, False, False), (101, broken, True, False, False),
-        (0, FIXTURE / 'junit.xml', False, False, False), (0, None, True, True, False)]
-    for exit_code, junit_path, script, stale, expected in scenarios:
-        result, step, written = make_test(exit_code=exit_code, junit_path=junit_path,
-                                          script=script, stale=stale)
-        label = (exit_code, junit_path and junit_path.name, script, stale)
-        output = result.stdout + result.stderr
-        assert step['exit_code'] == exit_code, (label, step, output)
-        assert (result.returncode == 0) == (exit_code == 0), (label, result.returncode, output)
-        assert ('### Test time: 6 tests in 7.000 s' in result.stdout) == expected, (label, output)
-        assert (WARNING in result.stderr) != expected, (label, output)
-        assert ('### Test time:' in written) == expected, (label, written)
-        if stale:
-            assert 'predates this run' in result.stderr, output
-    print('PASS: make test keeps nextest\'s exit status with a missing, stale or unreadable '
-          'JUnit and without the report script')
+        # (JUnit written, report script present, earlier run's leftover, summary expected,
+        #  warning detail)
+        (None, True, None, False, 'nextest wrote no JUnit'),
+        (FIXTURE / 'junit.xml', True, None, True, None),
+        (broken, True, None, False, 'cannot read JUnit'),
+        (miscounted, True, None, False, 'declares tests="7", its testcases count 6'),
+        (FIXTURE / 'junit.xml', False, None, False, None),
+        # The earlier JUnit is removed before nextest starts, however recent: a run that
+        # writes none has none.
+        (None, True, 'junit', False, 'nextest wrote no JUnit'),
+        (FIXTURE / 'junit.xml', True, 'junit', True, None),
+        (None, True, 'directory', False, 'cannot remove the earlier JUnit')]
+    for i, (junit_path, script, prior, expected, detail) in enumerate(scenarios):
+        # Every outcome of the report, under a nextest that passes and one that fails.
+        for exit_code in [0, [1, 3, 101][i % 3]]:
+            result, step, written = make_test(exit_code=exit_code, junit_path=junit_path,
+                                              script=script, prior=prior)
+            label = (exit_code, junit_path and junit_path.name, script, prior)
+            output = result.stdout + result.stderr
+            assert step['exit_code'] == exit_code, (label, step, output)
+            assert (result.returncode == 0) == (exit_code == 0), (label, result.returncode,
+                                                                  output)
+            assert ('### Test time:' in result.stdout) == expected, (label, output)
+            assert ('### Test time: 6 tests in 7.000 s' in result.stdout) == expected, label
+            assert (WARNING in result.stderr) != expected, (label, output)
+            assert ('### Test time:' in written) == expected, (label, written)
+            if detail:
+                assert detail in result.stderr, (label, output)
+    print('PASS: make test and its recorded test step keep nextest\'s exit status, passing or '
+          'failing, with a missing, earlier, miscounted or unreadable JUnit and without the '
+          'report script')
 
 
 def check_gate_entry_status():
@@ -317,7 +430,22 @@ def check_gate_entry_status():
                 cwd=repo, env=environment(base, exit_code), capture_output=True, text=True)
             assert result.returncode == exit_code, (exit_code, result.stdout, result.stderr)
             assert WARNING in result.stderr, result.stderr
-    print('PASS: the gate entry returns nextest\'s exact exit status without a JUnit')
+            # A reused run directory: its earlier JUnit is gone before nextest starts.
+            run = base / 'target' / 'nextest-reports' / 'reused'
+            old = run / 'store/ci/junit.xml'
+            old.parent.mkdir(parents=True)
+            shutil.copyfile(FIXTURE / 'junit.xml', old)
+            env = environment(base, exit_code)
+            env.update(AF_GATE_NEXTEST_TARGET=str(base / 'target'), AF_GATE_NEXTEST_RUN=str(run))
+            result = subprocess.run(
+                [sys.executable, 'scripts/nextest-gate.py', '--locked', '--profile', 'ci'],
+                cwd=repo, env=env, capture_output=True, text=True)
+            assert result.returncode == exit_code, (exit_code, result.stdout, result.stderr)
+            assert f'{WARNING}: nextest wrote no JUnit at {old.resolve()}' in result.stderr, (
+                result.stderr)
+            assert '### Test time:' not in result.stdout and not old.exists(), result.stdout
+    print('PASS: the gate entry returns nextest\'s exact exit status without a JUnit and never '
+          'reports an earlier run\'s')
 
 
 def check_task_gate():
@@ -358,6 +486,8 @@ def main():
         tmp = Path(tmp)
         check_fixture_totals()
         check_config_lookup(tmp)
+        check_toml_subset()
+        check_declared_counts(tmp)
         check_histogram_edges(tmp)
         check_failures_and_missing_times(tmp)
         check_compare(tmp)

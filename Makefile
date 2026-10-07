@@ -4,8 +4,8 @@
 # `TEST_RUNNER=cargo` keeps the sequential libtest path for comparison. TEST_THREADS bounds
 # concurrent tests, not compiler jobs: four on a four-core runner, half the cores elsewhere,
 # because these tests spawn real process trees. After nextest, whatever its status, the gate
-# entry prints scripts/test-time-report.py's summary of the JUnit it just wrote; the step keeps
-# nextest's exit status.
+# entry prints scripts/test-time-report.py's summary of the JUnit it just wrote (it removes an
+# earlier run's JUnit first); the step keeps nextest's exit status.
 TEST_RUNNER ?= nextest
 TEST_THREADS ?= $(shell python3 -c 'import os; print(max(4, (os.cpu_count() or 4) // 2))')
 CI_STEP = python3 scripts/ci-step.py
