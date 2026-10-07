@@ -1,5 +1,6 @@
 //! `af task report` end to end (ADR-0142), over Stores the existing fixtures build: a Task
-//! interrupted and resumed once, a document Task whose model Worker fails at its Provider, two
+//! interrupted and resumed once, a document Task whose model Worker fails at its Provider (once
+//! with no usage report at capacity, ADR-0143), two
 //! Tasks of one Store (one of them later collected, and reported alone), and two Tasks under two
 //! pipelines, one whose review round recorded a major and a minor finding. Every `--json` document validates against
 //! `schemas/task-report-v1.json`, every Markdown block passes `scripts/check-pr-report.py`, and
@@ -359,6 +360,18 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
 /// fixture's `codex-fixture-1` when it spells none. Returns the fixture and what `af task run
 /// --execute` printed.
 fn failed_provider_task(model: impl FnOnce(&Path) -> Option<String>) -> (Fixture, Value) {
+    failed_provider_task_with(
+        model,
+        " sys.stderr.write('synthetic provider outage\\n'); sys.exit(1)\n",
+    )
+}
+
+/// `failed_provider_task`, with the fake Codex's author call replaced by `failure`: one line of
+/// its Python, indented one space.
+fn failed_provider_task_with(
+    model: impl FnOnce(&Path) -> Option<String>,
+    failure: &str,
+) -> (Fixture, Value) {
     let f = Fixture::new(true, 5712, 49152);
     if let Some(model) = model(&f.home) {
         let catalog_path = f.repo.join(".af/task-catalog.toml");
@@ -389,14 +402,7 @@ fn failed_provider_task(model: impl FnOnce(&Path) -> Option<String>) -> (Fixture
     let native = std::fs::read_to_string(&codex).unwrap();
     let author = " kind='author'; r=json.loads(request)\n";
     assert_eq!(native.matches(author).count(), 1);
-    std::fs::write(
-        &codex,
-        native.replace(
-            author,
-            " sys.stderr.write('synthetic provider outage\\n'); sys.exit(1)\n",
-        ),
-    )
-    .unwrap();
+    std::fs::write(&codex, native.replace(author, failure)).unwrap();
     let planned = f.cli(&["task", "plan", "--file", "document.json"]);
     assert!(
         planned.status.success(),
@@ -542,6 +548,261 @@ fn a_provider_failure_is_counted_with_its_class_and_charge_and_the_provider_stay
             f.home.to_str().unwrap(),
             f.state.to_str().unwrap(),
         ],
+    );
+}
+
+/// What `af` prints for `args` over the fixture's Store, as text.
+fn fixture_text(f: &Fixture, args: &[&str]) -> String {
+    stdout(
+        &Command::new(AF)
+            .current_dir(&f.repo)
+            .env("HOME", &f.home)
+            .env("PATH", &f.path)
+            .env("AF_PROVIDERS_FILE", f.home.join("providers.toml"))
+            .args(args)
+            .arg("--state")
+            .arg(&f.state)
+            .output()
+            .unwrap(),
+    )
+}
+
+/// Issue #165, end to end (ADR-0143): the author's Codex call uses a tool and then fails with
+/// `Selected model is at capacity`, reporting no usage. Its Attempt settles at zero with its
+/// usage unknown and the cause `capacity`, its diagnostic names that cause without copying the
+/// Provider's message, and every report shows the usage as unknown rather than as spend, while
+/// the admission call's reported usage is charged exactly as before.
+#[test]
+fn a_capacity_failure_without_usage_is_charged_zero_and_reported_as_unknown() {
+    let (f, done) = failed_provider_task_with(
+        |_| None,
+        concat!(
+            " print(json.dumps({'type':'thread.started','thread_id':'synthetic-author'}));",
+            " print(json.dumps({'type':'item.completed','item':{'type':'command_execution',",
+            "'command':'ls','aggregated_output':'','exit_code':0,'status':'completed'}}));",
+            " print(json.dumps({'type':'turn.failed','error':{'message':",
+            "'Selected model is at capacity. Please try a different model.'}}));",
+            " sys.exit(1)\n",
+        ),
+    );
+    // Only the admission call reported usage, and it is charged exactly that.
+    assert_eq!(done["chargeable_tokens"], "5712", "{done:#}");
+
+    let cas = Cas::open_existing(f.state.join("cas")).unwrap();
+    let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
+    let execution = store
+        .task_projection(&cas, "release-notes")
+        .unwrap()
+        .unwrap()
+        .execution
+        .unwrap();
+    let accounting = execution.attempt_accounting();
+    let author = accounting
+        .iter()
+        .find(|a| a.reservation.node == "root.nodes.author" && a.started)
+        .expect("the author's Attempt began");
+    assert_eq!(author.charged_tokens, 0);
+    assert_eq!(
+        author.unknown_usage,
+        Some(review_core::task::usage::TaskUnknownUsageCauseV1::Capacity)
+    );
+    assert!(author.usage_id.is_none());
+    // Its reservation was released: nothing of it is held or charged.
+    assert_eq!(execution.budget.committed_tokens(), 5712);
+    assert_eq!(execution.budget.reserved_tokens(), 0);
+    drop(store);
+
+    // `af task show --json`: the settlement carries the marker and a closed diagnostic.
+    let shown = f.cli(&["task", "show", "release-notes"]);
+    let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
+    schemas::valid(&schemas::validator("task-inspection-v11.json"), &shown);
+    assert_eq!(shown["unknown_usage_attempts"], 1, "{shown:#}");
+    let settled = shown["execution_records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| {
+            entry["record"]["attempt_id"] == author.attempt_id.as_str()
+                && entry["record"]["kind"] == "settled"
+        })
+        .unwrap();
+    assert_eq!(settled["record"]["charged_tokens"], "0");
+    assert_eq!(
+        settled["record"]["unknown_usage"],
+        serde_json::json!({"cause": "capacity"})
+    );
+    let diagnostic = settled["diagnostic"]["error"].as_str().unwrap();
+    assert!(
+        diagnostic.contains("Provider model at capacity (capacity)"),
+        "{diagnostic}"
+    );
+    assert!(!diagnostic.contains("Selected model"), "{diagnostic}");
+
+    // The text of `af task show` and `af task list` never reads the zero as spend.
+    let text = fixture_text(&f, &["task", "show", "release-notes"]);
+    assert!(
+        text.contains("tokens 5712 (+1 unknown: capacity)"),
+        "{text}"
+    );
+    let listed = fixture_text(&f, &["task", "list"]);
+    assert!(listed.contains("5712 tokens (+1 unknown)"), "{listed}");
+    let listed: Value = serde_json::from_slice(&f.cli(&["task", "list"]).stdout).unwrap();
+    schemas::valid(
+        &schemas::validator("task-list-entry-v2.json"),
+        &listed["tasks"][0],
+    );
+    assert_eq!(
+        listed["tasks"][0]["unknown_usage_attempts"], 1,
+        "{listed:#}"
+    );
+
+    // `af task report`: the count in the document, the cell and the cause in the block.
+    let value: Value = serde_json::from_str(&fixture_report(&f, true)).unwrap();
+    let task = &value["tasks"][0];
+    assert_eq!(task["chargeable_tokens"], "5712");
+    assert_eq!(task["attempts"]["unknown_usage"], 1, "{task:#}");
+    assert_eq!(
+        task["attempts"]["unknown_usage_causes"],
+        serde_json::json!([{"cause": "capacity", "attempts": 1}])
+    );
+    assert_eq!(value["totals"]["unknown_usage"], 1);
+    let node = task["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["node"] == "root.nodes.author")
+        .unwrap();
+    assert_eq!(node["tokens"], "0");
+    assert_eq!(node["unknown_usage"], 1);
+    let markdown = fixture_report(&f, false);
+    let round = markdown
+        .lines()
+        .find(|line| line.starts_with("| 1 | release-notes |"))
+        .unwrap();
+    assert!(round.contains(" | 5,712 (+1 unknown) | "), "{round}");
+    let total = markdown
+        .lines()
+        .find(|line| line.starts_with("|  | Total: "))
+        .unwrap();
+    assert!(total.contains(" | 5,712 (+1 unknown) | "), "{total}");
+    assert!(
+        markdown.contains(", 1 Attempt's usage unknown (capacity)</summary>"),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains("| root.nodes.author | author | codex codex-fixture-1/high | 1 (1 failed) | 0 (+1 unknown) |"),
+        "{markdown}"
+    );
+    assert_block_is_checked(&markdown);
+    assert_private(
+        &[&markdown, &value.to_string()],
+        &["Selected model", "codex-personal", f.home.to_str().unwrap()],
+    );
+}
+
+/// ADR-0143 after `af task gc --apply`: the author's first Codex call fails at capacity with no
+/// usage report and its retry succeeds, so the Task completes with one Attempt whose usage is
+/// unknown. Collected, its tombstone keeps that count, and `af task list`, `af task show` and
+/// `af task report` still show `(+1 unknown)` beside the tokens, never a bare charge; the
+/// report block still passes the pull request check.
+#[test]
+fn a_collected_task_keeps_its_unknown_usage_count() {
+    let (f, done) = failed_provider_task_with(
+        |_| None,
+        concat!(
+            " kind='author'; r=json.loads(request)\n",
+            " if not os.path.exists(home+'/capacity'): open(home+'/capacity','w').close();",
+            " print(json.dumps({'type':'turn.failed','error':{'message':",
+            "'Selected model is at capacity. Please try a different model.'}})); sys.exit(1)\n",
+        ),
+    );
+    assert_eq!(done["phase"]["kind"], "finished", "{done:#}");
+    let before: Value =
+        serde_json::from_slice(&f.cli(&["task", "show", "release-notes"]).stdout).unwrap();
+    assert_eq!(before["unknown_usage_attempts"], 1, "{before:#}");
+    let tokens = before["chargeable_tokens"].as_str().unwrap().to_owned();
+    let listed = fixture_text(&f, &["task", "list"]);
+    assert!(
+        listed.contains(&format!("{tokens} tokens (+1 unknown)")),
+        "{listed}"
+    );
+
+    // The preview names the count the tombstone will keep.
+    let preview: Value = serde_json::from_slice(
+        &f.cli(&["task", "gc", "--older-than", "0", "--keep", "0"])
+            .stdout,
+    )
+    .unwrap();
+    schemas::valid(&schemas::validator("task-gc-v1.json"), &preview);
+    assert_eq!(
+        preview["tasks"][0]["unknown_usage_attempts"], 1,
+        "{preview:#}"
+    );
+    let collected = f.cli(&["task", "gc", "--older-than", "0", "--keep", "0", "--apply"]);
+    let collected: Value = serde_json::from_slice(&collected.stdout).unwrap();
+    assert_eq!(
+        collected["applied"]["tombstoned"],
+        serde_json::json!(["release-notes"]),
+        "{collected:#}"
+    );
+    schemas::valid(&schemas::validator("task-gc-v1.json"), &collected);
+
+    // `af task list`: the tombstone keeps the count, in both forms.
+    let listed = fixture_text(&f, &["task", "list"]);
+    let row = listed
+        .lines()
+        .find(|line| line.starts_with("release-notes"))
+        .unwrap();
+    assert!(
+        row.contains(&format!("{tokens} tokens (+1 unknown)")),
+        "{row}"
+    );
+    assert!(row.contains("collected "), "{row}");
+    let listed: Value = serde_json::from_slice(&f.cli(&["task", "list"]).stdout).unwrap();
+    let entry = &listed["tasks"][0];
+    schemas::valid(&schemas::validator("task-list-entry-v2.json"), entry);
+    assert_eq!(entry["unknown_usage_attempts"], 1, "{entry:#}");
+    assert_eq!(entry["collected"]["unknown_usage_attempts"], 1, "{entry:#}");
+    schemas::valid(
+        &schemas::validator("task-collected-v1.json"),
+        &entry["collected"],
+    );
+
+    // `af task show`: the collected summary names the unknown usage beside the tokens.
+    let shown = fixture_text(&f, &["task", "show", "release-notes"]);
+    assert!(
+        shown.contains(&format!("chargeable tokens: {tokens} (+1 unknown)")),
+        "{shown}"
+    );
+
+    // `af task report`: the document carries the retained count, the block shows it.
+    let value: Value = serde_json::from_str(&fixture_report(&f, true)).unwrap();
+    let task = &value["tasks"][0];
+    assert_eq!(task["collected"], true);
+    assert!(task.get("attempts").is_none(), "{task:#}");
+    assert_eq!(task["collected_unknown_usage"], 1, "{task:#}");
+    assert_eq!(value["totals"]["unknown_usage"], 1);
+    let markdown = fixture_report(&f, false);
+    let cell = format!(" | {} (+1 unknown) | ", thousands(&tokens));
+    let round = markdown
+        .lines()
+        .find(|line| line.starts_with("| 1 | release-notes |"))
+        .unwrap();
+    assert!(round.contains(" (collected) | "), "{round}");
+    assert!(round.contains(&cell), "{round}");
+    let total = markdown
+        .lines()
+        .find(|line| line.starts_with("|  | Total: "))
+        .unwrap();
+    assert!(total.contains(&cell), "{total}");
+    assert!(
+        markdown.contains(", 1 Attempt's usage unknown</summary>"),
+        "{markdown}"
+    );
+    assert_block_is_checked(&markdown);
+    assert_private(
+        &[&markdown, &value.to_string()],
+        &["Selected model", "codex-personal", f.home.to_str().unwrap()],
     );
 }
 

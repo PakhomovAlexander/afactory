@@ -121,6 +121,92 @@ fn cumulative_execution_accounting_has_one_full_width_encoding() {
     assert!(serde_json::from_value::<TaskExecutionRecordV1>(numeric).is_err());
 }
 
+/// ADR-0143: a settlement whose Provider reported no usage carries `unknown_usage` with its
+/// cause, is charged zero and names no usage report. The schema and the type agree on every
+/// cause and refuse a charge or a usage report beside the marker; a settlement written before
+/// the marker existed keeps its bytes and its charge.
+#[test]
+fn unknown_usage_settles_at_zero_with_a_closed_cause_and_earlier_settlements_still_read() {
+    use review_core::task::execution::TaskExecutionRecordV1;
+    use review_core::task::usage::{TaskUnknownUsageCauseV1 as Cause, TaskUnknownUsageV1};
+    let digest = format!("sha256:{}", "1".repeat(64));
+    let settled = |charged: &str, unknown: Option<Value>| {
+        let mut value = json!({"kind":"settled", "attempt_id":"A".repeat(26),
+            "charged_tokens":charged,
+            "result":{"kind":"failed", "diagnostic_id":digest},
+            "raw_artifact_ids":[digest]});
+        if let Some(unknown) = unknown {
+            value["unknown_usage"] = unknown;
+        }
+        value
+    };
+    for cause in [
+        Cause::Capacity,
+        Cause::RateLimit,
+        Cause::Authentication,
+        Cause::ModelUnavailable,
+        Cause::Network,
+        Cause::LeaseExpired,
+        Cause::Interrupted,
+        Cause::Unreported,
+    ] {
+        let value = settled("0", Some(json!({"cause": cause.as_str()})));
+        assert_valid("task-execution-record-v5.json", &value);
+        let typed: TaskExecutionRecordV1 = serde_json::from_value(value.clone()).unwrap();
+        typed.validate().unwrap();
+        let TaskExecutionRecordV1::Settled { unknown_usage, .. } = &typed else {
+            unreachable!()
+        };
+        assert_eq!(*unknown_usage, Some(TaskUnknownUsageV1 { cause }));
+        assert_eq!(serde_json::to_value(&typed).unwrap(), value);
+        assert_eq!(
+            serde_json::to_value(cause).unwrap(),
+            json!(cause.as_str()),
+            "the record spells the cause as `as_str` does"
+        );
+    }
+    // A settlement with reported usage, as earlier releases wrote it, has no marker and keeps
+    // its charge, the reservation included.
+    let earlier = settled("400000", None);
+    assert_valid("task-execution-record-v5.json", &earlier);
+    let typed: TaskExecutionRecordV1 = serde_json::from_value(earlier.clone()).unwrap();
+    typed.validate().unwrap();
+    assert_eq!(serde_json::to_value(&typed).unwrap(), earlier);
+
+    let charged = settled("400000", Some(json!({"cause":"capacity"})));
+    assert_invalid(
+        "task-execution-record-v5.json",
+        &charged,
+        "unknown usage is charged zero",
+    );
+    let typed: TaskExecutionRecordV1 = serde_json::from_value(charged).unwrap();
+    assert!(typed.validate().is_err());
+    let mut reported = settled("0", Some(json!({"cause":"capacity"})));
+    reported["usage_id"] = json!(digest);
+    assert_invalid(
+        "task-execution-record-v5.json",
+        &reported,
+        "unknown usage names no usage report",
+    );
+    let typed: TaskExecutionRecordV1 = serde_json::from_value(reported).unwrap();
+    assert!(typed.validate().is_err());
+    for invalid in [
+        json!({"cause":"estimate"}),
+        json!({"cause":"capacity","tokens":"0"}),
+        json!({}),
+        json!(null),
+        json!("capacity"),
+    ] {
+        let value = settled("0", Some(invalid));
+        assert_invalid(
+            "task-execution-record-v5.json",
+            &value,
+            "a closed unknown-usage marker",
+        );
+        assert!(serde_json::from_value::<TaskExecutionRecordV1>(value).is_err());
+    }
+}
+
 #[test]
 fn cumulative_records_reject_invalid_decimal_encodings() {
     use review_core::task::execution::TaskExecutionRecordV1;

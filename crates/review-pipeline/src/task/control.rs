@@ -18,5 +18,6 @@ pub(crate) fn refused(message: impl Into<String>) -> TaskWorkOutput {
         raw_artifact_ids: vec![],
         usage_id: None,
         feedback_id: None,
+        unknown_usage_cause: None,
     }
 }

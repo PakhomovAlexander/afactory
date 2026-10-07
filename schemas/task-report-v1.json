@@ -191,6 +191,12 @@
           "$ref": "#/$defs/count"
         },
         "attempts": { "$ref": "#/$defs/attempts" },
+        "collected_unknown_usage": {
+          "description": "A collected Task's Attempts whose usage was unknown, as its `af/TaskCollected@1` tombstone retained the count (ADR-0143): the Tokens cell reads `(+N unknown)` after the charged total. Absent when none, and on a Task that records its Attempts, whose `attempts.unknown_usage` states it.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
         "chargeable_tokens": { "$ref": "#/$defs/tokens" },
         "wall_ms": {
           "description": "From the Task's first to its last recorded event; a collection tombstone is not the Task's event.",
@@ -213,14 +219,15 @@
             "not": {
               "anyOf": [{ "required": ["attempts"] }, { "required": ["nodes"] }, { "required": ["findings"] }]
             }
-          }
+          },
+          "else": { "not": { "required": ["collected_unknown_usage"] } }
         }
       ]
     },
     "attempts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["total", "failed", "failed_tokens", "failures"],
+      "required": ["total", "failed", "failed_tokens", "failures", "unknown_usage"],
       "properties": {
         "total": {
           "description": "Attempts begun, as `af task show` counts them.",
@@ -235,6 +242,41 @@
           "description": "The failed Attempts by reason class, in class order.",
           "type": "array",
           "items": { "$ref": "#/$defs/failure" }
+        },
+        "unknown_usage": {
+          "description": "Settled Attempts whose Provider reported no usage: each was charged zero and its usage is unknown (ADR-0143), so the Tokens cell reads `(+N unknown)` after the charged total.",
+          "$ref": "#/$defs/count"
+        },
+        "unknown_usage_causes": {
+          "description": "Those Attempts by cause, in cause order. Absent when none.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/unknown_usage" }
+        }
+      }
+    },
+    "unknown_usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cause", "attempts"],
+      "properties": {
+        "cause": {
+          "description": "What af knows of why no usage was reported: a classified native failure, the writer's expired lease, an interruption, or `unreported`.",
+          "enum": [
+            "capacity",
+            "rate_limit",
+            "authentication",
+            "model_unavailable",
+            "network",
+            "lease_expired",
+            "interrupted",
+            "unreported"
+          ]
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
         }
       }
     },
@@ -267,7 +309,7 @@
     "node_report": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["node", "role", "attempts", "failed_attempts", "tokens", "checks"],
+      "required": ["node", "role", "attempts", "failed_attempts", "tokens", "unknown_usage", "checks"],
       "properties": {
         "node": { "$ref": "#/$defs/node" },
         "role": {
@@ -285,6 +327,10 @@
         },
         "failed_attempts": { "$ref": "#/$defs/count" },
         "tokens": { "$ref": "#/$defs/tokens" },
+        "unknown_usage": {
+          "description": "The entry's Attempts whose usage is unknown (ADR-0143).",
+          "$ref": "#/$defs/count"
+        },
         "elapsed_ms": {
           "description": "The node's Attempts' elapsed time, from their attempt walls or their start and settlement records. Absent unless every Attempt recorded it.",
           "$ref": "#/$defs/count"
@@ -333,7 +379,7 @@
     "totals": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["tasks", "chargeable_tokens", "active_ms"],
+      "required": ["tasks", "chargeable_tokens", "unknown_usage", "active_ms"],
       "properties": {
         "tasks": {
           "type": "integer",
@@ -344,6 +390,10 @@
         "attempts": { "$ref": "#/$defs/count" },
         "failed_attempts": { "$ref": "#/$defs/count" },
         "chargeable_tokens": { "$ref": "#/$defs/tokens" },
+        "unknown_usage": {
+          "description": "Attempts whose usage is unknown, over every Task: those its Attempts record, or a collected Task's retained count (ADR-0143).",
+          "$ref": "#/$defs/count"
+        },
         "active_ms": { "$ref": "#/$defs/count" }
       }
     }

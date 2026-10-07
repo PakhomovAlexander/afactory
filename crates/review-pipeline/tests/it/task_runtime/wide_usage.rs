@@ -91,6 +91,7 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
                     }
                     .into(),
                 ),
+                native_failure: None,
             }
         }
     }

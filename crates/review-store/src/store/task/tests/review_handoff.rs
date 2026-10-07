@@ -153,6 +153,7 @@ fn settle(
                 },
                 usage_id: None,
                 raw_artifact_ids: vec![],
+                unknown_usage: None,
             },
             &f.authority,
         )

@@ -70,6 +70,7 @@ impl WorkerModelAdapter for Model {
             message: Ok(message.as_bytes().to_vec()),
             usage: Some(usage),
             raw_artifact_ids: vec![cas.put(message.as_bytes()).unwrap()],
+            native_failure: None,
         }
     }
 }
@@ -1127,6 +1128,7 @@ fn incomplete_billing_on_captured_reviewers_never_publishes_a_selected_result() 
                     Err("malformed native billing counter".into())
                 },
                 raw_artifact_ids: vec![cas.put(b"native usage fixture").unwrap()],
+                native_failure: None,
             }
         }
     }
@@ -1190,4 +1192,112 @@ fn incomplete_billing_on_captured_reviewers_never_publishes_a_selected_result() 
             .unwrap()
             .can_continue
     );
+}
+
+/// ADR-0143: a Task-hosted reviewer whose Provider returns a valid result but reports no usage
+/// is selected at zero. Its provenance records the zero charge with no usage report, its
+/// settlement records the usage as unknown, the Store admits the selection, and the review's
+/// Attempt evidence never reads the reservation as spend.
+#[test]
+fn a_reviewer_without_a_usage_report_is_selected_at_zero_with_its_usage_unknown() {
+    struct Unreported(AtomicUsize);
+    impl WorkerModelAdapter for Unreported {
+        fn provider_kind(&self) -> &'static str {
+            "claude"
+        }
+        fn model_settings(&self) -> Option<(String, String)> {
+            Some(("claude-fixture".into(), "high".into()))
+        }
+        fn invoke(
+            &self,
+            cas: &Cas,
+            _: &std::path::Path,
+            _: Vec<u8>,
+            _: std::time::Duration,
+            _: WorkerAccess,
+            _: Option<&std::sync::atomic::AtomicBool>,
+            _: &[(String, String)],
+        ) -> ModelWorkerReturn {
+            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+                return ModelWorkerReturn {
+                    usage_observation: None,
+                    message: Ok(b"OK".to_vec()),
+                    usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(1)),
+                    raw_artifact_ids: vec![cas.put(b"OK").unwrap()],
+                    native_failure: None,
+                };
+            }
+            let message = r#"{"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
+            ModelWorkerReturn {
+                usage_observation: None,
+                message: Ok(message.as_bytes().to_vec()),
+                usage: None,
+                raw_artifact_ids: vec![cas.put(message.as_bytes()).unwrap()],
+                native_failure: None,
+            }
+        }
+    }
+    use review_core::task::campaign_review::*;
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let (compiler, lease, plan) =
+        admitted_plan_with_provider(&cas, &mut store, "trusted_unsafe", "claude", None);
+    let model = Unreported(AtomicUsize::new(0));
+    let shared = SharedEventStore::new(&mut store);
+    let models = plan
+        .bindings
+        .iter()
+        .map(|(slot, binding)| {
+            (
+                slot.clone(),
+                TaskModelBinding {
+                    binding: binding.clone(),
+                    adapter: &model as &dyn WorkerModelAdapter,
+                },
+            )
+        })
+        .collect();
+    let host = CampaignReviewTaskHost::new(&cas, shared.clone(), &compiler, lease.clone(), models)
+        .unwrap();
+    let authority = CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
+    let runtime =
+        TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host).unwrap();
+    let report = runtime.execute().unwrap();
+    assert!(report.complete(), "{report:?}");
+    let execution = runtime.projection().unwrap().execution.unwrap();
+    let metadata = execution
+        .outputs
+        .values()
+        .find_map(|(_, output)| output.outputs.get("metadata"))
+        .unwrap();
+    let metadata: TaskReviewResultMetadataV1 =
+        serde_json::from_value(cas.get_artifact(&metadata.artifact_ids[0]).unwrap().payload)
+            .unwrap();
+    let provenance: TaskReviewAttemptProvenanceV2 = serde_json::from_value(
+        cas.get_artifact(&metadata.provenance_artifact_id)
+            .unwrap()
+            .payload,
+    )
+    .unwrap();
+    assert_eq!(provenance.charged_tokens.get(), 0);
+    assert!(provenance.usage_id.is_none());
+    let reviewer = execution
+        .attempt_accounting()
+        .into_iter()
+        .find(|row| row.attempt_id == provenance.attempt_id)
+        .unwrap();
+    assert_eq!(reviewer.charged_tokens, 0);
+    assert_eq!(
+        reviewer.unknown_usage,
+        Some(review_core::task::usage::TaskUnknownUsageCauseV1::Unreported)
+    );
+    assert!(u128::from(reviewer.reservation.tokens) > 0);
+    let evidence = host.selected_attempt_evidence().unwrap();
+    assert_eq!(evidence.len(), 1);
+    assert_eq!(evidence[0].cost_tokens, 0);
+    assert_eq!(evidence[0].usage.chargeable_tokens.get(), 0);
+    // Only the admission call's reported usage is charged.
+    assert_eq!(execution.budget.committed_tokens(), 1);
+    assert_eq!(execution.budget.reserved_tokens(), 0);
 }

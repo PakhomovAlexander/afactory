@@ -108,6 +108,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 message: Err("Worker invocation was cancelled before starting".into()),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 raw_artifact_ids: vec![],
+                native_failure: None,
             });
         }
         let output_schema = match structured::output_schema(&input) {
@@ -118,6 +119,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                     message: Err(error),
                     usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                     raw_artifact_ids: vec![],
+                    native_failure: None,
                 });
             }
         };
@@ -227,6 +229,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         };
         let returned = ModelWorkerReturn {
             usage_observation: accounting.observation,
+            native_failure: (!success).then_some(failure).flatten(),
             message,
             usage: accounting.usage,
             raw_artifact_ids: capture.raw_artifact_ids,

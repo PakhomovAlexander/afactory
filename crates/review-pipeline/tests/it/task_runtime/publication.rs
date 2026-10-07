@@ -189,6 +189,7 @@ fn publication_recovers(before_attempt: bool) {
                 raw_artifact_ids: vec![cas.put(&bytes).unwrap()],
                 message: Ok(bytes),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(7)),
+                native_failure: None,
             }
         }
     }

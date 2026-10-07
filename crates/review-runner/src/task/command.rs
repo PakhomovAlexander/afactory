@@ -35,6 +35,7 @@ pub fn invoke_command(
             usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
             usage_observation: None,
             raw_artifact_ids: vec![],
+            native_failure: None,
         },
     };
     let (reply, feedback_code) = match returned.message {
@@ -53,6 +54,7 @@ pub fn invoke_command(
         usage: returned.usage,
         usage_observation: None,
         raw_artifact_ids: returned.raw_artifact_ids,
+        native_failure: None,
     }
 }
 
@@ -100,6 +102,7 @@ pub fn invoke_command_bytes(
         usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
         usage_observation: None,
         raw_artifact_ids,
+        native_failure: None,
     }
 }
 

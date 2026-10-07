@@ -54,11 +54,15 @@ pub struct TaskWorkOutput {
     /// Adapter-reported counters survive output/CAS failure until durable accounting.
     pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
     pub outputs: Result<BTreeMap<String, ArtifactInputV1>, String>,
-    /// None means usage is unavailable, so the complete reservation remains charged.
+    /// None means no usage was reported: the Attempt settles at zero with its usage unknown
+    /// (ADR-0143), unless an earlier observation of the same Attempt established a charge.
     pub charged_tokens: Option<u128>,
     pub raw_artifact_ids: Vec<String>,
     pub usage_id: Option<String>,
     pub feedback_id: Option<String>,
+    /// What the host knows about why usage may be missing, such as the classified native
+    /// failure; None when it knows nothing better than an absent report.
+    pub unknown_usage_cause: Option<review_core::task::usage::TaskUnknownUsageCauseV1>,
 }
 
 pub trait TaskOperatorHost: Sync {
@@ -679,6 +683,7 @@ impl TaskRuntime<'_, '_> {
                 raw_artifact_ids: vec![],
                 usage_id: None,
                 feedback_id: None,
+                unknown_usage_cause: None,
             });
             if let Some(attempt) = &attempt {
                 // Capture known charge before output CAS admission: a crash during output or
@@ -716,10 +721,12 @@ impl TaskRuntime<'_, '_> {
                             .and_then(|o| o.reported_usage.as_ref())
                             .map(|u| u.chargeable_tokens.get()),
                     )
+                    // Reported but incomplete counters keep the reservation floor; an
+                    // observation without any counter is no report (ADR-0143).
                     .chain(
                         observation
                             .as_ref()
-                            .filter(|o| !o.charge_complete)
+                            .filter(|o| !o.charge_complete && o.reported_usage.is_some())
                             .map(|_| u128::from(attempt.reservation().tokens)),
                     )
                     .max();
@@ -815,7 +822,7 @@ impl TaskRuntime<'_, '_> {
                         .map_err(|error| error.to_string())?;
                 }
             }
-            let charged = result
+            let known = result
                 .charged_tokens
                 .into_iter()
                 .chain(
@@ -824,12 +831,24 @@ impl TaskRuntime<'_, '_> {
                         .as_ref()
                         .map(|usage| usage.chargeable_tokens.get()),
                 )
-                .max()
-                .unwrap_or_else(|| {
-                    attempt
-                        .as_ref()
-                        .map_or(0, |a| u128::from(a.reservation().tokens))
-                });
+                .max();
+            // No usage was reported: the Attempt is charged zero and its usage is recorded as
+            // unknown with what af knows of its cause, never estimated and never the reservation
+            // (ADR-0143). The reservation bounded it while it ran; settlement releases it.
+            let unknown_usage = (attempt.is_some() && known.is_none()).then(|| {
+                use review_core::task::usage::{
+                    TaskUnknownUsageCauseV1 as Cause, TaskUnknownUsageV1,
+                };
+                let interrupted = control::check(self.cancellation).is_err();
+                TaskUnknownUsageV1 {
+                    cause: result
+                        .unknown_usage_cause
+                        .filter(|cause| *cause != Cause::Unreported)
+                        .or(interrupted.then_some(Cause::Interrupted))
+                        .unwrap_or(Cause::Unreported),
+                }
+            });
+            let charged = known.unwrap_or(0);
             if attempt.is_none() && (charged != 0 || result.usage_observation.is_some()) {
                 return Err("Pure Task operator reported a paid operation".into());
             }
@@ -866,6 +885,7 @@ impl TaskRuntime<'_, '_> {
                             result: conclusion,
                             raw_artifact_ids: result.raw_artifact_ids,
                             usage_id: result.usage_id,
+                            unknown_usage,
                         },
                         self.authority,
                         || {

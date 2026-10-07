@@ -216,6 +216,7 @@ fn effect_currentness_requires_started_work_and_rechecks_revocation_and_settleme
                 },
                 raw_artifact_ids: vec![],
                 usage_id: None,
+                unknown_usage: None,
             },
             &f.authority,
         )
@@ -399,6 +400,7 @@ fn inflight_usage_survives_reopen_revocation_lower_settlement_and_writer_loss() 
                 },
                 raw_artifact_ids: vec![],
                 usage_id: None,
+                unknown_usage: None,
             };
             f.store
                 .settle_task_attempt(&f.cas, &lease, settlement.clone(), &f.authority)

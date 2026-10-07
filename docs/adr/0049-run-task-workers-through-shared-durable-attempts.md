@@ -7,7 +7,10 @@ entry-point cutover is complete, and the fixed implementation format is gone wit
 Superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): retained legacy
 implementation Stores, the common Store's read-only links to legacy histories, the historical
 delivery fixture, the fixed command implementation entry point with its ADR-0051 migration, and
-the *Compatibility and remaining work* section.
+the *Compatibility and remaining work* section. Superseded in part by
+[ADR-0143](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md): started
+old-writer work with no usage reported settles at zero with its usage unknown, not at its full
+reservation.
 
 ## Decision
 

@@ -120,6 +120,7 @@ fn planning_barrier_preserves_paid_history_fences_forgery_and_charges_late_usage
                 },
                 raw_artifact_ids: vec![],
                 usage_id: None,
+                unknown_usage: None,
             },
             &f.authority,
         )
@@ -246,6 +247,7 @@ fn planning_barrier_preserves_paid_history_fences_forgery_and_charges_late_usage
                 },
                 raw_artifact_ids: vec![],
                 usage_id: None,
+                unknown_usage: None,
             },
             &f.authority,
         )

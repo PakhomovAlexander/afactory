@@ -714,6 +714,7 @@ impl TaskOperatorHost for OptimizationTaskDomain {
             raw_artifact_ids: vec![],
             usage_id: None,
             feedback_id: None,
+            unknown_usage_cause: None,
         };
         if let Err(error) = super::control::check(cancellation) {
             return super::control::refused(error);
@@ -2451,6 +2452,7 @@ impl TaskOperatorHost for OptimizationCandidateTaskDomain {
             raw_artifact_ids: vec![],
             usage_id: None,
             feedback_id: None,
+            unknown_usage_cause: None,
         };
         if let Err(error) = super::control::check(cancellation) {
             return super::control::refused(error);

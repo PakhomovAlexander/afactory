@@ -260,6 +260,7 @@ impl CampaignReviewTaskHost<'_, '_> {
             raw_artifact_ids: vec![],
             usage_id: None,
             feedback_id: None,
+            unknown_usage_cause: None,
         };
         let mut feedback_code = TaskFeedbackCodeV1::ContextRejected;
         let mut runtime_evidence_id: Option<String> = None;
@@ -362,6 +363,9 @@ impl CampaignReviewTaskHost<'_, '_> {
             }
             result.usage = returned.usage;
             result.usage_observation = returned.usage_observation;
+            result.unknown_usage_cause = returned
+                .native_failure
+                .map(review_runner::native_failure::NativeFailureKind::unknown_usage_cause);
             result.charged_tokens = result
                 .usage
                 .as_ref()
@@ -391,7 +395,9 @@ impl CampaignReviewTaskHost<'_, '_> {
                 result.raw_artifact_ids.push(id.clone());
                 id
             };
-            let unknown = TaskTokenUsageV3::charge_only(u128::from(attempt.reservation().tokens));
+            // No usage report: the Attempt settles at zero with its usage unknown (ADR-0143),
+            // and its provenance records that same zero charge with no usage report.
+            let unknown = TaskTokenUsageV3::charge_only(0);
             let usage = result.usage.as_ref().unwrap_or(&unknown);
             let captured = crate::reviewer_output::capture_task_result(
                 cas,

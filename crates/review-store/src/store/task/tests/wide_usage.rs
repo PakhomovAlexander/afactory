@@ -146,6 +146,7 @@ fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery(
             },
             raw_artifact_ids: vec![],
             usage_id: None,
+            unknown_usage: None,
         };
         f.store
             .settle_task_attempt(&f.cas, &lease, settled.clone(), &f.authority)
@@ -298,6 +299,7 @@ fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery(
                 },
                 raw_artifact_ids: vec![],
                 usage_id: Some(usage_id.clone()),
+                unknown_usage: None,
             };
             f.store
                 .settle_task_attempt(&f.cas, &lease, terminal.clone(), &f.authority)
@@ -605,6 +607,7 @@ fn native_usage_observation_binds_context_producer_floor_and_preserves_late_char
                 },
                 raw_artifact_ids: vec![id],
                 usage_id: Some(usage_id),
+                unknown_usage: None,
             },
             &f.authority,
         )

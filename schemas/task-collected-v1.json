@@ -44,6 +44,12 @@
       "type": "string",
       "pattern": "^(0|[1-9][0-9]{0,38})$"
     },
+    "unknown_usage_attempts": {
+      "description": "Settled Attempts whose usage was unknown when the Task was collected (ADR-0143): no usage was reported, so each was charged zero and `chargeable_tokens` is not their spend. `af task list` and `af task report` print it as `(+N unknown)` after the tokens. Absent when none.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
     "last_event_unix_ms": {
       "type": "integer",
       "minimum": 1,

@@ -283,6 +283,7 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
             },
             raw_artifact_ids: vec![],
             usage_id: Some(id.clone()),
+            unknown_usage: None,
         },
         TaskExecutionRecordV1::Settled {
             attempt_id: attempt_id.clone(),
@@ -293,6 +294,7 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
             },
             raw_artifact_ids: vec![id.clone()],
             usage_id: None,
+            unknown_usage: None,
         },
         TaskExecutionRecordV1::Settled {
             attempt_id: attempt_id.clone(),
@@ -302,6 +304,7 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
             },
             raw_artifact_ids: vec![],
             usage_id: None,
+            unknown_usage: None,
         },
         TaskExecutionRecordV1::UsageObserved {
             charged_tokens: 12,
@@ -2460,6 +2463,7 @@ fn a_task_tombstone_is_one_closed_transition_referencing_no_artifact() {
         revision_id: format!("sha256:{}", "a".repeat(64)),
         outcome: "verified".into(),
         chargeable_tokens: "0".into(),
+        unknown_usage_attempts: 1,
         last_event_unix_ms: 90,
         collected_unix_ms: 100,
         collected_bytes: 4096,
@@ -2480,10 +2484,21 @@ fn a_task_tombstone_is_one_closed_transition_referencing_no_artifact() {
     assert_valid("task-transition-v5.json", &value);
     assert_valid("task-collected-v1.json", &value["change"]["collected"]);
     review_core::event::validate_event_payload(EventType::TaskTransitionV5, &value).unwrap();
+    // ADR-0143: the count of Attempts whose usage was unknown is kept, and absent when none.
+    assert_eq!(value["change"]["collected"]["unknown_usage_attempts"], 1);
+    let mut known = value.clone();
+    known["change"]["collected"]
+        .as_object_mut()
+        .unwrap()
+        .remove("unknown_usage_attempts");
+    assert_valid("task-transition-v5.json", &known);
+    review_core::event::validate_event_payload(EventType::TaskTransitionV5, &known).unwrap();
     for (field, bad) in [
         ("schema", json!("af/TaskCollected@2")),
         ("chargeable_tokens", json!("012")),
         ("collected_bytes", json!(-1)),
+        ("unknown_usage_attempts", json!(-1)),
+        ("unknown_usage_attempts", json!(9_007_199_254_740_992_u64)),
         ("result_id", json!(format!("sha256:{}", "b".repeat(64)))),
     ] {
         let mut forged = value.clone();

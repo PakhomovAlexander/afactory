@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::usage::DecimalU128;
+use super::usage::{DecimalU128, TaskUnknownUsageCauseV1};
 use super::{is_name, is_package_name, require, safe_number};
 
 pub const TASK_REPORT_V1: &str = "af/task-report@1";
@@ -258,6 +258,11 @@ pub struct TaskReportEntryV1 {
         deserialize_with = "super::present_option"
     )]
     pub attempts: Option<TaskReportAttemptsV1>,
+    /// A collected Task's Attempts whose usage was unknown, as its tombstone retained the count
+    /// (ADR-0143); absent when none and for a Task that records its Attempts, whose
+    /// `attempts.unknown_usage` states it.
+    #[serde(default, skip_serializing_if = "super::is_zero")]
+    pub collected_unknown_usage: u64,
     pub chargeable_tokens: DecimalU128,
     /// From the Task's first to its last recorded event, the tombstone excluded.
     pub wall_ms: u64,
@@ -281,6 +286,20 @@ pub struct TaskReportAttemptsV1 {
     pub failed_tokens: DecimalU128,
     /// The failed Attempts grouped by reason class, in class order.
     pub failures: Vec<TaskReportFailureV1>,
+    /// Settled Attempts whose usage is unknown: no usage was reported, so each was charged
+    /// zero (ADR-0143) and the Task's tokens are not their spend.
+    pub unknown_usage: u64,
+    /// Those Attempts by cause, in cause order; empty when none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unknown_usage_causes: Vec<TaskReportUnknownUsageV1>,
+}
+
+/// How many of a Task's Attempts have unknown usage for one cause.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskReportUnknownUsageV1 {
+    pub cause: TaskUnknownUsageCauseV1,
+    pub attempts: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -356,6 +375,8 @@ pub struct TaskReportNodeV1 {
     pub attempts: u64,
     pub failed_attempts: u64,
     pub tokens: DecimalU128,
+    /// The node's Attempts in this entry whose usage is unknown (ADR-0143).
+    pub unknown_usage: u64,
     /// Absent unless every Attempt of the node recorded its elapsed time.
     #[serde(
         default,
@@ -438,6 +459,9 @@ pub struct TaskReportTotalsV1 {
     )]
     pub failed_attempts: Option<u64>,
     pub chargeable_tokens: DecimalU128,
+    /// Attempts whose usage is unknown, over every Task: those its Attempts record, or a
+    /// collected Task's retained count (ADR-0143).
+    pub unknown_usage: u64,
     pub active_ms: u64,
 }
 
@@ -460,9 +484,13 @@ impl TaskReportTotalsV1 {
         }
         let mut tokens = 0u128;
         let mut active = 0u64;
+        let mut unknown = 0u64;
         for task in tasks {
             tokens = tokens
                 .checked_add(task.chargeable_tokens.get())
+                .ok_or("Task report total overflow")?;
+            unknown = unknown
+                .checked_add(task.unknown_usage())
                 .ok_or("Task report total overflow")?;
             active = active
                 .checked_add(task.active_ms)
@@ -478,6 +506,7 @@ impl TaskReportTotalsV1 {
                 .iter()
                 .map(|task| task.attempts.as_ref().map(|a| a.failed)))?,
             chargeable_tokens: DecimalU128::from(tokens),
+            unknown_usage: unknown,
             active_ms: active,
         })
     }
@@ -644,6 +673,14 @@ impl TaskReportFindingsV1 {
 }
 
 impl TaskReportEntryV1 {
+    /// Its Attempts whose usage is unknown: those its Attempts record, or for a collected Task
+    /// the count its tombstone retained.
+    pub fn unknown_usage(&self) -> u64 {
+        self.attempts
+            .as_ref()
+            .map_or(self.collected_unknown_usage, |a| a.unknown_usage)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         require(
             is_name(&self.task_id) && is_package_name(&self.kind),
@@ -676,6 +713,11 @@ impl TaskReportEntryV1 {
                 || self.nodes.is_none() && self.attempts.is_none() && self.findings.is_none(),
             "A collected Task records no Attempts",
         )?;
+        require(
+            (self.collected || self.collected_unknown_usage == 0)
+                && safe_number(self.collected_unknown_usage),
+            "Only a collected Task retains a bounded unknown-usage count",
+        )?;
         if let Some(findings) = &self.findings {
             findings.validate()?;
         }
@@ -697,6 +739,11 @@ impl TaskReportEntryV1 {
                 require(
                     nodes.iter().map(|node| node.failed_attempts).sum::<u64>() == attempts.failed,
                     "Task report node failures must add up to the Task's",
+                )?;
+                require(
+                    nodes.iter().map(|node| node.unknown_usage).sum::<u64>()
+                        == attempts.unknown_usage,
+                    "Task report node unknown usage must add up to the Task's",
                 )?;
             }
         }
@@ -731,6 +778,30 @@ impl TaskReportAttemptsV1 {
         require(
             attempts == self.failed && tokens == self.failed_tokens.get(),
             "Task report failure classes must add up to its failed Attempts",
+        )?;
+        require(
+            self.unknown_usage <= self.total,
+            "Task report unknown usage never exceeds its Attempts",
+        )?;
+        let mut causes = std::collections::BTreeSet::new();
+        let mut unknown = 0u64;
+        for entry in &self.unknown_usage_causes {
+            require(
+                entry.attempts > 0 && causes.insert(entry.cause),
+                "Task report unknown usage causes are distinct and non-empty",
+            )?;
+            unknown = unknown.saturating_add(entry.attempts);
+        }
+        require(
+            causes
+                .iter()
+                .copied()
+                .eq(self.unknown_usage_causes.iter().map(|u| u.cause)),
+            "Task report unknown usage causes are in cause order",
+        )?;
+        require(
+            unknown == self.unknown_usage,
+            "Task report unknown usage causes must add up to its unknown usage",
         )
     }
 }
@@ -743,8 +814,10 @@ impl TaskReportNodeV1 {
         )?;
         require(is_name(&self.role), "Task report node needs a role")?;
         require(
-            self.attempts > 0 && self.failed_attempts <= self.attempts,
-            "Task report node began an Attempt, and failed no more than it began",
+            self.attempts > 0
+                && self.failed_attempts <= self.attempts
+                && self.unknown_usage <= self.attempts,
+            "Task report node began an Attempt, and failed or left usage unknown no more than it began",
         )?;
         if let Some(TaskReportWorkerV1::Model {
             provider_kind,
@@ -820,7 +893,10 @@ mod tests {
                         tokens: DecimalU128::from(u128::from(failed) * 10),
                     }]
                 },
+                unknown_usage: 0,
+                unknown_usage_causes: Vec::new(),
             }),
+            collected_unknown_usage: 0,
             chargeable_tokens: DecimalU128::from(100),
             wall_ms: 5_000,
             active_ms: 3_000,
@@ -837,6 +913,7 @@ mod tests {
                 tokens: DecimalU128::from(100),
                 elapsed_ms: Some(2_000),
                 checks: vec![],
+                unknown_usage: 0,
             }]),
         }
     }

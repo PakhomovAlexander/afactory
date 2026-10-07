@@ -227,6 +227,7 @@ fn review_round_publication_refuses_pending_and_stale_task_prefix_then_reopens_e
                 },
                 usage_id: None,
                 raw_artifact_ids: vec![],
+                unknown_usage: None,
             },
             &f.authority,
         )
@@ -419,6 +420,7 @@ fn prospective_successor_cannot_publish_when_original_remaining_tokens_cannot_fu
                 },
                 usage_id: None,
                 raw_artifact_ids: vec![],
+                unknown_usage: None,
             },
             &f.authority,
         )

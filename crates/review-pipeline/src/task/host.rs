@@ -851,6 +851,7 @@ impl<'a> CapturedTaskHost<'a> {
         let mut token_usage = None;
         let mut usage_observation = None;
         let mut feedback_code = None;
+        let mut native_failure = None;
         let outputs = (|| {
             let (context, _) = worker.contract.read_context(cas, attempt.context_id())?;
             if context.invocation != *input {
@@ -939,6 +940,7 @@ impl<'a> CapturedTaskHost<'a> {
                 .map(|usage| usage.chargeable_tokens.get());
             token_usage = result.usage;
             usage_observation = result.usage_observation;
+            native_failure = result.native_failure;
             let reply = result.reply?;
             let producer = Producer::Attempt {
                 run_id: self.run_id.clone(),
@@ -1069,6 +1071,8 @@ impl<'a> CapturedTaskHost<'a> {
             raw_artifact_ids,
             usage_id: None,
             feedback_id,
+            unknown_usage_cause: native_failure
+                .map(review_runner::native_failure::NativeFailureKind::unknown_usage_cause),
         }
     }
 }
@@ -1130,6 +1134,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
                 raw_artifact_ids: vec![],
                 usage_id: None,
                 feedback_id: None,
+                unknown_usage_cause: None,
             },
             (None, _) => self
                 .domain

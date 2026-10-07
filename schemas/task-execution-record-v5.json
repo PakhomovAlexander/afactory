@@ -233,6 +233,42 @@
         },
         "usage_id": {
           "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "unknown_usage": {
+          "description": "No usage was reported: the Attempt is charged zero and its usage is unknown, with its cause (ADR-0143).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cause"
+          ],
+          "properties": {
+            "cause": {
+              "enum": [
+                "capacity",
+                "rate_limit",
+                "authentication",
+                "model_unavailable",
+                "network",
+                "lease_expired",
+                "interrupted",
+                "unreported"
+              ]
+            }
+          }
+        }
+      },
+      "dependentSchemas": {
+        "unknown_usage": {
+          "properties": {
+            "charged_tokens": {
+              "const": "0"
+            }
+          },
+          "not": {
+            "required": [
+              "usage_id"
+            ]
+          }
         }
       }
     },

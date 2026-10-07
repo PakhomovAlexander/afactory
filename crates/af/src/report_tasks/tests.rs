@@ -485,6 +485,7 @@ impl Fixture {
                     },
                     raw_artifact_ids: vec![],
                     usage_id: None,
+                    unknown_usage: None,
                 },
                 &Authority,
                 || Ok(None),

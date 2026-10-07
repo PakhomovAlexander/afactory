@@ -101,7 +101,20 @@ af task show pagination-cli
 
 The [ASCII preview guide](task-execution/preview.md) covers the two plan views and agent
 approval. `task list` shows terminal outcome, chargeable tokens and current delivery state.
-`task show` adds exact Snapshot IDs and the append-only event history. Both accept `--json`. The
+`task show` adds exact Snapshot IDs and the append-only event history. Both accept `--json`.
+
+Each Attempt runs under a token reservation that bounds it while it runs, and settles at the
+usage its Provider reported. An Attempt whose Provider reported no usage — a Codex call that
+failed with `Selected model is at capacity`, say, or one whose writer's lease expired while the
+machine slept — is charged 0 and its usage is recorded as unknown, with its cause (`capacity`,
+`rate_limit`, `authentication`, `model_unavailable`, `network`, `lease_expired`, `interrupted`
+or `unreported`); it is never charged its reservation or an estimate
+([ADR-0143](adr/0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)). It
+adds nothing to the Task's, a node's or the verification reserve's charged tokens, so only the
+Attempt limits bound repeated failures of this kind. `task list` prints such a Task's tokens as
+`1200 tokens (+1 unknown)` rather than as spend, `task show` adds the line
+`tokens 1200 (+1 unknown: capacity)` naming the causes, and their `--json` documents carry
+`unknown_usage_attempts`. The
 Task ID is also the delivery confirmation. An unverified Task is evidence, not a deliverable:
 read `task show`, fix the catalog, check, Worker or goal problem, then start a corrected Task
 under a new Task ID.
@@ -225,8 +238,9 @@ unfinished, holding a writer lease or bound by another Task's `inputs`. It write
 `--apply` it writes one tombstone per collected Task and removes every object no remaining Task
 or Campaign record reaches
 ([ADR-0135](adr/0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)). A
-collected Task keeps its ID, kind, revision, outcome, spend and times: `task list` and `task
-show` print it as `collected <time>`, and `task output` and `task deliver` refuse it. Run it
+collected Task keeps its ID, kind, revision, outcome, spend, how many of its Attempts' usage was
+unknown, and times: `task list` and `task show` print it as `collected <time>`, still with
+`(+N unknown)` beside its tokens, and `task output` and `task deliver` refuse it. Run it
 between Tasks: `--apply` is refused while any Task's writer lease is live. If it stops midway,
 rerun it; the next run finishes the removal.
 
@@ -251,7 +265,10 @@ grouped (`review (bugs, correctness: codex gpt-6-sol/high)`); Provider admission
 A Task whose plan is no longer retained (it was collected) or that never reached planning names
 no pipeline, and one line `**unknown pipeline**: not retained` stands for all such Tasks.
 Then each Task is a round, numbered in the order given, with one row: its outcome as `task show`
-states it, its review findings, chargeable tokens and active time. **Findings** counts what the
+states it, its review findings, chargeable tokens and active time. A Tokens cell, in a round, the
+`Total:` row or a node, is the charged total followed by `(+N unknown)` when N of its Attempts
+reported no usage, and the round's details name their causes
+(`1 Attempt's usage unknown (capacity)`); a collected Task keeps the count, not the causes. **Findings** counts what the
 Task's review rounds recorded, by severity (`6 major, 1 minor`), each finding once as the round's
 reduce step wrote it; it reads `none` when the reviewers ran and their complete rounds found
 nothing, `unknown` when the review ran but a round has no complete finding set (a required

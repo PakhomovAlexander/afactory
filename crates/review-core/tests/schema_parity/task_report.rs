@@ -27,6 +27,7 @@ fn report() -> TaskReportV1 {
                 elapsed_ms: None,
             },
         ],
+        unknown_usage: 0,
     };
     let task = TaskReportEntryV1 {
         round: 0,
@@ -61,7 +62,10 @@ fn report() -> TaskReportV1 {
                     tokens: DecimalU128::from(20),
                 },
             ],
+            unknown_usage: 0,
+            unknown_usage_causes: Vec::new(),
         }),
+        collected_unknown_usage: 0,
         chargeable_tokens: DecimalU128::from(u128::MAX / 2),
         wall_ms: 60_000,
         active_ms: 20_000,
@@ -94,6 +98,7 @@ fn report() -> TaskReportV1 {
         findings: None,
         runs: 1,
         attempts: None,
+        collected_unknown_usage: 1,
         chargeable_tokens: DecimalU128::from(5),
         wall_ms: 10,
         active_ms: 10,
@@ -194,6 +199,17 @@ fn task_report_document_and_schema_agree_in_both_directions() {
     invalid(
         &|v| v["tasks"][1]["attempts"] = v["tasks"][0]["attempts"].clone(),
         "Attempts on a collected Task",
+    );
+    // ADR-0143: a collected Task keeps its unknown-usage count; a Task that records its
+    // Attempts states it there instead.
+    assert_eq!(value["tasks"][1]["collected_unknown_usage"], 1);
+    invalid(
+        &|v| v["tasks"][0]["collected_unknown_usage"] = json!(1),
+        "a retained unknown-usage count on an uncollected Task",
+    );
+    invalid(
+        &|v| v["tasks"][1]["collected_unknown_usage"] = json!(-1),
+        "a negative retained unknown-usage count",
     );
     invalid(
         &|v| v["tasks"][0]["attempts"]["failures"][0]["class"] = json!("timeout"),
@@ -352,4 +368,103 @@ fn the_model_pattern_and_the_rust_rule_agree() {
             "{model:?}"
         );
     }
+}
+
+/// ADR-0143: Attempts whose usage is unknown are counted on the Task's attempts, by cause, on
+/// each node and in the totals; the counts must add up, and the schema knows only the closed
+/// causes. The collected Task records no Attempts; the totals add the count its tombstone
+/// retained to the other Task's.
+#[test]
+fn unknown_usage_counts_add_up_and_carry_closed_causes() {
+    use review_core::task::usage::TaskUnknownUsageCauseV1 as Cause;
+    let mut tasks = report().tasks;
+    for task in &mut tasks {
+        task.round = 0;
+    }
+    let attempts = tasks[0].attempts.as_mut().unwrap();
+    attempts.unknown_usage = 2;
+    attempts.unknown_usage_causes = vec![
+        TaskReportUnknownUsageV1 {
+            cause: Cause::Capacity,
+            attempts: 1,
+        },
+        TaskReportUnknownUsageV1 {
+            cause: Cause::LeaseExpired,
+            attempts: 1,
+        },
+    ];
+    tasks[0].nodes.as_mut().unwrap()[0].unknown_usage = 2;
+    let pipelines = report().pipelines;
+    let unknown = TaskReportV1::new(pipelines, tasks).unwrap();
+    assert_eq!(unknown.totals.unknown_usage, 3);
+    let value = serde_json::to_value(&unknown).unwrap();
+    assert_valid("task-report-v1.json", &value);
+    assert_eq!(
+        value["tasks"][0]["attempts"]["unknown_usage_causes"],
+        json!([{"cause":"capacity","attempts":1},{"cause":"lease_expired","attempts":1}])
+    );
+    assert_eq!(
+        serde_json::from_value::<TaskReportV1>(value.clone()).unwrap(),
+        unknown
+    );
+    // With every usage known the count is zero and the causes are absent.
+    let known = serde_json::to_value(report()).unwrap();
+    assert_eq!(known["tasks"][0]["attempts"]["unknown_usage"], 0);
+    assert!(
+        known["tasks"][0]["attempts"]
+            .get("unknown_usage_causes")
+            .is_none()
+    );
+
+    let refused = |edit: &dyn Fn(&mut Value), why: &str| {
+        let mut changed = value.clone();
+        edit(&mut changed);
+        assert!(
+            serde_json::from_value::<TaskReportV1>(changed)
+                .map_err(|e| e.to_string())
+                .and_then(|report| report.validate())
+                .is_err(),
+            "{why}"
+        );
+    };
+    refused(
+        &|v| v["tasks"][0]["attempts"]["unknown_usage_causes"][1]["attempts"] = json!(2),
+        "causes that do not add up",
+    );
+    refused(
+        &|v| v["tasks"][0]["nodes"][0]["unknown_usage"] = json!(1),
+        "nodes that do not add up",
+    );
+    refused(
+        &|v| v["totals"]["unknown_usage"] = json!(2),
+        "totals without the collected Task's retained count",
+    );
+    refused(
+        &|v| {
+            let causes = v["tasks"][0]["attempts"]["unknown_usage_causes"].clone();
+            v["tasks"][0]["attempts"]["unknown_usage_causes"] = json!([causes[1], causes[0]]);
+        },
+        "causes out of order",
+    );
+    for (edit, why) in [
+        (
+            json!({"cause":"estimate","attempts":1}),
+            "a cause outside the closed set",
+        ),
+        (json!({"cause":"capacity","attempts":0}), "an empty cause"),
+    ] {
+        let mut changed = value.clone();
+        changed["tasks"][0]["attempts"]["unknown_usage_causes"][0] = edit;
+        assert_invalid("task-report-v1.json", &changed, why);
+    }
+    let mut missing = value.clone();
+    missing["totals"]
+        .as_object_mut()
+        .unwrap()
+        .remove("unknown_usage");
+    assert_invalid(
+        "task-report-v1.json",
+        &missing,
+        "the totals always carry the count",
+    );
 }

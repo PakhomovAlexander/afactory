@@ -128,6 +128,15 @@ pub enum TaskExecutionRecordV1 {
             deserialize_with = "super::present_option"
         )]
         usage_id: Option<String>,
+        /// Present when no usage was reported: the Attempt is charged zero and its usage is
+        /// unknown, with its cause (ADR-0143). Absent on every settlement with reported usage,
+        /// so records written before this field keep their bytes and their charge.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "super::present_option"
+        )]
+        unknown_usage: Option<super::usage::TaskUnknownUsageV1>,
     },
     Published {
         output_id: String,
@@ -300,6 +309,14 @@ impl TaskExecutionRecordV1 {
                     "Task release needs bounded diagnostics",
                 )?;
                 Some(attempt_id)
+            }
+            Self::Settled {
+                charged_tokens,
+                usage_id,
+                unknown_usage: Some(_),
+                ..
+            } if *charged_tokens != 0 || usage_id.is_some() => {
+                return Err("Unknown Task usage is charged zero and names no usage report".into());
             }
             Self::Settled {
                 attempt_id,

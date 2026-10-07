@@ -396,6 +396,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
         },
         raw_artifact_ids: vec![],
         usage_id: None,
+        unknown_usage: None,
     };
     wide.validate().unwrap();
     let mut value = finished.clone();

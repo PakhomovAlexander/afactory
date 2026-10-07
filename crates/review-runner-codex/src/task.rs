@@ -95,6 +95,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                 message: Err("Worker invocation was cancelled before starting".into()),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 raw_artifact_ids: vec![],
+                native_failure: None,
             });
         }
         let staging = match tempfile::tempdir() {
@@ -181,12 +182,19 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             message: Err("Codex Worker framing failed".into()),
             usage: None,
             raw_artifact_ids: capture.raw_artifact_ids,
+            native_failure: None,
         };
         returned.usage = events.reported_usage();
         returned.usage_observation = events.observation();
         if !capture.status.as_ref().is_ok_and(|status| status.success()) || events.error.is_some() {
+            // An `error` or `turn.failed` event is a native failure even when its message is
+            // unclassified: its closed diagnostic names that, never the bare exit status.
+            returned.native_failure = failure.or(events.upstream_failure);
             returned.message = Err(
-                if let Some(kind) = failure.filter(|kind| *kind != NativeFailureKind::Unknown) {
+                if let Some(kind) = failure
+                    .filter(|kind| *kind != NativeFailureKind::Unknown)
+                    .or(events.upstream_failure.filter(|_| !events.malformed_usage))
+                {
                     let mut message = format!(
                         "Codex Worker failed: {}; transport: {:?}",
                         kind.diagnostic(),
@@ -202,7 +210,8 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                         events.error
                     )
                 } else {
-                    // Keep the historical valid-usage failure diagnostic and artifact identity.
+                    // A failed process with no failure event keeps its historical diagnostic
+                    // and artifact identity.
                     format!("Codex Worker failed with {:?}", capture.status)
                 },
             );

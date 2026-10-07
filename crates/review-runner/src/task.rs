@@ -390,6 +390,8 @@ pub struct WorkerReturn {
     pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
     pub raw_artifact_ids: Vec<String>,
     pub feedback_code: Option<TaskFeedbackCodeV1>,
+    /// The classified native failure the call ended with, if it failed natively.
+    pub native_failure: Option<crate::native_failure::NativeFailureKind>,
 }
 
 /// Provider framing is separate from the Worker's business contract. A model adapter returns
@@ -402,6 +404,10 @@ pub struct ModelWorkerReturn {
     pub message: Result<Vec<u8>, String>,
     pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
     pub raw_artifact_ids: Vec<String>,
+    /// The classified native failure, from the client's own error fields or streams, when the
+    /// native call failed. It names the cause of unknown usage (ADR-0143); the raw Provider
+    /// message never travels with it.
+    pub native_failure: Option<crate::native_failure::NativeFailureKind>,
 }
 
 /// The return of a native program that could not be started at all. It received no input and
@@ -501,6 +507,7 @@ impl ModelWorkerReturn {
             message: Err(error.to_string()),
             usage: None,
             raw_artifact_ids: vec![],
+            native_failure: None,
         }
     }
 }
@@ -528,6 +535,7 @@ pub fn invoke_model(
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 raw_artifact_ids: vec![],
                 feedback_code: Some(TaskFeedbackCodeV1::ContextRejected),
+                native_failure: None,
             };
         }
     };
@@ -548,6 +556,7 @@ pub fn invoke_model(
         usage: returned.usage,
         raw_artifact_ids: returned.raw_artifact_ids,
         feedback_code,
+        native_failure: returned.native_failure,
     }
 }
 

@@ -97,6 +97,7 @@ fn expired_publication_at_report(
                 },
                 raw_artifact_ids: vec![],
                 usage_id: None,
+                unknown_usage: None,
             },
             &f.authority,
         )

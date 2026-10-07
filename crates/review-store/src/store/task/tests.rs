@@ -924,6 +924,7 @@ fn shared_execution_replays_reserved_attempts_and_publishes_outputs_once() {
         },
         raw_artifact_ids: vec![],
         usage_id: None,
+        unknown_usage: None,
     };
     f.store
         .settle_task_attempt(&f.cas, &lease, settlement.clone(), &f.authority)
@@ -989,6 +990,7 @@ fn output_publication_rechecks_authority_after_domain_validation_including_repla
                     },
                     raw_artifact_ids: vec![],
                     usage_id: None,
+                    unknown_usage: None,
                 },
                 &f.authority,
             )
@@ -1072,7 +1074,8 @@ fn rejected_task_output_keeps_its_charge_and_cannot_feed_downstream_nodes() {
                         output_id: output_id.clone()
                     },
                     raw_artifact_ids: vec![],
-                    usage_id: None
+                    usage_id: None,
+                    unknown_usage: None
                 },
                 &f.authority
             )
@@ -1125,6 +1128,7 @@ fn crash_after_successful_settlement_reuses_the_selected_result_under_a_new_writ
                 },
                 raw_artifact_ids: vec![],
                 usage_id: None,
+                unknown_usage: None,
             },
             &f.authority,
         )
@@ -1198,8 +1202,10 @@ fn crash_after_successful_settlement_reuses_the_selected_result_under_a_new_writ
     assert_eq!(execution.budget.committed_tokens(), 7);
 }
 
+/// Started work whose writer's lease expired before any usage was reported settles at zero
+/// with its usage unknown (ADR-0143); unstarted work is released. Neither leaves a charge.
 #[test]
-fn writer_recovery_charges_started_work_and_releases_only_unstarted_work() {
+fn writer_recovery_settles_unreported_started_work_as_unknown_and_releases_unstarted_work() {
     for started in [false, true] {
         let mut f = Fixture::new(false).with_execution_graph();
         let lease = f.open();
@@ -1255,12 +1261,24 @@ fn writer_recovery_charges_started_work_and_releases_only_unstarted_work() {
         let execution = f.state().execution.unwrap();
         assert!(execution.pending_attempts().is_empty());
         assert_eq!(execution.budget.reserved_tokens(), 0);
-        assert_eq!(
-            execution.budget.committed_tokens(),
-            if started { 10 } else { 0 }
-        );
+        assert_eq!(execution.budget.committed_tokens(), 0);
+        // The Attempt still counts against the Attempt limits.
         assert_eq!(execution.budget.begun_attempts(), u64::from(started));
         assert!(!execution.outputs.contains_key("root.nodes.write"));
+        let accounting = execution.attempt_accounting();
+        assert_eq!(accounting.len(), 1);
+        assert_eq!(accounting[0].charged_tokens, 0);
+        assert_eq!(
+            accounting[0].unknown_usage,
+            started.then_some(review_core::task::usage::TaskUnknownUsageCauseV1::LeaseExpired)
+        );
+        assert_eq!(
+            matches!(
+                accounting[0].result,
+                Some(review_core::task::execution::TaskAttemptResultV1::Abandoned { .. })
+            ),
+            started
+        );
     }
 }
 
@@ -1303,6 +1321,7 @@ fn late_usage_is_charged_after_task_finish_without_reopening_its_result() {
                 },
                 raw_artifact_ids: vec![],
                 usage_id: None,
+                unknown_usage: None,
             },
             &f.authority,
         )
@@ -1421,6 +1440,7 @@ fn warm_and_cold_replay_reject_missing_or_corrupt_execution_evidence() {
                     result,
                     raw_artifact_ids: vec![raw.clone()],
                     usage_id: Some(usage.clone()),
+                    unknown_usage: None,
                 },
                 &f.authority,
             )
@@ -1742,6 +1762,7 @@ fn native_usage_classification_keeps_exact_attempt_context_and_charge_guards() {
                 },
                 raw_artifact_ids: evidence,
                 usage_id: None,
+                unknown_usage: None,
             },
             &f.authority,
         );

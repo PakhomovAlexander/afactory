@@ -316,6 +316,9 @@ pub(crate) struct Tally {
     pub(crate) released: u64,
     /// The highest charge recorded for each Attempt, summed.
     pub(crate) tokens: u128,
+    /// Settled Attempts whose usage is unknown: no usage was reported, so each was charged zero
+    /// (ADR-0143) and `tokens` is not their spend.
+    pub(crate) unknown: u64,
     /// The recorded Attempt walls, summed.
     pub(crate) wall_ms: u64,
     /// The Attempts that recorded a wall.
@@ -333,6 +336,7 @@ impl Tally {
         self.failed += other.failed;
         self.released += other.released;
         self.tokens = self.tokens.saturating_add(other.tokens);
+        self.unknown += other.unknown;
         self.wall_ms = self.wall_ms.saturating_add(other.wall_ms);
         self.walls += other.walls;
     }
@@ -350,6 +354,10 @@ struct Reservation {
     /// `Some(succeeded)` once settled.
     settled: Option<bool>,
     charged: u128,
+    /// Its settlement recorded unknown usage (ADR-0143).
+    unknown: bool,
+    /// A usage observation names it: its usage was reported, even as 0 tokens.
+    observed: bool,
 }
 
 /// A recorded plan as the pane reads it: `{"graph": <compiled graph>, "bindings": <the plan's
@@ -472,6 +480,8 @@ pub(crate) fn tally(
                         released: false,
                         settled: None,
                         charged: 0,
+                        unknown: false,
+                        observed: false,
                     };
                     reservations.insert(attempt.to_owned(), reservation);
                 }
@@ -490,6 +500,9 @@ pub(crate) fn tally(
                 reservation.charged = reservation.charged.max(charged);
                 if kind == "settled" {
                     reservation.settled = Some(record["result"]["kind"] == "succeeded");
+                    reservation.unknown = record["unknown_usage"].is_object();
+                } else {
+                    reservation.observed = true;
                 }
             }
             _ => {}
@@ -508,6 +521,8 @@ pub(crate) fn tally(
             Some(false) => tally.failed += 1,
         }
         tally.tokens = tally.tokens.saturating_add(reservation.charged);
+        // A usage observation makes its usage known, even one that reported 0 tokens.
+        tally.unknown += u64::from(reservation.unknown && !reservation.observed);
     }
     let mut walled = BTreeSet::new();
     for wall in tasks::array(&document["attempt_walls"]) {
@@ -872,7 +887,11 @@ pub(crate) fn tally_rows(tally: &Tally) -> Vec<Row> {
     };
     vec![
         attempts,
-        Row::plain(format!("tokens    charged {}", tally.tokens)),
+        Row::plain(format!(
+            "tokens    charged {}{}",
+            tally.tokens,
+            tasks::unknown_suffix(tally.unknown)
+        )),
         Row::plain(wall),
     ]
 }

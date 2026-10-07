@@ -41,6 +41,12 @@
     "chargeable_tokens": {
       "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
     },
+    "unknown_usage_attempts": {
+      "description": "Settled Attempts whose Provider reported no usage: each was charged zero and its usage is unknown (ADR-0143), so `chargeable_tokens` is not their spend. Absent when every usage is known. A collected Task's count is the one its tombstone retained.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
     "derived_snapshot_id": {
       "anyOf": [
         {

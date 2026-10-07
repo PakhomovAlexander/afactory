@@ -127,6 +127,7 @@ impl WorkerModelAdapter for NativeModel<'_> {
             },
             usage: Some(TaskTokenUsageV3::charge_only(self.usage)),
             raw_artifact_ids: vec![cas.put(RAW).unwrap()],
+            native_failure: None,
         }
     }
 }

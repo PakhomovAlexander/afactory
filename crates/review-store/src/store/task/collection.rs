@@ -95,6 +95,8 @@ pub struct CollectionCandidate {
     pub result_id: Option<String>,
     pub outcome: Option<String>,
     pub chargeable_tokens: String,
+    /// Settled Attempts whose usage is unknown (ADR-0143); the tombstone keeps the count.
+    pub unknown_usage_attempts: u64,
     pub last_event_unix_ms: u64,
     pub disposition: CollectionDisposition,
     pub footprint: TaskFootprint,
@@ -566,6 +568,13 @@ impl EventStore {
                     .as_ref()
                     .map_or(0, |execution| execution.budget.committed_tokens())
                     .to_string(),
+                unknown_usage_attempts: task.execution.as_ref().map_or(0, |execution| {
+                    execution
+                        .attempt_accounting()
+                        .iter()
+                        .filter(|attempt| attempt.unknown_usage.is_some())
+                        .count() as u64
+                }),
                 last_event_unix_ms: task.last_time,
                 disposition,
                 footprint: reach.footprint(&task_run_id(&task.task_id)?),
@@ -655,6 +664,7 @@ impl EventStore {
                             .clone()
                             .ok_or_else(|| conflict("A collected Task has no outcome"))?,
                         chargeable_tokens: task.chargeable_tokens.clone(),
+                        unknown_usage_attempts: task.unknown_usage_attempts,
                         last_event_unix_ms: task.last_event_unix_ms,
                         collected_unix_ms: now_unix_ms,
                         collected_bytes: task.collected_bytes,

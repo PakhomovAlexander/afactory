@@ -679,6 +679,48 @@ fn attempts_are_attributed_through_the_recorded_plan_never_by_name() {
     assert_eq!(tallies[&task("fixture/old-writer")].failed, 1);
 }
 
+/// ADR-0143: an Attempt settled with unknown usage is counted as unknown beside the charge,
+/// never as spend, unless a later observation reported its usage, even as 0 tokens.
+#[test]
+fn unknown_usage_reads_beside_the_charge_until_an_observation_reports_it() {
+    let unknown = |attempt: &str| {
+        let mut entry = settled(attempt, "0", "failed");
+        entry["record"]["unknown_usage"] = json!({"cause": "capacity"});
+        entry
+    };
+    let document = json!({
+        "plan_id": "plan",
+        "graph": graph(),
+        "execution_records": [
+            reserved("known", "inv"),
+            settled("known", "120", "succeeded"),
+            reserved("capacity", "inv"),
+            unknown("capacity"),
+            reserved("late", "inv"),
+            unknown("late"),
+            record("usage_observed", "late", json!({"charged_tokens": "3"})),
+            reserved("zero", "inv"),
+            unknown("zero"),
+            record("usage_observed", "zero", json!({"charged_tokens": "0"})),
+        ],
+        "attempt_walls": []
+    });
+    let mut invoked = |_: &str| {
+        Ok(Invoked {
+            node: "root.nodes.implement".to_owned(),
+            plan_id: Some("plan".to_owned()),
+        })
+    };
+    let mut compiled = |plan: &str| Err(format!("no plan {plan}"));
+    let tallies = tally(&document, &mut invoked, &mut compiled, &mut no_package).unwrap();
+    let tally = tallies[&task("fixture/implementer")];
+    assert_eq!((tally.tokens, tally.unknown), (123, 1));
+    assert_eq!(
+        texts(&tally_rows(&tally))[1],
+        "tokens    charged 123 (+1 unknown)"
+    );
+}
+
 #[test]
 fn the_accounting_takes_each_attempts_highest_charge_and_skips_released_reservations() {
     let wall = |attempt: &str, ms: u64| json!({"attempt_id": attempt, "elapsed_ms": ms});
@@ -736,6 +778,7 @@ fn the_accounting_takes_each_attempts_highest_charge_and_skips_released_reservat
             tokens: 150 + 90 + 5,
             wall_ms: 1_500,
             walls: 2,
+            unknown: 0,
         }
     );
     assert_eq!(tally.attempts(), 3);

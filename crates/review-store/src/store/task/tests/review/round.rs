@@ -310,6 +310,7 @@ fn superseded_review_round_blocks_dispatch_but_retains_started_usage_and_settlem
                 },
                 raw_artifact_ids: vec![],
                 usage_id: None,
+                unknown_usage: None,
             },
             &f.authority,
         )

@@ -28,6 +28,11 @@ pub struct TaskCollectedV1 {
     pub outcome: String,
     /// Committed chargeable tokens, as decimal text (`af task list` spells them so).
     pub chargeable_tokens: String,
+    /// Settled Attempts whose usage was unknown when the Task was collected: no usage was
+    /// reported, so each was charged zero (ADR-0143) and `chargeable_tokens` is not their spend.
+    /// Absent when none.
+    #[serde(default, skip_serializing_if = "super::is_zero")]
+    pub unknown_usage_attempts: u64,
     /// Policy time of the Task's last event before the tombstone.
     pub last_event_unix_ms: u64,
     /// Policy time the tombstone was written.
@@ -62,6 +67,10 @@ impl TaskCollectedV1 {
                 && self.collected_unix_ms >= self.last_event_unix_ms
                 && safe_number(self.collected_bytes),
             "A Task tombstone needs bounded times, collected no earlier than its last event",
+        )?;
+        require(
+            safe_number(self.unknown_usage_attempts),
+            "A Task tombstone counts its unknown-usage Attempts within the safe integer range",
         )
     }
 }
@@ -120,6 +129,7 @@ mod tests {
             revision_id: format!("sha256:{}", "a".repeat(64)),
             outcome: "verified".into(),
             chargeable_tokens: "1200".into(),
+            unknown_usage_attempts: 1,
             last_event_unix_ms: 10,
             collected_unix_ms: 20,
             collected_bytes: 4096,
@@ -163,6 +173,10 @@ mod tests {
                 collected_unix_ms: 0,
                 ..tombstone()
             },
+            TaskCollectedV1 {
+                unknown_usage_attempts: 1 << 53,
+                ..tombstone()
+            },
         ];
         for value in refused {
             assert!(value.validate().is_err(), "{value:?}");
@@ -175,6 +189,24 @@ mod tests {
         assert_eq!(collected_time(951_782_400_000), "2000-02-29T00:00:00Z");
         assert_eq!(collected_time(1_790_599_874_258), "2026-09-28T12:51:14Z");
         assert_eq!(collected_time(4_102_444_799_999), "2099-12-31T23:59:59Z");
+    }
+
+    /// The unknown-usage count is spelled only when there is one, so a tombstone without
+    /// unknown usage keeps the bytes it had before the field existed.
+    #[test]
+    fn a_tombstone_spells_unknown_usage_only_when_some_attempt_had_it() {
+        let value = serde_json::to_value(tombstone()).unwrap();
+        assert_eq!(value["unknown_usage_attempts"], 1);
+        let none = TaskCollectedV1 {
+            unknown_usage_attempts: 0,
+            ..tombstone()
+        };
+        let value = serde_json::to_value(&none).unwrap();
+        assert!(value.get("unknown_usage_attempts").is_none(), "{value}");
+        assert_eq!(
+            serde_json::from_value::<TaskCollectedV1>(value).unwrap(),
+            none
+        );
     }
 
     #[test]
