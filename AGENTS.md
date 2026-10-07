@@ -46,6 +46,10 @@ review corpora belong in consuming repositories, not here.
   review or Task work; a directory marked `preserved` (a container's cleanup was not confirmed)
   is left for the operator. Do not clear `$TMPDIR` by hand while a review or Task runs: a live
   sandbox is a directory nobody else may touch.
+- Integration tests launch `af` through `crate::common::af()`, which gives each test process a
+  private `HOME` and XDG directories below cargo's target directory. A run ends with a sweep of
+  what af keeps on the machine (ADR-0144), so an `af` that inherits the developer's real home can
+  remove their own Stores and campaigns; never spawn the binary without that isolation.
 - Everything else `af` keeps between runs is held to one machine budget, `[storage] max_bytes`;
   `af storage` shows it and `af storage prune --apply` reclaims it
   ([ADR-0144](docs/adr/0144-hold-afs-disk-use-to-a-machine-budget.md)).

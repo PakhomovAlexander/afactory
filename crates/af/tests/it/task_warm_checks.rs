@@ -207,7 +207,7 @@ fn af(fixture: &Fixture, args: &[&str]) -> (i32, String, String) {
 
 /// `af` under the fixture's kernel environment plus `extra`.
 fn af_with(fixture: &Fixture, extra: &[(&str, &Path)], args: &[&str]) -> (i32, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .current_dir(&fixture.repo)
         .env("HOME", &fixture.home)
         .env("XDG_CONFIG_HOME", fixture.home.join(".config"))

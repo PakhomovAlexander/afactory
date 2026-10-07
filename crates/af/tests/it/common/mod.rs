@@ -11,6 +11,45 @@ pub const AF: &str = env!("CARGO_BIN_EXE_af");
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const TARGET: &str = env!("AF_TARGET");
 
+/// `af` for a test: the binary under test with `HOME` and every XDG directory in a private
+/// directory of this test process, below cargo's target directory, so no test reads or changes
+/// the developer's real af state. A run ends with the Storage Budget's sweep of everything af
+/// keeps on the machine (ADR-0144), so a test that reached the real `~/.local/state/af` could
+/// remove a developer's own history. The toolchain stays reachable: rustup hands every process
+/// it starts `RUSTUP_HOME` and `CARGO_HOME`. A test that sets any of these names itself
+/// afterwards wins, since the last `env` of a name counts.
+pub fn af() -> Command {
+    let mut command = Command::new(AF);
+    for (name, value) in private_home_env() {
+        command.env(name, value);
+    }
+    command
+}
+
+/// `HOME` and the XDG directories of this test process's private home, created once.
+pub fn private_home_env() -> Vec<(&'static str, PathBuf)> {
+    static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    let home = HOME.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let home = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join("af-test-homes")
+            .join(format!("{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        home
+    });
+    vec![
+        ("HOME", home.clone()),
+        ("XDG_CONFIG_HOME", home.join(".config")),
+        ("XDG_STATE_HOME", home.join(".local/state")),
+        ("XDG_CACHE_HOME", home.join(".cache")),
+        ("XDG_DATA_HOME", home.join(".local/share")),
+        ("XDG_BIN_HOME", home.join(".local/bin")),
+    ]
+}
+
 pub fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();

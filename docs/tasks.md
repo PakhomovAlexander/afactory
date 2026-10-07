@@ -274,8 +274,10 @@ stays.
 
 `af storage` prints what af holds, per kind, against the budget, and the free bytes against
 `[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@1` document.
-`af storage prune` previews the sweep that runs after every `af task run` and `af review run`;
-`af storage prune --apply` performs it now. The sweep collects first: finished Tasks beyond the
+After every `af task run` and `af review run` the sweep holds af to `max_bytes`, evicting least
+recently used entries; it does not collect by age unless `[storage] auto_gc = true`. `af storage
+prune` previews the sweep with collection; `af storage prune --apply` performs it now. It collects
+first: finished Tasks beyond the
 newest `keep_tasks` (20) of each Store, review campaigns beyond the newest `keep_campaigns` (20)
 and Stores this release cannot read, each idle at least `keep_days` (14); then it evicts until
 af fits. A Store made with `--state` is recorded in `$XDG_STATE_HOME/af/stores.toml`, so the

@@ -13,7 +13,6 @@ use serde_json::Value;
 
 use crate::{schemas, task_cli, task_gc};
 
-const AF: &str = env!("CARGO_BIN_EXE_af");
 const DAY: Duration = Duration::from_secs(86_400);
 
 /// A private machine: every root af reads lives below one temporary directory.
@@ -44,7 +43,7 @@ impl Machine {
     }
 
     fn command(&self, cwd: &Path, env: &[(&str, &str)], args: &[&str]) -> Command {
-        let mut command = Command::new(AF);
+        let mut command = crate::common::af();
         command
             .current_dir(cwd)
             .env("HOME", self.root.join("home"))
@@ -256,10 +255,11 @@ fn collected(list: &Value, task_id: &str) -> bool {
 }
 
 #[test]
-fn collection_after_a_run_takes_finished_tasks_beyond_the_newest_and_auto_gc_off_keeps_them() {
+fn collection_after_a_run_takes_finished_tasks_only_when_auto_gc_is_on() {
     let machine = Machine::new();
     let (repo, state) = task_gc::fixture(&machine.root);
     let eager = [
+        ("AF_STORAGE__AUTO_GC", "true"),
         ("AF_STORAGE__KEEP_DAYS", "0"),
         ("AF_STORAGE__KEEP_TASKS", "1"),
     ];
@@ -289,11 +289,14 @@ fn collection_after_a_run_takes_finished_tasks_beyond_the_newest_and_auto_gc_off
     );
     assert!(registry.contains("kind = \"task\""), "{registry}");
 
-    // auto_gc = false: the same runs keep both; `af storage prune --apply` collects on request.
+    // The default, auto_gc = false: the same runs keep both, since nothing is over the budget;
+    // `af storage prune --apply` collects on request.
     let off = Machine::new();
     let (repo, state) = task_gc::fixture(&off.root);
-    let mut quiet = eager.to_vec();
-    quiet.push(("AF_STORAGE__AUTO_GC", "false"));
+    let quiet = [
+        ("AF_STORAGE__KEEP_DAYS", "0"),
+        ("AF_STORAGE__KEEP_TASKS", "1"),
+    ];
     for file in ["gc-older.json", "gc-newer.json"] {
         assert!(start(&off, &repo, &state, file, &quiet).status.success());
     }
@@ -706,7 +709,9 @@ fn the_sweep_that_ends_a_run_is_an_observation_of_its_task() {
     // Nothing was removed after the first run: nothing is recorded.
     let first = json(&show("gc-older", true));
     assert!(first.get("storage_sweeps").is_none(), "{first}");
+    // Collection by age is off by default; this run turns it on to have something to record.
     let eager = [
+        ("AF_STORAGE__AUTO_GC", "true"),
         ("AF_STORAGE__KEEP_DAYS", "0"),
         ("AF_STORAGE__KEEP_TASKS", "1"),
     ];

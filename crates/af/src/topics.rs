@@ -160,7 +160,9 @@ repository's .af/af.toml cannot set it:
                                cannot be measured, checks, measurement repetitions and Worker
                                Attempts are refused with insufficient_disk before any token is
                                spent
-  auto_gc = true               collect after every `af task run` and `af review run`
+  auto_gc = false              also collect by age (keep_days, keep_tasks, keep_campaigns) after
+                               every `af task run` and `af review run`; off, a run only holds af
+                               to max_bytes, and `af storage prune --apply` collects on request
   keep_days = 14               collection never takes anything used in the last keep_days
   keep_tasks = 20              newest finished Tasks kept per Store
   keep_campaigns = 20          newest review campaigns kept

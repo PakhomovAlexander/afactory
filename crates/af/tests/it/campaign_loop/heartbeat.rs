@@ -60,7 +60,7 @@ fn heartbeat_failure_cancels_native_group_and_new_writer_recovers_exact_usage_wi
         &std::env::var_os("PATH").unwrap_or_default(),
     ));
     let mut child = ChildGuard(Some(
-        Command::new(env!("CARGO_BIN_EXE_af"))
+        crate::common::af()
             .args([
                 "review",
                 "run",

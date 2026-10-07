@@ -19,7 +19,7 @@ use crate::schemas;
 const TASK: &str = "starter-report";
 
 fn af(repo: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_af"))
+    crate::common::af()
         .current_dir(repo)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .args(args)
@@ -118,7 +118,7 @@ fn repin_and_commit(repo: &Path) {
 
 /// Run one `af task` command with `--json --state`, expecting `code`.
 fn run(repo: &Path, state: &Path, args: &[&str], code: i32) -> Value {
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .current_dir(repo)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .args(args)

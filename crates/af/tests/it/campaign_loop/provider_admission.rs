@@ -64,7 +64,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
         }
     }
     fn cli(&self, mode: &[&str], bounds: &[&str]) -> std::process::Output {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_af"));
+        let mut cmd = crate::common::af();
         cmd.args(mode)
             .args([
                 "--repo",

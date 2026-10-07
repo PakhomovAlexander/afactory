@@ -212,7 +212,7 @@ impl Fixture {
             std::iter::once(self.bin.clone()).chain(std::env::split_paths(&inherited)),
         )
         .unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        let output = crate::common::af()
             .current_dir(&self.repo)
             .env("HOME", &home)
             .env("XDG_CONFIG_HOME", home.join(".config"))
@@ -524,7 +524,7 @@ fn a_failed_gate_cleanup_keeps_the_result_and_the_next_sweep_retries_it() {
         std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
     ))
     .unwrap();
-    let swept = Command::new(env!("CARGO_BIN_EXE_af"))
+    let swept = crate::common::af()
         .current_dir(&fixture.repo)
         .env("HOME", &home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
@@ -1043,7 +1043,7 @@ fn the_staged_remote_twins_differ_only_where_they_run_kernel_and_plan_on_this_re
         }
         std::fs::write(&file, serde_json::to_vec(&task).unwrap()).unwrap();
         let home = root.join("home");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_af"));
+        let mut command = crate::common::af();
         command
             .current_dir(&repo)
             .env("HOME", &home)

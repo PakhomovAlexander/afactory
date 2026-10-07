@@ -1533,7 +1533,7 @@ fn runs_task_work(command: &cli::Command) -> bool {
 }
 
 /// `af task run`, `af task start --execute` and `af review run` end with the Storage Budget's
-/// sweep, collection included, when `[storage] auto_gc` is on (ADR-0144).
+/// sweep: the budget always, age-based collection too when `[storage] auto_gc` is on (ADR-0144).
 fn collects_after_run(command: &cli::Command) -> bool {
     match command {
         cli::Command::Review(namespace) => {

@@ -5,7 +5,7 @@ use std::{
     process::Command,
 };
 fn call(repo: &Path, state: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_af"))
+    crate::common::af()
         .current_dir(repo)
         .args(args)
         .arg("--state")
@@ -49,7 +49,7 @@ pub(crate) fn setup(
     template: &str,
     max_attempts: u32,
 ) -> (PathBuf, PathBuf) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_af"));
+    let mut cmd = crate::common::af();
     cmd.current_dir(root).args([
         "catalog",
         "init",
@@ -498,7 +498,7 @@ fn explicit_relative_refresh_source_uses_the_callers_directory() {
     let mut stale = selected.clone();
     stale["description"] = json!("Wrong same-named repository file.");
     write(&repo.join("updated.json"), &stale);
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .current_dir(root.path())
         .args([
             "task",

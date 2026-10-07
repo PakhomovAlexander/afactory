@@ -34,9 +34,15 @@ remote check left two branches and a draft pull request open.
    directory, so a throwaway one would not be signed in.
 4. **Leaving gate pull requests for the operator.** Rejected: that is the behaviour that left
    #179, #180, #185 and #187 open.
-5. **One machine-wide budget over entries af evicts whole, least recently used first, plus a
-   free-disk floor, collection after runs, af-owned check directories and removal of what
-   Workers and gates leave in other tools.** Chosen.
+5. **Age-based collection after every run by default** (`auto_gc = true`). Rejected on
+   2026-10-07: a test run of this package's own branch, whose tests reached a developer's real
+   state directories, collected that developer's review history by age alone: 62 campaigns and 12
+   Task Stores the machine still had room for. Age is a reason to delete only when the operator
+   asks for it; the budget is the reason by default.
+6. **One machine-wide budget over entries af evicts whole, least recently used first, enforced
+   after every run, plus a free-disk floor, collection by age on request (`af storage prune
+   --apply`, or `auto_gc = true`), af-owned check directories and removal of what Workers and
+   gates leave in other tools.** Chosen.
 
 ## Decision
 
@@ -48,7 +54,7 @@ remote check left two branches and a draft pull request open.
    keys. Two checks with the same toolchain, environment and repository share one key across
    Attempts, Tasks and processes.
 2. **`[storage]`, machine layers only.** A typed `StoragePolicy` with built-in defaults:
-   `max_bytes = "20GiB"`, `min_free_bytes = "10GiB"`, `auto_gc = true`, `keep_days = 14`,
+   `max_bytes = "20GiB"`, `min_free_bytes = "10GiB"`, `auto_gc = false`, `keep_days = 14`,
    `keep_tasks = 20`, `keep_campaigns = 20`, `keep_worker_transcripts = false`,
    `keep_gate_pull_requests = false`; byte counts are integers or B, KiB, MiB, GiB, TiB.
    `AF_STORAGE__<KEY>` overrides it. A directory, project or local layer that carries
@@ -93,7 +99,8 @@ remote check left two branches and a draft pull request open.
    `af/TaskStorageSweep@1` inline (at most 256 removals and 64 failures listed, the rest counted;
    a sweep that removed nothing and failed nothing records nothing), which `af task show` prints
    as one line. Triggers: the end of every `af task run`, `af task start --execute` and `af
-   review run` whatever the outcome (when `auto_gc`; its failure is a warning) — an interrupted
+   review run` whatever the outcome (the budget step; collection too only when `auto_gc` is on,
+   which it is not by default; its failure is a warning) — an interrupted
    run is not an outcome: after `Ctrl-C` af stops promptly and leaves collection to the next run
    or `af storage prune --apply`, because a sweep can wait on GitHub for gate cleanups — a warm check
    about to create a key that does not exist (budget only), the free-disk floor, and `af storage

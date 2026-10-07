@@ -28,7 +28,7 @@ source = "PakhomovAlexander/afactory"
 [storage]
 max_bytes = "20GiB"
 min_free_bytes = "10GiB"
-auto_gc = true
+auto_gc = false
 keep_days = 14
 keep_tasks = 20
 keep_campaigns = 20
@@ -167,7 +167,8 @@ pub(crate) struct StoragePolicy {
     pub(crate) max_bytes: u64,
     /// The free-disk floor below which a check or a Worker Attempt is refused.
     pub(crate) min_free_bytes: u64,
-    /// Collection after every `af task run` and `af review run`.
+    /// Age-based collection after every `af task run` and `af review run`. Off by default: a
+    /// run then holds af to the budget only, and age-based collection runs on request.
     pub(crate) auto_gc: bool,
     /// Collection never takes anything used in the last `keep_days`.
     pub(crate) keep_days: u64,
@@ -833,7 +834,7 @@ mod tests {
             StoragePolicy {
                 max_bytes: 20 << 30,
                 min_free_bytes: 10 << 30,
-                auto_gc: true,
+                auto_gc: false,
                 keep_days: 14,
                 keep_tasks: 20,
                 keep_campaigns: 20,
@@ -865,7 +866,7 @@ mod tests {
         std::fs::create_dir_all(repo.join(".af")).unwrap();
         std::fs::write(
             repo.join(".af/af.toml"),
-            "[storage]\nmax_bytes = \"1B\"\nauto_gc = false\n",
+            "[storage]\nmax_bytes = \"1B\"\nauto_gc = true\n",
         )
         .unwrap();
         let roots = MachineRoots {
@@ -880,7 +881,7 @@ mod tests {
             20 << 30,
             "the repository cannot shrink the budget"
         );
-        assert!(policy.auto_gc);
+        assert!(!policy.auto_gc, "the repository cannot turn collection on");
         assert_eq!(policy.keep_days, 3, "the environment is a machine layer");
         assert!(
             config

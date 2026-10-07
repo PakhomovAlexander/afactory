@@ -2,14 +2,13 @@
 //! `af self` live in `self_managed.rs`.
 
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
-const AF: &str = env!("CARGO_BIN_EXE_af");
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const TARGET: &str = env!("AF_TARGET");
 
 fn af(args: &[&str]) -> Output {
-    Command::new(AF)
+    crate::common::af()
         .args(args)
         .env("AF_SELF_OFFLINE", "1")
         .env("NO_COLOR", "1")
@@ -145,7 +144,7 @@ fn completion_scripts_delegate_to_the_binary() {
             out(&script)
         );
     }
-    let dynamic = Command::new(AF)
+    let dynamic = crate::common::af()
         .env("COMPLETE", "fish")
         .env("AF_SELF_OFFLINE", "1")
         .args(["--", "af", "provider", ""])
@@ -260,7 +259,7 @@ fn the_configuration_ladder_merges_in_order_and_names_origins() {
         "[ui]\ncolor = \"never-read\"\n",
     );
 
-    let show = Command::new(AF)
+    let show = crate::common::af()
         .args(["config", "show", "--origin", "--repo"])
         .arg(project.join("sub"))
         .env("HOME", &home)
@@ -300,7 +299,7 @@ fn the_configuration_ladder_merges_in_order_and_names_origins() {
     assert!(line("ui.color").contains("work/.af/af.toml:2"), "{text}");
 
     let json: serde_json::Value = serde_json::from_slice(
-        &Command::new(AF)
+        &crate::common::af()
             .args(["config", "show", "--json", "--repo"])
             .arg(&project)
             .env("HOME", &home)
@@ -336,7 +335,7 @@ fn the_configuration_ladder_merges_in_order_and_names_origins() {
 
 #[test]
 fn json_errors_are_one_document_on_stdout() {
-    let failed = Command::new(AF)
+    let failed = crate::common::af()
         .args(["config", "show", "--json"])
         .env_remove("HOME")
         .env_remove("XDG_CONFIG_HOME")

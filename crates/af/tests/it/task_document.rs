@@ -7,7 +7,7 @@ use std::process::Command;
 pub(crate) mod provider_admission;
 
 fn af(repo: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_af"))
+    crate::common::af()
         .current_dir(repo)
         .args(args)
         .output()
@@ -64,7 +64,7 @@ fn setup(root: &Path) -> (PathBuf, PathBuf) {
     (repo, root.join("state"))
 }
 fn run(repo: &Path, state: &Path, args: &[&str], code: i32) -> Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_af"))
+    let out = crate::common::af()
         .current_dir(repo)
         .args(args)
         .args(["--json", "--state"])
@@ -166,7 +166,7 @@ fn document_starter_runs_without_credentials_code_artifacts_or_code_checks_and_r
     );
     assert_eq!(output["artifact_id"], document_id);
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
-    let refused = Command::new(env!("CARGO_BIN_EXE_af"))
+    let refused = crate::common::af()
         .current_dir(&repo)
         .args([
             "task",

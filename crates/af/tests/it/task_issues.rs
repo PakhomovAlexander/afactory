@@ -5,7 +5,7 @@ use std::{
     process::Command,
 };
 fn run(repo: &Path, args: &[&str], expected: i32) -> Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_af"))
+    let out = crate::common::af()
         .current_dir(repo)
         .args(args)
         .arg("--json")

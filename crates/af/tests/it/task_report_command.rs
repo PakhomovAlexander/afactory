@@ -19,8 +19,6 @@ use crate::schemas;
 use crate::task_document::provider_admission::Fixture;
 use crate::{task_cli, task_document, task_gc, task_interrupt};
 
-const AF: &str = env!("CARGO_BIN_EXE_af");
-
 fn workspace() -> PathBuf {
     std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
@@ -28,7 +26,7 @@ fn workspace() -> PathBuf {
 }
 
 fn report(repo: &Path, state: &Path, ids: &[&str], json: bool) -> Output {
-    let mut command = Command::new(AF);
+    let mut command = crate::common::af();
     command
         .current_dir(repo)
         .args(["task", "report"])
@@ -198,7 +196,7 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
     // Time between the two runs is waiting, not work.
     std::thread::sleep(std::time::Duration::from_millis(1_500));
     std::fs::write(&resume, b"").unwrap();
-    let resumed = Command::new(AF)
+    let resumed = crate::common::af()
         .current_dir(&repo)
         .args(["task", "run", task_interrupt::TASK, "--state"])
         .arg(&state)
@@ -223,7 +221,7 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
 
     // The outcome, Attempts and tokens are the ones `af task show` states.
     let shown: Value = serde_json::from_str(&stdout(
-        &Command::new(AF)
+        &crate::common::af()
             .current_dir(&repo)
             .args(["task", "show", task_interrupt::TASK, "--json", "--state"])
             .arg(&state)
@@ -235,7 +233,7 @@ fn a_task_resumed_once_reports_two_runs_and_active_time_below_its_wall_time() {
     assert_eq!(task["attempts"]["total"], shown["attempts"]);
     assert_eq!(task["chargeable_tokens"], shown["chargeable_tokens"]);
     let text = String::from_utf8(
-        Command::new(AF)
+        crate::common::af()
             .current_dir(&repo)
             .args(["task", "show", task_interrupt::TASK, "--state"])
             .arg(&state)
@@ -423,7 +421,7 @@ fn failed_provider_task_with(
 /// `af task report` over the fixture's document Task: the `--json` document, validated against
 /// the published schema, or the Markdown block.
 fn fixture_report(f: &Fixture, json: bool) -> String {
-    let mut command = Command::new(AF);
+    let mut command = crate::common::af();
     command
         .current_dir(&f.repo)
         .env("HOME", &f.home)
@@ -554,7 +552,7 @@ fn a_provider_failure_is_counted_with_its_class_and_charge_and_the_provider_stay
 /// What `af` prints for `args` over the fixture's Store, as text.
 fn fixture_text(f: &Fixture, args: &[&str]) -> String {
     stdout(
-        &Command::new(AF)
+        &crate::common::af()
             .current_dir(&f.repo)
             .env("HOME", &f.home)
             .env("PATH", &f.path)
@@ -1019,7 +1017,7 @@ fn a_refresh_that_recovers_a_pending_attempt_is_neither_a_run_nor_active_time() 
 
     // Kill af outright while the implementer runs: nothing settles its Attempt.
     let af = |args: &[&str]| {
-        let mut command = Command::new(AF);
+        let mut command = crate::common::af();
         command
             .current_dir(&repo)
             .args(args)
@@ -1257,7 +1255,7 @@ fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own
     )
     .unwrap();
     let af = |args: &[&str]| {
-        let mut command = Command::new(AF);
+        let mut command = crate::common::af();
         command
             .current_dir(&repo)
             .env("HOME", &home)
@@ -1504,7 +1502,7 @@ fn several_tasks_give_one_row_each_in_order_and_an_unknown_id_prints_nothing() {
     assert!(String::from_utf8_lossy(&none.stderr).contains("Task `gc-older` was not found"));
 
     // A collected Task keeps its row from the tombstone: its Attempts are unknown, not zero.
-    let collected = Command::new(AF)
+    let collected = crate::common::af()
         .current_dir(&repo)
         .args([
             "task",
@@ -1622,7 +1620,7 @@ fn a_review_rounds_findings_are_counted_once_by_severity_from_its_reduce_step() 
     let directory = tempfile::tempdir().unwrap();
     let (repo, state) = task_cli::fixture_named(directory.path(), "bounded-repair");
     let af = |args: &[&str]| {
-        Command::new(AF)
+        crate::common::af()
             .current_dir(&repo)
             .args(args)
             .args(["--json", "--state"])
@@ -1679,7 +1677,7 @@ fn a_round_recorded_before_a_source_refresh_still_counts() {
     let (repo, state) =
         crate::task_refresh::setup(root.path(), None, "implementation-reviewed", 10);
     let af = |args: &[&str]| {
-        Command::new(AF)
+        crate::common::af()
             .current_dir(&repo)
             .args(args)
             .args(["--json", "--state"])
@@ -1850,7 +1848,7 @@ fn two_pipelines_lead_the_block_in_first_use_order_above_one_row_per_round() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    let started = Command::new(AF)
+    let started = crate::common::af()
         .current_dir(&repo)
         .args([
             "task",

@@ -19,8 +19,6 @@ use crate::task_cli;
 
 use crate::schemas;
 
-const AF: &str = env!("CARGO_BIN_EXE_af");
-
 fn text(output: &Output) -> String {
     format!(
         "{}\n{}",
@@ -55,7 +53,7 @@ struct Chain {
 
 impl Chain {
     fn af(&self, args: &[&str]) -> Output {
-        Command::new(AF)
+        crate::common::af()
             .current_dir(&self.repo)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .args(args)
@@ -101,7 +99,7 @@ impl Chain {
 
 /// Initialize one starter into `root/<profile>` and return that directory.
 fn starter(root: &Path, profile: &str) -> PathBuf {
-    let init = Command::new(AF)
+    let init = crate::common::af()
         .current_dir(root)
         .args(["catalog", "init", "--profile", profile])
         .args(["--destination", profile, "--json"])

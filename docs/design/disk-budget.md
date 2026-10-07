@@ -45,10 +45,13 @@ and leaves nothing in other tools' directories.
    installed versions. When af holds more than the budget it evicts least recently used entries
    first. It never evicts an entry in use: a held lock, a live writer lease, a running Task or
    campaign, the default or a pinned version, or the running binary.
-3. Collection runs by itself after every `af task run` and `af review run`, whatever the outcome,
-   unless the operator turns it off. An interrupted run is not an outcome: after `Ctrl-C` af stops
-   promptly and the next run or `af storage prune --apply` collects. It reaches every Store af made, including Stores this release
-   cannot read and Stores made with `--state`.
+3. Every `af task run` and `af review run`, whatever the outcome, ends with the sweep that holds af
+   to the budget. Age-based collection (`keep_days`, `keep_tasks`, `keep_campaigns`) is off by
+   default (`auto_gc = false`): nothing a user still has room for disappears by age alone; it runs
+   on `af storage prune --apply`, or after every run when the operator turns `auto_gc` on. An
+   interrupted run is not an outcome: after `Ctrl-C` af stops promptly and the next run or
+   `af storage prune --apply` sweeps. The sweep reaches every Store af made, including Stores this
+   release cannot read and Stores made with `--state`.
 4. Every check af runs gets a `HOME`, a `TMPDIR` and an `AF_CHECK_SCRATCH` directory that af creates
    empty before the check and removes after it. A check never needs a path outside them, and a
    review gate check gets the same environment contract as a Task code check.
@@ -75,7 +78,7 @@ stripped from the directory, project and local layers and reported in `ignored`,
 [storage]
 max_bytes = "20GiB"          # the budget; integer bytes or a string with B, KiB, MiB, GiB, TiB
 min_free_bytes = "10GiB"     # the free-disk floor of 2.6
-auto_gc = true               # collection after every run (D3)
+auto_gc = false              # also collect by age after every run (D3); off: budget only
 keep_days = 14               # collection never takes anything used in the last keep_days
 keep_tasks = 20              # newest finished Tasks kept per Store
 keep_campaigns = 20          # newest review campaigns kept
@@ -124,7 +127,8 @@ One function, used by every trigger:
 4. Report every removal (kind, path, bytes, rule) on stderr and, for a Task run, as an observation
    of that Task.
 
-Triggers: the end of every `af task run` and `af review run` (when `auto_gc`); a warm check that
+Triggers: the end of every `af task run` and `af review run` (the budget, and collection when
+`auto_gc` is on); a warm check that
 would create a new key; the free-disk floor of 3.5; and `af storage prune --apply`.
 
 ### 3.4 Store registry
@@ -184,16 +188,18 @@ performs it; `--json` on both. The refusal of 3.5 and the docs name this command
   with `insufficient_disk` and no spend; `af storage --json` and `af storage prune` (preview, then
   `--apply`) report what they did.
 
-### D3. Collection runs by itself and reaches every Store
+### D3. The sweep runs after every run, and collection reaches every Store
 
-- At the end of `af task run` and `af review run`, whatever the outcome, when `auto_gc` is on: the
-  sweep with collection on. Its failure is a warning, never the command's exit status.
+- At the end of `af task run` and `af review run`, whatever the outcome: the sweep's budget step,
+  with collection on too when `auto_gc` is (off by default, decided on 2026-10-07 after a test run
+  of this branch collected a developer's real review history: age alone is not a reason to delete
+  what a user still has room for). Its failure is a warning, never the command's exit status.
 - Stores this release cannot replay (the `ANOTHER_RELEASE` error, `event.rs:282`) are listed by
   `af storage` with that reason and removed whole by collection when idle at least `keep_days` and
   not in use.
 - The registry of 3.4.
-- Tests: after a run, an old finished Task beyond `keep_tasks` is collected and a recent one is
-  kept; `auto_gc = false` keeps both; a Store fixture whose log holds an unknown event type is
+- Tests: with `auto_gc = true`, after a run an old finished Task beyond `keep_tasks` is collected
+  and a recent one is kept; the default keeps both until `af storage prune --apply`; a Store fixture whose log holds an unknown event type is
   removed when idle and kept when recent or locked; a `--state` Store outside the root is registered
   and collected; a registry entry whose Store is gone is dropped.
 

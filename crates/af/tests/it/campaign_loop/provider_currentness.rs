@@ -34,7 +34,7 @@ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_toke
 }
 
 fn invoke(repo: &Path, home: &Path, state: &str, doctor: bool) -> std::process::Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_af"));
+    let mut command = crate::common::af();
     command.args(if doctor {
         ["provider", "doctor"]
     } else {
@@ -125,7 +125,7 @@ fn review_account_change_after_admission_refuses_private_context_and_keeps_admis
         !text.contains("private-other@example.test"),
         "account status leaked to ordinary output"
     );
-    let shown = Command::new(env!("CARGO_BIN_EXE_af"))
+    let shown = crate::common::af()
         .current_dir(&repo)
         .env("HOME", &home)
         .env("AF_SELF_OFFLINE", "1")

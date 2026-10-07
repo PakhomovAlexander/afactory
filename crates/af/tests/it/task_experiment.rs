@@ -92,7 +92,7 @@ fn af(fixture: &Fixture, args: &[&str]) -> (i32, String, String) {
 /// [`af`] with further machine settings.
 fn af_with(fixture: &Fixture, env: &[(&str, &str)], args: &[&str]) -> (i32, String, String) {
     let home = fixture.root.join("home");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_af"));
+    let mut command = crate::common::af();
     command.envs(env.iter().copied());
     if let Some(bin) = &fixture.bin {
         command

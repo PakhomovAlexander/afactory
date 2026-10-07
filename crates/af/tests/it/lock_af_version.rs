@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 use review_config::lock::{AfPin, Lockfile};
 
 use crate::common;
-use common::{AF, Sandbox, Signer, TARGET, VERSION};
+use common::{Sandbox, Signer, TARGET, VERSION};
 
 /// An empty self-managed layout, so the source build under test never dispatches to a release
 /// that happens to be installed on the developer's machine.
@@ -20,7 +20,7 @@ fn empty_layout() -> &'static Path {
 }
 
 fn af(args: &[&str]) -> Output {
-    Command::new(AF)
+    crate::common::af()
         .args(args)
         .env("AF_SELF_OFFLINE", "1")
         .env("HOME", empty_layout())

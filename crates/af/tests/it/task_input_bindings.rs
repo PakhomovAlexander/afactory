@@ -11,8 +11,6 @@ use std::process::{Command, Output};
 
 use crate::task_cli;
 
-const AF: &str = env!("CARGO_BIN_EXE_af");
-
 fn git(repo: &Path, args: &[&str]) -> Output {
     Command::new("git")
         .current_dir(repo)
@@ -24,7 +22,7 @@ fn git(repo: &Path, args: &[&str]) -> Output {
 }
 
 fn run(repo: &Path, state: &Path, args: &[&str], json: bool) -> Output {
-    let mut command = Command::new(AF);
+    let mut command = crate::common::af();
     command.current_dir(repo).args(args);
     if json {
         command.arg("--json");

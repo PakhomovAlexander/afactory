@@ -99,7 +99,7 @@ sys.exit(p.returncode)
     }
 
     fn command_kind(&self, action: &str, kind: &str) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_af"));
+        let mut command = crate::common::af();
         command
             .args([
                 "provider",

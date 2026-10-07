@@ -2,7 +2,7 @@ use super::*;
 use std::collections::BTreeMap;
 
 fn invoke(repo: &Path, state: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_af"))
+    crate::common::af()
         .current_dir(repo)
         .args(args)
         .arg("--state")

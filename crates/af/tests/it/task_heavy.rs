@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path, process::Command};
 
 fn run(repo: &Path, state: &Path, args: &[&str]) -> (i32, Value) {
-    let out = Command::new(env!("CARGO_BIN_EXE_af"))
+    let out = crate::common::af()
         .current_dir(repo)
         .args(args)
         .args(["--state"])

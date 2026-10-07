@@ -9,7 +9,7 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use serde_json::Value;
 
@@ -27,7 +27,7 @@ fn fake_provider(root: &Path, name: &str, script: &str) -> PathBuf {
 
 /// `af` with piped standard streams: the non-interactive shape every agent and CI job has.
 fn af(home: &Path, bin: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_af"))
+    crate::common::af()
         .args(args)
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("config"))
@@ -451,7 +451,7 @@ exit 64
     // CODEX_HOME names the registered context too, so the ambient candidate folds into it and
     // the document has exactly one Provider to reason about.
     let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_af"))
+        crate::common::af()
             .args(args)
             .env("HOME", root.path())
             .env("XDG_CONFIG_HOME", root.path().join("config"))

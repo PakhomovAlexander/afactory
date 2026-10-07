@@ -4,7 +4,8 @@
 //! The budget counts entries — the unit af evicts whole: a warm toolchain key, a warm
 //! Workspace, a review campaign, a finished Task, a Store this release cannot replay, an
 //! installed version. One sweep serves every trigger: the end of `af task run` and `af review
-//! run` (with collection, when `auto_gc`), a warm check about to create a new key (budget only),
+//! run` (the budget; age-based collection too only when `auto_gc` is on, which it is not by
+//! default), a warm check about to create a new key (budget only),
 //! the free-disk floor, and `af storage prune --apply`. It never evicts an entry in use (a held
 //! lock, a live writer lease, a running campaign, the default or a pinned version, the running
 //! binary) or one used within the last hour, and it removes nothing without going through the
@@ -1314,26 +1315,22 @@ fn record_on_task(report: &SweepReport) {
 }
 
 /// The end of `af task run` and `af review run`, whatever the outcome of the work they started:
-/// the sweep with collection on, when `[storage] auto_gc` is. Its failure is a warning, never
-/// the command's.
+/// the sweep that holds af to `[storage] max_bytes`, with age-based collection only when
+/// `[storage] auto_gc` is on (off by default: nothing a user still has room for goes by age
+/// alone). Its failure is a warning, never the command's.
 pub(crate) fn after_run() {
     if !WORK_STARTED.load(std::sync::atomic::Ordering::Acquire) {
         return;
     }
-    let outcome = policy().and_then(|policy| {
-        if !policy.auto_gc {
-            return Ok(None);
-        }
-        Ok(Some(sweep(&Roots::current()?, &policy, true, true)))
-    });
+    let outcome =
+        policy().and_then(|policy| Ok(sweep(&Roots::current()?, &policy, policy.auto_gc, true)));
     match outcome {
-        Ok(Some(report)) => {
+        Ok(report) => {
             report_to_stderr(&report);
             record_on_task(&report);
         }
-        Ok(None) => {}
         Err(error) => {
-            eprintln!("af storage: warning: collection after the run did not run: {error}")
+            eprintln!("af storage: warning: the sweep after the run did not run: {error}")
         }
     }
 }
