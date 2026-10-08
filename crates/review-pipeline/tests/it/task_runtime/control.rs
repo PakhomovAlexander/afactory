@@ -75,7 +75,7 @@ fn captured_command_cancellation_retains_both_streams_and_never_retries() {
         .with_cancellation(&cancellation);
     std::thread::scope(|scope| {
         let cancel = scope.spawn(|| {
-            let until = Instant::now() + Duration::from_secs(3);
+            let until = Instant::now() + LOAD_SAFE_WALL;
             loop {
                 if std::fs::read_to_string(&ready).is_ok_and(|s| s.split_whitespace().count() == 2)
                 {

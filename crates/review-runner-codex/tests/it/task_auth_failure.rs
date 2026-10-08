@@ -1,9 +1,9 @@
+use crate::load_safe_wall::LOAD_SAFE_WALL;
 use review_core::Command;
 use review_runner::task::{WorkerAccess, WorkerModelAdapter};
 use review_runner_codex::task::CodexTaskAdapter;
 use review_store::Cas;
 use std::os::unix::fs::PermissionsExt;
-use std::time::Duration;
 
 #[test]
 fn authentication_failure_survives_missing_usage_without_retaining_challenges() {
@@ -29,7 +29,7 @@ fn authentication_failure_survives_missing_usage_without_retaining_challenges() 
             &cas,
             temp.path(),
             b"input".to_vec(),
-            Duration::from_secs(5),
+            LOAD_SAFE_WALL,
             WorkerAccess::ReadOnly,
             None,
             &[],
@@ -82,7 +82,7 @@ fn non_auth_native_failures_keep_their_evidence_and_classification() {
             &cas,
             temp.path(),
             b"input".to_vec(),
-            Duration::from_secs(5),
+            LOAD_SAFE_WALL,
             WorkerAccess::ReadOnly,
             None,
             &[],
@@ -113,7 +113,7 @@ fn plaintext_auth_failure_is_private_even_without_a_json_event() {
         &cas,
         temp.path(),
         b"input".to_vec(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         WorkerAccess::ReadOnly,
         None,
         &[],
@@ -167,7 +167,7 @@ fn network_failure_does_not_publish_device_challenges_from_either_stream() {
                 &cas,
                 temp.path(),
                 b"input".to_vec(),
-                Duration::from_secs(5),
+                LOAD_SAFE_WALL,
                 WorkerAccess::ReadOnly,
                 None,
                 &[],
@@ -202,7 +202,7 @@ fn successful_output_about_device_authentication_is_unchanged() {
         &cas,
         temp.path(),
         b"input".to_vec(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         WorkerAccess::ReadOnly,
         None,
         &[],
@@ -239,7 +239,7 @@ fn model_text_about_revoked_credentials_cannot_replace_a_network_failure() {
         &cas,
         temp.path(),
         b"input".to_vec(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         WorkerAccess::ReadOnly,
         None,
         &[],
@@ -298,7 +298,7 @@ fn a_failure_event_without_usage_names_its_classified_cause() {
             &cas,
             temp.path(),
             b"input".to_vec(),
-            Duration::from_secs(5),
+            LOAD_SAFE_WALL,
             WorkerAccess::ReadOnly,
             None,
             &[],

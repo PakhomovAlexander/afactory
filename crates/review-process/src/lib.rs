@@ -669,6 +669,12 @@ fn kill_process_group(_pid: u32) {}
 mod tests {
     use super::*;
 
+    /// The total wall a test gives a fixture process whose subject is not the deadline
+    /// (ADR-0114). Under a loaded gate a shell took seconds to start, so a 1 s wall raced
+    /// scheduling; two minutes only bounds a hung fixture, and a passing test never waits for it.
+    /// A test whose subject is the deadline keeps its own short wall.
+    pub(crate) const LOAD_SAFE_WALL: Duration = Duration::from_secs(120);
+
     #[test]
     fn an_expired_child_deadline_still_gets_stdin_writer_grace() {
         let expired = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
@@ -681,7 +687,7 @@ mod tests {
         command.args(["-c", "sleep 30 >&2 & printf complete"]);
 
         let started = Instant::now();
-        let output = run_supervised(&mut command, None, Duration::from_secs(1)).unwrap();
+        let output = run_supervised(&mut command, None, LOAD_SAFE_WALL).unwrap();
 
         assert_eq!(output.stdout, b"complete");
         assert!(output.stderr_held);

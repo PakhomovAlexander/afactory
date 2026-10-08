@@ -3,6 +3,12 @@ use review_check::Command;
 use review_core::exec::Arg;
 use std::time::Instant;
 
+/// The Check wall and readiness window for a test whose subject is cancellation, not a deadline
+/// (ADR-0114). Materializing the gate clone and starting the Check's shell took seconds on a
+/// loaded gate, so a 3 s window raced scheduling; two minutes only bounds a hung fixture, and a
+/// passing test never waits for it, because it cancels as soon as the Check has begun.
+const LOAD_SAFE_WALL: Duration = Duration::from_secs(120);
+
 fn binding() -> review_config::GateExecutionSpec {
     review_config::GateExecutionSpec {
         provider: review_config::SandboxProviderSpec::TrustedLocal,
@@ -245,7 +251,7 @@ fn controlled_check_sequence_retains_interrupted_raw_result_and_stops_before_the
     let sequence = IntegrationCheckSequence {
         cas: &cas,
         checks: &checks,
-        check_timeout: Duration::from_secs(20),
+        check_timeout: LOAD_SAFE_WALL,
         binding: &binding,
         container_provider: None,
     };
@@ -253,7 +259,7 @@ fn controlled_check_sequence_retains_interrupted_raw_result_and_stops_before_the
     let snapshot = cas.put(b"derived").unwrap();
     let failure = std::thread::scope(|scope| {
         let cancel = scope.spawn(|| {
-            let until = Instant::now() + Duration::from_secs(3);
+            let until = Instant::now() + LOAD_SAFE_WALL;
             while !ready.is_file() {
                 if Instant::now() >= until {
                     flag.store(true, Ordering::Release);

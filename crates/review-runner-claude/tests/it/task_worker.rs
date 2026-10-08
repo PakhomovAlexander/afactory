@@ -1,3 +1,4 @@
+use crate::load_safe_wall::LOAD_SAFE_WALL;
 use review_core::{Arg, Command};
 use review_runner::task::{WorkerAccess, WorkerContract, WorkerModelAdapter};
 use review_runner_claude::task::ClaudeTaskAdapter;
@@ -44,7 +45,7 @@ fn review_role_keeps_the_legacy_read_only_tool_grant() {
         &cas,
         temp.path(),
         b"review".to_vec(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         WorkerAccess::ReadOnly,
         None,
         &[],
@@ -100,7 +101,7 @@ fn execute_checks_grants_bash_and_ends_shell_children_with_the_attempt() {
         &cas,
         temp.path(),
         b"review".to_vec(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         WorkerAccess::ExecuteChecks,
         None,
         &[],
@@ -251,7 +252,7 @@ fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage
             &cas,
             &workdir,
             b"{\"declared\":\"input\"}".to_vec(),
-            Duration::from_secs(5),
+            LOAD_SAFE_WALL,
             WorkerAccess::ReadOnly,
             None,
             &[],
@@ -307,7 +308,7 @@ fn malformed_native_usage_refuses_message_and_survives_raw_capture_outage() {
             &cas,
             temp.path(),
             b"input".to_vec(),
-            Duration::from_secs(5),
+            LOAD_SAFE_WALL,
             WorkerAccess::ReadOnly,
             None,
             &[],

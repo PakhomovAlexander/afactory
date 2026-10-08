@@ -3,6 +3,8 @@
 //! Add a new subject as `tests/it/<subject>.rs` plus a `mod` line below.
 
 // Shared fixtures, declared once for every subject module.
+#[path = "support/load_safe_wall.rs"]
+mod load_safe_wall;
 #[path = "support/render.rs"]
 mod render_support;
 

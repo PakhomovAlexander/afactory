@@ -3,6 +3,12 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// The total wall and readiness window for a fixture this file cancels (ADR-0114). Under a
+/// loaded gate a shell took seconds to start, so a 5 s readiness window or a 10 s wall raced
+/// scheduling instead of cancellation; two minutes only bounds a hung fixture, and a passing
+/// test never waits for it, because it cancels as soon as the fixture is ready.
+const LOAD_SAFE_WALL: Duration = Duration::from_secs(120);
+
 struct Directory(std::path::PathBuf);
 impl Directory {
     fn new() -> Self {
@@ -114,7 +120,7 @@ fn cancellation_retains_prefixes_and_stops_running_stdin_and_each_held_drain() {
         let flag = AtomicBool::new(false);
         let (capture, ids, cancelled_at) = std::thread::scope(|scope| {
             let cancel = scope.spawn(|| {
-                let limit = Instant::now() + Duration::from_secs(5);
+                let limit = Instant::now() + LOAD_SAFE_WALL;
                 let mut ids = Vec::new();
                 while Instant::now() < limit {
                     if let Ok(bytes) = std::fs::read_to_string(&marker) {
@@ -148,12 +154,8 @@ fn cancellation_retains_prefixes_and_stops_running_stdin_and_each_held_drain() {
                 (ids, at)
             });
             let input = (mode == "stdin").then(|| vec![b'x'; 4 * 1024 * 1024]);
-            let capture = run_supervised_captured_cancellable(
-                &mut command,
-                input,
-                Duration::from_secs(10),
-                &flag,
-            );
+            let capture =
+                run_supervised_captured_cancellable(&mut command, input, LOAD_SAFE_WALL, &flag);
             let (ids, at) = cancel.join().unwrap();
             (capture, ids, at)
         });

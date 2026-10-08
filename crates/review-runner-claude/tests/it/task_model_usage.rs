@@ -1,3 +1,4 @@
+use crate::load_safe_wall::LOAD_SAFE_WALL;
 use review_core::{Arg, Command, Producer, task::usage::TASK_TOKEN_USAGE_V3};
 use review_runner::task::{
     WorkerAccess, WorkerModelAdapter,
@@ -37,7 +38,7 @@ printf '%s' '{"is_error":false,"result":"OK","usage":{"input_tokens":0,"output_t
         &cas,
         temp.path(),
         b"public input".to_vec(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         WorkerAccess::ReadOnly,
         None,
         &[],
@@ -195,7 +196,7 @@ fn top_level_and_model_usage_charges_persist_and_reopen_exact() {
             &cas,
             temp.path(),
             b"input".to_vec(),
-            Duration::from_secs(5),
+            LOAD_SAFE_WALL,
             WorkerAccess::ReadOnly,
             None,
             &[],
@@ -262,7 +263,7 @@ fn a_breakdown_above_the_top_level_summary_keeps_the_reply_and_is_charged_in_ful
         &cas,
         temp.path(),
         b"synthetic public input".to_vec(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         WorkerAccess::ReadOnly,
         None,
         &[],

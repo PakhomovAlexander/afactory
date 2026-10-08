@@ -1,6 +1,8 @@
 # ADR-0114: Budget CLI Task fixtures for loaded machines, never for a fast one
 
-**Status:** accepted (2026-09-22)
+**Status:** accepted (2026-09-22); amended 2026-10-08
+([short fixed walls](#amendment-2026-10-08-short-fixed-walls)),
+which applies the same remedy to the fixture processes of tests whose subject is not a deadline.
 
 ## Context
 
@@ -88,3 +90,66 @@ does not read ten minutes as a slow test and collapse it back toward a sequence'
   complete verification reserve next to the widened total.
 - Other CLI Task suites keep their fixture budgets. If the same symptom appears there, the same
   remedy applies — raise that suite's wall budget with the same documentation, never its reserve.
+
+## Amendment, 2026-10-08: short fixed walls
+
+Issue #206, for tests whose subject is not the deadline. Under a loaded gate (seven nextest
+threads, one-minute load 7-28) tests that give a fixture process a short fixed real-time wall
+failed although they pass alone: a fake Codex or
+Claude provider given a 5 s total wall, a model-runner or supervisor fixture given 1-10 s, a
+Jira source fixture given a 5 s deadline, or a cancellation test that waits 2-5 s for its
+fixture to become ready before it cancels. Starting a shell or Python on such a machine took
+about 5 s, so the test raced scheduling and reported a timeout its subject never asked about.
+The defect is the one above in a smaller envelope: the wall belongs to the fixture, not to the
+behaviour under test.
+
+### Decision
+
+A test whose subject is not a timeout or deadline gives every fixture process a named,
+documented load-safe wall, `LOAD_SAFE_WALL`, two minutes, with the reason written beside it. It
+replaces the total wall the test passes to a provider adapter, a `ModelRunner`, the supervisor,
+or a source, and the window in which it waits for a fixture to become ready, or for the shared
+Store, before it acts. The families it names:
+
+- **Fake-provider walls.** `review-runner-codex` and `review-runner-claude`: the auth-failure,
+  capture, final-message, worker, model-usage and structured-reply tests, and the shared native
+  cancellation fixture. The three runner test binaries share one definition,
+  `crates/review-runner/tests/it/support/load_safe_wall.rs`, as they already share that
+  fixture.
+- **Model-runner and supervisor walls.** `review-runner`'s `model_supervision` tests and
+  `review-process`'s held-pipe unit tests and cancellation test.
+- **Source deadlines.** `review-source-task`'s transport and source tests.
+- **Provider unit tests in `af`.** The identity-recheck wrapper's Attempt wall and the
+  synthetic-login waits of the auth handoff adapter.
+- **Readiness and Store waits.** `review-pipeline`'s captured command cancellation, controlled
+  check sequence and runtime-store observer.
+
+`changelog.d/test-perf-load-walls.md` lists every test changed and every one left alone.
+
+What stays exact:
+
+- A test whose subject is a timeout or deadline keeps every wall it sets, including the
+  fixture-preparation walls inside it: it asserts `TimedOut` or a deadline refusal, and widening
+  its wall would change what it proves. ADR-0124's rule is unchanged: a budget a test asserts is
+  protected by running that test alone, never by widening it.
+- Every elapsed-time assertion keeps its bound, as do the waits in which a killed process must
+  disappear: those bounds are the promptness the test exists to prove. Lease and heartbeat tests
+  measure real time and are untouched.
+- No production constant changes. A production deadline that only a new test-only parameter
+  could raise is not raised: `af provider status` keeps its 15 s probe, and the test that hits
+  it is reported as not fixed.
+- No fixture budget or reserve changes. The native-model CLI fixture of `task_file` already has
+  its ten-minute Task wall (above); its reviewers' 5 s Attempt walls are verifier allowances
+  that, with the 45 s Provider admission allowance and the 5 s check, exactly fill the pinned
+  60 s verification reserve, so they cannot grow without widening that reserve, and are left
+  as they are.
+- `.config/nextest.toml` is unchanged: no retries, and the run-alone list keeps its members.
+
+### Consequences
+
+- A passing test's duration is unchanged. Every widened wall bounds a process that exits on its
+  own, and the supervisor's drain grace, not the wall, ends a held pipe, so only a hung fixture
+  waits for the two minutes, and only to fail.
+- The two-minute value is documented where it is set, with the failure it prevents, so that it
+  is not read as slack and collapsed back toward a run's elapsed time.
+- A new test with a fixture process uses `LOAD_SAFE_WALL` unless its subject is the deadline.

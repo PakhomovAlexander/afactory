@@ -6,6 +6,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The deadline for source reads whose subject is not the deadline (ADR-0114): two minutes only
+/// bounds a hung read on a loaded gate, and a passing test never waits for it. A test that also
+/// asserts `TimedOut` keeps every wall it sets.
+const LOAD_SAFE_WALL: Duration = Duration::from_secs(120);
+
 fn issue() -> IssueInput {
     IssueInput {
         schema: "af.issue-input/1".into(),
@@ -149,7 +154,7 @@ fn replacement_sources_have_equivalent_requirements_and_exact_field_provenance()
 fn jira_refuses_incomplete_changed_or_unsupported_sources_without_leaking_response_text() {
     let cancelled = AtomicBool::new(false);
     let control = SourceControl {
-        deadline: Instant::now() + Duration::from_secs(5),
+        deadline: Instant::now() + LOAD_SAFE_WALL,
         cancelled: &cancelled,
     };
     let select = selector();
@@ -280,7 +285,7 @@ fn adf_list_continuations_preserve_nesting_and_ordered_marker_width() {
 
     let cancelled = AtomicBool::new(false);
     let control = SourceControl {
-        deadline: Instant::now() + Duration::from_secs(5),
+        deadline: Instant::now() + LOAD_SAFE_WALL,
         cancelled: &cancelled,
     };
     let select = selector();
