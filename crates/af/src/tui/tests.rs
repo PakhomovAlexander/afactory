@@ -1314,6 +1314,91 @@ fn command_lines_route_to_the_browser_a_refusal_or_a_hand_off() {
     assert!(app.quit);
 }
 
+/// A refusal naming a long path keeps its reason on the status line at the 80-column minimum:
+/// the path is shortened from the left, its final component kept; a short path is unchanged.
+#[test]
+fn a_long_path_on_the_status_line_keeps_the_reason_visible() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    let long = root
+        .join("a-directory-with-a-rather-long-name/".repeat(4))
+        .join("nowhere");
+    press(
+        &mut app,
+        &mut host,
+        format!(":cd {}\r", long.display()).as_bytes(),
+    );
+    let full = format!("{}: not a directory", long.display());
+    assert_eq!(app.message, Some((full.clone(), true)));
+    assert!(full.len() > 80, "{full}");
+    let frame = app.frame(80, 24).text();
+    let status = frame.lines().last().unwrap();
+    assert!(status.len() <= 80, "{status}");
+    let shortened = ".../a-directory-with-a-rather-long-name/nowhere: not a directory";
+    assert!(status.ends_with(shortened), "{status}");
+
+    press(&mut app, &mut host, b":cd /nowhere\r");
+    assert_eq!(
+        app.message,
+        Some(("/nowhere: not a directory".to_owned(), true))
+    );
+    let frame = app.frame(80, 24).text();
+    let status = frame.lines().last().unwrap();
+    assert!(status.len() <= 80, "{status}");
+    assert!(status.ends_with("  /nowhere: not a directory"), "{status}");
+    assert!(!status.contains("..."), "{status}");
+}
+
+/// At the 80-column minimum the reason stays visible when the final component alone is wider
+/// than the line, and a quoted path with spaces is shortened as one path.
+#[test]
+fn a_wide_name_or_a_path_with_spaces_keeps_the_reason_visible() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    let name = "long-name-".repeat(9);
+    assert_eq!(name.len(), 90);
+    press(&mut app, &mut host, format!(":cd /tmp/{name}\r").as_bytes());
+    let full = format!("/tmp/{name}: not a directory");
+    assert_eq!(app.message, Some((full, true)));
+    let frame = app.frame(80, 24).text();
+    let status = frame.lines().last().unwrap();
+    assert!(status.len() <= 80, "{status}");
+    let shortened = format!("...{}: not a directory", &name[30..]);
+    assert_eq!(status, shortened);
+
+    // Spaces in the final component: its tail stays with the reason, not its first word.
+    let path = format!("/tmp/deep/{}nowhere", "words ".repeat(14));
+    press(&mut app, &mut host, format!(":cd \"{path}\"\r").as_bytes());
+    let full = format!("{path}: not a directory");
+    assert!(full.len() > 80, "{full}");
+    assert_eq!(app.message, Some((full, true)));
+    let frame = app.frame(80, 24).text();
+    let status = frame.lines().last().unwrap();
+    assert!(status.len() <= 80, "{status}");
+    let shortened = format!("...{}: not a directory", &path[path.len() - 60..]);
+    assert_eq!(status, shortened);
+    assert!(
+        status.ends_with("words words nowhere: not a directory"),
+        "{status}"
+    );
+
+    // Spaces in leading components: whole components give way, never a word of one.
+    let path = format!("/tmp/deep/{}/nowhere at all", "words words".repeat(6));
+    press(&mut app, &mut host, format!(":cd \"{path}\"\r").as_bytes());
+    let full = format!("{path}: not a directory");
+    assert!(full.len() > 80, "{full}");
+    assert_eq!(app.message, Some((full, true)));
+    let frame = app.frame(80, 24).text();
+    let status = frame.lines().last().unwrap();
+    assert!(status.len() <= 80, "{status}");
+    assert!(
+        status.ends_with("  .../nowhere at all: not a directory"),
+        "{status}"
+    );
+}
+
 /// Released before the child, re-entered after the wait; then the panes the child may have
 /// changed are read again, keeping what is opened and the bar's selection.
 #[test]
