@@ -227,7 +227,8 @@ future readers need.
 - [0130 — Report a Provider CLI that cannot start as an installation
   failure](0130-report-a-provider-cli-that-cannot-start.md)
 - [0131 — Warm Task checks through a toolchain-keyed, bounded, machine-local
-  cache](0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md)
+  cache](0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md) (amended 2026-10-07 by
+  [ADR-0144](0144-hold-afs-disk-use-to-a-machine-budget.md))
 - [0132 — Measure and compare source candidates in the
   kernel](0132-measure-and-compare-source-candidates-in-the-kernel.md)
 - [0133 — Accept reports bound to an exact source
@@ -235,7 +236,8 @@ future readers need.
 - [0134 — Bind any declared root port to recorded Task
   outputs](0134-bind-any-declared-root-port-to-recorded-task-outputs.md)
 - [0135 — Collect finished Tasks behind a tombstone and a reachability
-  sweep](0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
+  sweep](0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md) (amended
+  2026-10-07 by [ADR-0144](0144-hold-afs-disk-use-to-a-machine-budget.md))
 - [0136 — Remove a registered Provider by ID](0136-remove-a-registered-provider-by-id.md)
 - [0137 — Permit Provider logins through private host
   capabilities](0137-permit-provider-logins-through-private-host-capabilities.md)
@@ -244,10 +246,12 @@ future readers need.
   requester](0139-deliver-native-login-challenges-to-a-verified-private-requester.md)
 - [0140 — Run a declared check through a gate pull
   request](0140-run-a-declared-check-through-a-gate-pull-request.md) (amended 2026-10-05: [the
-  pipeline chooses](0140-run-a-declared-check-through-a-gate-pull-request.md#amendment-2026-10-05-the-pipeline-chooses))
+  pipeline chooses](0140-run-a-declared-check-through-a-gate-pull-request.md#amendment-2026-10-05-the-pipeline-chooses);
+  2026-10-07 by [ADR-0144](0144-hold-afs-disk-use-to-a-machine-budget.md))
 - [0141 — List a logged-out default context only until its kind is
   registered](0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)
 - [0142 — Carry the `af task report` of its Tasks in every pull
   request](0142-carry-the-af-task-report-in-every-pull-request.md)
 - [0143 — Charge zero and record unknown usage when no usage is
   reported](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)
+- [0144 — Hold af's disk use to a machine budget](0144-hold-afs-disk-use-to-a-machine-budget.md)

@@ -96,7 +96,7 @@ fn environment(home: &Path) -> Vec<(&'static str, std::ffi::OsString)> {
 }
 
 fn af(cwd: &Path, home: &Path, args: &[&str]) -> Output {
-    let mut command = Command::new(AF);
+    let mut command = crate::common::af();
     command.current_dir(cwd).env_clear().args(args);
     for (name, value) in environment(home) {
         command.env(name, value);

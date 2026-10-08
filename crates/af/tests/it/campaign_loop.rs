@@ -41,7 +41,7 @@ fn invoke_af(
     args: &[&str],
     default_mode: Option<&str>,
 ) -> (i32, String, String) {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_af"));
+    let mut command = crate::common::af();
     command
         .arg("review")
         .current_dir(repo)
@@ -457,7 +457,7 @@ fn campaign_enumeration_reads_label_named_explicit_state_and_round_history() {
         "{stdout}"
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .args([
             "review",
             "campaigns",
@@ -1854,7 +1854,7 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     );
 
     let run_doctor = |campaign: &str| {
-        Command::new(env!("CARGO_BIN_EXE_af"))
+        crate::common::af()
             .args([
                 "provider",
                 "doctor",

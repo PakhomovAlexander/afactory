@@ -124,10 +124,7 @@ test -z "$(git remote)"
 #[test]
 fn review_help_examples_name_policy_base_and_candidate() {
     for args in [vec!["--help"], vec!["review", "--help"]] {
-        let output = Command::new(env!("CARGO_BIN_EXE_af"))
-            .args(&args)
-            .output()
-            .unwrap();
+        let output = crate::common::af().args(&args).output().unwrap();
         assert!(output.status.success());
         let help = String::from_utf8_lossy(&output.stdout);
         let examples = help.rsplit("Examples").next().unwrap();
@@ -155,7 +152,7 @@ fn review_help_examples_name_policy_base_and_candidate() {
 fn implementation_entrypoints_select_the_software_profile() {
     let readme = readme();
     assert!(readme.contains("af catalog init --profile software --destination DIR"));
-    let help = Command::new(env!("CARGO_BIN_EXE_af"))
+    let help = crate::common::af()
         .args(["task", "--help"])
         .output()
         .unwrap();

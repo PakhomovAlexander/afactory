@@ -18,7 +18,7 @@ impl BoundedCli {
     fn spawn(directory: &Path, label: &str, repo: &Path, home: &Path, args: &[&str]) -> Self {
         let stdout = directory.join(format!("{label}.stdout"));
         let stderr = directory.join(format!("{label}.stderr"));
-        let child = Command::new(env!("CARGO_BIN_EXE_af"))
+        let child = crate::common::af()
             .current_dir(repo)
             .env("HOME", home)
             .args(["review"])

@@ -24,7 +24,21 @@ channel = "stable"
 install_pins = true
 keep_versions = 3
 source = "PakhomovAlexander/afactory"
+
+[storage]
+max_bytes = "20GiB"
+min_free_bytes = "10GiB"
+auto_gc = false
+keep_days = 14
+keep_tasks = 20
+keep_campaigns = 20
+keep_worker_transcripts = false
+keep_gate_pull_requests = false
 "#;
+
+/// The tables only machine layers may set: a repository's `.af/af.toml` can steer neither what
+/// af downloads (`[self]`) nor what it keeps or removes on this machine (`[storage]`).
+const MACHINE_ONLY: [(&str, &str); 2] = [("self", "self"), ("storage", "storage")];
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Origin {
@@ -48,7 +62,8 @@ pub(crate) struct Config {
     /// The `[self]` policy — what to download, from where, and whether to exec it — is only ever
     /// taken from such a load, so a repository can never steer it.
     pub(crate) machine_scope: bool,
-    /// `[self]` tables found in directory, project, or local layers: reported, never merged.
+    /// `[self]` and `[storage]` tables found in directory, project, or local layers: reported,
+    /// never merged.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) ignored: Vec<String>,
     /// Every file a layer would read, in ladder order, present or not.
@@ -142,6 +157,101 @@ impl Config {
             source: str_of("source")?,
         })
     }
+}
+
+/// The `[storage]` table, typed (ADR-0144). Every field has a built-in default, and only
+/// machine layers set it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoragePolicy {
+    /// The budget over every byte af keeps between runs.
+    pub(crate) max_bytes: u64,
+    /// The free-disk floor below which a check or a Worker Attempt is refused.
+    pub(crate) min_free_bytes: u64,
+    /// Age-based collection after every `af task run` and `af review run`. Off by default: a
+    /// run then holds af to the budget only, and age-based collection runs on request.
+    pub(crate) auto_gc: bool,
+    /// Collection never takes anything used in the last `keep_days`.
+    pub(crate) keep_days: u64,
+    /// The newest finished Tasks kept per Store.
+    pub(crate) keep_tasks: usize,
+    /// The newest review campaigns kept.
+    pub(crate) keep_campaigns: usize,
+    /// Keep each Claude Attempt's project directory in the Claude config directory.
+    pub(crate) keep_worker_transcripts: bool,
+    /// Leave remote-check gate pull requests and branches open when a Task finishes.
+    pub(crate) keep_gate_pull_requests: bool,
+}
+
+impl Config {
+    pub(crate) fn storage_policy(&self) -> Result<StoragePolicy, String> {
+        let table = self
+            .effective
+            .get("storage")
+            .and_then(Value::as_table)
+            .ok_or("[storage] is missing from the effective configuration")?;
+        let get = |key: &str| {
+            table
+                .get(key)
+                .ok_or_else(|| format!("[storage] {key} has no value"))
+        };
+        let bool_of = |key: &str| -> Result<bool, String> {
+            get(key)?
+                .as_bool()
+                .ok_or_else(|| format!("[storage] {key} must be true or false"))
+        };
+        let bytes_of = |key: &str| -> Result<u64, String> {
+            let value = get(key)?;
+            match value {
+                Value::Integer(bytes) => u64::try_from(*bytes).ok(),
+                Value::String(text) => parse_bytes(text),
+                _ => None,
+            }
+            .ok_or_else(|| {
+                format!(
+                    "[storage] {key} must be a byte count: an integer, or a number with B, KiB, \
+                     MiB, GiB or TiB (like \"20GiB\")"
+                )
+            })
+        };
+        let count_of = |key: &str| -> Result<u64, String> {
+            get(key)?
+                .as_integer()
+                .and_then(|value| u64::try_from(value).ok())
+                .ok_or_else(|| format!("[storage] {key} must be a non-negative integer"))
+        };
+        Ok(StoragePolicy {
+            max_bytes: bytes_of("max_bytes")?,
+            min_free_bytes: bytes_of("min_free_bytes")?,
+            auto_gc: bool_of("auto_gc")?,
+            keep_days: count_of("keep_days")?,
+            keep_tasks: usize::try_from(count_of("keep_tasks")?)
+                .map_err(|_| "[storage] keep_tasks is too large".to_string())?,
+            keep_campaigns: usize::try_from(count_of("keep_campaigns")?)
+                .map_err(|_| "[storage] keep_campaigns is too large".to_string())?,
+            keep_worker_transcripts: bool_of("keep_worker_transcripts")?,
+            keep_gate_pull_requests: bool_of("keep_gate_pull_requests")?,
+        })
+    }
+}
+
+/// A byte count as `[storage]` spells one: digits, optionally followed by `B`, `KiB`, `MiB`,
+/// `GiB` or `TiB` (binary units), with optional spaces between.
+pub(crate) fn parse_bytes(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let split = text
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(text.len());
+    let (number, unit) = text.split_at(split);
+    let number: u64 = number.parse().ok()?;
+    let factor: u64 = match unit.trim() {
+        "" | "B" => 1,
+        "KiB" => 1 << 10,
+        "MiB" => 1 << 20,
+        "GiB" => 1 << 30,
+        "TiB" => 1 << 40,
+        _ => return None,
+    };
+    number.checked_mul(factor)
 }
 
 pub(crate) fn parse_duration(text: &str) -> Option<Duration> {
@@ -327,12 +437,15 @@ pub(crate) fn load_rooted(
                 .map_err(|error| format!("{}: {}", path.display(), error.message()))?;
             if matches!(layer, "directory" | "project" | "local")
                 && let Some(table) = value.as_table_mut()
-                && table.remove("self").is_some()
             {
-                ignored.push(format!(
-                    "[self] in {} ({layer} layer): machine-only table, ignored — see af help self",
-                    path.display()
-                ));
+                for (name, topic) in MACHINE_ONLY {
+                    if table.remove(name).is_some() {
+                        ignored.push(format!(
+                            "[{name}] in {} ({layer} layer): machine-only table, ignored — see af help {topic}",
+                            path.display()
+                        ));
+                    }
+                }
             }
             let lines = key_lines(&text);
             record_origins(&value, "", layer, Some(&path), &lines, &mut origins);
@@ -703,6 +816,83 @@ mod tests {
         let policy = config.self_policy().unwrap();
         assert_eq!(policy.auto_update, AutoUpdate::Notify);
         assert_eq!(policy.keep_versions, 3);
+    }
+
+    #[test]
+    fn built_in_storage_policy_is_the_documented_default() {
+        let effective: Value = toml::from_str(BUILT_IN).unwrap();
+        let config = Config {
+            machine_scope: true,
+            ignored: Vec::new(),
+            files: Vec::new(),
+            toplevel: None,
+            effective,
+            origins: BTreeMap::new(),
+        };
+        assert_eq!(
+            config.storage_policy().unwrap(),
+            StoragePolicy {
+                max_bytes: 20 << 30,
+                min_free_bytes: 10 << 30,
+                auto_gc: false,
+                keep_days: 14,
+                keep_tasks: 20,
+                keep_campaigns: 20,
+                keep_worker_transcripts: false,
+                keep_gate_pull_requests: false,
+            }
+        );
+    }
+
+    #[test]
+    fn byte_counts_parse_in_binary_units_only() {
+        assert_eq!(parse_bytes("20GiB"), Some(20 << 30));
+        assert_eq!(parse_bytes("1 MiB"), Some(1 << 20));
+        assert_eq!(parse_bytes("512"), Some(512));
+        assert_eq!(parse_bytes("7B"), Some(7));
+        assert_eq!(parse_bytes("2TiB"), Some(2 << 40));
+        for bad in ["", "GiB", "1GB", "1.5GiB", "-1", "99999999999TiB"] {
+            assert_eq!(parse_bytes(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_repository_storage_table_is_ignored_and_reported() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let repo = root.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(repo.join(".af")).unwrap();
+        std::fs::write(
+            repo.join(".af/af.toml"),
+            "[storage]\nmax_bytes = \"1B\"\nauto_gc = true\n",
+        )
+        .unwrap();
+        let roots = MachineRoots {
+            system: root.join("etc"),
+            user: root.join("user"),
+            environment: vec![("AF_STORAGE__KEEP_DAYS".to_string(), "3".to_string())],
+        };
+        let config = load_rooted(Some(&repo), false, &roots).unwrap();
+        let policy = config.storage_policy().unwrap();
+        assert_eq!(
+            policy.max_bytes,
+            20 << 30,
+            "the repository cannot shrink the budget"
+        );
+        assert!(!policy.auto_gc, "the repository cannot turn collection on");
+        assert_eq!(policy.keep_days, 3, "the environment is a machine layer");
+        assert!(
+            config
+                .ignored
+                .iter()
+                .any(|note| note.starts_with("[storage] in ") && note.contains("project layer")),
+            "{:?}",
+            config.ignored
+        );
+        assert_eq!(config.origins["storage.max_bytes"].layer, "built-in");
+        assert_eq!(config.origins["storage.keep_days"].layer, "environment");
     }
 
     #[test]

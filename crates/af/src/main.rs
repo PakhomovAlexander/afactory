@@ -44,6 +44,7 @@ mod report_tasks;
 mod review_task;
 mod self_optimizer;
 mod selfmgmt;
+mod storage;
 mod task;
 mod task_execution;
 mod topics;
@@ -97,6 +98,9 @@ impl Options {
                 "state {} is inside the repository; af state must live under XDG state or an explicit external --state directory",
                 state.display()
             ));
+        }
+        if self.state.is_some() {
+            storage::registry::record(&state, storage::registry::StoreKind::Review);
         }
         Ok(state)
     }
@@ -403,6 +407,7 @@ fn campaign_state(state: &Option<PathBuf>, campaign: &str) -> Result<PathBuf, St
         Some(state) => {
             let state = resolve_filesystem_path(state)?;
             validate_campaign_name(campaign)?;
+            storage::registry::record(&state, storage::registry::StoreKind::Review);
             Ok(state)
         }
         None => default_campaign_state(campaign),
@@ -532,6 +537,9 @@ struct GcCandidateView {
     last_activity_unix_ms: Option<u64>,
     age_days: u64,
     action: &'static str,
+    /// Why a candidate is kept although old enough: it is in use (ADR-0144).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_use: Option<String>,
 }
 
 /// Reclaim Campaign state. Without `--apply` it only lists what would go; with it, whole
@@ -543,7 +551,19 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
         None => default_campaigns_root()?,
     };
     let root = resolve_filesystem_path(&requested_root)?;
+    if options.state_root.is_some() {
+        storage::registry::record(&root, storage::registry::StoreKind::ReviewRoot);
+    }
     let enumeration = enumerate_campaigns(&root, true)?;
+    // Each campaign directory's identity as enumerated: only that directory is ever removed.
+    let measured: BTreeMap<String, Option<review_sandbox::Identity>> = enumeration
+        .campaigns
+        .iter()
+        .map(|campaign| {
+            let identity = review_sandbox::Identity::of(&root.join(&campaign.state_dir)).ok();
+            (campaign.state_dir.clone(), identity)
+        })
+        .collect();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|age| u64::try_from(age.as_millis()).unwrap_or(u64::MAX))
@@ -564,20 +584,34 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
             .older_than_days
             .is_none_or(|threshold| age_days >= threshold);
         let candidate = old_enough && !kept.contains(campaign.id.as_str());
+        // A campaign a running `af review run` holds, or whose Task holds a live writer lease,
+        // is never removed (ADR-0144).
+        // With --apply it is held exclusively from this look through the removal, so no run
+        // starts on it in between; a preview only looks, and writes nothing.
+        let held = (candidate && options.apply)
+            .then(|| storage::hold_campaign_for_removal(&root.join(&campaign.state_dir)));
+        let live = match &held {
+            Some(Err(why)) => Some(why.clone()),
+            Some(Ok(_)) => None,
+            None => candidate
+                .then(|| storage::campaign_in_use(&root.join(&campaign.state_dir)))
+                .flatten(),
+        };
         let action = if !candidate {
             "keep"
+        } else if live.is_some() {
+            "in use"
         } else if options.apply {
             let path = root.join(&campaign.state_dir);
-            if std::fs::symlink_metadata(&path)
-                .map(|metadata| metadata.file_type().is_symlink())
-                .unwrap_or(true)
-            {
+            let Some(identity) = measured.get(&campaign.state_dir).copied().flatten() else {
                 return Err(format!(
-                    "refusing to remove {}: not a plain directory",
+                    "refusing to remove {}: its identity could not be measured",
                     path.display()
                 ));
-            }
-            std::fs::remove_dir_all(&path)
+            };
+            // Through descriptors from the root, no link followed, and only while it is still
+            // the directory enumerated (ADR-0144).
+            review_sandbox::remove_beneath(&root, &path, Some(identity))
                 .map_err(|error| format!("removing {}: {error}", path.display()))?;
             reclaimed = reclaimed.saturating_add(campaign.state_bytes.unwrap_or(0));
             "removed"
@@ -592,11 +626,12 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
             last_activity_unix_ms: campaign.last_activity_unix_ms,
             age_days,
             action,
+            in_use: live,
         });
     }
     let reclaimable: u64 = candidates
         .iter()
-        .filter(|candidate| candidate.action != "keep")
+        .filter(|candidate| !matches!(candidate.action, "keep" | "in use"))
         .map(|candidate| candidate.state_bytes)
         .sum();
     if options.json {
@@ -633,7 +668,7 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
     );
     for candidate in &candidates {
         println!(
-            "  {:<12} {} ({}): {}; {}",
+            "  {:<12} {} ({}): {}; {}{}",
             candidate.action,
             candidate.label.escape_debug(),
             candidate.state_dir,
@@ -641,7 +676,12 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
             candidate
                 .last_activity_unix_ms
                 .map(age_label)
-                .unwrap_or_else(|| "no store write recorded".to_string())
+                .unwrap_or_else(|| "no store write recorded".to_string()),
+            candidate
+                .in_use
+                .as_deref()
+                .map(|why| format!("; {why}"))
+                .unwrap_or_default()
         );
     }
     for problem in &enumeration.problems {
@@ -1082,6 +1122,18 @@ fn main() {
     let sandbox_sweep = runs_task_work(&command)
         .then(sweep_stale_sandboxes_in_background)
         .flatten();
+    if runs_task_work(&command)
+        && let Err(error) = storage::install()
+    {
+        // The free-disk floor and the budget step before a new warm key (ADR-0144). Without
+        // them no check or Worker may start, so work is refused rather than run unguarded.
+        eprintln!(
+            "af: the storage budget cannot be set up, so no Task or review work starts: {error}; \
+             see `af config show --origin` for [storage] and the XDG directories"
+        );
+        std::process::exit(1);
+    }
+    let collects_after = collects_after_run(&command);
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
         cli::Command::Review(namespace) => ("af review", review_command(namespace)),
         cli::Command::Provider { command } => ("af provider", provider_command(command)),
@@ -1419,6 +1471,16 @@ fn main() {
                 cli::SelfCommand::RefreshCheck => selfmgmt::refresh_check().map(|()| 0),
             },
         ),
+        cli::Command::Storage { json, command } => (
+            "af storage",
+            match command {
+                None => storage::show(json),
+                Some(cli::StorageCommand::Prune {
+                    apply,
+                    json: prune_json,
+                }) => storage::prune(apply, json || prune_json),
+            },
+        ),
         cli::Command::Completions { shell } => (
             "af completions",
             selfmgmt::completion_script(shell).map(|script| {
@@ -1430,6 +1492,10 @@ fn main() {
     };
     if let Some(signal) = interrupt::received() {
         exit_interrupted(&argv, prefix, signal, outcome.err());
+    }
+    if collects_after {
+        // Whatever the run's outcome; a failure here is a warning, never the exit status.
+        storage::after_run();
     }
     let code = match outcome {
         Ok(code) => code,
@@ -1466,6 +1532,21 @@ fn runs_task_work(command: &cli::Command) -> bool {
             matches!(namespace.command, None | Some(cli::ReviewCommand::Run(_)))
         }
         cli::Command::Provider { command } => matches!(command, cli::ProviderCommand::Doctor(_)),
+        cli::Command::Task { command } => matches!(
+            command,
+            cli::TaskCommand::Start { execute: true, .. } | cli::TaskCommand::Run { .. }
+        ),
+        _ => false,
+    }
+}
+
+/// `af task run`, `af task start --execute` and `af review run` end with the Storage Budget's
+/// sweep: the budget always, age-based collection too when `[storage] auto_gc` is on (ADR-0144).
+fn collects_after_run(command: &cli::Command) -> bool {
+    match command {
+        cli::Command::Review(namespace) => {
+            matches!(namespace.command, None | Some(cli::ReviewCommand::Run(_)))
+        }
         cli::Command::Task { command } => matches!(
             command,
             cli::TaskCommand::Start { execute: true, .. } | cli::TaskCommand::Run { .. }
@@ -3793,6 +3874,9 @@ fn sweep_stale_sandboxes_in_background() -> Option<std::thread::JoinHandle<()>> 
 fn run(options: &Options) -> Result<RunVerdict, String> {
     let state = options.resolved_state_dir()?;
     std::fs::create_dir_all(&state).map_err(|error| error.to_string())?;
+    // Held for the whole run: no sweep and no `af review gc` removes this campaign under it.
+    // A run that cannot hold it does not start: unprotected, a sweep could remove its Store.
+    let _running = storage::hold_running(&state)?;
     let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
     let mut store =
         EventStore::open(state.join("events.sqlite")).map_err(|error| error.to_string())?;

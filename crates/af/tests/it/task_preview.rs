@@ -2,10 +2,10 @@
 use crate::task_cli;
 use serde_json::Value;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn cli(repo: &Path, state: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_af"))
+    crate::common::af()
         .current_dir(repo)
         .args(args)
         .arg("--state")

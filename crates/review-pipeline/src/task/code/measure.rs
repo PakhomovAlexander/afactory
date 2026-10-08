@@ -223,25 +223,38 @@ impl CodeTaskDomain {
                 "the measure Attempt's deadline left no time to start this repetition",
             ));
         }
+        // Below the machine's free-disk floor, checked through the same Storage Budget as every
+        // other check, the repetition materializes nothing and its command never starts: the
+        // measurement fails with the typed refusal (ADR-0144).
+        if let Err(refusal) = crate::storage::ensure_free_disk() {
+            return Ok(Repetition::Failed(
+                MeasurementRunV1 {
+                    started_unix_ms: started,
+                    elapsed_ms: 0,
+                    exit_code: None,
+                    stdout_id: None,
+                    stderr_id: None,
+                    cache: None,
+                    metrics: BTreeMap::new(),
+                },
+                MeasurementFailureReasonV1::InsufficientDisk,
+                refusal,
+            ));
+        }
         let sandbox =
             Sandbox::materialize(manifest, cas, Mode::ReadOnly).map_err(|e| e.to_string())?;
         review_sandbox::admit(self.policy.isolation(), &sandbox).map_err(|e| e.to_string())?;
-        // HOME, TMPDIR, XDG_CACHE_HOME and a cold CARGO_TARGET_DIR live here, and all of it is
-        // discarded with the repetition: the command reports the bytes it cares about itself.
-        let runtime = tempfile::tempdir().map_err(|e| e.to_string())?;
-        for directory in ["tmp", "cache"] {
-            std::fs::create_dir_all(runtime.path().join(directory)).map_err(|e| e.to_string())?;
-        }
+        // HOME, TMPDIR, AF_CHECK_SCRATCH, XDG_CACHE_HOME and a cold CARGO_TARGET_DIR live here,
+        // and all of it is discarded with the repetition: the command reports the bytes it cares
+        // about itself.
+        let runtime = review_sandbox::CheckRuntime::new().map_err(|e| e.to_string())?;
         let remaining = deadline.saturating_sub(now_ms()?);
-        let runner = CheckRunner::new(cas, sandbox.root())
-            .with_cancellation(cancellation)
-            .with_timeout(Duration::from_millis(definition.wall_ms.min(remaining)))
-            .with_env("HOME", runtime.path().display().to_string())
-            .with_env("TMPDIR", runtime.path().join("tmp").display().to_string())
-            .with_env(
-                "XDG_CACHE_HOME",
-                runtime.path().join("cache").display().to_string(),
-            );
+        let runner = runtime.environment().into_iter().fold(
+            CheckRunner::new(cas, sandbox.root())
+                .with_cancellation(cancellation)
+                .with_timeout(Duration::from_millis(definition.wall_ms.min(remaining))),
+            |runner, (key, value)| runner.with_env(key, value),
+        );
         let runner = rustup
             .iter()
             .flat_map(|rustup| rustup.environment())
@@ -253,6 +266,7 @@ impl CodeTaskDomain {
                     runner.local_environment(),
                     sandbox.root(),
                     runtime.path(),
+                    None,
                     cancellation,
                     Duration::from_millis(remaining),
                 )?;
@@ -328,6 +342,26 @@ impl CodeTaskDomain {
             }
             return Ok(never_started(
                 "the measure Attempt's deadline ran out while its warm layer was prepared",
+            ));
+        }
+        // Preparation (the sandbox, a Cache Snapshot copy, a warm layer) spent disk: the floor is
+        // read again right before the command would start (ADR-0144).
+        if let Err(refusal) = crate::storage::ensure_free_disk() {
+            if let (Some(session), Some(prepared)) = (session, prepared) {
+                session.finish(prepared.key_lock, prepared.directories, None)?;
+            }
+            return Ok(Repetition::Failed(
+                MeasurementRunV1 {
+                    started_unix_ms: started,
+                    elapsed_ms: 0,
+                    exit_code: None,
+                    stdout_id: None,
+                    stderr_id: None,
+                    cache: None,
+                    metrics: BTreeMap::new(),
+                },
+                MeasurementFailureReasonV1::InsufficientDisk,
+                refusal,
             ));
         }
         let timeout_ms = definition.wall_ms.min(remaining);

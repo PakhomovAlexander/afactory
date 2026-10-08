@@ -317,13 +317,65 @@ pub fn project_key(repository_id: &str) -> String {
     ))
 }
 
+/// The fixed token a check's runtime path becomes in every hashed environment value, so a key
+/// never depends on the per-check directory a value happens to name.
+pub const RUNTIME_TOKEN: &str = "<af-check-runtime>";
+
+/// What a toolchain key hashes besides the version probes and the declaration: the check's
+/// runtime directory, replaced by [`RUNTIME_TOKEN`] wherever a hashed value names it, and the
+/// verified content digest of a prepared native toolchain, which a private copy's path cannot
+/// stand for.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ToolchainContext<'a> {
+    pub runtime: Option<&'a Path>,
+    pub native_digest: Option<&'a str>,
+}
+
+impl ToolchainContext<'_> {
+    /// `value` with every occurrence of the runtime path, as given and as resolved, replaced
+    /// by [`RUNTIME_TOKEN`]; the longer spelling first, so one is never half-replaced by the
+    /// other.
+    pub fn normalize(&self, value: &str) -> String {
+        let Some(runtime) = self.runtime else {
+            return value.to_string();
+        };
+        let mut spellings = vec![runtime.display().to_string()];
+        if let Ok(resolved) = runtime.canonicalize() {
+            spellings.push(resolved.display().to_string());
+        }
+        spellings.retain(|spelling| !spelling.is_empty());
+        spellings.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+        spellings.dedup();
+        let mut value = value.to_string();
+        for spelling in spellings {
+            value = value.replace(&spelling, RUNTIME_TOKEN);
+        }
+        value
+    }
+
+    /// The identity a session memoizes one resolved key under: every environment value, with
+    /// the runtime path replaced, and the native toolchain digest. Two checks whose environments
+    /// differ only in their runtime directory share one entry; any other difference is another.
+    fn memo(&self, environment: &[(String, String)]) -> String {
+        let normalized: Vec<(&str, String)> = environment
+            .iter()
+            .map(|(name, value)| (name.as_str(), self.normalize(value)))
+            .collect();
+        serde_json::to_string(&(normalized, self.native_digest)).unwrap_or_default()
+    }
+}
+
 /// Resolve the toolchain identity a check would build with. Both version commands run in the
 /// check's working directory, under exactly the check's environment and a 30-second bound, so a
 /// toolchain file, a `PATH` or a rustup home that selects another compiler selects another key.
+/// The hashed environment values name the check's runtime directory only as [`RUNTIME_TOKEN`],
+/// and a prepared native toolchain is keyed by its verified digest (domain
+/// `af.task-build-cache.toolchain/2`), so no per-check or per-Attempt path changes the key.
 pub fn toolchain_identity(
     workdir: &Path,
     environment: &[(String, String)],
     declaration: &ToolchainDeclaration,
+    context: ToolchainContext<'_>,
     cancellation: Option<&AtomicBool>,
     bound: Duration,
 ) -> Result<String, String> {
@@ -335,25 +387,29 @@ pub fn toolchain_identity(
         .filter(|host| !host.is_empty())
         .ok_or("rustc -vV reported no host triple")?;
     let fixed = |key: &str| {
-        environment
-            .iter()
-            .rev()
-            .find(|(name, _)| name == key)
-            .map_or("", |(_, value)| value.as_str())
-            .as_bytes()
+        context
+            .normalize(
+                environment
+                    .iter()
+                    .rev()
+                    .find(|(name, _)| name == key)
+                    .map_or("", |(_, value)| value.as_str()),
+            )
+            .into_bytes()
     };
     Ok(key_digest(
-        "af.task-build-cache.toolchain/1",
+        "af.task-build-cache.toolchain/2",
         &[
             declaration.path.as_deref().unwrap_or("none").as_bytes(),
             &declaration.bytes,
             &rustc,
             &cargo,
             host.as_bytes(),
-            fixed("PATH"),
-            fixed("LC_ALL"),
-            fixed("TZ"),
-            fixed("RUSTUP_HOME"),
+            &fixed("PATH"),
+            &fixed("LC_ALL"),
+            &fixed("TZ"),
+            &fixed("RUSTUP_HOME"),
+            context.native_digest.unwrap_or("none").as_bytes(),
         ],
     ))
 }
@@ -495,13 +551,17 @@ pub(crate) struct PreparedCheck {
     pub(crate) refusal: Option<String>,
 }
 
-/// The warm layer of one check Attempt. The toolchain is resolved once, before the first check.
+/// The warm layer of one check Attempt. The toolchain is resolved once per distinct hashed
+/// environment: a second check with the same environment (its runtime directory aside) reuses
+/// the first one's key, and a check with another environment resolves its own.
 pub(crate) struct WarmSession<'a> {
     host: &'a WarmCheckHost,
     policy: &'a CodeWarmPolicy,
     project: String,
     declaration: ToolchainDeclaration,
-    toolchain: Option<Result<String, String>>,
+    toolchains: BTreeMap<String, Result<String, String>>,
+    /// The key the latest preparation resolved, which a check skipped before preparing names.
+    latest: Option<String>,
 }
 
 impl<'a> WarmSession<'a> {
@@ -516,21 +576,25 @@ impl<'a> WarmSession<'a> {
             policy,
             project: project_key(repository_id),
             declaration,
-            toolchain: None,
+            toolchains: BTreeMap::new(),
+            latest: None,
         }
     }
 
     /// Lock, validate and then measure the build directories, and materialize any Cache
-    /// Snapshot into `runtime`. `environment` is the check's own environment, used for the one
-    /// toolchain probe. `budget` is the check Attempt's remaining wall time: the toolchain probe
-    /// and every lock wait are bounded by what is left of it, so preparation can never outlive
-    /// the reservation it prepares for.
+    /// Snapshot into `runtime`. `environment` is the check's own environment, used for the
+    /// toolchain probe; `native_digest` is the verified digest of a native toolchain prepared for
+    /// this check. `budget` is the check Attempt's remaining wall time: the toolchain probe and
+    /// every lock wait are bounded by what is left of it, so preparation can never outlive the
+    /// reservation it prepares for.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare(
         &mut self,
         cas: &Cas,
         environment: &[(String, String)],
         workdir: &Path,
         runtime: &Path,
+        native_digest: Option<&str>,
         cancellation: Option<&AtomicBool>,
         budget: Duration,
     ) -> Result<PreparedCheck, String> {
@@ -558,18 +622,27 @@ impl<'a> WarmSession<'a> {
         };
         if !kinds.is_empty() {
             let started = Instant::now();
+            let context = ToolchainContext {
+                runtime: Some(runtime),
+                native_digest,
+            };
             let toolchain = self
-                .toolchain
-                .get_or_insert_with(|| {
+                .toolchains
+                .entry(context.memo(environment))
+                .or_insert_with(|| {
                     toolchain_identity(
                         workdir,
                         environment,
                         &self.declaration,
+                        context,
                         cancellation,
                         left().min(TOOLCHAIN_PROBE_TIMEOUT),
                     )
                 })
                 .clone();
+            if let Ok(resolved) = &toolchain {
+                self.latest = Some(resolved.clone());
+            }
             match toolchain {
                 Err(detail) => {
                     eprintln!("warm check cache diagnostic: {detail}");
@@ -598,6 +671,12 @@ impl<'a> WarmSession<'a> {
                         .clone()
                         .map_or_else(default_task_build_cache_root, Ok)
                         .and_then(|root| {
+                            // A key that does not exist yet is new bytes on the machine: the
+                            // Storage Budget evicts what it must before it is made (ADR-0144).
+                            let path = root.join(&self.project).join(hex(&toolchain));
+                            if std::fs::symlink_metadata(&path).is_err() {
+                                crate::storage::before_new_warm_key();
+                            }
                             lock_task_build_cache_key(
                                 &root,
                                 &self.project,
@@ -888,7 +967,7 @@ impl<'a> WarmSession<'a> {
     /// with `reason`, so the check keeps one observation per kind although it never started.
     pub(crate) fn skipped(&self, cas: &Cas, reason: &str) -> Result<Vec<Observation>, String> {
         let started = Instant::now();
-        let toolchain = self.toolchain.clone().and_then(Result::ok);
+        let toolchain = self.latest.clone();
         let mut observations = Vec::new();
         for kind in &self.policy.build_cache {
             observations.push(self.ineligible(
@@ -1036,6 +1115,16 @@ impl<'a> WarmSession<'a> {
             return Ok(Vec::new());
         };
         if excess.is_none() {
+            // The key's allocated bytes, recorded while it is still locked, so the Storage
+            // Budget's sweep need not walk an unchanged target again (ADR-0144).
+            match review_sandbox::storage::allocated_bytes(key.path()) {
+                Ok(bytes) => {
+                    if let Err(detail) = key.record_size(bytes) {
+                        eprintln!("warm check cache diagnostic: {detail}");
+                    }
+                }
+                Err(error) => eprintln!("warm check cache diagnostic: measuring the key: {error}"),
+            }
             return Ok(Vec::new());
         }
         let removed = key.remove_kinds()?;
@@ -1165,6 +1254,7 @@ mod tests {
             workdir.path(),
             &environment,
             &pinned,
+            ToolchainContext::default(),
             None,
             Duration::from_secs(30),
         )
@@ -1175,6 +1265,7 @@ mod tests {
                 workdir.path(),
                 &environment,
                 &pinned,
+                ToolchainContext::default(),
                 None,
                 Duration::from_secs(30)
             )
@@ -1188,6 +1279,7 @@ mod tests {
                 workdir.path(),
                 &environment,
                 &changed,
+                ToolchainContext::default(),
                 None,
                 Duration::from_secs(30)
             )
@@ -1204,6 +1296,7 @@ mod tests {
                 workdir.path(),
                 &environment,
                 &absent,
+                ToolchainContext::default(),
                 None,
                 Duration::from_secs(30)
             )
@@ -1217,6 +1310,7 @@ mod tests {
                 workdir.path(),
                 &zone,
                 &pinned,
+                ToolchainContext::default(),
                 None,
                 Duration::from_secs(30)
             )
@@ -1234,6 +1328,7 @@ mod tests {
                 workdir.path(),
                 &environment,
                 &pinned,
+                ToolchainContext::default(),
                 None,
                 Duration::from_secs(30)
             )
@@ -1254,6 +1349,7 @@ mod tests {
                 workdir.path(),
                 &environment,
                 &pinned,
+                ToolchainContext::default(),
                 None,
                 Duration::from_secs(30)
             )
@@ -1266,6 +1362,7 @@ mod tests {
                 workdir.path(),
                 &environment,
                 &pinned,
+                ToolchainContext::default(),
                 None,
                 Duration::from_secs(30)
             )
@@ -1279,6 +1376,7 @@ mod tests {
                 workdir.path(),
                 &environment,
                 &pinned,
+                ToolchainContext::default(),
                 None,
                 Duration::from_secs(30)
             )
@@ -1419,6 +1517,7 @@ mod tests {
                 &fixture.environment,
                 fixture.workdir.path(),
                 fixture.runtime.path(),
+                None,
                 None,
                 Duration::from_secs(120),
             )
@@ -1625,6 +1724,7 @@ mod tests {
                 &fixture.environment,
                 fixture.workdir.path(),
                 runtime.path(),
+                None,
                 None,
                 Duration::from_secs(120),
             )
@@ -2148,6 +2248,7 @@ mod tests {
                 workdir.path(),
                 environment,
                 &declaration(b"x"),
+                ToolchainContext::default(),
                 None,
                 Duration::from_secs(30),
             )

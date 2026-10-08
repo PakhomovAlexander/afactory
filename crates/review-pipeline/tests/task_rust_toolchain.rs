@@ -43,7 +43,10 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf, PathBuf, String) {
     );
     executable(
         &source.join("bin/cargo"),
-        "#!/bin/sh\ntest \"$CARGO_HOME\" = \"$HOME/cargo\" || exit 7\ntest \"$RUSTUP_HOME\" = \"$HOME/rustup\" || exit 8\ntest \"$RUSTUP_TOOLCHAIN\" = '1.88.0-x86_64-unknown-linux-gnu' || exit 9\ntest ! -e \"$CARGO_HOME/credentials.toml\" || exit 10\ntest \"$(cat \"$HOME/toolchain/lib/marker\")\" = pristine || exit 11\nif test \"$1\" = mutate; then printf changed > \"$HOME/toolchain/lib/marker\"; fi\n",
+        // The private homes sit beside the check's own `HOME` in its runtime directory: a check
+        // under the kernel has `HOME=<runtime>/home` (ADR-0144); a bare runner here has
+        // `HOME=<runtime>`.
+        "#!/bin/sh\nR=${HOME%/home}\ntest \"$CARGO_HOME\" = \"$R/cargo\" || exit 7\ntest \"$RUSTUP_HOME\" = \"$R/rustup\" || exit 8\ntest \"$RUSTUP_TOOLCHAIN\" = '1.88.0-x86_64-unknown-linux-gnu' || exit 9\ntest ! -e \"$CARGO_HOME/credentials.toml\" || exit 10\ntest \"$(cat \"$R/toolchain/lib/marker\")\" = pristine || exit 11\nif test \"$1\" = mutate; then printf changed > \"$R/toolchain/lib/marker\"; fi\n",
     );
     executable(&source.join("bin/rustfmt"), "#!/bin/sh\nexit 0\n");
     executable(&source.join("bin/clippy-driver"), "#!/bin/sh\nexit 0\n");
@@ -516,7 +519,7 @@ fn run_code_task_domain_fixture(mapping: Option<PathBuf>, cold: bool, review_wra
                 vec![
                     review_core::Arg::literal("-c"),
                     review_core::Arg::literal(
-                        r#"test -n "$PATH" && test -z "$CARGO_HOME$RUSTUP_HOME$RUSTUP_TOOLCHAIN" && test ! -e "$HOME/toolchain""#,
+                        r#"test -n "$PATH" && test -z "$CARGO_HOME$RUSTUP_HOME$RUSTUP_TOOLCHAIN" && test ! -e "${HOME%/home}/toolchain""#,
                     ),
                 ],
             );

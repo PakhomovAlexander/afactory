@@ -1,6 +1,8 @@
 # ADR-0135: Collect finished Tasks behind a tombstone and a reachability sweep
 
-Status: accepted, 2026-09-28. Amends
+Status: accepted, 2026-09-28; amended on 2026-10-07 by
+[ADR-0144](0144-hold-afs-disk-use-to-a-machine-budget.md): collection also runs by itself after
+every run. Amends
 [ADR-0131](0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md): the Warm Check
 Cache gets a second, hard byte bound, and only that bound ends a running check.
 

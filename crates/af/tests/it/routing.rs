@@ -23,7 +23,7 @@ fn git(repo: &Path, args: &[&str]) {
 }
 
 fn af(state_home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_af"))
+    crate::common::af()
         .args(args)
         .env("XDG_STATE_HOME", state_home)
         .output()

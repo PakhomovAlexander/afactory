@@ -34,7 +34,7 @@ fn git(repo: &Path, home: &Path, args: &[&str]) {
 }
 
 fn invoke(repo: &Path, home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_af"))
+    crate::common::af()
         .current_dir(repo)
         .env("HOME", home)
         .args(["review"])

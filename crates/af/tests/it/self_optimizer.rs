@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 
 fn af(repo: &Path, state: &Path, extra: &[&str]) -> Value {
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .current_dir(repo)
         .args([
             "self",
@@ -132,7 +132,7 @@ fn command_json_with_env(
     args: &[&str],
     environment: &[(&str, &Path)],
 ) -> Value {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_af"));
+    let mut command = crate::common::af();
     command
         .current_dir(repo)
         .args(args)
@@ -1149,7 +1149,7 @@ fn light_cache_candidate_measures_real_latency_and_grounds_later_adoption_eviden
         "unknown toolchain was not retained on every measured arm: {unknown_comparison:#?}"
     );
     let refused_cache_delivery = fixture.temp.path().join("unknown-cache-delivery");
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .current_dir(repo)
         .args([
             "task",
@@ -1362,7 +1362,7 @@ fn controlled_candidate_with_inputs(
     if !accepted {
         assert_ne!(result["result"]["acceptance"], "satisfied", "{result:#}");
         let delivery = temp.path().join("refused-delivery");
-        let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        let output = crate::common::af()
             .current_dir(&repo)
             .args([
                 "task",
@@ -1596,7 +1596,7 @@ fn approved_experiment_that_exceeds_parent_resources_becomes_explicit_non_succes
         .into_string(),
     )
     .unwrap();
-    let refused = Command::new(env!("CARGO_BIN_EXE_af"))
+    let refused = crate::common::af()
         .current_dir(&repo)
         .args([
             "task",
@@ -1730,7 +1730,7 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
             .into_string(),
         )
         .unwrap();
-        let refused = Command::new(env!("CARGO_BIN_EXE_af"))
+        let refused = crate::common::af()
             .current_dir(&repo)
             .args([
                 "task",
@@ -1762,7 +1762,7 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
     }
     let forged = temp.path().join("forged.minisig");
     std::fs::write(&forged, "not a minisign signature").unwrap();
-    let refused = Command::new(env!("CARGO_BIN_EXE_af"))
+    let refused = crate::common::af()
         .current_dir(&repo)
         .args([
             "task",
@@ -2024,7 +2024,7 @@ fn self_optimize_compiles_executes_and_replays_without_model_calls() {
     let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
     let report = cas.get_json(report_id).unwrap();
     assert_eq!(report["type"], "af/OptimizationReport@1");
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .current_dir(&repo)
         .args([
             "task",
@@ -2051,7 +2051,7 @@ fn self_optimize_compiles_executes_and_replays_without_model_calls() {
 fn actual_code_task_runtime_evidence_round_trips_through_native_af_capture() {
     let temp = tempfile::tempdir().unwrap();
     let (repo, state) = task_cli::fixture_named(temp.path(), "pagination");
-    let task = Command::new(env!("CARGO_BIN_EXE_af"))
+    let task = crate::common::af()
         .current_dir(&repo)
         .args([
             "task",

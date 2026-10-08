@@ -202,6 +202,9 @@ pub enum RemoteCheckReasonV1 {
     DeadlineExpired,
     /// The Attempt was cancelled during the remote phase.
     Cancelled,
+    /// The machine was below its free-disk floor, so the remote phase did not start
+    /// (ADR-0144).
+    InsufficientDisk,
 }
 
 impl RemoteCheckReasonV1 {
@@ -220,6 +223,7 @@ impl RemoteCheckReasonV1 {
             Self::RemoteCheckInconclusive => "remote_check_inconclusive",
             Self::DeadlineExpired => "deadline_expired",
             Self::Cancelled => "cancelled",
+            Self::InsufficientDisk => "insufficient_disk",
         }
     }
 
@@ -245,6 +249,7 @@ impl RemoteCheckReasonV1 {
                 | Self::RemotePushRefused
                 | Self::DeadlineExpired
                 | Self::Cancelled
+                | Self::InsufficientDisk
         )
     }
 
@@ -532,6 +537,103 @@ impl RemoteCheckEvidenceV1 {
             // Unreachable for validated evidence: refused and published both require a reason.
             (_, None) => RemoteCheckVerdictV1::NotRun(RemoteCheckReasonV1::RemoteCheckMissing),
         }
+    }
+}
+
+/// The record `af/TaskGateCleanup@1` of one attempt to remove what a finished Task's remote
+/// checks left on GitHub (ADR-0144): its draft gate pull requests closed and its two
+/// `af-gate/<task-id>/` branches deleted. It travels inline in one `gate_cleanup` transition of
+/// the Task's log and references no artifact. A failure keeps its redacted reason and never
+/// changes the Task's result; a later sweep tries again.
+pub const TASK_GATE_CLEANUP_V1: &str = "af/TaskGateCleanup@1";
+
+/// At most this many pull requests one cleanup closes.
+pub const MAX_GATE_PULL_REQUESTS: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateCleanupOutcomeV1 {
+    /// Every named pull request is closed and both branches are gone.
+    Done,
+    /// Something was left; `reason` says what.
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskGateCleanupV1 {
+    /// Always [`TASK_GATE_CLEANUP_V1`].
+    pub schema: String,
+    /// The `owner/name` the pull requests live in.
+    pub github: String,
+    /// The draft gate pull requests the Task's evidence recorded, ascending.
+    pub pull_requests: Vec<u64>,
+    /// Exactly `af-gate/<task-id>/base` and `af-gate/<task-id>/head`.
+    pub branches: Vec<String>,
+    pub outcome: GateCleanupOutcomeV1,
+    /// Why a failed cleanup left something, redacted and bounded; absent when done.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    pub reason: Option<String>,
+}
+
+impl TaskGateCleanupV1 {
+    /// The two branches a Task's gate pushes.
+    pub fn branches_of(task_id: &str) -> Vec<String> {
+        vec![
+            format!("af-gate/{task_id}/base"),
+            format!("af-gate/{task_id}/head"),
+        ]
+    }
+
+    /// `task_id` is the Task whose log carries the record.
+    pub fn validate(&self, task_id: &str) -> Result<(), String> {
+        self.validate_shape()?;
+        require(
+            self.branches == Self::branches_of(task_id),
+            "A gate cleanup names exactly its Task's two af-gate branches",
+        )
+    }
+
+    /// Everything but the Task the branches name, which only the log that carries the record
+    /// knows: both branches name one and the same Task.
+    pub fn validate_shape(&self) -> Result<(), String> {
+        let task = self
+            .branches
+            .first()
+            .and_then(|branch| branch.strip_prefix("af-gate/"))
+            .and_then(|rest| rest.strip_suffix("/base"))
+            .unwrap_or_default();
+        require(
+            super::is_name(task) && self.branches == Self::branches_of(task),
+            "A gate cleanup names exactly its Task's two af-gate branches",
+        )?;
+        require(
+            self.schema == TASK_GATE_CLEANUP_V1 && is_github_repository(&self.github),
+            "A gate cleanup needs its schema and an owner/name GitHub repository",
+        )?;
+        require(
+            self.pull_requests.len() <= MAX_GATE_PULL_REQUESTS
+                && self
+                    .pull_requests
+                    .iter()
+                    .all(|number| *number > 0 && super::safe_number(*number))
+                && self.pull_requests.windows(2).all(|pair| pair[0] < pair[1]),
+            "A gate cleanup names at most 64 distinct pull requests, ascending",
+        )?;
+        require(
+            match (&self.outcome, &self.reason) {
+                (GateCleanupOutcomeV1::Done, None) => true,
+                (GateCleanupOutcomeV1::Failed, Some(reason)) => {
+                    !reason.trim().is_empty() && reason.len() <= MAX_REMOTE_DIAGNOSTIC_BYTES
+                }
+                _ => false,
+            },
+            "A failed gate cleanup keeps a bounded reason, and only a failed one",
+        )
     }
 }
 

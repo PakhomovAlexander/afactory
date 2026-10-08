@@ -207,10 +207,12 @@ fn af(fixture: &Fixture, args: &[&str]) -> (i32, String, String) {
 
 /// `af` under the fixture's kernel environment plus `extra`.
 fn af_with(fixture: &Fixture, extra: &[(&str, &Path)], args: &[&str]) -> (i32, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .current_dir(&fixture.repo)
         .env("HOME", &fixture.home)
         .env("XDG_CONFIG_HOME", fixture.home.join(".config"))
+        .env("XDG_STATE_HOME", fixture.home.join(".local/state"))
+        .env("XDG_DATA_HOME", fixture.home.join(".local/share"))
         .env("XDG_CACHE_HOME", &fixture.cache)
         .env("PATH", format!("{}:/usr/bin:/bin", fixture.bin.display()))
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -1711,5 +1713,149 @@ fn pinned_git(repo: &Path, args: &[&str]) {
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// A native Rust toolchain the operator's mapping names: a stub `rustc` and `cargo` that answer
+/// the version probes with release 1.88.0, copied privately into every check's runtime directory
+/// (ADR-0127). `variant` changes the copied bytes, so the verified digest, and nothing else.
+fn native_toolchain(fixture: &Fixture, variant: &str) -> PathBuf {
+    let source = fixture.root.join(format!("native-{variant}"));
+    std::fs::create_dir_all(source.join("bin")).unwrap();
+    for (program, text) in [
+        (
+            "rustc",
+            "rustc 1.88.0 (native fixture)\\nrelease: 1.88.0\\nhost: fixture-native-host",
+        ),
+        ("cargo", "cargo 1.88.0 (native fixture)"),
+    ] {
+        let path = source.join("bin").join(program);
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\n# {variant}\nprintf '{text}\\n'\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let limits = review_sandbox::toolchain::ToolchainLimits {
+        max_bytes: 1_000_000,
+        max_entries: 100,
+        max_copy_bytes: 1_000_000,
+    };
+    let seed = fixture.root.join(format!("seed-{variant}"));
+    let digest =
+        review_sandbox::toolchain::snapshot_toolchain(&source, &seed, limits, None).unwrap();
+    std::fs::remove_dir_all(seed).unwrap();
+    let mapping = fixture.root.join(format!("rust-toolchain-{variant}.toml"));
+    std::fs::write(
+        &mapping,
+        format!(
+            "version = 1\n[rust]\nversion = '1.88.0'\nhost = 'fixture-native-host'\n\
+             components = []\nsource = '{}'\nexpected_digest = '{digest}'\nmax_bytes = 1000000\n\
+             max_entries = 100\nmax_copy_bytes = 1000000\n",
+            source.display()
+        ),
+    )
+    .unwrap();
+    mapping
+}
+
+const NATIVE: &str = "\n[rust_toolchain]\nversion = \"1.88.0\"\nhost = \"fixture-native-host\"\n\
+components = []\nchecks = [\"pagination\"]\n";
+
+/// ADR-0144 D1: a prepared native toolchain lives in each check's own runtime directory, and
+/// that path no longer reaches the key: two Tasks share one key and the second check is warm.
+/// A toolchain with another verified digest is another key.
+#[test]
+fn a_native_toolchain_check_keeps_one_warm_key_across_tasks() {
+    let fixture = fixture(format!(
+        "{}{NATIVE}",
+        code_policy(
+            BUILD,
+            60_000,
+            false,
+            Some("build_cache = [\"cargo_target\"]")
+        )
+    ));
+    let mapping = native_toolchain(&fixture, "first");
+    let extra = [("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE", mapping.as_path())];
+    let first = start_with(&fixture, &extra, "native-one", 0);
+    let second = start_with(&fixture, &extra, "native-two", 0);
+    let cold = observations(&first);
+    let warm = observations(&second);
+    assert!(cold[0]["toolchain_id"].is_string(), "{cold:?}");
+    assert_eq!(warm[0]["toolchain_id"], cold[0]["toolchain_id"], "one key");
+    assert_eq!(cold[0]["bytes_available"], 0);
+    assert_eq!(warm[0]["bytes_available"], 4096, "the second check is warm");
+    assert_eq!(
+        warm_directories(&fixture).len(),
+        1,
+        "no second key was made"
+    );
+    let shown = show(&fixture, "native-two");
+    assert!(shown.contains("cargo_target warm 4096"), "{shown}");
+
+    // Other toolchain bytes are another verified digest, so another key.
+    let changed = native_toolchain(&fixture, "second");
+    let other = start_with(
+        &fixture,
+        &[("AF_TASK_RUST_TOOLCHAIN_POLICY_FILE", changed.as_path())],
+        "native-three",
+        0,
+    );
+    let third = observations(&other);
+    assert_ne!(third[0]["toolchain_id"], cold[0]["toolchain_id"]);
+    assert_eq!(third[0]["bytes_available"], 0, "a new key starts cold");
+    assert_eq!(warm_directories(&fixture).len(), 2);
+}
+
+/// A check that reports the four directories af gave it, and whether each was empty and
+/// writable, into `report` outside its tree.
+fn runtime_probe(report: &Path) -> String {
+    format!(
+        "import json, os\n\
+names = ['HOME', 'TMPDIR', 'AF_CHECK_SCRATCH', 'XDG_CACHE_HOME']\n\
+seen = {{}}\n\
+for name in names:\n    path = os.environ.get(name)\n    entry = {{'path': path}}\n    if path:\n        entry['empty'] = os.listdir(path) == []\n        probe = os.path.join(path, 'probe')\n        open(probe, 'w').write('x')\n        entry['writable'] = open(probe).read() == 'x'\n    seen[name] = entry\n\
+open({report:?}, 'w').write(json.dumps(seen))\n\
+import pagination\n\
+assert pagination.paginate(list(range(7)),2,3) == [2,3,4]\n",
+        report = report.display().to_string()
+    )
+}
+
+/// ADR-0144 D4: every check gets a HOME, a TMPDIR, an AF_CHECK_SCRATCH and an XDG_CACHE_HOME,
+/// each empty and writable, all below one `af-check-<pid>-…` runtime directory that is gone once
+/// the check ended.
+#[test]
+fn a_check_gets_four_private_directories_that_are_gone_after_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let report = directory.path().canonicalize().unwrap().join("report.json");
+    let fixture = fixture(code_policy(&runtime_probe(&report), 60_000, false, None));
+    let done = start(&fixture, "runtime-dirs", 0);
+    assert_eq!(done["result"]["acceptance"], "satisfied", "{done}");
+    let seen: Value = serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+    let home = PathBuf::from(seen["HOME"]["path"].as_str().unwrap());
+    let runtime = home.parent().unwrap().to_path_buf();
+    let name = runtime.file_name().unwrap().to_str().unwrap();
+    assert!(name.starts_with("af-check-"), "{name}");
+    for (variable, below) in [
+        ("HOME", "home"),
+        ("TMPDIR", "tmp"),
+        ("AF_CHECK_SCRATCH", "scratch"),
+        ("XDG_CACHE_HOME", "cache"),
+    ] {
+        let entry = &seen[variable];
+        assert_eq!(
+            PathBuf::from(entry["path"].as_str().unwrap()),
+            runtime.join(below),
+            "{variable}"
+        );
+        assert_eq!(entry["empty"], true, "{variable}");
+        assert_eq!(entry["writable"], true, "{variable}");
+    }
+    assert!(
+        !runtime.exists(),
+        "the runtime directory outlived its check"
     );
 }

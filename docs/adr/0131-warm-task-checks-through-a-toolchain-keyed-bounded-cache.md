@@ -3,7 +3,9 @@
 Status: accepted, 2026-09-27; amended the same day by package R1's follow-up (Task
 `research-r1c`, see [Amendment](#amendment-rustup-home-cargo_home-and-fail-closed-bounds)), and
 on 2026-09-28 by [ADR-0135](0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md)
-(package R5, see [Two bounds](#amendment-two-bounds)).
+(package R5, see [Two bounds](#amendment-two-bounds)); amended on 2026-10-07 by
+[ADR-0144](0144-hold-afs-disk-use-to-a-machine-budget.md): the key no longer depends on a
+check's runtime path, and old keys are evicted by the Storage Budget.
 Supersedes in part
 [ADR-0108](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md): the one-Round
 scope of a candidate-built build cache, for Task checks only.

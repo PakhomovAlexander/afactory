@@ -17,8 +17,6 @@ use crate::task_cli;
 
 use crate::schemas;
 
-const AF: &str = env!("CARGO_BIN_EXE_af");
-
 fn git(repo: &Path, args: &[&str]) -> Output {
     Command::new("git")
         .current_dir(repo)
@@ -30,7 +28,7 @@ fn git(repo: &Path, args: &[&str]) -> Output {
 }
 
 fn af(repo: &Path, state: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
-    let mut command = Command::new(AF);
+    let mut command = crate::common::af();
     command.current_dir(repo).args(args);
     for (key, value) in env {
         command.env(key, value);

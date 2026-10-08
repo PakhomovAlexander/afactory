@@ -19,7 +19,7 @@ fn non_utf8_dir(root: &Path, name: &[u8]) -> Option<std::path::PathBuf> {
 }
 
 fn af(home: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_af"))
+    crate::common::af()
         .args(args)
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("config"))
@@ -154,7 +154,7 @@ exit 64
     }
     std::fs::write(auth.join("logged-in"), "").unwrap();
     let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_af"))
+        crate::common::af()
             .args(args)
             .env("HOME", home)
             .env("XDG_CONFIG_HOME", home.join("config"))
@@ -232,7 +232,7 @@ exit 64
     }
     std::fs::write(auth.join("registered"), "").unwrap();
     let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_af"))
+        crate::common::af()
             .args(args)
             .env("HOME", home)
             .env("XDG_CONFIG_HOME", home.join("config"))
@@ -663,7 +663,7 @@ fn setup_rejects_a_non_utf8_auth_directory_before_creating_it() {
     let auth = root
         .path()
         .join(std::ffi::OsString::from_vec(b"codex-auth-\xff".to_vec()));
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .args(["provider", "setup", "codex-main", "--kind", "codex"])
         .env("HOME", root.path())
         .env("XDG_CONFIG_HOME", root.path().join("config"))
@@ -695,7 +695,7 @@ fn setup_rejects_a_utf8_alias_to_a_non_utf8_parent_before_creating_the_leaf() {
     let alias = root.path().join("printable-auth-parent");
     let auth = alias.join("codex-auth");
     symlink(&target, &alias).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .args(["provider", "setup", "codex-main", "--kind", "codex"])
         .arg("--auth-dir")
         .arg(&auth)
@@ -729,7 +729,7 @@ fi
 exit 64
 "#,
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .args([
             "provider",
             "setup",
@@ -1058,7 +1058,7 @@ fn add_uses_the_active_cli_directory_by_default() {
     let root = tempfile::tempdir().unwrap();
     let auth = root.path().join("codex-home");
     std::fs::create_dir(&auth).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .args(["provider", "add", "codex-main", "--kind", "codex"])
         .env("HOME", root.path())
         .env("XDG_CONFIG_HOME", root.path().join("config"))
