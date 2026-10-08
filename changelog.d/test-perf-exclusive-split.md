@@ -48,9 +48,9 @@
   | --- | --- | --- | --- | --- |
   | Main's single test | 60.3 | 60.3 | 60.3 | 60.3 |
   | Previous seven-test split | 60.2 | 97.2 | 69.4 | 65.5 |
-  | Chosen pair | 45.5 | 65.4 | 50.5 | 48.3 |
+  | Chosen pair | 45.5 | 65.3 | 50.5 | 48.3 |
 
-  The pair beats the single test by 9.8 s at T = 4, clearing the 5 s bar, so the split is kept
+  The pair beats the single test by 9.85 s at T = 4, clearing the 5 s bar, so the split is kept
   in this form.
 - `setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask` stays in the
   exclusive override. Its work takes 0.37 s, but running first and alone it pays the first
