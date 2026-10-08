@@ -1,7 +1,7 @@
 - The self-optimizer light-strategy test no longer holds every test thread for its whole run
   (#203, [ADR-0124](docs/adr/0124-run-tests-in-parallel-processes-and-link-them-once.md)). It
   is split into two tests in `crates/af/tests/it/self_optimizer.rs`. Each builds its own
-  repository and Store with the same `af` commands through shared helpers. Only
+  repository and Store with the same `af` commands through shared helpers. Of the two, only
   `light_cache_candidate_measures_real_latency_and_grounds_later_adoption_evidence` stays in
   the exclusive override of `.config/nextest.toml`. It first runs, delivers and adopts the
   light candidate without asserting on it, then runs every phase from line 719 to line 1277
@@ -52,8 +52,13 @@
 
   The pair beats the single test by 9.8 s at T = 4, clearing the 5 s bar, so the split is kept
   in this form.
-- `setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask` is no longer
-  exclusive. Its only deadline is the 15 s Codex probe that its ordinary sibling runs under
-  too, and its work takes 0.37 s locally and 0.07 s on CI. Its ~14.6 s was the first launch
-  of a freshly linked `af`, which macOS assesses before it runs. The measurement is written
-  beside the exclusive override.
+- `setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask` stays in the
+  exclusive override. Its work takes 0.37 s, but running first and alone it pays the first
+  launch of a freshly linked `af`, which macOS assesses before it runs: 11.2 s measured
+  straight after relinking, and every Task gate starts from a fresh build. Outside the override
+  that cost lands on whichever parallel test launches `af` first, under the 15 s provider status
+  probe deadline. In a before/after bench (one warm-up, then three alternating full-suite runs
+  per side, 7 threads, 14-core macOS host), one of three runs without it failed that test and
+  `status_keeps_a_default_context_whose_status_probe_failed` with "provider status probe timed
+  out after 15 seconds"; no run with it failed. Its gain outside was about 1.3 s. The reason
+  is written beside the exclusive override.
