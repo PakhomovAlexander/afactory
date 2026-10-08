@@ -6,6 +6,7 @@
 //! command line parsed by the CLI's clap definition, or `$EDITOR` on a declared file. Nothing
 //! here turns working-tree bytes into execution authority.
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use clap::{CommandFactory as _, Parser as _};
@@ -354,6 +355,8 @@ pub(crate) struct App {
     search: Option<(String, bool)>,
     /// A status-line message and whether it is an error.
     message: Option<(String, bool)>,
+    /// The byte range of the path the message names, which the status line shortens to fit.
+    message_path: Option<Range<usize>>,
     /// `:help` rows, shown in place of the main pane.
     help: Option<Vec<Row>>,
     main: View,
@@ -388,6 +391,7 @@ impl App {
             prompt: Prompt::default(),
             search: None,
             message: None,
+            message_path: None,
             help: None,
             main: View::default(),
             bar_top: 0,
@@ -435,10 +439,20 @@ impl App {
 
     fn say(&mut self, text: impl Into<String>) {
         self.message = Some((text.into(), false));
+        self.message_path = None;
     }
 
     fn say_error(&mut self, text: impl Into<String>) {
         self.message = Some((text.into(), true));
+        self.message_path = None;
+    }
+
+    /// An error naming `path`: `<path>: <reason>`, of which the status line shortens the path,
+    /// as one path whatever it holds, and never the reason.
+    fn say_path_error(&mut self, path: &Path, reason: &str) {
+        let named = path.display().to_string();
+        self.say_error(format!("{named}: {reason}"));
+        self.message_path = Some(0..named.len());
     }
 
     fn opened_tab(&self) -> Option<Tab> {
@@ -560,6 +574,7 @@ impl App {
         }
         let action = self.keymap.feed(key)?;
         self.message = None;
+        self.message_path = None;
         if self.help.is_some() {
             match action {
                 Action::Quit | Action::Cancel => self.help = None,
@@ -1009,7 +1024,7 @@ impl App {
             _ => self.scope.root.join(dir),
         };
         if !path.is_dir() {
-            self.say_error(format!("{}: not a directory", path.display()));
+            self.say_path_error(&path, "not a directory");
             return;
         }
         match Scope::resolve(Some(path.as_path())) {
@@ -1465,7 +1480,10 @@ impl App {
         }
         let paint = self.status_paint();
         let right = match &self.message {
-            Some((text, _)) => paint::fit_path(text, width),
+            Some((text, _)) => match &self.message_path {
+                Some(path) => paint::fit_named(text, path.clone(), width),
+                None => paint::fit_path(text, width),
+            },
             None => self.legend(),
         };
         // The message, binding or legend on the right is what the line is for. At a narrow

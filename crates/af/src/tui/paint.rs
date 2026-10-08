@@ -3,6 +3,7 @@
 
 use std::ffi::OsStr;
 use std::io::Write;
+use std::ops::Range;
 
 /// How much colour the terminal takes. Text keeps the terminal's own foreground and ground
 /// in every case; the brand's colours (brand/README.md) appear only as a fill with ink on it,
@@ -227,10 +228,9 @@ pub(crate) fn scrolled(spans: &[Span], skip: usize) -> Vec<Span> {
 }
 
 /// `text` as printable ASCII within `width` columns, its longest path (a word starting `/` or
-/// `~/`) shortened from the left so what follows it, a refusal's reason, stays visible: whole
-/// leading components give way to `...`, and the final component is always kept. Text that
-/// fits, or that has no path, is only made printable; the frame cuts what still does not fit
-/// from the right.
+/// `~/`) shortened as [`fit_named`] shortens it. This is for a message that does not say which
+/// path it names; one that does passes the path's span to [`fit_named`], so a path with spaces
+/// is shortened whole. Text that fits, or that has no path, is only made printable.
 pub(crate) fn fit_path(text: &str, width: usize) -> String {
     let text = ascii(text);
     if text.len() <= width {
@@ -248,27 +248,47 @@ pub(crate) fn fit_path(text: &str, width: usize) -> String {
     else {
         return text;
     };
-    let (before, after) = (&text[..start], &text[start + path.len()..]);
+    fit_named(&text, start..start + path.len(), width)
+}
+
+/// `text` as printable ASCII within `width` columns, the path at `path` (a byte range of
+/// `text`) shortened from the left so the text around it, a refusal's reason, stays whole and
+/// visible: whole leading components give way to `...`, then, when the final component alone is
+/// too wide, its own leading columns do. Only when not even `...` fits beside the rest is the
+/// final component kept whole and the rest left to the frame, which cuts from the right. Text
+/// that fits, or a range that is not a span of `text`, is only made printable.
+pub(crate) fn fit_named(text: &str, path: Range<usize>, width: usize) -> String {
+    let (Some(before), Some(named), Some(after)) = (
+        text.get(..path.start),
+        text.get(path.clone()),
+        text.get(path.end..),
+    ) else {
+        return ascii(text);
+    };
+    // Printable ASCII before measuring, so a byte is a column.
+    let (before, path, after) = (ascii(before), ascii(named), ascii(after));
+    if before.len() + path.len() + after.len() <= width {
+        return format!("{before}{path}{after}");
+    }
     // The slashes a shortened path may start at: never the first column, never a trailing one.
-    let named = path.trim_end_matches('/').len();
+    let end = path.trim_end_matches('/').len();
     let cuts: Vec<usize> = path
         .match_indices('/')
         .map(|(at, _)| at)
-        .filter(|&at| at > 0 && at < named)
+        .filter(|&at| at > 0 && at < end)
         .collect();
-    let room = width.saturating_sub(before.len() + after.len() + "...".len());
-    let Some(cut) = cuts
-        .iter()
-        .copied()
-        .find(|&at| path.len() - at <= room)
-        .or(cuts.last().copied())
-    else {
-        return text;
+    let kept = match width.checked_sub(before.len() + after.len() + "...".len()) {
+        Some(room) => match cuts.iter().copied().find(|&at| path.len() - at <= room) {
+            Some(cut) => &path[cut..],
+            // The text did not fit, so the path is wider than `room` and this cuts into it.
+            None => &path[path.len() - room..],
+        },
+        None => match cuts.last() {
+            Some(&cut) if cut > "...".len() => &path[cut..],
+            _ => return format!("{before}{path}{after}"),
+        },
     };
-    if cut <= "...".len() {
-        return text;
-    }
-    format!("{before}...{}{after}", &path[cut..])
+    format!("{before}...{kept}{after}")
 }
 
 pub(crate) struct Frame {
@@ -430,6 +450,46 @@ mod tests {
         assert_eq!(fit_path(two, 30), "a/b .../hub/ is not a/c");
         // Printable ASCII before measuring, so a byte is a column.
         assert_eq!(fit_path("/var/tmp/\u{e9}t\u{e9}: x", 12), ".../?t?: x");
+    }
+
+    #[test]
+    fn a_named_path_is_shortened_whole_and_inside_its_final_component() {
+        let reason = ": not a directory";
+        // A final component wider than the room loses its own leading columns.
+        let name = "n".repeat(90);
+        let refusal = format!("/tmp/{name}{reason}");
+        let fitted = fit_named(&refusal, 0..refusal.len() - reason.len(), 80);
+        assert_eq!(fitted, format!("...{}{reason}", &name[30..]));
+        assert_eq!(fitted.len(), 80);
+        // Alike when there is no leading component to remove.
+        for path in [format!("/{name}"), format!("~/{name}")] {
+            let refusal = format!("{path}{reason}");
+            let fitted = fit_named(&refusal, 0..path.len(), 40);
+            assert_eq!(fitted, format!("...{}{reason}", &name[70..]));
+        }
+        // A path with spaces is one path: its components give way, never a word of it.
+        let path = "/tmp/deep/many words here/and words there/nowhere at all";
+        let said = format!("cannot read {path}{reason}");
+        let fitted = fit_named(&said, 12..12 + path.len(), 64);
+        assert_eq!(
+            fitted,
+            "cannot read .../and words there/nowhere at all: not a directory"
+        );
+        let fitted = fit_named(&said, 12..12 + path.len(), 40);
+        assert_eq!(fitted, "cannot read ...e at all: not a directory");
+        assert_eq!(fitted.len(), 40);
+        // Text that fits is unchanged, and the span is measured before it is made printable.
+        assert_eq!(fit_named(&said, 12..12 + path.len(), said.len()), said);
+        let accented = "/var/tmp/\u{e9}t\u{e9} x: y";
+        assert_eq!(
+            fit_named(accented, 0..accented.len() - 3, 12),
+            ".../?t? x: y"
+        );
+        // Not even `...` fits beside the reason: the final component stays, the frame cuts.
+        let fitted = fit_named(&refusal, 0..refusal.len() - reason.len(), 10);
+        assert_eq!(fitted, format!(".../{name}{reason}"));
+        // A range that is not a span of the text only makes it printable.
+        assert_eq!(fit_named("a\u{e9}: b", 0..2, 3), "a?: b");
     }
 
     #[test]
