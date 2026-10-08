@@ -1314,6 +1314,42 @@ fn command_lines_route_to_the_browser_a_refusal_or_a_hand_off() {
     assert!(app.quit);
 }
 
+/// A refusal naming a long path keeps its reason on the status line at the 80-column minimum:
+/// the path is shortened from the left, its final component kept; a short path is unchanged.
+#[test]
+fn a_long_path_on_the_status_line_keeps_the_reason_visible() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    let long = root
+        .join("a-directory-with-a-rather-long-name/".repeat(4))
+        .join("nowhere");
+    press(
+        &mut app,
+        &mut host,
+        format!(":cd {}\r", long.display()).as_bytes(),
+    );
+    let full = format!("{}: not a directory", long.display());
+    assert_eq!(app.message, Some((full.clone(), true)));
+    assert!(full.len() > 80, "{full}");
+    let frame = app.frame(80, 24).text();
+    let status = frame.lines().last().unwrap();
+    assert!(status.len() <= 80, "{status}");
+    let shortened = ".../a-directory-with-a-rather-long-name/nowhere: not a directory";
+    assert!(status.ends_with(shortened), "{status}");
+
+    press(&mut app, &mut host, b":cd /nowhere\r");
+    assert_eq!(
+        app.message,
+        Some(("/nowhere: not a directory".to_owned(), true))
+    );
+    let frame = app.frame(80, 24).text();
+    let status = frame.lines().last().unwrap();
+    assert!(status.len() <= 80, "{status}");
+    assert!(status.ends_with("  /nowhere: not a directory"), "{status}");
+    assert!(!status.contains("..."), "{status}");
+}
+
 /// Released before the child, re-entered after the wait; then the panes the child may have
 /// changed are read again, keeping what is opened and the bar's selection.
 #[test]

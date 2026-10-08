@@ -226,6 +226,51 @@ pub(crate) fn scrolled(spans: &[Span], skip: usize) -> Vec<Span> {
     kept
 }
 
+/// `text` as printable ASCII within `width` columns, its longest path (a word starting `/` or
+/// `~/`) shortened from the left so what follows it, a refusal's reason, stays visible: whole
+/// leading components give way to `...`, and the final component is always kept. Text that
+/// fits, or that has no path, is only made printable; the frame cuts what still does not fit
+/// from the right.
+pub(crate) fn fit_path(text: &str, width: usize) -> String {
+    let text = ascii(text);
+    if text.len() <= width {
+        return text;
+    }
+    let Some((start, path)) = text
+        .split(' ')
+        .scan(0, |at, word| {
+            let start = *at;
+            *at += word.len() + 1;
+            Some((start, word))
+        })
+        .filter(|(_, word)| word.starts_with('/') || word.starts_with("~/"))
+        .max_by_key(|(_, word)| word.len())
+    else {
+        return text;
+    };
+    let (before, after) = (&text[..start], &text[start + path.len()..]);
+    // The slashes a shortened path may start at: never the first column, never a trailing one.
+    let named = path.trim_end_matches('/').len();
+    let cuts: Vec<usize> = path
+        .match_indices('/')
+        .map(|(at, _)| at)
+        .filter(|&at| at > 0 && at < named)
+        .collect();
+    let room = width.saturating_sub(before.len() + after.len() + "...".len());
+    let Some(cut) = cuts
+        .iter()
+        .copied()
+        .find(|&at| path.len() - at <= room)
+        .or(cuts.last().copied())
+    else {
+        return text;
+    };
+    if cut <= "...".len() {
+        return text;
+    }
+    format!("{before}...{}{after}", &path[cut..])
+}
+
 pub(crate) struct Frame {
     cells: Vec<Vec<(u8, Paint)>>,
 }
@@ -357,6 +402,34 @@ mod tests {
         let mut again = Vec::new();
         paint(&frame, &mut shown, &mut again, Palette::Mono).unwrap();
         assert!(again.is_empty());
+    }
+
+    #[test]
+    fn a_long_path_gives_way_to_the_text_after_it() {
+        let refusal = "/private/var/folders/f9/T/af-check/tmp/hub/nowhere: not a directory";
+        // Text that fits, or that has no path to shorten, is unchanged.
+        assert_eq!(fit_path(refusal, refusal.len()), refusal);
+        assert_eq!(fit_path("af task list: exit 2", 10), "af task list: exit 2");
+        assert_eq!(fit_path("/a/b: gone", 4), "/a/b: gone");
+        let named = "pipeline elsewhere/pipeline is not listed";
+        assert_eq!(fit_path(named, 20), named);
+        // Whole leading components go first; as many trailing ones stay as fit.
+        assert_eq!(
+            fit_path(refusal, 40),
+            ".../tmp/hub/nowhere: not a directory"
+        );
+        // The final component stays even when nothing else fits; the frame cuts the rest.
+        assert_eq!(fit_path(refusal, 10), ".../nowhere: not a directory");
+        let said = fit_path(&format!("cannot read {refusal}"), 47);
+        assert_eq!(said, "cannot read .../hub/nowhere: not a directory");
+        // A path under the home directory shortens alike.
+        let home = fit_path("~/work/projects/hub/nowhere: not a directory", 41);
+        assert_eq!(home, ".../projects/hub/nowhere: not a directory");
+        // The longest path is the one shortened, and a trailing slash is not a component.
+        let two = "a/b /private/var/folders/hub/ is not a/c";
+        assert_eq!(fit_path(two, 30), "a/b .../hub/ is not a/c");
+        // Printable ASCII before measuring, so a byte is a column.
+        assert_eq!(fit_path("/var/tmp/\u{e9}t\u{e9}: x", 12), ".../?t?: x");
     }
 
     #[test]

@@ -1465,7 +1465,7 @@ impl App {
         }
         let paint = self.status_paint();
         let right = match &self.message {
-            Some((text, _)) => text.clone(),
+            Some((text, _)) => paint::fit_path(text, width),
             None => self.legend(),
         };
         // The message, binding or legend on the right is what the line is for. At a narrow
