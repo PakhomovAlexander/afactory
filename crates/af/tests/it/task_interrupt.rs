@@ -182,7 +182,7 @@ fn interrupt_running_af(
     args: &[&str],
 ) -> std::process::Output {
     let mut af = ChildGuard(Some(
-        Command::new(env!("CARGO_BIN_EXE_af"))
+        crate::common::af()
             .current_dir(repo)
             .args(args)
             .arg("--state")
@@ -299,7 +299,7 @@ fn sigint_stops_the_worker_group_records_a_cancelled_attempt_and_the_task_resume
     }
 
     std::fs::write(&resume, b"").unwrap();
-    let resumed = Command::new(env!("CARGO_BIN_EXE_af"))
+    let resumed = crate::common::af()
         .current_dir(&repo)
         .args(["task", "run", TASK, "--json", "--state"])
         .arg(&state)
@@ -391,7 +391,7 @@ fn sigint_to_af_task_run_stops_its_worker_and_the_task_resumes() {
     let ready = directory.path().join("worker-ready");
     let resume = directory.path().join("worker-resume");
     long_running_implementer(&repo, &ready, &resume);
-    let planned = Command::new(env!("CARGO_BIN_EXE_af"))
+    let planned = crate::common::af()
         .current_dir(&repo)
         .args([
             "task",
@@ -455,7 +455,7 @@ fn sigint_to_af_task_run_stops_its_worker_and_the_task_resumes() {
     }
 
     std::fs::write(&resume, b"").unwrap();
-    let resumed = Command::new(env!("CARGO_BIN_EXE_af"))
+    let resumed = crate::common::af()
         .current_dir(&repo)
         .args(["task", "run", TASK, "--json", "--state"])
         .arg(&state)

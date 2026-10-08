@@ -161,7 +161,7 @@ fn run_task(repo: &Path, home: &Path, state: &Path) -> (i32, String, String) {
 }
 
 fn run_af(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .current_dir(repo)
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))

@@ -29,7 +29,7 @@ const FIXTURE_ATTEMPT_WALL_MS: u64 = 5_000;
 const PLANNING_SCHEDULING_MARGIN_MS: u64 = 300_000;
 
 fn run(repo: &Path, state: &Path, args: &[&str], code: i32) -> Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_af"))
+    let out = crate::common::af()
         .current_dir(repo)
         .args(args)
         .args(["--json", "--state"])
@@ -339,7 +339,7 @@ fn export_refuses_preparation_private_task_values_and_unsafe_destinations() {
     commit(&repo);
     run(&repo, &state, &["task", "plan", "--file", "ticket.json"], 0);
     let rejected = |destination: &str| {
-        let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        let output = crate::common::af()
             .current_dir(&repo)
             .args([
                 "task",
@@ -416,7 +416,7 @@ fn generated_definition_exports_without_approval_and_a_second_developer_reuses_i
         before
     );
     let original = std::fs::read(repo.join("shared/catalog.toml")).unwrap();
-    let denied = Command::new(env!("CARGO_BIN_EXE_af"))
+    let denied = crate::common::af()
         .current_dir(&repo)
         .args([
             "task",
@@ -441,7 +441,7 @@ fn generated_definition_exports_without_approval_and_a_second_developer_reuses_i
     std::fs::rename(repo.join("shared"), repo.join("relocated/bundle")).unwrap();
     commit(&repo);
     let catalog = |args: &[&str]| {
-        let out = Command::new(env!("CARGO_BIN_EXE_af"))
+        let out = crate::common::af()
             .current_dir(&repo)
             .args(args)
             .output()
@@ -489,7 +489,7 @@ fn generated_definition_exports_without_approval_and_a_second_developer_reuses_i
 
     let second = root.path().join("second-developer");
     let (consumer, consumer_state) = task_cli::fixture_named(&second, "pagination");
-    let imported = Command::new(env!("CARGO_BIN_EXE_af"))
+    let imported = crate::common::af()
         .current_dir(&consumer)
         .args(["catalog", "sync", "--source"])
         .arg(&repo)
@@ -572,7 +572,7 @@ fn generated_nested_plan_waits_for_exact_approval_then_resumes_with_shared_accou
         2
     );
     assert!(waiting["result"].is_null());
-    let denied = Command::new(env!("CARGO_BIN_EXE_af"))
+    let denied = crate::common::af()
         .current_dir(&repo)
         .args(["task", "run", "--execute", "pagination-cli", "--state"])
         .arg(&state)
@@ -814,7 +814,7 @@ fn signed_rejection_and_revocation_survive_reopen_and_block_generated_execution(
                 "af.signed-task-authorization/1"
             );
         }
-        let out = Command::new(env!("CARGO_BIN_EXE_af"))
+        let out = crate::common::af()
             .current_dir(&repo)
             .args(["task", "run", "--execute", "pagination-cli", "--state"])
             .arg(&state)
@@ -852,7 +852,7 @@ fn preview_confirmation_runs_only_the_bootstrap_and_cannot_approve_generated_wor
         0,
     );
     assert_eq!(generated["phase"]["reason"], "needs_plan_review");
-    let out = Command::new(env!("CARGO_BIN_EXE_af"))
+    let out = crate::common::af()
         .current_dir(&repo)
         .args([
             "task",

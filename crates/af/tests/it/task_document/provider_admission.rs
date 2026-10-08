@@ -130,7 +130,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
     }
 
     pub(crate) fn cli(&self, args: &[&str]) -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_af"))
+        crate::common::af()
             .current_dir(&self.repo)
             .env("HOME", &self.home)
             .env("USER", "fixture")

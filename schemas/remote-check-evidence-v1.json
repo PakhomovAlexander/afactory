@@ -51,7 +51,8 @@
         "remote_merge_mismatch",
         "remote_check_inconclusive",
         "deadline_expired",
-        "cancelled"
+        "cancelled",
+        "insufficient_disk"
       ]
     },
     "diagnostic": {
@@ -117,7 +118,8 @@
               "remote_ref_conflict",
               "remote_push_refused",
               "deadline_expired",
-              "cancelled"
+              "cancelled",
+              "insufficient_disk"
             ]
           }
         },

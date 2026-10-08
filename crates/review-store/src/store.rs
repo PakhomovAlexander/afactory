@@ -515,6 +515,21 @@ impl EventStore {
             .map_err(StoreError::Sqlite)
     }
 
+    /// The first event type this release does not know, when another af release wrote one
+    /// into this log: such a Store cannot be replayed here at all, only removed whole by the
+    /// Storage Budget (ADR-0144). `None` when every type is known.
+    pub fn unknown_event_type(&self) -> Result<Option<String>, StoreError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT type FROM events ORDER BY type")?;
+        let types = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(types
+            .into_iter()
+            .find(|kind| kind.parse::<review_core::EventType>().is_err()))
+    }
+
     /// Every event of a run, in sequence order. This is the only read replay needs.
     pub fn replay(&self, run_id: &str) -> Result<Vec<RunEvent>, StoreError> {
         self.replay_from(run_id, 0)

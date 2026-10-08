@@ -9,8 +9,6 @@ use std::process::{Command, Output};
 
 use crate::task_cli;
 
-const AF: &str = env!("CARGO_BIN_EXE_af");
-
 /// Two files a coordinator would once have handed to the next Task through the checkout.
 const CANDIDATE: &str = "--- a/x\n+++ b/x\n";
 const REVIEWS: &str = "{\"reports\":[]}\n";
@@ -26,7 +24,7 @@ fn git(repo: &Path, args: &[&str]) -> Output {
 }
 
 fn af(repo: &Path, state: &Path, args: &[&str]) -> Output {
-    Command::new(AF)
+    crate::common::af()
         .current_dir(repo)
         .args(args)
         .args(["--json", "--state"])

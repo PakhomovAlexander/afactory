@@ -86,8 +86,14 @@ fn task_cli_workspace() -> PathBuf {
 }
 
 fn af(fixture: &Fixture, args: &[&str]) -> (i32, String, String) {
+    af_with(fixture, &[], args)
+}
+
+/// [`af`] with further machine settings.
+fn af_with(fixture: &Fixture, env: &[(&str, &str)], args: &[&str]) -> (i32, String, String) {
     let home = fixture.root.join("home");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_af"));
+    let mut command = crate::common::af();
+    command.envs(env.iter().copied());
     if let Some(bin) = &fixture.bin {
         command
             .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
@@ -1217,4 +1223,71 @@ fn the_release_measure_script_reports_its_target_directory_and_binary_bytes() {
         .output()
         .unwrap();
     assert!(!refused.status.success());
+}
+
+/// ADR-0144: below the machine's free-disk floor a measurement repetition, checked through the
+/// same Storage Budget as every other check, materializes nothing and never starts its command:
+/// the Measurement records a typed `insufficient_disk` failure, and no Worker starts after it.
+#[test]
+fn below_the_floor_a_measurement_fails_with_insufficient_disk_without_running_its_command() {
+    let fixture = fixture(&[]);
+    let file = task_file(&fixture, "full-disk", json!({"size.txt": "80\n"}));
+    let (code, stdout, stderr) = af_with(
+        &fixture,
+        &[("AF_TEST_FREE_BYTES", "0")],
+        &[
+            "task",
+            "start",
+            "--execute",
+            "--file",
+            file.to_str().unwrap(),
+            "--state",
+            fixture.state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    // The Worker after it is refused before it starts, and the run stops resumable.
+    assert_ne!(code, 0, "{stderr}\n{stdout}");
+    let mut measured = Vec::new();
+    let mut stack = vec![fixture.state.join("cas")];
+    while let Some(next) = stack.pop() {
+        if next.is_dir() {
+            for entry in std::fs::read_dir(&next).unwrap() {
+                stack.push(entry.unwrap().path());
+            }
+        } else if let Ok(value) = serde_json::from_slice::<Value>(&std::fs::read(&next).unwrap())
+            && value["type"] == "af/Measurement@1"
+        {
+            schemas::valid(
+                &schemas::validator("measurement-v1.json"),
+                &value["payload"],
+            );
+            measured
+                .push(serde_json::from_value::<MeasurementV1>(value["payload"].clone()).unwrap());
+        }
+    }
+    let [baseline] = measured.as_slice() else {
+        panic!("one Measurement, the baseline's: {measured:?}\n{stderr}");
+    };
+    assert_eq!(serde_json::to_value(baseline.outcome).unwrap(), "failed");
+    let failure = baseline.failure.as_ref().unwrap();
+    assert_eq!(failure.reason.as_str(), "insufficient_disk");
+    assert!(
+        failure
+            .detail
+            .starts_with("insufficient_disk: 0 B (0 bytes) free on the volume of "),
+        "{}",
+        failure.detail
+    );
+    assert!(failure.detail.contains("AF_STORAGE__MIN_FREE_BYTES"));
+    assert_eq!(failure.repetition, 1);
+    // The command never ran: nothing it printed, no exit, no elapsed time.
+    let [run] = baseline.runs.as_slice() else {
+        panic!("{baseline:?}");
+    };
+    assert_eq!(run.exit_code, None);
+    assert_eq!(run.stdout_id, None);
+    assert_eq!(run.stderr_id, None);
+    assert_eq!(run.elapsed_ms, 0);
+    assert!(baseline.summary.is_empty());
 }

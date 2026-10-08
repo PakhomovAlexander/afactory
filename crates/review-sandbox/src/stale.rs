@@ -1,8 +1,9 @@
-//! Stale sandbox removal: the one place that knows how a sandbox directory is named, and the
-//! sweep that removes the directories a dead process left behind.
+//! Stale sandbox removal: the one place that knows how a sandbox directory and a check runtime
+//! directory are named, and the sweep that removes the directories a dead process left behind.
 //!
 //! Every temporary sandbox and temporary template lives in a directory under the process's
-//! temporary root named `af-sandbox-<pid>-<random>`. The handle that owns the directory removes
+//! temporary root named `af-sandbox-<pid>-<random>`, and every check's runtime directory (its
+//! `HOME`, `TMPDIR`, `AF_CHECK_SCRATCH` and `XDG_CACHE_HOME`) in one named `af-check-<pid>-<random>`. The handle that owns the directory removes
 //! it on drop, so a process that ends normally leaves nothing. A process that is killed, or
 //! that aborts, never runs its drops: its trees stay in the temporary root forever, and a tree
 //! that a Gate built into carries a whole `target/` directory. The pid in the name is what lets
@@ -23,6 +24,8 @@
 use std::path::Path;
 
 const PREFIX: &str = "af-sandbox-";
+/// The name prefix of a check's runtime directory (see [`crate::CheckRuntime`]).
+pub(crate) const CHECK_PREFIX: &str = "af-check-";
 
 /// The marker a provider writes beside a sandbox tree (never inside it, where a container bind
 /// could see it) when it releases the handle without removing the directory on purpose. A
@@ -31,7 +34,7 @@ pub(crate) const PRESERVED: &str = "preserved";
 
 /// Directories deeper than this are not walked; a sandbox tree is nowhere near it, and a bound
 /// keeps a hostile tree from exhausting the stack.
-const MAX_DEPTH: u32 = 128;
+pub(crate) const MAX_DEPTH: u32 = 128;
 
 /// A fresh, private directory for one sandbox or template, named so a later sweep can
 /// attribute it to this process.
@@ -39,6 +42,26 @@ pub(crate) fn tempdir() -> std::io::Result<tempfile::TempDir> {
     tempfile::Builder::new()
         .prefix(&format!("{PREFIX}{}-", std::process::id()))
         .tempdir()
+}
+
+/// A fresh, private directory for one Worker Attempt or admission probe that needs a working
+/// directory of its own: named like a sandbox, so the crash sweep attributes it to this process
+/// and a harness that keys its history by working directory can be told it was af's.
+pub fn attempt_directory() -> std::io::Result<tempfile::TempDir> {
+    tempdir()
+}
+
+/// A fresh, private check runtime directory named `af-check-<pid>-<random>`.
+pub(crate) fn check_tempdir() -> std::io::Result<tempfile::TempDir> {
+    tempfile::Builder::new()
+        .prefix(&format!("{CHECK_PREFIX}{}-", std::process::id()))
+        .tempdir()
+}
+
+/// Whether `name` is the name af gives a sandbox or a check runtime directory: either prefix,
+/// a decimal pid and a non-empty random part.
+pub fn is_af_directory_name(name: &str) -> bool {
+    owner_pid(name).is_some()
 }
 
 /// Write the [`PRESERVED`] marker into a sandbox's own directory (the parent of its tree).
@@ -51,7 +74,9 @@ pub(crate) fn mark_preserved(sandbox_dir: &Path) -> std::io::Result<()> {
 
 /// The owning pid encoded in a sandbox directory name, or `None` for any other entry.
 fn owner_pid(name: &str) -> Option<u32> {
-    let rest = name.strip_prefix(PREFIX)?;
+    let rest = name
+        .strip_prefix(PREFIX)
+        .or_else(|| name.strip_prefix(CHECK_PREFIX))?;
     let (pid, random) = rest.split_once('-')?;
     if pid.is_empty() || random.is_empty() || !pid.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
@@ -60,7 +85,7 @@ fn owner_pid(name: &str) -> Option<u32> {
 }
 
 #[cfg(unix)]
-fn process_exists(pid: u32) -> bool {
+pub(crate) fn process_exists(pid: u32) -> bool {
     use nix::errno::Errno;
     use nix::sys::signal::kill;
     use nix::unistd::Pid;
@@ -74,7 +99,7 @@ fn process_exists(pid: u32) -> bool {
 }
 
 #[cfg(not(unix))]
-fn process_exists(_pid: u32) -> bool {
+pub(crate) fn process_exists(_pid: u32) -> bool {
     true
 }
 
@@ -91,8 +116,8 @@ pub struct SweepReport {
     pub preserved: usize,
 }
 
-/// Remove every sandbox directory under this process's temporary root whose owning process no
-/// longer exists. Best-effort and silent: an unreadable root or a failed removal is counted,
+/// Remove every sandbox and check runtime directory under this process's temporary root whose
+/// owning process no longer exists. Best-effort and silent: an unreadable root or a failed removal is counted,
 /// never raised, because nothing a review does depends on this housekeeping.
 pub fn sweep_stale_sandboxes() -> SweepReport {
     sweep_stale_sandboxes_in(&std::env::temp_dir())
@@ -102,6 +127,13 @@ pub fn sweep_stale_sandboxes() -> SweepReport {
 /// another process's `TMPDIR`.
 pub fn sweep_stale_sandboxes_in(root: &Path) -> SweepReport {
     let mut report = SweepReport::default();
+    // A runtime or sandbox removal a dead process left claimed is finished first (ADR-0144).
+    #[cfg(unix)]
+    {
+        let (removed, left) = crate::finish_abandoned_claims(root);
+        report.removed += removed.len();
+        report.failed += left.len();
+    }
     let Ok(entries) = std::fs::read_dir(root) else {
         return report;
     };
@@ -111,10 +143,10 @@ pub fn sweep_stale_sandboxes_in(root: &Path) -> SweepReport {
             continue;
         };
         let path = entry.path();
-        let is_directory = std::fs::symlink_metadata(&path)
-            .map(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
-            .unwrap_or(false);
-        if !is_directory {
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
             continue;
         }
         if pid == own_pid || process_exists(pid) {
@@ -125,7 +157,7 @@ pub fn sweep_stale_sandboxes_in(root: &Path) -> SweepReport {
             report.preserved += 1;
             continue;
         }
-        if remove_tree_nofollow(root, &entry.file_name()) {
+        if remove_listed(root, &entry.file_name(), &metadata) {
             report.removed += 1;
         } else {
             report.failed += 1;
@@ -134,13 +166,32 @@ pub fn sweep_stale_sandboxes_in(root: &Path) -> SweepReport {
     report
 }
 
+/// Remove the directory a sweep listed, only while its name still holds that directory: the
+/// identity the listing measured binds the claimed removal (ADR-0144).
+#[cfg(unix)]
+fn remove_listed(root: &Path, name: &std::ffi::OsStr, listed: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let identity = crate::Identity {
+        device: listed.dev(),
+        inode: listed.ino(),
+    };
+    crate::open_anchor(root)
+        .and_then(|anchor| crate::remove_tree_at(&anchor, name, Some(identity)))
+        .is_ok()
+}
+
+#[cfg(not(unix))]
+fn remove_listed(root: &Path, name: &std::ffi::OsStr, _listed: &std::fs::Metadata) -> bool {
+    remove_tree_nofollow(root, name)
+}
+
 /// Remove `<parent>/<name>` and everything below it without following a single link: every
 /// directory is opened relative to its parent's descriptor with `O_NOFOLLOW`, made writable
 /// through that descriptor (a read-only sandbox left its directories at 0o555), and emptied
 /// with `unlinkat`. A name that turns into a symlink between the listing and the open is
 /// unlinked as the link it now is. Returns whether the whole tree is gone.
 #[cfg(unix)]
-fn remove_tree_nofollow(parent: &Path, name: &std::ffi::OsStr) -> bool {
+pub fn remove_tree_nofollow(parent: &Path, name: &std::ffi::OsStr) -> bool {
     use nix::dir::Dir;
     use nix::fcntl::OFlag;
     use nix::sys::stat::Mode;
@@ -161,7 +212,10 @@ fn remove_tree_nofollow(parent: &Path, name: &std::ffi::OsStr) -> bool {
 }
 
 #[cfg(unix)]
-fn remove_children_nofollow(directory: &mut nix::dir::Dir, depth: u32) -> nix::Result<()> {
+pub(crate) fn remove_children_nofollow(
+    directory: &mut nix::dir::Dir,
+    depth: u32,
+) -> nix::Result<()> {
     use nix::dir::{Dir, Type};
     use nix::errno::Errno;
     use nix::fcntl::OFlag;
@@ -211,7 +265,7 @@ fn remove_children_nofollow(directory: &mut nix::dir::Dir, depth: u32) -> nix::R
 }
 
 #[cfg(not(unix))]
-fn remove_tree_nofollow(parent: &Path, name: &std::ffi::OsStr) -> bool {
+pub fn remove_tree_nofollow(parent: &Path, name: &std::ffi::OsStr) -> bool {
     std::fs::remove_dir_all(parent.join(name)).is_ok()
 }
 
@@ -227,6 +281,38 @@ mod tests {
         assert_eq!(owner_pid("af-sandbox-42x-Ab3xYz"), None);
         assert_eq!(owner_pid(".tmpAb3xYz"), None);
         assert_eq!(owner_pid("af-sandbox-99999999999-Ab3xYz"), None);
+        assert_eq!(owner_pid("af-check-4242-Ab3xYz"), Some(4242));
+        assert_eq!(owner_pid("af-check--Ab3xYz"), None);
+        assert!(is_af_directory_name("af-check-17-x"));
+        assert!(!is_af_directory_name("af-checks-17-x"));
+    }
+
+    #[test]
+    fn a_fresh_check_runtime_is_attributed_to_this_process() {
+        let dir = check_tempdir().unwrap();
+        let name = dir.path().file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with(CHECK_PREFIX), "{name}");
+        assert_eq!(owner_pid(name), Some(std::process::id()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_sweep_removes_a_dead_check_runtime_and_keeps_a_live_one() {
+        let root = tempfile::tempdir().unwrap();
+        let dead = root.path().join("af-check-2000000000-dead03");
+        std::fs::create_dir_all(dead.join("home").join(".cache")).unwrap();
+        std::fs::write(dead.join("scratch-file"), b"x").unwrap();
+        let live = root
+            .path()
+            .join(format!("af-check-{}-live02", std::process::id()));
+        std::fs::create_dir_all(live.join("tmp")).unwrap();
+
+        let report = sweep_stale_sandboxes_in(root.path());
+
+        assert_eq!(report.removed, 1, "{report:?}");
+        assert_eq!(report.live, 1, "{report:?}");
+        assert!(!dead.exists());
+        assert!(live.join("tmp").exists());
     }
 
     #[test]

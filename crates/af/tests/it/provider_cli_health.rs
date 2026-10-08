@@ -8,7 +8,7 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use serde_json::Value;
 
@@ -78,7 +78,7 @@ impl Machine {
     /// `af` on a `PATH` holding only the fixture programs, with the registered context as the
     /// ambient one too, so every document has exactly one Provider.
     fn af(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_af"))
+        crate::common::af()
             .args(args)
             // Outside any checkout, so no repository's af pin is consulted.
             .current_dir(self.root.path())
@@ -220,7 +220,7 @@ fn a_claude_cli_that_cannot_start_is_reported_the_same_way() {
     )
     .unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let status = Command::new(env!("CARGO_BIN_EXE_af"))
+    let status = crate::common::af()
         .args(["provider", "status", "--json"])
         .current_dir(root.path())
         .env("HOME", root.path())

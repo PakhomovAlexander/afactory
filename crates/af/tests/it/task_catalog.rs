@@ -28,7 +28,7 @@ fn commit(repo: &Path, message: &str) {
     }
 }
 fn af(repo: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_af"))
+    crate::common::af()
         .current_dir(repo)
         .args(args)
         .output()

@@ -635,6 +635,36 @@ impl IntegrationCheckSequence<'_> {
         let outcome = (|| -> Result<IntegrationChecksV1, String> {
             crate::task::control::check(cancellation)?;
             integration_remaining(self.check_timeout, deadline)?;
+            let selected: BTreeSet<_> = policy
+                .post_apply_checks
+                .iter()
+                .map(String::as_str)
+                .collect();
+            // Below the machine's free-disk floor no post-apply check starts, and nothing is
+            // prepared for them: no template, no sandbox, no runtime (ADR-0144).
+            if let Err(refusal) = crate::storage::ensure_free_disk() {
+                let mut checks = Vec::new();
+                for definition in self
+                    .checks
+                    .iter()
+                    .filter(|definition| selected.contains(definition.name.as_str()))
+                {
+                    let result = review_check::CheckResult::not_run(definition, refusal.clone());
+                    let result_artifact_id = record_integration_check(self.cas, &result)?;
+                    result_artifact_ids.push(result_artifact_id.clone());
+                    checks.push(IntegrationCheckV1 {
+                        name: result.name,
+                        passed: false,
+                        result_artifact_id,
+                    });
+                }
+                let checks = IntegrationChecksV1 {
+                    derived_snapshot_id: derived_snapshot_id.into(),
+                    checks,
+                };
+                checks.validate()?;
+                return Ok(checks);
+            }
             let template = review_sandbox::SandboxTemplate::materialize(manifest, self.cas)
                 .map_err(|error| error.to_string())?;
             let binding = self.binding;
@@ -673,14 +703,10 @@ impl IntegrationCheckSequence<'_> {
                     .map_err(|error| error.to_string())?,
             };
             integration_remaining(self.check_timeout, deadline)?;
-            let mut runner = CheckRunner::new(self.cas, sandbox.root())
-                .with_timeout(self.check_timeout)
-                .with_cancellation(cancellation);
-            let selected: BTreeSet<_> = policy
-                .post_apply_checks
-                .iter()
-                .map(String::as_str)
-                .collect();
+            // A container check sees the check runtime's tmpfs mounts; the sandbox stays its
+            // only bind (ADR-0144).
+            let container = container.map(ContainerProvider::with_check_runtime);
+            let rustup = crate::task::warm_check::RustupHome::of_kernel();
             let mut checks = Vec::new();
             for definition in self
                 .checks
@@ -688,29 +714,67 @@ impl IntegrationCheckSequence<'_> {
                 .filter(|definition| selected.contains(definition.name.as_str()))
             {
                 crate::task::control::check(cancellation)?;
-                runner = runner.with_timeout(integration_remaining(self.check_timeout, deadline)?);
+                // Read again before this check's runtime is made: an earlier check, or the
+                // sandbox, may have used the room (ADR-0144).
+                if let Err(refusal) = crate::storage::ensure_free_disk() {
+                    let result = review_check::CheckResult::not_run(definition, refusal);
+                    let result_artifact_id = record_integration_check(self.cas, &result)?;
+                    result_artifact_ids.push(result_artifact_id.clone());
+                    checks.push(IntegrationCheckV1 {
+                        name: result.name,
+                        passed: false,
+                        result_artifact_id,
+                    });
+                    continue;
+                }
+                // Each check's own HOME, TMPDIR, AF_CHECK_SCRATCH and XDG_CACHE_HOME, created
+                // empty here and removed when it ends.
+                let runtime = review_sandbox::CheckRuntime::new().map_err(|e| e.to_string())?;
+                let mut runner = CheckRunner::new(self.cas, sandbox.root())
+                    .with_timeout(integration_remaining(self.check_timeout, deadline)?)
+                    .with_cancellation(cancellation);
+                for ((key, local), (_, portable)) in runtime
+                    .environment()
+                    .into_iter()
+                    .zip(review_sandbox::CheckRuntime::container_environment())
+                {
+                    runner = runner.with_split_env(key, local, portable);
+                }
+                for (key, value) in rustup.environment() {
+                    runner = if key == "RUSTUP_HOME" {
+                        runner.with_local_env(key, value)
+                    } else {
+                        runner.with_env(key, value)
+                    };
+                }
                 let mut cleanup_failure = None;
-                let result = match container.as_ref() {
-                    Some(provider) => runner.run_with(definition, |program, args, env, timeout| {
-                        match provider.exec_evidenced_controlled(
-                            sandbox.root(),
-                            program,
-                            args,
-                            env,
-                            timeout,
-                            cancellation,
-                        ) {
-                            Ok(execution) => Ok((execution.output, execution.stderr_held)),
-                            Err(error) => {
-                                if !error.cleanup_confirmed() {
-                                    cleanup_failure = Some(error.to_string());
+                let floor = crate::storage::ensure_free_disk().err();
+                let result = match (floor, container.as_ref()) {
+                    // Below the machine's free-disk floor the check does not start.
+                    (Some(refusal), _) => review_check::CheckResult::not_run(definition, refusal),
+                    (None, Some(provider)) => {
+                        runner.run_with(definition, |program, args, env, timeout| {
+                            match provider.exec_evidenced_controlled(
+                                sandbox.root(),
+                                program,
+                                args,
+                                env,
+                                timeout,
+                                cancellation,
+                            ) {
+                                Ok(execution) => Ok((execution.output, execution.stderr_held)),
+                                Err(error) => {
+                                    if !error.cleanup_confirmed() {
+                                        cleanup_failure = Some(error.to_string());
+                                    }
+                                    Err(error.to_string())
                                 }
-                                Err(error.to_string())
                             }
-                        }
-                    }),
-                    None => runner.run(definition),
+                        })
+                    }
+                    (None, None) => runner.run(definition),
                 };
+                drop(runtime);
                 if let Some(error) = cleanup_failure {
                     // Preserve before any fallible evidence write: CAS failure must not delete a
                     // writable bind which may still have a daemon-owned process attached.

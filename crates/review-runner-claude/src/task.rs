@@ -27,6 +27,8 @@ pub struct ClaudeTaskAdapter {
     /// The explicit `--model` restriction every reported model's usage is checked against.
     model: String,
     grants: Vec<(String, String)>,
+    /// Keep the harness's project directory of each Attempt instead of removing it.
+    keep_transcripts: bool,
 }
 
 impl ClaudeTaskAdapter {
@@ -44,6 +46,7 @@ impl ClaudeTaskAdapter {
             model_flags,
             model,
             grants: vec![],
+            keep_transcripts: false,
         })
     }
     pub fn with_auth(mut self, config_dir: Option<String>, user: String, home: String) -> Self {
@@ -52,6 +55,43 @@ impl ClaudeTaskAdapter {
             self.grants.push(("CLAUDE_CONFIG_DIR".into(), config));
         }
         self
+    }
+
+    /// Keep each Attempt's `projects/<slug>` directory in the Claude config directory
+    /// (`[storage] keep_worker_transcripts`); by default it is removed when the process exits.
+    pub fn keeping_transcripts(mut self, keep: bool) -> Self {
+        self.keep_transcripts = keep;
+        self
+    }
+
+    /// The harness directory the auth grants point the CLI at, when they name one.
+    fn session_store(&self) -> Option<crate::ClaudeSessionStore> {
+        let grant = |name: &str| {
+            self.grants
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.as_str())
+        };
+        let home = grant("HOME")?;
+        Some(crate::ClaudeSessionStore::from_grants(
+            grant("CLAUDE_CONFIG_DIR"),
+            home,
+        ))
+    }
+
+    /// After the Claude process of an Attempt in `workdir` exits, whatever the outcome, remove
+    /// the history the CLI kept for that working directory (ADR-0144). Only a directory af
+    /// created for this Attempt alone qualifies; a failure is reported, never the Attempt's.
+    fn remove_transcripts(&self, workdir: &Path) {
+        if self.keep_transcripts {
+            return;
+        }
+        let Some(store) = self.session_store() else {
+            return;
+        };
+        if let Err(detail) = store.remove_attempt_project(workdir) {
+            eprintln!("af: the Claude Worker's transcript was not removed: {detail}");
+        }
     }
 }
 
@@ -197,6 +237,9 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 }
             },
         );
+        // The process has exited, whatever its outcome: what it kept in the operator's Claude
+        // history for this Attempt's working directory goes now.
+        self.remove_transcripts(workdir);
         let accounting = model_usage::account(parsed.as_ref(), &self.model);
         let success = accounting.error.is_none()
             && accounting.observation.is_none()

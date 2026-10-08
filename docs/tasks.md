@@ -190,9 +190,14 @@ It grants a check directories that survive it. `cargo_target` becomes the check'
 `CARGO_TARGET_DIR` and `cargo_home` its `CARGO_HOME`, Cargo's registry and git caches. Each is
 `$XDG_CACHE_HOME/af/task-build-cache/<project>/<toolchain>/<kind>`, created with mode `0700` and
 keyed by the repository and by the toolchain the check resolves. That toolchain is the
-Snapshot's `rust-toolchain.toml`, `rustc -vV`, `cargo -vV`, the host triple, and the check's
-`PATH`, `LC_ALL`, `TZ` and `RUSTUP_HOME`. A later check with the same key starts from the
-earlier build. Both bounds cover the kinds of one key together, not each on its own.
+Snapshot's `rust-toolchain.toml`, `rustc -vV`, `cargo -vV`, the host triple, the check's
+`PATH`, `LC_ALL`, `TZ` and `RUSTUP_HOME`, and the verified digest of a native toolchain the
+check prepared ([ADR-0127](adr/0127-snapshot-pinned-rust-before-native-task-checks.md)). The
+check's own runtime directory never reaches the key: wherever a hashed value names it, a fixed
+token stands in its place, so two checks with the same toolchain share one key across Attempts,
+Tasks and processes ([ADR-0144](adr/0144-hold-afs-disk-use-to-a-machine-budget.md)). A later
+check with the same key starts from the earlier build. Both bounds cover the kinds of one key
+together, not each on its own; the Storage Budget below bounds how many keys stay.
 
 Under `[warm]` a check and its toolchain probe also receive the kernel's rustup home: its own
 `RUSTUP_HOME`, else `$HOME/.rustup` when that directory exists. They also receive
@@ -228,6 +233,71 @@ names the bound that acted. This is candidate-built state on your machine, not i
 `$XDG_CACHE_HOME/af/task-build-cache` is always safe. A policy without `[warm]` records every
 document exactly as before.
 
+## What a check may write
+
+Every check af runs — a Task code check, a measurement repetition, a review gate check and a
+post-apply integration check — gets four directories of its own, created empty and private
+before it starts and removed when it ends
+([ADR-0144](adr/0144-hold-afs-disk-use-to-a-machine-budget.md)):
+
+| Variable | Directory |
+| --- | --- |
+| `HOME` | `<runtime>/home` |
+| `TMPDIR` | `<runtime>/tmp` |
+| `AF_CHECK_SCRATCH` | `<runtime>/scratch` |
+| `XDG_CACHE_HOME` | `<runtime>/cache` |
+
+`<runtime>` is `af-check-<pid>-<random>` in af's temporary directory; a killed `af` leaves it to
+the next run's crash sweep. A container check sees the same variables below `/af-check`, on mounts
+that go with the container. Write scratch files, copies of the tree and tool caches to
+`$AF_CHECK_SCRATCH` or `$TMPDIR`, never to `/tmp` or `~/.cache`: nothing removes those, and a
+check that copies its tree there on every run fills the disk. Build output that should survive a
+check belongs in a `[warm]` directory or a Gate's `build_caches`. Review gate checks also get the
+kernel's `RUSTUP_HOME` and `RUSTUP_AUTO_INSTALL=0`, as Task checks under `[warm]` do, so their
+private `HOME` never downloads a toolchain; Cargo's registry comes from a Cache Snapshot or the
+check's own `CARGO_HOME`.
+
+## The Storage Budget
+
+af keeps at most `[storage] max_bytes` between runs, 20 GiB by default
+([ADR-0144](adr/0144-hold-afs-disk-use-to-a-machine-budget.md)). The budget counts warm toolchain
+keys, warm Workspaces, review campaign Stores, the finished Tasks of every Task Store, Stores
+this release cannot read, and installed versions. When af holds more, the least recently used
+entry goes first. Nothing in use goes — a held lock, a live writer lease, a running `af review
+run`, the default or a pinned version, the running binary — and nothing used within the last
+hour. A finished Task goes through the Store's own collection and keeps its tombstone. Every
+directory is removed through descriptors opened from its configured root (`/` for a Store
+registered elsewhere) without following a link, and only while it is still the directory the
+sweep measured; anything else is left and reported. An installed version is checked again under
+the lock `af self` holds while it changes the default or a pin, so one that became protected
+stays.
+
+`af storage` prints what af holds, per kind, against the budget, and the free bytes against
+`[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@1` document.
+After every `af task run` and `af review run` the sweep holds af to `max_bytes`, evicting least
+recently used entries; it does not collect by age unless `[storage] auto_gc = true`. `af storage
+prune` previews the sweep with collection; `af storage prune --apply` performs it now. It collects
+first: finished Tasks beyond the
+newest `keep_tasks` (20) of each Store, review campaigns beyond the newest `keep_campaigns` (20)
+and Stores this release cannot read, each idle at least `keep_days` (14); then it evicts until
+af fits. A Store made with `--state` is recorded in `$XDG_STATE_HOME/af/stores.toml`, so the
+sweep reaches it too. A finished Task whose remote checks left gate branches or a pull request is
+collected only after its gate cleanup is done, by the sweep and by `af task gc --apply` alike;
+until then it stays and the next sweep tries again. The sweep that ends `af task run` records
+what it removed and what failed on that Task as one `storage_sweep` observation: `af task show`
+prints a `storage sweep:` line and `--json` carries `storage_sweeps`.
+
+Below the free-disk floor af does not start a check, a measurement repetition or a Worker
+Attempt. Every volume af works on counts — the one holding its temporary directory and the one
+holding `$XDG_CACHE_HOME` — and a volume whose free bytes cannot be measured refuses too, with
+the measurement error. The check's result is `not_run` with reason `insufficient_disk: …`; a
+measurement fails with reason `insufficient_disk` without starting its command; a Worker Attempt
+is released before it starts and charged nothing, and `af task run` stops with the same message,
+leaving the Task to resume once there is room. `[storage]` is read only from the machine's layers: `/etc/af/config.toml`,
+`~/.config/af/config.toml` and `AF_STORAGE__<KEY>`, for example
+`AF_STORAGE__MAX_BYTES=50GiB`. A repository's `.af/af.toml` cannot change it; `af config show`
+reports such a table as ignored. See `af help storage` for every key.
+
 ## Reclaim Store space
 
 `af task list --sizes` prints, per Task, the bytes of the stored objects only that Task reaches
@@ -242,7 +312,8 @@ collected Task keeps its ID, kind, revision, outcome, spend, how many of its Att
 unknown, and times: `task list` and `task show` print it as `collected <time>`, still with
 `(+N unknown)` beside its tokens, and `task output` and `task deliver` refuse it. Run it
 between Tasks: `--apply` is refused while any Task's writer lease is live. If it stops midway,
-rerun it; the next run finishes the removal.
+rerun it; the next run finishes the removal. The Storage Budget's sweep runs the same collection
+by itself after every run.
 
 ## Report what Tasks cost
 

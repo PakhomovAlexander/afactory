@@ -27,6 +27,7 @@ mod render;
 mod routing;
 mod self_managed;
 mod self_optimizer;
+mod storage_budget;
 mod task_acceptance;
 mod task_catalog;
 mod task_cli_fixture;

@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 
 fn run(repo: &Path, state: &Path, args: &[&str]) -> (i32, Value) {
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .current_dir(repo)
         .args(args)
         .args(["--json", "--state"])
@@ -74,7 +74,7 @@ fn bounded_repair_preserves_one_round_and_delivers_verified_s2() {
         &result["review_rounds"][0],
     );
     let worktree = directory.path().join("delivered");
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .current_dir(&repo)
         .args([
             "task",
@@ -339,7 +339,7 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
     commit_fixture(&repo);
     let (code, plan) = run(&repo, &state, &["task", "plan", "--file", "ticket.json"]);
     assert_eq!(code, 0, "{plan:#}");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_af"))
+    let mut child = crate::common::af()
         .current_dir(&repo)
         .args([
             "task",

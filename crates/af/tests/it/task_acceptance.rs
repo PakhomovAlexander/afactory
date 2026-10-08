@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::{path::Path, process::Command};
 
 fn run(repo: &Path, state: &Path, args: &[&str], expected: i32) -> Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_af"))
+    let out = crate::common::af()
         .current_dir(repo)
         .args(args)
         .arg("--state")

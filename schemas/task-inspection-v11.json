@@ -926,6 +926,22 @@
         }
       }
     },
+    "gate_cleanups": {
+      "description": "Every recorded attempt to close the Task's draft gate pull requests and delete its two af-gate branches (ADR-0144), in log order; absent when none was made.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "urn:af:schema:task-gate-cleanup:1"
+      }
+    },
+    "storage_sweeps": {
+      "description": "What every Storage Budget sweep that ended a run of this Task removed and failed to remove (ADR-0144), in log order; absent when none removed or failed anything.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "urn:af:schema:task-storage-sweep:1"
+      }
+    },
     "experiments": {
       "type": "array",
       "minItems": 1,

@@ -32,7 +32,7 @@ fn workspace() -> PathBuf {
 }
 
 fn cli(repo: &Path, state: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_af"))
+    crate::common::af()
         .current_dir(repo)
         .args(args)
         .args(["--json", "--state"])

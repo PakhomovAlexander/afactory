@@ -27,3 +27,7 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   and package RC3, which moves the choice from the machine to the pipeline, as its amendment of
   2026-10-05; the live proof is recorded in its §6, and adoption in this repository's policy
   follows the release.
+- [`disk-budget.md`](disk-budget.md) — af holds a bounded, visible amount of disk: a stable warm
+  cache key, one machine-wide budget evicted least recently used and enforced after every run,
+  collection that reaches every Store, an af-owned scratch directory and `HOME` for every check, and removal of
+  what Workers and gates leave in Claude and GitHub. Accepted 2026-10-07; package D1–D5 in flight.

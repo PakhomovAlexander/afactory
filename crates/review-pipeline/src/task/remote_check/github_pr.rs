@@ -3,9 +3,11 @@
 //! workflow's `pull_request` run for that pull request and head commit.
 //!
 //! The executor never force-pushes, writes no ref outside this Task's two branches, and never
-//! merges, marks ready, closes, comments on or deletes anything. For a required job that did not
-//! succeed it keeps a bounded tail of the job's log, so a remote failure can be debugged where a
-//! local one is.
+//! merges, marks ready or comments on anything. For a required job that did not succeed it keeps
+//! a bounded tail of the job's log, so a remote failure can be debugged where a local one is.
+//! When the Task finishes, and before collection takes it, [`cleanup`] closes the draft gate pull
+//! requests its evidence recorded and deletes exactly its two branches (ADR-0144), each only
+//! while it still equals the recorded evidence; nothing else is ever closed or deleted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -14,8 +16,9 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use review_core::task::remote_check::{
-    MAX_REMOTE_NAME_CHARS, MAX_REMOTE_STEPS, RemoteCheckReasonV1, RemoteCheckStateV1, RemoteJobV1,
-    RemotePullRequestV1, RemoteRunV1, RemoteStepV1,
+    GateCleanupOutcomeV1, MAX_REMOTE_DIAGNOSTIC_BYTES, MAX_REMOTE_NAME_CHARS, MAX_REMOTE_STEPS,
+    RemoteCheckReasonV1, RemoteCheckStateV1, RemoteJobV1, RemotePullRequestV1, RemoteRunV1,
+    RemoteStepV1, TASK_GATE_CLEANUP_V1, TaskGateCleanupV1,
 };
 use review_source_git::Manifest;
 use review_store::Cas;
@@ -71,8 +74,8 @@ pub struct RemotePhase<'a> {
 const PR_TITLE_PREFIX: &str = "af gate: ";
 const PR_BODY: &str = "Opened by af on an operator's machine to run this repository's declared \
 checks against an exact Task Snapshot (ADR-0140). It is not for review or merge: af never marks \
-it ready, merges, closes or comments on it. Close it and delete its two af-gate branches when the \
-Task no longer needs them.";
+it ready, merges or comments on it. af closes it and deletes its two af-gate branches when the \
+Task finishes (ADR-0144).";
 const WAIT_SLICE: Duration = Duration::from_millis(50);
 const MAX_PAGES: u32 = 10;
 /// The bound of the one read-back that follows an interrupted push.
@@ -81,6 +84,216 @@ const PUSH_RECOVERY: Duration = Duration::from_secs(20);
 pub const MAX_JOB_LOG_BYTES: usize = 256 * 1024;
 /// The log excerpt kept for one check, across its unsuccessful jobs.
 pub const MAX_CHECK_LOG_BYTES: usize = 1024 * 1024;
+
+/// What a finished Task's evidence recorded of its gate (ADR-0144): the repository, the base
+/// and head commits its remote phases pushed (the latest observed), and the draft gate pull
+/// requests they opened. A cleanup touches only what still equals this record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateEvidence {
+    /// The `owner/name` every recorded remote check named.
+    pub github: String,
+    /// The commit `af-gate/<task-id>/base` was pushed with.
+    pub base_commit: Option<String>,
+    /// The commit `af-gate/<task-id>/head` was last pushed with.
+    pub head_commit: Option<String>,
+    /// The draft gate pull requests the evidence recorded.
+    pub pull_requests: Vec<u64>,
+}
+
+/// Remove what one Task's remote checks left on GitHub (ADR-0144), proving ownership first. A
+/// recorded pull request is closed only when it is open, its base repository is the recorded
+/// repository, its head and base are exactly this Task's two `af-gate/` branches and its head
+/// commit is the recorded head commit. A branch is deleted only when the push target shows
+/// exactly the recorded commit for it, in one atomic push of the matching deletions. Anything
+/// that differs is left in place and named in the failed record's reason; nothing else is ever
+/// closed, deleted or written. The caller records the result either way, and it never changes
+/// the Task's result.
+pub fn cleanup(
+    task_id: &str,
+    target: &GithubPrTarget,
+    evidence: &GateEvidence,
+    mapping: Option<&Path>,
+    settings: &GithubPrSettings,
+    deadline: Instant,
+) -> TaskGateCleanupV1 {
+    let mut numbers: Vec<u64> = evidence
+        .pull_requests
+        .iter()
+        .copied()
+        .filter(|n| *n > 0)
+        .collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    let redactor = Redactor::new(&target.push_url, mapping);
+    let failures = cleanup_failures(
+        task_id, target, evidence, &numbers, &redactor, settings, deadline,
+    );
+    let reason = (!failures.is_empty()).then(|| {
+        let joined = redactor.apply(&failures.join("; "));
+        let mut end = joined.len().min(MAX_REMOTE_DIAGNOSTIC_BYTES);
+        while !joined.is_char_boundary(end) {
+            end -= 1;
+        }
+        joined[..end].to_owned()
+    });
+    TaskGateCleanupV1 {
+        schema: TASK_GATE_CLEANUP_V1.into(),
+        github: evidence.github.clone(),
+        pull_requests: numbers,
+        branches: TaskGateCleanupV1::branches_of(task_id),
+        outcome: if reason.is_some() {
+            GateCleanupOutcomeV1::Failed
+        } else {
+            GateCleanupOutcomeV1::Done
+        },
+        reason,
+    }
+}
+
+/// Why one recorded pull request is not this Task's to close, when it is not: every
+/// difference from the record, or nothing.
+fn foreign_pull(pull: &Pull, evidence: &GateEvidence, head: &str, base: &str) -> Vec<String> {
+    let mut differs = Vec::new();
+    if !pull.base_repo.eq_ignore_ascii_case(&evidence.github) {
+        differs.push(format!("its base repository is {:?}", pull.base_repo));
+    }
+    if !pull.head_repo.eq_ignore_ascii_case(&evidence.github) {
+        differs.push(format!("its head repository is {:?}", pull.head_repo));
+    }
+    if pull.head_ref != head {
+        differs.push(format!(
+            "its head branch is {:?}, not {head}",
+            pull.head_ref
+        ));
+    }
+    if pull.base_ref != base {
+        differs.push(format!(
+            "its base branch is {:?}, not {base}",
+            pull.base_ref
+        ));
+    }
+    match &evidence.head_commit {
+        Some(recorded) if pull.head_sha == *recorded => {}
+        Some(recorded) => differs.push(format!(
+            "its head commit {} is not the recorded {recorded}",
+            pull.head_sha
+        )),
+        None => differs.push("no head commit was recorded for this Task".into()),
+    }
+    differs
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cleanup_failures(
+    task_id: &str,
+    target: &GithubPrTarget,
+    evidence: &GateEvidence,
+    numbers: &[u64],
+    redactor: &Redactor,
+    settings: &GithubPrSettings,
+    deadline: Instant,
+) -> Vec<String> {
+    if !is_ref_component(task_id) {
+        return vec![format!(
+            "Task ID {task_id:?} cannot name af-gate branches, so none was pushed for it"
+        )];
+    }
+    if !target.github.eq_ignore_ascii_case(&evidence.github) {
+        return vec![format!(
+            "the mapping's target names github:{}, not the recorded github:{}; nothing was \
+             closed or deleted",
+            target.github, evidence.github
+        )];
+    }
+    let tools = Tools {
+        path: settings.path.as_deref(),
+        deadline,
+        cancellation: None,
+        redactor,
+    };
+    let directory = match tempfile::tempdir() {
+        Ok(directory) => directory,
+        Err(error) => return vec![format!("creating the private repository: {error}")],
+    };
+    let repository = match GateRepository::init(&tools, directory) {
+        Ok(repository) => repository,
+        Err(error) => return vec![error.describe("creating the private repository")],
+    };
+    let mut failures = Vec::new();
+    let head = format!("af-gate/{task_id}/head");
+    let base = format!("af-gate/{task_id}/base");
+    let api = Api {
+        tools: &tools,
+        github: &evidence.github,
+        cwd: repository.root(),
+    };
+    for number in numbers {
+        match api.pull(*number) {
+            // A closed pull request has nothing left to close.
+            Ok(pull) if !pull.open => {}
+            Ok(pull) => {
+                let differs = foreign_pull(&pull, evidence, &head, &base);
+                if !differs.is_empty() {
+                    failures.push(format!(
+                        "pull request #{number} was left open: {}",
+                        differs.join(", ")
+                    ));
+                } else if let Err(error) = api.close_pull(*number) {
+                    failures.push(error.describe(&format!("closing pull request #{number}")));
+                }
+            }
+            Err(error) => {
+                failures.push(error.describe(&format!("reading pull request #{number}")));
+            }
+        }
+    }
+    let branches = [
+        (
+            base.as_str(),
+            format!("refs/heads/{base}"),
+            &evidence.base_commit,
+        ),
+        (
+            head.as_str(),
+            format!("refs/heads/{head}"),
+            &evidence.head_commit,
+        ),
+    ];
+    let url = target.push_url.as_str();
+    match repository.ls_remote(&tools, url, &[&branches[0].1, &branches[1].1]) {
+        Ok(found) => {
+            let mut deletions = Vec::new();
+            for (branch, reference, recorded) in &branches {
+                match (found.get(reference.as_str()), recorded) {
+                    (None, _) => {}
+                    (Some(now), Some(recorded)) if now == recorded => {
+                        deletions.push((reference.clone(), recorded.clone()));
+                    }
+                    (Some(now), Some(recorded)) => failures.push(format!(
+                        "branch {branch} was left: it holds {now}, not the recorded {recorded}"
+                    )),
+                    (Some(now), None) => failures.push(format!(
+                        "branch {branch} was left: it holds {now}, and no commit was recorded \
+                         for it"
+                    )),
+                }
+            }
+            // Each deletion is bound at the server to its recorded commit, so a branch moved
+            // after the read-back above is not deleted either.
+            if !deletions.is_empty() {
+                match repository.delete(&tools, url, task_id, &deletions) {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => failures.push(error.describe(
+                        "deleting the af-gate branches (each only at its recorded commit)",
+                    )),
+                    Err(error) => failures.push(error),
+                }
+            }
+        }
+        Err(error) => failures.push(error.describe("reading the af-gate branches")),
+    }
+    failures
+}
 
 /// Run the remote phase once for every remote check of one Check node. `Err` is a
 /// kernel error (a tree that did not read back, an unwritable private repository), never a
@@ -255,7 +468,8 @@ pub fn run(
     let url = phase.target.push_url.as_str();
     let delete_hint = format!(
         "another Task, or this Task ID in another Store, owns the name; delete both branches \
-         (`git push <push-url> --delete {base_branch} {head_branch}`) or rename the Task"
+         (`git push <push-url> --delete {base_branch} {head_branch}`) or rename the Task (af \
+         deletes them itself once the Task that owns them finishes)"
     );
 
     let found = match repository.ls_remote(&tools, url, &[&base_ref, &head_ref]) {
@@ -1287,6 +1501,14 @@ impl Api<'_> {
         ])?;
         parse_pull(&value, self.github)
             .ok_or_else(|| ToolError::Failed(Some("the created pull request is malformed".into())))
+    }
+
+    /// Close one pull request. Nothing else about it changes.
+    fn close_pull(&self, number: u64) -> Result<Pull, ToolError> {
+        let path = format!("repos/{}/pulls/{number}", self.github);
+        let value = self.call(&["--method", "PATCH", &path, "-f", "state=closed"])?;
+        parse_pull(&value, self.github)
+            .ok_or_else(|| ToolError::Failed(Some("the closed pull request is malformed".into())))
     }
 
     fn pull(&self, number: u64) -> Result<Pull, ToolError> {

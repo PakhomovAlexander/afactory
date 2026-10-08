@@ -144,6 +144,15 @@ impl CheckResult {
         }
     }
 
+    /// A local check refused before it ran, with the reason it was refused for: the shape an
+    /// unstartable check has, so losing it can never read as passing it.
+    pub fn not_run(definition: &CheckDefinition, reason: impl Into<String>) -> CheckResult {
+        CheckResult {
+            reason: Some(reason.into()),
+            ..base_result(definition)
+        }
+    }
+
     /// Whether this result is exactly one of the two shapes: local (no `remote`) or remote
     /// (`remote`, and no program, exit code, arguments or `stderr`; a log excerpt as `stdout`
     /// only when the check did not pass). A mixture is neither.
@@ -204,6 +213,13 @@ impl<'a> CheckRunner<'a> {
         let entry = (key.into(), value.into());
         self.local_env.push(entry.clone());
         self.portable_env.push(entry);
+        self
+    }
+
+    /// Add a value only a host-local check receives, such as a host path no container image
+    /// can resolve; a container run never sees it.
+    pub fn with_local_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.local_env.push((key.into(), value.into()));
         self
     }
 
@@ -599,6 +615,34 @@ mod tests {
                 .contains("evidence was not preserved")
         );
         assert_eq!(super::stderr_held_reason(false), None);
+    }
+
+    #[test]
+    fn a_local_only_value_never_reaches_an_external_provider() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let runner = CheckRunner::new(&cas, directory.path())
+            .with_local_env("RUSTUP_HOME", "/host/rustup")
+            .with_env("RUSTUP_AUTO_INSTALL", "0");
+        assert!(
+            runner
+                .local_environment()
+                .contains(&("RUSTUP_HOME".to_string(), "/host/rustup".to_string()))
+        );
+        let check = CheckDefinition::new("probe", Command::new("/bin/true", vec![]));
+        let result = runner.run_with(&check, |_, _, environment, _| {
+            assert!(environment.iter().all(|(key, _)| key != "RUSTUP_HOME"));
+            assert!(environment.contains(&("RUSTUP_AUTO_INSTALL".to_string(), "0".to_string())));
+            Err("assertion provider stops here".to_string())
+        });
+        assert_eq!(result.status, CheckStatus::NotRun);
+        let refused = CheckResult::not_run(&check, "insufficient_disk: 1 B free");
+        assert_eq!(refused.status, CheckStatus::NotRun);
+        assert_eq!(
+            refused.reason.as_deref(),
+            Some("insufficient_disk: 1 B free")
+        );
+        assert_eq!(refused.program.as_deref(), Some("/bin/true"));
     }
 
     #[test]

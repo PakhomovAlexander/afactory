@@ -470,6 +470,9 @@ pub(crate) fn state_path(repo: &Path, state: Option<&Path>) -> Result<(PathBuf, 
     if state.starts_with(&repo) {
         return Err("Task state must be outside the repository".into());
     }
+    // A Store outside the default root is known to the Storage Budget only through the
+    // registry (ADR-0144); recording is best effort.
+    crate::storage::registry::record(&state, crate::storage::registry::StoreKind::Task);
     Ok((repo, state))
 }
 
@@ -1670,6 +1673,8 @@ fn start_captured(
         store
             .admit_task_plan(&cas, &lease, &trusted)
             .map_err(|e| e.to_string())?;
+        // The sweep that ends this run records what it removed on this Task (ADR-0144).
+        crate::storage::note_task_run(&state, lease.task_id());
         execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
         Ok(())
     })();
@@ -2009,6 +2014,10 @@ fn execute(
     // Interrupted work is neither assembled nor finished: the lease is released and the Task
     // stays resumable with `af task run` (ADR-0129).
     crate::interrupt::check()?;
+    // So is work the free-disk floor stopped before a Worker started (ADR-0144).
+    if let Some(refusal) = runtime.disk_refusal() {
+        return Err(refusal);
+    }
     let report = report?;
     let projection = runtime.projection()?;
     if matches!(projection.phase, TaskPhaseV1::Waiting { .. }) {
@@ -2025,7 +2034,12 @@ fn execute(
         )
         .map_err(|e| e.to_string())?
         .0;
-    runtime.finish(&result_id)
+    runtime.finish(&result_id)?;
+    drop(runtime);
+    // The result is recorded; what the Task's remote checks left on GitHub goes now, under the
+    // same lease, and only ever as a warning when it cannot (ADR-0144).
+    crate::storage::gate::after_finish(cas, store, lease);
+    Ok(())
 }
 
 fn confirm_current_plan(
@@ -2194,6 +2208,8 @@ pub(super) fn run(
                 .admit_task_plan(&cas, &lease, &trusted)
                 .map_err(|e| e.to_string())?;
         }
+        // The sweep that ends this run records what it removed on this Task (ADR-0144).
+        crate::storage::note_task_run(&state, lease.task_id());
         execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
         Ok(())
     })();
@@ -2539,6 +2555,9 @@ fn present_with_format(
         for line in remote_check_lines(&value) {
             println!("{line}");
         }
+        if let Some(line) = storage_sweep_line(&value) {
+            println!("{line}");
+        }
         for line in measurement_lines(cas, &state)? {
             println!("{line}");
         }
@@ -2789,6 +2808,18 @@ fn cache_condition(measurement: &review_core::task::measurement::MeasurementV1) 
     }
 }
 
+/// Every remote check's evidence a Task's selected outputs name: what its gate pushed and
+/// opened, for the gate cleanup of ADR-0144.
+pub(crate) fn remote_check_evidence(
+    cas: &Cas,
+    state: &TaskProjection,
+) -> Result<Vec<review_core::task::remote_check::RemoteCheckEvidenceV1>, String> {
+    remote_check_records(cas, state)?
+        .into_iter()
+        .map(|record| serde_json::from_value(record["record"].clone()).map_err(|e| e.to_string()))
+        .collect()
+}
+
 /// Every remote check result of the Task's current check receipts (ADR-0140), in node and
 /// check order, with the evidence document it derives from. Replay reads only the Store.
 fn remote_check_records(
@@ -2864,8 +2895,45 @@ fn evidence_seconds(text: &str) -> Option<i64> {
 
 /// The text `af task show` prints for each remote check (ADR-0140): the executor and pull
 /// request, the run and its attempt, each required job with its conclusion and duration, the
-/// unsuccessful steps, the kept log excerpt, the refusal reason, and the two commands that clean
-/// up after the gate.
+/// unsuccessful steps, the kept log excerpt and the refusal reason; then the latest gate cleanup
+/// (ADR-0144), and the two commands that clean up after the gate whenever af has not.
+/// One line for the latest Storage Budget sweep recorded on the Task (ADR-0144): what the sweep
+/// that ended a run of it removed, how much, what failed, and the totals against the budget.
+fn storage_sweep_line(inspection: &serde_json::Value) -> Option<String> {
+    let sweep = inspection["storage_sweeps"].as_array()?.last()?;
+    let count = |field: &str| sweep[field].as_array().map_or(0, Vec::len) as u64;
+    let removed = count("removals") + sweep["omitted_removals"].as_u64().unwrap_or(0);
+    let failed = count("failures") + sweep["omitted_failures"].as_u64().unwrap_or(0);
+    let bytes = sweep["removals"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|removal| removal["bytes"].as_u64())
+        .fold(0_u64, u64::saturating_add);
+    let total = |field: &str| crate::storage::human_bytes(sweep[field].as_u64().unwrap_or(0));
+    Some(format!(
+        "storage sweep: removed {removed} entr{} ({}){}; {} → {} of a {} budget{}",
+        if removed == 1 { "y" } else { "ies" },
+        crate::storage::human_bytes(bytes),
+        if failed > 0 {
+            format!(
+                ", {failed} removal{} failed",
+                if failed == 1 { "" } else { "s" }
+            )
+        } else {
+            String::new()
+        },
+        total("total_before"),
+        total("total_after"),
+        total("max_bytes"),
+        if sweep["stop"] == "nothing_evictable" {
+            ", still over: the rest is in use or was used within the hour"
+        } else {
+            ""
+        }
+    ))
+}
+
 fn remote_check_lines(inspection: &serde_json::Value) -> Vec<String> {
     let mut lines = Vec::new();
     let mut cleanups = BTreeSet::new();
@@ -2944,9 +3012,45 @@ fn remote_check_lines(inspection: &serde_json::Value) -> Vec<String> {
             ));
         }
     }
+    let latest = inspection["gate_cleanups"]
+        .as_array()
+        .and_then(|cleanups| cleanups.last());
+    if let Some(cleanup) = latest {
+        let pulls = cleanup["pull_requests"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_u64)
+            .map(|number| format!("pull request {number}"))
+            .collect::<Vec<_>>();
+        let branches = cleanup["branches"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>();
+        lines.push(match cleanup["outcome"].as_str() {
+            Some("done") => format!(
+                "gate cleanup: done; closed {} and deleted {}",
+                if pulls.is_empty() {
+                    "no pull request".to_string()
+                } else {
+                    pulls.join(", ")
+                },
+                preview::text(&branches.join(" and "))
+            ),
+            _ => format!(
+                "gate cleanup: failed; {}",
+                preview::text(cleanup["reason"].as_str().unwrap_or("no reason recorded"))
+            ),
+        });
+        if cleanup["outcome"] == "done" {
+            return lines;
+        }
+    }
     for (github, number, task_id) in cleanups {
         lines.push(format!(
-            "gate branches af-gate/{task_id}/base and af-gate/{task_id}/head stay until you remove them:"
+            "gate branches af-gate/{task_id}/base and af-gate/{task_id}/head stay until af removes them (`af storage prune --apply` retries) or you do:"
         ));
         if let Some(number) = number {
             lines.push(format!("  gh pr close {number} --repo {github}"));
@@ -3230,6 +3334,12 @@ fn inspection(
     let remote_checks = remote_check_records(cas, &state)?;
     if !remote_checks.is_empty() {
         value["remote_checks"] = json!(remote_checks);
+    }
+    if !state.gate_cleanups.is_empty() {
+        value["gate_cleanups"] = json!(state.gate_cleanups);
+    }
+    if !state.storage_sweeps.is_empty() {
+        value["storage_sweeps"] = json!(state.storage_sweeps);
     }
     if !owned_child_sets.is_empty() {
         value["owned_child_sets"] = json!(owned_child_sets);
@@ -3609,11 +3719,37 @@ mod remote_check_line_tests {
                 "remote check docs: not_run by github-pr on octo/gate, pull request \
                  https://github.com/octo/gate/pull/12",
                 "  reason: remote_check_missing",
-                "gate branches af-gate/rc1/base and af-gate/rc1/head stay until you remove them:",
+                "gate branches af-gate/rc1/base and af-gate/rc1/head stay until af removes them \
+                 (`af storage prune --apply` retries) or you do:",
                 "  gh pr close 12 --repo octo/gate",
                 "  git push <push-url> --delete af-gate/rc1/base af-gate/rc1/head",
             ]
         );
+        // ADR-0144: a done cleanup replaces the manual commands; a failed one says why first.
+        let mut cleaned = inspection.clone();
+        cleaned["gate_cleanups"] = serde_json::json!([{"schema": "af/TaskGateCleanup@1",
+            "github": "octo/gate", "pull_requests": [12],
+            "branches": ["af-gate/rc1/base", "af-gate/rc1/head"], "outcome": "done"}]);
+        let lines = remote_check_lines(&cleaned);
+        assert_eq!(
+            lines.last().unwrap(),
+            "gate cleanup: done; closed pull request 12 and deleted af-gate/rc1/base and \
+             af-gate/rc1/head"
+        );
+        assert!(!lines.iter().any(|line| line.contains("gh pr close")));
+        let mut failed = inspection.clone();
+        failed["gate_cleanups"] = serde_json::json!([{"schema": "af/TaskGateCleanup@1",
+            "github": "octo/gate", "pull_requests": [12],
+            "branches": ["af-gate/rc1/base", "af-gate/rc1/head"], "outcome": "failed",
+            "reason": "closing pull request #12 failed: HTTP 403"}]);
+        let lines = remote_check_lines(&failed);
+        assert!(
+            lines.contains(
+                &"gate cleanup: failed; closing pull request #12 failed: HTTP 403".to_string()
+            ),
+            "{lines:?}"
+        );
+        assert!(lines.iter().any(|line| line.contains("gh pr close 12")));
         // A refusal published nothing, so it prints no cleanup; its redacted diagnostic shows.
         let refused = serde_json::json!({"task_id": "rc1", "remote_checks": [
             entry("kernel", "not_run", fixture("refused-push-refused.json")),
@@ -3631,6 +3767,28 @@ mod remote_check_line_tests {
         );
         assert_eq!(lines.len(), 3);
         assert!(remote_check_lines(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn the_latest_storage_sweep_is_one_line() {
+        assert_eq!(storage_sweep_line(&serde_json::json!({})), None);
+        let inspection = serde_json::json!({"storage_sweeps": [
+            {"schema": "af/TaskStorageSweep@1", "removals": [], "omitted_removals": 0,
+             "failures": ["removing /x: it changed"], "omitted_failures": 0, "stop": "fits",
+             "max_bytes": 1024, "total_before": 0, "total_after": 0},
+            {"schema": "af/TaskStorageSweep@1", "removals": [
+                {"kind": "task", "path": "/s", "task_id": "gc-older", "bytes": 2048,
+                 "rule": "collection"}],
+             "omitted_removals": 0, "failures": [], "omitted_failures": 0,
+             "stop": "nothing_evictable", "max_bytes": 1024, "total_before": 4096,
+             "total_after": 2048}]});
+        assert_eq!(
+            storage_sweep_line(&inspection).as_deref(),
+            Some(
+                "storage sweep: removed 1 entry (2.0 KiB); 4.0 KiB → 2.0 KiB of a 1.0 KiB \
+                 budget, still over: the rest is in use or was used within the hour"
+            )
+        );
     }
 
     #[test]

@@ -109,6 +109,18 @@ pub enum TaskChangeV1 {
     TaskCollected {
         collected: super::collection::TaskCollectedV1,
     },
+    /// One attempt to close a finished Task's draft gate pull requests and delete its two
+    /// `af-gate/` branches (ADR-0144), carried inline. It references no artifact and never
+    /// changes the Task's result; a failed one is tried again by a later sweep.
+    GateCleanup {
+        cleanup: super::remote_check::TaskGateCleanupV1,
+    },
+    /// What the Storage Budget's sweep at the end of `af task run` removed (ADR-0144), carried
+    /// inline as an observation of the Task that run executed. It references no artifact and
+    /// never changes the Task's result.
+    StorageSweep {
+        sweep: super::storage_sweep::TaskStorageSweepV1,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +186,8 @@ impl TaskTransitionV1 {
                 !reason.trim().is_empty() && reason.chars().count() <= 65536,
                 "Revocation needs a bounded reason",
             ),
+            TaskChangeV1::GateCleanup { cleanup } => cleanup.validate_shape(),
+            TaskChangeV1::StorageSweep { sweep } => sweep.validate(),
             TaskChangeV1::TaskCollected { collected } => {
                 collected.validate()?;
                 require(

@@ -360,6 +360,17 @@ pub(crate) fn setup_hint(kind: &str, ids: &BTreeSet<String>) -> String {
     format!("set up {kind}: af provider setup {id} --kind {kind} --login")
 }
 
+/// The config directories of every Claude Provider the registry declares: where af's Claude
+/// Workers wrote their history (ADR-0144).
+pub(crate) fn registered_claude_config_dirs() -> Vec<PathBuf> {
+    load_specs()
+        .0
+        .into_iter()
+        .filter(|spec| spec.registry_declared && spec.kind == ProviderKind::Claude)
+        .filter_map(|spec| spec.auth_dir)
+        .collect()
+}
+
 /// Where the Provider registry is read from, when it can be named at all.
 pub(crate) fn registry_location() -> Option<PathBuf> {
     registry_path().ok().flatten()
@@ -3863,6 +3874,9 @@ fn probe_claude_weekly_limits(
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
 
     let reader_slot = ClaudeReaderSlot::acquire()?;
+    // An af-owned working directory, dropped after the child below has exited: the CLI keys its
+    // project history by working directory, and this one's history is removed with it.
+    let directory = ProbeDirectory::new(spec)?;
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 50,
@@ -3878,7 +3892,7 @@ fn probe_claude_weekly_limits(
     let mut command = CommandBuilder::new(program.as_os_str());
     command.args(["--setting-sources", "user", "/usage"]);
     command.env_clear();
-    command.cwd("/");
+    command.cwd(directory.path().as_os_str());
     command.env("PATH", probe_path);
     if let Some(home) = std::env::var_os("HOME").filter(|value| Path::new(value).is_absolute()) {
         command.env("HOME", home);
@@ -4129,14 +4143,105 @@ fn bounded_tail(buffer: &[u8], window: usize) -> &[u8] {
     &buffer[buffer.len().saturating_sub(window)..]
 }
 
+/// The fresh working directory af creates for one provider CLI probe (ADR-0144), named
+/// `af-sandbox-<pid>-<random>` like every Attempt directory, so the startup crash sweep removes
+/// it when af dies and a harness that keys its history by working directory can be told it was
+/// af's. Dropped once the probe's process has exited, whatever the outcome: for a Claude probe
+/// it first removes the `<CLAUDE_CONFIG_DIR>/projects/<slug>` directory the CLI may have kept for
+/// this directory alone, through descriptors and under the `keep_worker_transcripts` rule of
+/// Worker Attempts; `projects/-` and every other project directory stay untouched.
+pub(crate) struct ProbeDirectory {
+    directory: tempfile::TempDir,
+    claude_config: Option<PathBuf>,
+}
+
+impl ProbeDirectory {
+    fn new(spec: &ProviderSpec) -> Result<Self, String> {
+        use std::os::unix::fs::PermissionsExt;
+        // A probe is work like any Attempt: below the machine's free-disk floor it does not
+        // start (ADR-0144). Without an installed storage host (`af provider status` outside a
+        // run) there is no floor to hold, as for every other command that is not a run.
+        review_pipeline::storage::ensure_free_disk()?;
+        let unusable =
+            |error: std::io::Error| format!("cannot create the probe's working directory: {error}");
+        let directory = review_sandbox::attempt_directory().map_err(unusable)?;
+        // Private and searchable whatever the umask: the CLI must be able to start in it.
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .map_err(unusable)?;
+        Ok(Self {
+            directory,
+            claude_config: (spec.kind == ProviderKind::Claude)
+                .then(|| claude_config_of(spec))
+                .flatten(),
+        })
+    }
+
+    fn path(&self) -> &Path {
+        self.directory.path()
+    }
+}
+
+/// The Claude config directory a probe of `spec` runs against: the one it is handed as
+/// `CLAUDE_CONFIG_DIR`, otherwise the CLI's default below `HOME`.
+fn claude_config_of(spec: &ProviderSpec) -> Option<PathBuf> {
+    if spec.explicit_selector {
+        return spec.auth_dir.clone();
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .map(|home| home.join(".claude"))
+}
+
+impl Drop for ProbeDirectory {
+    fn drop(&mut self) {
+        let Some(config) = &self.claude_config else {
+            return;
+        };
+        if crate::storage::policy().is_ok_and(|policy| policy.keep_worker_transcripts) {
+            return;
+        }
+        // The harness keys history by the process's working directory: both spellings count.
+        let mut slugs = vec![review_runner_claude::ClaudeSessionStore::project_slug(
+            self.path(),
+        )];
+        if let Ok(resolved) = self.path().canonicalize() {
+            slugs.push(review_runner_claude::ClaudeSessionStore::project_slug(
+                &resolved,
+            ));
+        }
+        slugs.sort();
+        slugs.dedup();
+        // Each project directory the CLI left is measured now that the probe has exited, and
+        // only that directory is removed: one replaced before its removal is left and reported.
+        let mut failures = Vec::new();
+        let mut projects = Vec::new();
+        for slug in slugs {
+            match review_sandbox::Identity::of(&config.join("projects").join(&slug)) {
+                Ok(identity) => projects.push((slug, Some(identity))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    failures.push(format!("projects/{slug} could not be measured: {error}"))
+                }
+            }
+        }
+        let (_, left) = crate::storage::remove_claude_projects(config, &projects);
+        failures.extend(left);
+        for failure in failures {
+            eprintln!("af: warning: the Claude history of a provider probe was left: {failure}");
+        }
+    }
+}
+
 fn configure_probe_environment(
     command: &mut Command,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
+    directory: &Path,
 ) {
     command
         .env_clear()
-        .current_dir(Path::new("/"))
+        .current_dir(directory)
         .env("PATH", probe_path);
     if let Some(home) = std::env::var_os("HOME").filter(|value| Path::new(value).is_absolute()) {
         command.env("HOME", home);
@@ -4205,9 +4310,10 @@ fn probe_codex_request_observed(
     answered: &mut bool,
 ) -> Result<serde_json::Value, String> {
     check_task_probe_control(attempt_deadline, cancelled)?;
+    let directory = ProbeDirectory::new(spec)?;
     let mut command = Command::new(program);
     command.args(["app-server", "--stdio"]);
-    configure_probe_environment(&mut command, spec, probe_path);
+    configure_probe_environment(&mut command, spec, probe_path, directory.path());
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -4565,6 +4671,8 @@ fn run_probe_before(
     attempt_deadline: Option<Instant>,
 ) -> Result<ProbeOutput, String> {
     check_task_probe_control(attempt_deadline, cancelled)?;
+    // Removed, with what a Claude CLI kept for it, once the probe has exited (ADR-0144).
+    let directory = ProbeDirectory::new(spec)?;
     let mut command = Command::new(program);
     match spec.kind {
         ProviderKind::Claude => {
@@ -4574,7 +4682,7 @@ fn run_probe_before(
             command.args(["login", "status"]);
         }
     }
-    configure_probe_environment(&mut command, spec, probe_path);
+    configure_probe_environment(&mut command, spec, probe_path, directory.path());
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

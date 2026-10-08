@@ -2,7 +2,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use review_config::lock::{Lockfile, Pin};
 
@@ -15,7 +15,7 @@ fn repo(root: &Path) -> PathBuf {
 }
 
 fn af(repo: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_af"))
+    crate::common::af()
         .args(["onboard", "--repo", repo.to_str().unwrap()])
         .args(args)
         .output()
@@ -157,7 +157,7 @@ fn preview_rejects_a_repository_path_that_cannot_be_copied_as_utf8() {
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     // A `.git` the kernel accepts as a repository holds a HEAD.
     std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .arg("onboard")
         .arg("--repo")
         .arg(&repo)
@@ -187,7 +187,7 @@ fn existing_authority_can_be_validated_under_a_non_utf8_repository_path() {
     std::fs::remove_dir(&target).unwrap();
     std::fs::rename(&source, &target).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .arg("onboard")
         .args(["--repo", "."])
         .arg("--json")
@@ -208,7 +208,7 @@ fn preview_rejects_a_non_utf8_canonical_repository_reached_as_dot() {
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     // A `.git` the kernel accepts as a repository holds a HEAD.
     std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .args(["onboard", "--repo", ".", "--gate", "check=true", "--json"])
         .current_dir(&repo)
         .output()
@@ -351,7 +351,7 @@ fn absent_gate_is_a_refusal_and_help_is_self_contained() {
     assert!(stderr(&refused).contains("no unambiguous acceptance Gate"));
     assert!(!repo.join(".af").exists());
 
-    let help = Command::new(env!("CARGO_BIN_EXE_af"))
+    let help = crate::common::af()
         .args(["onboard", "--help"])
         .output()
         .unwrap();

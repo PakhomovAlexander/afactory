@@ -3,13 +3,11 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use review_config::layout;
 
 use crate::task_cli;
-
-const AF: &str = env!("CARGO_BIN_EXE_af");
 
 fn workspace() -> PathBuf {
     std::env::var_os("AF_WORKSPACE_ROOT")
@@ -111,7 +109,7 @@ fn every_authority_path_the_kernel_resolves_is_declared_in_the_layout_table() {
 
 #[test]
 fn af_help_config_carries_the_codes_table() {
-    let help = Command::new(AF)
+    let help = crate::common::af()
         .args(["help", "config"])
         .env("AF_SELF_OFFLINE", "1")
         .env("NO_COLOR", "1")
@@ -130,7 +128,7 @@ fn af_help_config_carries_the_codes_table() {
 }
 
 fn plan(repo: &Path, state: &Path, file: &str) -> Output {
-    Command::new(AF)
+    crate::common::af()
         .current_dir(repo)
         .args(["task", "plan", "--file", file, "--state"])
         .arg(state)

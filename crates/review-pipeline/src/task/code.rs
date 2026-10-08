@@ -1092,10 +1092,56 @@ impl CodeTaskDomain {
                 .checks
                 .get(name)
                 .ok_or("Named check is not captured")?;
+            // Below the machine's free-disk floor the check does not start, and nothing is
+            // prepared for it either: no sandbox, no runtime. It reports `insufficient_disk` as
+            // its result, and every declared warm kind keeps its one observation (ADR-0144).
+            if let Some(refusal) = crate::storage::ensure_free_disk().err() {
+                let observations = match session.as_mut() {
+                    Some(session) => session.skipped(cas, crate::storage::INSUFFICIENT_DISK)?,
+                    None => Vec::new(),
+                };
+                let result = CheckResult {
+                    name: name.clone(),
+                    status: CheckStatus::NotRun,
+                    exit_code: None,
+                    reason: Some(refusal),
+                    program: Some(definition.command.program.clone()),
+                    args: definition.command.args.clone(),
+                    stdout: None,
+                    stderr: None,
+                    required: definition.required,
+                    remote: None,
+                };
+                if let Some(rustup) = &rustup {
+                    let caches = observations
+                        .into_iter()
+                        .map(|observation| {
+                            observation
+                                .record(cas, [attempt.task_id(), attempt.id(), &input.node, name])
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let check = TaskRuntimeCheckV1 {
+                        name: name.clone(),
+                        outcome: TaskRuntimeCheckOutcomeV1::NotRun,
+                        rustup_home: rustup.source,
+                    };
+                    warm_evidence.push((check, None, caches));
+                }
+                if definition.required {
+                    local_failed.push(name.clone());
+                }
+                let id = cas
+                    .put_json(&serde_json::to_value(result).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+                checks.insert(name.clone(), id);
+                continue;
+            }
             let sandbox =
                 Sandbox::materialize(&manifest, cas, Mode::ReadOnly).map_err(|e| e.to_string())?;
             review_sandbox::admit(self.policy.isolation(), &sandbox).map_err(|e| e.to_string())?;
-            let runtime = tempfile::tempdir().map_err(|e| e.to_string())?;
+            // HOME, TMPDIR, AF_CHECK_SCRATCH and XDG_CACHE_HOME live in this af-owned directory,
+            // created empty here and removed with it when the check ends.
+            let runtime = review_sandbox::CheckRuntime::new().map_err(|e| e.to_string())?;
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| e.to_string())?
@@ -1105,19 +1151,18 @@ impl CodeTaskDomain {
                 .policy
                 .check_process_wall_ms
                 .map_or(remaining, |limit| limit.min(remaining));
-            let runner = CheckRunner::new(cas, sandbox.root())
-                .with_cancellation(cancellation)
-                .with_timeout(Duration::from_millis(remaining))
-                .with_env("HOME", runtime.path().display().to_string())
-                .with_env(
-                    "XDG_CACHE_HOME",
-                    runtime.path().join("cache").display().to_string(),
-                );
+            let runner = runtime.environment().into_iter().fold(
+                CheckRunner::new(cas, sandbox.root())
+                    .with_cancellation(cancellation)
+                    .with_timeout(Duration::from_millis(remaining)),
+                |runner, (key, value)| runner.with_env(key, value),
+            );
             let mut runner = rustup
                 .iter()
                 .flat_map(RustupHome::environment)
                 .fold(runner, |runner, (key, value)| runner.with_env(key, value));
             let mut toolchain_evidence = None;
+            let mut native_digest = None;
             if let Some(request) = self
                 .policy
                 .rust_toolchain
@@ -1141,6 +1186,7 @@ impl CodeTaskDomain {
                         "verified_release":prepared.verified_release,
                         "requested_host":request.host,"resolved_host":prepared.resolved_host,
                         "components":request.components,"materialization":"private_copy"}));
+                    native_digest = Some(prepared.content_digest.clone());
                     for (key, value) in prepared.environment {
                         runner = runner.with_env(key, value);
                     }
@@ -1160,6 +1206,7 @@ impl CodeTaskDomain {
                     runner.local_environment(),
                     sandbox.root(),
                     runtime.path(),
+                    native_digest.as_deref(),
                     cancellation,
                     Duration::from_millis(remaining),
                 )?),
@@ -1200,7 +1247,16 @@ impl CodeTaskDomain {
                         runner.with_env(key.clone(), value.clone())
                     }),
             };
-            let refusal = prepared.as_ref().and_then(|p| p.refusal.clone());
+            // Preparation (the sandbox, a private toolchain copy, a Cache Snapshot) spent disk:
+            // the floor is read again right before the check would start (ADR-0144).
+            let refusal = prepared
+                .as_ref()
+                .and_then(|p| p.refusal.clone())
+                .or_else(|| {
+                    (remaining > 0)
+                        .then(crate::storage::ensure_free_disk)
+                        .and_then(Result::err)
+                });
             let started = remaining > 0 && refusal.is_none();
             let mut exceeded: Option<Excess> = None;
             let (mut result, timing) = if started {
@@ -1421,7 +1477,34 @@ AF_TOOLCHAIN_SNAPSHOT ",
                     })
                 })
                 .collect::<Result<_, String>>()?;
-            let outcomes = if local_failed.is_empty() {
+            // The remote phase starts nothing below the machine's free-disk floor either: its
+            // private repository and its push are work like any check's (ADR-0144).
+            let floor = if local_failed.is_empty() {
+                crate::storage::ensure_free_disk().err()
+            } else {
+                None
+            };
+            let outcomes = if let Some(refusal) = floor {
+                let base = super::remote_check::EvidenceBase {
+                    github: &target.github,
+                    snapshot_id: &snapshot_id,
+                    source_snapshot_id: &source_id,
+                };
+                requests
+                    .iter()
+                    .map(|request| {
+                        base.refused(
+                            request,
+                            RemoteCheckReasonV1::InsufficientDisk,
+                            format!(
+                                "remote check `{}` was not dispatched: {refusal}",
+                                request.name
+                            ),
+                            None,
+                        )
+                    })
+                    .collect::<Vec<RemoteCheckOutcome>>()
+            } else if local_failed.is_empty() {
                 // One clock for the whole remote phase: it ends at the earlier of the per-check
                 // wall on this timer and the Attempt's deadline.
                 let started = std::time::Instant::now();

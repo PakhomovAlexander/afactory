@@ -31,7 +31,7 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf) {
 fn review_file_uses_common_task_state_and_keeps_changes_requested_exit() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, state) = fixture_named(directory.path(), "review");
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .current_dir(&repo)
         .args([
             "review",
@@ -63,7 +63,7 @@ fn review_file_uses_common_task_state_and_keeps_changes_requested_exit() {
         2
     );
     assert!(state.join("events.sqlite").is_file());
-    let replay = Command::new(env!("CARGO_BIN_EXE_af"))
+    let replay = crate::common::af()
         .current_dir(&repo)
         .args([
             "task",
@@ -81,7 +81,7 @@ fn review_file_uses_common_task_state_and_keeps_changes_requested_exit() {
         serde_json::from_slice::<Value>(&replay.stdout).unwrap(),
         result
     );
-    let wrong_kind = Command::new(env!("CARGO_BIN_EXE_af"))
+    let wrong_kind = crate::common::af()
         .current_dir(&repo)
         .args([
             "review",
@@ -357,7 +357,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     )
     .unwrap();
     let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_af"))
+        crate::common::af()
             .current_dir(&repo)
             .env("HOME", &home)
             .env("USER", "fixture")
@@ -461,7 +461,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
         assert_eq!(listed["schema"], "af/task-list@2");
         assert_eq!(listed["tasks"][0]["schema"], "af/task-list-entry@2");
         assert_eq!(listed["tasks"][0]["chargeable_tokens"], exact.to_string());
-        let text = Command::new(env!("CARGO_BIN_EXE_af"))
+        let text = crate::common::af()
             .current_dir(&repo)
             .args(["task", "list", "--state"])
             .arg(&state)
@@ -539,7 +539,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
 }
 
 fn af(repo: &Path, state: &Path, args: &[&str]) -> Value {
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .current_dir(repo)
         .args(["task"])
         .args(args)
@@ -625,7 +625,7 @@ fn captured_task_kind_packages_keep_business_names_and_domain_acceptance() {
         assert!(plan["plan"]["dependencies"][package_name].is_object());
         let task_id = ticket["task_id"].as_str().unwrap();
         std::fs::write(package.join("kind.toml"), "modified after capture").unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        let output = crate::common::af()
             .current_dir(&repo)
             .args(["task", "run", "--execute", task_id, "--json", "--state"])
             .arg(&state)
@@ -734,7 +734,7 @@ fn embedded_review_never_accepts(case: &str) {
         }
         assert!(command.status().unwrap().success());
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+    let output = crate::common::af()
         .current_dir(&repo)
         .args([
             "task",
@@ -1021,7 +1021,7 @@ fn task_start_runs_a_task_file_and_requires_one() {
         "start --kind implement --goal pagination",
         "start --file ticket.json --pipeline .af/pipelines/implement.toml",
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        let output = crate::common::af()
             .current_dir(&repo)
             .arg("task")
             .args(args.split(' '))
@@ -1066,7 +1066,7 @@ fn current_review_catalog_uses_exact_assignments_and_reopens_without_dispatch() 
     let directory = tempfile::tempdir().unwrap();
     let (repo, state) = fixture_named(directory.path(), "review-v2");
     let invoke = |args: &[&str]| {
-        let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        let output = crate::common::af()
             .current_dir(&repo)
             .args(args)
             .args(["--json", "--state"])
