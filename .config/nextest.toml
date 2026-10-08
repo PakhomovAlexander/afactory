@@ -24,8 +24,11 @@ path = "junit.xml"
 # - light_cache_candidate_measures_real_latency_and_grounds_later_adoption_evidence: measures
 #   the 8-trial latency comparison against a baseline that sleeps 3 s, plus the phases that
 #   follow it on the same repository and Store: those that read that comparison's Task and the
-#   unknown-toolchain comparison after it. The other light-strategy phases measure nothing and
-#   run in parallel.
+#   unknown-toolchain comparison after it. Every other light-strategy phase measures nothing and
+#   runs in parallel in one test, light_strategy_generates_one_candidate_without_exposing_*.
+#   Run alone on a 14-core macOS host (median of three), the pair takes 45.5 s + 19.8 s against
+#   60.3 s for the single test it replaces. With E the exclusive seconds and S the sum, the
+#   expected wall time E*(T-1)/T + S/T is 50.5 s at 4 threads and 48.3 s at 7 (60.3 s single).
 # setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask is not here: its only
 # deadline is the 15 s Codex probe that its ordinary sibling setup_owns_codex_login_* runs
 # under too. Its work takes 0.37 s run directly on a 14-core macOS host and 0.07 s in CI junit.
