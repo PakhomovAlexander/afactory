@@ -19,6 +19,126 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.12.0-rc.1] - 2026-10-08
+
+### Authority compatibility
+
+Committed .af/ policy keeps working as is. Machine files: the remote-checks mapping no longer takes `checks` (a pipeline's `remote_checks` chooses), and `[storage]` is new machine-only configuration (budget-only by default).
+
+### Changes
+
+- release: v0.11.0 (#183)
+- Remote Checks: the pipeline chooses where a check runs (#186)
+- Leave out a logged-out CLI default context once its kind is registered (#182)
+- Bump jsonschema, num-bigint, minisign-verify and minisign; test damaged signatures (#188)
+- build(deps): bump minisign from 0.9.1 to 0.10.0 (#177)
+- build(deps): bump minisign-verify from 0.2.5 to 0.3.0 (#176)
+- build(deps): bump num-bigint from 0.4.8 to 0.5.1 (#175)
+- Bump jsonschema from 0.57.0 to 0.58.4 (#174)
+- Add af task report, and require its block in every pull request (#192)
+- Pin af 0.11.0 in .af/af.lock (#184)
+- Charge zero and record unknown usage when a Provider reports none (#165) (#195)
+- Hold af's disk use to a machine budget (#213)
+
+- Remote Checks are chosen by the pipeline, not by the machine. A Task pipeline's check node lists
+  `checks` (run on this machine) and `remote_checks` (run through the check's declared remote
+  executor); a project that wants both gates keeps two pipeline variants, and there is no
+  per-machine switch. The machine-local mapping (`$XDG_CONFIG_HOME/af/remote-checks.toml` or
+  `AF_TASK_REMOTE_CHECK_POLICY_FILE`) now names only where this machine may push gate branches
+  for a repository: **its `checks` key is gone, and a file that still carries it is refused**. A
+  pipeline with remote checks cannot be planned without a target, and its plan carries the effect
+  `publish-gate` and the destination `github:<owner/name>`, which `af task plan` prints on
+  `EFFECTS` and `SEND`, so confirming the plan is the consent; the target is read again before
+  the check Attempt pushes. A pipeline without `remote_checks` plans and runs exactly as before
+  ([ADR-0140](docs/adr/0140-run-a-declared-check-through-a-gate-pull-request.md), amended).
+
+- `af provider status` and the browser's Providers pane no longer list the Claude or Codex CLI's
+  default context (`claude-ambient`, `codex-ambient`) when it has no login and a Provider of its
+  kind is registered; it still shows on a machine with no Provider of that kind yet, and when it
+  holds a login ([ADR-0141](docs/adr/0141-list-a-logged-out-default-context-only-until-its-kind-is-registered.md)).
+
+- `af task report TASK_ID...` summarizes how recorded Tasks ran and what they cost, as one
+  Markdown block between `<!-- af-task-report:v1 -->` and `<!-- /af-task-report -->`, ready for
+  a pull request description, or with `--json` one `af/task-report@1` document
+  (`schemas/task-report-v1.json`). The block leads with one line per pipeline the Tasks ran, its
+  steps in dependency order with each step's Worker by Provider kind and model and the gate's
+  check names, parallel steps of one role grouped
+  (`review (bugs, correctness: codex gpt-6-sol/high)`), and `**unknown pipeline**: not
+  retained` once for Tasks whose plan was collected or never made; then one row per Task, each
+  a round, with its outcome, its review findings by severity (`6 major, 1 minor`, `none`,
+  `unknown` when a round has no complete finding set, `gate failed`, or `—` without a review,
+  and how many reviewers failed), tokens with thousands separators
+  (`205,295`) and active time, and a `Total:` row of Attempts (failed), tokens and active time;
+  then per round its runs, wall time, failed Attempts by reason class and charged tokens, and per
+  node the Worker, Attempts, tokens, elapsed time and check results. Findings are counted once
+  each as the round's reduce step recorded them, and review rounds come from the Task's log, so
+  a round recorded before `af task refresh` still counts. Active time sums the Task's runs, the
+  leases in which an Attempt started, so waiting between `af task run`s, a refresh, the recovery
+  of a pending Attempt and a resume that only publishes a settled result are not counted; a
+  figure the Store does not record is shown as unknown. Each Attempt is charged to the Worker of
+  the plan it ran under, so a node that `af task refresh` moved onto another Worker has one row
+  per Worker. It only reads the Store and never prints a Provider label, path, credential,
+  prompt or Worker output: a Worker's model is copied only when it is a model identity (at most
+  96 characters of letters, digits and `._:+-` with at most one `/`, and no `@`, URL, drive
+  letter or `..`) and is `unknown` otherwise, and every cell encodes `\` and `|` so a value stays
+  in its cell. This repository now requires the block in every pull request description: changes
+  are made through af Tasks, and the `PR report` workflow, which runs on `pull_request_target`
+  from the base branch's checker so a pull request can change neither the check nor its
+  workflow, refuses a description without exactly one well-formed block — a pipeline line, the
+  six round-table columns Round, Task, Outcome, Findings, Tokens and Active in order, at least
+  one round row and a last `Total:` row; placeholder, short and long rows (with or without their
+  outer `|`), a Round, Task or Outcome cell that is empty or holds only an HTML comment, a
+  separator row of the wrong width, and a block inside a code fence or indented as code, even
+  right after a heading, a thematic break, a fence, an HTML block or a list item, fail —
+  apart from Dependabot and `release/` pull requests
+  ([ADR-0142](docs/adr/0142-carry-the-af-task-report-in-every-pull-request.md)).
+
+- An Attempt whose Provider reported no usage is charged 0 tokens and its usage is recorded as
+  unknown, with its cause, instead of being charged its whole reservation: a Codex Attempt that
+  failed with `Selected model is at capacity` no longer costs 400,000 tokens, nor does one
+  recovered after its writer's lease expired while the machine slept. The settlement's
+  `af/TaskExecutionRecord@5` carries `unknown_usage: { cause }` (`capacity`, `rate_limit`,
+  `authentication`, `model_unavailable`, `network`, `lease_expired`, `interrupted` or
+  `unreported`); such an Attempt adds nothing to the Task's, node's or verification reserve's
+  charged tokens and still counts against the Attempt limits, and Attempts with reported usage
+  are charged exactly as before. A Codex Attempt that ends with an `error` or `turn.failed`
+  event names its classified cause, such as `Provider model at capacity (capacity)`, instead of
+  the bare exit status. `af task show`, `af task list`, the browser's Tasks and Workers panes and
+  `af task report` show such usage as unknown, never as 0 spend: a Tokens cell reads
+  `1,200 (+1 unknown)`, the round's details name the cause, and the JSON documents carry the
+  count. A usage observation, even one that reports 0 tokens, makes an Attempt's usage known,
+  and `af task gc --apply` keeps the count in the collected Task's `af/TaskCollected@1`
+  tombstone, so a collected Task still lists and reports `(+N unknown)`. Stores written by earlier releases read as before, with their recorded charges
+  ([ADR-0143](docs/adr/0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)).
+
+- af now keeps a bounded, visible amount of disk
+  ([ADR-0144](docs/adr/0144-hold-afs-disk-use-to-a-machine-budget.md)). A machine-only `[storage]`
+  table (20 GiB `max_bytes` and a 10 GiB `min_free_bytes` floor by default; `AF_STORAGE__<KEY>`
+  overrides it, and a repository's `.af/af.toml` cannot) bounds warm build keys, warm Workspaces,
+  review campaigns, Task Stores and installed versions, evicting the least recently used entry first
+  and never one in use or used within the hour, after every `af task run` and `af review run`.
+  Age-based collection (`keep_days`, `keep_tasks`, `keep_campaigns`) runs on `af storage prune
+  --apply`, or after every run with `auto_gc = true` (off by default), and reaches Stores this
+  release cannot read and Stores made with `--state`, which `$XDG_STATE_HOME/af/stores.toml` now
+  records; every removal opens its target from its configured root through descriptors, never
+  following a link and never removing a directory that changed since it was measured, and an
+  installed version is checked again under the lock `af self` takes to change the default or a pin.
+  The sweep that ends `af task run` is recorded on that Task as a `storage_sweep` observation, shown
+  by `af task show`. Below the floor on any volume af works on, or when one cannot be measured, a
+  check reports `insufficient_disk`, a measurement fails with `insufficient_disk` without running
+  its command, and a Worker Attempt is refused before any token is spent. `af storage` shows what af
+  holds and `af storage prune [--apply]` reclaims it. A warm check with a native toolchain mapping
+  now reuses one key instead of making a new one every Attempt (the key domain moves to
+  `af.task-build-cache.toolchain/2`, so old keys are evicted once). Every check, review gate checks
+  included, gets its own empty `HOME`, `TMPDIR`, `AF_CHECK_SCRATCH` and `XDG_CACHE_HOME`, removed
+  after it: write to `$AF_CHECK_SCRATCH` or `$TMPDIR`, never `/tmp`. Provider probes run in a
+  directory af makes for them, and af removes each Claude Worker Attempt's and probe's history from
+  the Claude config directory (`keep_worker_transcripts` keeps it). It closes a finished Task's gate
+  pull request and deletes its `af-gate/` branches (`keep_gate_pull_requests` keeps them) only while
+  they still equal the Task's recorded repository, refs and commits, recording the result as
+  `gate_cleanup` without changing the Task's result, and collects such a Task only after a cleanup
+  is done.
+
 ## [0.11.0] - 2026-10-05
 
 ### Authority compatibility
