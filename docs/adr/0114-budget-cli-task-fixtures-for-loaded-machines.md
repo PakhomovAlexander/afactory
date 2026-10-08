@@ -2,7 +2,8 @@
 
 **Status:** accepted (2026-09-22); amended 2026-10-08
 ([short fixed walls](#amendment-2026-10-08-short-fixed-walls)),
-which applies the same remedy to the fixture processes of tests whose subject is not a deadline.
+which applies the same remedy to the fixture processes of tests whose subject is not a deadline,
+including a debug-only, raise-only provider probe timeout setting.
 
 ## Context
 
@@ -60,7 +61,8 @@ it creates — including the second developer's consuming Task — with a docume
 test applies the same test-local total (`CATALOG_TASK_WALL_MS`) after copying its shared fixture;
 the committed reusable fixture remains unchanged for tests that need its original limits. The
 native-model helper similarly uses `NATIVE_MODEL_TASK_WALL_MS` for the Task total while retaining
-its 60s verification reserve and every dispatch bound.
+its 60s verification reserve and every dispatch bound (the amendment below grows that reserve
+with its reviewers' Attempt walls).
 
 The margin is added to the total budget and taken from nothing. Per-Attempt walls (5s in every
 fixture Worker manifest and in the fixture code policy), Attempt counts, token budgets and the
@@ -87,7 +89,8 @@ does not read ten minutes as a slow test and collapse it back toward a sequence'
 - `crates/af/tests/task_catalog.rs` pins that its local override changes only the total Task wall;
   the shared fixture's tokens, Attempt count and complete verification reserve remain exact.
 - `crates/af/tests/task_file.rs` pins the native-model fixture's token and Attempt limits and its
-  complete verification reserve next to the widened total.
+  complete verification reserve next to the widened total; since the amendment below, the
+  reserve as the sum of the allowances it protects.
 - Other CLI Task suites keep their fixture budgets. If the same symptom appears there, the same
   remedy applies — raise that suite's wall budget with the same documentation, never its reserve.
 
@@ -123,6 +126,27 @@ Store, before it acts. The families it names:
   synthetic-login waits of the auth handoff adapter.
 - **Readiness and Store waits.** `review-pipeline`'s captured command cancellation, controlled
   check sequence and runtime-store observer.
+- **Provider probes in `af` integration tests.** `af`'s provider status, subscription, version
+  and Claude usage probes (15 s, 10 s and Claude's 30 s status probe) are production deadlines
+  no test parameter reached, so a debug build reads one test setting,
+  `AF_TEST_PROVIDER_PROBE_TIMEOUT_MS`, following the precedent of `AF_TEST_CLOCK_QUANTUM_MS` and
+  `AF_TEST_FREE_BYTES`. It exists only under `#[cfg(debug_assertions)]`, so a release binary
+  never reads it; it can only raise a probe's timeout, and a value at or below the production
+  timeout, outside 1 ms to ten minutes, or not a number is ignored; an Attempt deadline still
+  bounds every probe; and no Worker or provider CLI receives it, since both start in an isolated
+  command environment. The `af` integration tests' shared `af()` helper, and the PTY spawns that
+  clear the environment, set it to the load-safe two minutes, which reaches
+  `provider_registry::status_keeps_a_default_context_whose_status_probe_failed` and every other
+  test that meets a probe without being about its timeout. The native-model `task_file` fixture
+  asserts the setting reached neither a probe nor a model call.
+- **Native-model reviewer Attempt walls.** The `task_file` native-model fixture's two reviewers
+  get the load-safe wall as their Attempt wall instead of their manifests' 5 s. Each starts a
+  Python fake provider twice, for its identity recheck and its model call, so 5 s was a race.
+  Their verification reserve grows with them: it stays exactly the protected allocation it
+  encodes, the 45 s Provider admission allowance, both reviewer walls and the 5 s check, now
+  290 s instead of 60 s; and the Task wall keeps its ten minutes of slack above that reserve.
+  The test that pinned the old 60 s literal now pins that sum, and that the parts are the
+  fixture's own.
 
 `changelog.d/test-perf-load-walls.md` lists every test changed and every one left alone.
 
@@ -135,14 +159,16 @@ What stays exact:
 - Every elapsed-time assertion keeps its bound, as do the waits in which a killed process must
   disappear: those bounds are the promptness the test exists to prove. Lease and heartbeat tests
   measure real time and are untouched.
-- No production constant changes. A production deadline that only a new test-only parameter
-  could raise is not raised: `af provider status` keeps its 15 s probe, and the test that hits
-  it is reported as not fixed.
-- No fixture budget or reserve changes. The native-model CLI fixture of `task_file` already has
-  its ten-minute Task wall (above); its reviewers' 5 s Attempt walls are verifier allowances
-  that, with the 45 s Provider admission allowance and the 5 s check, exactly fill the pinned
-  60 s verification reserve, so they cannot grow without widening that reserve, and are left
-  as they are.
+- No production constant changes, and release behaviour is unchanged: `af provider status`
+  keeps its 15 s probe in every release binary, and the probe-deadline unit tests of
+  `providers::installation` run with it. The debug-only probe setting above is the one test
+  parameter added, and it can only raise.
+- No reserve shrinks. The only reserve that changes, the native-model `task_file` fixture's,
+  grows by exactly what its reviewers' Attempt walls grew, so it still covers the Provider
+  admission allowance, both Attempt walls and the check. Token and Attempt limits keep their
+  fixture values.
+- `optimization_configuration` is not a wall problem: its tests set no wall, and their failures
+  are #149, reflink cache materialization.
 - `.config/nextest.toml` is unchanged: no retries, and the run-alone list keeps its members.
 
 ### Consequences

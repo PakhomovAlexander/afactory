@@ -3,7 +3,9 @@
   (seven nextest threads, load 7-28) no longer fails it on a timeout its subject never asked
   about. Only a hung fixture waits for the larger wall; a passing test takes as long as before.
   Tests whose subject is a timeout keep their exact walls, every elapsed-time assertion keeps its
-  bound, and no production constant, fixture budget, reserve or nextest setting changes (#206,
+  bound, and no production constant or nextest setting changes. A debug-only, raise-only test
+  setting lifts the provider probes' timeouts, and one fixture grows its reserve with its walls;
+  no reserve shrinks (#206,
   [ADR-0114](docs/adr/0114-budget-cli-task-fixtures-for-loaded-machines.md), amended).
 - Changed, `review-runner-codex` (5 s provider wall): `task_auth_failure::` all seven tests
   (`authentication_failure_survives_missing_usage_without_retaining_challenges`,
@@ -119,12 +121,23 @@
 - Unchanged, the wall is already long: `af` `tui` (30-300 s), `provider_auth_handoff` (30 s),
   `task_report_command` (60 s), `task_command_process_group` (30 s) and the container probes'
   60 s execution wall.
-- Not fixed: `af` `provider_registry::status_keeps_a_default_context_whose_status_probe_failed`
-  meets the production 15 s provider status probe, which no existing injection point raises, and
-  no production surface is added for it. `task_file`'s native-model tests (the four
-  `native_client_*`, `native_model_cli_*`, `native_codex_multiturn_*` and
-  `native_task_account_change_*`) already have a ten-minute Task wall; their remaining short
-  walls are the reviewers' 5 s Attempt walls, which with the 45 s Provider admission allowance
-  and the 5 s check exactly fill the pinned 60 s verification reserve, so they cannot grow
-  without widening that reserve, and their admission and rechecks run under the same 15 s
-  probe. `optimization_configuration`'s tests set no wall at all, so there is nothing to widen.
+- Changed, `af` integration tests (15 s Codex, 10 s Claude usage and 30 s Claude status
+  provider probes): a debug build's provider probes now honor `AF_TEST_PROVIDER_PROBE_TIMEOUT_MS`, which can only raise
+  their timeouts (a value at or below production, outside 1 ms to ten minutes, or not a number
+  changes nothing), never reaches a Worker or provider CLI, and is never read by a release
+  binary. The shared `crate::common::af()` helper, and the PTY spawns of `provider_registry` and
+  `tui` that clear the environment, set it to the two-minute load-safe value, so
+  `provider_registry::status_keeps_a_default_context_whose_status_probe_failed` and every other
+  `af` integration test that meets a probe without being about its timeout no longer race it.
+  The probe-deadline unit tests (`providers::installation`) keep the production value.
+- Changed, `af` `task_file` native-model tests (the four `native_client_*`,
+  `native_model_cli_*`, `native_codex_multiturn_*` and `native_task_account_change_*`): the
+  reviewers' 5 s Attempt walls are now the two-minute load-safe wall, the verification reserve
+  grows from 60 s to the 290 s it now encodes (45 s Provider admission, both reviewers and the
+  5 s check), and the Task wall keeps ten minutes above that reserve; token and Attempt limits
+  are unchanged. Their admission and rechecks run under the raised probe timeout above, and
+  they assert the setting reached neither a probe nor a model call. The pinning test, renamed
+  `native_model_fixture_widens_only_its_walls_and_the_reserve_that_covers_them`, asserts the
+  reserve equals that sum instead of the old literal.
+- Not a wall: `optimization_configuration`'s failures are #149 (reflink cache materialization);
+  its tests set no wall, and nothing here changes them.
