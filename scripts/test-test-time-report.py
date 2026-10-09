@@ -2,15 +2,18 @@
 """Exercise `test-time-report.py` through its real entry, and its wiring into `make test` and
 the Task gate with a stand-in `cargo`, offline. It runs under Python 3.9, the Task gate's.
 
-The summary's totals are checked exactly against `fixtures/test-time-report/`, a small nextest
-JUnit and nextest config; the config reader is checked on the real `.config/nextest.toml`. The
-wiring scenarios prove that the report never changes the test step's exit status, whether the
-JUnit is there, left by an earlier run, miscounted, unreadable or the script is gone.
+The summary's totals and the exact exclusive list are checked against `fixtures/test-time-report/`,
+a small nextest JUnit and nextest config; the config reader is checked on the real
+`.config/nextest.toml` against that file's own raw text, so it holds whichever tests the file
+marks exclusive. The wiring scenarios prove that the report never changes the test step's exit
+status, whether the JUnit is there, left by an earlier run, miscounted, unreadable or the script
+is gone.
 """
 import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -24,12 +27,8 @@ WARNING = 'warning: no test-time report'
 SPEC = importlib.util.spec_from_file_location('test_time_report', SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
-# The real exclusive block (ADR-0124), as `.config/nextest.toml` lists it.
-EXCLUSIVE = ['::identity_rechecks_cancel_an_inflight_status_process$',
-             '::codex_subscription_probe_reaps_descendants_after_an_early_exit$',
-             'setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask$',
-             'typed_reply_never_falls_back_and_failed_outputs_keep_accounting$',
-             'light_strategy_generates_one_candidate_without_exposing_source_to_author_workers$']
+# The fixture's exclusive block, as `fixtures/test-time-report/nextest.toml` lists it.
+FIXTURE_EXCLUSIVE = ['::alone_with_a_budget$', 'measured_elapsed$']
 
 
 def report(*args, cwd=None):
@@ -135,23 +134,60 @@ def check_config_lookup(tmp):
     print('PASS: default and explicit nextest config')
 
 
+def raw_filter_clauses(text):
+    """The one multi-line literal filter in a config's raw text and its `test(/.../)` regexes.
+
+    Read from the text itself, not through the parser under test, so the real config's checks
+    hold whichever tests it marks exclusive."""
+    [literal] = re.findall(r"^filter = '''\n(.*?)'''$", text, re.MULTILINE | re.DOTALL)
+    clauses = [c.replace('\\/', '/') for c in re.findall(r'test\(/(.+?)(?<!\\)/\)', literal)]
+    assert clauses, literal
+    return literal, clauses
+
+
+def check_anchored(pattern):
+    """A `name$` or `::name$` pattern matches its test's full name, never a suffixed one."""
+    body = pattern.pattern[:-1]
+    if not pattern.pattern.endswith('$') or not re.fullmatch(r'(?:::)?\w+(?:::\w+)*', body):
+        return False
+    name = 'crate::module' + ('' if body.startswith('::') else '::') + body
+    assert pattern.search(name), (pattern, name)
+    assert not pattern.search(name + '_x'), (pattern, name)
+    return True
+
+
 def check_toml_subset():
-    real = MODULE.parse_toml((ROOT / '.config/nextest.toml').read_text(encoding='utf-8'), 'real')
+    real_text = (ROOT / '.config/nextest.toml').read_text(encoding='utf-8')
+    real = MODULE.parse_toml(real_text, 'real')
     ci = real['profile']['ci']
     assert (ci['retries'], ci['fail-fast'], ci['junit']) == (0, False, {'path': 'junit.xml'}), ci
     assert ci['slow-timeout'] == {'period': '120s'}, ci
     [override] = ci['overrides']
     assert (override['threads-required'], override['priority']) == ('num-test-threads', 100)
-    # The multi-line literal filter keeps its text byte for byte, without the leading newline.
-    assert override['filter'] == ''.join(
-        f'{"| " if i else ""}test(/{regex}/)\n' for i, regex in enumerate(EXCLUSIVE)), override
+    # The multi-line literal filter keeps its text byte for byte, without the leading newline,
+    # and every `test(/.../)` clause of it becomes one pattern, in order.
+    literal, clauses = raw_filter_clauses(real_text)
+    assert override['filter'] == literal, (override, literal)
     patterns = MODULE.exclusive_patterns(ROOT / '.config/nextest.toml', True)
-    assert [p.pattern for p in patterns] == EXCLUSIVE, patterns
-    assert patterns[0].search('task::identity_rechecks_cancel_an_inflight_status_process')
-    assert not patterns[0].search('task::identity_rechecks_cancel_an_inflight_status_process_x')
-    fixture = MODULE.parse_toml((FIXTURE / 'nextest.toml').read_text(encoding='utf-8'), 'fixture')
-    assert [o['threads-required'] for o in fixture['profile']['ci']['overrides']] == [
-        'num-test-threads', 2], fixture
+    assert [p.pattern for p in patterns] == clauses, (patterns, clauses)
+    # Each plain test-name pattern of the real list is anchored; the fixture's always are.
+    for pattern in patterns:
+        check_anchored(pattern)
+    # The committed fixture pins the exact list: only the exclusive override counts.
+    fixture_text = (FIXTURE / 'nextest.toml').read_text(encoding='utf-8')
+    fixture = MODULE.parse_toml(fixture_text, 'fixture')
+    exclusive, other = fixture['profile']['ci']['overrides']
+    assert (exclusive['threads-required'], other['threads-required']) == (
+        'num-test-threads', 2), fixture
+    assert exclusive['filter'] == ''.join(
+        f'{"| " if i else ""}test(/{regex}/)\n' for i, regex in enumerate(FIXTURE_EXCLUSIVE))
+    assert raw_filter_clauses(fixture_text) == (exclusive['filter'], FIXTURE_EXCLUSIVE)
+    patterns = MODULE.exclusive_patterns(FIXTURE / 'nextest.toml', True)
+    assert [p.pattern for p in patterns] == FIXTURE_EXCLUSIVE, patterns
+    assert all([check_anchored(p) for p in patterns]), patterns
+    assert patterns[0].search('unit::alone_with_a_budget')
+    assert not patterns[0].search('unit::alone_with_a_budget_x')
+    assert not patterns[0].search('unit::not_alone_with_a_budget')
     samples = {
         'strings': (r'a = "x\t\"\u00e9" # c' '\n' r"b = 'C:\\p'" '\n'
                     'c = """\nl1\\\n   l2"""\n' "d = '''\nq''''' \n"),
