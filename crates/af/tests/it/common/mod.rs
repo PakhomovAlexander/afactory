@@ -18,13 +18,29 @@ pub const TARGET: &str = env!("AF_TARGET");
 /// remove a developer's own history. The toolchain stays reachable: rustup hands every process
 /// it starts `RUSTUP_HOME` and `CARGO_HOME`. A test that sets any of these names itself
 /// afterwards wins, since the last `env` of a name counts.
+///
+/// It also raises the provider probes' timeouts to [`LOAD_SAFE_PROBE_TIMEOUT_MS`].
 pub fn af() -> Command {
     let mut command = Command::new(AF);
     for (name, value) in private_home_env() {
         command.env(name, value);
     }
+    command.env(PROBE_TIMEOUT_SETTING, LOAD_SAFE_PROBE_TIMEOUT_MS);
     command
 }
+
+/// The debug-only setting that raises the provider status, subscription, version and usage
+/// probes' timeouts (ADR-0114); a release binary never reads it.
+pub const PROBE_TIMEOUT_SETTING: &str = "AF_TEST_PROVIDER_PROBE_TIMEOUT_MS";
+
+/// Two minutes, the load-safe wall (ADR-0114), in place of the production 15 s Codex and 10 s
+/// Claude usage probes. Starting a fake provider's shell or Python on a loaded gate (seven
+/// nextest threads, load 7-28) took about 5 s, so a test whose subject is not the probe's
+/// timeout raced scheduling and reported a provider af could not tell about. A probe that
+/// answers still ends when it answers, and an Attempt deadline still bounds every probe; only a
+/// hung fixture waits longer, and only to fail. A test whose subject is a probe timeout removes
+/// the setting to keep the production value; none of the `af` integration tests is one.
+pub const LOAD_SAFE_PROBE_TIMEOUT_MS: &str = "120000";
 
 /// `HOME` and the XDG directories of this test process's private home, created once.
 pub fn private_home_env() -> Vec<(&'static str, PathBuf)> {

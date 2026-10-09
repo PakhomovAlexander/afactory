@@ -52,7 +52,7 @@ pub fn check(
             &cas,
             directory.path(),
             b"exact context".to_vec(),
-            Duration::from_secs(10),
+            crate::load_safe_wall::LOAD_SAFE_WALL,
             WorkerAccess::ReadOnly,
             Some(&flag),
             &[],
@@ -66,7 +66,7 @@ pub fn check(
         flag.store(false, Ordering::Release);
         let (returned, pids, stopped) = std::thread::scope(|scope| {
             let cancel = scope.spawn(|| {
-                let deadline = Instant::now() + Duration::from_secs(5);
+                let deadline = Instant::now() + crate::load_safe_wall::LOAD_SAFE_WALL;
                 let mut pids = Vec::new();
                 while Instant::now() < deadline {
                     if let Ok(text) = std::fs::read_to_string(directory.path().join("ready")) {
@@ -102,7 +102,7 @@ pub fn check(
                 &cas,
                 directory.path(),
                 b"exact context".to_vec(),
-                Duration::from_secs(10),
+                crate::load_safe_wall::LOAD_SAFE_WALL,
                 WorkerAccess::ReadOnly,
                 Some(&flag),
                 &[],

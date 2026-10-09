@@ -14,6 +14,13 @@ use review_store::store::task::execution::PreparedTaskAttempt;
 use review_store::{Cas, EventStore};
 use serde_json::json;
 
+/// How long a test waits for a fixture process to become ready, or for the shared Store, when
+/// its subject is not a deadline (ADR-0114). Under a loaded gate a Python fixture took seconds to
+/// start and a heartbeat could hold the Store briefly, so 2-3 s windows raced scheduling; two
+/// minutes only bounds a hung fixture or a real deadlock, and a passing test never waits for it.
+/// The fixture's Task, Attempt and verification budgets are unchanged.
+const LOAD_SAFE_WALL: std::time::Duration = std::time::Duration::from_secs(120);
+
 #[path = "task_runtime/control.rs"]
 mod control;
 #[path = "task_runtime/output_admission.rs"]
@@ -1192,7 +1199,7 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
         fn lock(&self) -> std::sync::MutexGuard<'_, &'a mut EventStore> {
             // A heartbeat may briefly own the connection. Bound the wait so a runtime that
             // accidentally calls the host while holding its lock fails instead of hanging.
-            let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let until = std::time::Instant::now() + LOAD_SAFE_WALL;
             loop {
                 match self.store.try_lock() {
                     Ok(store) => return store,

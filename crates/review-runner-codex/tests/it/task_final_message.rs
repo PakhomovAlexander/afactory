@@ -1,6 +1,7 @@
 //! Exercise actual native output objects in a supervised test subprocess. A regression that
 //! blocks opening a FIFO must fail within the harness deadline and leave no blocked test thread.
 
+use crate::load_safe_wall::LOAD_SAFE_WALL;
 use review_core::Command;
 use review_runner::task::{MAX_WORKER_BYTES, WorkerModelAdapter};
 use review_runner_codex::task::CodexTaskAdapter;
@@ -48,7 +49,7 @@ fn native_final_message_objects_are_bounded_and_keep_exact_usage() {
             // Keep even a killed child's private output directory beneath parent-owned cleanup.
             .env("TMPDIR", temporary.path())
             .current_dir(temporary.path());
-        let output = review_runner::run_supervised(&mut child, None, Duration::from_secs(15))
+        let output = review_runner::run_supervised(&mut child, None, LOAD_SAFE_WALL)
             .unwrap_or_else(|error| panic!("{case}: child did not finish: {error}"));
         let stdout = String::from_utf8_lossy(&output.stdout);
         // A child that selected no test also exits 0; require the case to have actually run.
@@ -102,7 +103,7 @@ print(json.dumps({{'type':'turn.completed','usage':{{'input_tokens':184467440737
         &cas,
         temporary.path(),
         b"native request".to_vec(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         review_runner::task::WorkerAccess::ReadOnly,
         None,
         &[],

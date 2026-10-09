@@ -1,3 +1,4 @@
+use crate::load_safe_wall::LOAD_SAFE_WALL;
 use review_core::{Arg, Command};
 use review_runner::task::{
     MAX_WORKER_BYTES, WORKER_REPLY_FORMAT, WorkerAccess, WorkerContract, WorkerModelAdapter,
@@ -5,7 +6,7 @@ use review_runner::task::{
 use review_runner_claude::task::{ClaudeTaskAdapter, task_tools};
 use review_store::Cas;
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, os::unix::fs::PermissionsExt, time::Duration};
+use std::{collections::BTreeMap, os::unix::fs::PermissionsExt};
 
 fn request(payload: Value) -> Value {
     json!({"schema":"af.worker-request/1","reply_format":WORKER_REPLY_FORMAT,
@@ -37,7 +38,7 @@ fn invoke(
         &cas,
         temp.path(),
         input.to_string().into_bytes(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         access,
         None,
         &[],

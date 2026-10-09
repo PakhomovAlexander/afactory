@@ -7,6 +7,13 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Output, Stdio};
 
 use serde_json::{Value, json};
 
+use crate::common::{LOAD_SAFE_PROBE_TIMEOUT_MS, PROBE_TIMEOUT_SETTING};
+
+/// Every `af` child a fixture here starts gets an environment cleared and rebuilt, so each one is
+/// handed the load-safe provider probe setting again (ADR-0114): a completed handoff reaches the
+/// fake CLI's status probe, and no test here is about that probe's timeout. The fake CLIs record
+/// the setting if it ever reaches them; [`Fixture::no_secrets`] and the Claude handoff test
+/// assert it never does.
 struct Fixture {
     root: tempfile::TempDir,
 }
@@ -23,6 +30,7 @@ impl Fixture {
 import os,sys,time
 from pathlib import Path
 root=Path(os.environ['CODEX_HOME'])
+if 'AF_TEST_PROVIDER_PROBE_TIMEOUT_MS' in os.environ: (root/'probe-setting-leaked').touch()
 if sys.argv[1:]==['login','status']:
     with (root/'status-probes').open('a') as f: f.write('status\n')
     if (root/'ready').exists():
@@ -116,6 +124,7 @@ sys.exit(p.returncode)
             .env("XDG_CONFIG_HOME", self.root.path().join("config"))
             .env("PATH", self.root.path().join("bin"))
             .env("AF_SELF_OFFLINE", "1")
+            .env(PROBE_TIMEOUT_SETTING, LOAD_SAFE_PROBE_TIMEOUT_MS)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -146,6 +155,7 @@ sys.exit(p.returncode)
             .env("XDG_CONFIG_HOME", self.root.path().join("config"))
             .env("PATH", self.root.path().join("bin"))
             .env("AF_SELF_OFFLINE", "1")
+            .env(PROBE_TIMEOUT_SETTING, LOAD_SAFE_PROBE_TIMEOUT_MS)
             .env("HTTP_PROXY", "http://fixture.invalid:8080")
             .env("SSL_CERT_FILE", "/fixture/certificate.pem")
             .env("OPENAI_API_KEY", "AMBIENT-KEY-MUST-NOT-PASS")
@@ -189,6 +199,7 @@ sys.exit(p.returncode)
 import json,os,sys,time
 from pathlib import Path
 root=Path(os.environ['CLAUDE_CONFIG_DIR'])
+if 'AF_TEST_PROVIDER_PROBE_TIMEOUT_MS' in os.environ: (root/'probe-setting-leaked').touch()
 if sys.argv[1:]==['auth','status','--json']:
     ready=(root/'ready').exists()
     print(json.dumps({'loggedIn':ready,'authMethod':'claude.ai' if ready else 'none','apiProvider':'firstParty'}))
@@ -238,6 +249,10 @@ print('Login successful.',flush=True)
         .unwrap();
         assert!(!state.contains("AF-FAKE-SECRET"));
         assert!(!state.contains("https://"));
+        assert!(
+            !self.root.path().join("auth/probe-setting-leaked").exists(),
+            "the test-only probe setting reached a provider CLI"
+        );
         let registry = self.root.path().join("config/af/providers.toml");
         if registry.exists() {
             let text = std::fs::read_to_string(registry).unwrap();
@@ -700,6 +715,7 @@ sys.exit(p.returncode)
             .env("XDG_CONFIG_HOME", fixture.root.path().join("config"))
             .env("PATH", fixture.root.path().join("bin"))
             .env("AF_SELF_OFFLINE", "1")
+            .env(PROBE_TIMEOUT_SETTING, LOAD_SAFE_PROBE_TIMEOUT_MS)
             .output()
             .unwrap();
         assert_eq!(state(&output)["state"], "private_route_unavailable");
@@ -843,6 +859,14 @@ fn claude_private_code_and_callback_paths_complete_without_task_dispatch() {
             assert!(!text.contains("AF-ONE-TIME-FIXTURE"));
             assert!(!text.contains("oauth/authorize"));
         }
+        assert!(
+            !fixture
+                .root
+                .path()
+                .join("auth/probe-setting-leaked")
+                .exists(),
+            "the test-only probe setting reached a provider CLI"
+        );
     }
 }
 

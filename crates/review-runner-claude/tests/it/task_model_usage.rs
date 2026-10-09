@@ -1,3 +1,4 @@
+use crate::load_safe_wall::LOAD_SAFE_WALL;
 use review_core::{Arg, Command, Producer, task::usage::TASK_TOKEN_USAGE_V3};
 use review_runner::task::{
     WorkerAccess, WorkerModelAdapter,
@@ -6,7 +7,10 @@ use review_runner::task::{
 use review_runner_claude::task::ClaudeTaskAdapter;
 use review_store::Cas;
 use serde_json::json;
-use std::{os::unix::fs::PermissionsExt, time::Duration};
+use std::{
+    os::unix::fs::PermissionsExt,
+    time::{Duration, Instant},
+};
 
 /// The explicit model restriction every Task binding carries.
 fn opus() -> Vec<Arg> {
@@ -37,7 +41,7 @@ printf '%s' '{"is_error":false,"result":"OK","usage":{"input_tokens":0,"output_t
         &cas,
         temp.path(),
         b"public input".to_vec(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         WorkerAccess::ReadOnly,
         None,
         &[],
@@ -103,6 +107,7 @@ fn synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage() 
         }
         let adapter =
             ClaudeTaskAdapter::new(&Command::new(program.to_str().unwrap(), opus())).unwrap();
+        let invoked = Instant::now();
         let result = adapter.invoke(
             &cas,
             temp.path(),
@@ -122,6 +127,15 @@ fn synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage() 
             "{scenario}: {:?}",
             result.message
         );
+        if scenario == "timeout" {
+            // The identity refusal names the message error, so the wall shows in the elapsed
+            // time: without it the provider's `sleep 10` would end the invocation.
+            assert!(
+                invoked.elapsed() < Duration::from_secs(10),
+                "the 500 ms wall ends the provider: {:?}",
+                invoked.elapsed()
+            );
+        }
         // Positive auxiliary usage refuses the reply but is charged in full, whatever else
         // failed: exit status, deadline or raw capture.
         assert_eq!(
@@ -195,7 +209,7 @@ fn top_level_and_model_usage_charges_persist_and_reopen_exact() {
             &cas,
             temp.path(),
             b"input".to_vec(),
-            Duration::from_secs(5),
+            LOAD_SAFE_WALL,
             WorkerAccess::ReadOnly,
             None,
             &[],
@@ -262,7 +276,7 @@ fn a_breakdown_above_the_top_level_summary_keeps_the_reply_and_is_charged_in_ful
         &cas,
         temp.path(),
         b"synthetic public input".to_vec(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         WorkerAccess::ReadOnly,
         None,
         &[],
