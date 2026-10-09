@@ -81,7 +81,11 @@ fn heartbeat_refuses_expiry_future_clocks_and_changed_latest_writer() {
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
             "future" => {
-                connection.execute("UPDATE events SET payload=json_set(payload,'$.now_unix_ms',?2) WHERE run_id=?1 AND sequence=1", rusqlite::params![run, i64::try_from(now().unwrap()+10_000).unwrap()]).unwrap();
+                // The holder's own later recorded time is the time it is judged at (ADR-0128),
+                // so a recorded clock that reaches the lease's expiry fences it, whatever the
+                // host clock reads.
+                let until = f.state().lease_until;
+                connection.execute("UPDATE events SET payload=json_set(payload,'$.now_unix_ms',?2) WHERE run_id=?1 AND sequence=1", rusqlite::params![run, i64::try_from(until).unwrap()]).unwrap();
             }
             "writer" | "epoch" => {
                 let (field, value) = if case == "writer" {
@@ -317,4 +321,248 @@ fn a_live_writer_append_timed_before_its_own_renewal_is_not_fenced() {
             .task_change(&f.cas, &stale, TaskChangeV1::Resumed {}, before)
             .is_err()
     );
+}
+
+/// Apply `transition` to a copy of `state` the way an append does, but without the append's
+/// stamp, so the projection's own clock rule is what judges it.
+fn apply_unstamped(
+    f: &Fixture,
+    state: &TaskProjection,
+    transition: &TaskTransitionV1,
+) -> Result<TaskProjection, StoreError> {
+    let (event_type, payload) = crate::store::task::review_handoff::encode_transition(transition)?;
+    let mut next = state.clone();
+    next.apply(
+        &f.cas,
+        &RunEvent {
+            event_id: String::new(),
+            run_id: task_run_id(&state.task_id)?,
+            sequence: state.next_sequence,
+            event_type,
+            occurred_at: String::new(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: references(&f.cas, &transition.change, Some(state))?,
+            payload,
+        },
+        transition,
+    )?;
+    Ok(next)
+}
+
+/// Issue #231, with injected times: the work's operation reads its clock, its own heartbeat
+/// then records a later renewal through its other connection, and only then does the work
+/// observe its lease and write. Both are judged at the renewal's time; nothing sleeps.
+#[test]
+fn a_writer_whose_clock_read_precedes_its_own_renewal_observes_and_writes() {
+    let mut f = Fixture::new(false);
+    let lease = f.open();
+    f.propose(&lease);
+    let read = f.state().last_time;
+    let renewed_at = read + 103;
+    let until = f.state().lease_until + 1_000;
+    let mut heartbeat = f.store.reopen(std::time::Duration::from_secs(1)).unwrap();
+    heartbeat
+        .task_change(
+            &f.cas,
+            &lease,
+            TaskChangeV1::LeaseRenewed {
+                lease_until_unix_ms: until,
+            },
+            renewed_at,
+        )
+        .unwrap();
+    // Before this record the observation failed: "observed at …, last recorded …".
+    assert_eq!(f.store.task_lease_state_at(&lease, read).unwrap(), until);
+    assert_eq!(heartbeat.task_lease_state_at(&lease, read).unwrap(), until);
+    let event = f
+        .store
+        .task_change(
+            &f.cas,
+            &lease,
+            TaskChangeV1::Waiting {
+                reason: TaskWaitingReasonV1::NeedsHuman,
+            },
+            read,
+        )
+        .unwrap();
+    // Stamped at the renewal's time before it was persisted: the log stays monotonic.
+    assert_eq!(
+        read_task_transition(&event).unwrap().now_unix_ms,
+        renewed_at
+    );
+    let state = f.state();
+    assert_eq!(state.last_time, renewed_at);
+    assert_eq!(
+        state.phase,
+        TaskPhaseV1::Waiting {
+            reason: TaskWaitingReasonV1::NeedsHuman
+        }
+    );
+    assert_eq!(f.store.task_lease_state_at(&lease, read).unwrap(), until);
+}
+
+/// The observation's same-writer rule never covers lost authority: another writer or epoch,
+/// a real expiry and a fenced writer are refused at every time.
+#[test]
+fn lease_observation_still_refuses_another_writer_an_expiry_and_a_fenced_writer() {
+    let mut f = Fixture::new(false);
+    let lease = f.open();
+    f.propose(&lease);
+    let read = f.state().last_time;
+    let until = f.state().lease_until + 1_000;
+    f.store
+        .task_change(
+            &f.cas,
+            &lease,
+            TaskChangeV1::LeaseRenewed {
+                lease_until_unix_ms: until,
+            },
+            read + 103,
+        )
+        .unwrap();
+    let other = TaskLease {
+        writer: "writer-2".into(),
+        ..lease.clone()
+    };
+    let stale = TaskLease {
+        epoch: lease.epoch + 1,
+        ..lease.clone()
+    };
+    for time in [read, read + 103, until - 1] {
+        assert!(f.store.task_lease_state_at(&other, time).is_err());
+        assert!(f.store.task_lease_state_at(&stale, time).is_err());
+    }
+    assert_eq!(
+        f.store.task_lease_state_at(&lease, until - 1).unwrap(),
+        until
+    );
+    for time in [until, until + 1] {
+        let error = f.store.task_lease_state_at(&lease, time).unwrap_err();
+        assert!(error.to_string().contains("expired or fenced"), "{error}");
+    }
+    // Released and taken by a successor: the old writer is fenced even at an earlier time.
+    f.store.release_task_lease(&f.cas, &lease).unwrap();
+    let released = f.state().last_time;
+    assert!(f.store.task_lease_state_at(&lease, read).is_err());
+    let successor = TaskLease {
+        writer: "writer-2".into(),
+        epoch: lease.epoch + 1,
+        ..lease.clone()
+    };
+    f.store
+        .append_task_transition(
+            &f.cas,
+            "task-1",
+            TaskTransitionV1 {
+                writer: successor.writer.clone(),
+                epoch: successor.epoch,
+                now_unix_ms: released,
+                change: TaskChangeV1::LeaseTaken {
+                    lease_until_unix_ms: released + 1_000_000,
+                },
+            },
+        )
+        .unwrap();
+    for time in [read, released, released + 1] {
+        assert!(f.store.task_lease_state_at(&lease, time).is_err());
+    }
+    assert_eq!(
+        f.store.task_lease_state_at(&successor, released).unwrap(),
+        released + 1_000_000
+    );
+}
+
+/// The projection judges the current writer's transition at the later of its time and the last
+/// recorded time, and records it there, so a heartbeat's renewal between the operation's clock
+/// read and its write no longer looks like a clock moving backwards (#231). Another writer's
+/// earlier time, a stale epoch, an expired lease and a finished Task are refused as before.
+#[test]
+fn projection_applies_the_same_writers_earlier_time_and_fences_every_other_case() {
+    let mut f = Fixture::new(false);
+    let lease = f.open();
+    f.propose(&lease);
+    let read = f.state().last_time;
+    let renewed_at = read + 103;
+    let until = f.state().lease_until + 1_000;
+    f.store
+        .task_change(
+            &f.cas,
+            &lease,
+            TaskChangeV1::LeaseRenewed {
+                lease_until_unix_ms: until,
+            },
+            renewed_at,
+        )
+        .unwrap();
+    let state = f.state();
+    assert_eq!(state.last_time, renewed_at);
+    let waiting = |writer: &str, epoch: u64, now_unix_ms: u64| TaskTransitionV1 {
+        writer: writer.into(),
+        epoch,
+        now_unix_ms,
+        change: TaskChangeV1::Waiting {
+            reason: TaskWaitingReasonV1::NeedsHuman,
+        },
+    };
+
+    let applied = apply_unstamped(&f, &state, &waiting(&lease.writer, lease.epoch, read)).unwrap();
+    assert_eq!(
+        applied.last_time, renewed_at,
+        "never recorded before the renewal"
+    );
+    assert_eq!(applied.next_sequence, state.next_sequence + 1);
+    // A same-writer release timed before the renewal ends the lease at the renewal, not earlier.
+    let released = apply_unstamped(
+        &f,
+        &state,
+        &TaskTransitionV1 {
+            change: TaskChangeV1::LeaseReleased {},
+            ..waiting(&lease.writer, lease.epoch, read)
+        },
+    )
+    .unwrap();
+    assert_eq!(released.lease_until, renewed_at);
+
+    for (name, transition) in [
+        ("another writer", waiting("writer-2", lease.epoch, read)),
+        (
+            "a stale epoch",
+            waiting(&lease.writer, lease.epoch + 1, read),
+        ),
+        (
+            "another writer, later",
+            waiting("writer-2", lease.epoch, renewed_at + 1),
+        ),
+        (
+            "an expired lease",
+            waiting(&lease.writer, lease.epoch, until),
+        ),
+        (
+            "a premature takeover",
+            TaskTransitionV1 {
+                change: TaskChangeV1::LeaseTaken {
+                    lease_until_unix_ms: until + 1_000_000,
+                },
+                ..waiting("writer-2", lease.epoch + 1, read)
+            },
+        ),
+    ] {
+        assert!(
+            apply_unstamped(&f, &state, &transition).is_err(),
+            "{name} must be refused"
+        );
+    }
+    // A finished Task refuses the same writer's ordinary work at either time.
+    let mut finished = state.clone();
+    finished.phase = TaskPhaseV1::Finished {
+        result_id: "sha256:finished".into(),
+    };
+    for time in [read, renewed_at + 1] {
+        let error =
+            apply_unstamped(&f, &finished, &waiting(&lease.writer, lease.epoch, time)).unwrap_err();
+        assert!(error.to_string().contains("finished"), "{error}");
+    }
 }

@@ -7,6 +7,15 @@ impl EventStore {
     /// those operations still validate the complete Task projection and its current CAS refs.
     /// No lease fact or integrity result is retained between calls.
     pub fn task_lease_state(&self, lease: &TaskLease) -> Result<u64, StoreError> {
+        self.task_lease_state_at(lease, now()?)
+    }
+
+    /// `task_lease_state` observed at `now_unix_ms`, the clock its caller read.
+    pub(super) fn task_lease_state_at(
+        &self,
+        lease: &TaskLease,
+        now_unix_ms: u64,
+    ) -> Result<u64, StoreError> {
         let run_id = task_run_id(lease.task_id())?;
         // Include the latest lease change, the latest transition of any kind and the stream
         // tail, so a changed writer, future policy clock or foreign event cannot hide behind
@@ -110,7 +119,6 @@ impl EventStore {
         let until = expiry
             .filter(|_| genesis)
             .ok_or_else(|| conflict("Unknown Task lease"))?;
-        let time = now()?;
         if writer.as_ref() != Some(&(lease.writer.clone(), lease.epoch)) {
             return Err(conflict(format!(
                 "Task writer lease is expired or fenced: the lease is held by {:?}, not {} \
@@ -118,10 +126,14 @@ impl EventStore {
                 writer, lease.writer, lease.epoch
             )));
         }
-        if time >= until || time < clock {
+        // The holder's clock may have been read before its own heartbeat recorded a later
+        // renewal through its other connection: it is observed at the last recorded time, as
+        // its transitions are judged (ADR-0128). Every other writer was refused above.
+        let time = now_unix_ms.max(clock);
+        if time >= until {
             return Err(conflict(format!(
-                "Task writer lease is expired or fenced: observed at {time}, expiry {until}, last \
-                 recorded {clock}"
+                "Task writer lease is expired or fenced: observed at {now_unix_ms}, expiry \
+                 {until}, last recorded {clock}"
             )));
         }
         Ok(until)
