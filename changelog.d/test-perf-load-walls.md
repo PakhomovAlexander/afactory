@@ -130,6 +130,25 @@
   `provider_registry::status_keeps_a_default_context_whose_status_probe_failed` and every other
   `af` integration test that meets a probe without being about its timeout no longer race it.
   The probe-deadline unit tests (`providers::installation`) keep the production value.
+- Changed, `af` `provider_auth_handoff`: `Fixture::command_kind`, `Fixture::begin_kind` (through
+  its Python host) and the inline `af` spawn of
+  `duplicate_stdout_and_named_fifos_are_not_private_capabilities` clear the environment, so their
+  `af` never got the setting and a completed handoff's fake Codex or Claude status probe ran
+  under the production 15 s or 30 s. Each now sets it again after `env_clear`; no test there is
+  about a probe's timeout. The fake CLIs record the setting if it reaches them, and
+  `Fixture::no_secrets` and `claude_private_code_and_callback_paths_complete_without_task_dispatch`
+  assert it reached neither a status probe nor a login.
+- Checked, no other change needed. Every other `env_clear` or `env_remove` before `af` or a
+  provider probe in a test: `tui`'s `af()` helper and `Browser` PTY spawn, and
+  `provider_registry`'s `in_terminal` (through `setup_in_terminal` and the umask setup test),
+  already set it after clearing; `common::af()` callers that only remove other names
+  (`task_warm_checks`, `task_experiment`, `task_remote_checks`, `campaign_loop`, `cli_surface`,
+  `storage_budget`, and `provider_registry`'s status runs) keep it; the umask `provider add`
+  runs of `provider_registry`, `onboarding_quickstart` (`af onboard`, `af review plan`) and
+  `common::Layout::command` (self-management) reach no provider probe and clear nothing; the
+  `af` unit-test `env_clear`s (`providers::auth_handoff::adapter` and `guard` synthetic logins,
+  `tui::panes::pipelines` git) start neither `af` nor a probe; and no other crate's tests start
+  `af` or a provider probe.
 - Changed, `af` `task_file` native-model tests (the four `native_client_*`,
   `native_model_cli_*`, `native_codex_multiturn_*` and `native_task_account_change_*`): the
   reviewers' 5 s Attempt walls are now the two-minute load-safe wall, the verification reserve

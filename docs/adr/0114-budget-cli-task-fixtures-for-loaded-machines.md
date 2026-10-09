@@ -134,11 +134,14 @@ Store, before it acts. The families it names:
   never reads it; it can only raise a probe's timeout, and a value at or below the production
   timeout, outside 1 ms to ten minutes, or not a number is ignored; an Attempt deadline still
   bounds every probe; and no Worker or provider CLI receives it, since both start in an isolated
-  command environment. The `af` integration tests' shared `af()` helper, and the PTY spawns that
-  clear the environment, set it to the load-safe two minutes, which reaches
+  command environment. The `af` integration tests' shared `af()` helper sets it to the load-safe
+  two minutes, and every test helper that clears the environment before starting `af` sets it
+  again afterwards: the PTY spawns of `provider_registry` and `tui`, and `provider_auth_handoff`'s
+  fixtures, whose completed handoff reaches the fake provider's status probe. That reaches
   `provider_registry::status_keeps_a_default_context_whose_status_probe_failed` and every other
   test that meets a probe without being about its timeout. The native-model `task_file` fixture
-  asserts the setting reached neither a probe nor a model call.
+  asserts the setting reached neither a probe nor a model call, and the `provider_auth_handoff`
+  fake CLIs that it reached neither a probe nor a login.
 - **Native-model reviewer Attempt walls.** The `task_file` native-model fixture's two reviewers
   get the load-safe wall as their Attempt wall instead of their manifests' 5 s. Each starts a
   Python fake provider twice, for its identity recheck and its model call, so 5 s was a race.
