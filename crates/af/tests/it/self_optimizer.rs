@@ -182,8 +182,19 @@ fn controlled_candidate_cannot_count_relabelled_inputs_as_distinct_families() {
     controlled_candidate_with_inputs("harness.py", "print('correct')\n", false, true);
 }
 
-#[test]
-fn light_strategy_generates_one_candidate_without_exposing_source_to_author_workers() {
+/// The committed light-strategy fixture: the pagination repository with the candidate optimizer
+/// catalog, its Store, and the developer key that signs plan decisions. Both light tests below
+/// build their own, so each sees only the state its own `af` commands made, and only the test
+/// that measures real latency runs alone (`.config/nextest.toml`).
+struct LightFixture {
+    temp: tempfile::TempDir,
+    repo: std::path::PathBuf,
+    state: std::path::PathBuf,
+    key: minisign::KeyPair,
+    project: String,
+}
+
+fn light_fixture() -> LightFixture {
     let temp = tempfile::tempdir().unwrap();
     let (repo, state) = task_cli::fixture_named(temp.path(), "pagination");
     let key = install_candidate_optimizer_catalog(&repo);
@@ -223,45 +234,51 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     )
     .unwrap();
     std::fs::write(repo.join("oracle.py"), "import json, sys\nfrom pathlib import Path\njson.loads(Path(sys.argv[1]).read_text())\ntext = Path('.af/optimization/optimization-check-candidate/instructions.md').read_text()\nassert text.count('Keep the required acceptance oracle unchanged.') == 1\n").unwrap();
-    for args in [
-        vec!["add", "-A"],
-        vec!["commit", "-qm", "light optimizer fixture"],
-    ] {
+    commit(&repo, "light optimizer fixture");
+    LightFixture {
+        temp,
+        repo,
+        state,
+        key,
+        project,
+    }
+}
+
+/// Stages and commits every change in `directory`.
+fn commit(directory: &Path, message: &str) {
+    for args in [vec!["add", "-A"], vec!["commit", "-qm", message]] {
         assert!(
             Command::new("git")
-                .current_dir(&repo)
+                .current_dir(directory)
                 .args(args)
                 .status()
                 .unwrap()
                 .success()
         );
     }
-    let waiting = af(&repo, &state, &["--strategy", "light", "--execute"]);
-    assert_eq!(
-        waiting["phase"]["reason"], "needs_plan_review",
-        "{waiting:#}"
-    );
-    assert_eq!(
-        waiting["attempts"], 2,
-        "diagnose and propose run exactly once"
-    );
-    let task = waiting["task_id"].as_str().unwrap();
-    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
-    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
-    let projection = store.task_projection(&cas, task).unwrap().unwrap();
-    let execution = projection.execution.as_ref().unwrap();
-    for node in ["root.nodes.diagnose", "root.nodes.propose"] {
-        let invocation = &execution.invocations.get(node).unwrap().1;
-        assert!(
-            !invocation.inputs.contains_key("source"),
-            "author Worker received protected source: {node}"
-        );
+}
+
+/// Re-pins each named package's catalog digest to its current bytes.
+fn repin(repo: &Path, packages: &[(&str, &Path)]) {
+    let catalog_path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Table = std::fs::read_to_string(&catalog_path)
+        .unwrap()
+        .parse()
+        .unwrap();
+    for (name, root) in packages {
+        catalog["packages"][*name]["digest"] =
+            toml::Value::String(review_config::lock::package_digest(name, root).unwrap());
     }
-    let payload = temp.path().join("light.payload");
-    let signature = temp.path().join("light.minisig");
+    std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+}
+
+/// Records the owner's signed approval of `task`'s plan; `label` names the decision files.
+fn approve_plan(fixture: &LightFixture, task: &str, label: &str, reason: &str, comment: &str) {
+    let payload = fixture.temp.path().join(format!("{label}.payload"));
+    let signature = fixture.temp.path().join(format!("{label}.minisig"));
     command_json(
-        &repo,
-        &state,
+        &fixture.repo,
+        &fixture.state,
         &[
             "task",
             "decision-payload",
@@ -271,7 +288,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
             "--decision",
             "approved",
             "--reason",
-            "one generated light candidate",
+            reason,
             "--output",
             payload.to_str().unwrap(),
         ],
@@ -280,10 +297,10 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     std::fs::write(
         &signature,
         minisign::sign(
-            Some(&key.pk),
-            &key.sk,
+            Some(&fixture.key.pk),
+            &fixture.key.sk,
             bytes.as_slice(),
-            Some("light candidate"),
+            Some(comment),
             None,
         )
         .unwrap()
@@ -291,8 +308,8 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     )
     .unwrap();
     command_json(
-        &repo,
-        &state,
+        &fixture.repo,
+        &fixture.state,
         &[
             "task",
             "approve",
@@ -303,22 +320,44 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
             signature.to_str().unwrap(),
         ],
     );
-    let completed = command_json(&repo, &state, &["task", "run", task, "--execute"]);
-    assert_eq!(
-        completed["result"]["acceptance"], "satisfied",
-        "{completed:#}"
+}
+
+/// Runs the light strategy to its plan review, approves that plan and runs the approved Task.
+/// Returns the Task ID and the completed run.
+fn approved_light_task(fixture: &LightFixture) -> (String, Value) {
+    let waiting = af(
+        &fixture.repo,
+        &fixture.state,
+        &["--strategy", "light", "--execute"],
     );
-    assert_eq!(
-        completed["attempts"], 5,
-        "two author, two arm, one evaluator Attempts"
+    let task = waiting["task_id"].as_str().unwrap().to_owned();
+    approve_plan(
+        fixture,
+        &task,
+        "light",
+        "one generated light candidate",
+        "light candidate",
     );
-    let completed_projection =
-        review_store::EventStore::open_read_only(state.join("events.sqlite"))
-            .unwrap()
-            .task_projection(&cas, task)
-            .unwrap()
-            .unwrap();
-    let first_configuration_id = completed_projection
+    let completed = command_json(
+        &fixture.repo,
+        &fixture.state,
+        &["task", "run", &task, "--execute"],
+    );
+    (task, completed)
+}
+
+/// The configuration the light Task's `prepare` node produced.
+fn prepared_configuration(
+    fixture: &LightFixture,
+    cas: &review_store::Cas,
+    task: &str,
+) -> review_core::ArtifactEnvelope {
+    let projection = review_store::EventStore::open_read_only(fixture.state.join("events.sqlite"))
+        .unwrap()
+        .task_projection(cas, task)
+        .unwrap()
+        .unwrap();
+    let configuration_id = projection
         .execution
         .as_ref()
         .unwrap()
@@ -329,62 +368,22 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         .outputs["configuration"]
         .artifact_ids[0]
         .clone();
-    let first_configuration = cas.get_artifact(&first_configuration_id).unwrap();
-    assert_eq!(
-        first_configuration.payload["light_recipe_id"],
-        "context_retrieval_dedup"
-    );
-    let candidate_execution_id =
-        first_configuration.payload["candidate_execution_configuration_id"]
-            .as_str()
-            .unwrap();
-    let candidate_execution = cas.get_artifact(candidate_execution_id).unwrap();
-    assert_ne!(
-        candidate_execution.payload["original_package_digest"],
-        candidate_execution.payload["package_digest"],
-        "the approved candidate must identify changed package bytes"
-    );
-    for suffix in ["_baseline", "_candidate"] {
-        let (_, invocation) = completed_projection
-            .execution
-            .as_ref()
-            .unwrap()
-            .invocations
-            .iter()
-            .find(|(node, _)| node.ends_with(suffix))
-            .map(|(_, value)| value)
-            .unwrap();
-        assert!(
-            !invocation.inputs.contains_key("execution_configuration"),
-            "package instructions must not be duplicated as arm business data"
-        );
-    }
-    let first_invalidation = first_configuration.payload["light_invalidation_id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let proposal_id = completed["result"]["outputs"]["proposal"]["artifact_ids"][0]
-        .as_str()
-        .unwrap();
-    let proposal = cas.get_artifact(proposal_id).unwrap();
-    assert_eq!(proposal.artifact_type, "af/OptimizationProposal@1");
-    assert_eq!(proposal.payload["recipe_id"], "context_retrieval_dedup");
-    let replay = command_json(&repo, &state, &["task", "run", task, "--execute"]);
-    assert_eq!(
-        replay["attempts"], 5,
-        "replay made no fresh author or trial call"
-    );
+    cas.get_artifact(&configuration_id).unwrap()
+}
 
-    let delivered = temp.path().join("light-delivery");
+/// Delivers the approved light candidate into a new worktree. Returns the delivery document and
+/// the worktree.
+fn deliver_light_candidate(fixture: &LightFixture, task: &str) -> (Value, std::path::PathBuf) {
+    let delivered = fixture.temp.path().join("light-delivery");
     let delivery = command_json(
-        &repo,
-        &state,
+        &fixture.repo,
+        &fixture.state,
         &[
             "task",
             "deliver",
             task,
             "--repo",
-            repo.to_str().unwrap(),
+            fixture.repo.to_str().unwrap(),
             "--branch",
             "af/light-adoption",
             "--worktree",
@@ -393,48 +392,15 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
             task,
         ],
     );
-    assert_eq!(delivery["outcome"]["kind"], "delivered", "{delivery:#}");
-    assert_eq!(
-        std::fs::read_to_string(
-            delivered.join(".af/optimization/optimization-check-candidate/instructions.md")
-        )
-        .unwrap(),
-        candidate_execution.payload["instructions"]
-            .as_str()
-            .unwrap(),
-        "delivered configuration must equal the exact measured candidate bytes"
-    );
-    let projection = review_store::EventStore::open_read_only(state.join("events.sqlite"))
-        .unwrap()
-        .task_projection(&cas, task)
-        .unwrap()
-        .unwrap();
-    let terminal_record_id = &projection.deliveries.last().unwrap().0;
-    let terminal_record = cas.get_artifact(terminal_record_id).unwrap();
-    assert!(terminal_record.input_artifacts.iter().any(|id| {
-        cas.get_artifact(id)
-            .is_ok_and(|artifact| artifact.artifact_type == "af/OptimizationAdoptionReceipt@1")
-    }));
+    (delivery, delivered)
+}
 
-    assert!(
+/// Commits the delivered worktree as adopted and returns that exact adoption commit.
+fn adopt_delivery(delivered: &Path) -> String {
+    commit(delivered, "adopt exact light optimization");
+    String::from_utf8(
         Command::new("git")
-            .current_dir(&delivered)
-            .args(["add", "-A"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .current_dir(&delivered)
-            .args(["commit", "-qm", "adopt exact light optimization"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    let exact_adoption_commit = String::from_utf8(
-        Command::new("git")
-            .current_dir(&delivered)
+            .current_dir(delivered)
             .args(["rev-parse", "HEAD"])
             .output()
             .unwrap()
@@ -442,280 +408,44 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     )
     .unwrap()
     .trim()
-    .to_owned();
-    let equivalent = command_json(
-        &delivered,
-        &state,
-        &[
-            "task",
-            "observe-adoption",
-            task,
-            "--commit",
-            "HEAD",
-            "--workload",
-            "fixture-v1",
-            "--model",
-            "command-workers-v1",
-            "--environment",
-            "fixture-environment-v1",
-            "--repo",
-            delivered.to_str().unwrap(),
-        ],
-    );
-    assert_eq!(equivalent["observation"]["equivalence"], "equivalent");
-    let equivalent_replay = command_json(
-        &delivered,
-        &state,
-        &[
-            "task",
-            "observe-adoption",
-            task,
-            "--commit",
-            "HEAD",
-            "--workload",
-            "fixture-v1",
-            "--model",
-            "command-workers-v1",
-            "--environment",
-            "fixture-environment-v1",
-            "--repo",
-            delivered.to_str().unwrap(),
-        ],
-    );
-    assert_eq!(
-        equivalent_replay["observation_id"], equivalent["observation_id"],
-        "replaying unchanged adoption evidence must not create another Store event"
-    );
+    .to_owned()
+}
 
-    std::fs::write(
-        delivered.join(".af/optimization/optimization-check-candidate/instructions.md"),
-        "edited after delivery\n",
-    )
-    .unwrap();
-    assert!(
-        Command::new("git")
-            .current_dir(&delivered)
-            .args(["add", "-A"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .current_dir(&delivered)
-            .args(["commit", "-qm", "edit adopted optimization"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    let edited = command_json(
-        &delivered,
-        &state,
-        &[
-            "task",
-            "observe-adoption",
-            task,
-            "--commit",
-            "HEAD",
-            "--workload",
-            "fixture-v2",
-            "--model",
-            "command-workers-v1",
-            "--environment",
-            "fixture-environment-v1",
-            "--repo",
-            delivered.to_str().unwrap(),
-        ],
-    );
-    assert_eq!(edited["observation"]["equivalence"], "edited");
-
-    std::fs::write(
-        repo.join("source-invalidation.txt"),
-        "changed source identity\n",
-    )
-    .unwrap();
-    assert!(
-        Command::new("git")
-            .current_dir(&repo)
-            .args(["add", "-A"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .current_dir(&repo)
-            .args(["commit", "-qm", "change recipe invalidation source"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    let invalidated = af(&repo, &state, &["--strategy", "light", "--execute"]);
-    assert_eq!(invalidated["phase"]["reason"], "needs_plan_review");
-    let invalidated_task = invalidated["task_id"].as_str().unwrap();
-    let invalidated_projection =
-        review_store::EventStore::open_read_only(state.join("events.sqlite"))
-            .unwrap()
-            .task_projection(&cas, invalidated_task)
-            .unwrap()
-            .unwrap();
-    let invalidated_configuration_id = &invalidated_projection.execution.as_ref().unwrap().outputs
-        ["root.nodes.prepare"]
-        .1
-        .outputs["configuration"]
-        .artifact_ids[0];
-    let invalidated_configuration = cas.get_artifact(invalidated_configuration_id).unwrap();
-    assert_ne!(
-        invalidated_configuration.payload["light_invalidation_id"], first_invalidation,
-        "a changed source must invalidate the installed recipe identity"
-    );
-
-    let propose_root = repo.join(".af/optimization/optimization-light-propose");
-    let propose_worker = propose_root.join("worker.py");
-    let policy_path = repo.join(".af/optimization-policy.json");
+/// Removes the captured objective exception, so light economics alone decide adoption.
+fn remove_objective_exception(fixture: &LightFixture) {
+    let propose_root = fixture
+        .repo
+        .join(".af/optimization/optimization-light-propose");
+    let policy_path = fixture.repo.join(".af/optimization-policy.json");
     let mut policy: Value = serde_json::from_slice(&std::fs::read(&policy_path).unwrap()).unwrap();
     policy["light_economics"]["objective_exception"] = Value::Null;
     std::fs::write(&policy_path, serde_json::to_vec(&policy).unwrap()).unwrap();
-    let catalog_path = repo.join(".af/task-catalog.toml");
-    let mut catalog: toml::Table = std::fs::read_to_string(&catalog_path)
-        .unwrap()
-        .parse()
-        .unwrap();
-    catalog["packages"]["builtin/optimization-light-propose"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("builtin/optimization-light-propose", &propose_root)
-            .unwrap(),
+    repin(
+        &fixture.repo,
+        &[("builtin/optimization-light-propose", &propose_root)],
     );
-    std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
-    assert!(
-        Command::new("git")
-            .current_dir(&repo)
-            .args(["add", "-A"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .current_dir(&repo)
-            .args(["commit", "-qm", "remove objective exception"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    let uneconomic = command_json(
-        &repo,
-        &state,
-        &["self", "optimize", "--strategy", "light", "--execute"],
-    );
-    assert_eq!(uneconomic["phase"]["reason"], "needs_plan_review");
-    let uneconomic_task = uneconomic["task_id"].as_str().unwrap();
-    let payload = temp.path().join("uneconomic.payload");
-    let signature = temp.path().join("uneconomic.minisig");
-    command_json(
-        &repo,
-        &state,
-        &[
-            "task",
-            "decision-payload",
-            uneconomic_task,
-            "--developer",
-            "owner",
-            "--decision",
-            "approved",
-            "--reason",
-            "measure economics before adoption",
-            "--output",
-            payload.to_str().unwrap(),
-        ],
-    );
-    let bytes = std::fs::read(&payload).unwrap();
-    std::fs::write(
-        &signature,
-        minisign::sign(
-            Some(&key.pk),
-            &key.sk,
-            bytes.as_slice(),
-            Some("economics"),
-            None,
-        )
-        .unwrap()
-        .into_string(),
-    )
-    .unwrap();
-    command_json(
-        &repo,
-        &state,
-        &[
-            "task",
-            "approve",
-            uneconomic_task,
-            "--payload",
-            payload.to_str().unwrap(),
-            "--signature",
-            signature.to_str().unwrap(),
-        ],
-    );
-    let withheld = command_json(
-        &repo,
-        &state,
-        &["task", "run", uneconomic_task, "--execute"],
-    );
-    assert_eq!(withheld["result"]["acceptance"], "inconclusive");
-    let withheld_id = withheld["result"]["outputs"]["result"]["artifact_ids"][0]
-        .as_str()
-        .unwrap();
-    let withheld_result = cas.get_artifact(withheld_id).unwrap();
-    assert_eq!(withheld_result.payload["adoption_offered"], false);
-    assert_eq!(withheld_result.payload["conclusion"], "recommendation_only");
+    commit(&fixture.repo, "remove objective exception");
+}
 
-    let original_worker = std::fs::read_to_string(&propose_worker).unwrap();
-    let binding_worker = original_worker.replace(
-        "    'recipe_id': selected,\n",
-        "    'recipe_id': selected,\n    'candidate_binding': {'package':'project/worker','provider_kind':'codex','model':'gpt-test','effort':'high'},\n",
-    );
-    assert_ne!(binding_worker, original_worker);
-    std::fs::write(&propose_worker, binding_worker).unwrap();
-    let mut catalog: toml::Table = std::fs::read_to_string(&catalog_path)
-        .unwrap()
-        .parse()
-        .unwrap();
-    catalog["packages"]["builtin/optimization-light-propose"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("builtin/optimization-light-propose", &propose_root)
-            .unwrap(),
-    );
-    std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
-    assert!(
-        Command::new("git")
-            .current_dir(&repo)
-            .args(["add", "-A"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .current_dir(&repo)
-            .args(["commit", "-qm", "refuse unexecuted candidate binding"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    let unexecuted_binding = command_json(
-        &repo,
-        &state,
-        &["self", "optimize", "--strategy", "light", "--execute"],
-    );
-    assert_eq!(
-        unexecuted_binding["phase"]["kind"], "finished",
-        "{unexecuted_binding:#}"
-    );
-    assert_eq!(unexecuted_binding["result"]["acceptance"], "inconclusive");
-    assert_eq!(
-        unexecuted_binding["attempts"], 2,
-        "a binding that cannot be installed is refused before either protected arm"
-    );
-    std::fs::write(&propose_worker, original_worker).unwrap();
+/// What `configure_cache_experiment` leaves for the test that runs it.
+struct CacheExperiment {
+    cache_policy: std::path::PathBuf,
+    diagnose_source: String,
+    cache_diagnose: String,
+    baseline_root: std::path::PathBuf,
+    baseline_source: String,
+}
 
+/// Points the light strategy at the admitted cargo sandbox cache under the repeated latency
+/// recipe, with the ordinary evaluator checking the offline cache it receives, and commits it.
+/// The baseline arm sleeps 3 s, so only a test that runs alone may run its latency comparison.
+fn configure_cache_experiment(fixture: &LightFixture) -> CacheExperiment {
+    let LightFixture {
+        temp,
+        repo,
+        project,
+        ..
+    } = fixture;
     let cache_root = temp.path().join("approved-cargo-cache");
     let cached_crate = cache_root.join("registry/cache/index/example.crate");
     std::fs::create_dir_all(cached_crate.parent().unwrap()).unwrap();
@@ -742,6 +472,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         .unwrap(),
     )
     .unwrap();
+    let policy_path = repo.join(".af/optimization-policy.json");
     let mut policy: Value = serde_json::from_slice(&std::fs::read(&policy_path).unwrap()).unwrap();
     policy["writable_paths"] = json!([".af/cache/cargo.json"]);
     policy["light_economics"]["objective_exception"] = json!("correctness");
@@ -777,6 +508,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         .unwrap(),
     )
     .unwrap();
+    let propose_root = repo.join(".af/optimization/optimization-light-propose");
     let diagnose_root = repo.join(".af/optimization/optimization-light-diagnose");
     let diagnose_worker = diagnose_root.join("worker.py");
     let diagnose_source = std::fs::read_to_string(&diagnose_worker).unwrap();
@@ -784,8 +516,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         "selected = 'sandbox_dependency_cache' if 'sandbox_dependency_cache' in eligible else eligible[0]",
         "selected = 'sandbox_dependency_cache'",
     );
-    assert_ne!(diagnose_source, cache_diagnose);
-    std::fs::write(&diagnose_worker, cache_diagnose).unwrap();
+    std::fs::write(&diagnose_worker, &cache_diagnose).unwrap();
     let baseline_root = repo.join(".af/optimization/optimization-check-baseline");
     let baseline_worker = baseline_root.join("worker.py");
     let baseline_source = std::fs::read_to_string(&baseline_worker).unwrap();
@@ -810,42 +541,372 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         ),
     )
     .unwrap();
-    let mut catalog: toml::Table = std::fs::read_to_string(&catalog_path)
-        .unwrap()
-        .parse()
-        .unwrap();
-    catalog["packages"]["builtin/optimization-light-propose"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("builtin/optimization-light-propose", &propose_root)
-            .unwrap(),
+    repin(
+        repo,
+        &[
+            ("builtin/optimization-light-propose", &propose_root),
+            ("builtin/optimization-light-diagnose", &diagnose_root),
+            ("builtin/optimization-check-baseline", &baseline_root),
+            ("fixture/evaluator", &ordinary_evaluator_root),
+        ],
     );
-    catalog["packages"]["builtin/optimization-light-diagnose"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("builtin/optimization-light-diagnose", &diagnose_root)
-            .unwrap(),
+    commit(repo, "exercise admitted sandbox cache");
+    CacheExperiment {
+        cache_policy,
+        diagnose_source,
+        cache_diagnose,
+        baseline_root,
+        baseline_source,
+    }
+}
+
+/// Restores the baseline worker without its sleep and removes the committed rust toolchain
+/// file, so every later measured arm lacks the cache toolchain identity.
+fn remove_cache_toolchain(fixture: &LightFixture, experiment: &CacheExperiment) {
+    // This second experiment verifies missing toolchain evidence, not latency. Do not
+    // spend another set of real sleeps to obtain a verdict that must remain inconclusive.
+    std::fs::write(
+        experiment.baseline_root.join("worker.py"),
+        &experiment.baseline_source,
+    )
+    .unwrap();
+    repin(
+        &fixture.repo,
+        &[(
+            "builtin/optimization-check-baseline",
+            &experiment.baseline_root,
+        )],
     );
-    catalog["packages"]["builtin/optimization-check-baseline"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("builtin/optimization-check-baseline", &baseline_root)
-            .unwrap(),
+    std::fs::remove_file(fixture.repo.join("rust-toolchain.toml")).unwrap();
+    commit(&fixture.repo, "exercise unknown cache toolchain");
+}
+
+/// Every light-strategy phase that measures no real time, in the original order on one
+/// repository and Store: plan review without source, the approved run and its replay, delivery
+/// and adoption observations, source invalidation, the uneconomic recommendation, the binding it
+/// cannot install and, after the cache configuration and toolchain removal, the unsupported
+/// recipe. It runs in parallel with other tests.
+#[test]
+fn light_strategy_generates_one_candidate_without_exposing_source_to_author_workers() {
+    let fixture = light_fixture();
+    let (repo, state) = (&fixture.repo, &fixture.state);
+    let waiting = af(repo, state, &["--strategy", "light", "--execute"]);
+    assert_eq!(
+        waiting["phase"]["reason"], "needs_plan_review",
+        "{waiting:#}"
     );
-    catalog["packages"]["fixture/evaluator"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("fixture/evaluator", &ordinary_evaluator_root).unwrap(),
+    assert_eq!(
+        waiting["attempts"], 2,
+        "diagnose and propose run exactly once"
     );
-    std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
-    for args in [
-        vec!["add", "-A"],
-        vec!["commit", "-qm", "exercise admitted sandbox cache"],
-    ] {
+    let task = waiting["task_id"].as_str().unwrap();
+    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let projection = store.task_projection(&cas, task).unwrap().unwrap();
+    let execution = projection.execution.as_ref().unwrap();
+    for node in ["root.nodes.diagnose", "root.nodes.propose"] {
+        let invocation = &execution.invocations.get(node).unwrap().1;
         assert!(
-            Command::new("git")
-                .current_dir(&repo)
-                .args(args)
-                .status()
-                .unwrap()
-                .success()
+            !invocation.inputs.contains_key("source"),
+            "author Worker received protected source: {node}"
         );
     }
+
+    approve_plan(
+        &fixture,
+        task,
+        "light",
+        "one generated light candidate",
+        "light candidate",
+    );
+    let completed = command_json(repo, state, &["task", "run", task, "--execute"]);
+    assert_eq!(
+        completed["result"]["acceptance"], "satisfied",
+        "{completed:#}"
+    );
+    assert_eq!(
+        completed["attempts"], 5,
+        "two author, two arm, one evaluator Attempts"
+    );
+    let completed_projection =
+        review_store::EventStore::open_read_only(state.join("events.sqlite"))
+            .unwrap()
+            .task_projection(&cas, task)
+            .unwrap()
+            .unwrap();
+    let first_configuration = prepared_configuration(&fixture, &cas, task);
+    assert_eq!(
+        first_configuration.payload["light_recipe_id"],
+        "context_retrieval_dedup"
+    );
+    let candidate_execution_id =
+        first_configuration.payload["candidate_execution_configuration_id"]
+            .as_str()
+            .unwrap();
+    let candidate_execution = cas.get_artifact(candidate_execution_id).unwrap();
+    assert_ne!(
+        candidate_execution.payload["original_package_digest"],
+        candidate_execution.payload["package_digest"],
+        "the approved candidate must identify changed package bytes"
+    );
+    for suffix in ["_baseline", "_candidate"] {
+        let (_, invocation) = completed_projection
+            .execution
+            .as_ref()
+            .unwrap()
+            .invocations
+            .iter()
+            .find(|(node, _)| node.ends_with(suffix))
+            .map(|(_, value)| value)
+            .unwrap();
+        assert!(
+            !invocation.inputs.contains_key("execution_configuration"),
+            "package instructions must not be duplicated as arm business data"
+        );
+    }
+    let proposal_id = completed["result"]["outputs"]["proposal"]["artifact_ids"][0]
+        .as_str()
+        .unwrap();
+    let proposal = cas.get_artifact(proposal_id).unwrap();
+    assert_eq!(proposal.artifact_type, "af/OptimizationProposal@1");
+    assert_eq!(proposal.payload["recipe_id"], "context_retrieval_dedup");
+    let first_invalidation = first_configuration.payload["light_invalidation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let replay = command_json(repo, state, &["task", "run", task, "--execute"]);
+    assert_eq!(
+        replay["attempts"], 5,
+        "replay made no fresh author or trial call"
+    );
+
+    let (delivery, delivered) = deliver_light_candidate(&fixture, task);
+    assert_eq!(delivery["outcome"]["kind"], "delivered", "{delivery:#}");
+    assert_eq!(
+        std::fs::read_to_string(
+            delivered.join(".af/optimization/optimization-check-candidate/instructions.md")
+        )
+        .unwrap(),
+        candidate_execution.payload["instructions"]
+            .as_str()
+            .unwrap(),
+        "delivered configuration must equal the exact measured candidate bytes"
+    );
+    let projection = review_store::EventStore::open_read_only(state.join("events.sqlite"))
+        .unwrap()
+        .task_projection(&cas, task)
+        .unwrap()
+        .unwrap();
+    let terminal_record_id = &projection.deliveries.last().unwrap().0;
+    let terminal_record = cas.get_artifact(terminal_record_id).unwrap();
+    assert!(terminal_record.input_artifacts.iter().any(|id| {
+        cas.get_artifact(id)
+            .is_ok_and(|artifact| artifact.artifact_type == "af/OptimizationAdoptionReceipt@1")
+    }));
+
+    adopt_delivery(&delivered);
+    let equivalent = command_json(
+        &delivered,
+        state,
+        &[
+            "task",
+            "observe-adoption",
+            task,
+            "--commit",
+            "HEAD",
+            "--workload",
+            "fixture-v1",
+            "--model",
+            "command-workers-v1",
+            "--environment",
+            "fixture-environment-v1",
+            "--repo",
+            delivered.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(equivalent["observation"]["equivalence"], "equivalent");
+    let equivalent_replay = command_json(
+        &delivered,
+        state,
+        &[
+            "task",
+            "observe-adoption",
+            task,
+            "--commit",
+            "HEAD",
+            "--workload",
+            "fixture-v1",
+            "--model",
+            "command-workers-v1",
+            "--environment",
+            "fixture-environment-v1",
+            "--repo",
+            delivered.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        equivalent_replay["observation_id"], equivalent["observation_id"],
+        "replaying unchanged adoption evidence must not create another Store event"
+    );
+
+    std::fs::write(
+        delivered.join(".af/optimization/optimization-check-candidate/instructions.md"),
+        "edited after delivery\n",
+    )
+    .unwrap();
+    commit(&delivered, "edit adopted optimization");
+    let edited = command_json(
+        &delivered,
+        state,
+        &[
+            "task",
+            "observe-adoption",
+            task,
+            "--commit",
+            "HEAD",
+            "--workload",
+            "fixture-v2",
+            "--model",
+            "command-workers-v1",
+            "--environment",
+            "fixture-environment-v1",
+            "--repo",
+            delivered.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(edited["observation"]["equivalence"], "edited");
+
+    std::fs::write(
+        repo.join("source-invalidation.txt"),
+        "changed source identity\n",
+    )
+    .unwrap();
+    commit(repo, "change recipe invalidation source");
+    let invalidated = af(repo, state, &["--strategy", "light", "--execute"]);
+    assert_eq!(invalidated["phase"]["reason"], "needs_plan_review");
+    let invalidated_task = invalidated["task_id"].as_str().unwrap();
+    let invalidated_projection =
+        review_store::EventStore::open_read_only(state.join("events.sqlite"))
+            .unwrap()
+            .task_projection(&cas, invalidated_task)
+            .unwrap()
+            .unwrap();
+    let invalidated_configuration_id = &invalidated_projection.execution.as_ref().unwrap().outputs
+        ["root.nodes.prepare"]
+        .1
+        .outputs["configuration"]
+        .artifact_ids[0];
+    let invalidated_configuration = cas.get_artifact(invalidated_configuration_id).unwrap();
+    assert_ne!(
+        invalidated_configuration.payload["light_invalidation_id"], first_invalidation,
+        "a changed source must invalidate the installed recipe identity"
+    );
+
+    remove_objective_exception(&fixture);
+    let uneconomic = command_json(
+        repo,
+        state,
+        &["self", "optimize", "--strategy", "light", "--execute"],
+    );
+    assert_eq!(uneconomic["phase"]["reason"], "needs_plan_review");
+    let uneconomic_task = uneconomic["task_id"].as_str().unwrap();
+    approve_plan(
+        &fixture,
+        uneconomic_task,
+        "uneconomic",
+        "measure economics before adoption",
+        "economics",
+    );
+    let withheld = command_json(repo, state, &["task", "run", uneconomic_task, "--execute"]);
+    assert_eq!(withheld["result"]["acceptance"], "inconclusive");
+    let withheld_id = withheld["result"]["outputs"]["result"]["artifact_ids"][0]
+        .as_str()
+        .unwrap();
+    let withheld_result = cas.get_artifact(withheld_id).unwrap();
+    assert_eq!(withheld_result.payload["adoption_offered"], false);
+    assert_eq!(withheld_result.payload["conclusion"], "recommendation_only");
+
+    let propose_root = repo.join(".af/optimization/optimization-light-propose");
+    let propose_worker = propose_root.join("worker.py");
+    let original_worker = std::fs::read_to_string(&propose_worker).unwrap();
+    let binding_worker = original_worker.replace(
+        "    'recipe_id': selected,\n",
+        "    'recipe_id': selected,\n    'candidate_binding': {'package':'project/worker','provider_kind':'codex','model':'gpt-test','effort':'high'},\n",
+    );
+    assert_ne!(binding_worker, original_worker);
+    std::fs::write(&propose_worker, binding_worker).unwrap();
+    repin(
+        repo,
+        &[("builtin/optimization-light-propose", &propose_root)],
+    );
+    commit(repo, "refuse unexecuted candidate binding");
+    let unexecuted_binding = command_json(
+        repo,
+        state,
+        &["self", "optimize", "--strategy", "light", "--execute"],
+    );
+    assert_eq!(
+        unexecuted_binding["phase"]["kind"], "finished",
+        "{unexecuted_binding:#}"
+    );
+    assert_eq!(unexecuted_binding["result"]["acceptance"], "inconclusive");
+    assert_eq!(
+        unexecuted_binding["attempts"], 2,
+        "a binding that cannot be installed is refused before either protected arm"
+    );
+    std::fs::write(&propose_worker, original_worker).unwrap();
+
+    let experiment = configure_cache_experiment(&fixture);
+    remove_cache_toolchain(&fixture, &experiment);
+    let worker = std::fs::read_to_string(&propose_worker).unwrap().replace(
+        "'recipe_id': selected",
+        "'recipe_id': 'deterministic_artifact_reuse'",
+    );
+    std::fs::write(&propose_worker, worker).unwrap();
+    repin(
+        repo,
+        &[("builtin/optimization-light-propose", &propose_root)],
+    );
+    commit(repo, "propose unsupported recipe");
+    let unsupported = command_json(
+        repo,
+        state,
+        &["self", "optimize", "--strategy", "light", "--execute"],
+    );
+    assert_eq!(unsupported["phase"]["kind"], "finished", "{unsupported:#}");
+    assert_eq!(
+        unsupported["result"]["acceptance"], "inconclusive",
+        "{unsupported:#}"
+    );
+    assert_eq!(
+        unsupported["attempts"], 2,
+        "an unsupported recipe is refused before any protected child is prepared"
+    );
+}
+
+/// The one light test that measures real elapsed time, so `.config/nextest.toml` runs it alone:
+/// the cache candidate's repeated latency comparison against a baseline that sleeps 3 s, then
+/// every phase that reads that comparison's Task (`cache_task`): its replay, delivery, adoption,
+/// the ordinary Task that reuses the adopted cache, the unknown-toolchain comparison (baseline
+/// restored without its sleep) that follows it in the same repository and Store, and the light
+/// adoption observed with the cache Task as evidence. The light candidate is delivered first
+/// only so that last observation has an adopted Task to attach to.
+#[test]
+fn light_cache_candidate_measures_real_latency_and_grounds_later_adoption_evidence() {
+    let fixture = light_fixture();
+    let (task, _) = approved_light_task(&fixture);
+    let task = task.as_str();
+    let (_, delivered) = deliver_light_candidate(&fixture, task);
+    let exact_adoption_commit = adopt_delivery(&delivered);
+    let experiment = configure_cache_experiment(&fixture);
+    assert_ne!(experiment.diagnose_source, experiment.cache_diagnose);
+    let cache_policy = &experiment.cache_policy;
+    let (repo, state) = (&fixture.repo, &fixture.state);
+    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+
     let cache_waiting = command_json(
-        &repo,
-        &state,
+        repo,
+        state,
         &["self", "optimize", "--strategy", "light", "--execute"],
     );
     assert_eq!(
@@ -853,58 +914,19 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         "{cache_waiting:#}"
     );
     let cache_task = cache_waiting["task_id"].as_str().unwrap();
-    let payload = temp.path().join("cache.payload");
-    let signature = temp.path().join("cache.minisig");
-    command_json(
-        &repo,
-        &state,
-        &[
-            "task",
-            "decision-payload",
-            cache_task,
-            "--developer",
-            "owner",
-            "--decision",
-            "approved",
-            "--reason",
-            "measure admitted cache preparation",
-            "--output",
-            payload.to_str().unwrap(),
-        ],
-    );
-    let bytes = std::fs::read(&payload).unwrap();
-    std::fs::write(
-        &signature,
-        minisign::sign(
-            Some(&key.pk),
-            &key.sk,
-            bytes.as_slice(),
-            Some("cache candidate"),
-            None,
-        )
-        .unwrap()
-        .into_string(),
-    )
-    .unwrap();
-    command_json(
-        &repo,
-        &state,
-        &[
-            "task",
-            "approve",
-            cache_task,
-            "--payload",
-            payload.to_str().unwrap(),
-            "--signature",
-            signature.to_str().unwrap(),
-        ],
+    approve_plan(
+        &fixture,
+        cache_task,
+        "cache",
+        "measure admitted cache preparation",
+        "cache candidate",
     );
     let cache_completed = command_json_with_env(
-        &repo,
-        &state,
+        repo,
+        state,
         &["task", "run", cache_task, "--execute"],
         &[
-            ("AF_CACHE_POLICY_FILE", &cache_policy),
+            ("AF_CACHE_POLICY_FILE", cache_policy),
             ("AF_TEST_CLOCK_QUANTUM_MS", Path::new("4")),
         ],
     );
@@ -999,20 +1021,20 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
             > 0
     );
     let cache_replay = command_json_with_env(
-        &repo,
-        &state,
+        repo,
+        state,
         &["task", "run", cache_task, "--execute"],
         &[
-            ("AF_CACHE_POLICY_FILE", &cache_policy),
+            ("AF_CACHE_POLICY_FILE", cache_policy),
             ("AF_TEST_CLOCK_QUANTUM_MS", Path::new("4")),
         ],
     );
     assert_eq!(cache_replay["attempts"], cache_completed["attempts"]);
 
-    let cache_delivery = temp.path().join("cache-delivery");
+    let cache_delivery = fixture.temp.path().join("cache-delivery");
     let delivered_cache = command_json(
-        &repo,
-        &state,
+        repo,
+        state,
         &[
             "task",
             "deliver",
@@ -1034,22 +1056,10 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
             .trim(),
         r#"{"schema":"af.sandbox-cache-selection/1","kind":"cargo"}"#
     );
-    for args in [
-        vec!["add", "-A"],
-        vec!["commit", "-qm", "adopt exact cache selection"],
-    ] {
-        assert!(
-            Command::new("git")
-                .current_dir(&cache_delivery)
-                .args(args)
-                .status()
-                .unwrap()
-                .success()
-        );
-    }
+    commit(&cache_delivery, "adopt exact cache selection");
     let cache_adoption = command_json(
         &cache_delivery,
-        &state,
+        state,
         &[
             "task",
             "observe-adoption",
@@ -1069,9 +1079,9 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     assert_eq!(cache_adoption["observation"]["equivalence"], "equivalent");
     let ordinary = command_json_with_env(
         &cache_delivery,
-        &state,
+        state,
         &["task", "start", "--execute", "--file", "ticket.json"],
-        &[("AF_CACHE_POLICY_FILE", &cache_policy)],
+        &[("AF_CACHE_POLICY_FILE", cache_policy)],
     );
     assert_eq!(
         ordinary["result"]["acceptance"], "satisfied",
@@ -1089,92 +1099,27 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     );
     assert!(!cache_delivery.join(".af-cache").exists());
 
-    // This second experiment verifies missing toolchain evidence, not latency. Do not
-    // spend another set of real sleeps to obtain a verdict that must remain inconclusive.
-    std::fs::write(&baseline_worker, &baseline_source).unwrap();
-    let mut catalog: toml::Table = std::fs::read_to_string(&catalog_path)
-        .unwrap()
-        .parse()
-        .unwrap();
-    catalog["packages"]["builtin/optimization-check-baseline"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("builtin/optimization-check-baseline", &baseline_root)
-            .unwrap(),
-    );
-    std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
-
-    std::fs::remove_file(repo.join("rust-toolchain.toml")).unwrap();
-    for args in [
-        vec!["add", "-A"],
-        vec!["commit", "-qm", "exercise unknown cache toolchain"],
-    ] {
-        assert!(
-            Command::new("git")
-                .current_dir(&repo)
-                .args(args)
-                .status()
-                .unwrap()
-                .success()
-        );
-    }
+    remove_cache_toolchain(&fixture, &experiment);
     let unknown_waiting = command_json(
-        &repo,
-        &state,
+        repo,
+        state,
         &["self", "optimize", "--strategy", "light", "--execute"],
     );
     assert_eq!(unknown_waiting["phase"]["reason"], "needs_plan_review");
     let unknown_task = unknown_waiting["task_id"].as_str().unwrap();
-    let payload = temp.path().join("unknown-toolchain.payload");
-    let signature = temp.path().join("unknown-toolchain.minisig");
-    command_json(
-        &repo,
-        &state,
-        &[
-            "task",
-            "decision-payload",
-            unknown_task,
-            "--developer",
-            "owner",
-            "--decision",
-            "approved",
-            "--reason",
-            "prove unknown toolchain withholds cache adoption",
-            "--output",
-            payload.to_str().unwrap(),
-        ],
-    );
-    let bytes = std::fs::read(&payload).unwrap();
-    std::fs::write(
-        &signature,
-        minisign::sign(
-            Some(&key.pk),
-            &key.sk,
-            bytes.as_slice(),
-            Some("unknown toolchain"),
-            None,
-        )
-        .unwrap()
-        .into_string(),
-    )
-    .unwrap();
-    command_json(
-        &repo,
-        &state,
-        &[
-            "task",
-            "approve",
-            unknown_task,
-            "--payload",
-            payload.to_str().unwrap(),
-            "--signature",
-            signature.to_str().unwrap(),
-        ],
+    approve_plan(
+        &fixture,
+        unknown_task,
+        "unknown-toolchain",
+        "prove unknown toolchain withholds cache adoption",
+        "unknown toolchain",
     );
     let unknown = command_json_with_env(
-        &repo,
-        &state,
+        repo,
+        state,
         &["task", "run", unknown_task, "--execute"],
         &[
-            ("AF_CACHE_POLICY_FILE", &cache_policy),
+            ("AF_CACHE_POLICY_FILE", cache_policy),
             ("AF_TEST_CLOCK_QUANTUM_MS", Path::new("4")),
         ],
     );
@@ -1203,9 +1148,9 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
                 .any(|name| name == "cache_toolchain_identity")),
         "unknown toolchain was not retained on every measured arm: {unknown_comparison:#?}"
     );
-    let refused_cache_delivery = temp.path().join("unknown-cache-delivery");
+    let refused_cache_delivery = fixture.temp.path().join("unknown-cache-delivery");
     let output = crate::common::af()
-        .current_dir(&repo)
+        .current_dir(repo)
         .args([
             "task",
             "deliver",
@@ -1229,7 +1174,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
 
     let observed_task = command_json(
         &delivered,
-        &state,
+        state,
         &[
             "task",
             "observe-adoption",
@@ -1256,7 +1201,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     );
     let adoption_projection = command_json(
         &delivered,
-        &state,
+        state,
         &["task", "show", task, "--repo", delivered.to_str().unwrap()],
     );
     assert_eq!(adoption_projection["schema"], "af/task-inspection@11");
@@ -1274,51 +1219,6 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     assert_eq!(
         projected["task_evidence"][0]["record"]["causal_claim"],
         false
-    );
-
-    let worker = std::fs::read_to_string(&propose_worker).unwrap().replace(
-        "'recipe_id': selected",
-        "'recipe_id': 'deterministic_artifact_reuse'",
-    );
-    std::fs::write(&propose_worker, worker).unwrap();
-    let mut catalog: toml::Table = std::fs::read_to_string(&catalog_path)
-        .unwrap()
-        .parse()
-        .unwrap();
-    catalog["packages"]["builtin/optimization-light-propose"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("builtin/optimization-light-propose", &propose_root)
-            .unwrap(),
-    );
-    std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
-    assert!(
-        Command::new("git")
-            .current_dir(&repo)
-            .args(["add", "-A"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .current_dir(&repo)
-            .args(["commit", "-qm", "propose unsupported recipe"])
-            .status()
-            .unwrap()
-            .success()
-    );
-    let unsupported = command_json(
-        &repo,
-        &state,
-        &["self", "optimize", "--strategy", "light", "--execute"],
-    );
-    assert_eq!(unsupported["phase"]["kind"], "finished", "{unsupported:#}");
-    assert_eq!(
-        unsupported["result"]["acceptance"], "inconclusive",
-        "{unsupported:#}"
-    );
-    assert_eq!(
-        unsupported["attempts"], 2,
-        "an unsupported recipe is refused before any protected child is prepared"
     );
 }
 
