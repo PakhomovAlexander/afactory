@@ -1113,13 +1113,14 @@ impl EventStore {
                     ..
                 }
         );
-        let time = now()?;
-        let transition = TaskTransitionV1 {
+        let mut transition = TaskTransitionV1 {
             writer: state.writer.clone(),
             epoch: state.epoch,
-            now_unix_ms: time,
+            now_unix_ms: now()?,
             change,
         };
+        // Stamped before it is persisted, as every other Task append is (ADR-0128).
+        transition.now_unix_ms = state.writer_time(&transition);
         let (kind, value) = super::review_handoff::encode_transition(&transition)?;
         let event = NewEvent::new(kind, value.clone()).referencing(super::references(
             cas,

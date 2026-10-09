@@ -1,6 +1,8 @@
 # ADR-0128: Renew a live Task writer's lease through its own Store connection
 
-**Status:** accepted (2026-09-29), revised (2026-09-30) for the SQLite write lock. Amends
+**Status:** accepted (2026-09-29), revised (2026-09-30) for the SQLite write lock, and
+(2026-10-08) to apply the writer's own clock to every place that compares it with the last
+recorded time. Amends
 [ADR-0089](0089-interrupt-task-work-when-its-writer-heartbeat-fails.md): the heartbeat no
 longer observes and renews only through the connection its work holds.
 
@@ -108,6 +110,18 @@ from starting close to it.
   its lease is judged at that time. The stamp is applied before the transition is persisted,
   so the log stays monotonic and replays unchanged. Another writer, or a stale epoch, keeps
   its own time and is fenced as before.
+
+  The same rule holds at every place that compares the current writer's clock with the last
+  recorded time ([issue #231](https://github.com/PakhomovAlexander/afactory/issues/231)). The
+  heartbeat's lease observation judges the exact holder at the later of its clock and the last
+  recorded time; every other writer or epoch is refused before any time is compared. The
+  projection's own clock check, when it applies a transition, uses the same time and records
+  the transition there, so a released lease ends no earlier than the last recorded event. The
+  review integration append stamps its transition before it is persisted, as every other append
+  does. A takeover, Task collection and every other writer keep their own clock, and an
+  earlier one is still refused. An expired lease, a finished Task and a recorded clock that has
+  reached the lease's expiry are refused at any host time. Judging at the later time never
+  extends a lease: it can only reach expiry sooner.
 
 ## Consequences
 

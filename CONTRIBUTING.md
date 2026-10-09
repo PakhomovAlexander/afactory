@@ -61,6 +61,57 @@ fail loudly there, never skip.
   subject there is a new file plus one `mod` line.
 - A test that reproduces a bug goes in first and fails; the fix follows in the same PR.
 
+## Test time
+
+After every nextest run, passing or failing, `make test` prints a summary of the JUnit report
+nextest just wrote (`target/nextest/ci/junit.xml`, or the gate's run directory under
+`nextest-reports/` when `scripts/verify.sh` runs it). CI also adds it to the step summary, and
+a Task gate's output ends with it. Before nextest starts, the JUnit an earlier run left at that
+path is removed, so a run that writes none is never reported from an old one. The report never
+changes the step's exit status: if the JUnit is missing or unreadable, or its testcases do not
+add up to the `tests`, `failures` and `errors` counts nextest declared, you get a warning
+instead. Read it top down:
+
+- **Wall (nextest)** and **Tests** are nextest's own run time and test count, exactly as its
+  `Summary` line prints them.
+- **Test-seconds (summed)** adds up every test's own time. **Achieved parallelism** is that sum
+  divided by the wall time: how many tests were running on average. If it is well below
+  `TEST_THREADS`, the time goes to the long tail or the exclusive block.
+- **Exclusive block** is the summed time of the tests matched by the `test(/.../)` filters of
+  the override in `.config/nextest.toml` that takes every test thread. Nothing else runs while
+  they do, so the whole block adds to the wall time.
+- The duration histogram counts tests per bucket (`<0.1`, `0.1-1`, `1-3`, `3-10`, `10-30`,
+  `30-60`, `>=60` seconds; lower edge inclusive), with their seconds and their share of the
+  summed test-seconds. The slowest tests (`--top N`, 20 by default) follow with their test
+  binary, then any failed tests.
+
+`python3 scripts/test-time-report.py summary JUNIT` prints the same summary for any report;
+`--format json` emits it as an `af.test-time-summary/1` document instead.
+
+For a pull request that changes test time, measure before and after on the same machine with
+the same `TEST_THREADS`, keep a copy of each run's JUnit, then compare them:
+
+```sh
+git switch main && make test && cp target/nextest/ci/junit.xml /tmp/base-1.xml
+# ...repeat for /tmp/base-2.xml and /tmp/base-3.xml, then on your branch:
+make test && cp target/nextest/ci/junit.xml /tmp/head-1.xml
+# ...repeat for /tmp/head-2.xml and /tmp/head-3.xml, then compare with each side's config:
+git show main:.config/nextest.toml > /tmp/base-nextest.toml
+python3 scripts/test-time-report.py compare \
+  --base-nextest-config /tmp/base-nextest.toml --head-nextest-config .config/nextest.toml \
+  /tmp/base-*.xml -- /tmp/head-*.xml
+```
+
+Each side's exclusive block is computed from its own config, so a change that adds a test to
+the exclusive override or splits one out of it is measured with the list each side ran under;
+when the two configs differ, the output names both. `--nextest-config PATH` alone still sets the
+config of both sides, and each per-side option defaults to it.
+
+Run times vary between runs, so use three runs per side. The comparison takes the median of
+each total per side and prints the delta and percent change. It also lists every test whose
+median time moved by at least 1 s, plus tests that were added or removed, as a Markdown table.
+Paste that table into the pull request description, next to the `af task report` block.
+
 ## Design changes and ADRs
 
 A change to a contract, a wire shape, a gate, a budget, a sandbox boundary, or the release

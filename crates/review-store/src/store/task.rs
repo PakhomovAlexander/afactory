@@ -879,7 +879,11 @@ impl TaskProjection {
             ),
             _ => false,
         };
-        if transition.now_unix_ms < self.last_time
+        // The same writer's transition is judged and recorded at `writer_time`, never before
+        // the last recorded event (ADR-0128). Another writer, or a stale epoch, keeps its own
+        // time, so its earlier clock is still refused here.
+        let time = self.writer_time(transition);
+        if time < self.last_time
             || (matches!(self.phase, TaskPhaseV1::Finished { .. }) && !accounting_after_finish)
         {
             return Err(conflict(
@@ -905,10 +909,10 @@ impl TaskProjection {
             match &transition.change {
                 TaskChangeV1::ReviewIntegrationSelected { .. }
                 | TaskChangeV1::ReviewIntegrationFinished { .. } => {
-                    self.apply_review_integration(cas, &transition.change, transition.now_unix_ms)?;
+                    self.apply_review_integration(cas, &transition.change, time)?;
                 }
                 TaskChangeV1::ReviewContinued { handoff_id } => {
-                    self.apply_review_handoff(cas, handoff_id, transition.now_unix_ms)?;
+                    self.apply_review_handoff(cas, handoff_id, time)?;
                 }
                 TaskChangeV1::SourceRefreshed {
                     revision_id,
@@ -920,7 +924,7 @@ impl TaskProjection {
                         revision_id,
                         plan_id.as_deref(),
                         *waiting,
-                        transition.now_unix_ms,
+                        time,
                     )?;
                 }
                 TaskChangeV1::DeliveryRecorded { record_id } => {
@@ -945,7 +949,7 @@ impl TaskProjection {
                         .push((observation_id.clone(), value));
                 }
                 TaskChangeV1::ExecutionRecorded { record_id } => {
-                    self.apply_execution(cas, record_id, transition.now_unix_ms)?;
+                    self.apply_execution(cas, record_id, time)?;
                 }
                 TaskChangeV1::RunReported { report_id } => {
                     self.apply_run_report(cas, report_id)?;
@@ -994,7 +998,7 @@ impl TaskProjection {
                             "Cannot release a Task lease with pending Attempts",
                         ));
                     }
-                    self.lease_until = transition.now_unix_ms;
+                    self.lease_until = time;
                 }
                 TaskChangeV1::PlanProposed { plan_id } => {
                     if self.admitted || self.execution.is_some() {
@@ -1023,7 +1027,7 @@ impl TaskProjection {
                         proposal_id,
                         revision_id,
                         plan_id,
-                        transition.now_unix_ms,
+                        time,
                     )?;
                 }
                 TaskChangeV1::PlanDecided {
@@ -1101,7 +1105,7 @@ impl TaskProjection {
                     if self.plan_id.as_ref() != Some(plan_id) {
                         return Err(conflict("Task plan admission is stale"));
                     }
-                    self.check_approval(cas, transition.now_unix_ms)?;
+                    self.check_approval(cas, time)?;
                     self.admitted = true;
                     self.phase = TaskPhaseV1::Running {};
                     self.resume_phase = None;
@@ -1124,7 +1128,7 @@ impl TaskProjection {
                         .take()
                         .ok_or_else(|| conflict("Task has no resumable pause"))?;
                     if self.admitted {
-                        self.check_approval(cas, transition.now_unix_ms)?;
+                        self.check_approval(cas, time)?;
                     }
                     self.phase = prior;
                 }
@@ -1138,9 +1142,9 @@ impl TaskProjection {
                         task_revision_id,
                         plan_id,
                         report_id,
-                        transition.now_unix_ms,
+                        time,
                     )?;
-                    self.check_plan_decision(cas, transition.now_unix_ms)?;
+                    self.check_plan_decision(cas, time)?;
                     self.recording_recovery = Some(recovery);
                     self.resume_phase = None;
                     self.phase = TaskPhaseV1::Running {};
@@ -1275,7 +1279,7 @@ impl TaskProjection {
                 }
             }
         }
-        self.last_time = transition.now_unix_ms;
+        self.last_time = time;
         self.next_sequence = event.sequence + 1;
         Ok(())
     }
