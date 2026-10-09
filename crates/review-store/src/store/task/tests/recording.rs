@@ -35,6 +35,37 @@ fn recording_resume_cannot_acquire_an_output_published_after_the_failed_report()
 }
 
 fn expired_publication_at_report(
+    f: Fixture,
+    revoke: bool,
+    publish_after_report: bool,
+) -> (Fixture, TaskLease, String) {
+    let [case] = past_deadlines([paused_publication_at_report(
+        f,
+        revoke,
+        publish_after_report,
+    )]);
+    case
+}
+
+/// Wait once on the real clock until every case's Task deadline has passed, then reopen each
+/// case's Store as a later process would.
+fn past_deadlines<const N: usize>(
+    cases: [(Fixture, TaskLease, String); N],
+) -> [(Fixture, TaskLease, String); N] {
+    let deadline = cases
+        .iter()
+        .map(|(f, ..)| f.revision.limits.deadline_unix_ms)
+        .max()
+        .unwrap_or_default();
+    let delay = deadline.saturating_sub(now().unwrap()) + 5;
+    std::thread::sleep(std::time::Duration::from_millis(delay));
+    cases.map(|(mut f, lease, output)| {
+        f.store = EventStore::open(&f.path).unwrap();
+        (f, lease, output)
+    })
+}
+
+fn paused_publication_at_report(
     mut f: Fixture,
     revoke: bool,
     publish_after_report: bool,
@@ -181,14 +212,6 @@ fn expired_publication_at_report(
             )
             .unwrap();
     }
-    let delay = f
-        .revision
-        .limits
-        .deadline_unix_ms
-        .saturating_sub(now().unwrap())
-        + 5;
-    std::thread::sleep(std::time::Duration::from_millis(delay));
-    f.store = EventStore::open(&f.path).unwrap();
     (f, lease, output)
 }
 
@@ -409,24 +432,46 @@ fn recording_resume_pins_exact_report_and_outputs_without_dispatch_or_new_resour
 fn recording_resume_rejects_revoked_decision_or_replaced_latest_report() {
     let mut expired_decision = Fixture::new(true).with_execution_graph();
     expired_decision.authority.valid_until = now().unwrap() + 1500;
-    let (mut expired_decision, paused, _) = expired_publication(expired_decision, false);
-    let before = expired_decision.state().next_sequence;
-    assert!(
-        expired_decision
-            .store
-            .resume_task_for_recording(&expired_decision.cas, &paused, &expired_decision.authority)
-            .is_err()
+    // Prepare every case, then wait once until all of their deadlines have passed.
+    let [expired_decision, revoked, replaced] = past_deadlines([
+        paused_publication_at_report(expired_decision, false, false),
+        paused_publication_at_report(Fixture::new(true).with_execution_graph(), true, false),
+        paused_publication_at_report(Fixture::new(true).with_execution_graph(), false, false),
+    ]);
+    let (mut expired_decision, paused, _) = expired_decision;
+    assert_past_deadline(&expired_decision);
+    let state = expired_decision.state();
+    let decision = &state.decisions[&expired_decision.plan_id];
+    assert!(decision.revocation.is_none());
+    assert!(now().unwrap() >= decision.valid_until);
+    let before = state.next_sequence;
+    assert_conflict(
+        expired_decision.store.resume_task_for_recording(
+            &expired_decision.cas,
+            &paused,
+            &expired_decision.authority,
+        ),
+        "Task plan approval is rejected, revoked, expired or stale",
     );
     assert_eq!(expired_decision.state().next_sequence, before);
-    let (mut f, lease, _) = expired_publication(Fixture::new(true).with_execution_graph(), true);
-    let before = f.state().next_sequence;
+    let (mut f, lease, _) = revoked;
+    assert_past_deadline(&f);
+    let state = f.state();
+    let decision = &state.decisions[&f.plan_id];
+    assert!(decision.revocation.is_some());
     assert!(
+        now().unwrap() < decision.valid_until,
+        "only revocation refuses"
+    );
+    let before = state.next_sequence;
+    assert_conflict(
         f.store
-            .resume_task_for_recording(&f.cas, &lease, &f.authority)
-            .is_err()
+            .resume_task_for_recording(&f.cas, &lease, &f.authority),
+        "Task plan approval is rejected, revoked, expired or stale",
     );
     assert_eq!(f.state().next_sequence, before);
-    let (mut f, lease, _) = expired_publication(Fixture::new(true).with_execution_graph(), false);
+    let (mut f, lease, _) = replaced;
+    assert_past_deadline(&f);
     let state = f.state();
     let old_report = state.run_reports.last().unwrap();
     let mut report = read_task_run_report(&f.cas, old_report).unwrap();
@@ -449,22 +494,42 @@ fn recording_resume_rejects_revoked_decision_or_replaced_latest_report() {
         .0;
     f.store.record_task_run_report(&f.cas, &lease, &id).unwrap();
     let before = f.state().next_sequence;
-    assert!(
+    // Past the deadline, the replaced latest report passes the expired-pause gate and is
+    // refused only for carrying no publication failure.
+    assert_conflict(
         f.store
-            .resume_task_for_recording(&f.cas, &lease, &f.authority)
-            .is_err()
+            .resume_task_for_recording(&f.cas, &lease, &f.authority),
+        "Recording recovery needs an already-published selected output at the failed report",
     );
     let mut stale = transition(&f, &lease);
     let TaskChangeV1::RecordingResumed { report_id, .. } = &mut stale.change else {
         unreachable!()
     };
     *report_id = old_report.clone();
-    assert!(
+    // That gate's other conditions held above, so the stale report alone refuses here.
+    assert_ne!(f.state().run_reports.last(), Some(old_report));
+    assert_conflict(
         f.store
-            .append_task_transition(&f.cas, lease.task_id(), stale)
-            .is_err()
+            .append_task_transition(&f.cas, lease.task_id(), stale),
+        "Recording recovery requires the exact expired admitted publication pause",
     );
     assert_eq!(f.state().next_sequence, before);
+}
+
+/// Each case acts only once its own Task deadline has passed on the real clock.
+fn assert_past_deadline(f: &Fixture) {
+    let deadline = f.state().revision.limits.deadline_unix_ms;
+    assert!(
+        now().unwrap() >= deadline,
+        "deadline {deadline} has not passed"
+    );
+}
+
+fn assert_conflict<T: std::fmt::Debug>(result: Result<T, StoreError>, cause: &str) {
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        format!("event store conflict: {cause}")
+    );
 }
 
 #[test]

@@ -95,19 +95,39 @@ impl WorkerModelAdapter for OutageModel {
 
 #[test]
 fn worker_and_provider_cas_failure_recover_full_reported_usage_without_another_call() {
-    for fail_at in [0, 1] {
-        recovery_case(fail_at, false);
-    }
+    recovery_cases(&[0, 1], false, &mut vec![]);
 }
 
 #[test]
 fn incomplete_native_observation_survives_cas_outage_and_both_admission_and_worker_recovery() {
-    for fail_at in [0, 1] {
-        recovery_case(fail_at, true);
+    recovery_cases(&[0, 1], true, &mut vec![]);
+}
+
+/// Each case fails inside the previous case's continuation, so every case keeps its own
+/// runtime host across one real wait past all of their leases; then each case recovers.
+fn recovery_cases(fail_ats: &[usize], incomplete: bool, leases: &mut Vec<u64>) {
+    match fail_ats.split_first() {
+        Some((&fail_at, rest)) => recovery_case(fail_at, incomplete, |lease_until| {
+            leases.push(lease_until);
+            recovery_cases(rest, incomplete, leases);
+        }),
+        None => {
+            let lease_until = leases.iter().copied().max().unwrap_or_default();
+            while unix_millis() <= u128::from(lease_until) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
     }
 }
 
-fn recovery_case(fail_at: usize, incomplete: bool) {
+fn unix_millis() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+}
+
+fn recovery_case(fail_at: usize, incomplete: bool, wait_past_leases: impl FnOnce(u64)) {
     let mut f = super::wide_usage::configured_fixture();
     let model = OutageModel {
         objects: f._directory.path().join("cas/objects"),
@@ -206,14 +226,13 @@ fn recovery_case(fail_at: usize, incomplete: bool) {
         "the old writer cannot abandon its own pending Attempt"
     );
     // Use real lease expiry without moving the Task's original absolute deadline.
-    while SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis()
-        <= u128::from(state.lease_until_unix_ms())
-    {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    let lease_until = state.lease_until_unix_ms();
+    wait_past_leases(lease_until);
+    assert!(
+        unix_millis() > u128::from(lease_until),
+        "fail_at {fail_at} lease has not passed"
+    );
+    assert!(unix_millis() < u128::from(state.revision.limits.deadline_unix_ms));
     let recovered = f
         .store
         .take_task_lease(&f.cas, &f.task.task_id, "recovery", 60000)

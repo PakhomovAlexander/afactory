@@ -846,124 +846,142 @@ fn canonical_review_conclusion_recovers_before_task_finish_without_reexecution()
 
 #[test]
 fn an_expired_review_records_incomplete_without_inventing_unstarted_gate_facts() {
+    expired_reviews(&["unbound", "bound", "cached"], &mut vec![]);
+}
+
+/// Each mode is prepared inside the previous mode's continuation, so every admitted execution
+/// stays open across one real wait past all of their deadlines; then each mode finishes.
+fn expired_reviews(modes: &[&str], deadlines: &mut Vec<u64>) {
+    match modes.split_first() {
+        Some((mode, rest)) => expired_review(mode, |deadline| {
+            deadlines.push(deadline);
+            expired_reviews(rest, deadlines);
+        }),
+        None => {
+            let deadline = deadlines.iter().copied().max().unwrap_or_default();
+            std::thread::sleep(std::time::Duration::from_millis(
+                deadline.saturating_sub(unix_millis()) + 5,
+            ));
+        }
+    }
+}
+
+fn unix_millis() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+}
+
+fn expired_review(mode: &str, wait_past_deadlines: impl FnOnce(u64)) {
     use review_core::task::execution::TaskInvocationV1;
-    for mode in ["unbound", "bound", "cached"] {
-        let directory = tempfile::tempdir().unwrap();
-        let cas = Cas::open(directory.path().join("cas")).unwrap();
-        let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
-        let definition = if mode == "unbound" {
-            command_pipeline()
-        } else {
-            command_pipeline().replace("version = 2", &format!(
-                "version = 3\n[gate]\nprovider=\"trusted_local\"\nrequired_isolation=\"none\"\nmode=\"ephemeral-write\"{}",
-                if mode == "cached" { "\ncaches=[\"cargo\"]" } else { "" }))
-                .replace("id = \"reviewer\"", "id = \"reviewer\"\ngated_by=\"gate\"")
-                + "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[{name=\"decision\",type=\"review.kernel/GateDecision@1\",cardinality=\"one\",optional=false,snapshot_affinity=\"any\"}]\n[[checks]]\nname=\"required\"\nprogram=\"/bin/false\"\n"
-        };
-        let millis = || {
-            u64::try_from(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis(),
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let definition = if mode == "unbound" {
+        command_pipeline()
+    } else {
+        command_pipeline().replace("version = 2", &format!(
+            "version = 3\n[gate]\nprovider=\"trusted_local\"\nrequired_isolation=\"none\"\nmode=\"ephemeral-write\"{}",
+            if mode == "cached" { "\ncaches=[\"cargo\"]" } else { "" }))
+            .replace("id = \"reviewer\"", "id = \"reviewer\"\ngated_by=\"gate\"")
+            + "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[{name=\"decision\",type=\"review.kernel/GateDecision@1\",cardinality=\"one\",optional=false,snapshot_affinity=\"any\"}]\n[[checks]]\nname=\"required\"\nprogram=\"/bin/false\"\n"
+    };
+    let mut limits = capture::limits();
+    limits.deadline_unix_ms = unix_millis() + 5000;
+    let deadline = limits.deadline_unix_ms;
+    let (compiler, lease) = admit_with_limits(&cas, &mut store, &definition, limits);
+    let shared = SharedEventStore::new(&mut store);
+    let host = CampaignReviewTaskHost::new(
+        &cas,
+        shared.clone(),
+        &compiler,
+        lease.clone(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
+    let runtime =
+        TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host).unwrap();
+    let state = runtime.projection().unwrap();
+    let plan_id = state.plan_id.unwrap();
+    let plan: review_core::task::plan::ExecutionPlanV1 =
+        serde_json::from_value(cas.get_artifact(&plan_id).unwrap().payload).unwrap();
+    let graph: review_graph::task::CompiledTask =
+        serde_json::from_value(cas.get_artifact(&plan.compiled_graph_id).unwrap().payload).unwrap();
+    let root = graph
+        .nodes
+        .iter()
+        .find(|(_, node)| {
+            matches!(
+                node.operator,
+                review_graph::task::CompiledOperator::RootInputs
             )
-            .unwrap()
-        };
-        let mut limits = capture::limits();
-        limits.deadline_unix_ms = millis() + 5000;
-        let deadline = limits.deadline_unix_ms;
-        let (compiler, lease) = admit_with_limits(&cas, &mut store, &definition, limits);
-        let shared = SharedEventStore::new(&mut store);
-        let host = CampaignReviewTaskHost::new(
-            &cas,
-            shared.clone(),
-            &compiler,
-            lease.clone(),
-            BTreeMap::new(),
-        )
+        })
+        .unwrap()
+        .0;
+    let input = TaskInvocationV1 {
+        plan_id,
+        node: root.clone(),
+        inputs: BTreeMap::new(),
+    };
+    let invocation = plan::artifact(
+        &cas,
+        review_core::task::execution::TASK_INVOCATION_V1,
+        input,
+    );
+    shared
+        .lock()
+        .unwrap()
+        .record_task_invocation(&cas, &lease, &invocation, &authority)
         .unwrap();
-        let authority =
-            CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
-        let runtime =
-            TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host)
-                .unwrap();
-        let state = runtime.projection().unwrap();
-        let plan_id = state.plan_id.unwrap();
-        let plan: review_core::task::plan::ExecutionPlanV1 =
-            serde_json::from_value(cas.get_artifact(&plan_id).unwrap().payload).unwrap();
-        let graph: review_graph::task::CompiledTask =
-            serde_json::from_value(cas.get_artifact(&plan.compiled_graph_id).unwrap().payload)
-                .unwrap();
-        let root = graph
-            .nodes
-            .iter()
-            .find(|(_, node)| {
-                matches!(
-                    node.operator,
-                    review_graph::task::CompiledOperator::RootInputs
-                )
-            })
-            .unwrap()
-            .0;
-        let input = TaskInvocationV1 {
-            plan_id,
-            node: root.clone(),
-            inputs: BTreeMap::new(),
-        };
-        let invocation = plan::artifact(
-            &cas,
-            review_core::task::execution::TASK_INVOCATION_V1,
-            input,
-        );
+    // A real admitted execution expires before its first effect. Its lease remains valid.
+    wait_past_deadlines(deadline);
+    assert!(unix_millis() >= deadline, "{mode} deadline has not passed");
+    assert_eq!(
         shared
             .lock()
             .unwrap()
-            .record_task_invocation(&cas, &lease, &invocation, &authority)
-            .unwrap();
-        // A real admitted execution expires before its first effect. Its lease remains valid.
-        std::thread::sleep(std::time::Duration::from_millis(
-            deadline.saturating_sub(millis()) + 5,
-        ));
-        assert!(
-            shared
-                .lock()
-                .unwrap()
-                .check_task_dispatch(&cas, &lease, &authority)
-                .is_err()
-        );
-        let run = runtime.execute().unwrap();
-        assert!(!run.complete());
-        let result = host.assemble_recorded_result(&cas).unwrap();
-        assert_eq!(
-            result.acceptance,
-            review_core::task::TaskAcceptanceV1::Inconclusive
-        );
-        let result_id = plan::artifact(&cas, review_core::task::TASK_RESULT_V1, result);
-        runtime.finish(&result_id).unwrap();
-        let state = runtime.projection().unwrap();
-        assert_eq!(state.execution.unwrap().budget.begun_attempts(), 0);
-        let events = shared.lock().unwrap().replay("review").unwrap();
-        assert!(!events.iter().any(|event| matches!(
-            event.event_type,
-            EventType::GateExecutionBoundV1
-                | EventType::CheckCompletedV1
-                | EventType::CacheSnapshotMaterializedV1
-        )));
-        let reports: Vec<_> = events
-            .iter()
-            .filter(|event| event.event_type.is_run_report())
-            .collect();
-        assert_eq!(reports.len(), 1);
-        let report: review_core::RunReportPayloadV6 =
-            serde_json::from_value(reports[0].payload.clone()).unwrap();
-        assert!(matches!(
-            report.verdict,
-            review_core::RunVerdictV3::Incomplete { .. }
-        ));
-        assert_eq!(report.spent_tokens.get(), 0);
-        assert!(report.execution.bindings().is_empty());
-        assert_eq!(reports[0].payload["execution"]["kind"], mode);
-    }
+            .check_task_dispatch(&cas, &lease, &authority)
+            .unwrap_err()
+            .to_string(),
+        "event store conflict: Task plan deadline expired"
+    );
+    let run = runtime.execute().unwrap();
+    assert!(!run.complete());
+    let result = host.assemble_recorded_result(&cas).unwrap();
+    assert_eq!(
+        result.acceptance,
+        review_core::task::TaskAcceptanceV1::Inconclusive
+    );
+    let result_id = plan::artifact(&cas, review_core::task::TASK_RESULT_V1, result);
+    runtime.finish(&result_id).unwrap();
+    let state = runtime.projection().unwrap();
+    assert_eq!(state.execution.unwrap().budget.begun_attempts(), 0);
+    let events = shared.lock().unwrap().replay("review").unwrap();
+    assert!(!events.iter().any(|event| matches!(
+        event.event_type,
+        EventType::GateExecutionBoundV1
+            | EventType::CheckCompletedV1
+            | EventType::CacheSnapshotMaterializedV1
+    )));
+    let reports: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type.is_run_report())
+        .collect();
+    assert_eq!(reports.len(), 1);
+    let report: review_core::RunReportPayloadV6 =
+        serde_json::from_value(reports[0].payload.clone()).unwrap();
+    assert!(matches!(
+        report.verdict,
+        review_core::RunVerdictV3::Incomplete { .. }
+    ));
+    assert_eq!(report.spent_tokens.get(), 0);
+    assert!(report.execution.bindings().is_empty());
+    assert_eq!(reports[0].payload["execution"]["kind"], mode);
 }
 
 #[test]
