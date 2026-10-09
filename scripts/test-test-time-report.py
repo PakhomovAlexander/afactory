@@ -170,9 +170,13 @@ def check_toml_subset():
     assert override['filter'] == literal, (override, literal)
     patterns = MODULE.exclusive_patterns(ROOT / '.config/nextest.toml', True)
     assert [p.pattern for p in patterns] == clauses, (patterns, clauses)
-    # Each plain test-name pattern of the real list is anchored; the fixture's always are.
+    # Every pattern of the real list is a plain test-name pattern anchored at the end, whichever
+    # tests it names: an unanchored one would silently run more tests alone.
     for pattern in patterns:
-        check_anchored(pattern)
+        assert check_anchored(pattern), (
+            f'.config/nextest.toml: exclusive pattern {pattern.pattern!r} is not a plain test '
+            'name anchored with a trailing `$`; an unanchored pattern would silently run more '
+            'tests alone')
     # The committed fixture pins the exact list: only the exclusive override counts.
     fixture_text = (FIXTURE / 'nextest.toml').read_text(encoding='utf-8')
     fixture = MODULE.parse_toml(fixture_text, 'fixture')
