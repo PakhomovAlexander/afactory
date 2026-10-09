@@ -21,7 +21,23 @@ else
   cache_home="${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}"
   target_dir="$cache_home/af/gate-target"
 fi
-mkdir -p "$target_dir"
+mkdir -p "$target_dir/nextest-reports"
 # nextest store.dir is workspace-relative, independent of CARGO_TARGET_DIR.
-# Preserve the CI profile/JUnit and place only gate reports beside build artifacts.
-AF_WORKSPACE_ROOT="$PWD" CARGO_TARGET_DIR="$target_dir" AF_GATE_NEXTEST_TARGET="$target_dir" make check
+# Preserve the CI profile/JUnit and place only gate reports beside build artifacts. Each gate
+# owns one private run directory, so concurrent gates sharing a target never collide; it holds
+# the nextest store and, unless the caller chose a file, every make check step's timing.
+run_dir="$(mktemp -d "$target_dir/nextest-reports/run-XXXXXXXX")"
+export AF_CI_METRICS="${AF_CI_METRICS:-$run_dir/ci-metrics.jsonl}"
+status=0
+AF_WORKSPACE_ROOT="$PWD" CARGO_TARGET_DIR="$target_dir" AF_GATE_NEXTEST_TARGET="$target_dir" \
+  AF_GATE_NEXTEST_RUN="$run_dir" make check || status=$?
+# The gate output ends with where its test time went. The report never changes the status.
+echo "gate step timings: $AF_CI_METRICS"
+junit="$run_dir/store/ci/junit.xml"
+if [[ -f "$junit" ]]; then
+  python3 scripts/test-time-report.py summary "$junit" ||
+    echo "warning: no test-time report for $junit" >&2
+else
+  echo "warning: no test-time report: nextest wrote no JUnit at $junit" >&2
+fi
+exit "$status"

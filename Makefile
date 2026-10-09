@@ -3,7 +3,9 @@
 # nextest is the gate (ADR-0124): one process per test, scheduled across every test binary.
 # `TEST_RUNNER=cargo` keeps the sequential libtest path for comparison. TEST_THREADS bounds
 # concurrent tests, not compiler jobs: four on a four-core runner, half the cores elsewhere,
-# because these tests spawn real process trees.
+# because these tests spawn real process trees. After nextest, whatever its status, the gate
+# entry prints scripts/test-time-report.py's summary of the JUnit it just wrote (it removes an
+# earlier run's JUnit first); the step keeps nextest's exit status.
 TEST_RUNNER ?= nextest
 TEST_THREADS ?= $(shell python3 -c 'import os; print(max(4, (os.cpu_count() or 4) // 2))')
 CI_STEP = python3 scripts/ci-step.py
@@ -54,5 +56,6 @@ release-check:
 preflight-check:
 	$(CI_STEP) task-preflight python3 scripts/test-task-preflight.py
 	$(CI_STEP) nextest-gate python3 scripts/test-nextest-gate.py
+	$(CI_STEP) test-time-report python3 scripts/test-test-time-report.py
 	$(CI_STEP) provider-auth-host python3 scripts/test-provider-auth-host.py
 	$(CI_STEP) pr-report python3 scripts/test-check-pr-report.py
