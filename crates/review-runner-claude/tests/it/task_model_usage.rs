@@ -7,7 +7,10 @@ use review_runner::task::{
 use review_runner_claude::task::ClaudeTaskAdapter;
 use review_store::Cas;
 use serde_json::json;
-use std::{os::unix::fs::PermissionsExt, time::Duration};
+use std::{
+    os::unix::fs::PermissionsExt,
+    time::{Duration, Instant},
+};
 
 /// The explicit model restriction every Task binding carries.
 fn opus() -> Vec<Arg> {
@@ -104,6 +107,7 @@ fn synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage() 
         }
         let adapter =
             ClaudeTaskAdapter::new(&Command::new(program.to_str().unwrap(), opus())).unwrap();
+        let invoked = Instant::now();
         let result = adapter.invoke(
             &cas,
             temp.path(),
@@ -123,6 +127,15 @@ fn synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage() 
             "{scenario}: {:?}",
             result.message
         );
+        if scenario == "timeout" {
+            // The identity refusal names the message error, so the wall shows in the elapsed
+            // time: without it the provider's `sleep 10` would end the invocation.
+            assert!(
+                invoked.elapsed() < Duration::from_secs(10),
+                "the 500 ms wall ends the provider: {:?}",
+                invoked.elapsed()
+            );
+        }
         // Positive auxiliary usage refuses the reply but is charged in full, whatever else
         // failed: exit status, deadline or raw capture.
         assert_eq!(

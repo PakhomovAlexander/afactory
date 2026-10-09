@@ -120,12 +120,16 @@ Store, before it acts. The families it names:
   `crates/review-runner/tests/it/support/load_safe_wall.rs`, as they already share that
   fixture.
 - **Model-runner and supervisor walls.** `review-runner`'s `model_supervision` tests and
-  `review-process`'s held-pipe unit tests and cancellation test.
+  `review-process`'s held-pipe unit tests, its read-failure and cancelled-drain unit tests, and
+  its cancellation test.
+- **Container fixture writers.** `review-sandbox`'s runtime-fixture writer, for the broken
+  runtime and cancelled container tests; the deadline tests keep its 5 s.
 - **Source deadlines.** `review-source-task`'s transport and source tests.
 - **Provider unit tests in `af`.** The identity-recheck wrapper's Attempt wall and the
   synthetic-login waits of the auth handoff adapter.
-- **Readiness and Store waits.** `review-pipeline`'s captured command cancellation, controlled
-  check sequence and runtime-store observer.
+- **Readiness, Store and Check walls.** `review-pipeline`'s captured command cancellation,
+  controlled check sequence and runtime-store observer, and the Check wall and deadline option
+  of the legacy check-order test, whose two successful Checks never meet either.
 - **Provider probes in `af` integration tests.** `af`'s provider status, subscription, version
   and Claude usage probes (15 s, 10 s and Claude's 30 s status probe) are production deadlines
   no test parameter reached, so a debug build reads one test setting,
@@ -156,8 +160,11 @@ Store, before it acts. The families it names:
 What stays exact:
 
 - A test whose subject is a timeout or deadline keeps every wall it sets, including the
-  fixture-preparation walls inside it: it asserts `TimedOut` or a deadline refusal, and widening
-  its wall would change what it proves. ADR-0124's rule is unchanged: a budget a test asserts is
+  fixture-preparation walls inside it: it asserts `TimedOut`, a deadline refusal or an
+  elapsed-time bound, and widening its wall would change what it proves. A test that only sets
+  a short wall, or passes a deadline option, without asserting one of those is not such a test:
+  it gets the load-safe wall. Where a short wall is how a test ends its fixture and the timeout
+  was only implied, the test now asserts that timeout. ADR-0124's rule is unchanged: a budget a test asserts is
   protected by running that test alone, never by widening it.
 - Every elapsed-time assertion keeps its bound, as do the waits in which a killed process must
   disappear: those bounds are the promptness the test exists to prove. Lease and heartbeat tests

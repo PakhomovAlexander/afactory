@@ -3,10 +3,11 @@ use review_check::Command;
 use review_core::exec::Arg;
 use std::time::Instant;
 
-/// The Check wall and readiness window for a test whose subject is cancellation, not a deadline
+/// The Check wall, deadline and readiness window for a test whose subject is not a deadline
 /// (ADR-0114). Materializing the gate clone and starting the Check's shell took seconds on a
-/// loaded gate, so a 3 s window raced scheduling; two minutes only bounds a hung fixture, and a
-/// passing test never waits for it, because it cancels as soon as the Check has begun.
+/// loaded gate, so a 3 s window or a 10 s wall raced scheduling; two minutes only bounds a hung
+/// fixture, and a passing test never waits for it: its Checks succeed, or it cancels as soon as
+/// the Check has begun. Tests that assert a deadline refusal or a timeout keep their own walls.
 const LOAD_SAFE_WALL: Duration = Duration::from_secs(120);
 
 fn binding() -> review_config::GateExecutionSpec {
@@ -57,7 +58,7 @@ fn legacy_check_order_and_one_writable_clone_survive_the_shared_sequence() {
     let runner = IntegrationCheckSequence {
         cas: &cas,
         checks: &checks,
-        check_timeout: Duration::from_secs(10),
+        check_timeout: LOAD_SAFE_WALL,
         binding: &binding,
         container_provider: None,
     };
@@ -72,7 +73,7 @@ fn legacy_check_order_and_one_writable_clone_survive_the_shared_sequence() {
             &policy,
             &Manifest::default(),
             &snapshot,
-            Some(Instant::now() + Duration::from_secs(10)),
+            Some(Instant::now() + LOAD_SAFE_WALL),
         )
         .unwrap();
     assert_eq!(
@@ -217,6 +218,14 @@ sleep 60
         serde_json::from_value(cas.get_json(&failure.result_artifact_ids[0]).unwrap()).unwrap();
     assert_eq!(result.name, "first");
     assert!(!result.passed());
+    assert!(
+        result
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("container command did not finish"),
+        "the 100 ms Check wall ends the container: {result:?}"
+    );
     let error = failure.message;
     assert!(error.contains("Integration sandbox preserved"), "{error}");
     assert_eq!(

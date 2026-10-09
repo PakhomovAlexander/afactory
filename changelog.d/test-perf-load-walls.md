@@ -57,9 +57,17 @@
 - Changed, `review-process`: unit tests
   `a_descendant_holding_only_stderr_does_not_destroy_complete_stdout` (1 s),
   `capture::tests::stream_input_failure_keeps_both_outputs_and_its_error_type` (5 s),
-  `capture::tests::held_stdout_capture_and_compatibility_wrapper_keep_the_same_failure` (1 s);
+  `capture::tests::held_stdout_capture_and_compatibility_wrapper_keep_the_same_failure` (1 s),
+  `drain::tests::a_read_failure_retains_the_prefix` (5 s grace) and
+  `drain::tests::cancelled_drain_waits_for_buffered_prefix_and_keeps_cancellation_primary`
+  (1 s readiness and grace), which assert a read failure or a cancellation, never a timeout;
   `cancellation::cancellation_retains_prefixes_and_stops_running_stdin_and_each_held_drain`
   (5 s readiness, 10 s wall).
+- Changed, `review-sandbox` `container::tests`: the runtime-fixture writer takes its wall, so
+  `an_installed_but_broken_runtime_is_unusable_not_usable` and
+  `cancellation_still_confirms_container_removal_without_cancelling_cleanup`, which assert no
+  timeout, write their fake runtime under the load-safe wall instead of 5 s; the deadline tests
+  keep the writer's 5 s.
 - Changed, `review-source-task` (5 s deadline): `transport::`
   `native_transport_owns_protocol_flags_and_keeps_credentials_off_argv`; `sources::`
   `jira_refuses_incomplete_changed_or_unsupported_sources_without_leaking_response_text`,
@@ -77,37 +85,55 @@
   `native_stderr_never_enters_the_private_challenge_buffer`,
   `native_output_limit_is_cumulative_and_never_a_diagnostic`.
 - Changed, `review-pipeline`:
+  `review_domain::integration::tests::legacy_check_order_and_one_writable_clone_survive_the_shared_sequence`
+  (10 s Check wall and 10 s deadline option), which runs the same two successful Checks three
+  times and asserts only their order and equal receipts, never a timeout or a deadline refusal;
   `task_runtime::control::captured_command_cancellation_retains_both_streams_and_never_retries`
   (3 s readiness),
   `task_runtime::domain_observes_started_attempt_and_persists_through_the_runtime_store` (2 s
   Store wait), `review_domain::integration::tests::`
   `controlled_check_sequence_retains_interrupted_raw_result_and_stops_before_the_next_check`
   (20 s Check wall, 3 s readiness).
-- Unchanged, subject is a timeout or deadline (every wall kept, including fixture-preparation
-  walls inside them): codex and claude `task_worker::`
-  `timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_message`; claude
-  `task_model_usage::synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage`;
-  `model_supervision::a_hung_reviewer_is_killed_at_the_deadline`,
-  `a_killed_reviewer_keeps_what_it_wrote_so_far`,
-  `a_model_parent_exit_cannot_leave_the_stdin_writer_unbounded`; `review-source-task`
-  `native_source_cancels_inflight_process_and_bounds_output` and
-  `replacement_sources_have_equivalent_requirements_and_exact_field_provenance`, which also
-  assert `TimedOut`; `review-check` `deadline` tests;
-  `review-source-git` `git_deadline`; `review-process` `concurrent_pipes` and `drain` unit tests;
-  `review-sandbox` container probe, wedged-runtime, reap and timed-out-container tests (with
-  their shared `write_runtime` helper); `af` `providers::installation` probe-deadline test and
-  `identity_rechecks_use_remaining_attempt_deadline_and_prespawn_cancellation`;
-  `review-pipeline` `legacy_check_order_and_one_writable_clone_survive_the_shared_sequence`,
-  `an_absolute_attempt_deadline_refuses_setup_and_bounds_the_running_check` and
-  `unconfirmed_container_cleanup_preserves_the_writable_sandbox_and_stops_checks`, whose
-  container is ended by its 100 ms Check wall.
+- Unchanged, subject is a timeout or deadline: each test here asserts a timeout, a deadline
+  refusal or an elapsed-time bound, and keeps every wall it sets, including the
+  fixture-preparation walls inside it. Codex and Claude `task_worker::`
+  `timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_message`, which now
+  also asserts that its message error names the 500 ms wall's `TimedOut`; Claude
+  `task_model_usage::synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage`,
+  whose message error is the model-identity refusal, so its timeout scenario now asserts it
+  returns before the fixture's 10 s sleep could end it; `model_supervision::`
+  `a_hung_reviewer_is_killed_at_the_deadline`, `a_killed_reviewer_keeps_what_it_wrote_so_far` and
+  `a_model_parent_exit_cannot_leave_the_stdin_writer_unbounded` (`TimedOut` and elapsed);
+  `review-source-task` `native_source_cancels_inflight_process_and_bounds_output` and
+  `replacement_sources_have_equivalent_requirements_and_exact_field_provenance` (`TimedOut`);
+  `review-check` `deadline::` `a_hung_check_is_killed_and_recorded_not_run`,
+  `a_backgrounded_grandchild_does_not_hang_the_deadline` and
+  `a_passing_check_with_a_backgrounded_child_returns` (elapsed); `review-source-git`
+  `git_deadline` (deadline error and elapsed); `review-process` `concurrent_pipes` (`TimedOut`
+  and elapsed) and `drain::tests::held_pipe_cleanup_keeps_a_chunk_delivered_after_group_termination`
+  (its 1 s grace ends in a held stdout, and the shared cleanup deadline); `review-sandbox`
+  `container::tests::` `runtime_detection_stops_at_the_callers_deadline`,
+  `a_wedged_runtime_is_bounded_and_unusable` and `a_wedged_container_execution_is_bounded`
+  (deadline error and elapsed), and `a_failed_reap_is_distinct_from_a_safely_stopped_timeout`
+  and the live-runtime `a_timed_out_container_is_removed_before_execution_returns`, which now
+  also assert that their container command did not finish; `af`
+  `providers::installation::a_working_cli_and_a_slow_or_cancelled_check_are_not_installation_failures`
+  (elapsed) and `identity_rechecks_use_remaining_attempt_deadline_and_prespawn_cancellation`
+  (timed out and elapsed); `review-pipeline`
+  `an_absolute_attempt_deadline_refuses_setup_and_bounds_the_running_check` (deadline refusal
+  and elapsed) and `unconfirmed_container_cleanup_preserves_the_writable_sandbox_and_stops_checks`,
+  whose container is ended by its 100 ms Check wall and which now also asserts that its Check's
+  reason names that timeout.
 - Unchanged, no process starts under the wall: `model_supervision::`
   `a_missing_provider_is_unavailable_not_silent`,
   `an_untrusted_option_is_refused_before_the_model_starts`;
   `cancellation_before_spawn_cannot_execute_the_command`;
   `capture::tests::spawn_failure_does_not_invent_output`;
   `a_removed_executable_with_no_installed_client_refuses_by_name_before_any_probe`;
-  `an_installed_but_broken_runtime_is_unusable_not_usable`; and `task_model_transport`, whose
+  the 1 s execution wall of `an_installed_but_broken_runtime_is_unusable_not_usable`, refused
+  before launch; `drain::tests::cleanup_retains_a_prefix_even_when_its_reader_failed`, whose
+  in-process reader fails at once under the production 5 s grace of `collect_after_kill`, the
+  function it tests, so no test parameter sets that bound; and `task_model_transport`, whose
   1234 ms is a sentinel forwarded to a fake adapter.
 - Unchanged, the bound is the asserted promptness: the elapsed-time assertions of the changed
   capture, final-message, held-pipe and cancellation tests; the waits in which a killed process
