@@ -22,6 +22,7 @@ and `--help` on every namespace and command.
 | [`providers.md`](providers.md) | How a machine gets model access: registering a Provider, why an interactive login is opt-in and terminal-only, what `status` checks versus what `doctor` proves, and every `af provider` exit code. |
 | [`tasks.md`](tasks.md) | How to run implementation Tasks with `af task`: start, inspect, evaluate, and deliver to a new local worktree. |
 | [`task-execution/preflight.md`](task-execution/preflight.md) | Offline orchestration checklist for source lineage, declared budgets and evidence ordering; advisory only. |
+| [`ci-optimization.md`](ci-optimization.md) | Captured CI fixture profile, shard experiment protocol, exploratory measurements and remaining cache-evidence blocker. |
 | [`task-execution.md`](task-execution.md) | The Task runtime reference: fixed product decisions, contracts, fixtures, and walkthroughs for the common Task execution abstraction. |
 | [`task-execution/task-inputs.md`](task-execution/task-inputs.md) | The Task file's `inputs` table: binding a root input port to a recorded Task's output instead of exporting it to a file, what resolution records, and how a binding is shown. |
 | [`task-execution/experiments.md`](task-execution/experiments.md) | How an experiment Task measures a declared command on the source and on a candidate, compares the two under a declared objective, and gates its evaluator on the result: the `[measures]` and `[objectives]` policy tables, the report line, failure reasons and comparison rules. |
