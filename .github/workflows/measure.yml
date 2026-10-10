@@ -1,0 +1,41 @@
+name: Issue205 isolated measurement
+on:
+  push:
+    branches: [experiment/issue205-measure-1753]
+permissions:
+  contents: read
+jobs:
+  paired:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: PakhomovAlexander/afactory
+          ref: 6ca82d7d5e3ab94b9f426b2c99b8f44b95f87d42
+          path: base
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: PakhomovAlexander/afactory
+          ref: e3ecc53db3e14abe5a9bd3bdb39b7480dafcfa1a
+          path: head
+          persist-credentials: false
+      - name: Pinned toolchain and runner
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+          bash base/scripts/install-nextest.sh
+          sudo apt-get install -y --no-install-recommends lld
+      - name: Warm both and run six alternating full suites
+        run: python3 benchmark.py
+      - name: Retain all successes and failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: issue205-six-run-measurements
+          path: measurements
+          if-no-files-found: error
+          retention-days: 30
