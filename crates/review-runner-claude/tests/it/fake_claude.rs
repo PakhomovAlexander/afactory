@@ -33,39 +33,68 @@ fn package(dir: &Path, program: &str, args: &str) -> review_config::lock::Resolv
         .unwrap()
 }
 
+/// The command a Task Attempt runs: package model flags first, then the adapter-owned security
+/// flags, which therefore win; and no session flag, because no session is assigned, captured or
+/// resumed (ADR-0145).
 #[test]
 fn adapter_security_flags_follow_allowed_package_model_flags() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use review_runner::task::{WorkerAccess, WorkerModelAdapter};
+
     let dir = tempfile::tempdir().unwrap();
-    let package = package(
+    let cas = review_store::Cas::open(dir.path().join("cas")).unwrap();
+    let program = dir.path().join("fake-claude");
+    std::fs::write(
+        &program,
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$@\" >&2\nprintf '%s' '{\"is_error\":false,\"result\":\"OK\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}'\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = ClaudeTaskAdapter::new(&Command::new(
+        program.to_str().unwrap(),
+        ["--model", "opus", "--effort", "high"]
+            .into_iter()
+            .map(Arg::literal)
+            .collect(),
+    ))
+    .unwrap();
+    let returned = adapter.invoke(
+        &cas,
         dir.path(),
-        "claude",
-        "{ value = \"--model\" }, { value = \"opus\" }, { value = \"--effort\" }, { value = \"high\" }",
+        b"review".to_vec(),
+        std::time::Duration::from_secs(5),
+        WorkerAccess::ReadOnly,
+        None,
+        &[],
     );
-    let args = review_runner_claude::ClaudeAdapter::from_package(&package)
-        .unwrap()
-        .attempt_command(&Default::default())
-        .resolve()
-        .unwrap();
-    assert!(args.starts_with(&[
-        "-p".into(),
-        "--output-format".into(),
-        "json".into(),
-        "--model".into(),
-        "opus".into(),
-        "--effort".into(),
-        "high".into(),
-    ]));
-    assert!(args.ends_with(&[
-        "--safe-mode".into(),
-        "--restricted".into(),
-        "--permission-mode".into(),
-        "dontAsk".into(),
-        "--strict-mcp-config".into(),
-        "--tools".into(),
-        "Read,Glob,Grep".into(),
-        "--allowedTools".into(),
-        "Read,Glob,Grep".into(),
-    ]));
+    assert_eq!(returned.message.unwrap(), b"OK");
+    let args = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
+    let args: Vec<&str> = args.lines().collect();
+    assert_eq!(
+        args,
+        [
+            "-p",
+            "--output-format",
+            "json",
+            "--model",
+            "opus",
+            "--effort",
+            "high",
+            "--safe-mode",
+            "--restricted",
+            "--permission-mode",
+            "dontAsk",
+            "--strict-mcp-config",
+            "--tools",
+            "Read,Glob,Grep",
+            "--allowedTools",
+            "Read,Glob,Grep",
+        ]
+    );
+    for flag in ["--session-id", "--resume", "--fork-session"] {
+        assert!(!args.contains(&flag), "{args:?}");
+    }
 }
 
 #[test]
@@ -86,6 +115,22 @@ fn package_cannot_add_filesystem_settings_or_mcp_authority() {
         };
         assert!(error.contains("packages may set only"), "{error}");
     }
+}
+
+/// Rendering refuses a package whose arguments the Task adapter would refuse, so `af review
+/// render` never shows a package that cannot run.
+#[test]
+fn rendering_refuses_a_package_argument_that_widens_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    let package = package(
+        dir.path(),
+        "claude",
+        "{ value = \"--model\" }, { value = \"opus\" }, { value = \"--add-dir\" }, { value = \"/\" }",
+    );
+    let error = review_runner_claude::ClaudeAdapter::from_package(&package)
+        .map(|_| ())
+        .unwrap_err();
+    assert!(error.contains("packages may set only"), "{error}");
 }
 
 /// The adapter refuses a package that names anything but claude.

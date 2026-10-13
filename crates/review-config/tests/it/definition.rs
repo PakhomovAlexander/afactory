@@ -337,116 +337,34 @@ fn warm_layer_policy_is_reviewer_owned_and_bounded() {
     ));
 }
 
+/// No host captures or resumes a harness session, and no Cold Closeout is compiled, so their
+/// keys are not part of the pipeline format: a file that still names one is refused at parse
+/// rather than read as though it meant nothing (ADR-0145).
 #[test]
-fn the_session_layer_is_off_by_default_and_always_falls_back_to_notes() {
+fn retired_session_and_cold_closeout_keys_are_refused_at_parse() {
     let warm = MINIMAL.replace(
         "id = \"architecture\"\nkind = \"reviewer\"\n",
         "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = true }\n",
     );
-    let loaded = Definition::from_toml(&warm).unwrap().load().unwrap();
-    let policy = loaded.warm_policies()["architecture"];
-    assert_eq!(
-        policy.session,
-        review_config::SessionSpec::Off,
-        "the session layer ships behind a policy default of off"
-    );
-    assert!(policy.session.is_off() && !policy.session.captures());
-    assert_eq!(
-        policy.session_max_age_secs,
-        review_core::DEFAULT_SESSION_MAX_AGE_SECS
-    );
-
-    let recent = warm.replace(
-        "warm = { notes = true }",
-        "warm = { notes = true, session = \"if_recent\", session_max_age_secs = 900 }",
-    );
-    let loaded = Definition::from_toml(&recent).unwrap().load().unwrap();
-    let policy = loaded.warm_policies()["architecture"];
-    assert_eq!(policy.session, review_config::SessionSpec::IfRecent);
-    assert!(policy.session.captures());
-    assert_eq!(
-        policy.session.max_age_secs(policy.session_max_age_secs),
-        900
-    );
-    let always = warm.replace(
-        "warm = { notes = true }",
-        "warm = { notes = true, session = \"always\", session_max_age_secs = 900 }",
-    );
-    let loaded = Definition::from_toml(&always).unwrap().load().unwrap();
-    let policy = loaded.warm_policies()["architecture"];
-    assert_eq!(
-        policy.session.max_age_secs(policy.session_max_age_secs),
-        review_core::MAX_SESSION_MAX_AGE_SECS,
-        "`always` still refuses a transcript no prompt cache could be serving"
-    );
-
-    let over = warm.replace(
-        "warm = { notes = true }",
-        "warm = { notes = true, session = \"if_recent\", session_max_age_secs = 604800 }",
-    );
-    assert!(matches!(
-        Definition::from_toml(&over).unwrap().load(),
-        Err(ConfigError::Binding(message)) if message.contains("session_max_age_secs")
-    ));
-
-    // Every session gate falls back to Notes alone, so a session-only node would silently carry
-    // nothing the moment a gate refused.
-    let notes_off = warm.replace(
-        "warm = { notes = true }",
-        "warm = { notes = false, session = \"if_recent\" }",
-    );
-    assert!(matches!(
-        Definition::from_toml(&notes_off).unwrap().load(),
-        Err(ConfigError::Binding(message)) if message.contains("requires `notes = true`")
-    ));
-}
-
-#[test]
-fn cold_closeout_is_compiled_from_the_pinned_policy_and_refused_when_infeasible() {
-    let loaded = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
-    assert_eq!(
-        loaded.cold_closeout(),
-        review_config::ColdCloseoutSpec::None,
-        "a pipeline written before the field existed dispatches what it always did"
-    );
-    assert!(loaded.cold_closeout_nodes().is_empty());
-
-    let warm = MINIMAL.replace(
-        "id = \"architecture\"\nkind = \"reviewer\"\n",
-        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = true }\n",
-    );
-    let compiled = format!("{warm}\n[convergence]\ncold_closeout = \"one_required\"\n");
-    let loaded = Definition::from_toml(&compiled).unwrap().load().unwrap();
-    assert_eq!(
-        loaded.cold_closeout_nodes().to_vec(),
-        vec!["architecture".to_string()],
-        "the closeout names the exact warm reviewer it confirms, at load time"
-    );
-
-    // A cold reviewer's result needs no cold confirmation.
-    let cold = format!("{MINIMAL}\n[convergence]\ncold_closeout = \"all\"\n");
-    assert!(matches!(
-        Definition::from_toml(&cold).unwrap().load(),
-        Err(ConfigError::Binding(message)) if message.contains("no reviewer declares warm layers")
-    ));
-
-    // Feasibility: the run cap must admit the protected Attempt beside the Round's Workers.
-    let budgets = "\n[budgets]\nunit = \"tokens\"\nattempt = 1000\nrun = ";
-    let tight = format!("{compiled}{budgets}1500\n");
-    assert!(matches!(
-        Definition::from_toml(&tight).unwrap().load(),
-        Err(ConfigError::Binding(message)) if message.contains("protected tokens")
-    ));
-    let feasible = format!("{compiled}{budgets}4000\n");
-    assert_eq!(
-        Definition::from_toml(&feasible)
-            .unwrap()
-            .load()
-            .unwrap()
-            .cold_closeout_nodes()
-            .len(),
-        1
-    );
+    Definition::from_toml(&warm).unwrap().load().unwrap();
+    for retired in [
+        "warm = { notes = true, session = \"if_recent\" }",
+        "warm = { notes = true, session = \"off\" }",
+        "warm = { notes = true, session_max_age_secs = 900 }",
+    ] {
+        let pipeline = warm.replace("warm = { notes = true }", retired);
+        assert!(
+            matches!(Definition::from_toml(&pipeline), Err(ConfigError::Parse(_))),
+            "{retired}"
+        );
+    }
+    for policy in ["none", "one_required", "all"] {
+        let pipeline = format!("{warm}\n[convergence]\ncold_closeout = \"{policy}\"\n");
+        assert!(
+            matches!(Definition::from_toml(&pipeline), Err(ConfigError::Parse(_))),
+            "cold_closeout = {policy}"
+        );
+    }
 }
 
 #[test]

@@ -7,11 +7,13 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
 [`../values.md`](../values.md).
 
 - [`worker-warm-layers.md`](worker-warm-layers.md) — splitting a Worker Attempt into carried
-  layers (Notes, workspace, caches, session) so later Rounds do not pay the cold start again.
-  Packages P1–P4 are accepted as
+  layers (Notes, Head Delta, workspace, build cache) so later Rounds do not pay the cold start
+  again. Packages P1–P3 are accepted as
   [ADR-0107 *Carry Worker Notes*](../adr/0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md)
-  through [ADR-0110](../adr/0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md);
-  the session layer is being ported to the Task host.
+  through [ADR-0109](../adr/0109-rebase-warm-workspaces-at-stable-roots-with-digest-verification.md).
+  P4, the session layer and Cold Closeout, never ran on the Task host and was removed by
+  [ADR-0145](../adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md);
+  nothing further is planned.
 - [`worker-warm-layers-plan.md`](worker-warm-layers-plan.md) — the package sequence for that
   design, and the Findings each package had to prove. The Task files under `.af/tasks/warm-layers/`
   name it as their plan.
@@ -19,7 +21,11 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   M1–M3 ship; the M4 heavy whole-Pipeline redesign in §10 has not started.
 - [`research-pipelines.md`](research-pipelines.md) — research through `af`: warm Task checks,
   kernel-run measurements and comparisons, a report Task profile, bindings for every declared
-  root port, and `af task gc`. Proposed 2026-09-27; packages R1–R6 are not yet delivered.
+  root port, and `af task gc`. Packages R1–R5 are accepted as
+  [ADR-0131](../adr/0131-warm-task-checks-through-a-toolchain-keyed-bounded-cache.md) through
+  [ADR-0135](../adr/0135-collect-finished-tasks-behind-a-tombstone-and-a-reachability-sweep.md),
+  and the R6 campaign closed with its report verified; the report itself and its generated
+  sources file were removed from the repository, and git history keeps them.
 - [`remote-checks.md`](remote-checks.md) — a declared Task check run by a remote executor (a
   draft pull request and the repository's CI) and bound to the exact Snapshot, chosen by the
   pipeline's check node, for hosts too small to build the project. Package RC1 is accepted as

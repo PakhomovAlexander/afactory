@@ -23,12 +23,10 @@
 //! produces no reviewer artifacts at all — not reviewer artifacts nobody reads.
 
 mod build_cache;
-pub mod closeout;
 mod review_domain;
 mod reviewer_inputs;
 mod reviewer_output;
 pub mod scatter;
-pub mod session;
 pub mod storage;
 pub mod task;
 mod warm;

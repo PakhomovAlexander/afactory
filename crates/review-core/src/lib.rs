@@ -34,7 +34,6 @@ pub mod patch;
 pub mod path;
 pub mod resolution;
 pub mod reviewer_result;
-pub mod session;
 pub mod slice;
 pub mod snapshot;
 pub mod subject;
@@ -50,16 +49,8 @@ pub use workspace::{
 pub use warm::{
     BuildCacheDropReasonV1, DEFAULT_WORKER_NOTES_BYTES, HeadDeltaDropReasonV1, HeadDeltaEntryV1,
     HeadDeltaInputs, HeadDeltaMarkV1, HeadDeltaV1, InspectedPathV1, MAX_HEAD_DELTA_BYTES,
-    MAX_WORKER_NOTES_BYTES, PathHintV1, TreeView, WarmLayerV1, WarmSetSelectedPayloadV1, WarmSetV1,
+    MAX_WORKER_NOTES_BYTES, PathHintV1, TreeView, WarmLayerV2, WarmSetSelectedPayloadV2, WarmSetV2,
     WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1, WorkerNotesV1, compute_head_delta_marks,
-};
-
-pub use session::{
-    ColdCloseoutDispatchedPayloadV1, DEFAULT_SESSION_MAX_AGE_SECS, MAX_SESSION_MAX_AGE_SECS,
-    MAX_SESSION_TRANSCRIPT_BYTES, SessionCleanupOutcomeV1, SessionCleanupRefusalV1,
-    SessionDropReasonV1, SessionSnapshotCleanedPayloadV1, SessionSnapshotPreparedPayloadV1,
-    SessionSnapshotV1, SessionSourceV1, attempt_of_session_id, is_session_id,
-    session_id_for_attempt,
 };
 
 pub use build_cache::{
@@ -175,9 +166,7 @@ pub mod contract {
     pub const SEMANTIC_CLOSURE_V1: &str = "review.kernel/SemanticClosure@1";
     pub const WORKER_NOTES_V1: &str = "review.kernel/WorkerNotes@1";
     pub const HEAD_DELTA_V1: &str = "review.kernel/HeadDelta@1";
-    pub const WARM_SET_V1: &str = "review.kernel/WarmSet@1";
+    pub const WARM_SET_V2: &str = "review.kernel/WarmSet@2";
     /// Explicitly unsafe candidate-built output carried Gate to Worker; never a Cache Snapshot.
     pub const BUILD_CACHE_V1: &str = "review.kernel/BuildCache@1";
-    /// One Attempt's captured harness transcript, resumed forked and never mutated in place.
-    pub const SESSION_SNAPSHOT_V1: &str = "review.kernel/SessionSnapshot@1";
 }

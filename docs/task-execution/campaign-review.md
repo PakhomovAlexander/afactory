@@ -2,10 +2,11 @@
 
 `af review run` executions and the Provider doctor use the common Task runtime alongside
 Task-file and embedded Review, for every Campaign. Missing common Task state refuses instead of
-falling back, and a Campaign whose log holds events only the pre-Task executor wrote (af < 0.9)
-is refused. This page maps the Campaign Review operations onto that runtime and records the CLI
+falling back. A Campaign whose log holds a record this release does not write, such as one
+another af release wrote, is refused by the replay error that names it; no reader recognizes or
+reopens it. This page maps the Campaign Review operations onto that runtime and records the CLI
 boundaries. See [ADR-0084](../adr/0084-route-new-review-commands-through-the-common-task.md) and
-[ADR-0113](../adr/0113-ga-reads-only-what-ga-writes.md).
+[ADR-0145](../adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md).
 
 ## Adapter boundaries
 

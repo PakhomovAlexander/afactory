@@ -1,10 +1,10 @@
 # ADR-0110: Capture Claude sessions in two phases and confirm a clean warm Round cold
 
 Date: 2026-09-18
-Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
-Kernel reviewer path that ran the session protocol and dispatched Cold Closeout, with the
-Campaign `Attempt*@1` records a confirmation wrote. Until the Task host runs them, no executor
-captures a session or dispatches a confirmation.
+Status: Superseded by [ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md) (2026-10-09), after
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md) removed the Kernel reviewer path that ran the
+session protocol and dispatched Cold Closeout. No host ran either; the session layer, Cold
+Closeout, their events and config keys are removed, and the Warm Set is `WarmSet@2`.
 
 Implements package P4 of [`docs/design/worker-warm-layers.md`](../design/worker-warm-layers.md) on
 top of [ADR-0107](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md) (the Warm Set

@@ -11,7 +11,7 @@ selected Pipeline declares may be bound, not only `source`, `history` and `sourc
 hold and [ADR-0116](0116-report-undeclared-af-paths-and-let-a-project-refuse-them.md) reports what
 a Snapshot carries under it that the layout does not name. Both treat the symptom. The cause is
 the third item in the problem statement of
-[`docs/design/af-layout-plan.md`](../design/af-layout-plan.md): **a Task file cannot name another
+`docs/design/af-layout-plan.md`: **a Task file cannot name another
 Task's outputs.** Chaining implementation to repair to review meant exporting the predecessor's
 candidate tree and reviewer results to files, committing them so the next capture would see them,
 and pointing the next Task file at the paths. Every later Snapshot then carried them, which is how

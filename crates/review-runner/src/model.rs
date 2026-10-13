@@ -508,7 +508,7 @@ impl ContextManifest {
                 "warm_set",
                 "the Warm Set this Attempt starts from",
                 Some(id.clone()),
-                Some(review_core::contract::WARM_SET_V1.into()),
+                Some(review_core::contract::WARM_SET_V2.into()),
                 0,
             );
         }
@@ -549,20 +549,6 @@ impl ContextManifest {
                 None,
                 bytes,
             );
-        }
-        if let Some(resume) = &inputs.session_resume {
-            // The transcript is not prompt bytes: it reaches the model through the harness's
-            // own session store and is paid for as cache reads, which the Attempt's usage
-            // records separately from input tokens. The entry names what it is and how large,
-            // so a report can weigh the saving against it.
-            self.entries.push(ContextEntry {
-                name: "warm_session".into(),
-                required_by: "forked resume of this node's previous admitted Attempt".into(),
-                artifact_id: Some(resume.artifact_id.clone()),
-                artifact_type: Some(review_core::contract::SESSION_SNAPSHOT_V1.into()),
-                rendered_bytes: resume.transcript_bytes,
-                estimated_tokens: resume.estimated_tokens,
-            });
         }
     }
 
@@ -635,23 +621,10 @@ pub fn compose_model_prompt(
     instructions: &str,
     inputs: &ReviewerInputs,
 ) -> Result<(String, ContextManifest), String> {
-    // A resumed Attempt sends the delta prompt only: the forked session already holds the
-    // package instructions and the Change Set the previous Attempt read, and re-sending them
-    // would pay the prefix this layer exists to stop paying. The output contract is restated,
-    // because it is what the kernel parses. `af review render` shows exactly these bytes.
-    let resuming = inputs.session_resume.is_some();
-    let mut prompt = if resuming {
-        String::new()
-    } else {
-        instructions.to_string()
-    };
+    let mut prompt = instructions.to_string();
     prompt.push_str(RESULT_CONTRACT_V2);
     let instruction_bytes = prompt.len();
-    if resuming {
-        inputs.render_delta_into(&mut prompt)?;
-    } else {
-        inputs.render_into(&mut prompt)?;
-    }
+    inputs.render_into(&mut prompt)?;
     let mut manifest = ContextManifest::default();
     manifest.record(
         "worker_instructions",
@@ -675,14 +648,9 @@ pub fn compose_model_prompt(
     );
     // Warm layers are listed on their own so a report can say what each layer cost. The
     // entries are absent when warm is off, which keeps every cold manifest byte-identical.
-    // A resumed Attempt renders no Notes section: its own reasoning is already in the fork.
-    let notes = if resuming {
-        None
-    } else {
-        inputs
-            .rendered_notes_section()?
-            .map(|section| section.len())
-    };
+    let notes = inputs
+        .rendered_notes_section()?
+        .map(|section| section.len());
     let head_delta = inputs
         .rendered_head_delta_section()?
         .map(|section| section.len());
@@ -690,17 +658,6 @@ pub fn compose_model_prompt(
         .rendered_notes_request_section()
         .map(|section| section.len());
     manifest.record_warm_layers(inputs, notes, head_delta, request);
-    if resuming {
-        // The delta is the whole prompt beyond the restated contract. Naming it separately is
-        // what lets a report weigh a resumed Attempt against the cold prompt it replaced.
-        manifest.record(
-            "warm_session_delta",
-            "the delta prompt a forked resume sends instead of the whole input",
-            None,
-            None,
-            prompt.len() - instruction_bytes,
-        );
-    }
     manifest.finish(prompt.len());
     Ok((prompt, manifest))
 }
@@ -772,7 +729,7 @@ pub struct ReviewerInputs {
     pub head_delta: Option<serde_json::Value>,
     #[serde(skip)]
     pub head_delta_artifact_id: Option<String>,
-    /// The `WarmSet@1` that selected the layers above, so every manifest names the exact
+    /// The `WarmSet@2` that selected the layers above, so every manifest names the exact
     /// selection and not only its members.
     #[serde(skip)]
     pub warm_set_artifact_id: Option<String>,
@@ -781,17 +738,6 @@ pub struct ReviewerInputs {
     /// root and one environment variable, and the manifest lists it so the report can say so.
     #[serde(skip)]
     pub build_cache_artifact_id: Option<String>,
-    /// Package P4: the session identity the kernel assigned this Attempt, derived from its
-    /// Attempt ID. Present only for an adapter that hosts sessions and a node whose policy asks
-    /// for the layer; the adapter passes it as `--session-id` so the transcript is the kernel's
-    /// to capture and delete rather than the provider's to keep.
-    #[serde(skip)]
-    pub session_id: Option<String>,
-    /// Package P4: the previous admitted Attempt's transcript, already re-materialized into
-    /// this Attempt's harness directory. Present only when every gate passed; its presence is
-    /// what turns the prompt into the delta prompt.
-    #[serde(skip)]
-    pub session_resume: Option<crate::session::SessionResume>,
 }
 
 /// The Notes output bound a warm reviewer node declares. Data for the Worker; the kernel
@@ -1055,46 +1001,6 @@ impl ReviewerInputs {
         Ok(())
     }
 
-    /// Everything a resumed Attempt is sent: the delta prompt and nothing else. The forked
-    /// session already holds the package instructions and the Change Set the previous Attempt
-    /// read, so re-sending them would pay the prefix twice — which is the whole cost this layer
-    /// exists to remove. What changed still has to arrive: this Attempt's own authority, the
-    /// refusals of its earlier siblings, the current prior Finding Set, Delta Marking against
-    /// the head the session inspected, the resolved non-Change-Set ports and the Notes contract.
-    /// The output contract is restated in full, because it is what the kernel parses and a
-    /// resumed model must not drift from it.
-    pub fn render_delta_into(&self, prompt: &mut String) -> Result<(), String> {
-        prompt.push_str(
-            "\n\n## Continuing your previous session (kernel data)\n\n\
-             This conversation is a fork of the session you ran on this same node in the \
-             previous Round. Its transcript is yours and unchanged; nothing in it has been \
-             edited. What follows is only what changed since then. The repository in your \
-             working directory is the current head, not the tree you inspected before: the \
-             Delta Marking below says which paths moved, and any conclusion you carried over \
-             about an unlisted path still needs to hold against the current tree. Every prior \
-             Finding still needs its explicit answer under the output contract.",
-        );
-        if let Some(section) = self.rendered_attempt_context_section()? {
-            prompt.push_str(&section);
-        }
-        if let Some(section) = self.rendered_refusal_history_section()? {
-            prompt.push_str(&section);
-        }
-        if let Some(section) = self.rendered_prior_findings_section()? {
-            prompt.push_str(&section);
-        }
-        if let Some(section) = self.rendered_head_delta_section()? {
-            prompt.push_str(&section);
-        }
-        if let Some(section) = self.rendered_input_ports_section()? {
-            prompt.push_str(&section);
-        }
-        if let Some(section) = self.rendered_notes_request_section() {
-            prompt.push_str(&section);
-        }
-        Ok(())
-    }
-
     /// The prior-findings section, or nothing when this Attempt is assigned no prior claim.
     fn rendered_prior_findings_section(&self) -> Result<Option<String>, String> {
         if let Some(prior) = &self.prior_findings {
@@ -1134,8 +1040,7 @@ impl ReviewerInputs {
         Ok(None)
     }
 
-    /// The diff Subject's Change Set with its canonical patch. The one section a resumed
-    /// Attempt never receives again: the forked session already read it.
+    /// The diff Subject's Change Set with its canonical patch.
     fn render_change_sets_into(&self, prompt: &mut String) -> Result<(), String> {
         let change_sets: Vec<_> = self
             .artifacts
@@ -1250,13 +1155,6 @@ fn patch_fence(patch: &str) -> String {
 pub trait ReviewerAdapter {
     /// The exact bytes this adapter's Worker receives for `inputs`, without sending them.
     fn render_input(&self, inputs: &ReviewerInputs) -> Result<RenderedInput, RunnerError>;
-
-    /// The session half of this adapter, or `None` when it cannot host a kernel-assigned
-    /// session and resume it forked. The default refuses the layer, which is how every adapter
-    /// but Claude — Codex included — stays out of it without naming itself here.
-    fn session_layer(&self) -> Option<&dyn crate::session::SessionLayer> {
-        None
-    }
 }
 
 /// The `command` adapter: a deterministic, credential-free Worker whose input is the typed

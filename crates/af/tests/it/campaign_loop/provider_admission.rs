@@ -301,7 +301,7 @@ fn admission_plus_mandatory_reviewer_must_fit_before_any_paid_attempt() {
 
 /// A capture refused before its Task exists keeps its preparation events. After
 /// `--restart-round` the Campaign also holds RoundInputSuperseded@1 and still no Task; both
-/// commands must keep retrying common capture instead of treating it as pre-Task history.
+/// commands must keep retrying common capture.
 #[test]
 fn a_restarted_campaign_without_a_task_stays_on_the_common_runtime() {
     let f = Fixture::new(5712, Some(52767));
@@ -309,10 +309,6 @@ fn a_restarted_campaign_without_a_task_stays_on_the_common_runtime() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(1), "{stderr}");
         assert!(stderr.contains("mandatory"), "{stderr}");
-        assert!(
-            !stderr.contains("predates the common Task runtime"),
-            "{stderr}"
-        );
     };
     refused_by_common_capture(f.cli(&["review", "run"], NEW));
     refused_by_common_capture(f.cli(&["review", "run"], &[NEW, &["--restart-round"]].concat()));
@@ -387,11 +383,11 @@ fn a_task_captured_after_a_pre_task_restart_of_a_changed_candidate_resumes() {
     );
 }
 
-/// A Round closed by a pre-Task report (`RunReport@3`, no longer an event type) is history no GA
-/// command writes: the Campaign is refused by name before preparation, capture or any Provider
-/// call.
+/// A log holding a record this release does not write — here the retired `WarmSetSelected@1`,
+/// which `WarmSetSelected@2` replaced — fails closed on the replay error before preparation,
+/// capture or any Provider call. No reader, migration or fallback reopens it (ADR-0145).
 #[test]
-fn a_campaign_with_pre_task_executor_history_is_refused() {
+fn a_campaign_holding_a_retired_event_type_is_refused_before_any_work() {
     use sha2::{Digest, Sha256};
     let f = Fixture::new(5712, Some(52767));
     assert!(!f.cli(&["review", "run"], NEW).status.success());
@@ -415,29 +411,21 @@ fn a_campaign_with_pre_task_executor_history_is_refused() {
     id.update(campaign.as_bytes());
     id.update(b"\0");
     id.update(sequence.to_string().as_bytes());
-    let outcomes = ["generation", "reviewer", "gather", "ledger"].map(|node| {
-        json!({
-            "node": node,
-            "outcome": {"kind": "failed", "error": "resource limit reached before dispatch"},
-        })
-    });
-    let report = json!({
-        "outcomes": outcomes,
-        "blocked_gates": [],
-        "verdict": {"kind": "fail", "reason": "exhausted"},
-        "spent_tokens": 0,
+    let selection = json!({
+        "warm_set_artifact_id": format!("sha256:{}", "a".repeat(64)),
+        "layers": ["notes"],
     });
     connection
         .execute(
             "INSERT INTO events (run_id, sequence, event_id, type, occurred_at, causation_id,
                                  artifact_refs, payload)
-             VALUES (?1, ?2, ?3, 'RunReport@3', '2026-08-16T12:00:00Z', ?4, '[]', ?5)",
+             VALUES (?1, ?2, ?3, 'WarmSetSelected@1', '2026-08-16T12:00:00Z', ?4, '[]', ?5)",
             rusqlite::params![
                 campaign,
                 sequence,
                 &review_core::hex::encode(&id.finalize())[..26],
                 round.event_id,
-                report.to_string(),
+                selection.to_string(),
             ],
         )
         .unwrap();
@@ -452,7 +440,8 @@ fn a_campaign_with_pre_task_executor_history_is_refused() {
         assert_eq!(out.status.code(), Some(1));
         assert!(
             String::from_utf8_lossy(&out.stderr).contains(
-                "Campaign predates the common Task runtime (af < 0.9); start a new Campaign"
+                "unknown review-kernel event type: WarmSetSelected@1; this log was written by \
+                 another af release; start a new Campaign or Task"
             ),
             "{}",
             String::from_utf8_lossy(&out.stderr)

@@ -43,9 +43,10 @@ expanded tree, Claude/Codex workflow and the automation boundary.
 - Targeted repair is a distinct acceptance type from complete Review, and a project must opt
   into it ([ADR-0054](adr/0054-keep-targeted-repair-distinct-from-complete-review.md)).
 - Review commands run every Campaign through the common runtime. Missing common Task state
-  refuses instead of falling back, and a Campaign that holds pre-Task executor history (af < 0.9)
-  is refused ([ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md),
-  [ADR-0113](adr/0113-ga-reads-only-what-ga-writes.md)).
+  refuses instead of falling back, and a Campaign log holding a record this release does not
+  write is refused by its replay error
+  ([ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md),
+  [ADR-0145](adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)).
 - Provider admission is a paid, captured node inside the Task's own limits; a catalog may
   declare an explicit admission cost, and an omitted one means the fixed 4,096-token, 45-second
   allowance, and native identity is rechecked before every private send

@@ -136,8 +136,8 @@ continue that Round is refused by that check, on a Task whose root declares `req
 which every `implement` Task does.
 
 A bound `history` is therefore for a Pipeline that **reads** the ledger — a repairer or
-implementer given the findings as context, which is what `docs/design/af-layout-plan.md` §3
-describes — rather than one that continues the Round over a new Subject. Continuing a Round
+implementer given the findings as context — rather than one that continues the Round over a new
+Subject. Continuing a Round
 across a Task boundary needs its own decision about requirements retention; this one does not
 make it. `fixtures/task-runtime/bound-inputs/` is built that way, and says so.
 

@@ -7,8 +7,8 @@ use super::domain::{admit_source, answering, events_of, hosted, requesting, runn
 use super::*;
 use review_core::task::campaign_review::{TaskReviewContextV1, TaskReviewResultSelectedV1};
 use review_core::{
-    BuildCacheCapturedPayloadV1, HeadDeltaMarkV1, HeadDeltaV1, WarmLayerV1,
-    WarmSetSelectedPayloadV1, WarmSetV1, WorkerNotesRecordedPayloadV1, WorkerNotesV1,
+    BuildCacheCapturedPayloadV1, HeadDeltaMarkV1, HeadDeltaV1, WarmLayerV2,
+    WarmSetSelectedPayloadV2, WarmSetV2, WorkerNotesRecordedPayloadV1, WorkerNotesV1,
     WorkspaceBasisV1, WorkspaceFallbackReasonV1, WorkspaceRebasedPayloadV1,
 };
 use review_source_git::{Entry, EntryKind, Manifest};
@@ -269,11 +269,11 @@ fn manifest_entries(cas: &Cas, selected: &TaskReviewResultSelectedV1) -> Vec<ser
         .clone()
 }
 
-fn warm_set(cas: &Cas, event: &review_core::RunEvent) -> (WarmSetSelectedPayloadV1, WarmSetV1) {
-    let selection: WarmSetSelectedPayloadV1 =
+fn warm_set(cas: &Cas, event: &review_core::RunEvent) -> (WarmSetSelectedPayloadV2, WarmSetV2) {
+    let selection: WarmSetSelectedPayloadV2 =
         serde_json::from_value(event.payload.clone()).unwrap();
     selection.validate().unwrap();
-    let set: WarmSetV1 = serde_json::from_value(
+    let set: WarmSetV2 = serde_json::from_value(
         cas.get_artifact(&selection.warm_set_artifact_id)
             .unwrap()
             .payload,
@@ -296,7 +296,7 @@ id = "reviewer"
 kind = "reviewer"
 inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
 outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
-warm = { notes = true, notes_max_bytes = 4096, session = "always" }
+warm = { notes = true, notes_max_bytes = 4096 }
 REVIEWER
 [[nodes]]
 id = "ledger"
@@ -324,8 +324,7 @@ fn mark(delta: &HeadDeltaV1, path: &str) -> HeadDeltaMarkV1 {
 /// they are never recorded. Round two on a new head receives the selected Notes, a Head Delta
 /// against Round one's head and the open prior Findings through its wired port, from one Warm
 /// Set recorded before its first Attempt is reserved, so a retry renders the same warm bytes.
-/// The Task host runs no session protocol, so the session layer is dropped with that reason
-/// and the Attempt runs on Notes.
+/// The Warm Set is a `WarmSet@2` artifact selected by `WarmSetSelected@2`, with no session layer.
 #[test]
 fn notes_head_delta_and_prior_findings_carry_from_the_selected_attempt_to_the_next_round() {
     let directory = tempfile::tempdir().unwrap();
@@ -490,7 +489,7 @@ fn notes_head_delta_and_prior_findings_carry_from_the_selected_attempt_to_the_ne
         seen[3]["prior_findings"]["findings"][0]["title"], "helper is unreachable",
         "open prior Findings arrive through the wired port"
     );
-    let selections: Vec<_> = events_of(&shared, EventType::WarmSetSelectedV1)
+    let selections: Vec<_> = events_of(&shared, EventType::WarmSetSelectedV2)
         .into_iter()
         .filter(|event| event.causation_id.as_deref() == Some(round_two.as_str()))
         .collect();
@@ -554,16 +553,23 @@ fn notes_head_delta_and_prior_findings_carry_from_the_selected_attempt_to_the_ne
     );
     assert_eq!(
         selection.layers,
-        [WarmLayerV1::Notes, WarmLayerV1::HeadDelta]
+        [WarmLayerV2::Notes, WarmLayerV2::HeadDelta]
     );
     assert_eq!(set.round, 2);
     assert_eq!(set.notes_artifact_id.as_deref(), Some(notes_id.as_str()));
-    assert_eq!(set.session_artifact_id, None);
-    assert_eq!(
-        set.session_dropped,
-        Some(review_core::SessionDropReasonV1::HostUnsupported),
-        "the Task host records why the session layer was not carried"
+    let envelope = cas.get_artifact(&selection.warm_set_artifact_id).unwrap();
+    assert_eq!(envelope.artifact_type, "review.kernel/WarmSet@2");
+    assert!(
+        envelope
+            .payload
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|key| !key.starts_with("session")),
+        "WarmSet@2 records no session layer: {}",
+        envelope.payload
     );
+    assert_eq!(selections[0].event_type.as_str(), "WarmSetSelected@2");
     let delta_id = set
         .head_delta_artifact_id
         .expect("a Head Delta was carried");
@@ -657,7 +663,7 @@ fn an_over_bound_head_delta_is_dropped_at_selection_and_the_attempt_runs_on_note
     );
 
     let (selected_one, _) = selected_attempt(&shared, &round_one, "reviewer");
-    let selections: Vec<_> = events_of(&shared, EventType::WarmSetSelectedV1)
+    let selections: Vec<_> = events_of(&shared, EventType::WarmSetSelectedV2)
         .into_iter()
         .filter(|event| event.causation_id.as_deref() == Some(round_two.as_str()))
         .collect();
@@ -669,7 +675,7 @@ fn an_over_bound_head_delta_is_dropped_at_selection_and_the_attempt_runs_on_note
     );
     assert_eq!(set.head_delta_artifact_id, None);
     assert!(set.notes_artifact_id.is_some());
-    assert_eq!(selection.layers, [WarmLayerV1::Notes]);
+    assert_eq!(selection.layers, [WarmLayerV2::Notes]);
     assert_eq!(
         selection.source_attempt_id.as_deref(),
         Some(selected_one.as_str())
@@ -778,7 +784,7 @@ fn a_cold_node_records_nothing_and_touches_no_workspace_root() {
         }
     }
     for event_type in [
-        EventType::WarmSetSelectedV1,
+        EventType::WarmSetSelectedV2,
         EventType::WorkerNotesRecordedV1,
         EventType::WorkspaceRebasedV1,
     ] {
@@ -977,7 +983,7 @@ fn run_workspace(root_state: RootState) {
     );
     assert!(review_core::is_workspace_id(&first.workspace_id));
     let root = workspaces.join(&first.workspace_id).join("tree");
-    let selections = events_of(&shared, EventType::WarmSetSelectedV1);
+    let selections = events_of(&shared, EventType::WarmSetSelectedV2);
     assert_eq!(selections.len(), 1, "the cold reader selects nothing");
     let (selection, set) = warm_set(&cas, &selections[0]);
     assert!(
@@ -1109,7 +1115,7 @@ fn run_workspace(root_state: RootState) {
         tree_bytes(&fresh),
         "the prepared template is byte-identical to a full materialization"
     );
-    let selections: Vec<_> = events_of(&shared, EventType::WarmSetSelectedV1)
+    let selections: Vec<_> = events_of(&shared, EventType::WarmSetSelectedV2)
         .into_iter()
         .filter(|event| event.causation_id.as_deref() == Some(round_two.as_str()))
         .collect();
@@ -1120,7 +1126,7 @@ fn run_workspace(root_state: RootState) {
     );
     let (selection, set) = warm_set(&cas, &selections[0]);
     let layers = if basis == WorkspaceBasisV1::Rebased {
-        vec![WarmLayerV1::Workspace]
+        vec![WarmLayerV2::Workspace]
     } else {
         vec![]
     };
@@ -1144,7 +1150,7 @@ fn run_workspace(root_state: RootState) {
         "a sandbox write never reaches the template"
     );
     assert!(
-        events_of(&shared, EventType::WarmSetSelectedV1)
+        events_of(&shared, EventType::WarmSetSelectedV2)
             .iter()
             .all(|event| event.node_id.as_deref() == Some("reviewer")),
         "a node without the policy keeps a temporary template and records nothing"
@@ -1181,7 +1187,7 @@ fn run_workspace(root_state: RootState) {
         Some(head_two_id.as_str())
     );
     assert_eq!(tree_bytes(&root), tree_bytes(&fresh));
-    let selections: Vec<_> = events_of(&shared, EventType::WarmSetSelectedV1)
+    let selections: Vec<_> = events_of(&shared, EventType::WarmSetSelectedV2)
         .into_iter()
         .filter(|event| event.causation_id.as_deref() == Some(round_three.as_str()))
         .collect();
@@ -1447,7 +1453,7 @@ fn a_tdd_reviewer_reuses_the_gate_build_and_seals_the_same_diff_as_a_cold_run() 
         EntryKind::Executable
     );
 
-    let selections = events_of(&shared, EventType::WarmSetSelectedV1);
+    let selections = events_of(&shared, EventType::WarmSetSelectedV2);
     assert_eq!(
         selections.len(),
         1,
@@ -1455,7 +1461,7 @@ fn a_tdd_reviewer_reuses_the_gate_build_and_seals_the_same_diff_as_a_cold_run() 
     );
     assert_eq!(selections[0].node_id.as_deref(), Some("tdd"));
     let (selection, set) = warm_set(&cas, &selections[0]);
-    assert_eq!(selection.layers, [WarmLayerV1::BuildCache]);
+    assert_eq!(selection.layers, [WarmLayerV2::BuildCache]);
     assert_eq!(
         selection.source_attempt_id, None,
         "Round one has no previous Attempt"
@@ -1506,7 +1512,7 @@ fn a_tdd_reviewer_reuses_the_gate_build_and_seals_the_same_diff_as_a_cold_run() 
     );
     let cold = SharedEventStore::new(&mut cold_store);
     assert!(events_of(&cold, EventType::BuildCacheCapturedV1).is_empty());
-    assert!(events_of(&cold, EventType::WarmSetSelectedV1).is_empty());
+    assert!(events_of(&cold, EventType::WarmSetSelectedV2).is_empty());
     let (_, cold_tdd) = selected_attempt(&cold, &cold_round, "tdd");
     let (cold_artifact, cold_mutations) = sealed_mutations(&cold_cas, &cold_tdd);
     assert_eq!(cold_mutations, warm_mutations);
@@ -1565,7 +1571,7 @@ fn a_symlink_in_the_gate_cache_directory_refuses_capture_with_a_recorded_reason(
         Some(review_core::BuildCacheRefusalReasonV1::UnsafeContent)
     );
     assert_eq!((capture.entries, capture.bytes), (0, 0));
-    let selections = events_of(&shared, EventType::WarmSetSelectedV1);
+    let selections = events_of(&shared, EventType::WarmSetSelectedV2);
     assert_eq!(selections.len(), 1);
     let (selection, set) = warm_set(&cas, &selections[0]);
     assert!(selection.layers.is_empty());

@@ -16,12 +16,12 @@ publishing to a branch or pull request stays an explicit human action.
 
 **Status:** public alpha. See the latest release badge above for the published version;
 `af --version` reports the binary you actually run. APIs, configuration and persisted state may
-change before 1.0.
-Compatibility obligations start at 1.0: from the first 1.0
-release on, every change that affects committed `.af/` policy or a persisted artifact type is
-announced in [`CHANGELOG.md`](CHANGELOG.md) under *Authority compatibility*, with the hand edit
-or `af onboard --refresh-lock` it needs. State written by a pre-1.0 release is not read
-([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)).
+change in any release, and a release reads only the state and configuration it writes itself:
+finish or discard in-flight Campaigns and Tasks before upgrading. Every release states in
+[`CHANGELOG.md`](CHANGELOG.md), under *Authority compatibility*, which committed `.af/` policy it
+accepts and the hand edit or `af onboard --refresh-lock` a change needs; that line describes the
+release, not a promise about the next one
+([ADR-0145](docs/adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)).
 
 ## Install
 

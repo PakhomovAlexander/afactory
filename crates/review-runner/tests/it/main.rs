@@ -10,7 +10,6 @@ mod change_wide_prior;
 mod command_inputs;
 mod model_supervision;
 mod prior_bound;
-mod session_render;
 mod task_command_process_group;
 mod task_contexts;
 mod task_model_transport;

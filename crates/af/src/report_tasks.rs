@@ -52,7 +52,7 @@ struct TaskAttemptView {
     #[serde(skip_serializing_if = "Option::is_none")]
     wall: Option<TaskWallView>,
     /// The warm layers this Attempt's review node used and what its bound context cost,
-    /// joined from the Round's `WarmSetSelected@1`; absent for cold nodes.
+    /// joined from the Round's `WarmSetSelected@2`; absent for cold nodes.
     #[serde(skip_serializing_if = "Option::is_none")]
     warm: Option<super::AttemptWarmView>,
 }
@@ -336,7 +336,7 @@ pub(super) fn read(
     Ok(report)
 }
 
-/// `WarmSetSelected@1` layers by (Round, epoch, review node), read from the Campaign log so a
+/// `WarmSetSelected@2` layers by (Round, epoch, review node), read from the Campaign log so a
 /// Task-backed review Attempt reports its warm layers exactly as any other Attempt does.
 type WarmSelections = BTreeMap<(u32, u32, String), Vec<String>>;
 
@@ -405,8 +405,8 @@ fn warm_selections(events: &[review_core::RunEvent]) -> Result<WarmSelections, S
                         .map_err(|error| error.to_string())?;
                 rounds.insert(event.event_id.clone(), (payload.round, payload.epoch));
             }
-            review_core::EventType::WarmSetSelectedV1 => {
-                let payload: review_core::WarmSetSelectedPayloadV1 =
+            review_core::EventType::WarmSetSelectedV2 => {
+                let payload: review_core::WarmSetSelectedPayloadV2 =
                     serde_json::from_value(event.payload.clone())
                         .map_err(|error| error.to_string())?;
                 let Some((round, epoch)) = event
@@ -420,7 +420,7 @@ fn warm_selections(events: &[review_core::RunEvent]) -> Result<WarmSelections, S
                 let node = event
                     .node_id
                     .clone()
-                    .ok_or("WarmSetSelected@1 has no reviewer node")?;
+                    .ok_or("WarmSetSelected@2 has no reviewer node")?;
                 selections.insert(
                     (round, epoch, node),
                     payload

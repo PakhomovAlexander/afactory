@@ -10,10 +10,12 @@ lists the considered options with the reasons each was rejected, records the dec
 with its consequences. A changed decision is a new ADR that names what it supersedes. A partially
 superseded ADR keeps its body as it was and gains a note on its status line linking the new ADR,
 and that status line may be restated when the new ADR spends the transition wording it carried; a
-fully superseded ADR is deleted with its index entry, and git history keeps it. Links to a deleted
-ADR, or to an internal record deleted at GA, are rewritten to point at the superseding ADR or to
-plain text; this is the only edit allowed in another accepted ADR's body
-([ADR-0113](0113-ga-reads-only-what-ga-writes.md), clauses 6 and 8).
+fully superseded ADR is deleted with its index entry, and git history keeps it, unless the
+superseding ADR keeps it with a superseded status line, as ADR-0145 keeps ADR-0110. Links to a
+deleted ADR, or to an internal record or completed design note that was deleted, are rewritten to
+point at the superseding ADR or to plain text; this is the only edit allowed in another accepted
+ADR's body ([ADR-0113](0113-ga-reads-only-what-ga-writes.md), clauses 6 and 8;
+[ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md), clause 8).
 
 A number is never reissued: a deleted record leaves its number empty, and the index simply skips
 it. Two records were accepted on the same day under the number 0107 — the warm-layer ADR and the
@@ -188,12 +190,14 @@ future readers need.
 - [0109 — Re-base Warm Workspaces at stable roots with digest
   verification](0109-rebase-warm-workspaces-at-stable-roots-with-digest-verification.md)
 - [0110 — Capture Claude sessions in two phases and confirm a clean warm Round
-  cold](0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md)
+  cold](0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md) (superseded by
+  [ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md))
 - [0111 — Keep Provider bootstrap machine-local and cross-release
   safe](0111-keep-provider-bootstrap-machine-local-and-cross-release-safe.md)
 - [0112 — Refuse agent-mediated Provider logins and separate status from
   usage](0112-refuse-agent-mediated-provider-logins.md)
-- [0113 — GA reads only what GA writes](0113-ga-reads-only-what-ga-writes.md)
+- [0113 — GA reads only what GA writes](0113-ga-reads-only-what-ga-writes.md) (superseded in part
+  by [ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md))
 - [0114 — Budget CLI Task fixtures for loaded machines, never for a fast
   one](0114-budget-cli-task-fixtures-for-loaded-machines.md)
 - [0115 — Declare the `.af/` layout once and keep Task files out of
@@ -255,3 +259,5 @@ future readers need.
 - [0143 — Charge zero and record unknown usage when no usage is
   reported](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)
 - [0144 — Hold af's disk use to a machine budget](0144-hold-afs-disk-use-to-a-machine-budget.md)
+- [0145 — Read only what this release writes, and version every changed
+  shape](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)

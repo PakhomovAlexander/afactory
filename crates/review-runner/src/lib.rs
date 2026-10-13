@@ -8,7 +8,6 @@
 
 pub mod model;
 pub mod native_failure;
-pub mod session;
 pub mod task;
 
 pub use model::{
@@ -20,10 +19,6 @@ pub use model::{
 };
 pub use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 pub use review_process::run_supervised;
-pub use session::{
-    CapturedSession, SessionCapture, SessionDeletion, SessionLayer, SessionResume,
-    rehydrate_transcript, sanitize_transcript,
-};
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

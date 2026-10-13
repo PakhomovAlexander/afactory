@@ -2,7 +2,7 @@
 //! capture; package P3: the Warm Workspace each warm node's sandboxes are cloned from.
 //!
 //! Warmth is an artifact, never ambient state. A node's Warm Set is selected from the durable
-//! Campaign log, stored in the CAS, recorded as `WarmSetSelected@1` before the node's first
+//! Campaign log, stored in the CAS, recorded as `WarmSetSelected@2` before the node's first
 //! Attempt of the Round is dispatched, and delivered as declared inputs that the Attempt's
 //! context manifest lists with bytes and estimated tokens. Only the previous closed Round's
 //! admitted Attempt of the same node can be a source; fenced, quarantined, malformed and
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use review_core::{
     ArtifactEnvelope, BuildCacheKindV1, EventType, HeadDeltaInputs, HeadDeltaV1, InspectedPathV1,
     PathHintV1, PathRenameV1, Producer, RoundStartedPayloadV1, RunEvent, SourceSnapshot, TreeView,
-    WarmSetSelectedPayloadV1, WarmSetV1, WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1,
+    WarmSetSelectedPayloadV2, WarmSetV2, WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1,
     WorkerNotesV1, WorkspaceBasisV1, WorkspaceRebasedPayloadV1, compute_head_delta_marks,
     run_report_closes_round,
 };
@@ -36,8 +36,8 @@ use super::review_domain::ReviewDomainState;
 /// The Warm Set one node's Attempts start from in the active Round, as durably recorded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WarmSetRecord {
-    pub set: WarmSetV1,
-    /// The `review.kernel/WarmSet@1` artifact every Attempt's manifest names.
+    pub set: WarmSetV2,
+    /// The `review.kernel/WarmSet@2` artifact every Attempt's manifest names.
     pub artifact_id: String,
 }
 
@@ -57,19 +57,6 @@ struct RequestedLayers<'a> {
     notes: bool,
     build_cache: Option<(BuildCacheKindV1, String)>,
     workspace: Option<&'a WarmWorkspace>,
-    /// Package P4: the session layer, with the age bound its policy pinned and what the
-    /// frontend hosting the node can do with it. `None` for a node that hosts no session.
-    session: Option<SessionRequest<'a>>,
-}
-
-/// What deciding the session layer needs beyond the log: the pinned age bound, the host's
-/// capability, and the inputs this Round's Attempt will receive, so the delta prompt a resume
-/// would send is measured rather than assumed. All resolved before selection, so the decision
-/// is one function of durable state.
-struct SessionRequest<'a> {
-    max_age_secs: u64,
-    capability: Option<crate::session::SessionCapability>,
-    prospective: Option<&'a ReviewerInputs>,
 }
 
 impl ReviewDomainState<'_> {
@@ -184,11 +171,7 @@ impl ReviewDomainState<'_> {
     /// declares a build cache kind or a Warm Workspace selects one in every Round, because
     /// those layers travel from this Round's Gate and from the node's own stable root rather
     /// than from the previous Round's Attempt.
-    pub(crate) fn select_warm_set(
-        &self,
-        node_id: &str,
-        prospective: Option<&ReviewerInputs>,
-    ) -> Result<Option<WarmSetRecord>, String> {
+    pub(crate) fn select_warm_set(&self, node_id: &str) -> Result<Option<WarmSetRecord>, String> {
         let notes = self.notes_max_bytes(node_id).is_some() && self.authority.round > 1;
         let build_cache = match self.node_build_cache_kind(node_id) {
             Some(kind) => {
@@ -200,25 +183,7 @@ impl ReviewDomainState<'_> {
             None => None,
         };
         let keeps_workspace = self.warm_workspace_policy(node_id);
-        // The session layer, like Notes, can only come from the previous closed Round; a node
-        // that hosts sessions still records its drop reason in Round one's Warm Set only when
-        // some other layer already makes one, which is why it follows the same Round gate.
-        // The prospective inputs carry the Notes request the Attempt will render, so the
-        // measured delta is the one the Attempt sends.
-        let prospective = prospective.map(|inputs| {
-            let mut inputs = inputs.clone();
-            request_notes(&mut inputs, self.notes_max_bytes(node_id));
-            inputs
-        });
-        let session =
-            (self.session_policy(node_id).is_some() && self.authority.round > 1).then(|| {
-                SessionRequest {
-                    max_age_secs: self.session_max_age_secs(node_id),
-                    capability: self.session_capability(node_id),
-                    prospective: prospective.as_ref(),
-                }
-            });
-        if !notes && build_cache.is_none() && !keeps_workspace && session.is_none() {
+        if !notes && build_cache.is_none() && !keeps_workspace {
             return Ok(None);
         }
         if let Some(record) = self.warm_sets.lock().expect("warm sets").get(node_id) {
@@ -261,7 +226,6 @@ impl ReviewDomainState<'_> {
                         notes,
                         build_cache,
                         workspace: workspace.as_ref(),
-                        session,
                     },
                 )?;
                 self.record_warm_set(set)?
@@ -272,14 +236,13 @@ impl ReviewDomainState<'_> {
         Ok(Some(record))
     }
 
-    fn record_warm_set(&self, set: WarmSetV1) -> Result<WarmSetRecord, String> {
+    fn record_warm_set(&self, set: WarmSetV2) -> Result<WarmSetRecord, String> {
         set.validate()?;
         let layer_ids: Vec<String> = set
             .notes_artifact_id
             .iter()
             .chain(set.head_delta_artifact_id.iter())
             .chain(set.build_cache_artifact_id.iter())
-            .chain(set.session_artifact_id.iter())
             .cloned()
             .collect();
         let producer = Producer::KernelOperation {
@@ -293,14 +256,14 @@ impl ReviewDomainState<'_> {
         let cas = self.cas;
         let (artifact_id, _) = cas
             .put_artifact(
-                review_core::contract::WARM_SET_V1,
+                review_core::contract::WARM_SET_V2,
                 producer,
                 layer_ids.clone(),
                 Some(self.authority.head_snapshot_id.clone()),
                 encode(&set)?,
             )
             .map_err(|error| error.to_string())?;
-        let selected = WarmSetSelectedPayloadV1 {
+        let selected = WarmSetSelectedPayloadV2 {
             warm_set_artifact_id: artifact_id.clone(),
             source_attempt_id: set.source_attempt_id.clone(),
             layers: set.layers(),
@@ -309,7 +272,7 @@ impl ReviewDomainState<'_> {
         let mut refs = vec![artifact_id.clone()];
         refs.extend(layer_ids);
         self.append(
-            NewEvent::new(EventType::WarmSetSelectedV1, encode(&selected)?)
+            NewEvent::new(EventType::WarmSetSelectedV2, encode(&selected)?)
                 .node(&set.node)
                 .referencing(refs),
         )?;
@@ -365,9 +328,7 @@ pub(crate) fn apply_warm_set(
         inputs.head_delta_artifact_id = Some(id.clone());
     }
     // The build cache is never rendered; it reaches the sandbox as bytes when the Attempt's
-    // sandbox is prepared. The manifest still names it through this identity. The Session
-    // Snapshot is the same shape of layer: its bytes reach the harness's own session store when
-    // the Attempt's sandbox exists, so `crate::session::apply_session` binds it there.
+    // sandbox is prepared. The manifest still names it through this identity.
     inputs.build_cache_artifact_id = record.set.build_cache_artifact_id.clone();
     inputs.warm_set_artifact_id = Some(record.artifact_id.clone());
     Ok(())
@@ -396,18 +357,22 @@ fn recorded_warm_set(
     node_id: &str,
 ) -> Result<Option<WarmSetRecord>, String> {
     let Some(event) = events.iter().find(|event| {
-        event.event_type == EventType::WarmSetSelectedV1
+        event.event_type == EventType::WarmSetSelectedV2
             && event.causation_id.as_deref() == Some(round_event_id)
             && event.node_id.as_deref() == Some(node_id)
     }) else {
         return Ok(None);
     };
-    let payload: WarmSetSelectedPayloadV1 = decode(event.payload.clone())?;
+    let payload: WarmSetSelectedPayloadV2 = decode(event.payload.clone())?;
     let envelope = read_envelope(cas, &payload.warm_set_artifact_id)?;
-    if envelope.artifact_type != review_core::contract::WARM_SET_V1 {
-        return Err("recorded Warm Set artifact has another type".into());
+    if envelope.artifact_type != review_core::contract::WARM_SET_V2 {
+        return Err(format!(
+            "recorded Warm Set artifact is `{}`, not `{}`",
+            envelope.artifact_type,
+            review_core::contract::WARM_SET_V2
+        ));
     }
-    let set: WarmSetV1 = decode(envelope.payload)?;
+    let set: WarmSetV2 = decode(envelope.payload)?;
     set.validate()?;
     if set.node != node_id || set.layers() != payload.layers {
         return Err("recorded Warm Set contradicts its selection event".into());
@@ -517,8 +482,8 @@ fn select(
     head: &Manifest,
     node_id: &str,
     layers: RequestedLayers<'_>,
-) -> Result<WarmSetV1, String> {
-    let mut set = WarmSetV1 {
+) -> Result<WarmSetV2, String> {
+    let mut set = WarmSetV2 {
         node: node_id.to_string(),
         round: authority.round,
         source_attempt_id: None,
@@ -531,8 +496,6 @@ fn select(
         workspace_id: layers
             .workspace
             .map(|workspace| workspace.workspace_id.clone()),
-        session_artifact_id: None,
-        session_dropped: None,
     };
     if let Some((kind, gate)) = layers.build_cache {
         let (artifact_id, dropped) =
@@ -540,49 +503,17 @@ fn select(
         set.build_cache_artifact_id = artifact_id;
         set.build_cache_dropped = dropped;
     }
-    // The session gate measures the delta prompt a resume would send, which includes the
-    // Head Delta; so the session is decided after the delta is, never before.
-    let session = |set: &mut WarmSetV1,
-                   source: Option<&str>,
-                   head_delta: Option<&serde_json::Value>|
-     -> Result<(), String> {
-        let Some(request) = &layers.session else {
-            return Ok(());
-        };
-        if set.head_delta_dropped.is_some() {
-            // A fork cannot be told what moved since the transcript it would continue; the
-            // Attempt runs cold with the current Change Set and the drop is recorded.
-            set.session_artifact_id = None;
-            set.session_dropped = Some(review_core::SessionDropReasonV1::HeadDeltaDropped);
-            return Ok(());
-        }
-        let delta_estimate = prospective_delta_tokens(request.prospective, head_delta)?;
-        let (artifact_id, dropped) = crate::session::select_session(
-            cas,
-            events,
-            request.capability,
-            request.max_age_secs,
-            source,
-            crate::session::now_unix_ms(),
-            delta_estimate,
-        )?;
-        set.session_artifact_id = artifact_id;
-        set.session_dropped = dropped;
-        Ok(())
-    };
     if !layers.notes {
-        session(&mut set, None, None)?;
         return Ok(set);
     }
     let Some(previous) = previous_closed_round(events, authority)? else {
-        session(&mut set, None, None)?;
         return Ok(set);
     };
     let source = admitted_attempt(events, &previous.event_id, node_id)?;
     if let Some(attempt_id) = &source {
         set.notes_artifact_id = recorded_notes(events, &previous.event_id, attempt_id)?;
     }
-    set.source_attempt_id = source.clone();
+    set.source_attempt_id = source;
     let mut extra_paths = match &set.notes_artifact_id {
         Some(id) => read_notes(cas, id)?.referenced_paths(),
         None => BTreeSet::new(),
@@ -604,7 +535,6 @@ fn select(
         // Selection is the only place a layer may be refused: an Attempt runs on Notes alone
         // and the Warm Set records why, instead of a renderer stranding the Round later.
         set.head_delta_dropped = Some(review_core::HeadDeltaDropReasonV1::OverBound);
-        session(&mut set, source.as_deref(), None)?;
         return Ok(set);
     }
     let producer = Producer::KernelOperation {
@@ -626,32 +556,7 @@ fn select(
         )
         .map_err(|error| error.to_string())?;
     set.head_delta_artifact_id = Some(artifact_id);
-    session(&mut set, source.as_deref(), Some(&encode(&delta)?))?;
     Ok(set)
-}
-
-/// The tokens the delta prompt of a resumed Attempt would cost, measured by rendering the
-/// prospective inputs exactly as the resumed Attempt would render them: the same contract,
-/// the same Head Delta, no Notes section, and no package instructions. Zero without
-/// prospective inputs, which only a host that never selects the layer supplies.
-fn prospective_delta_tokens(
-    prospective: Option<&ReviewerInputs>,
-    head_delta: Option<&serde_json::Value>,
-) -> Result<u64, String> {
-    let Some(base) = prospective else {
-        return Ok(0);
-    };
-    let mut inputs = base.clone();
-    inputs.head_delta = head_delta.cloned();
-    inputs.notes = None;
-    inputs.session_resume = Some(review_runner::SessionResume {
-        session_id: String::new(),
-        artifact_id: String::new(),
-        transcript_bytes: 0,
-        estimated_tokens: 0,
-    });
-    let (prompt, _) = review_runner::compose_model_prompt("", &inputs)?;
-    Ok(review_runner::estimate_tokens(prompt.len()))
 }
 
 /// Marks over the union of the Notes paths, both diff Subjects' Change Set paths and the
@@ -916,4 +821,102 @@ fn tree_entry_digest(manifest: &Manifest, path: &str) -> Option<String> {
         .binary_search_by(|entry| entry.path.as_str().cmp(path))
         .ok()
         .map(|index| manifest.entries[index].content.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn producer() -> Producer {
+        Producer::KernelOperation {
+            run_id: "run".into(),
+            node_id: Some("reviewer".into()),
+            operation_id: "warm-set:reviewer:2:1".into(),
+        }
+    }
+
+    fn selection(artifact_id: &str, payload: serde_json::Value) -> RunEvent {
+        let mut payload = payload;
+        payload["warm_set_artifact_id"] = serde_json::Value::String(artifact_id.into());
+        RunEvent {
+            event_id: "e".repeat(26),
+            run_id: "run".into(),
+            sequence: 3,
+            event_type: EventType::WarmSetSelectedV2,
+            occurred_at: "2026-10-09T00:00:00Z".into(),
+            node_id: Some("reviewer".into()),
+            attempt_id: None,
+            causation_id: Some("round".into()),
+            correlation_id: None,
+            artifact_refs: vec![artifact_id.into()],
+            payload,
+        }
+    }
+
+    /// A resumed Round reads back exactly the `WarmSet@2` its selection event names.
+    #[test]
+    fn a_recorded_warm_set_two_replays_as_written() {
+        let root = tempfile::tempdir().unwrap();
+        let cas = Cas::open(root.path()).unwrap();
+        let set = WarmSetV2 {
+            node: "reviewer".into(),
+            round: 2,
+            source_attempt_id: Some("a".repeat(26)),
+            notes_artifact_id: Some(format!("sha256:{}", "4".repeat(64))),
+            head_delta_artifact_id: None,
+            head_delta_dropped: Some(review_core::HeadDeltaDropReasonV1::OverBound),
+            build_cache_artifact_id: None,
+            build_cache_dropped: None,
+            workspace: None,
+            workspace_id: None,
+        };
+        let (artifact_id, _) = cas
+            .put_artifact(
+                review_core::contract::WARM_SET_V2,
+                producer(),
+                Vec::new(),
+                None,
+                encode(&set).unwrap(),
+            )
+            .unwrap();
+        let event = selection(
+            &artifact_id,
+            serde_json::json!({"source_attempt_id": "a".repeat(26), "layers": ["notes"]}),
+        );
+        let recorded = recorded_warm_set(&cas, &[event], "round", "reviewer")
+            .unwrap()
+            .unwrap();
+        assert_eq!(recorded.set, set);
+        assert_eq!(recorded.artifact_id, artifact_id);
+        assert!(
+            recorded_warm_set(&cas, &[], "round", "reviewer")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// A `WarmSet@1` artifact is refused by its type, and no fallback reads it (ADR-0145).
+    #[test]
+    fn a_warm_set_one_artifact_is_refused_on_replay() {
+        let root = tempfile::tempdir().unwrap();
+        let cas = Cas::open(root.path()).unwrap();
+        let (artifact_id, _) = cas
+            .put_artifact(
+                "review.kernel/WarmSet@1",
+                producer(),
+                Vec::new(),
+                None,
+                serde_json::json!({
+                    "node": "reviewer",
+                    "round": 2,
+                    "source_attempt_id": "a".repeat(26),
+                    "session_dropped": "host_unsupported",
+                }),
+            )
+            .unwrap();
+        let event = selection(&artifact_id, serde_json::json!({"layers": []}));
+        let error = recorded_warm_set(&cas, &[event], "round", "reviewer").unwrap_err();
+        assert!(error.contains("review.kernel/WarmSet@1"), "{error}");
+        assert!(error.contains("review.kernel/WarmSet@2"), "{error}");
+    }
 }

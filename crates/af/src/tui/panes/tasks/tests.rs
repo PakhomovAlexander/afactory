@@ -1174,7 +1174,7 @@ fn stores_an_earlier_release_wrote_are_listed_once_and_other_refusals_each() {
         [
             "2 Task Stores were written by an earlier af release, in",
             "  ~/.local/state/af/task/local",
-            "af does not read pre-GA state (ADR-0113); move or remove them.",
+            "af reads no other release's state (ADR-0145); move or remove them.",
         ]
     );
     assert!(rows[2..5].iter().all(|row| row.len() <= MAIN), "{rows:#?}");

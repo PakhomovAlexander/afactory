@@ -47,7 +47,6 @@ pub enum Writer {
     CatalogInit,
     CatalogSync,
     SelfOptimize,
-    Kernel,
 }
 
 impl Writer {
@@ -58,7 +57,6 @@ impl Writer {
             Self::CatalogInit => "af catalog init",
             Self::CatalogSync => "af catalog sync",
             Self::SelfOptimize => "af self optimize",
-            Self::Kernel => "the kernel",
         }
     }
 }
@@ -70,8 +68,6 @@ pub enum Versioning {
     Versioned,
     /// Deliberately not committed: one checkout's personal overrides.
     Ignored,
-    /// Never on disk at all — the kernel builds it inside an in-memory authority Manifest.
-    Synthetic,
 }
 
 impl Versioning {
@@ -79,7 +75,6 @@ impl Versioning {
         match self {
             Self::Versioned => "versioned",
             Self::Ignored => "gitignored",
-            Self::Synthetic => "synthetic",
         }
     }
 }
@@ -247,12 +242,6 @@ pub const LAYOUT: &[Entry] = &[
         Versioning::Versioned,
         "accepted sandbox cache selections",
     ),
-    directory(
-        "task-compat",
-        Writer::Kernel,
-        Versioning::Synthetic,
-        "legacy Task authority, built in memory",
-    ),
 ];
 
 /// What one repository-relative path is, as far as this layout is concerned.
@@ -279,9 +268,7 @@ impl Classification {
 
 /// Classify one repository-relative, slash-separated path — a Snapshot manifest path, never a
 /// host path. A declared directory covers everything beneath it; a declared file covers exactly
-/// itself, so nothing may hang below one. A synthetic entry exists only inside an in-memory
-/// authority Manifest, so on a repository path it declares nothing: a tracked copy of it is as
-/// undeclared as any other stray tree.
+/// itself, so nothing may hang below one.
 pub fn classify(path: &str) -> Classification {
     let path = path.strip_prefix("./").unwrap_or(path);
     let path = path.trim_end_matches('/');
@@ -301,9 +288,6 @@ pub fn classify(path: &str) -> Classification {
     let Some(entry) = LAYOUT.iter().find(|entry| entry.segment == segment) else {
         return Classification::Undeclared;
     };
-    if entry.versioning == Versioning::Synthetic {
-        return Classification::Undeclared;
-    }
     match entry.kind {
         EntryKind::Directory => Classification::Declared(entry),
         EntryKind::File if beneath.is_none() => Classification::Declared(entry),
@@ -545,26 +529,16 @@ mod tests {
             .filter(|entry| entry.versioning != Versioning::Versioned)
             .map(Entry::name)
             .collect();
-        assert_eq!(unusual, vec!["af.local.toml", "task-compat/"]);
+        assert_eq!(unusual, vec!["af.local.toml"]);
     }
 
     #[test]
-    fn a_synthetic_entry_declares_nothing_on_a_repository_path() {
-        let synthetic: Vec<&Entry> = LAYOUT
-            .iter()
-            .filter(|entry| entry.versioning == Versioning::Synthetic)
-            .collect();
-        assert!(!synthetic.is_empty());
-        for entry in synthetic {
-            let root = format!(".af/{}", entry.segment);
-            assert_eq!(classify(&root), Classification::Undeclared, "{root}");
-            assert_eq!(
-                classify(&format!("{root}/x")),
-                Classification::Undeclared,
-                "{root}/x"
-            );
-            assert!(is_undeclared(&root));
+    fn a_retired_task_compat_tree_is_undeclared_like_any_stray_tree() {
+        for path in [".af/task-compat", ".af/task-compat/x"] {
+            assert_eq!(classify(path), Classification::Undeclared, "{path}");
+            assert!(is_undeclared(path), "{path}");
         }
+        assert!(LAYOUT.iter().all(|entry| entry.segment != "task-compat"));
         assert!(is_declared(".af/pipelines/review.toml"));
     }
 
@@ -647,7 +621,7 @@ mod tests {
         let found = classify_manifest(&manifest(&[(".af/%FF", 7), (".af/af.toml", 1)]));
         assert_eq!(found.undeclared.paths, [".af/%FF"]);
         // Only the first segment must be text: a declared directory covers any child bytes,
-        // a declared file covers nothing beneath it, and a synthetic entry declares nothing.
+        // a declared file covers nothing beneath it, and an undeclared segment declares nothing.
         assert!(matches!(
             classify_manifest_path(".af/checks/%FF.sh"),
             Classification::Declared(entry) if entry.segment == "checks"

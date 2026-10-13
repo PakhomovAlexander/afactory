@@ -88,24 +88,18 @@ pub enum EventType {
     ShardSetRecordedV1,
     #[serde(rename = "SemanticClosureChecked@1")]
     SemanticClosureCheckedV1,
-    #[serde(rename = "WarmSetSelected@1")]
-    WarmSetSelectedV1,
+    #[serde(rename = "WarmSetSelected@2")]
+    WarmSetSelectedV2,
     #[serde(rename = "WorkerNotesRecorded@1")]
     WorkerNotesRecordedV1,
     #[serde(rename = "BuildCacheCaptured@1")]
     BuildCacheCapturedV1,
     #[serde(rename = "WorkspaceRebased@1")]
     WorkspaceRebasedV1,
-    #[serde(rename = "SessionSnapshotPrepared@1")]
-    SessionSnapshotPreparedV1,
-    #[serde(rename = "SessionSnapshotCleaned@1")]
-    SessionSnapshotCleanedV1,
-    #[serde(rename = "ColdCloseoutDispatched@1")]
-    ColdCloseoutDispatchedV1,
 }
 
 impl EventType {
-    pub const ALL: [Self; 45] = [
+    pub const ALL: [Self; 42] = [
         Self::TaskTransitionV5,
         Self::TaskReviewResultSelectedV1,
         Self::CheckCompletedV1,
@@ -144,13 +138,10 @@ impl EventType {
         Self::SliceSetAcceptedV1,
         Self::ShardSetRecordedV1,
         Self::SemanticClosureCheckedV1,
-        Self::WarmSetSelectedV1,
+        Self::WarmSetSelectedV2,
         Self::WorkerNotesRecordedV1,
         Self::BuildCacheCapturedV1,
         Self::WorkspaceRebasedV1,
-        Self::SessionSnapshotPreparedV1,
-        Self::SessionSnapshotCleanedV1,
-        Self::ColdCloseoutDispatchedV1,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -193,13 +184,10 @@ impl EventType {
             Self::SliceSetAcceptedV1 => "SliceSetAccepted@1",
             Self::ShardSetRecordedV1 => "ShardSetRecorded@1",
             Self::SemanticClosureCheckedV1 => "SemanticClosureChecked@1",
-            Self::WarmSetSelectedV1 => "WarmSetSelected@1",
+            Self::WarmSetSelectedV2 => "WarmSetSelected@2",
             Self::WorkerNotesRecordedV1 => "WorkerNotesRecorded@1",
             Self::BuildCacheCapturedV1 => "BuildCacheCaptured@1",
             Self::WorkspaceRebasedV1 => "WorkspaceRebased@1",
-            Self::SessionSnapshotPreparedV1 => "SessionSnapshotPrepared@1",
-            Self::SessionSnapshotCleanedV1 => "SessionSnapshotCleaned@1",
-            Self::ColdCloseoutDispatchedV1 => "ColdCloseoutDispatched@1",
         }
     }
 
@@ -248,13 +236,10 @@ impl EventType {
             Self::SliceSetAcceptedV1 => ("SliceSetAccepted", 1),
             Self::ShardSetRecordedV1 => ("ShardSetRecorded", 1),
             Self::SemanticClosureCheckedV1 => ("SemanticClosureChecked", 1),
-            Self::WarmSetSelectedV1 => ("WarmSetSelected", 1),
+            Self::WarmSetSelectedV2 => ("WarmSetSelected", 2),
             Self::WorkerNotesRecordedV1 => ("WorkerNotesRecorded", 1),
             Self::BuildCacheCapturedV1 => ("BuildCacheCaptured", 1),
             Self::WorkspaceRebasedV1 => ("WorkspaceRebased", 1),
-            Self::SessionSnapshotPreparedV1 => ("SessionSnapshotPrepared", 1),
-            Self::SessionSnapshotCleanedV1 => ("SessionSnapshotCleaned", 1),
-            Self::ColdCloseoutDispatchedV1 => ("ColdCloseoutDispatched", 1),
         }
     }
 }
@@ -339,13 +324,10 @@ impl std::str::FromStr for EventType {
             "SliceSetAccepted@1" => Ok(Self::SliceSetAcceptedV1),
             "ShardSetRecorded@1" => Ok(Self::ShardSetRecordedV1),
             "SemanticClosureChecked@1" => Ok(Self::SemanticClosureCheckedV1),
-            "WarmSetSelected@1" => Ok(Self::WarmSetSelectedV1),
+            "WarmSetSelected@2" => Ok(Self::WarmSetSelectedV2),
             "WorkerNotesRecorded@1" => Ok(Self::WorkerNotesRecordedV1),
             "BuildCacheCaptured@1" => Ok(Self::BuildCacheCapturedV1),
             "WorkspaceRebased@1" => Ok(Self::WorkspaceRebasedV1),
-            "SessionSnapshotPrepared@1" => Ok(Self::SessionSnapshotPreparedV1),
-            "SessionSnapshotCleaned@1" => Ok(Self::SessionSnapshotCleanedV1),
-            "ColdCloseoutDispatched@1" => Ok(Self::ColdCloseoutDispatchedV1),
             other => Err(UnknownEventType(other.to_string())),
         }
     }
@@ -846,13 +828,13 @@ pub fn validate_event_payload(
                 .validate()
                 .map_err(|error| format!("{event_type}: {error}"))
         }
-        EventType::WarmSetSelectedV1 => {
+        EventType::WarmSetSelectedV2 => {
             let selected =
-                serde_json::from_value::<crate::WarmSetSelectedPayloadV1>(payload.clone())
-                    .map_err(|error| format!("WarmSetSelected@1: {error}"))?;
+                serde_json::from_value::<crate::WarmSetSelectedPayloadV2>(payload.clone())
+                    .map_err(|error| format!("WarmSetSelected@2: {error}"))?;
             selected
                 .validate()
-                .map_err(|error| format!("WarmSetSelected@1: {error}"))
+                .map_err(|error| format!("WarmSetSelected@2: {error}"))
         }
         EventType::WorkerNotesRecordedV1 => {
             let recorded =
@@ -877,30 +859,6 @@ pub fn validate_event_payload(
             rebased
                 .validate()
                 .map_err(|error| format!("WorkspaceRebased@1: {error}"))
-        }
-        EventType::SessionSnapshotPreparedV1 => {
-            let prepared =
-                serde_json::from_value::<crate::SessionSnapshotPreparedPayloadV1>(payload.clone())
-                    .map_err(|error| format!("SessionSnapshotPrepared@1: {error}"))?;
-            prepared
-                .validate()
-                .map_err(|error| format!("SessionSnapshotPrepared@1: {error}"))
-        }
-        EventType::SessionSnapshotCleanedV1 => {
-            let cleaned =
-                serde_json::from_value::<crate::SessionSnapshotCleanedPayloadV1>(payload.clone())
-                    .map_err(|error| format!("SessionSnapshotCleaned@1: {error}"))?;
-            cleaned
-                .validate()
-                .map_err(|error| format!("SessionSnapshotCleaned@1: {error}"))
-        }
-        EventType::ColdCloseoutDispatchedV1 => {
-            let dispatched =
-                serde_json::from_value::<crate::ColdCloseoutDispatchedPayloadV1>(payload.clone())
-                    .map_err(|error| format!("ColdCloseoutDispatched@1: {error}"))?;
-            dispatched
-                .validate()
-                .map_err(|error| format!("ColdCloseoutDispatched@1: {error}"))
         }
     }
 }

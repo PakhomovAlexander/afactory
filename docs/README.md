@@ -43,10 +43,11 @@ the considered options with the reasons each was rejected, records the decision,
 its consequences. Accepted ADRs are immutable; a change is a new ADR that says what it
 supersedes. A partially superseded ADR gains a status-line note linking the new one, and that
 status line may be restated when the new ADR spends the transition wording it carried; a fully
-superseded ADR is deleted, and git history keeps it.
-Links to a deleted ADR, or to an internal record deleted at GA, are rewritten to point at the
-superseding ADR or to plain text; this is the only edit allowed in another accepted ADR's body
-(ADR-0113 clauses 6 and 8). Propose one by copying the shape of a recent ADR, adding it to the
+superseded ADR is deleted, and git history keeps it, unless the superseding ADR keeps it with a
+superseded status line.
+Links to a deleted ADR, or to an internal record or completed design note that was deleted, are
+rewritten to point at the superseding ADR or to plain text; this is the only edit allowed in
+another accepted ADR's body (ADR-0113 clauses 6 and 8, ADR-0145 clause 8). Propose one by copying the shape of a recent ADR, adding it to the
 index in [`adr/README.md`](adr/README.md), and opening a pull request.
 
 ## Conventions
