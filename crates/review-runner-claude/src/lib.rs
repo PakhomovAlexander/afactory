@@ -21,13 +21,9 @@
 //! the real `HOME` is a deliberate loosening relative to the codex adapter; every grant's value
 //! is redacted from everything stored.
 //!
-//! **Sessions are the kernel's, not the provider's.** When a node's warm policy asks for the
-//! session layer, an Attempt's command carries the kernel-derived `--session-id`, and, when a
-//! Session Snapshot was carried, `--resume <source> --fork-session` so the captured transcript is
-//! read and never mutated ([`ClaudeAdapter::attempt_command`]). Both flags precede the package's
-//! model flags and are pinned by test like the security flags. Without them — every other
-//! adapter, Codex included — no session is assigned, captured, or resumed. The Task host does not
-//! run the session layer yet, so its Attempts carry neither flag. See [`session`].
+//! **No session is carried.** An Attempt's command assigns no session identity and resumes
+//! nothing; the history the CLI keeps for an Attempt's own working directory is removed when the
+//! process exits ([`session::ClaudeSessionStore::remove_attempt_project`]).
 //!
 //! **Token mapping, recorded:** cost is uncached input plus cache creation plus output as the CLI
 //! reports them — cache reads excluded. An agentic Worker re-reads its context
@@ -45,20 +41,14 @@ use review_core::{Arg, Command};
 use review_runner::ResolvedReviewer;
 use review_runner::{
     InputTransport, ModelRunner, RenderedInput, ReviewerAdapter, ReviewerInputs, RunnerError,
-    SessionLayer, compose_model_prompt,
+    compose_model_prompt,
 };
 use review_store::Cas;
 
 pub use session::ClaudeSessionStore;
 
 pub struct ClaudeAdapter {
-    program: String,
-    model_flags: Vec<String>,
     prompt: String,
-    /// The operator's harness session store, derived from the explicit auth grants. Absent
-    /// until one is supplied: without `HOME` there is no directory to address, and the adapter
-    /// refuses the session layer rather than guessing one.
-    session_store: Option<ClaudeSessionStore>,
 }
 
 impl ClaudeAdapter {
@@ -76,7 +66,9 @@ impl ClaudeAdapter {
                 package.name, package.runner.program
             ));
         }
-        let model_flags = claude_model_flags(&package.runner)
+        // Rendering spawns nothing, but a package whose arguments the Task adapter would refuse
+        // is refused here too, so `af review render` never shows a package that cannot run.
+        claude_model_flags(&package.runner)
             .map_err(|error| format!("package `{}` runner args: {error}", package.name))?;
         // From the verified bytes, never a fresh disk read: the prompt is the one file that
         // decides what the reviewer does, so it must be exactly what the digest covered.
@@ -87,21 +79,7 @@ impl ClaudeAdapter {
                 .to_vec(),
         )
         .map_err(|_| format!("package `{}`: reviewer.md is not UTF-8", package.name))?;
-        Ok(ClaudeAdapter {
-            program: package.runner.program.clone(),
-            model_flags,
-            prompt,
-            session_store: None,
-        })
-    }
-
-    /// Host the session layer in `store`: the directory the operator's auth grants point the
-    /// harness at ([`ClaudeSessionStore::from_grants`]). Built by the caller from those same
-    /// grants rather than read from the environment, so the adapter can only ever capture and
-    /// delete inside what the operator granted.
-    pub fn with_session_store(mut self, store: ClaudeSessionStore) -> Self {
-        self.session_store = Some(store);
-        self
+        Ok(ClaudeAdapter { prompt })
     }
 
     /// Narrow this invocation's attention. A narrowing only — the package prompt still
@@ -110,29 +88,6 @@ impl ClaudeAdapter {
         review_runner::append_focus(&mut self.prompt, focus.as_ref());
         self
     }
-
-    /// The `claude -p` command one Attempt runs for `inputs`: the session the kernel assigned
-    /// (and the forked resume of a carried Session Snapshot) first, then the package model
-    /// flags, then the adapter-owned security flags. Kept as the base for running the session
-    /// layer on the Task host (ADR-0110).
-    pub fn attempt_command(&self, inputs: &ReviewerInputs) -> Command {
-        let session = inputs.session_id.as_deref().map(|session_id| SessionArgs {
-            session_id,
-            resume_from: inputs
-                .session_resume
-                .as_ref()
-                .map(|resume| resume.session_id.as_str()),
-        });
-        claude_command(&self.program, &self.model_flags, session)
-    }
-}
-
-/// The session arguments one Attempt runs under: the kernel's own identity for the session this
-/// Attempt will write, and, when a Session Snapshot was carried, the source session to resume
-/// with a fork so the captured transcript is read and never mutated.
-struct SessionArgs<'a> {
-    session_id: &'a str,
-    resume_from: Option<&'a str>,
 }
 
 fn claude_model_flags(runner: &Command) -> Result<Vec<String>, String> {
@@ -169,33 +124,14 @@ fn claude_model_flags(runner: &Command) -> Result<Vec<String>, String> {
     Ok(flags)
 }
 
-fn claude_command(
-    program: &str,
-    model_flags: &[String],
-    session: Option<SessionArgs<'_>>,
-) -> Command {
+/// The `claude -p` command one Attempt runs: the package model flags, then the adapter-owned
+/// security flags.
+fn claude_command(program: &str, model_flags: &[String]) -> Command {
     let mut args = vec![
         Arg::literal("-p"),
         Arg::literal("--output-format"),
         Arg::literal("json"),
     ];
-    // The session identity is the kernel's, assigned from the Attempt ID before the process
-    // starts, so the transcript this invocation writes is the kernel's to capture and delete
-    // rather than the provider's to keep. A resume always forks: the captured transcript is
-    // read, and everything this Attempt says lands in its own session.
-    if let Some(session) = &session {
-        args.extend([
-            Arg::literal("--session-id"),
-            Arg::literal(session.session_id),
-        ]);
-        if let Some(resume_from) = session.resume_from {
-            args.extend([
-                Arg::literal("--resume"),
-                Arg::literal(resume_from),
-                Arg::literal("--fork-session"),
-            ]);
-        }
-    }
     args.extend(model_flags.iter().map(Arg::literal));
     // Security flags are adapter-owned and deliberately follow package-controlled model flags.
     // Claude applies the last value for valued flags; packages therefore cannot replace the
@@ -216,12 +152,6 @@ fn claude_command(
 }
 
 impl ReviewerAdapter for ClaudeAdapter {
-    fn session_layer(&self) -> Option<&dyn SessionLayer> {
-        self.session_store
-            .as_ref()
-            .map(|store| store as &dyn SessionLayer)
-    }
-
     /// The package prompt, then this Attempt's labelled inputs — data the kernel resolved,
     /// rendered under an explicit heading rather than woven into the instructions.
     fn render_input(&self, inputs: &ReviewerInputs) -> Result<RenderedInput, RunnerError> {

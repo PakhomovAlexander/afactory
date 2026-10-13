@@ -1,3 +1,4 @@
 /target
 /.scratch/
 *.key
+__pycache__/

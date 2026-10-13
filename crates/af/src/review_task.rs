@@ -307,14 +307,10 @@ fn task_id(campaign: &str) -> String {
     format!("review-{}", review_core::hex::encode(&digest.finalize()))
 }
 
-const PREDATES_COMMON_TASK_RUNTIME: &str =
-    "Campaign predates the common Task runtime (af < 0.9); start a new Campaign";
-
 /// Every Campaign runs on the common Task runtime. Its first capture may fail after preparation
 /// and operator events (a superseded Round input, policy time, Evidence, a waiver) and simply
-/// retries. Only records GA never writes refuse: evidence of the pre-Task executor, which a new
-/// capture would silently disown, and common evidence whose Task is missing, which must never
-/// fall back to a fresh allowance.
+/// retries. Common evidence whose Task is missing refuses, because it must never fall back to a
+/// fresh allowance; a log this release cannot replay refuses with the replay error.
 pub(super) fn require_common_campaign(
     cas: &Cas,
     store: &EventStore,
@@ -327,13 +323,7 @@ pub(super) fn require_common_campaign(
     {
         return Ok(());
     }
-    let events = store.replay(campaign).map_err(|error| {
-        if holds_a_retired_run_report(&error) {
-            PREDATES_COMMON_TASK_RUNTIME.to_owned()
-        } else {
-            error.to_string()
-        }
-    })?;
+    let events = store.replay(campaign).map_err(|error| error.to_string())?;
     if events.iter().any(|event| {
         matches!(
             event.event_type,
@@ -343,50 +333,7 @@ pub(super) fn require_common_campaign(
     }) {
         return Err("Review has common Task evidence but its original Task is unavailable".into());
     }
-    if events
-        .iter()
-        .any(|event| written_only_by_the_pre_task_executor(event.event_type))
-    {
-        return Err(PREDATES_COMMON_TASK_RUNTIME.into());
-    }
     Ok(())
-}
-
-/// Only the pre-Task executor wrote `RunReport@1` to `@5`. They are no longer event types, and
-/// when replay stops at one of them the log is named as the pre-common history it is. A log
-/// whose earlier retired Attempt, Provider Operation or broker row stops replay first keeps the
-/// generic unknown event type message, which already says to start a new Campaign.
-fn holds_a_retired_run_report(error: &review_store::StoreError) -> bool {
-    let review_store::StoreError::Sqlite(rusqlite::Error::FromSqlConversionFailure(_, _, cause)) =
-        error
-    else {
-        return false;
-    };
-    cause
-        .downcast_ref::<review_core::UnknownEventType>()
-        .is_some_and(|unknown| {
-            matches!(
-                unknown.0.as_str(),
-                "RunReport@1" | "RunReport@2" | "RunReport@3" | "RunReport@4" | "RunReport@5"
-            )
-        })
-}
-
-/// A denylist, never an allowlist: the shared Review domain also writes Node invocations,
-/// output receipts, Gate decisions and Check results on the Task path, and ledger commands
-/// append operator events before any Task exists. The pre-Task executor's other records are no
-/// longer event types: a log holding its run reports is refused where replay stops, and one
-/// holding its Attempt, broker or Provider Operation events fails replay on the unknown type.
-fn written_only_by_the_pre_task_executor(event_type: review_core::EventType) -> bool {
-    use review_core::EventType;
-    // Refusable only while the Task-host port of ADR-0110 writes these after Task capture (the
-    // guard returns early once a Task exists); the port must re-check them.
-    matches!(
-        event_type,
-        EventType::ColdCloseoutDispatchedV1
-            | EventType::SessionSnapshotPreparedV1
-            | EventType::SessionSnapshotCleanedV1
-    )
 }
 
 struct AdmissionOnly;
@@ -620,50 +567,4 @@ fn execute_current(
             },
         )
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use review_core::EventType;
-
-    /// The denylist is exactly the pre-Task executor's own records. Events the shared Review
-    /// domain writes on the Task path, and operator events appended before a Task exists, never
-    /// refuse a Campaign.
-    #[test]
-    fn only_pre_task_executor_events_refuse_a_campaign() {
-        let refused: Vec<EventType> = EventType::ALL
-            .into_iter()
-            .filter(|event| super::written_only_by_the_pre_task_executor(*event))
-            .collect();
-        assert_eq!(
-            refused,
-            [
-                EventType::SessionSnapshotPreparedV1,
-                EventType::SessionSnapshotCleanedV1,
-                EventType::ColdCloseoutDispatchedV1,
-            ]
-        );
-        for live in [
-            EventType::NodeInvocationV1,
-            EventType::NodeOutputReceiptV1,
-            EventType::GateDecisionV1,
-            EventType::CheckCompletedV1,
-            EventType::RoundInputSupersededV1,
-            EventType::PolicyTimeAdvancedV1,
-            EventType::EvidenceAddedV1,
-            EventType::EvidenceReuseAdmittedV1,
-            EventType::EvidenceSatisfiedV1,
-            EventType::DemandWaivedV1,
-            EventType::CampaignOpenedV1,
-            EventType::RoundStartedV1,
-            EventType::SourceCapturedV1,
-            EventType::GenerationAdvancedV1,
-        ] {
-            assert!(
-                !super::written_only_by_the_pre_task_executor(live),
-                "{} must never refuse a Campaign",
-                live.as_str()
-            );
-        }
-    }
 }

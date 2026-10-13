@@ -298,8 +298,8 @@ fn task_inspection_12_pairs_each_execution_record_type_with_its_own_generation()
         json!({"kind":"settled","attempt_id":attempt,"charged_tokens":charged,
             "result":{"kind":"succeeded","output_id":id('4')},"raw_artifact_ids":[]})
     };
-    // The one execution-record generation GA writes, under the one inspection document GA prints;
-    // a binding record rides beside it and is checked by its own schema.
+    // The one execution-record generation this release writes, under the one inspection document
+    // it prints; a binding record rides beside it and is checked by its own schema.
     let record = settled(json!("7"));
     let document = |bindings: Value| {
         json!({"schema":"af/task-inspection@11","task_id":"chain-history","revision_id":id('1'),

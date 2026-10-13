@@ -843,9 +843,6 @@ fn build_definition(gates: &[Gate]) -> Definition {
             clean_rounds: 1,
             max_rounds: 2,
             gate: SeveritySpec::Major,
-            // Emitted authority stays cold: `af onboard` writes no warm policy, so a compiled
-            // Cold Closeout would have no warm reviewer to confirm.
-            cold_closeout: review_config::ColdCloseoutSpec::None,
         },
         budgets: Some(BudgetSpec {
             unit: BudgetUnit::Tokens,

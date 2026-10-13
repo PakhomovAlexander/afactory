@@ -3,6 +3,9 @@
 **Status:** accepted (2026-09-21). Supersedes in part the ADRs listed under *Superseded clauses*
 and ADR-0015, ADR-0016, ADR-0022, ADR-0023, ADR-0024, ADR-0029, ADR-0030, ADR-0043, ADR-0051 and
 ADR-0080 in full. Records the acceptance of the ADRs listed under *Cutover acceptance*.
+Superseded in part by [ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md): the compatibility obligations it started at GA. No release
+reads state, configuration or flags only an earlier release wrote, and every changed persisted
+shape takes a new version in every release.
 
 Before GA, Afactory treated everything it had ever written as a permanent obligation.
 [ADR-0002](0002-event-payload-changes-bump-the-type-version.md) made every superseded event reader

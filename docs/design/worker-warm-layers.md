@@ -8,6 +8,12 @@ through [ADR-0110](../adr/0110-capture-sessions-in-two-phases-and-confirm-clean-
 which are the binding record; the vocabulary is [`CONTEXT.md`](../../CONTEXT.md) and the
 delivery sequence is [`worker-warm-layers-plan.md`](worker-warm-layers-plan.md).
 
+**P4 is removed.** No host ever ran the L5 Session layer or Cold Closeout.
+[ADR-0145](../adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)
+superseded ADR-0110 and deleted both, with their events, artifact and configuration keys, and the
+Warm Set became `WarmSet@2`. No port is planned. The L5 and Cold Closeout sections below record
+the design as it was proposed, not a capability.
+
 A Round 3 reviewer today pays the same cold start as Round 1: a fresh harness, a fresh tree, no
 build cache, and a model that re-reads everything it already read twice. This design splits a
 Worker Attempt into layers with distinct identities and lifetimes, so each layer can be carried
@@ -108,7 +114,7 @@ pointed at it, and the bytes are removed before seal; the clone is measured per 
 policy; a safe pipeline refuses it before any Worker dispatch and keeps the existing
 administrator-approved registry snapshot.
 
-### L5 Session: opt-in, forked, measured, Claude only
+### L5 Session: opt-in, forked, measured, Claude only (removed, ADR-0145)
 
 Claude 2.1.273 accepts `--session-id`, `--resume`, and `--fork-session` in print mode, so the
 kernel can assign each Attempt a session ID derived from its Attempt ID, capture the transcript at
@@ -171,7 +177,7 @@ quarantined Attempts carry nothing. An incomplete Round resumes its already pinn
 including its Warm Set. A retry within a Round is a new Attempt with a new epoch and inherits the
 Round's Warm Set, not the failed sibling's state.
 
-### Cold Closeout
+### Cold Closeout (removed, ADR-0145)
 
 A Round is only known to be the closing Round after its results are reduced, so a Round-level rule
 cannot be scheduled. Cold Closeout is instead compiled into the graph: for each required reviewer
@@ -294,15 +300,12 @@ HeadDelta@1 payload
 id = "correctness"
 kind = "reviewer"
 package = "correctness"
-warm = { notes = true, workspace = "rebase", build_cache = ["cargo_target"], session = "off" }
-# session: "off" | "if_recent" (policy warm.session.max_age) | "always"; Claude adapters only
+warm = { notes = true, workspace = "rebase", build_cache = ["cargo_target"] }
 
 [convergence]
 clean_rounds = 1
 max_rounds = 2
 gate = "major"
-cold_closeout = "one_required"      # "one_required" | "all" | "none"; compiled as a
-                                    # conditional cold Attempt with a protected reservation
 ```
 
 ```toml

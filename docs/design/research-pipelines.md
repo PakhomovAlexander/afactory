@@ -980,7 +980,8 @@ a human would hand a reviewer's notes back to an author.
 passed and the verifier (GPT-6 Sol) confirmed the report's aggregates — 38 kernel check spans
 summing to 28,946,211 ms and 38 markdownlint spans to 523,842 ms across the cited Tasks — the two
 corrected claims, the release-build medians and both regressions, and the recommendation. The
-report is committed as [`research-sdlc-report.md`](research-sdlc-report.md). Its findings: time
+report was committed as `docs/design/research-sdlc-report.md` and later removed with its sources
+file; git history keeps both. Its findings: time
 goes to the kernel check and within it to test execution, not compilation (a warm check is 0.86
 of a cold one on the pinned Snapshot; the test step is 672–679 s of a roughly 12-minute warm
 check); cache preparation is sub-second to under two seconds while a failed toolchain probe or an

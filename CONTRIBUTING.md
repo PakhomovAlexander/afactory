@@ -124,9 +124,16 @@ and end with `## Consequences`. Add the record to the index in `docs/adr/README.
 accepted ADR is immutable: a changed decision is a new ADR that names what it supersedes. A
 partially superseded ADR gains a status-line note linking the new one, and that status line may
 be restated when the new ADR spends the transition wording it carried; a fully superseded ADR
-is deleted with its index entry, and git history keeps it. Links to a deleted ADR, or to an
-internal record deleted at GA, are rewritten to point at the superseding ADR or to plain text;
-this is the only edit allowed in another accepted ADR's body (ADR-0113 clauses 6 and 8). Look
+is deleted with its index entry, and git history keeps it, unless the superseding ADR keeps it
+with a superseded status line. Links to a deleted ADR, or to an internal record or completed
+design note that was deleted, are rewritten to point at the superseding ADR or to plain text;
+this is the only edit allowed in another accepted ADR's body (ADR-0113 clauses 6 and 8,
+ADR-0145 clause 8).
+
+A change never adds a reader, migration, alias or fallback for state, configuration or flags an
+earlier release wrote. A change to a persisted typed shape gives it a new version and changes its
+writers, readers, Store validation, JSON Schema and parity tests together; the old version fails
+closed (ADR-0145). Look
 at `docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md` for the shape. Reference
 the ADR from the PR and from its change note.
 

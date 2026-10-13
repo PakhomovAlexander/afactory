@@ -128,7 +128,7 @@ impl CampaignReviewTaskHost<'_, '_> {
         // Warm layers are declared inputs bound before the exact context is captured; the
         // Warm Set itself was recorded when the invocation was published, before reservation.
         crate::warm::request_notes(&mut inputs, self.domain.notes_max_bytes(&node.id));
-        if let Some(record) = self.domain.select_warm_set(&node.id, None)? {
+        if let Some(record) = self.domain.select_warm_set(&node.id)? {
             crate::warm::apply_warm_set(cas, &mut inputs, &record)?;
         }
         Ok(inputs)
@@ -297,8 +297,7 @@ impl CampaignReviewTaskHost<'_, '_> {
             // The Round's recorded Warm Set names the Build Cache, if any; it is cloned into
             // this exact sandbox and its location reaches the adapter as sandbox-local
             // environment, never as rendered context.
-            // The Task-hosted frontend installs no session capability, so no delta is sized.
-            let warm_set = self.domain.select_warm_set(&node.id, None)?;
+            let warm_set = self.domain.select_warm_set(&node.id)?;
             let (environment, clone_evidence) =
                 self.domain
                     .materialize_build_cache(&node.id, warm_set.as_ref(), &sandbox)?;

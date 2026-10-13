@@ -61,7 +61,7 @@ fn bounded(text: &str, width: usize, indent: &str) -> Vec<String> {
     rows
 }
 
-/// Whether this release refused the Store because an earlier (pre-GA) af release wrote it:
+/// Whether this release refused the Store because an earlier af release wrote it:
 /// such Stores are listed together, once, rather than as one error each.
 fn earlier(store: &Store) -> bool {
     store.older && store.tasks.is_err()
@@ -1375,7 +1375,7 @@ impl TasksPane {
                 rows.push(Row::painted(line, Paint::Muted));
             }
             rows.push(Row::painted(
-                "af does not read pre-GA state (ADR-0113); move or remove them.",
+                "af reads no other release's state (ADR-0145); move or remove them.",
                 Paint::Muted,
             ));
             rows.push(Row::blank());

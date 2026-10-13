@@ -4,7 +4,8 @@
 [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the permanence of `ReviewerResult@1`, which is
 refused, and the new-version rule for pre-GA reviewer-result shapes. The flat report shape, the one
 `review-core` validator and the conformance corpus carry over to `ReviewerResult@2`, the only
-reviewer result.
+reviewer result. Superseded in part by [ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md): the new-version rule applies to every
+release, and no release keeps a reader for an earlier reviewer result.
 
 Every live reviewer adapter emits one flat `ReviewerResult@1` value whose `reports` entries carry
 `severity`, `file`, `line`, `title`, `body`, `fix`, and `confidence`. The kernel admits that value,

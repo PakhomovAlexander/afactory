@@ -83,8 +83,6 @@ fn every_authority_path_the_kernel_resolves_is_declared_in_the_layout_table() {
         let text = production(&std::fs::read_to_string(&path).unwrap());
         for segment in authority_segments(&text) {
             let candidate = format!(".af/{segment}");
-            // Membership in the table, not repository classification: a synthetic entry is in
-            // the table and classifies as undeclared on a repository path by design.
             let declared = layout::LAYOUT.iter().any(|entry| entry.segment == segment);
             let owner = path.display();
             assert!(declared, "{owner} resolves `{candidate}`, undeclared");

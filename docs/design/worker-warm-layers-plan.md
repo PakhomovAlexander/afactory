@@ -462,7 +462,7 @@ only the pre-Task Kernel executor and was removed for GA; it is recoverable with
 `git show 0b9431b:crates/review-pipeline/tests/session_snapshot.rs` (or, if history was rewritten,
 from the parent of the commit that
 `git log --diff-filter=D -- crates/review-pipeline/tests/session_snapshot.rs` names). Its
-scenarios are the acceptance list for porting the layer to the Task host:
+scenarios were:
 
 - a session captured at seal and resumed forked in the next Round, with cache-read tokens
   recorded separately from input tokens;
@@ -477,24 +477,12 @@ scenarios are the acceptance list for porting the layer to the Task host:
 - a session dropped when the Round cannot say what moved (an over-bound Head Delta);
 - a transcript carrying a credential never filed.
 
-`review-pipeline/tests/task_campaign_review/host/warm.rs` covers what the Task host does today
-(`host_unsupported`, Notes carried, an over-bound Head Delta dropped at selection). The layer's
-own evidence remains in
-`review-runner-claude/tests/session.rs` (the pinned flags, the bounded capture, the idempotent
-deletion, a symlinked project directory that is never followed),
-`review-runner/tests/session_render.rs` (the delta prompt and its manifest),
-`review-config/tests/definition.rs` (policy defaults and the feasibility refusal) and
-`review-core/tests/schema_parity.rs`.
-
-Two limits are carried deliberately. The session protocol and the Cold Closeout dispatch ran on
-the pre-Task Kernel's own reviewer path, which was removed for GA; the Task host installs no
-session capability and dispatches no confirmation yet, so a Task-hosted Review Attempt records the
-drop reason `host_unsupported` and runs on Notes, which is recorded rather than silent. And no
-cold-versus-warm dogfood comparison exists: the package was implemented without a live Campaign,
-so the design review's forked-resume Demand — net token and wall-time savings over cold and
-Notes-only Attempts at several ages — stays open until the first Campaign runs with
-`session = "if_recent"`. Both policy defaults are off, which is what the design asks for until
-that Evidence exists.
+The session protocol and the Cold Closeout dispatch ran only on the pre-Task Kernel's own reviewer
+path, which was removed for GA; the Task host never installed either, so every Task-hosted Review
+Attempt recorded the drop reason `host_unsupported` and ran on Notes, and no cold-versus-warm
+dogfood comparison was ever made. [ADR-0145](../adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)
+then removed the layer, Cold Closeout and their tests, and replaced the Warm Set with
+`WarmSet@2`; no port to the Task host is planned. The record below is the P4 review as it ran.
 
 The P4 review (Campaign `warm-p4-review`, the same two reviewers) closed with one Blocker and
 eight Majors that reduce to six fixes, all applied before verification:

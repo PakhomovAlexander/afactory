@@ -93,7 +93,7 @@ fn warm_layers_render_as_data_and_are_listed_in_the_manifest() {
     let warm_set = &manifest.entries[2];
     assert_eq!(
         warm_set.artifact_type.as_deref(),
-        Some("review.kernel/WarmSet@1")
+        Some("review.kernel/WarmSet@2")
     );
     assert_eq!(
         warm_set.artifact_id.as_deref(),

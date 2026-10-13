@@ -26,11 +26,13 @@ review corpora belong in consuming repositories, not here.
   rule. Releases are cut only through `make release` and the release workflow; a lock pins the
   release's bytes, not just its version
   ([ADR-0045](docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md)).
-- Compatibility obligations start at GA: never add a reader, migration, fallback or replay path
-  for state, configuration or flags that only a pre-GA (0.x) release wrote; such state is
-  unsupported and is discarded on upgrade
-  ([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)). Self-management still installs and
-  dispatches to pinned releases from 0.8.0 on.
+- No release carries compatibility obligations for an earlier one: never add a reader,
+  migration, alias, fallback or replay path for state, configuration or flags that only an
+  earlier release wrote; such state is refused and discarded on upgrade. A changed persisted
+  typed shape still takes a new version, with its writers, readers, schema and parity tests in
+  the same change, and the old version fails closed; everything the current release writes it
+  replays ([ADR-0145](docs/adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)). Self-management still installs and dispatches to pinned
+  releases from 0.8.0 on, and verifies their bytes and signatures.
 
 ## Building
 
