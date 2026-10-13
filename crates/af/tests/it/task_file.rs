@@ -9,17 +9,33 @@ mod wall_bounds;
 
 use crate::task_cli::{copy_tree, fixture_named};
 
+/// Each native-model reviewer's Attempt wall: two minutes, the load-safe wall (ADR-0114), in
+/// place of the fixture manifests' 5 s. A reviewer starts a Python fake provider for its
+/// identity recheck and again for its model call; on a loaded gate (seven nextest threads, load
+/// 7-28) that took about 5 s, so the Attempt timed out although its subject is accounting and
+/// account currentness, never the wall. A reviewer that answers still ends when it answers.
+const NATIVE_REVIEWER_WALL_MS: u64 = 120_000;
+/// The protected allowances the verification reserve must cover: the catalog's default Provider
+/// admission, the two reviewers and the fixture code policy's `check_wall_ms`.
+const PROVIDER_ADMISSION_WALL_MS: u64 = 45_000;
+const CHECK_WALL_MS: u64 = 5_000;
+/// The reserve grows with the reviewer walls, never shrinks: it is exactly the protected
+/// verifier allocation, as the fixture's 60 s was for its 5 s reviewers (ADR-0114).
+const NATIVE_MODEL_VERIFICATION_WALL_MS: u64 =
+    PROVIDER_ADMISSION_WALL_MS + 2 * NATIVE_REVIEWER_WALL_MS + CHECK_WALL_MS;
 /// Native-model fixtures plan, reject one changed account, restore it, then resume the same Task.
-/// Keep that absolute deadline away from loaded-gate latency without changing any dispatch or
-/// verification bound (ADR-0114).
-const NATIVE_MODEL_TASK_WALL_MS: u64 = 600_000;
+/// Keep that absolute deadline away from loaded-gate latency without changing any dispatch
+/// bound: ten minutes of slack above the whole verification reserve (ADR-0114).
+const NATIVE_MODEL_TASK_SLACK_MS: u64 = 600_000;
+const NATIVE_MODEL_TASK_WALL_MS: u64 =
+    NATIVE_MODEL_VERIFICATION_WALL_MS + NATIVE_MODEL_TASK_SLACK_MS;
 
 fn native_model_limits() -> Value {
     serde_json::json!({
         "tokens": 10_000,
         "max_attempts": 4,
         "wall_ms": NATIVE_MODEL_TASK_WALL_MS,
-        "verification": {"tokens": 6_096, "attempts": 4, "wall_ms": 60_000}
+        "verification": {"tokens": 6_096, "attempts": 4, "wall_ms": NATIVE_MODEL_VERIFICATION_WALL_MS}
     })
 }
 
@@ -181,14 +197,47 @@ fn native_client_removed_during_a_failed_recheck_is_rechecked_on_the_installed_o
 }
 
 #[test]
-fn native_model_fixture_widens_only_its_total_task_wall() {
+fn native_model_fixture_widens_only_its_walls_and_the_reserve_that_covers_them() {
     let limits = native_model_limits();
     assert_eq!(limits["wall_ms"], NATIVE_MODEL_TASK_WALL_MS);
     assert_eq!(limits["tokens"], 10_000);
     assert_eq!(limits["max_attempts"], 4);
     assert_eq!(limits["verification"]["tokens"], 6_096);
     assert_eq!(limits["verification"]["attempts"], 4);
-    assert_eq!(limits["verification"]["wall_ms"], 60_000);
+    // The reserve is the sum it encodes: Provider admission, both reviewers and the check.
+    assert_eq!(
+        limits["verification"]["wall_ms"],
+        PROVIDER_ADMISSION_WALL_MS + 2 * NATIVE_REVIEWER_WALL_MS + CHECK_WALL_MS
+    );
+    assert_eq!(
+        limits["wall_ms"].as_u64().unwrap() - limits["verification"]["wall_ms"].as_u64().unwrap(),
+        NATIVE_MODEL_TASK_SLACK_MS
+    );
+    // The parts are the fixture's own: its code policy's check wall and the 5 s reviewer walls
+    // this fixture raises, which are below the load-safe wall.
+    let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let review = workspace.join("fixtures/task-runtime/review/.af");
+    let policy: toml::Value =
+        toml::from_str(&std::fs::read_to_string(review.join("code-policy.toml")).unwrap()).unwrap();
+    assert_eq!(
+        policy["check_wall_ms"].as_integer(),
+        Some(CHECK_WALL_MS as i64)
+    );
+    for name in ["bugs", "correctness"] {
+        let worker: toml::Value = toml::from_str(
+            &std::fs::read_to_string(
+                review.join(format!("task-packages/fixture/{name}/worker.toml")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let wall = worker["signature"]["attempt"]["wall_ms"]
+            .as_integer()
+            .unwrap();
+        assert!((wall as u64) < NATIVE_REVIEWER_WALL_MS, "{name}: {wall}");
+    }
 }
 
 fn native_model_drift_case(
@@ -217,6 +266,7 @@ fn native_model_drift_case(
     let stub = r#"#!/usr/bin/python3
 import os,json,sys
 home=os.environ['CLAUDE_CONFIG_DIR']
+if 'AF_TEST_PROVIDER_PROBE_TIMEOUT_MS' in os.environ: open(home+'/probe-setting-leaked','a').write(' '.join(sys.argv[1:3])+'\n')
 def update():
  import shutil
  try: os.mkdir(home+'/updated')
@@ -259,6 +309,7 @@ print(json.dumps(envelope))
     let codex_stub = r#"#!/usr/bin/python3
 import os,json,sys
 home=os.environ['CODEX_HOME']
+if 'AF_TEST_PROVIDER_PROBE_TIMEOUT_MS' in os.environ: open(home+'/probe-setting-leaked','a').write(' '.join(sys.argv[1:3])+'\n')
 if sys.argv[1:2]==['app-server']:
  for line in sys.stdin:
   request=json.loads(line)
@@ -310,7 +361,9 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             model: format!("{kind}-fixture-1"),
             effort: "high".into(),
         };
-        worker.signature.attempt.as_mut().unwrap().tokens = 1000;
+        let attempt = worker.signature.attempt.as_mut().unwrap();
+        attempt.tokens = 1000;
+        attempt.wall_ms = NATIVE_REVIEWER_WALL_MS;
         std::fs::write(path.join("worker.toml"), toml::to_string(&worker).unwrap()).unwrap();
         catalog["packages"][&package]["digest"] =
             toml::Value::String(review_config::lock::package_digest(&package, &path).unwrap());
@@ -390,6 +443,13 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     assert!(!calls.exists(), "Changed account reached model dispatch");
     std::fs::write(&email, "developer@example.test").unwrap();
     let output = run(&["task", "run", "--execute", "review-cli"]);
+    // `af` ran its probes under the raised probe timeout `crate::common::af` sets; neither a
+    // probe nor a Worker's model call received that setting.
+    assert!(
+        !home.join("probe-setting-leaked").exists(),
+        "{}",
+        std::fs::read_to_string(home.join("probe-setting-leaked")).unwrap_or_default()
+    );
     if let Some(after) = switch_after {
         assert_eq!(
             output.status.code(),

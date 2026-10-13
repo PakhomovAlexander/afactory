@@ -54,6 +54,9 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const CLAUDE_STRUCTURAL_TIMEOUT: Duration = Duration::from_secs(30);
 const CLAUDE_USAGE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLAUDE_USAGE_CACHE_TTL: Duration = Duration::from_secs(60);
+/// The largest value `AF_TEST_PROVIDER_PROBE_TIMEOUT_MS` is honored at, ten minutes.
+#[cfg(debug_assertions)]
+const MAX_TEST_PROBE_TIMEOUT_MS: u64 = 600_000;
 const MAX_ORPHANED_CLAUDE_READERS: usize = 2;
 const MAX_CLAUDE_READER_SLOTS: usize = MAX_CONCURRENT_PROBES + MAX_ORPHANED_CLAUDE_READERS;
 
@@ -3951,7 +3954,8 @@ fn probe_claude_weekly_limits(
         let _ = reader_done_sender.send(());
     });
 
-    let deadline = Instant::now() + CLAUDE_USAGE_PROBE_TIMEOUT;
+    let timeout = probe_timeout(CLAUDE_USAGE_PROBE_TIMEOUT);
+    let deadline = Instant::now() + timeout;
     let mut next_parse = Instant::now();
     let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT * 2);
     let mut dirty = false;
@@ -3991,7 +3995,7 @@ fn probe_claude_weekly_limits(
         if Instant::now() >= deadline {
             break Err(format!(
                 "Claude usage probe timed out after {} seconds",
-                CLAUDE_USAGE_PROBE_TIMEOUT.as_secs()
+                timeout.as_secs()
             ));
         }
     };
@@ -4340,7 +4344,8 @@ fn probe_codex_request_observed(
         return Err(format!("cannot initialize Codex app-server probe: {error}"));
     }
 
-    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let timeout = probe_timeout(PROBE_TIMEOUT);
+    let deadline = Instant::now() + timeout;
     let deadline = attempt_deadline.map_or(deadline, |limit| deadline.min(limit));
     let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT.min(4096));
     let mut exceeded = false;
@@ -4390,7 +4395,7 @@ fn probe_codex_request_observed(
         if Instant::now() >= deadline {
             break Err(format!(
                 "Codex subscription probe timed out after {} seconds",
-                PROBE_TIMEOUT.as_secs()
+                timeout.as_secs()
             ));
         }
         thread::sleep(Duration::from_millis(25));
@@ -4700,10 +4705,10 @@ fn run_probe_before(
     let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT.min(4096));
     let mut discarded = Vec::new();
     let mut exceeded = false;
-    let timeout = match spec.kind {
+    let timeout = probe_timeout(match spec.kind {
         ProviderKind::Claude => CLAUDE_STRUCTURAL_TIMEOUT,
         ProviderKind::Codex => PROBE_TIMEOUT,
-    };
+    });
     let deadline = Instant::now() + timeout;
     let deadline = attempt_deadline.map_or(deadline, |limit| deadline.min(limit));
     let status = loop {
@@ -4763,6 +4768,39 @@ fn run_probe_before(
     let stdout = String::from_utf8(captured)
         .map_err(|_| "provider status output is not UTF-8".to_string())?;
     Ok(ProbeOutput { status, stdout })
+}
+
+/// A provider probe's timeout: the production value, which a debug build's deterministic
+/// fixture may raise with `AF_TEST_PROVIDER_PROBE_TIMEOUT_MS` so that a test whose subject is
+/// not this timeout does not race a loaded machine's process start-up (ADR-0114). The setting
+/// can only raise: a value at or below the production timeout, outside 1 ms to ten minutes, or
+/// not a number changes nothing, and a Task's Attempt deadline still bounds every probe.
+/// Production release binaries never read this setting; no Worker or provider CLI receives it,
+/// since both run in an isolated command environment.
+fn probe_timeout(production: Duration) -> Duration {
+    #[cfg(debug_assertions)]
+    {
+        raised_probe_timeout(
+            production,
+            std::env::var("AF_TEST_PROVIDER_PROBE_TIMEOUT_MS")
+                .ok()
+                .as_deref(),
+        )
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        production
+    }
+}
+
+#[cfg(debug_assertions)]
+fn raised_probe_timeout(production: Duration, setting: Option<&str>) -> Duration {
+    setting
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (1..=MAX_TEST_PROBE_TIMEOUT_MS).contains(value))
+        .map_or(production, |value| {
+            production.max(Duration::from_millis(value))
+        })
 }
 
 // The optional limit is the original native Attempt deadline. Status probes keep their own
@@ -5053,6 +5091,37 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn the_test_probe_timeout_setting_can_only_raise_a_probe_timeout() {
+        let raised = |production, setting| raised_probe_timeout(production, setting);
+        assert_eq!(raised(PROBE_TIMEOUT, None), PROBE_TIMEOUT);
+        assert_eq!(
+            raised(PROBE_TIMEOUT, Some("120000")),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            raised(CLAUDE_USAGE_PROBE_TIMEOUT, Some("120000")),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            raised(PROBE_TIMEOUT, Some("600000")),
+            Duration::from_secs(600)
+        );
+        // Lower than production, out of range or not a number: production stands.
+        for setting in ["1", "14999", "15000", "0", "600001", "-1", "", "2m", "1e5"] {
+            assert_eq!(
+                raised(PROBE_TIMEOUT, Some(setting)),
+                PROBE_TIMEOUT,
+                "{setting}"
+            );
+        }
+        assert_eq!(
+            raised(CLAUDE_STRUCTURAL_TIMEOUT, Some("20000")),
+            CLAUDE_STRUCTURAL_TIMEOUT
+        );
+    }
 
     #[test]
     fn conditional_registry_replace_preserves_a_noncooperating_replacement() {

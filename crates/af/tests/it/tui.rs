@@ -88,6 +88,10 @@ fn environment(home: &Path) -> Vec<(&'static str, std::ffi::OsString)> {
         ("AF_SELF_OFFLINE", "1".into()),
         ("NO_COLOR", "1".into()),
         ("TERM", "xterm-256color".into()),
+        (
+            crate::common::PROBE_TIMEOUT_SETTING,
+            crate::common::LOAD_SAFE_PROBE_TIMEOUT_MS.into(),
+        ),
     ];
     if let Some(path) = std::env::var_os("PATH") {
         environment.push(("PATH", path));

@@ -1,5 +1,11 @@
 use super::*;
 
+/// The Attempt wall for a wrapper whose subject is not the deadline (ADR-0114). Its identity
+/// recheck runs a fixture shell that took seconds to start on a loaded gate, so a 5 s wall raced
+/// scheduling; two minutes only bounds a hung fixture, and a passing test never waits for it.
+/// Tests whose subject is the recheck's deadline keep their own short walls.
+const LOAD_SAFE_WALL: Duration = Duration::from_secs(120);
+
 fn fixture(kind: ProviderKind, directory: &Path, body: &str) -> (PathBuf, ProviderSpec) {
     let program = directory.join("native-fixture");
     std::fs::write(&program, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -189,7 +195,7 @@ fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_nativ
         &cas,
         directory.path(),
         b"{}".to_vec(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         review_runner::task::WorkerAccess::ReadOnly,
         None,
         &environment,

@@ -136,11 +136,12 @@ fn repair_is_rejected(case: &str) {
     let replacement = match case {
         "negative" => original.replace("'positive' if fixed else 'negative'", "'negative'"),
         "missing" => "raise Exception('fix verifier unavailable')\n".into(),
-        "stale_view" => original.replace("v['current_view_id']", "c['previous_snapshot_id']"),
         "stale_subject" => original.replace(
             "c['continuation']['current_subject_id']",
             "c['continuation']['previous_subject_id']",
         ),
+        // Rejected by the package output schema (`claims.minProperties`) before
+        // `validate_context`, so this real-process case is not a contract-case duplicate.
         "missing_claim" => original.replace("print(json.dumps", "claims={}\nprint(json.dumps"),
         "failed_checks" => {
             let repair = repo.join(".af/task-packages/fixture/repairer/worker.py");
@@ -195,11 +196,6 @@ fn repair_rejects_a_negative_receipt() {
 #[test]
 fn repair_rejects_a_missing_receipt() {
     repair_is_rejected("missing");
-}
-
-#[test]
-fn repair_rejects_a_stale_view_receipt() {
-    repair_is_rejected("stale_view");
 }
 
 #[test]

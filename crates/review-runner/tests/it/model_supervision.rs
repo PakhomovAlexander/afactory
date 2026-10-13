@@ -4,6 +4,8 @@
 
 use std::time::{Duration, Instant};
 
+use crate::load_safe_wall::LOAD_SAFE_WALL;
+
 use review_core::{Arg, Command};
 use review_runner::{ModelRunner, RunnerError};
 use review_store::Cas;
@@ -26,11 +28,11 @@ fn controlled_capture_preserves_redacted_evidence_after_cancellation() {
     use std::sync::atomic::{AtomicBool, Ordering};
     let (dir, cas) = workdir();
     let flag = AtomicBool::new(false);
-    let runner = ModelRunner::new(dir.path(), Duration::from_secs(10))
+    let runner = ModelRunner::new(dir.path(), LOAD_SAFE_WALL)
         .with_grant("AF_FIXTURE_SECRET", "secret-cancellation-material");
     let capture = std::thread::scope(|scope| {
         let cancel = scope.spawn(|| {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + LOAD_SAFE_WALL;
             while !dir.path().join("ready").exists() && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -135,7 +137,7 @@ fn a_model_parent_exit_cannot_leave_the_stdin_writer_unbounded() {
 #[test]
 fn a_model_descendant_holding_output_is_charged_not_empty_evidence() {
     let (dir, cas) = workdir();
-    let runner = ModelRunner::new(dir.path(), Duration::from_secs(1));
+    let runner = ModelRunner::new(dir.path(), LOAD_SAFE_WALL);
     let capture = runner.capture(&cas, &sh("sleep 30 & printf partial"), vec![], None);
 
     assert!(
@@ -149,7 +151,7 @@ fn a_model_descendant_holding_output_is_charged_not_empty_evidence() {
 #[test]
 fn a_model_descendant_holding_only_stderr_preserves_the_complete_answer() {
     let (dir, cas) = workdir();
-    let runner = ModelRunner::new(dir.path(), Duration::from_secs(1));
+    let runner = ModelRunner::new(dir.path(), LOAD_SAFE_WALL);
     let capture = runner.capture(&cas, &sh("sleep 30 >&2 & printf complete"), vec![], None);
 
     assert!(capture.status.unwrap().success());
@@ -167,7 +169,7 @@ fn a_model_descendant_holding_only_stderr_preserves_the_complete_answer() {
 #[test]
 fn a_worker_may_ignore_its_stdin() {
     let (dir, cas) = workdir();
-    let runner = ModelRunner::new(dir.path(), Duration::from_secs(5));
+    let runner = ModelRunner::new(dir.path(), LOAD_SAFE_WALL);
     let capture = runner.capture(&cas, &sh("printf answer"), vec![b'x'; 1024 * 1024], None);
 
     assert!(capture.status.unwrap().success());
@@ -177,7 +179,7 @@ fn a_worker_may_ignore_its_stdin() {
 #[test]
 fn large_stdin_and_stderr_are_drained_concurrently() {
     let (dir, cas) = workdir();
-    let runner = ModelRunner::new(dir.path(), Duration::from_secs(5));
+    let runner = ModelRunner::new(dir.path(), LOAD_SAFE_WALL);
     let capture = runner.capture(
         &cas,
         &sh("head -c 1048576 /dev/zero >&2; cat >/dev/null; printf answer"),
@@ -193,7 +195,7 @@ fn large_stdin_and_stderr_are_drained_concurrently() {
 #[test]
 fn a_briefly_lingering_descendant_cannot_truncate_a_large_answer() {
     let (dir, cas) = workdir();
-    let runner = ModelRunner::new(dir.path(), Duration::from_secs(5));
+    let runner = ModelRunner::new(dir.path(), LOAD_SAFE_WALL);
     let capture = runner.capture(
         &cas,
         &sh("sleep 1 & head -c 1048576 /dev/zero | tr '\\000' x"),
@@ -216,8 +218,8 @@ fn a_briefly_lingering_descendant_cannot_truncate_a_large_answer() {
 fn a_granted_secret_is_redacted_from_everything_kept() {
     let (dir, cas) = workdir();
     let secret = "rt_live_key_5f3a9c1b2d";
-    let runner = ModelRunner::new(dir.path(), Duration::from_secs(10))
-        .with_grant("REVIEW_MODEL_KEY", secret);
+    let runner =
+        ModelRunner::new(dir.path(), LOAD_SAFE_WALL).with_grant("REVIEW_MODEL_KEY", secret);
 
     // Success path: the child proves it *received* the grant by writing it out.
     let capture = runner.capture(&cas, &sh("echo \"key=$REVIEW_MODEL_KEY\""), vec![], None);
@@ -250,7 +252,7 @@ fn a_granted_secret_is_redacted_from_everything_kept() {
 #[test]
 fn an_ungranted_variable_never_reaches_the_child() {
     let (dir, cas) = workdir();
-    let runner = ModelRunner::new(dir.path(), Duration::from_secs(10));
+    let runner = ModelRunner::new(dir.path(), LOAD_SAFE_WALL);
     let capture = runner.capture(
         &cas,
         &sh("echo \"token=${GITHUB_TOKEN:-absent}\""),
@@ -286,7 +288,7 @@ fn an_untrusted_option_is_refused_before_the_model_starts() {
 #[test]
 fn settled_held_output_retains_redacted_bytes_without_admitting_a_message() {
     let (dir, cas) = workdir();
-    let runner = ModelRunner::new(dir.path(), Duration::from_secs(1))
+    let runner = ModelRunner::new(dir.path(), LOAD_SAFE_WALL)
         .with_grant("FIXTURE_SECRET", "sensitive-fixture-value");
     let capture = runner.capture(
         &cas,

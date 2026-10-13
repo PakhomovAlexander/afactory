@@ -19,6 +19,345 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.12.0-rc.2] - 2026-10-09
+
+### Authority compatibility
+
+Committed .af/ policy keeps working as is relative to 0.12.0-rc.1; no authority migration is required.
+
+### Changes
+
+- chore: pin af 0.12.0-rc.1 in .af/af.lock (#227)
+- Keep a long path's reason on the TUI status line (fixes a test that failed every Task gate) (#233)
+- Report slow tests and suite totals from every nextest run (#218)
+- Run only the self-optimizer's timed phase alone (#222)
+- Wait once, not per case, in looping lease and deadline tests (#204) (#234)
+- Judge the same Task writer at its later recorded time everywhere (#231) (#235)
+- Fix main: check the real nextest config against its own text, not a pinned exclusive list (#236)
+- Give non-timeout tests a load-safe wall so a loaded machine cannot fail them (#206 part 1) (#237)
+
+- `make test` now prints where test time goes after every nextest run, passing or failing:
+  nextest's wall time and test count, summed test-seconds, achieved parallelism, the time spent
+  in the exclusive block that `.config/nextest.toml` runs alone
+  ([ADR-0124](docs/adr/0124-run-tests-in-parallel-processes-and-link-them-once.md)), failures,
+  a duration histogram and the slowest tests. CI also writes it to the step summary. A Task
+  gate (`scripts/verify.sh`) records every `make check` step's time beside its nextest reports
+  and ends its output with the same summary. The JUnit an earlier run left is removed before
+  nextest starts, and a JUnit whose testcases do not add up to its declared counts gets a
+  warning instead of totals; the report never changes the test step's exit status. It runs
+  under Python 3.9 and reads `.config/nextest.toml` without `tomllib`. `scripts/test-time-report.py compare BASE_JUNIT... -- HEAD_JUNIT...` compares runs
+  by their per-side medians and lists per-test changes of at least 1 s and added or removed
+  tests, as a Markdown table for a pull request description. `--base-nextest-config PATH` and
+  `--head-nextest-config PATH` give each side its own nextest config (each defaults to
+  `--nextest-config`, which still sets both), so each side's exclusive block counts exactly the
+  tests its own config runs alone, and the output names both configs when they differ.
+
+- The self-optimizer light-strategy test no longer holds every test thread for its whole run
+  (#203, [ADR-0124](docs/adr/0124-run-tests-in-parallel-processes-and-link-them-once.md)). It
+  is split into two tests in `crates/af/tests/it/self_optimizer.rs`. Each builds its own
+  repository and Store with the same `af` commands through shared helpers. Of the two, only
+  `light_cache_candidate_measures_real_latency_and_grounds_later_adoption_evidence` stays in
+  the exclusive override of `.config/nextest.toml`. It first runs, delivers and adopts the
+  light candidate without asserting on it, then runs every phase from line 719 to line 1277
+  of the original test in order: the cache latency comparison (8 trials, 3 s baseline) with its
+  replay, delivery, adoption and ordinary cache-consuming Task (719-1090), the unknown-toolchain
+  comparison and refused delivery (1092-1228), and the light adoption observed with the cache
+  Task as evidence (1230-1277).
+  `light_strategy_generates_one_candidate_without_exposing_source_to_author_workers` runs in
+  parallel and keeps every other phase in the original order on one repository: plan review
+  without source (186-259), the approved five-Attempt run and its replay (260-376), delivery and
+  adoption observations (378-530), source invalidation (532-571), the uneconomic recommendation
+  (573-669), the unexecuted binding (671-717) and, after the same cache configuration and
+  toolchain removal, the unsupported recipe (1279-1322). Every assertion of the original is in
+  exactly one of the two, unchanged. The original repeated its `git` exit-status checks inline;
+  they now live in one `commit` helper, so both tests check the setup commits they both make.
+  No sleep, trial count, budget, retry or slow-timeout changed. The previous seven-test split
+  had dropped the original's restore of the baseline worker without its sleep before the
+  unknown-toolchain comparison. That comparison slept 3 s on every baseline trial and took
+  20.2 s instead of 8.1 s. `remove_cache_toolchain` now restores the baseline as main does.
+- Measured with temporary per-phase timers, since removed. Each test ran alone under
+  `cargo nextest run --profile ci` on a 14-core macOS host after one warm-up launch of `af`.
+  Figures are medians of three runs unless marked otherwise.
+  - Main's single test took 60.3 s. Setup up to the adopted light candidate took 8.8 s:
+    fixture 0.2, plan review 4.0, approval and run 3.5, delivery and adoption 1.1. Phases that
+    read no comparison state took 13.3 s: replay 0.1, adoption observations 0.7,
+    invalidation 2.2, uneconomic 5.7, binding 2.2, unsupported recipe 2.5.
+  - The two real comparisons took 28.4 s: the cache `task run`, with its trials and 3 s
+    baselines, 20.2 s, and the unknown-toolchain `task run` 8.1 s. Their configuration, plan
+    and signed approval took 5.5 s.
+  - The non-timed work that only reads the comparisons' state took 3.7 s: cache assertions 0.1,
+    replay 0.1, delivery and adoption 1.5, the ordinary Task 1.3, unknown-toolchain assertions
+    and refused delivery 0.1, and the light observation with cache evidence 0.6.
+  - The previous split's exclusive test took 60.2 s: light setup 9.6, plans 5.5, cache
+    comparison 20.5, unknown-toolchain comparison with the sleeps 20.2, reads 4.0. Its seven
+    moved tests, each run once alone, took 37.0 s together: 10.7, 7.8, 6.0, 5.7, 2.4, 2.2 and
+    2.2 s.
+  - In the chosen pair, the exclusive test takes 45.5 s: light setup 9.6, cache plan 2.4,
+    cache comparison 19.7, its reads 2.8, unknown-toolchain plan 2.5, its comparison 7.6, its
+    reads 0.7. The parallel test takes 19.8 s.
+- The decision uses the expected wall time W(T) = E*(T-1)/T + S/T, where E is the exclusive
+  seconds and S the sum of all the light-strategy tests:
+
+  | Variant | E (s) | S (s) | W(4) (s) | W(7) (s) |
+  | --- | --- | --- | --- | --- |
+  | Main's single test | 60.3 | 60.3 | 60.3 | 60.3 |
+  | Previous seven-test split | 60.2 | 97.2 | 69.4 | 65.5 |
+  | Chosen pair | 45.5 | 65.3 | 50.5 | 48.3 |
+
+  The pair beats the single test by 9.85 s at T = 4, clearing the 5 s bar, so the split is kept
+  in this form.
+- `setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask` stays in the
+  exclusive override. Its work takes 0.37 s, but running first and alone it pays the first
+  launch of a freshly linked `af`, which macOS assesses before it runs: 11.2 s measured
+  straight after relinking, and every Task gate starts from a fresh build. Outside the override
+  that cost lands on whichever parallel test launches `af` first, under the 15 s provider status
+  probe deadline. In a before/after bench (one warm-up, then three alternating full-suite runs
+  per side, 7 threads, 14-core macOS host), one of three runs without it failed that test and
+  `status_keeps_a_default_context_whose_status_probe_failed` with "provider status probe timed
+  out after 15 seconds"; no run with it failed. Its gain outside was about 1.3 s. The reason
+  is written beside the exclusive override.
+
+- Tests that loop over cases bound by a real lease or deadline now prepare every case, wait once
+  on the real clock until every case's lease or deadline has passed, and then run each case,
+  which first asserts that its own lease or deadline has passed (issue #204). No production
+  timing constant, real clock or assertion changed; tests whose subject is the wait are untouched.
+  `task_runtime::usage_recovery::worker_and_provider_cas_failure_recover_full_reported_usage_without_another_call`
+  and `incomplete_native_observation_survives_cas_outage_and_both_admission_and_worker_recovery`
+  went from two real lease waits each to one (about 30.5 s to 15.5 s), and each case now also
+  asserts that the Task's absolute deadline has not passed when it recovers.
+  `task_campaign_review::host::an_expired_review_records_incomplete_without_inventing_unstarted_gate_facts`
+  went from three real deadline waits to one (5.2 s), and each mode now asserts the exact
+  dispatch refusal `Task plan deadline expired` instead of any error. In review-store,
+  `recording_resume_rejects_revoked_decision_or_replaced_latest_report` first gained exact refusal
+  causes for every case: the expired decision and the revoked decision each refuse with the
+  approval conflict, pinned to expiry or revocation alone by the decision's state; the replaced
+  report's resume refuses for carrying no publication failure; and its stale-report append refuses
+  at the expired-pause gate, whose other conditions the preceding refusal proves. A temporary
+  variant without the wait then failed: the expired-decision and replaced-report resumes refused
+  with `Recording recovery requires the exact expired admitted publication pause` instead. The
+  revoked case refuses the same way with or without the wait, because revocation is checked
+  before the deadline, so its own past-deadline assertion is what catches a missing wait. Only
+  then were its three deadline waits coalesced into one (9.2 s to 3.2 s). No target was left
+  unchanged.
+
+- `af` browser: a message on the status line that names a long path, such as the `:cd` refusal
+  `<path>: not a directory`, keeps its reason visible. The path is shortened from the left with
+  `...`, whole leading components first and then, when its final component alone is too wide,
+  inside that component, instead of the line being cut before the reason. A quoted path with
+  spaces is shortened as one path. A message that fits is unchanged (#229).
+
+- A live Task writer is no longer fenced when its own heartbeat records a renewal between one of
+  its operations reading the clock and that operation observing its lease or writing (#231). Each
+  place that compares the current writer's clock with the last recorded time now judges the same
+  writer and epoch at the later of the two: the heartbeat's lease observation
+  (`EventStore::task_lease_state`), the projection's clock check when it applies a transition
+  (`TaskProjection::apply`, which also records that time and ends a released lease there), and the
+  review integration append (`append_integration_atomic`), which now stamps its transition before
+  it is persisted, as every other Task append already did. The lease check of each Task write
+  (`TaskProjection::check_lease`) and the append stamp already used this time. Another writer or
+  epoch, a premature takeover, Task collection's own clock check, an expired lease and a finished
+  Task are refused as before
+  ([ADR-0128](docs/adr/0128-renew-a-live-task-writer-lease-through-its-own-connection.md)).
+
+- Tests: a test whose subject is not a deadline now gives its fixture processes a named,
+  documented two-minute wall, `LOAD_SAFE_WALL`, instead of a short fixed one, so a loaded gate
+  (seven nextest threads, load 7-28) no longer fails it on a timeout its subject never asked
+  about. Only a hung fixture waits for the larger wall; a passing test takes as long as before.
+  Tests whose subject is a timeout keep their exact walls, every elapsed-time assertion keeps its
+  bound, and no production constant or nextest setting changes. A debug-only, raise-only test
+  setting lifts the provider probes' timeouts, and one fixture grows its reserve with its walls;
+  no reserve shrinks (#206,
+  [ADR-0114](docs/adr/0114-budget-cli-task-fixtures-for-loaded-machines.md), amended).
+- Changed, `review-runner-codex` (5 s provider wall): `task_auth_failure::` all seven tests
+  (`authentication_failure_survives_missing_usage_without_retaining_challenges`,
+  `non_auth_native_failures_keep_their_evidence_and_classification`,
+  `plaintext_auth_failure_is_private_even_without_a_json_event`,
+  `network_failure_does_not_publish_device_challenges_from_either_stream`,
+  `successful_output_about_device_authentication_is_unchanged`,
+  `model_text_about_revoked_credentials_cannot_replace_a_network_failure`,
+  `a_failure_event_without_usage_names_its_classified_cause`);
+  `task_capture::held_output_retains_reported_overrun_without_admitting_the_message`;
+  `task_final_message::native_final_message_objects_are_bounded_and_keep_exact_usage` (also its
+  15 s child-harness wall); `task_worker::review_role_keeps_the_legacy_workspace_write_sandbox`,
+  `execute_checks_runs_workspace_write_rooted_at_the_sandbox`,
+  `typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage`,
+  `multiple_native_turns_retain_exact_components_and_uncached_charge`,
+  `malformed_native_usage_refuses_message_and_survives_raw_capture_outage`;
+  `task_cancellation::native_cancellation_retains_full_turn_usage_and_reaps_owned_process`
+  (shared fixture: 10 s wall, 5 s readiness window).
+- Changed, `review-runner-claude` (5 s provider wall): `task_auth_failure::`
+  `refresh_contention_survives_missing_usage_without_retaining_challenges`,
+  `non_auth_native_failures_keep_their_evidence_and_classification`,
+  `successful_output_about_authentication_is_not_classified_as_failure`,
+  `network_failure_does_not_publish_device_challenges_from_either_stream`,
+  `model_text_about_revoked_credentials_cannot_replace_a_network_failure`;
+  `task_capture::held_output_retains_reported_overrun_without_admitting_the_message`;
+  `task_worker::review_role_keeps_the_legacy_read_only_tool_grant`,
+  `execute_checks_grants_bash_and_ends_shell_children_with_the_attempt`,
+  `typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage`,
+  `malformed_native_usage_refuses_message_and_survives_raw_capture_outage`;
+  `task_model_usage::title_suppression_reaches_the_child_without_replacing_personal_auth_grants`,
+  `top_level_and_model_usage_charges_persist_and_reopen_exact`,
+  `a_breakdown_above_the_top_level_summary_keeps_the_reply_and_is_charged_in_full`;
+  `task_structured::` every test through its `invoke` helper
+  (`typed_native_command_preserves_input_schema_and_role_permissions`,
+  `execute_checks_command_derives_bash_from_the_access_alone`,
+  `typed_reply_never_falls_back_and_failed_outputs_keep_accounting`,
+  `malformed_or_oversized_typed_requests_do_not_spawn_and_legacy_stays_textual`,
+  `nested_payload_references_keep_their_own_roots_and_literal_values`);
+  `task_cancellation::native_cancellation_retains_full_usage_and_reaps_owned_process`.
+- Changed, `review-runner` `model_supervision::`
+  `controlled_capture_preserves_redacted_evidence_after_cancellation` (10 s wall, 5 s readiness),
+  `a_model_descendant_holding_output_is_charged_not_empty_evidence`,
+  `a_model_descendant_holding_only_stderr_preserves_the_complete_answer`,
+  `settled_held_output_retains_redacted_bytes_without_admitting_a_message` (1 s),
+  `a_worker_may_ignore_its_stdin`, `large_stdin_and_stderr_are_drained_concurrently`,
+  `a_briefly_lingering_descendant_cannot_truncate_a_large_answer` (5 s),
+  `a_granted_secret_is_redacted_from_everything_kept`,
+  `an_ungranted_variable_never_reaches_the_child` (10 s).
+- Changed, `review-process`: unit tests
+  `a_descendant_holding_only_stderr_does_not_destroy_complete_stdout` (1 s),
+  `capture::tests::stream_input_failure_keeps_both_outputs_and_its_error_type` (5 s),
+  `capture::tests::held_stdout_capture_and_compatibility_wrapper_keep_the_same_failure` (1 s),
+  `drain::tests::a_read_failure_retains_the_prefix` (5 s grace) and
+  `drain::tests::cancelled_drain_waits_for_buffered_prefix_and_keeps_cancellation_primary`
+  (1 s readiness and grace), which assert a read failure or a cancellation, never a timeout;
+  `cancellation::cancellation_retains_prefixes_and_stops_running_stdin_and_each_held_drain`
+  (5 s readiness, 10 s wall).
+- Changed, `review-sandbox` `container::tests`: the runtime-fixture writer takes its wall, so
+  `an_installed_but_broken_runtime_is_unusable_not_usable` and
+  `cancellation_still_confirms_container_removal_without_cancelling_cleanup`, which assert no
+  timeout, write their fake runtime under the load-safe wall instead of 5 s; the deadline tests
+  keep the writer's 5 s.
+- Changed, `review-source-task` (5 s deadline): `transport::`
+  `native_transport_owns_protocol_flags_and_keeps_credentials_off_argv`; `sources::`
+  `jira_refuses_incomplete_changed_or_unsupported_sources_without_leaking_response_text`,
+  `adf_list_continuations_preserve_nesting_and_ordered_marker_width`.
+- Changed, `af` unit tests: `providers::task::currentness_tests::`
+  `sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_native_client`
+  (5 s Attempt wall); `providers::auth_handoff::adapter::tests::` the 5 s synthetic-login waits of
+  `synthetic_claude_process_accepts_exactly_one_code_and_reaps`,
+  `synthetic_claude_callback_completes_without_returned_code`,
+  `native_nonzero_exit_never_presents_a_stale_challenge`,
+  `synthetic_codex_device_cli_is_reaped_on_successful_exit`,
+  `dropping_device_login_reaps_the_owned_native_cli_without_json_requests`,
+  `codex_native_failure_cannot_complete_or_publish_a_stale_challenge`,
+  `private_guard_codes_are_decoded_only_for_owned_guard_children`,
+  `native_stderr_never_enters_the_private_challenge_buffer`,
+  `native_output_limit_is_cumulative_and_never_a_diagnostic`.
+- Changed, `review-pipeline`:
+  `review_domain::integration::tests::legacy_check_order_and_one_writable_clone_survive_the_shared_sequence`
+  (10 s Check wall and 10 s deadline option), which runs the same two successful Checks three
+  times and asserts only their order and equal receipts, never a timeout or a deadline refusal;
+  `task_runtime::control::captured_command_cancellation_retains_both_streams_and_never_retries`
+  (3 s readiness),
+  `task_runtime::domain_observes_started_attempt_and_persists_through_the_runtime_store` (2 s
+  Store wait), `review_domain::integration::tests::`
+  `controlled_check_sequence_retains_interrupted_raw_result_and_stops_before_the_next_check`
+  (20 s Check wall, 3 s readiness).
+- Unchanged, subject is a timeout or deadline: each test here asserts a timeout, a deadline
+  refusal or an elapsed-time bound, and keeps every wall it sets, including the
+  fixture-preparation walls inside it. Codex and Claude `task_worker::`
+  `timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_message`, which now
+  also asserts that its message error names the 500 ms wall's `TimedOut`; Claude
+  `task_model_usage::synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage`,
+  whose message error is the model-identity refusal, so its timeout scenario now asserts it
+  returns before the fixture's 10 s sleep could end it; `model_supervision::`
+  `a_hung_reviewer_is_killed_at_the_deadline`, `a_killed_reviewer_keeps_what_it_wrote_so_far` and
+  `a_model_parent_exit_cannot_leave_the_stdin_writer_unbounded` (`TimedOut` and elapsed);
+  `review-source-task` `native_source_cancels_inflight_process_and_bounds_output` and
+  `replacement_sources_have_equivalent_requirements_and_exact_field_provenance` (`TimedOut`);
+  `review-check` `deadline::` `a_hung_check_is_killed_and_recorded_not_run`,
+  `a_backgrounded_grandchild_does_not_hang_the_deadline` and
+  `a_passing_check_with_a_backgrounded_child_returns` (elapsed); `review-source-git`
+  `git_deadline` (deadline error and elapsed); `review-process` `concurrent_pipes` (`TimedOut`
+  and elapsed) and `drain::tests::held_pipe_cleanup_keeps_a_chunk_delivered_after_group_termination`
+  (its 1 s grace ends in a held stdout, and the shared cleanup deadline); `review-sandbox`
+  `container::tests::` `runtime_detection_stops_at_the_callers_deadline`,
+  `a_wedged_runtime_is_bounded_and_unusable` and `a_wedged_container_execution_is_bounded`
+  (deadline error and elapsed), and `a_failed_reap_is_distinct_from_a_safely_stopped_timeout`
+  and the live-runtime `a_timed_out_container_is_removed_before_execution_returns`, which now
+  also assert that their container command did not finish; `af`
+  `providers::installation::a_working_cli_and_a_slow_or_cancelled_check_are_not_installation_failures`
+  (elapsed) and `identity_rechecks_use_remaining_attempt_deadline_and_prespawn_cancellation`
+  (timed out and elapsed); `review-pipeline`
+  `an_absolute_attempt_deadline_refuses_setup_and_bounds_the_running_check` (deadline refusal
+  and elapsed) and `unconfirmed_container_cleanup_preserves_the_writable_sandbox_and_stops_checks`,
+  whose container is ended by its 100 ms Check wall and which now also asserts that its Check's
+  reason names that timeout.
+- Unchanged, no process starts under the wall: `model_supervision::`
+  `a_missing_provider_is_unavailable_not_silent`,
+  `an_untrusted_option_is_refused_before_the_model_starts`;
+  `cancellation_before_spawn_cannot_execute_the_command`;
+  `capture::tests::spawn_failure_does_not_invent_output`;
+  `a_removed_executable_with_no_installed_client_refuses_by_name_before_any_probe`;
+  the 1 s execution wall of `an_installed_but_broken_runtime_is_unusable_not_usable`, refused
+  before launch; `drain::tests::cleanup_retains_a_prefix_even_when_its_reader_failed`, whose
+  in-process reader fails at once under the production 5 s grace of `collect_after_kill`, the
+  function it tests, so no test parameter sets that bound; and `task_model_transport`, whose
+  1234 ms is a sentinel forwarded to a fake adapter.
+- Unchanged, the bound is the asserted promptness: the elapsed-time assertions of the changed
+  capture, final-message, held-pipe and cancellation tests; the waits in which a killed process
+  must disappear (`native_cancellation`, claude
+  `execute_checks_grants_bash_and_ends_shell_children_with_the_attempt`, `review-process` and
+  `review-source-task` cancellation); `review-sandbox`
+  `cancellation_still_confirms_container_removal_without_cancelling_cleanup`, whose readiness
+  window is its 3 s elapsed assertion; `review-graph` `independent_reviewers_run_concurrently`;
+  the lease and heartbeat tests of `task_runtime::control`, `review-store` and `af`
+  `campaign_loop::heartbeat`, `common_review_summaries::recovery` and `task_interrupt`.
+- Unchanged, the wall is already long: `af` `tui` (30-300 s), `provider_auth_handoff` (30 s),
+  `task_report_command` (60 s), `task_command_process_group` (30 s) and the container probes'
+  60 s execution wall.
+- Changed, `af` integration tests (15 s Codex, 10 s Claude usage and 30 s Claude status
+  provider probes): a debug build's provider probes now honor `AF_TEST_PROVIDER_PROBE_TIMEOUT_MS`, which can only raise
+  their timeouts (a value at or below production, outside 1 ms to ten minutes, or not a number
+  changes nothing), never reaches a Worker or provider CLI, and is never read by a release
+  binary. The shared `crate::common::af()` helper, and the PTY spawns of `provider_registry` and
+  `tui` that clear the environment, set it to the two-minute load-safe value, so
+  `provider_registry::status_keeps_a_default_context_whose_status_probe_failed` and every other
+  `af` integration test that meets a probe without being about its timeout no longer race it.
+  The probe-deadline unit tests (`providers::installation`) keep the production value.
+- Changed, `af` `provider_auth_handoff`: `Fixture::command_kind`, `Fixture::begin_kind` (through
+  its Python host) and the inline `af` spawn of
+  `duplicate_stdout_and_named_fifos_are_not_private_capabilities` clear the environment, so their
+  `af` never got the setting and a completed handoff's fake Codex or Claude status probe ran
+  under the production 15 s or 30 s. Each now sets it again after `env_clear`; no test there is
+  about a probe's timeout. The fake CLIs record the setting if it reaches them, and
+  `Fixture::no_secrets` and `claude_private_code_and_callback_paths_complete_without_task_dispatch`
+  assert it reached neither a status probe nor a login.
+- Checked, no other change needed. Every other `env_clear` or `env_remove` before `af` or a
+  provider probe in a test: `tui`'s `af()` helper and `Browser` PTY spawn, and
+  `provider_registry`'s `in_terminal` (through `setup_in_terminal` and the umask setup test),
+  already set it after clearing; `common::af()` callers that only remove other names
+  (`task_warm_checks`, `task_experiment`, `task_remote_checks`, `campaign_loop`, `cli_surface`,
+  `storage_budget`, and `provider_registry`'s status runs) keep it; the umask `provider add`
+  runs of `provider_registry`, `onboarding_quickstart` (`af onboard`, `af review plan`) and
+  `common::Layout::command` (self-management) reach no provider probe and clear nothing; the
+  `af` unit-test `env_clear`s (`providers::auth_handoff::adapter` and `guard` synthetic logins,
+  `tui::panes::pipelines` git) start neither `af` nor a probe; and no other crate's tests start
+  `af` or a provider probe.
+- Changed, `af` `task_file` native-model tests (the four `native_client_*`,
+  `native_model_cli_*`, `native_codex_multiturn_*` and `native_task_account_change_*`): the
+  reviewers' 5 s Attempt walls are now the two-minute load-safe wall, the verification reserve
+  grows from 60 s to the 290 s it now encodes (45 s Provider admission, both reviewers and the
+  5 s check), and the Task wall keeps ten minutes above that reserve; token and Attempt limits
+  are unchanged. Their admission and rechecks run under the raised probe timeout above, and
+  they assert the setting reached neither a probe nor a model call. The pinning test, renamed
+  `native_model_fixture_widens_only_its_walls_and_the_reserve_that_covers_them`, asserts the
+  reserve equals that sum instead of the old literal.
+- Not a wall: `optimization_configuration`'s failures are #149 (reflink cache materialization);
+  its tests set no wall, and nothing here changes them.
+
+- `scripts/test-test-time-report.py` no longer pins the live exclusive list of
+  `.config/nextest.toml`: it reads the expected filter and its `test(/.../)` clauses from that
+  file's raw text, independently of the TOML subset parser it checks, and keeps the exact-list
+  assertions on the committed fixture `fixtures/test-time-report/nextest.toml`. Changing which
+  tests run alone no longer breaks `make preflight-check`. It still requires every live
+  exclusive pattern to be a plain test-name pattern anchored with a trailing `$`, and fails
+  naming the offending pattern otherwise, since an unanchored one would silently run more tests
+  alone: a temporary local edit removing the `$` from one live clause made the script fail,
+  while dropping or renaming anchored clauses left it passing.
+
 ## [0.12.0-rc.1] - 2026-10-08
 
 ### Authority compatibility

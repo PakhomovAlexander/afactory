@@ -1,3 +1,4 @@
+use crate::load_safe_wall::LOAD_SAFE_WALL;
 use review_core::{Arg, Command};
 use review_runner::task::{WorkerAccess, WorkerContract, WorkerModelAdapter};
 use review_runner_codex::task::{CodexTaskAdapter, task_sandbox_mode};
@@ -35,7 +36,7 @@ fn review_role_keeps_the_legacy_workspace_write_sandbox() {
         &cas,
         temp.path(),
         b"review".to_vec(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         WorkerAccess::WriteSource,
         None,
         &[],
@@ -95,7 +96,7 @@ fn execute_checks_runs_workspace_write_rooted_at_the_sandbox() {
             &cas,
             &sandbox,
             b"review".to_vec(),
-            Duration::from_secs(5),
+            LOAD_SAFE_WALL,
             access,
             None,
             &[],
@@ -194,6 +195,11 @@ fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_messa
             u128::from(u64::MAX) + 20
         );
         if timed_out {
+            let message = returned.message.as_ref().unwrap_err();
+            assert!(
+                message.contains("TimedOut { after_ms: 500 }"),
+                "the 500 ms wall ends the provider: {message}"
+            );
             assert_eq!(returned.raw_artifact_ids.len(), 2);
             assert_eq!(
                 cas.get(&returned.raw_artifact_ids[0]).unwrap(),
@@ -256,7 +262,7 @@ fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage
             &cas,
             &workdir,
             b"{\"declared\":\"input\"}".to_vec(),
-            Duration::from_secs(5),
+            LOAD_SAFE_WALL,
             WorkerAccess::ReadOnly,
             None,
             &[],
@@ -310,7 +316,7 @@ fn multiple_native_turns_retain_exact_components_and_uncached_charge() {
         &cas,
         temp.path(),
         b"input".to_vec(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         WorkerAccess::ReadOnly,
         None,
         &[],
@@ -364,7 +370,7 @@ fn malformed_native_usage_refuses_message_and_survives_raw_capture_outage() {
             &cas,
             temp.path(),
             b"input".to_vec(),
-            Duration::from_secs(5),
+            LOAD_SAFE_WALL,
             WorkerAccess::ReadOnly,
             None,
             &[],

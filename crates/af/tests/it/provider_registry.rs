@@ -107,6 +107,10 @@ fn setup_in_terminal(
         ("XDG_CONFIG_HOME", config.as_os_str()),
         ("PATH", bin.as_os_str()),
         ("AF_SELF_OFFLINE", OsStr::new("1")),
+        (
+            crate::common::PROBE_TIMEOUT_SETTING,
+            OsStr::new(crate::common::LOAD_SAFE_PROBE_TIMEOUT_MS),
+        ),
     ];
     env.extend_from_slice(extra_env);
     in_terminal(OsStr::new(env!("CARGO_BIN_EXE_af")), &arguments, &env)
@@ -491,6 +495,10 @@ exit 64
             ("HOME", root.path().as_os_str()),
             ("XDG_CONFIG_HOME", config.as_os_str()),
             ("AF_SELF_OFFLINE", OsStr::new("1")),
+            (
+                crate::common::PROBE_TIMEOUT_SETTING,
+                OsStr::new(crate::common::LOAD_SAFE_PROBE_TIMEOUT_MS),
+            ),
         ],
     );
     assert_eq!(code, 0, "{output}");

@@ -1,3 +1,4 @@
+use crate::load_safe_wall::LOAD_SAFE_WALL;
 use review_core::{Arg, Command};
 use review_runner::task::WorkerModelAdapter;
 use review_runner_claude::task::ClaudeTaskAdapter;
@@ -30,7 +31,7 @@ fn held_output_retains_reported_overrun_without_admitting_the_message() {
         &cas,
         temp.path(),
         b"input".to_vec(),
-        Duration::from_secs(5),
+        LOAD_SAFE_WALL,
         review_runner::task::WorkerAccess::ReadOnly,
         None,
         &[],

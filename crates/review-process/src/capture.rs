@@ -351,7 +351,7 @@ mod tests {
         let capture = run_supervised_inner(
             &mut command,
             Some(|_: &mut dyn Write| Err("original typed input failure")),
-            Duration::from_secs(5),
+            crate::tests::LOAD_SAFE_WALL,
             ExitPolicy::PreserveProcessGroup,
         );
         assert_eq!(capture.stdout, b"output");
@@ -367,7 +367,7 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "printf output; printf diagnostic >&2; sleep 30 &"]);
         let started = Instant::now();
-        let capture = run_supervised_captured(&mut command, None, Duration::from_secs(1));
+        let capture = run_supervised_captured(&mut command, None, crate::tests::LOAD_SAFE_WALL);
         assert_eq!(capture.stdout, b"output");
         assert_eq!(capture.stderr, b"diagnostic");
         assert!(matches!(

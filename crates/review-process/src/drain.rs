@@ -156,7 +156,7 @@ mod tests {
             "stdout",
             0,
             &mut None,
-            OUTPUT_DRAIN_GRACE,
+            crate::tests::LOAD_SAFE_WALL,
             |_| {},
             None,
         );
@@ -203,7 +203,7 @@ mod tests {
                 ready: Some(ready),
                 killed,
             });
-            begun.recv_timeout(Duration::from_secs(1)).unwrap();
+            begun.recv_timeout(crate::tests::LOAD_SAFE_WALL).unwrap();
             let cancelled = AtomicBool::new(true);
             let mut cleanup = None;
             let output = collect_with(
@@ -211,7 +211,7 @@ mod tests {
                 stream,
                 0,
                 &mut cleanup,
-                Duration::from_secs(1),
+                crate::tests::LOAD_SAFE_WALL,
                 |_| release.send(()).unwrap(),
                 Some(&cancelled),
             );

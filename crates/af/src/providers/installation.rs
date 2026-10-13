@@ -217,7 +217,7 @@ fn version_check(
     }
     // Output past the bound is read and dropped: only the first lines are ever reported.
     let (mut out, mut err, mut exceeded) = (Vec::new(), Vec::new(), false);
-    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let deadline = Instant::now() + probe_timeout(PROBE_TIMEOUT);
     let deadline = attempt_deadline.map_or(deadline, |limit| deadline.min(limit));
     let status = loop {
         let drained = drain_available(&mut stdout, &mut out, &mut exceeded)

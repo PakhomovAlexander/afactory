@@ -522,7 +522,17 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
+    /// The fixture-writing wall for a test whose subject is not a deadline (ADR-0114). Under a
+    /// loaded gate a shell took seconds to start, so a 5 s wall raced scheduling; two minutes
+    /// only bounds a hung writer, and a passing test never waits for it. Tests whose subject is
+    /// a probe or execution deadline keep the 5 s writer wall.
+    const LOAD_SAFE_WALL: Duration = Duration::from_secs(120);
+
     fn write_runtime(path: &Path, script: &str) {
+        write_runtime_within(path, script, Duration::from_secs(5));
+    }
+
+    fn write_runtime_within(path: &Path, script: &str, wall: Duration) {
         // Linux CI observed ETXTBSY while probing a freshly written fixture. A concurrent
         // child's inherited writable descriptor is a possible cause. Keep that descriptor
         // out of this multithreaded parent; reaping this single-threaded writer establishes
@@ -532,7 +542,7 @@ mod tests {
             .args(["-c", "printf '%s' \"$2\" > \"$1\"", "runtime-fixture"])
             .arg(path)
             .arg(script);
-        let output = run_supervised(&mut writer, None, Duration::from_secs(5)).unwrap();
+        let output = run_supervised(&mut writer, None, wall).unwrap();
         assert!(
             output.status.success(),
             "writing runtime fixture: {}",
@@ -568,9 +578,10 @@ mod tests {
     fn an_installed_but_broken_runtime_is_unusable_not_usable() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("broken-runtime");
-        write_runtime(
+        write_runtime_within(
             &fake,
             "#!/bin/sh\necho 'Cannot connect to the daemon' >&2\nexit 1\n",
+            LOAD_SAFE_WALL,
         );
 
         let provider = ContainerProvider::with_runtime(&fake);
@@ -696,6 +707,12 @@ mod tests {
             )
             .unwrap_err();
         assert!(!error.cleanup_confirmed(), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("container command did not finish"),
+            "{error}"
+        );
         assert!(error.to_string().contains("was not confirmed"), "{error}");
     }
 
@@ -705,12 +722,13 @@ mod tests {
         for cleanup_ok in [true, false] {
             let dir = tempfile::tempdir().unwrap();
             let fake = dir.path().join("runtime");
-            write_runtime(
+            write_runtime_within(
                 &fake,
                 &format!(
                     "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then printf '%s\\n' \"$@\" > \"$0.cleanup\"; exit {}; fi\nprintf ready > \"$0.ready\"\nsleep 30\n",
                     if cleanup_ok { 0 } else { 1 }
                 ),
+                LOAD_SAFE_WALL,
             );
             let provider = ContainerProvider::with_runtime(&fake);
             let flag = AtomicBool::new(false);
@@ -872,6 +890,12 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.cleanup_confirmed(), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("container command did not finish"),
+            "{error}"
+        );
 
         let mut inspect = std::process::Command::new(&runtime);
         inspect.args(["inspect", execution_name]);

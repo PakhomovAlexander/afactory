@@ -1130,16 +1130,28 @@ fn repair_context_and_decisions_bind_every_current_view_and_keep_original_proven
         "task-fix-verification-v1.json",
         &serde_json::to_value(&verified).unwrap(),
     );
+    // `validate_fix_output` and `repair_acceptance` both admit a verifier result only through
+    // `validate_context`; "stale_snapshot_view" stands in for the removed real-process
+    // `task_repair::repair_rejects_a_stale_view_receipt` (exit 4, 8 Attempts and unchanged replay
+    // stay asserted by `task_repair::repair_rejects_a_stale_subject_receipt`).
     for case in [
         "missing",
         "extra",
         "old_view",
+        "stale_snapshot_view",
         "old_subject",
         "another_continuation",
     ] {
         let mut changed = verified.clone();
         match case {
             "missing" => changed.claims.clear(),
+            "stale_snapshot_view" => {
+                changed
+                    .claims
+                    .get_mut("finding-one")
+                    .unwrap()
+                    .expected_view_id = context.previous_snapshot_id.clone()
+            }
             "extra" => {
                 changed
                     .claims

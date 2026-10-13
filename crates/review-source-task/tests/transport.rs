@@ -4,6 +4,12 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
+
+/// The deadline for a source operation whose subject is not the deadline (ADR-0114). Under a
+/// loaded gate starting the Python curl fixture took seconds, so a 5 s deadline raced
+/// scheduling; two minutes only bounds a hung fixture, and a passing test never waits for it.
+/// A test that also asserts `TimedOut` keeps every wall it sets.
+const LOAD_SAFE_WALL: Duration = Duration::from_secs(120);
 fn select() -> JiraSelector {
     JiraSelector {
         site: "example.atlassian.net".into(),
@@ -58,7 +64,7 @@ sys.stdout.write('{"fields":{}}\n200')"#,
     );
     let cancelled = AtomicBool::new(false);
     let control = SourceControl {
-        deadline: Instant::now() + Duration::from_secs(5),
+        deadline: Instant::now() + LOAD_SAFE_WALL,
         cancelled: &cancelled,
     };
     let response = transport.get_issue(&select(), &control).unwrap();

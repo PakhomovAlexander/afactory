@@ -838,6 +838,11 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
     use std::time::{Duration, Instant};
 
+    /// How long a test waits for a synthetic login to answer or exit (ADR-0114). The fixture
+    /// shell took seconds to start on a loaded gate, so a 5 s window raced scheduling; two
+    /// minutes only bounds a hung fixture, and a passing test never waits for it.
+    const LOAD_SAFE_WALL: Duration = Duration::from_secs(120);
+
     // Exact 0.159.2 source-authored device_code_prompt fixture, with a synthetic code.
     // https://raw.githubusercontent.com/openai/codex/rust-v0.159.2/codex-rs/login/src/device_code_auth.rs
     const DEVICE: &str = "\nWelcome to Codex [v\x1b[90m0.159.2\x1b[0m]\n\x1b[90mOpenAI's command-line coding agent\x1b[0m\n\nFollow these steps to sign in with ChatGPT using device code authorization:\n\n1. Open this link in your browser and sign in to your account\n   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n\n2. Enter this one-time code \x1b[90m(expires in 15 minutes)\x1b[0m\n   \x1b[94mTEST-CODE\x1b[0m\n\n\x1b[90mContinue only if you started this login in Codex. If a website or another person gave you this code, cancel.\x1b[0m\n\n";
@@ -1029,7 +1034,7 @@ mod tests {
     }
 
     fn next_event(login: &mut NativeLogin) -> Result<Event, Failure> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + LOAD_SAFE_WALL;
         loop {
             if let Some(event) = login.poll()? {
                 return Ok(event);
@@ -1348,7 +1353,7 @@ mod tests {
             ProviderKind::Claude,
             "printf '%s\\n' 'https://claude.ai/oauth/authorize?state=synthetic'; exit 1",
         );
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + LOAD_SAFE_WALL;
         while login.watch.exited() != Some(true) {
             assert!(Instant::now() < deadline, "synthetic exit was not observed");
             std::thread::sleep(Duration::from_millis(5));
@@ -1397,7 +1402,7 @@ mod tests {
     #[test]
     fn codex_native_failure_cannot_complete_or_publish_a_stale_challenge() {
         let mut login = fixture(ProviderKind::Codex, &device_script("exit 1"));
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + LOAD_SAFE_WALL;
         while login.watch.exited() != Some(true) {
             assert!(Instant::now() < deadline, "synthetic exit was not observed");
             std::thread::sleep(Duration::from_millis(5));
@@ -1456,7 +1461,7 @@ mod tests {
             ProviderKind::Claude,
             "while :; do printf '%s' 'synthetic-secret-output'; done",
         );
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + LOAD_SAFE_WALL;
         loop {
             match login.poll() {
                 Err(Failure::OutputLimit) => break,
