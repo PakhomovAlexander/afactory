@@ -4,7 +4,9 @@
 
 During the public alpha, security fixes ship in the latest public alpha release; older alpha
 releases and release candidates are not patched. Use `af self update` to move forward.
-Alpha security fixes do not imply compatibility guarantees for pre-GA state or configuration.
+A release reads only the state and configuration it writes itself, so a security fix carries no
+compatibility guarantee for state or configuration an earlier release wrote
+([ADR-0145](docs/adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)).
 
 From 1.0 onward, only the latest `1.x` minor line will receive security fixes, shipped as patch
 releases on that line (`1.N.1`, `1.N.2`, …).

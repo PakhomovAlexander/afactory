@@ -126,7 +126,7 @@ fn cumulative_execution_accounting_has_one_full_width_encoding() {
 /// cause and refuse a charge or a usage report beside the marker; a settlement written before
 /// the marker existed keeps its bytes and its charge.
 #[test]
-fn unknown_usage_settles_at_zero_with_a_closed_cause_and_earlier_settlements_still_read() {
+fn unknown_usage_settles_at_zero_with_a_closed_cause_and_reported_usage_keeps_its_charge() {
     use review_core::task::execution::TaskExecutionRecordV1;
     use review_core::task::usage::{TaskUnknownUsageCauseV1 as Cause, TaskUnknownUsageV1};
     let digest = format!("sha256:{}", "1".repeat(64));
@@ -165,13 +165,13 @@ fn unknown_usage_settles_at_zero_with_a_closed_cause_and_earlier_settlements_sti
             "the record spells the cause as `as_str` does"
         );
     }
-    // A settlement with reported usage, as earlier releases wrote it, has no marker and keeps
-    // its charge, the reservation included.
-    let earlier = settled("400000", None);
-    assert_valid("task-execution-record-v5.json", &earlier);
-    let typed: TaskExecutionRecordV1 = serde_json::from_value(earlier.clone()).unwrap();
+    // A settlement with reported usage has no marker and keeps its charge, the reservation
+    // included.
+    let reported_charge = settled("400000", None);
+    assert_valid("task-execution-record-v5.json", &reported_charge);
+    let typed: TaskExecutionRecordV1 = serde_json::from_value(reported_charge.clone()).unwrap();
     typed.validate().unwrap();
-    assert_eq!(serde_json::to_value(&typed).unwrap(), earlier);
+    assert_eq!(serde_json::to_value(&typed).unwrap(), reported_charge);
 
     let charged = settled("400000", Some(json!({"cause":"capacity"})));
     assert_invalid(
