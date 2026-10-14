@@ -4379,18 +4379,17 @@ enum InitializeAnswer {
     /// A JSON-RPC response with id 1 whose `result` is a JSON object: the only proof of the
     /// protocol capability.
     Result(serde_json::Value),
-    /// A response with id 1 carrying an `error`.
-    Rejected,
-    /// A response with id 1 whose `result` is absent, `null` or not an object, or a line before
-    /// it that is not a JSON-RPC message. Carries how, and the line, bounded and filtered.
-    Malformed { how: &'static str, line: String },
+    /// A refusal of the protocol capability: a response with id 1 carrying an `error`, one whose
+    /// `result` is absent, `null` or not an object, or a line before it that is not a JSON-RPC
+    /// message. Carries how, and the line, bounded and filtered.
+    Refused { how: &'static str, line: String },
 }
 
 /// The first complete stdout line that answers `initialize`, or that no JSON-RPC peer would
 /// write: blank lines and other messages (notifications, other ids) are skipped.
 fn initialize_answer(captured: &[u8]) -> Option<InitializeAnswer> {
     complete_lines(captured).find_map(|line| {
-        let malformed = |how| InitializeAnswer::Malformed {
+        let refused = |how| InitializeAnswer::Refused {
             how,
             line: review_runner::cli::bounded_cli_line(&String::from_utf8_lossy(line)),
         };
@@ -4398,31 +4397,35 @@ fn initialize_answer(captured: &[u8]) -> Option<InitializeAnswer> {
             return None;
         }
         let Ok(message) = serde_json::from_slice::<serde_json::Value>(line) else {
-            return Some(malformed("with a line that is not a JSON-RPC message"));
+            return Some(refused("with a line that is not a JSON-RPC message"));
         };
         if !message.is_object() {
-            return Some(malformed("with a line that is not a JSON-RPC message"));
+            return Some(refused("with a line that is not a JSON-RPC message"));
         }
         if message.get("id").and_then(serde_json::Value::as_u64) != Some(1) {
             return None;
         }
         Some(if message.get("error").is_some() {
-            InitializeAnswer::Rejected
+            refused("with an error")
         } else if message
             .get("result")
             .is_some_and(serde_json::Value::is_object)
         {
             InitializeAnswer::Result(message)
         } else {
-            malformed("without a result object")
+            refused("without a result object")
         })
     })
 }
 
-/// How long a probe that read a malformed `initialize` answer waits for the app-server to exit,
+/// The process outcome of an app-server that refused `initialize` and was still running when the
+/// exit grace ended, so af stopped it.
+const APP_SERVER_STOPPED_BY_AF: &str = "was stopped by af";
+
+/// How long a probe that read a refused `initialize` answer waits for the app-server to exit,
 /// so the report can carry its exit status; the answer already refused the CLI, so the wait is
 /// only for the report, and the probe deadline still bounds it.
-const MALFORMED_ANSWER_EXIT_GRACE: Duration = Duration::from_secs(1);
+const REFUSED_ANSWER_EXIT_GRACE: Duration = Duration::from_secs(1);
 
 /// The bytes of the app-server's stderr a probe keeps: enough for its first error lines.
 const MAX_APP_SERVER_STDERR: usize = 8 * 1024;
@@ -4514,14 +4517,10 @@ fn probe_codex_request_observed(
         if !requested_limits && let Some(answer) = initialize_answer(&captured) {
             let response = match answer {
                 InitializeAnswer::Result(response) => response,
-                InitializeAnswer::Rejected => {
-                    observed.lacks_protocol = true;
-                    break Err("Codex app-server rejected initialization".to_string());
-                }
-                InitializeAnswer::Malformed { how, line } => {
+                InitializeAnswer::Refused { how, line } => {
                     observed.lacks_protocol = true;
                     // Report the exit too when the app-server ends right after its answer.
-                    let grace = Instant::now() + MALFORMED_ANSWER_EXIT_GRACE.min(timeout);
+                    let grace = Instant::now() + REFUSED_ANSWER_EXIT_GRACE.min(timeout);
                     let exit = loop {
                         match review_process::try_reap_killing_group(&mut child, &mut watch) {
                             Ok(Some(status)) => {
@@ -4534,12 +4533,10 @@ fn probe_codex_request_observed(
                             Ok(None) | Err(_) => break None,
                         }
                     };
-                    break Err(match exit {
-                        Some(exit) => format!(
-                            "codex app-server {exit} after answering initialize {how}: {line}"
-                        ),
-                        None => format!("codex app-server answered initialize {how}: {line}"),
-                    });
+                    let exit = exit.unwrap_or_else(|| APP_SERVER_STOPPED_BY_AF.to_string());
+                    break Err(format!(
+                        "codex app-server {exit} after answering initialize {how}: {line}"
+                    ));
                 }
             };
             observed.answered = true;
@@ -4582,11 +4579,7 @@ fn probe_codex_request_observed(
                         break Ok(response);
                     }
                     Some(InitializeAnswer::Result(_)) => observed.answered = true,
-                    Some(InitializeAnswer::Rejected) => {
-                        observed.lacks_protocol = true;
-                        break Err("Codex app-server rejected initialization".to_string());
-                    }
-                    Some(InitializeAnswer::Malformed { how, line }) => {
+                    Some(InitializeAnswer::Refused { how, line }) => {
                         observed.lacks_protocol = true;
                         break Err(format!(
                             "codex app-server {exit} after answering initialize {how}: {line}"
@@ -6512,12 +6505,12 @@ auth_dir = "{}"
                 serde_json::json!({"id":1,"result":{}})
             ))
         );
-        assert_eq!(
-            initialize_answer(b"{\"id\":1,\"error\":{\"code\":-1}}\n"),
-            Some(InitializeAnswer::Rejected)
-        );
         for (captured, how) in [
-            (&b"{\"id\":1}\n"[..], "without a result object"),
+            (
+                &b"{\"id\":1,\"error\":{\"code\":-32600,\"message\":\"bad init\"}}\n"[..],
+                "with an error",
+            ),
+            (b"{\"id\":1}\n", "without a result object"),
             (b"{\"id\":1,\"result\":null}\n", "without a result object"),
             (b"{\"id\":1,\"result\":[]}\r\n", "without a result object"),
             (
@@ -6526,9 +6519,9 @@ auth_dir = "{}"
             ),
             (b"42\n", "with a line that is not a JSON-RPC message"),
         ] {
-            let Some(InitializeAnswer::Malformed { how: said, line }) = initialize_answer(captured)
+            let Some(InitializeAnswer::Refused { how: said, line }) = initialize_answer(captured)
             else {
-                panic!("{captured:?} was not malformed");
+                panic!("{captured:?} was not refused");
             };
             assert_eq!(said, how);
             assert_eq!(

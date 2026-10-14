@@ -448,21 +448,29 @@ mod tests {
             refused.summary()
         );
 
-        let rejecting = codex_with_app_server(
-            "IFS= read -r _\nprintf '%s\\n' '{\"id\":1,\"error\":{\"code\":-32600,\"message\":\"bad\"}}'\nexit 0",
-        );
-        let Err(CliRefusal::Incompatible(refused)) =
-            check(directory.path(), ProviderKind::Codex, &rejecting)
-        else {
-            panic!("an app-server that rejects initialize was accepted");
-        };
-        assert!(
-            refused
-                .message()
-                .contains("; Codex app-server rejected initialization; fix:"),
-            "{}",
-            refused.message()
-        );
+        // Issue #259, round 4: a rejection carries the process outcome and the line it answered
+        // with — its exit status when it exited, af's phrase when af stopped it still running.
+        let rejection = r#"{"id":1,"error":{"code":-32600,"message":"bad init"}}"#;
+        for (after, outcome) in [
+            ("exit 0", "exited 0"),
+            ("while IFS= read -r _; do :; done", "was stopped by af"),
+        ] {
+            let rejecting = codex_with_app_server(&format!(
+                "IFS= read -r _\nprintf '%s\\n' '{rejection}'\n{after}"
+            ));
+            let Err(CliRefusal::Incompatible(refused)) =
+                check(directory.path(), ProviderKind::Codex, &rejecting)
+            else {
+                panic!("an app-server that rejects initialize was accepted");
+            };
+            assert!(
+                refused.message().contains(&format!(
+                    "; missing: {APP_SERVER_PROTOCOL}; codex app-server {outcome} after answering initialize with an error: {rejection}; fix:"
+                )),
+                "{}",
+                refused.message()
+            );
+        }
 
         // An answer is enough, however soon the app-server exits after giving it.
         let answers_and_exits = codex_with_app_server(

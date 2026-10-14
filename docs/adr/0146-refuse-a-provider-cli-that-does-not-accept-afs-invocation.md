@@ -56,9 +56,12 @@ invocation af builds, and the diagnostics hid the one line that said so.
    a JSON object proves the protocol. An app-server that exits before such a response, answers
    `initialize` with an error, answers it without a `result` object (`{"id":1}`, a `null` or
    non-object `result`) or writes a line that is not JSON-RPC is refused as missing that protocol
-   capability when the CLI's own `--version` succeeds. The report carries the exit status when it
-   exited and the bounded line it answered with, and the identity and usage probes read the
-   `initialize` answer by the same rule. When `--version` also fails it is an ADR-0130 installation
+   capability when the CLI's own `--version` succeeds. Every such refusal carries the process
+   outcome, its exit status when it exited or the af-authored `was stopped by af` when it was
+   still running after a one-second grace, and the bounded line it answered with, an error
+   response included: `codex app-server exited 0 after answering initialize with an error:
+   {"id":1,"error":{"code":-32600,"message":"bad init"}}`. The identity and usage probes read
+   the `initialize` answer by the same rule. When `--version` also fails it is an ADR-0130 installation
    failure. A check af gave up on, by timeout, deadline or cancellation, leaves the CLI unchecked:
    `unavailable` in status, never `authenticated`. Plain status, `status --usage`, setup and
    admission therefore all give the same report for an app-server that cannot initialize. A help
@@ -115,7 +118,10 @@ invocation af builds, and the diagnostics hid the one line that said so.
    - a run of 32 or more characters of the base64 and base64url alphabet (`A-Z`, `a-z`, `0-9`,
      `+`, `/`, `=`, `_`, `-`) holding at least one upper-case letter, one lower-case letter and
      one digit;
-   - a JSON Web Token: three base64url segments joined by dots, the first starting with `eyJ`;
+   - a JSON Web Token: exactly three non-empty base64url runs (`A-Z`, `a-z`, `0-9`, `_`, `-`)
+     joined by single dots, the first starting with `eyJ` and 16 or more characters long, the
+     third 16 or more characters long, bounded by a character outside that alphabet or the
+     line's ends, so `error: eyJabc.def. ordinary failure` passes;
    - login-challenge material.
 
    A run of letters alone is a word, a long option name or a path segment, not a secret, and

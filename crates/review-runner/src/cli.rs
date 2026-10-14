@@ -51,6 +51,9 @@ const TOKEN_PREFIXES: [&str; 14] = [
 /// like a key or token.
 const MIN_SECRET_RUN: usize = 32;
 
+/// The shortest header and signature a [`json_web_token`] has: shorter runs are ordinary text.
+const MIN_JWT_SEGMENT: usize = 16;
+
 /// One Provider-authored line is at most this many characters, plus an ellipsis.
 pub const MAX_CLI_LINE_CHARS: usize = 240;
 /// A stderr excerpt keeps at most this many lines from the end of the stream...
@@ -369,10 +372,16 @@ fn is_base64url_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '-')
 }
 
-/// A JSON Web Token: three base64url segments joined by dots, the first starting with `eyJ` (a
-/// base64url-encoded `{"`), where it starts a word. The signature may be empty, as an unsigned
-/// token's is.
+/// A JSON Web Token: exactly three non-empty runs of the base64url alphabet (`A-Z`, `a-z`, `0-9`,
+/// `_`, `-`) joined by single dots, the first starting with `eyJ` (a base64url-encoded `{"`) and
+/// at least [`MIN_JWT_SEGMENT`] long, the third, its signature, at least [`MIN_JWT_SEGMENT`] long,
+/// and the whole bounded by a character outside the alphabet or the line's ends.
 fn json_web_token(line: &str) -> bool {
+    // Every base64url character is ASCII, so each run ends on a character boundary.
+    let run = |from: &str| {
+        from.find(|c: char| !is_base64url_char(c))
+            .unwrap_or(from.len())
+    };
     line.match_indices("eyJ").any(|(at, _)| {
         if line[..at]
             .chars()
@@ -381,13 +390,16 @@ fn json_web_token(line: &str) -> bool {
         {
             return false;
         }
-        let mut segments = line[at..].splitn(3, '.');
-        let whole_segment =
-            |segment: &str| !segment.is_empty() && segment.chars().all(is_base64url_char);
-        segments.next().is_some_and(whole_segment)
-            && segments.next().is_some_and(whole_segment)
-            // The signature runs to the first character outside the alphabet.
-            && segments.next().is_some()
+        let rest = &line[at..];
+        let header = run(rest);
+        let Some(rest) = rest[header..].strip_prefix('.') else {
+            return false;
+        };
+        let payload = run(rest);
+        let Some(rest) = rest[payload..].strip_prefix('.') else {
+            return false;
+        };
+        header >= MIN_JWT_SEGMENT && payload > 0 && run(rest) >= MIN_JWT_SEGMENT
     })
 }
 
@@ -884,8 +896,9 @@ Options:
         let digest = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
         assert_eq!(digest.len(), 64);
         for line in [
-            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl",
-            "session eyJhbGciOiJub25lIn0.eyJzdWIiOiIxIn0. expired",
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlc2lnbmF0dXJl",
+            "session eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlc2lnbmF0dXJl. expired",
+            "token=\"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlc2lnbmF0dXJl\"",
             &format!("fetch failed: {mixed_base64}"),
             &format!("sha256 {digest}"),
             &format!("blob/{digest}/x"),
@@ -902,6 +915,13 @@ Options:
             "ThisIsAVeryLongCamelCaseIdentifierWithoutDigits",
             "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJ",
             "error: eyJ is not a token",
+            // Issue #259, round 4: a JSON Web Token is three whole base64url segments, the header
+            // and the signature 16 or more characters long; anything less is ordinary text.
+            "error: eyJabc.def. ordinary failure",
+            "error: eyJabc.def.ghi",
+            "session eyJhbGciOiJub25lIn0.eyJzdWIiOiIxIn0. expired",
+            "error: eyJhbGciOiJIUzI1NiJ9..c2lnbmF0dXJlc2lnbmF0dXJl",
+            "error: xeyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl",
         ] {
             assert!(!looks_like_credential(line), "{line}");
             assert_eq!(bounded_cli_line(line), *line, "{line}");

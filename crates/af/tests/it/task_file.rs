@@ -288,6 +288,20 @@ fn a_codex_answering_initialize_without_a_result_is_refused_at_admission() {
     );
 }
 
+/// Issue #259, round 4: a codex whose bare app-server answers `initialize` with an error object
+/// and exits 0 is refused at admission with the report status and setup give — its exit status
+/// and the error line — before any Worker process starts.
+#[test]
+fn a_codex_rejecting_initialize_is_refused_at_admission() {
+    native_model_drift_case_with(
+        false,
+        true,
+        None,
+        ClientUpdate::None,
+        Some(Incompatible::InitializeRejected),
+    );
+}
+
 /// An installed client that cannot serve af's invocation; the case then ends at the admission
 /// refusal.
 #[derive(Clone, Copy)]
@@ -298,6 +312,8 @@ enum Incompatible<'a> {
     AppServer,
     /// A codex whose bare app-server answers `initialize` with `{"id":1}` and exits 0.
     InitializeWithoutResult,
+    /// A codex whose bare app-server answers `initialize` with an error object and exits 0.
+    InitializeRejected,
 }
 
 fn native_model_drift_case(
@@ -398,6 +414,10 @@ if sys.argv[1:2]==['app-server'] and os.path.isfile(home+'/app-server-no-result'
  sys.stdin.readline()
  print('{"id":1}',flush=True)
  sys.exit(0)
+if sys.argv[1:2]==['app-server'] and os.path.isfile(home+'/app-server-rejects'):
+ sys.stdin.readline()
+ print('{"id":1,"error":{"code":-32600,"message":"bad init"}}',flush=True)
+ sys.exit(0)
 if sys.argv[1:2]==['app-server']:
  for line in sys.stdin:
   request=json.loads(line)
@@ -427,6 +447,9 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     }
     if matches!(incompatible, Some(Incompatible::InitializeWithoutResult)) {
         std::fs::write(home.join("app-server-no-result"), b"fixture").unwrap();
+    }
+    if matches!(incompatible, Some(Incompatible::InitializeRejected)) {
+        std::fs::write(home.join("app-server-rejects"), b"fixture").unwrap();
     }
     let version = if old_help.is_some() {
         "2.1.101"
@@ -546,6 +569,10 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             ),
             Incompatible::InitializeWithoutResult => format!(
                 "Task Provider admission refused before any Worker was dispatched: provider codex-personal: incompatible Provider CLI: the codex CLI `{}` (version codex-cli 0.121.0) does not accept af's invocation; missing: `codex app-server` answering JSON-RPC `initialize` over its default stdio transport; codex app-server exited 0 after answering initialize without a result object: {{\"id\":1}}; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`",
+                program.display()
+            ),
+            Incompatible::InitializeRejected => format!(
+                "Task Provider admission refused before any Worker was dispatched: provider codex-personal: incompatible Provider CLI: the codex CLI `{}` (version codex-cli 0.121.0) does not accept af's invocation; missing: `codex app-server` answering JSON-RPC `initialize` over its default stdio transport; codex app-server exited 0 after answering initialize with an error: {{\"id\":1,\"error\":{{\"code\":-32600,\"message\":\"bad init\"}}}}; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`",
                 program.display()
             ),
         };

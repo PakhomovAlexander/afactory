@@ -548,9 +548,11 @@ fn a_codex_whose_app_server_exits_before_initialize_is_incompatible_on_status_an
 }
 
 /// A codex whose `exec --help` declares every option and whose login is ChatGPT, but whose bare
-/// `app-server` answers `initialize` with `{"id":1}`, no result, and exits 0; with
+/// `app-server` answers `initialize` with `answer` and exits 0; with
 /// `$CODEX_HOME/initialize-result` it answers `{"id":1,"result":{}}` instead.
-pub(crate) const CODEX_WITHOUT_INITIALIZE_RESULT: &str = r#"#!/bin/sh
+fn codex_answering_initialize(answer: &str) -> String {
+    format!(
+        r#"#!/bin/sh
 if [ "$1" = --version ]; then
   printf '%s\n' 'codex-cli 0.149.0'
   exit 0
@@ -562,14 +564,16 @@ fi
 if [ "$1" = app-server ]; then
   IFS= read -r _
   if [ -f "$CODEX_HOME/initialize-result" ]; then
-    printf '%s\n' '{"id":1,"result":{}}'
+    printf '%s\n' '{{"id":1,"result":{{}}}}'
   else
-    printf '%s\n' '{"id":1}'
+    printf '%s\n' '{answer}'
   fi
   exit 0
 fi
 exit 64
-"#;
+"#
+    )
+}
 
 /// Issue #259, round 3: a reply with id 1 but no `result` object never proves the app-server
 /// protocol. Such a codex is `incompatible` under exit 4 on status, with and without `--usage`,
@@ -577,15 +581,35 @@ exit 64
 /// authenticated.
 #[test]
 fn a_codex_answering_initialize_without_a_result_is_incompatible_on_status_and_setup() {
+    // The exit is reported once the app-server has ended, which it does right after answering.
+    a_refused_initialize_is_incompatible_on_status_and_setup(
+        r#"{"id":1}"#,
+        "exited 0 after answering initialize without a result object",
+    );
+}
+
+/// Issue #259, round 4: an app-server answering `initialize` with an error object and exiting 0
+/// is `incompatible` under exit 4 on status, with and without `--usage`, and on setup, reported
+/// with its exit status and the error line it answered with.
+#[test]
+fn a_codex_rejecting_initialize_is_incompatible_with_its_exit_and_line() {
+    a_refused_initialize_is_incompatible_on_status_and_setup(
+        r#"{"id":1,"error":{"code":-32600,"message":"bad init"}}"#,
+        "exited 0 after answering initialize with an error",
+    );
+}
+
+/// `answer` refuses the protocol capability as `refusal` says; the report carries it, then the
+/// line itself.
+fn a_refused_initialize_is_incompatible_on_status_and_setup(answer: &str, refusal: &str) {
     let machine = Machine::registered();
     machine.install(
         "codex",
-        &with_help("codex", CODEX_WITHOUT_INITIALIZE_RESULT),
+        &with_help("codex", &codex_answering_initialize(answer)),
         0o755,
     );
-    // The exit is reported once the app-server has ended, which it does right after answering.
     let observed = format!(
-        "missing: {APP_SERVER_PROTOCOL}; codex app-server exited 0 after answering initialize without a result object: {{\"id\":1}}; fix: upgrade it with `npm install -g @openai/codex@latest`"
+        "missing: {APP_SERVER_PROTOCOL}; codex app-server {refusal}: {answer}; fix: upgrade it with `npm install -g @openai/codex@latest`"
     );
     for usage in [false, true] {
         let mut args = vec!["provider", "status", "--json"];

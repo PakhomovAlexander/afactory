@@ -11,10 +11,12 @@
   and exits 4, and `--json` now emits `af/provider-status@2`. Task admission refuses before any
   Worker runs or any token is charged. The Codex app-server is now started without `--stdio`, so
   codex-cli 0.121.0 works again. An app-server that exits early is reported with its exit status
-  and its own first error line. A Worker that exits without a parsable result (for Claude, anything but
+  and its own first error line, and one that rejects or malforms its `initialize` answer with its
+  exit status (or `was stopped by af`) and the line it answered with. A Worker that exits without a parsable result (for Claude, anything but
   an object with a boolean `is_error` and its `result`, `{}` included; for Codex, anything but the
   `-o` final message after a clean exit) now reports its exit status and a bounded stderr excerpt
   whatever its failure is classified as, and one whose CLI refused
   af's arguments is classified `unsupported_invocation`. One shared filter replaces any Provider
   line that looks like credential material (`API_KEY=…`, `Bearer …`, `Authorization:`, `sk-…`,
-  32 or more hex characters, 32 or more base64 characters mixing cases and digits, a JWT) with `[line withheld: looks like credential material]`.
+  32 or more hex characters, 32 or more base64 characters mixing cases and digits, a JWT of three
+  whole base64url segments whose header and signature are 16 or more characters long) with `[line withheld: looks like credential material]`.
