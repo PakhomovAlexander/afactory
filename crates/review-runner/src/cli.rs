@@ -47,7 +47,8 @@ const TOKEN_PREFIXES: [&str; 14] = [
     "glpat-",
 ];
 
-/// A run of base64 or hex characters at least this long looks like a key or token.
+/// A hex run, or a base64 run mixing upper case, lower case and digits, at least this long looks
+/// like a key or token.
 const MIN_SECRET_RUN: usize = 32;
 
 /// One Provider-authored line is at most this many characters, plus an ellipsis.
@@ -258,9 +259,9 @@ pub fn is_invocation_error(text: &str) -> bool {
 /// printed: a key, token, secret, password, credential or auth assignment (`API_KEY=…`,
 /// `"refresh_token": "…"`, `password: …`, any case and any prefix), `Bearer` and a token, an
 /// `Authorization` header, a token prefix (`sk-`, `sk-ant-`, `sk-proj-`, `ghp_`, `xoxb-`, …), a
-/// run of [`MIN_SECRET_RUN`] or more base64 or hex characters, or login-challenge material. The
-/// one run exempt is a plain lower-case word, option or path (`--dangerously-bypass-approvals-…`):
-/// a key or token of that length holds a digit, an upper-case letter, `+` or `=`.
+/// [`secret_run`], a JSON Web Token, or login-challenge material. A run of letters alone is a
+/// word, an option or a path segment (`--dangerously-bypass-approvals-…`,
+/// `/Users/alice/projects/af`), never a secret, and passes.
 pub fn looks_like_credential(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     secret_assignment(&lower)
@@ -268,6 +269,7 @@ pub fn looks_like_credential(line: &str) -> bool {
         || authorization_header(&lower)
         || token_prefix(&lower)
         || secret_run(line)
+        || json_web_token(line)
         || crate::native_failure::carries_auth_material(line.as_bytes())
 }
 
@@ -341,15 +343,52 @@ fn token_prefix(lower: &str) -> bool {
     })
 }
 
+/// A run of [`MIN_SECRET_RUN`] or more hexadecimal characters, or of [`MIN_SECRET_RUN`] or more
+/// characters of the base64 and base64url alphabet (`A-Z`, `a-z`, `0-9`, `+`, `/`, `=`, `_`, `-`)
+/// holding at least one upper-case letter, one lower-case letter and one digit.
 fn secret_run(line: &str) -> bool {
-    line.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-')))
-        .filter(|run| run.len() >= MIN_SECRET_RUN)
-        .any(|run| {
-            run.chars().all(|c| c.is_ascii_hexdigit())
-                || run
-                    .chars()
-                    .any(|c| c.is_ascii_digit() || c.is_ascii_uppercase() || matches!(c, '+' | '='))
-        })
+    let hex_run = line
+        .split(|c: char| !c.is_ascii_hexdigit())
+        .any(|run| run.len() >= MIN_SECRET_RUN);
+    hex_run
+        || line
+            .split(|c: char| !is_base64_char(c))
+            .filter(|run| run.len() >= MIN_SECRET_RUN)
+            .any(|run| {
+                run.contains(|c: char| c.is_ascii_uppercase())
+                    && run.contains(|c: char| c.is_ascii_lowercase())
+                    && run.contains(|c: char| c.is_ascii_digit())
+            })
+}
+
+fn is_base64_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-')
+}
+
+fn is_base64url_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-')
+}
+
+/// A JSON Web Token: three base64url segments joined by dots, the first starting with `eyJ` (a
+/// base64url-encoded `{"`), where it starts a word. The signature may be empty, as an unsigned
+/// token's is.
+fn json_web_token(line: &str) -> bool {
+    line.match_indices("eyJ").any(|(at, _)| {
+        if line[..at]
+            .chars()
+            .next_back()
+            .is_some_and(is_base64url_char)
+        {
+            return false;
+        }
+        let mut segments = line[at..].splitn(3, '.');
+        let whole_segment =
+            |segment: &str| !segment.is_empty() && segment.chars().all(is_base64url_char);
+        segments.next().is_some_and(whole_segment)
+            && segments.next().is_some_and(whole_segment)
+            // The signature runs to the first character outside the alphabet.
+            && segments.next().is_some()
+    })
 }
 
 /// One line of Provider text made safe to print: terminal escapes and control characters
@@ -481,7 +520,8 @@ pub fn transport_outcome(status: &Result<std::process::ExitStatus, crate::Runner
 /// What a failed Worker's stderr says that a diagnostic may quote: its bounded, sanitized
 /// [`stderr_excerpt`] and the CLI's own upgrade hint. Read before any privacy filter replaces the
 /// captured stream, so a recognized failure keeps the Worker's own last words; every line went
-/// through the credential filter, and a challenge-bearing stream is the marker alone.
+/// through the credential filter, and when either stream carries challenge or credential material
+/// the excerpt is the marker alone, as the privacy filter then replaces both streams.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WorkerStderr {
     excerpt: Option<String>,
@@ -489,11 +529,38 @@ pub struct WorkerStderr {
 }
 
 impl WorkerStderr {
-    pub fn read(stderr: &[u8]) -> Self {
+    pub fn read(stderr: &[u8], stdout: &[u8]) -> Self {
+        if crate::native_failure::carries_auth_material(stdout) {
+            return Self {
+                excerpt: Some(WITHHELD_LINE.to_string()),
+                fix: None,
+            };
+        }
         Self {
             excerpt: stderr_excerpt(stderr),
             fix: error_and_fix(stderr, b"").1,
         }
+    }
+}
+
+fn ended(status: &Result<std::process::ExitStatus, crate::RunnerError>) -> String {
+    match status {
+        Ok(status) => exit_description(status),
+        Err(error) => format!("ended ({error})"),
+    }
+}
+
+/// How a Worker process that left no answer af can parse ended, with its own words: `exited 1
+/// without a parsable result; stderr: …`, or `… and wrote no stderr`. Every diagnostic of such a
+/// process carries it, whatever its failure is classified as.
+pub fn ended_without_result(
+    status: &Result<std::process::ExitStatus, crate::RunnerError>,
+    stderr: &WorkerStderr,
+) -> String {
+    let outcome = ended(status);
+    match &stderr.excerpt {
+        Some(excerpt) => format!("{outcome} without a parsable result; stderr: {excerpt}"),
+        None => format!("{outcome} without a parsable result and wrote no stderr"),
     }
 }
 
@@ -511,14 +578,8 @@ pub fn startup_failure(
     kind: crate::native_failure::NativeFailureKind,
 ) -> String {
     use crate::native_failure::NativeFailureKind;
-    let outcome = match status {
-        Ok(status) => exit_description(status),
-        Err(error) => format!("ended ({error})"),
-    };
-    let said = match &stderr.excerpt {
-        Some(excerpt) => format!("{outcome} without a parsable result; stderr: {excerpt}"),
-        None => format!("{outcome} without a parsable result and wrote no stderr"),
-    };
+    let outcome = ended(status);
+    let said = ended_without_result(status, stderr);
     match kind {
         NativeFailureKind::Unknown => format!("{worker} {said}"),
         NativeFailureKind::UnsupportedInvocation => {
@@ -741,7 +802,7 @@ Options:
                 "Claude Worker",
                 invocation,
                 &exited_1,
-                &WorkerStderr::read(b"error: unknown option '--safe-mode'\n"),
+                &WorkerStderr::read(b"error: unknown option '--safe-mode'\n", b""),
                 NativeFailureKind::UnsupportedInvocation,
             ),
             "Claude Worker failed: the installed claude CLI does not accept af's invocation (unsupported_invocation); it exited 1: error: unknown option '--safe-mode'; fix: upgrade it with `npm install -g @anthropic-ai/claude-code@latest`, then rerun `af provider status`"
@@ -751,7 +812,7 @@ Options:
                 "Claude Worker",
                 invocation,
                 &exited_1,
-                &WorkerStderr::read(b""),
+                &WorkerStderr::read(b"", b""),
                 NativeFailureKind::Unknown
             ),
             "Claude Worker exited 1 without a parsable result and wrote no stderr"
@@ -813,6 +874,60 @@ Options:
         }
     }
 
+    /// Issue #259, round 3: a run is a secret by its shape — 32 or more hex characters, 32 or
+    /// more base64 characters mixing upper case, lower case and digits, or a JSON Web Token —
+    /// and a run of letters alone, a word or a path, is not.
+    #[test]
+    fn runs_are_withheld_by_their_shape_and_letters_alone_pass() {
+        let mixed_base64 = "Ab3dEf6hIj9lMn2pQr5tUv8xYz1BcD4fGh7jKl0nOp-";
+        assert_eq!(mixed_base64.len(), 43);
+        let digest = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+        assert_eq!(digest.len(), 64);
+        for line in [
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl",
+            "session eyJhbGciOiJub25lIn0.eyJzdWIiOiIxIn0. expired",
+            &format!("fetch failed: {mixed_base64}"),
+            &format!("sha256 {digest}"),
+            &format!("blob/{digest}/x"),
+            "upload id ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abc",
+        ] {
+            assert!(looks_like_credential(line), "{line}");
+            assert_eq!(bounded_cli_line(line), WITHHELD_LINE, "{line}");
+        }
+        for line in [
+            &"g".repeat(40),
+            "mnpqrstuvwxyzmnpqrstuvwxyzmnpqrstuvwxyz",
+            "/Users/alice/bs/apkhmv-main/af/afactory-wt-cli-compat/crates/af",
+            "error: unexpected argument '--stdio' found",
+            "ThisIsAVeryLongCamelCaseIdentifierWithoutDigits",
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJ",
+            "error: eyJ is not a token",
+        ] {
+            assert!(!looks_like_credential(line), "{line}");
+            assert_eq!(bounded_cli_line(line), *line, "{line}");
+        }
+    }
+
+    /// The privacy filter replaces both streams when either carries challenge material, so the
+    /// excerpt of an innocent-looking stderr beside such a stdout is the marker alone.
+    #[test]
+    fn challenge_material_on_stdout_withholds_the_stderr_excerpt() {
+        use std::os::unix::process::ExitStatusExt;
+        let said = WorkerStderr::read(
+            b"FIXTURE_STDERR\n",
+            b"{\"type\":\"turn.failed\",\"error\":{\"message\":\"visit https://auth.openai.com/codex/device\"}}",
+        );
+        let exited_1 = Ok(std::process::ExitStatus::from_raw(256));
+        assert_eq!(
+            ended_without_result(&exited_1, &said),
+            format!("exited 1 without a parsable result; stderr: {WITHHELD_LINE}")
+        );
+        assert_eq!(
+            ended_without_result(&exited_1, &WorkerStderr::read(b"FIXTURE_STDERR\n", b"{}")),
+            "exited 1 without a parsable result; stderr: FIXTURE_STDERR"
+        );
+    }
+
     #[test]
     fn a_withheld_line_keeps_the_rest_of_the_excerpt_and_the_fix() {
         for line in CREDENTIAL_LINES {
@@ -857,7 +972,7 @@ Options:
             upgrade: "npm install -g @openai/codex@latest",
         };
         let exited_1 = Ok(std::process::ExitStatus::from_raw(256));
-        let said = WorkerStderr::read(b"network failed: proxy refused connection\n");
+        let said = WorkerStderr::read(b"network failed: proxy refused connection\n", b"");
         for kind in [
             NativeFailureKind::Network,
             NativeFailureKind::AuthMissing,
@@ -894,8 +1009,10 @@ Options:
             ),
             "Codex Worker failed: Provider network request failed (network); it exited 1 without a parsable result; stderr: network failed: proxy refused connection"
         );
-        let secret =
-            WorkerStderr::read(b"error: unknown option '--safe-mode'; API_KEY=sk-secret\n");
+        let secret = WorkerStderr::read(
+            b"error: unknown option '--safe-mode'; API_KEY=sk-secret\n",
+            b"",
+        );
         let message = startup_failure(
             "Codex Worker",
             &INVOCATION,

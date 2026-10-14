@@ -228,8 +228,9 @@ struct IdentityFailure {
     /// The CLI gave no answer af recognizes, and af did not give up waiting for one: it may not
     /// start at all. A CLI that answered — logged out, another account — never is.
     cli_silent: bool,
-    /// The Codex app-server exited before answering `initialize`: unless the CLI cannot start at
-    /// all, it lacks the protocol capability the probe needs.
+    /// The Codex app-server gave no `initialize` result object — it exited first, rejected it or
+    /// answered it malformed: unless the CLI cannot start at all, it lacks the protocol
+    /// capability the probe needs.
     protocol_unanswered: bool,
 }
 
@@ -244,8 +245,8 @@ impl IdentityFailure {
 }
 
 /// Why a silent identity probe's CLI cannot serve af: an installation failure when its own
-/// version check confirms one, else, for an app-server that exited before `initialize`, the
-/// missing protocol capability.
+/// version check confirms one, else, for an app-server that gave no `initialize` result object,
+/// the missing protocol capability.
 fn cli_cannot_serve(
     program: &Path,
     spec: &ProviderSpec,
@@ -339,7 +340,7 @@ fn observe_identity(
             )
             .map_err(|message| IdentityFailure {
                 cli_silent: !observed.answered && !probe_gave_up(&message),
-                protocol_unanswered: observed.exited_before_initialize,
+                protocol_unanswered: observed.lacks_protocol,
                 message,
             })?;
             let principal = codex_principal(&response).map_err(IdentityFailure::answered)?;

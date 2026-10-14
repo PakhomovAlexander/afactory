@@ -431,3 +431,58 @@ fn a_classified_failure_without_events_keeps_its_exit_and_stderr_excerpt() {
         "Claude Worker failed: Provider network request failed (network); it exited 1 without a parsable result; stderr: network failed: proxy refused connection"
     );
 }
+
+/// Issue #259, round 3: an envelope is only a JSON object carrying a boolean `is_error` and the
+/// `result`. Any other JSON on stdout, `{}` among it, is no parsable result, so the Worker keeps
+/// its exit, its stderr excerpt and its classification.
+#[test]
+fn json_that_is_not_an_envelope_is_no_parsable_result() {
+    use review_runner::native_failure::NativeFailureKind;
+    for stdout in [
+        "{}",
+        "[]",
+        "\"done\"",
+        r#"{"is_error":"false","result":"OK"}"#,
+        r#"{"is_error":false}"#,
+        r#"{"result":"OK"}"#,
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        let said = temp.path().join("stdout");
+        std::fs::write(&said, stdout).unwrap();
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\ncat '{}'\necho 'network failed: proxy refused connection' >&2\nexit 1\n",
+                said.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter = ClaudeTaskAdapter::new(&Command::new(
+            script.to_str().unwrap(),
+            vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+        ))
+        .unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            LOAD_SAFE_WALL,
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        assert_eq!(
+            returned.native_failure,
+            Some(NativeFailureKind::Network),
+            "{stdout}"
+        );
+        assert_eq!(
+            returned.message.unwrap_err(),
+            "Claude Worker failed: Provider network request failed (network); it exited 1 without a parsable result; stderr: network failed: proxy refused connection",
+            "{stdout}"
+        );
+    }
+}

@@ -432,3 +432,42 @@ exit 64"#,
     );
     assert!(!refusal.contains("login"), "{refusal}");
 }
+
+/// Issue #259, round 3: an app-server that answers `initialize` with `{"id":1}` and exits proved
+/// nothing; the identity probe reads it as the missing protocol capability, never as an account
+/// answer or a login problem.
+#[test]
+fn an_app_server_answering_initialize_without_a_result_lacks_the_protocol() {
+    let directory = tempfile::tempdir().unwrap();
+    let (program, spec) = fixture(
+        ProviderKind::Codex,
+        directory.path(),
+        r#"if [ "$1" = --version ]; then echo 'codex-cli 0.99.0'; exit 0; fi
+if [ "$1" = app-server ]; then
+  IFS= read -r _
+  printf '%s\n' '{"id":1}'
+  exit 0
+fi
+exit 64"#,
+    );
+    let path = std::ffi::OsStr::new("/usr/bin:/bin");
+    let error = probe_identity(&program, &spec, path, &AtomicBool::new(false), None).unwrap_err();
+    assert!(
+        error.ends_with(r#"initialize without a result object: {"id":1}"#),
+        "{error}"
+    );
+    let checked = identity(spec, program)
+        .recheck_identity(Instant::now() + LOAD_SAFE_WALL, &AtomicBool::new(false));
+    let Err(Recheck::CliCannotServe(refusal @ CliRefusal::Incompatible(_))) = checked else {
+        panic!("an app-server without an initialize result was not refused as incompatible");
+    };
+    let refusal = admission_refusal(&refusal);
+    assert!(
+        refusal.contains(&format!(
+            "missing: {};",
+            super::super::compatibility::APP_SERVER_PROTOCOL
+        )),
+        "{refusal}"
+    );
+    assert!(!refusal.contains("login"), "{refusal}");
+}

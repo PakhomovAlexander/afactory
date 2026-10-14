@@ -17,8 +17,11 @@
 //! admission Attempt starts. No isolation flag is ever dropped to make an older CLI run: the
 //! refusal is the only outcome. For Codex, the check also proves the app-server protocol the
 //! identity and usage probes need with a token-free `initialize` round trip of its own
-//! ([`check_app_server`]): an app-server that exits before answering it is reported as the missing
-//! protocol capability ([`protocol_incompatibility`]) on every surface alike.
+//! ([`check_app_server`]): only a JSON-RPC response with id 1 whose `result` is a JSON object
+//! proves it, and an app-server that exits before one, rejects `initialize` or answers it
+//! malformed (`{"id":1}`, a `null` or non-object `result`, a line that is not JSON-RPC) is
+//! reported as the missing protocol capability ([`protocol_incompatibility`]) on every surface
+//! alike.
 //!
 //! The help page, the version and the CLI's error line are Provider-authored text: they reach
 //! human output, stderr and Attempt diagnostics bounded and stripped of control characters, never
@@ -220,9 +223,10 @@ pub(super) fn check_invocation(
 /// The token-free half of the Codex app-server protocol every af probe needs: start the bare
 /// `codex app-server` in the probe environment, send `initialize`, accept its answer and stop the
 /// process. No account or rate-limit request is sent, the answer is never read as a login answer,
-/// and the round trip is bounded by the probe timeout and the Attempt deadline. An app-server that
-/// exits before answering, or rejects af's `initialize`, lacks the protocol capability; one af gave
-/// up waiting on, or could not run, leaves the CLI unchecked.
+/// and the round trip is bounded by the probe timeout and the Attempt deadline. Only an answer
+/// whose `result` is a JSON object proves the protocol: an app-server that exits before one,
+/// rejects af's `initialize` or answers it malformed lacks the protocol capability; one af gave up
+/// waiting on, or could not run, leaves the CLI unchecked.
 fn check_app_server(
     program: &Path,
     spec: &ProviderSpec,
@@ -241,16 +245,14 @@ fn check_app_server(
         &mut observed,
     ) {
         Ok(_) => Ok(()),
-        Err(error) if observed.exited_before_initialize || observed.rejected_initialize => {
-            Err(protocol_incompatibility(
-                program,
-                spec,
-                probe_path,
-                cancelled,
-                attempt_deadline,
-                &error,
-            ))
-        }
+        Err(error) if observed.lacks_protocol => Err(protocol_incompatibility(
+            program,
+            spec,
+            probe_path,
+            cancelled,
+            attempt_deadline,
+            &error,
+        )),
         Err(error) => Err(CliRefusal::Unchecked(format!(
             "provider {}: af could not check that the {} CLI `{}` serves {APP_SERVER_PROTOCOL}: {error}",
             spec.id,
@@ -260,9 +262,10 @@ fn check_app_server(
     }
 }
 
-/// A Codex CLI whose app-server exited before answering `initialize`, or rejected it, and whose
-/// own version check says it starts: it lacks the protocol capability af's probes need.
-/// `observed` is the probe's own error, with the exit status and the CLI's first error line.
+/// A Codex CLI whose app-server gave no `initialize` result object — it exited first, rejected
+/// it or answered it malformed — and whose own version check says it starts: it lacks the
+/// protocol capability af's probes need. `observed` is the probe's own error, with the exit
+/// status when it exited and the CLI's first error line or the line it answered with.
 pub(super) fn protocol_incompatibility(
     program: &Path,
     spec: &ProviderSpec,
@@ -466,6 +469,57 @@ mod tests {
             "IFS= read -r _\nprintf '%s\\n' '{\"id\":1,\"result\":{}}'\nexit 0",
         );
         assert!(check(directory.path(), ProviderKind::Codex, &answers_and_exits).is_ok());
+    }
+
+    /// Issue #259, round 3: only a response with id 1 whose `result` is a JSON object proves the
+    /// protocol. `{"id":1}`, a `null` or non-object `result` and a line that is not JSON-RPC are
+    /// the missing protocol capability, reported with the exit and the line it answered with.
+    #[test]
+    fn only_an_initialize_result_object_proves_the_protocol() {
+        let directory = tempfile::tempdir().unwrap();
+        for (answer, how, line) in [
+            (r#"{"id":1}"#, "without a result object", r#"{"id":1}"#),
+            (
+                r#"{"id":1,"result":null}"#,
+                "without a result object",
+                r#"{"id":1,"result":null}"#,
+            ),
+            (
+                r#"{"id":1,"result":"ok"}"#,
+                "without a result object",
+                r#"{"id":1,"result":"ok"}"#,
+            ),
+            (
+                "codex app-server ready",
+                "with a line that is not a JSON-RPC message",
+                "codex app-server ready",
+            ),
+            ("[1]", "with a line that is not a JSON-RPC message", "[1]"),
+        ] {
+            std::fs::write(directory.path().join("answer"), format!("{answer}\n")).unwrap();
+            let body = codex_with_app_server(&format!(
+                "IFS= read -r _\ncat '{}'\nexit 0",
+                directory.path().join("answer").display()
+            ));
+            let Err(CliRefusal::Incompatible(refused)) =
+                check(directory.path(), ProviderKind::Codex, &body)
+            else {
+                panic!("{answer}: a malformed initialize answer was accepted");
+            };
+            let message = refused.message();
+            assert!(
+                message.contains(&format!(
+                    "missing: {APP_SERVER_PROTOCOL}; codex app-server exited 0 after answering initialize {how}: {line}; fix:"
+                )),
+                "{message}"
+            );
+        }
+
+        // A notification before the answer is skipped; the result object is the proof.
+        let answers = codex_with_app_server(
+            "IFS= read -r _\nprintf '%s\\n' '' '{\"method\":\"note\"}' '{\"id\":1,\"result\":{}}'\nexit 0",
+        );
+        assert!(check(directory.path(), ProviderKind::Codex, &answers).is_ok());
     }
 
     /// The protocol check is bounded by the probe timeout and the Attempt deadline, and a silent

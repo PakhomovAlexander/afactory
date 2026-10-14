@@ -1,6 +1,8 @@
 //! Codex framing for generic typed Task Workers, preserving failed and malformed usage.
 use super::*;
-use review_runner::cli::{WorkerStderr, is_invocation_error, startup_failure, transport_outcome};
+use review_runner::cli::{
+    WorkerStderr, ended_without_result, is_invocation_error, startup_failure,
+};
 use review_runner::native_failure::{NativeFailureKind, classify_native_failure};
 use review_runner::task::{
     MAX_WORKER_BYTES, ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter,
@@ -154,7 +156,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                 events = TaskEvents::parse(stdout);
                 // The Worker's own last words, bounded and filtered, before the privacy filter
                 // below may replace the stream.
-                said = WorkerStderr::read(stderr);
+                said = WorkerStderr::read(stderr, stdout);
                 if failed || events.upstream_failure.is_some() {
                     // Framed events speak only through their error fields: an agent message
                     // that quotes an auth error is model output, never a native diagnostic.
@@ -200,6 +202,10 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         };
         returned.usage = events.reported_usage();
         returned.usage_observation = events.observation();
+        // The only parsable result is the `-o` final message of a process that exited 0 with no
+        // `error` or `turn.failed` event. Every other ending, framed events or not, carries the
+        // exit and the Worker's own last words.
+        let ended = ended_without_result(&capture.status, &said);
         if !capture.status.as_ref().is_ok_and(|status| status.success()) || events.error.is_some() {
             // An `error` or `turn.failed` event is a native failure even when its message is
             // unclassified: its closed diagnostic names that, never the bare exit status.
@@ -218,24 +224,24 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                 .filter(|kind| *kind != NativeFailureKind::Unknown)
                 .or(events.upstream_failure.filter(|_| !events.malformed_usage))
             {
-                let mut message = format!(
-                    "Codex Worker failed: {}; transport: {}",
-                    kind.diagnostic(),
-                    transport_outcome(&capture.status)
-                );
+                let mut message = format!("Codex Worker failed: {}; it {ended}", kind.diagnostic());
                 if events.malformed_usage {
                     message.push_str("; Codex Worker returned malformed native usage");
                 }
                 message
             } else if events.malformed_usage {
                 format!(
-                    "Codex Worker returned malformed native usage: {:?}",
+                    "Codex Worker returned malformed native usage: {:?}; it {ended}",
                     events.error
                 )
             } else {
-                format!(
-                    "Codex Worker failed; transport: {}",
-                    transport_outcome(&capture.status)
+                // Only events that carry no failure, such as `thread.started`.
+                startup_failure(
+                    "Codex Worker",
+                    &CODEX_INVOCATION,
+                    &capture.status,
+                    &said,
+                    failure.unwrap_or(NativeFailureKind::Unknown),
                 )
             });
             return if capture.started {
@@ -246,7 +252,8 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         }
         // The `-o` file is the only final message: an absent or empty file is no reply.
         returned.message = read_final_message(&output_directory)
-            .and_then(|bytes| bytes.ok_or_else(|| "Codex Worker returned no final message".into()));
+            .and_then(|bytes| bytes.ok_or_else(|| "Codex Worker returned no final message".into()))
+            .map_err(|error| format!("{error}; it {ended}"));
         Ok(returned)
     }
 }

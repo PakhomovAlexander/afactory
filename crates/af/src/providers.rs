@@ -4364,15 +4364,65 @@ fn probe_codex_request_before(
 /// How far one Codex app-server probe got.
 #[derive(Default)]
 struct AppServerProbe {
-    /// The app-server answered `initialize`: from then on the CLI has started, whatever the
-    /// request itself concludes.
+    /// The app-server answered `initialize` with a result object: from then on the CLI has
+    /// started and serves the protocol, whatever the request itself concludes.
     answered: bool,
-    /// The app-server exited before answering `initialize`; the probe's error then carries its
-    /// exit status and the CLI's own first error line.
-    exited_before_initialize: bool,
-    /// The app-server answered `initialize` with an error: it does not accept af's handshake.
-    rejected_initialize: bool,
+    /// The app-server did not prove the protocol: it exited before a result object, answered
+    /// `initialize` with an error, or wrote a malformed answer ([`InitializeAnswer`]). The
+    /// probe's error carries the exit status when it exited and the bounded observed line.
+    lacks_protocol: bool,
 }
+
+/// What the app-server's stdout says about af's `initialize`, read line by line in order.
+#[derive(Debug, PartialEq)]
+enum InitializeAnswer {
+    /// A JSON-RPC response with id 1 whose `result` is a JSON object: the only proof of the
+    /// protocol capability.
+    Result(serde_json::Value),
+    /// A response with id 1 carrying an `error`.
+    Rejected,
+    /// A response with id 1 whose `result` is absent, `null` or not an object, or a line before
+    /// it that is not a JSON-RPC message. Carries how, and the line, bounded and filtered.
+    Malformed { how: &'static str, line: String },
+}
+
+/// The first complete stdout line that answers `initialize`, or that no JSON-RPC peer would
+/// write: blank lines and other messages (notifications, other ids) are skipped.
+fn initialize_answer(captured: &[u8]) -> Option<InitializeAnswer> {
+    complete_lines(captured).find_map(|line| {
+        let malformed = |how| InitializeAnswer::Malformed {
+            how,
+            line: review_runner::cli::bounded_cli_line(&String::from_utf8_lossy(line)),
+        };
+        if line.iter().all(u8::is_ascii_whitespace) {
+            return None;
+        }
+        let Ok(message) = serde_json::from_slice::<serde_json::Value>(line) else {
+            return Some(malformed("with a line that is not a JSON-RPC message"));
+        };
+        if !message.is_object() {
+            return Some(malformed("with a line that is not a JSON-RPC message"));
+        }
+        if message.get("id").and_then(serde_json::Value::as_u64) != Some(1) {
+            return None;
+        }
+        Some(if message.get("error").is_some() {
+            InitializeAnswer::Rejected
+        } else if message
+            .get("result")
+            .is_some_and(serde_json::Value::is_object)
+        {
+            InitializeAnswer::Result(message)
+        } else {
+            malformed("without a result object")
+        })
+    })
+}
+
+/// How long a probe that read a malformed `initialize` answer waits for the app-server to exit,
+/// so the report can carry its exit status; the answer already refused the CLI, so the wait is
+/// only for the report, and the probe deadline still bounds it.
+const MALFORMED_ANSWER_EXIT_GRACE: Duration = Duration::from_secs(1);
 
 /// The bytes of the app-server's stderr a probe keeps: enough for its first error lines.
 const MAX_APP_SERVER_STDERR: usize = 8 * 1024;
@@ -4461,12 +4511,38 @@ fn probe_codex_request_observed(
                 "Codex app-server output exceeds {MAX_PROBE_OUTPUT} bytes"
             ));
         }
-        if !requested_limits && let Some(response) = response_for_id(&captured, 1) {
+        if !requested_limits && let Some(answer) = initialize_answer(&captured) {
+            let response = match answer {
+                InitializeAnswer::Result(response) => response,
+                InitializeAnswer::Rejected => {
+                    observed.lacks_protocol = true;
+                    break Err("Codex app-server rejected initialization".to_string());
+                }
+                InitializeAnswer::Malformed { how, line } => {
+                    observed.lacks_protocol = true;
+                    // Report the exit too when the app-server ends right after its answer.
+                    let grace = Instant::now() + MALFORMED_ANSWER_EXIT_GRACE.min(timeout);
+                    let exit = loop {
+                        match review_process::try_reap_killing_group(&mut child, &mut watch) {
+                            Ok(Some(status)) => {
+                                reaped = true;
+                                break Some(review_runner::cli::exit_description(&status));
+                            }
+                            Ok(None) if Instant::now() < grace.min(deadline) => {
+                                thread::sleep(Duration::from_millis(10));
+                            }
+                            Ok(None) | Err(_) => break None,
+                        }
+                    };
+                    break Err(match exit {
+                        Some(exit) => format!(
+                            "codex app-server {exit} after answering initialize {how}: {line}"
+                        ),
+                        None => format!("codex app-server answered initialize {how}: {line}"),
+                    });
+                }
+            };
             observed.answered = true;
-            if response.get("error").is_some() {
-                observed.rejected_initialize = true;
-                break Err("Codex app-server rejected initialization".to_string());
-            }
             let Some(request) = request else {
                 break Ok(response);
             };
@@ -4492,27 +4568,43 @@ fn probe_codex_request_observed(
                 if requested_limits && let Some(response) = response_for_id(&captured, 2) {
                     break Ok(response);
                 }
-                // The protocol check asks for the `initialize` answer alone, however soon the
-                // app-server exits after giving it.
-                if request.is_none()
-                    && let Some(response) = response_for_id(&captured, 1)
-                {
-                    observed.answered = true;
-                    if response.get("error").is_some() {
-                        observed.rejected_initialize = true;
+                let exit = review_runner::cli::exit_description(&status);
+                let answer = if requested_limits {
+                    None
+                } else {
+                    initialize_answer(&captured)
+                };
+                match answer {
+                    // The protocol check asks for the `initialize` answer alone, however soon
+                    // the app-server exits after giving it.
+                    Some(InitializeAnswer::Result(response)) if request.is_none() => {
+                        observed.answered = true;
+                        break Ok(response);
+                    }
+                    Some(InitializeAnswer::Result(_)) => observed.answered = true,
+                    Some(InitializeAnswer::Rejected) => {
+                        observed.lacks_protocol = true;
                         break Err("Codex app-server rejected initialization".to_string());
                     }
-                    break Ok(response);
+                    Some(InitializeAnswer::Malformed { how, line }) => {
+                        observed.lacks_protocol = true;
+                        break Err(format!(
+                            "codex app-server {exit} after answering initialize {how}: {line}"
+                        ));
+                    }
+                    None => {}
                 }
-                let exit = review_runner::cli::exit_description(&status);
-                let (line, _) = review_runner::cli::error_and_fix(&said, b"");
-                let line = line.map(|line| format!(": {line}")).unwrap_or_default();
-                if requested_limits || response_for_id(&captured, 1).is_some() {
+                if observed.answered {
+                    let (line, _) = review_runner::cli::error_and_fix(&said, b"");
+                    let line = line.map(|line| format!(": {line}")).unwrap_or_default();
                     break Err(format!(
                         "codex app-server {exit} after initialize without answering `{method}`{line}"
                     ));
                 }
-                observed.exited_before_initialize = true;
+                // Its own error line, else what it printed on stdout, is what it said.
+                let (line, _) = review_runner::cli::error_and_fix(&said, &captured);
+                let line = line.map(|line| format!(": {line}")).unwrap_or_default();
+                observed.lacks_protocol = true;
                 break Err(format!(
                     "codex app-server {exit} before answering initialize{line}"
                 ));
@@ -4547,18 +4639,21 @@ fn probe_codex_request_observed(
     result
 }
 
-fn response_for_id(captured: &[u8], expected_id: u64) -> Option<serde_json::Value> {
+/// The newline-terminated lines of a stream, without their line endings: a line still being
+/// written is not read.
+fn complete_lines(captured: &[u8]) -> impl Iterator<Item = &[u8]> {
     captured
         .split_inclusive(|byte| *byte == b'\n')
         .filter(|line| line.ends_with(b"\n"))
-        .filter_map(|line| {
-            let line = line
-                .strip_suffix(b"\n")
-                .unwrap_or(line)
-                .strip_suffix(b"\r")
-                .unwrap_or(line);
-            serde_json::from_slice::<serde_json::Value>(line).ok()
+        .map(|line| {
+            let line = line.strip_suffix(b"\n").unwrap_or(line);
+            line.strip_suffix(b"\r").unwrap_or(line)
         })
+}
+
+fn response_for_id(captured: &[u8], expected_id: u64) -> Option<serde_json::Value> {
+    complete_lines(captured)
+        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
         .find(|message| message.get("id").and_then(serde_json::Value::as_u64) == Some(expected_id))
 }
 
@@ -6327,7 +6422,7 @@ auth_dir = "{}"
             error,
             "codex app-server exited 2 before answering initialize: error: unexpected argument '--stdio' found"
         );
-        assert!(observed.exited_before_initialize && !observed.answered);
+        assert!(observed.lacks_protocol && !observed.answered);
     }
 
     #[test]
@@ -6407,6 +6502,48 @@ auth_dir = "{}"
             ),
             "API billing"
         );
+    }
+
+    #[test]
+    fn an_initialize_answer_is_proof_only_with_a_result_object() {
+        assert_eq!(
+            initialize_answer(b"{\"method\":\"note\"}\n\n{\"id\":1,\"result\":{}}\n"),
+            Some(InitializeAnswer::Result(
+                serde_json::json!({"id":1,"result":{}})
+            ))
+        );
+        assert_eq!(
+            initialize_answer(b"{\"id\":1,\"error\":{\"code\":-1}}\n"),
+            Some(InitializeAnswer::Rejected)
+        );
+        for (captured, how) in [
+            (&b"{\"id\":1}\n"[..], "without a result object"),
+            (b"{\"id\":1,\"result\":null}\n", "without a result object"),
+            (b"{\"id\":1,\"result\":[]}\r\n", "without a result object"),
+            (
+                b"starting\n{\"id\":1,\"result\":{}}\n",
+                "with a line that is not a JSON-RPC message",
+            ),
+            (b"42\n", "with a line that is not a JSON-RPC message"),
+        ] {
+            let Some(InitializeAnswer::Malformed { how: said, line }) = initialize_answer(captured)
+            else {
+                panic!("{captured:?} was not malformed");
+            };
+            assert_eq!(said, how);
+            assert_eq!(
+                line,
+                String::from_utf8_lossy(captured)
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .trim_end()
+            );
+        }
+        // Nothing yet: no line, a line still being written, or another id.
+        for captured in [&b""[..], b"{\"id\":1,\"res", b"{\"id\":2,\"result\":{}}\n"] {
+            assert_eq!(initialize_answer(captured), None);
+        }
     }
 
     #[test]

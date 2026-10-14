@@ -263,12 +263,12 @@ fn a_failure_event_without_usage_names_its_classified_cause() {
     for (message, diagnostic, kind) in [
         (
             "Selected model is at capacity. Please try a different model.",
-            "Codex Worker failed: Provider model at capacity (capacity); transport: ",
+            "Codex Worker failed: Provider model at capacity (capacity); it exited 1 without a parsable result and wrote no stderr",
             NativeFailureKind::Capacity,
         ),
         (
             "something unexpected happened",
-            "Codex Worker failed: Provider returned an unclassified failure (unknown); transport: ",
+            "Codex Worker failed: Provider returned an unclassified failure (unknown); it exited 1 without a parsable result and wrote no stderr",
             NativeFailureKind::Unknown,
         ),
     ] {
@@ -470,4 +470,74 @@ fn a_classified_failure_without_events_keeps_its_exit_and_stderr_excerpt() {
         returned.message.unwrap_err(),
         "Codex Worker failed: Provider network request failed (network); it exited 1 without a parsable result; stderr: network failed: proxy refused connection"
     );
+}
+
+/// Issue #259, round 3: the only parsable result is the `-o` final message of a process that
+/// exited 0 without a failure event. A missing final message at exit 0, stdout holding only
+/// unrelated framed events, and a non-zero exit after `turn.failed` each keep the exit, the
+/// bounded stderr excerpt and the classification.
+#[test]
+fn every_exit_without_a_final_message_keeps_its_exit_and_stderr_excerpt() {
+    use review_runner::native_failure::NativeFailureKind;
+    let started = r#"{"type":"thread.started","thread_id":"fixture"}"#;
+    let completed = r#"{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":2}}"#;
+    let failed = r#"{"type":"turn.failed","error":{"message":"Selected model is at capacity."}}"#;
+    for (stdout, stderr, exit, kind, expected) in [
+        (
+            format!("{started}\n{completed}"),
+            "error: cannot write last message",
+            0,
+            None,
+            "Codex Worker returned no final message; it exited 0 without a parsable result; stderr: error: cannot write last message",
+        ),
+        (
+            started.to_string(),
+            "error: cannot write last message",
+            1,
+            None,
+            "Codex Worker exited 1 without a parsable result; stderr: error: cannot write last message",
+        ),
+        (
+            started.to_string(),
+            "network failed: proxy refused connection",
+            1,
+            Some(NativeFailureKind::Network),
+            "Codex Worker failed: Provider network request failed (network); it exited 1 without a parsable result; stderr: network failed: proxy refused connection",
+        ),
+        (
+            format!("{started}\n{failed}"),
+            "error: cannot write last message",
+            1,
+            Some(NativeFailureKind::Capacity),
+            "Codex Worker failed: Provider model at capacity (capacity); it exited 1 without a parsable result; stderr: error: cannot write last message",
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        std::fs::write(temp.path().join("stdout"), format!("{stdout}\n")).unwrap();
+        std::fs::write(temp.path().join("stderr"), format!("{stderr}\n")).unwrap();
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\ncat '{0}/stdout'\ncat '{0}/stderr' >&2\nexit {exit}\n",
+                temp.path().display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter =
+            CodexTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            LOAD_SAFE_WALL,
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        assert_eq!(returned.message.unwrap_err(), expected);
+        assert_eq!(returned.native_failure, kind, "{expected}");
+    }
 }

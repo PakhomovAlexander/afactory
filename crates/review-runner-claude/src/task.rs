@@ -214,6 +214,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             runner = runner.with_env(name, value);
         }
         let mut parsed = None;
+        let mut enveloped = false;
         let mut failure: Option<NativeFailureKind> = None;
         let mut said = WorkerStderr::default();
         let capture = runner.capture_filtered(
@@ -225,16 +226,20 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 // Keep the original in-memory usage envelope, but never capture an auth
                 // challenge or token-bearing error as ordinary Task evidence.
                 parsed = serde_json::from_slice::<serde_json::Value>(stdout).ok();
-                let native_failed = parsed.as_ref().is_some_and(|value| {
+                enveloped = parsed
+                    .as_ref()
+                    .is_some_and(|value| is_envelope(value, output_schema.is_some()));
+                let envelope = parsed.as_ref().filter(|_| enveloped);
+                let native_failed = envelope.is_some_and(|value| {
                     value.get("is_error").and_then(serde_json::Value::as_bool) == Some(true)
                 });
                 // The Worker's own last words, bounded and filtered, before the privacy filter
                 // below may replace the stream.
-                said = WorkerStderr::read(stderr);
+                said = WorkerStderr::read(stderr, stdout);
                 if failed || native_failed {
                     // A parsed envelope speaks only through its native error fields, so model
-                    // text cannot choose the category. Unparsed stdout is native output.
-                    let kind = match &parsed {
+                    // text cannot choose the category. Any other stdout is native output.
+                    let kind = match envelope {
                         Some(value) => native_failure(value, native_failed),
                         None => classify_native_failure(&String::from_utf8_lossy(stdout)),
                     };
@@ -253,7 +258,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                         });
                     // A CLI whose own argument parser refused af's invocation printed no
                     // envelope, only its parser's error; it never reached a model.
-                    if parsed.is_none()
+                    if envelope.is_none()
                         && !failure.is_some_and(NativeFailureKind::is_auth)
                         && [&*stderr, &*stdout]
                             .iter()
@@ -271,20 +276,22 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         // history for this Attempt's working directory goes now.
         self.remove_transcripts(workdir);
         let accounting = model_usage::account(parsed.as_ref(), &self.model);
+        let envelope = parsed.as_ref().filter(|_| enveloped);
         let success = accounting.error.is_none()
             && accounting.observation.is_none()
             && capture.status.as_ref().is_ok_and(|status| status.success())
-            && parsed.as_ref().is_some_and(|v| {
+            && envelope.is_some_and(|v| {
                 v.get("is_error").and_then(serde_json::Value::as_bool) == Some(false)
             });
         let message = if success {
             structured::message(
-                parsed.as_ref().expect("successful envelope"),
+                envelope.expect("successful envelope"),
                 output_schema.is_some(),
             )
-        } else if parsed.is_none() {
-            // No envelope at all: the process's exit and its own last words are all there is,
-            // whatever the failure was classified as.
+        } else if envelope.is_none() {
+            // No envelope, whether stdout was empty, prose or JSON of another shape (`{}`): the
+            // process's exit and its own last words are all there is, whatever the failure was
+            // classified as.
             Err(startup_failure(
                 "Claude Worker",
                 &CLAUDE_INVOCATION,
@@ -326,6 +333,16 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             Err(Unstarted(Box::new(returned)))
         }
     }
+}
+
+/// Whether stdout is a result envelope: a JSON object carrying the fields the adapter reads, a
+/// boolean `is_error` and the `result`, or for a schema-constrained Attempt its
+/// `structured_output`. Any other JSON, `{}` among it, is no parsable result.
+fn is_envelope(value: &serde_json::Value, typed: bool) -> bool {
+    value
+        .get("is_error")
+        .is_some_and(serde_json::Value::is_boolean)
+        && (value.get("result").is_some() || typed && value.get("structured_output").is_some())
 }
 
 /// `result` is the CLI's own API error text only in an `is_error` envelope without structured

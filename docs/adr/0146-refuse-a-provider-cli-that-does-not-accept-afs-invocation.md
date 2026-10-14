@@ -52,9 +52,13 @@ invocation af builds, and the diagnostics hid the one line that said so.
    same check then proves the app-server protocol. It starts the bare `codex app-server` in the
    same probe environment, sends `initialize`, accepts its answer and stops the process. It sends
    no account or rate-limit request, and the answer never counts as a login answer. The probe
-   timeout and the Attempt deadline bound it. An app-server that exits before answering
-   `initialize`, or answers it with an error, is refused as missing that protocol capability when
-   the CLI's own `--version` succeeds. When `--version` also fails it is an ADR-0130 installation
+   timeout and the Attempt deadline bound it. Only a JSON-RPC response with id 1 whose `result` is
+   a JSON object proves the protocol. An app-server that exits before such a response, answers
+   `initialize` with an error, answers it without a `result` object (`{"id":1}`, a `null` or
+   non-object `result`) or writes a line that is not JSON-RPC is refused as missing that protocol
+   capability when the CLI's own `--version` succeeds. The report carries the exit status when it
+   exited and the bounded line it answered with, and the identity and usage probes read the
+   `initialize` answer by the same rule. When `--version` also fails it is an ADR-0130 installation
    failure. A check af gave up on, by timeout, deadline or cancellation, leaves the CLI unchecked:
    `unavailable` in status, never `authenticated`. Plain status, `status --usage`, setup and
    admission therefore all give the same report for an app-server that cannot initialize. A help
@@ -75,8 +79,13 @@ invocation af builds, and the diagnostics hid the one line that said so.
      dispatched: …` carrying the report, before any Worker process starts and before any Attempt is
      reserved or charged. A refused selection's stderr line now also names each candidate's own
      reason after `No Pipeline selected: …`. None of these is worded as a login or account problem.
-5. **Worker startup failures carry their own words.** A Claude or Codex Worker that exits without
-   a parsable result now has its exit status (`exited 1`, never a debug-printed `ExitStatus`) and
+5. **Worker startup failures carry their own words.** A parsable result is, for Claude, a JSON
+   object carrying the fields the adapter reads, a boolean `is_error` and the `result` (or, for a
+   schema-constrained Attempt, the `structured_output`); `{}` and any other JSON are none. For
+   Codex it is the `-o` final message of a process that exited 0 without an `error` or
+   `turn.failed` event; a missing final-message file at exit 0, stdout holding only unrelated
+   events and a non-zero exit after `turn.failed` are none. A Claude or Codex Worker that exits
+   without a parsable result now has its exit status (`exited 1`, never a debug-printed `ExitStatus`) and
    a bounded, sanitized stderr excerpt in its Attempt diagnostic: its first error line and its last
    six lines, at most 1,024 characters, control characters and terminal escapes removed, and grant
    values redacted as before. This holds for every classification: `network`, every `auth_*`,
@@ -84,7 +93,8 @@ invocation af builds, and the diagnostics hid the one line that said so.
    failure keeps its closed diagnostic first, as in `Codex Worker failed: Provider network request
    failed (network); it exited 1 without a parsable result; stderr: …`. The excerpt is read before
    the privacy filter replaces the captured stream, so an auth failure's diagnostic keeps the
-   Worker's words while its Task evidence stays replaced. A failure whose output is the CLI's own argument error (`unknown option`, `unexpected
+   Worker's words while its Task evidence stays replaced; when either stream carries challenge
+   material, which makes that filter replace both, the excerpt is the withheld marker alone. A failure whose output is the CLI's own argument error (`unknown option`, `unexpected
    argument`, `unrecognized …`, a `Usage:` block) is its own `NativeFailureKind`,
    `UnsupportedInvocation` (`unsupported_invocation`), whose diagnostic says the installed CLI
    does not accept af's invocation and names the upgrade. It is not an authentication failure, and
@@ -101,14 +111,17 @@ invocation af builds, and the diagnostics hid the one line that said so.
    - `Bearer` and a token;
    - an `Authorization` header;
    - a token prefix (`sk-`, `sk-ant-`, `sk-proj-`, `ghp_`, `xoxb-` and their kin);
-   - a run of 32 or more base64 or hex characters;
+   - a run of 32 or more hexadecimal characters;
+   - a run of 32 or more characters of the base64 and base64url alphabet (`A-Z`, `a-z`, `0-9`,
+     `+`, `/`, `=`, `_`, `-`) holding at least one upper-case letter, one lower-case letter and
+     one digit;
+   - a JSON Web Token: three base64url segments joined by dots, the first starting with `eyJ`;
    - login-challenge material.
 
-   The one exempt run is made only of lower-case letters, `-`, `_` and `/`, and not only of hex
-   digits, as a long option name or path is; a key or token that long has a digit, an upper-case
-   letter, `+` or `=`. The line is judged whole, before it is cut to its bound. A stream carrying
-   challenge material anywhere is still withheld as a whole, now as that marker rather than as
-   silence. The exit status and the classification always stay; only the line goes.
+   A run of letters alone is a word, a long option name or a path segment, not a secret, and
+   passes by design, so executable paths stay readable. The line is judged whole, before it is
+   cut to its bound. A stream carrying challenge material anywhere is still withheld as a whole,
+   now as that marker rather than as silence. The exit status and the classification always stay; only the line goes.
 7. **No weaker invocation, ever.** No isolation flag is dropped, reordered behind package flags or
    replaced to make an older CLI run, and there is no fallback invocation for an older CLI. The
    capability check never runs paid inference, never alters credentials, and its diagnostics carry
@@ -150,6 +163,11 @@ invocation af builds, and the diagnostics hid the one line that said so.
   rules. Withholding only the offending line keeps the CLI's other words, such as the argument
   error before a leaked key. Challenge material, which a terminal may wrap across lines, still
   withholds the stream.
+- **Withhold every run of 32 or more base64 characters.** Rejected. Letters alone make such a
+  run as readily as a key does: a long option, a path such as
+  `/Users/alice/bs/apkhmv-main/af/afactory-wt-cli-compat/crates/af`, and the report would lose
+  the executable it names. A key or token that long mixes cases and digits, or is hex, or is a
+  JWT.
 - **Recognize only the spellings seen so far.** Rejected. `API_KEY=` reached a diagnostic because
   the filter knew `token=` and `access_token` but not that spelling. The filter now matches names
   by their secret-bearing part and token shapes by their form.
