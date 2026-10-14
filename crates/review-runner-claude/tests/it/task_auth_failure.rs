@@ -317,6 +317,53 @@ fn a_cli_that_refuses_afs_arguments_is_an_unsupported_invocation_with_its_own_li
     }
 }
 
+/// Issue #259, round 5: a CLI argument error outranks an authentication hint beside it. A Worker
+/// that prints no envelope and whose stderr holds both `error: unknown option '--safe-mode'` and
+/// `Authentication required` is `unsupported_invocation`, with its exit and the bounded excerpt,
+/// never blamed on credentials; its raw streams stay as withheld as the auth text made them.
+#[test]
+fn an_argument_error_outranks_an_authentication_hint() {
+    use review_runner::native_failure::NativeFailureKind;
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let script = temp.path().join("provider");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"error: unknown option '--safe-mode'\" 'Authentication required' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = ClaudeTaskAdapter::new(&Command::new(
+        script.to_str().unwrap(),
+        vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+    ))
+    .unwrap();
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"input".to_vec(),
+        LOAD_SAFE_WALL,
+        WorkerAccess::ReadOnly,
+        None,
+        &[],
+    );
+    assert_eq!(
+        returned.native_failure,
+        Some(NativeFailureKind::UnsupportedInvocation)
+    );
+    let error = returned.message.unwrap_err();
+    assert_eq!(
+        error,
+        "Claude Worker failed: the installed claude CLI does not accept af's invocation (unsupported_invocation); it exited 1: error: unknown option '--safe-mode' | Authentication required; fix: upgrade it with `npm install -g @anthropic-ai/claude-code@latest`, then rerun `af provider status`"
+    );
+    assert!(!error.contains("auth_missing"), "{error}");
+    assert!(returned.usage.is_none(), "no usage was reported");
+    for id in &returned.raw_artifact_ids {
+        let kept = String::from_utf8(cas.get(id).unwrap()).unwrap();
+        assert!(!kept.contains("Authentication required"), "{kept}");
+    }
+}
+
 /// Issue #259, round 2: a Worker that exits without a parsable result keeps its exit and its own
 /// bounded stderr excerpt whatever its failure is classified as, and a line that looks like
 /// credential material is withheld whole while the exit and the classification stay.

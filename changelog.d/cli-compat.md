@@ -4,8 +4,9 @@
   reads `claude --help` or `codex exec --help` and refuses a CLI that does not declare every
   option af passes, such as Claude Code before 2.1.248, which has no `--restricted`. For Codex it
   also starts the bare `codex app-server` and asks it to `initialize`; only an answer whose
-  `result` is a JSON object proves it, so an app-server that exits first, rejects it or answers
-  `{"id":1}` is `incompatible` on plain status, `--usage`, setup and admission alike. No isolation flag
+  `result` is a JSON object proves it, so an app-server that exits first, rejects it, answers
+  `{"id":1}` or first writes a line that is neither a response nor a notification (`{"foo":"bar"}`,
+  refused at once rather than waited on) is `incompatible` on plain status, `--usage`, setup and admission alike. No isolation flag
   is ever dropped to make a CLI run. The report names the Provider, the path, the version, every
   missing option and the upgrade command. `af provider status` shows the new state `incompatible`
   and exits 4, and `--json` now emits `af/provider-status@2`. Task admission refuses before any
@@ -16,7 +17,8 @@
   an object with a boolean `is_error` and its `result`, `{}` included; for Codex, anything but the
   `-o` final message after a clean exit) now reports its exit status and a bounded stderr excerpt
   whatever its failure is classified as, and one whose CLI refused
-  af's arguments is classified `unsupported_invocation`. One shared filter replaces any Provider
-  line that looks like credential material (`API_KEY=…`, `Bearer …`, `Authorization:`, `sk-…`,
+  af's arguments is classified `unsupported_invocation`, even beside an authentication hint or
+  after unrelated Codex events. One shared filter replaces any Provider
+  line, the Codex rate-limit names `status --usage` shows among them, that looks like credential material (`API_KEY=…`, `Bearer …`, `Authorization:`, `sk-…`,
   32 or more hex characters, 32 or more base64 characters mixing cases and digits, a JWT of three
   whole base64url segments whose header and signature are 16 or more characters long) with `[line withheld: looks like credential material]`.

@@ -82,7 +82,14 @@ impl NativeFailureKind {
     /// suppress an obvious auth challenge/token on a non-auth failure (for example, a failed
     /// network request during refresh), without changing that failure's classification.
     pub fn redact_auth_capture(self, stdout: &mut Vec<u8>, stderr: &mut Vec<u8>) {
-        if self.is_auth() || auth_material(stdout) || auth_material(stderr) {
+        self.redact_capture(false, stdout, stderr);
+    }
+
+    /// [`Self::redact_auth_capture`] for a failure classified as `self` whose streams a native
+    /// classification also read as auth output (`auth_seen`): an invocation error takes the
+    /// classification, but the streams stay as sensitive as the auth text made them.
+    pub fn redact_capture(self, auth_seen: bool, stdout: &mut Vec<u8>, stderr: &mut Vec<u8>) {
+        if auth_seen || self.is_auth() || auth_material(stdout) || auth_material(stderr) {
             *stdout = self.diagnostic().as_bytes().to_vec();
             // One summary, not two identical CAS IDs: Attempt raw-evidence references are
             // required to be distinct. Neither original stream survives the replacement.

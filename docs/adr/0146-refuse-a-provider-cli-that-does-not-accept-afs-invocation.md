@@ -55,8 +55,11 @@ invocation af builds, and the diagnostics hid the one line that said so.
    timeout and the Attempt deadline bound it. Only a JSON-RPC response with id 1 whose `result` is
    a JSON object proves the protocol. An app-server that exits before such a response, answers
    `initialize` with an error, answers it without a `result` object (`{"id":1}`, a `null` or
-   non-object `result`) or writes a line that is not JSON-RPC is refused as missing that protocol
-   capability when the CLI's own `--version` succeeds. Every such refusal carries the process
+   non-object `result`) or writes, before that answer, a line that is neither a JSON-RPC response
+   carrying an `id` nor a notification carrying a `method` (`{"foo":"bar"}`, any non-JSON line)
+   is refused as missing that protocol capability when the CLI's own `--version` succeeds. Such a
+   line refuses at once, never waited on as silence until the timeout; a notification before the
+   result is accepted. Every such refusal carries the process
    outcome, its exit status when it exited or the af-authored `was stopped by af` when it was
    still running after a one-second grace, and the bounded line it answered with, an error
    response included: `codex app-server exited 0 after answering initialize with an error:
@@ -100,13 +103,18 @@ invocation af builds, and the diagnostics hid the one line that said so.
    material, which makes that filter replace both, the excerpt is the withheld marker alone. A failure whose output is the CLI's own argument error (`unknown option`, `unexpected
    argument`, `unrecognized …`, a `Usage:` block) is its own `NativeFailureKind`,
    `UnsupportedInvocation` (`unsupported_invocation`), whose diagnostic says the installed CLI
-   does not accept af's invocation and names the upgrade. It is not an authentication failure, and
+   does not accept af's invocation and names the upgrade. When the Worker left no parsable result,
+   that argument error takes precedence over every other classification, an authentication hint
+   on the same stderr and unrelated events a Codex Worker framed first included; auth text beside
+   it still keeps the captured streams replaced. It is not an authentication failure, and
    its unknown-usage cause is `unreported`
    ([ADR-0143](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)).
 6. **One credential filter for every Provider-authored line.** Every line of Provider text that
    may reach a diagnostic, a probe error or human output goes through
    `review_runner::cli::bounded_cli_line`. That covers stderr excerpts, app-server error lines,
-   help and version lines. The function replaces the whole line with the af-authored
+   help and version lines, and the Codex rate-limit names and ids `af provider status --usage`
+   shows in its table, where a withheld label keeps its window figures. Plan types and
+   subscription labels are mapped to a fixed af vocabulary and never quoted. The function replaces the whole line with the af-authored
    `[line withheld: looks like credential material]` when `looks_like_credential` finds any of:
    - a key, token, secret, password, credential or auth assignment (`NAME=value`, `NAME: value`,
      `NAME="value"`, any case, any prefix such as `API_KEY`, `OPENAI_API_KEY`,

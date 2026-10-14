@@ -178,18 +178,18 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                                 .into_iter()
                                 .find(|kind| *kind != NativeFailureKind::Unknown)
                         });
-                    // A CLI whose own argument parser refused af's invocation framed no event,
-                    // only its parser's error; it never reached a model.
-                    if !events.framed
-                        && !failure.is_some_and(NativeFailureKind::is_auth)
-                        && (is_invocation_error(&String::from_utf8_lossy(stderr))
-                            || is_invocation_error(&unframed(stdout)))
+                    let auth_seen = failure.is_some_and(NativeFailureKind::is_auth);
+                    // A CLI whose own argument parser refused af's invocation left no result,
+                    // only its parser's error, whatever events it framed first; the refusal
+                    // outranks every other classification, an auth hint among them.
+                    if is_invocation_error(&String::from_utf8_lossy(stderr))
+                        || is_invocation_error(&unframed(stdout))
                     {
                         failure = Some(NativeFailureKind::UnsupportedInvocation);
                     }
                     failure
                         .unwrap_or(NativeFailureKind::Unknown)
-                        .redact_auth_capture(stdout, stderr);
+                        .redact_capture(auth_seen, stdout, stderr);
                 }
             },
         );
@@ -210,40 +210,44 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             // An `error` or `turn.failed` event is a native failure even when its message is
             // unclassified: its closed diagnostic names that, never the bare exit status.
             returned.native_failure = failure.or(events.upstream_failure);
-            returned.message = Err(if !events.framed {
-                // No event at all: the process's exit and its own last words are all there is,
-                // whatever the failure was classified as.
-                startup_failure(
-                    "Codex Worker",
-                    &CODEX_INVOCATION,
-                    &capture.status,
-                    &said,
-                    failure.unwrap_or(NativeFailureKind::Unknown),
-                )
-            } else if let Some(kind) = failure
-                .filter(|kind| *kind != NativeFailureKind::Unknown)
-                .or(events.upstream_failure.filter(|_| !events.malformed_usage))
-            {
-                let mut message = format!("Codex Worker failed: {}; it {ended}", kind.diagnostic());
-                if events.malformed_usage {
-                    message.push_str("; Codex Worker returned malformed native usage");
-                }
-                message
-            } else if events.malformed_usage {
-                format!(
-                    "Codex Worker returned malformed native usage: {:?}; it {ended}",
-                    events.error
-                )
-            } else {
-                // Only events that carry no failure, such as `thread.started`.
-                startup_failure(
-                    "Codex Worker",
-                    &CODEX_INVOCATION,
-                    &capture.status,
-                    &said,
-                    failure.unwrap_or(NativeFailureKind::Unknown),
-                )
-            });
+            returned.message = Err(
+                if !events.framed || failure == Some(NativeFailureKind::UnsupportedInvocation) {
+                    // No event at all, or a refused invocation after unrelated events: the
+                    // process's exit and its own last words are all there is, whatever the failure
+                    // was classified as.
+                    startup_failure(
+                        "Codex Worker",
+                        &CODEX_INVOCATION,
+                        &capture.status,
+                        &said,
+                        failure.unwrap_or(NativeFailureKind::Unknown),
+                    )
+                } else if let Some(kind) = failure
+                    .filter(|kind| *kind != NativeFailureKind::Unknown)
+                    .or(events.upstream_failure.filter(|_| !events.malformed_usage))
+                {
+                    let mut message =
+                        format!("Codex Worker failed: {}; it {ended}", kind.diagnostic());
+                    if events.malformed_usage {
+                        message.push_str("; Codex Worker returned malformed native usage");
+                    }
+                    message
+                } else if events.malformed_usage {
+                    format!(
+                        "Codex Worker returned malformed native usage: {:?}; it {ended}",
+                        events.error
+                    )
+                } else {
+                    // Only events that carry no failure, such as `thread.started`.
+                    startup_failure(
+                        "Codex Worker",
+                        &CODEX_INVOCATION,
+                        &capture.status,
+                        &said,
+                        failure.unwrap_or(NativeFailureKind::Unknown),
+                    )
+                },
+            );
             return if capture.started {
                 Ok(returned)
             } else {

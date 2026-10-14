@@ -256,10 +256,11 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                                 .into_iter()
                                 .find(|kind| *kind != NativeFailureKind::Unknown)
                         });
+                    let auth_seen = failure.is_some_and(NativeFailureKind::is_auth);
                     // A CLI whose own argument parser refused af's invocation printed no
-                    // envelope, only its parser's error; it never reached a model.
+                    // envelope, only its parser's error; it never reached a model, so the
+                    // refusal outranks every other classification, an auth hint among them.
                     if envelope.is_none()
-                        && !failure.is_some_and(NativeFailureKind::is_auth)
                         && [&*stderr, &*stdout]
                             .iter()
                             .any(|stream| is_invocation_error(&String::from_utf8_lossy(stream)))
@@ -268,7 +269,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                     }
                     failure
                         .unwrap_or(NativeFailureKind::Unknown)
-                        .redact_auth_capture(stdout, stderr);
+                        .redact_capture(auth_seen, stdout, stderr);
                 }
             },
         );

@@ -4386,7 +4386,8 @@ enum InitializeAnswer {
 }
 
 /// The first complete stdout line that answers `initialize`, or that no JSON-RPC peer would
-/// write: blank lines and other messages (notifications, other ids) are skipped.
+/// write: blank lines, notifications (a `method`, no `id`) and responses to other ids are
+/// skipped; any other line, an object with neither `id` nor `method` among them, refuses.
 fn initialize_answer(captured: &[u8]) -> Option<InitializeAnswer> {
     complete_lines(captured).find_map(|line| {
         let refused = |how| InitializeAnswer::Refused {
@@ -4399,8 +4400,16 @@ fn initialize_answer(captured: &[u8]) -> Option<InitializeAnswer> {
         let Ok(message) = serde_json::from_slice::<serde_json::Value>(line) else {
             return Some(refused("with a line that is not a JSON-RPC message"));
         };
-        if !message.is_object() {
+        let Some(object) = message.as_object() else {
             return Some(refused("with a line that is not a JSON-RPC message"));
+        };
+        // Only a response, which carries an `id`, or a notification, which carries a `method`,
+        // may precede the answer; an object with neither is no JSON-RPC message, never silence.
+        if !object.contains_key("id") {
+            return (!object
+                .get("method")
+                .is_some_and(serde_json::Value::is_string))
+            .then(|| refused("with a line that is not a JSON-RPC message"));
         }
         if message.get("id").and_then(serde_json::Value::as_u64) != Some(1) {
             return None;
@@ -4683,10 +4692,11 @@ fn parse_codex_subscription_response(
     let mut skipped_windows = 0_usize;
     let mut truncated = false;
     for snapshot in snapshots {
-        let bucket = snapshot
+        let label = snapshot
             .get("limitName")
             .and_then(serde_json::Value::as_str)
-            .or_else(|| snapshot.get("limitId").and_then(serde_json::Value::as_str))
+            .or_else(|| snapshot.get("limitId").and_then(serde_json::Value::as_str));
+        let bucket = label
             .map(|value| safe_display(value, "Codex"))
             .unwrap_or_else(|| "Codex".to_string());
         for field in ["primary", "secondary"] {
@@ -4708,7 +4718,8 @@ fn parse_codex_subscription_response(
             let window_minutes = window
                 .get("windowDurationMins")
                 .and_then(serde_json::Value::as_u64);
-            if !seen_limits.insert((bucket.clone(), window_minutes)) {
+            // The same snapshot under two keys is one limit; two withheld labels are not.
+            if !seen_limits.insert((label, window_minutes)) {
                 continue;
             }
             if limits.len() == MAX_PROVIDER_LIMITS {
@@ -4859,12 +4870,16 @@ fn logged_out_detail(spec: &ProviderSpec) -> String {
     detail
 }
 
+/// A Provider-authored label made safe to show: [`review_runner::cli::bounded_cli_line`], the one
+/// credential filter, judges it whole, so a label that looks like credential material is the fixed
+/// [`review_runner::cli::WITHHELD_LINE`]; any other is cut at 48 characters, and an empty one is
+/// `fallback`.
 fn safe_display(value: &str, fallback: &str) -> String {
-    let value: String = value
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(48)
-        .collect();
+    let value = review_runner::cli::bounded_cli_line(value);
+    if value == review_runner::cli::WITHHELD_LINE {
+        return value;
+    }
+    let value: String = value.chars().take(48).collect();
     if value.is_empty() {
         fallback.to_string()
     } else {
@@ -6323,6 +6338,41 @@ auth_dir = "{}"
         );
     }
 
+    /// Issue #259, round 5: a rate-limit label or plan type that looks like credential material
+    /// never reaches a limit name or the subscription; the window figures stay.
+    #[test]
+    fn credential_looking_codex_labels_are_withheld_and_their_windows_kept() {
+        use review_runner::cli::WITHHELD_LINE;
+        for label in ["OPENAI_API_KEY=sk-proj-FIXTURE", "API_KEY=abcd"] {
+            let response = serde_json::json!({"id":2,"result":{"rateLimitsByLimitId":{
+                "named":{"limitId":"named","limitName":label,"planType":label,
+                    "primary":{"usedPercent":37,"windowDurationMins":300}},
+                "bare":{"limitId":label,"limitName":null,
+                    "primary":{"usedPercent":12,"windowDurationMins":10080}}
+            }}});
+            let snapshot = parse_codex_subscription_response(&response).unwrap();
+            assert_eq!(snapshot.subscription, "ChatGPT (plan unavailable)");
+            let shown: Vec<_> = snapshot
+                .limits
+                .iter()
+                .map(|limit| (limit.name.as_str(), limit.used_percent))
+                .collect();
+            assert_eq!(
+                shown,
+                [
+                    (format!("{WITHHELD_LINE} 1w").as_str(), 12),
+                    (format!("{WITHHELD_LINE} 5h").as_str(), 37)
+                ]
+            );
+        }
+        assert_eq!(
+            safe_display("GPT-5.3-Codex-Spark", "Codex"),
+            "GPT-5.3-Codex-Spark"
+        );
+        assert_eq!(safe_display("\u{1b}[31m\n", "Codex"), "Codex");
+        assert_eq!(safe_display(&"x".repeat(60), "Codex"), "x".repeat(48));
+    }
+
     #[test]
     fn malformed_codex_windows_do_not_hide_valid_subscription_data() {
         let response: serde_json::Value = serde_json::from_str(include_str!(
@@ -6500,6 +6550,14 @@ auth_dir = "{}"
     #[test]
     fn an_initialize_answer_is_proof_only_with_a_result_object() {
         assert_eq!(
+            initialize_answer(
+                b"{\"method\":\"remoteControl/status/changed\",\"params\":{}}\n{\"id\":1,\"result\":{}}\n"
+            ),
+            Some(InitializeAnswer::Result(
+                serde_json::json!({"id":1,"result":{}})
+            ))
+        );
+        assert_eq!(
             initialize_answer(b"{\"method\":\"note\"}\n\n{\"id\":1,\"result\":{}}\n"),
             Some(InitializeAnswer::Result(
                 serde_json::json!({"id":1,"result":{}})
@@ -6518,6 +6576,15 @@ auth_dir = "{}"
                 "with a line that is not a JSON-RPC message",
             ),
             (b"42\n", "with a line that is not a JSON-RPC message"),
+            // Issue #259, round 5: an object with neither `id` nor `method` is no message.
+            (
+                b"{\"foo\":\"bar\"}\n{\"id\":1,\"result\":{}}\n",
+                "with a line that is not a JSON-RPC message",
+            ),
+            (
+                b"{\"method\":7}\n",
+                "with a line that is not a JSON-RPC message",
+            ),
         ] {
             let Some(InitializeAnswer::Refused { how: said, line }) = initialize_answer(captured)
             else {

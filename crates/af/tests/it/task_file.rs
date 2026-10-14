@@ -302,6 +302,21 @@ fn a_codex_rejecting_initialize_is_refused_at_admission() {
     );
 }
 
+/// Issue #259, round 5: a codex whose bare app-server writes `{"foo":"bar"}`, neither a response
+/// nor a notification, before any `initialize` answer and stays running is refused at admission
+/// at once, with the line and the report that af stopped it, before any Worker process starts.
+/// Every other case's app-server writes a notification before its result, which is accepted.
+#[test]
+fn a_codex_writing_a_malformed_object_before_initialize_is_refused_at_admission() {
+    native_model_drift_case_with(
+        false,
+        true,
+        None,
+        ClientUpdate::None,
+        Some(Incompatible::InitializeMalformed),
+    );
+}
+
 /// An installed client that cannot serve af's invocation; the case then ends at the admission
 /// refusal.
 #[derive(Clone, Copy)]
@@ -314,6 +329,8 @@ enum Incompatible<'a> {
     InitializeWithoutResult,
     /// A codex whose bare app-server answers `initialize` with an error object and exits 0.
     InitializeRejected,
+    /// A codex whose bare app-server writes `{"foo":"bar"}` and stays running.
+    InitializeMalformed,
 }
 
 fn native_model_drift_case(
@@ -418,10 +435,15 @@ if sys.argv[1:2]==['app-server'] and os.path.isfile(home+'/app-server-rejects'):
  sys.stdin.readline()
  print('{"id":1,"error":{"code":-32600,"message":"bad init"}}',flush=True)
  sys.exit(0)
+if sys.argv[1:2]==['app-server'] and os.path.isfile(home+'/app-server-malformed'):
+ sys.stdin.readline()
+ print('{"foo":"bar"}',flush=True)
+ for line in sys.stdin: pass
+ sys.exit(0)
 if sys.argv[1:2]==['app-server']:
  for line in sys.stdin:
   request=json.loads(line)
-  if request.get('id')==1: print(json.dumps({'id':1,'result':{}}),flush=True)
+  if request.get('id')==1: print(json.dumps({'method':'remoteControl/status/changed','params':{}})+'\n'+json.dumps({'id':1,'result':{}}),flush=True)
   if request.get('id')==2: print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':open(home+'/account-email').read()}}}),flush=True)
  sys.exit(0)
 sys.stdin.read()
@@ -450,6 +472,9 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     }
     if matches!(incompatible, Some(Incompatible::InitializeRejected)) {
         std::fs::write(home.join("app-server-rejects"), b"fixture").unwrap();
+    }
+    if matches!(incompatible, Some(Incompatible::InitializeMalformed)) {
+        std::fs::write(home.join("app-server-malformed"), b"fixture").unwrap();
     }
     let version = if old_help.is_some() {
         "2.1.101"
@@ -555,7 +580,17 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             .output()
             .unwrap()
     };
+    let started = std::time::Instant::now();
     let plan = run(&["review", "plan", "--file", "review.json"]);
+    if matches!(incompatible, Some(Incompatible::InitializeMalformed)) {
+        // Refused at once, not waited on until the raised probe timeout: well within the
+        // production one of 15 seconds.
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(15),
+            "admission waited {:?}",
+            started.elapsed()
+        );
+    }
     if let Some(incompatible) = incompatible {
         let program = std::fs::canonicalize(&installed).unwrap();
         let refusal = match incompatible {
@@ -573,6 +608,10 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             ),
             Incompatible::InitializeRejected => format!(
                 "Task Provider admission refused before any Worker was dispatched: provider codex-personal: incompatible Provider CLI: the codex CLI `{}` (version codex-cli 0.121.0) does not accept af's invocation; missing: `codex app-server` answering JSON-RPC `initialize` over its default stdio transport; codex app-server exited 0 after answering initialize with an error: {{\"id\":1,\"error\":{{\"code\":-32600,\"message\":\"bad init\"}}}}; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`",
+                program.display()
+            ),
+            Incompatible::InitializeMalformed => format!(
+                "Task Provider admission refused before any Worker was dispatched: provider codex-personal: incompatible Provider CLI: the codex CLI `{}` (version codex-cli 0.121.0) does not accept af's invocation; missing: `codex app-server` answering JSON-RPC `initialize` over its default stdio transport; codex app-server was stopped by af after answering initialize with a line that is not a JSON-RPC message: {{\"foo\":\"bar\"}}; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`",
                 program.display()
             ),
         };

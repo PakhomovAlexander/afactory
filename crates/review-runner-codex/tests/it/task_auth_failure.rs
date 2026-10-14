@@ -364,6 +364,74 @@ fn a_cli_that_refuses_afs_arguments_is_an_unsupported_invocation_with_its_own_li
     assert!(returned.usage.is_none(), "no usage was reported");
 }
 
+/// Issue #259, round 5: a CLI argument error on stderr outranks every native classification when
+/// there is no parsable result: beside an authentication hint, and after an unrelated framed
+/// event. Each Attempt is `unsupported_invocation` with its exit and the bounded excerpt, never a
+/// credential failure or a generic one; the auth text keeps the raw streams withheld.
+#[test]
+fn an_argument_error_outranks_an_auth_hint_and_framed_events() {
+    use review_runner::native_failure::NativeFailureKind;
+    for (stdout, stderr, excerpt, auth) in [
+        (
+            "",
+            "error: unexpected argument '--ephemeral' found\nAuthentication required\n",
+            "error: unexpected argument '--ephemeral' found | Authentication required",
+            true,
+        ),
+        (
+            "{\"type\":\"thread.started\",\"thread_id\":\"fixture\"}\n",
+            "error: unexpected argument '--ephemeral' found\n",
+            "error: unexpected argument '--ephemeral' found",
+            false,
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        std::fs::write(temp.path().join("stdout"), stdout).unwrap();
+        std::fs::write(temp.path().join("stderr"), stderr).unwrap();
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\ncat '{0}/stdout'\ncat '{0}/stderr' >&2\nexit 2\n",
+                temp.path().display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter =
+            CodexTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            LOAD_SAFE_WALL,
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        assert_eq!(
+            returned.native_failure,
+            Some(NativeFailureKind::UnsupportedInvocation),
+            "{stdout}{stderr}"
+        );
+        let error = returned.message.unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "Codex Worker failed: the installed codex CLI does not accept af's invocation (unsupported_invocation); it exited 2: {excerpt}; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`"
+            )
+        );
+        assert!(returned.usage.is_none(), "no usage was reported");
+        if auth {
+            for id in &returned.raw_artifact_ids {
+                let kept = String::from_utf8(cas.get(id).unwrap()).unwrap();
+                assert!(!kept.contains("Authentication required"), "{kept}");
+            }
+        }
+    }
+}
+
 /// Issue #259, round 2: a Worker that exits without a parsable result keeps its exit and its own
 /// bounded stderr excerpt whatever its failure is classified as, and a line that looks like
 /// credential material is withheld whole while the exit and the classification stay.

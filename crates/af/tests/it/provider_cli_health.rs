@@ -430,6 +430,66 @@ exit 64
     );
 }
 
+/// Issue #259, round 5: a Codex rate-limit snapshot whose `limitName` or `planType` looks like
+/// credential material, with valid windows, reaches neither the status table, stderr nor the
+/// JSON document: the label is the fixed withheld marker, the plan is unavailable, and the window
+/// figures stay.
+#[test]
+fn credential_looking_codex_rate_limit_labels_are_withheld_on_status_usage() {
+    const WITHHELD: &str = "[line withheld: looks like credential material]";
+    for (label, secret) in [
+        ("OPENAI_API_KEY=sk-proj-FIXTURE", "sk-proj-FIXTURE"),
+        ("API_KEY=abcd", "abcd"),
+    ] {
+        let codex = format!(
+            r#"#!/bin/sh
+if [ "$1" = --version ]; then
+  printf '%s\n' 'codex-cli 0.149.0'
+  exit 0
+fi
+if [ "$1" = login ] && [ "$2" = status ]; then
+  printf '%s\n' 'Logged in using ChatGPT' >&2
+  exit 0
+fi
+if [ "$1" = app-server ]; then
+  while IFS= read -r request; do
+    case "$request" in
+      *'"id":1'*) printf '%s\n' '{{"id":1,"result":{{}}}}' ;;
+      *'"id":2'*) printf '%s\n' '{{"id":2,"result":{{"rateLimits":{{"limitId":"codex","limitName":"{label}","primary":{{"usedPercent":37,"windowDurationMins":10080,"resetsAt":1787831613}},"secondary":null,"planType":"{label}"}}}}}}' ;;
+    esac
+  done
+  exit 0
+fi
+exit 64
+"#
+        );
+        let machine = Machine::registered();
+        machine.install("codex", &with_help("codex", &codex), 0o755);
+
+        let json = machine.af(&["provider", "status", "--json", "--usage"]);
+        assert_eq!(code(&json), 0, "{}", err(&json));
+        let reported = document(&json);
+        let provider = only_provider(&reported);
+        assert_eq!(provider["usage"]["state"], "available", "{provider}");
+        let window = &provider["usage"]["windows"][0];
+        assert_eq!(window["used_percent"], 37, "{provider}");
+        assert_eq!(window["window_minutes"], 10080, "{provider}");
+        // The document carries no Provider-authored label at all.
+        assert!(window.get("name").is_none(), "{provider}");
+
+        let human = machine.af(&["provider", "status", "--usage"]);
+        assert_eq!(code(&human), 0, "{}", err(&human));
+        assert!(out(&human).contains(WITHHELD), "{}", out(&human));
+        assert!(out(&human).contains("37%"), "{}", out(&human));
+        for output in [&json, &human] {
+            for said in [out(output), err(output)] {
+                assert!(!said.contains(secret), "{label}: {said}");
+                assert!(!said.contains("API_KEY"), "{label}: {said}");
+            }
+        }
+    }
+}
+
 /// The protocol capability a Codex CLI lacks when its bare app-server cannot answer `initialize`.
 const APP_SERVER_PROTOCOL: &str =
     "`codex app-server` answering JSON-RPC `initialize` over its default stdio transport";
@@ -549,8 +609,14 @@ fn a_codex_whose_app_server_exits_before_initialize_is_incompatible_on_status_an
 
 /// A codex whose `exec --help` declares every option and whose login is ChatGPT, but whose bare
 /// `app-server` answers `initialize` with `answer` and exits 0; with
-/// `$CODEX_HOME/initialize-result` it answers `{"id":1,"result":{}}` instead.
+/// `$CODEX_HOME/initialize-result` it first writes a notification and then answers
+/// `{"id":1,"result":{}}` instead.
 fn codex_answering_initialize(answer: &str) -> String {
+    codex_answering_initialize_then(answer, "exit 0")
+}
+
+/// [`codex_answering_initialize`], whose app-server runs `then` after writing `answer`.
+fn codex_answering_initialize_then(answer: &str, then: &str) -> String {
     format!(
         r#"#!/bin/sh
 if [ "$1" = --version ]; then
@@ -564,11 +630,11 @@ fi
 if [ "$1" = app-server ]; then
   IFS= read -r _
   if [ -f "$CODEX_HOME/initialize-result" ]; then
-    printf '%s\n' '{{"id":1,"result":{{}}}}'
-  else
-    printf '%s\n' '{answer}'
+    printf '%s\n' '{{"method":"remoteControl/status/changed","params":{{}}}}' '{{"id":1,"result":{{}}}}'
+    exit 0
   fi
-  exit 0
+  printf '%s\n' '{answer}'
+  {then}
 fi
 exit 64
 "#
@@ -599,15 +665,55 @@ fn a_codex_rejecting_initialize_is_incompatible_with_its_exit_and_line() {
     );
 }
 
+/// Issue #259, round 5: an app-server that writes `{"foo":"bar"}`, neither a response with an
+/// `id` nor a notification with a `method`, before any `initialize` answer and stays running is
+/// refused at once, never waited on as silence: `incompatible` under exit 4 on status, with and
+/// without `--usage`, and on setup, within the probe timeout, reporting that af stopped it and the
+/// line it wrote. The same app-server writing a notification before its result is accepted.
+#[test]
+fn a_codex_writing_a_malformed_object_before_initialize_is_incompatible_at_once() {
+    a_refused_initialize_is_incompatible_on_status_and_setup_with(
+        &codex_answering_initialize_then(
+            r#"{"foo":"bar"}"#,
+            "while IFS= read -r _; do :; done\n  exit 0",
+        ),
+        r#"{"foo":"bar"}"#,
+        "was stopped by af after answering initialize with a line that is not a JSON-RPC message",
+    );
+}
+
 /// `answer` refuses the protocol capability as `refusal` says; the report carries it, then the
 /// line itself.
 fn a_refused_initialize_is_incompatible_on_status_and_setup(answer: &str, refusal: &str) {
-    let machine = Machine::registered();
-    machine.install(
-        "codex",
-        &with_help("codex", &codex_answering_initialize(answer)),
-        0o755,
+    a_refused_initialize_is_incompatible_on_status_and_setup_with(
+        &codex_answering_initialize(answer),
+        answer,
+        refusal,
     );
+}
+
+/// [`a_refused_initialize_is_incompatible_on_status_and_setup`] for the codex `script`, which
+/// writes `answer` as the first line of its app-server. Each refusal arrives well within the
+/// production probe timeout, though tests raise it: none is a timeout.
+fn a_refused_initialize_is_incompatible_on_status_and_setup_with(
+    script: &str,
+    answer: &str,
+    refusal: &str,
+) {
+    const PRODUCTION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+    let machine = Machine::registered();
+    machine.install("codex", &with_help("codex", script), 0o755);
+    let af = |args: &[&str]| {
+        let started = std::time::Instant::now();
+        let output = machine.af(args);
+        assert!(
+            started.elapsed() < PRODUCTION_PROBE_TIMEOUT,
+            "{args:?} waited {:?}: {}",
+            started.elapsed(),
+            err(&output)
+        );
+        output
+    };
     let observed = format!(
         "missing: {APP_SERVER_PROTOCOL}; codex app-server {refusal}: {answer}; fix: upgrade it with `npm install -g @openai/codex@latest`"
     );
@@ -616,7 +722,7 @@ fn a_refused_initialize_is_incompatible_on_status_and_setup(answer: &str, refusa
         if usage {
             args.push("--usage");
         }
-        let json = machine.af(&args);
+        let json = af(&args);
         assert_eq!(code(&json), 4, "{usage}: {}", err(&json));
         let reported = document(&json);
         assert_eq!(reported["exit_code"], 4);
@@ -627,14 +733,14 @@ fn a_refused_initialize_is_incompatible_on_status_and_setup(answer: &str, refusa
         assert!(!err(&json).contains("login"), "{}", err(&json));
 
         args.retain(|arg| *arg != "--json");
-        let human = machine.af(&args);
+        let human = af(&args);
         assert_eq!(code(&human), 4, "{usage}: {}", err(&human));
         assert!(out(&human).contains("incompatible"), "{}", out(&human));
         assert!(!out(&human).contains("authenticated"), "{}", out(&human));
     }
 
     let other = machine.root.path().join("codex-other");
-    let setup = machine.af(&[
+    let setup = af(&[
         "provider",
         "setup",
         "codex-other",
@@ -654,7 +760,7 @@ fn a_refused_initialize_is_incompatible_on_status_and_setup(answer: &str, refusa
 
     // A result object, however empty, proves the protocol.
     std::fs::write(machine.auth.join("initialize-result"), b"").unwrap();
-    let json = machine.af(&["provider", "status", "--json"]);
+    let json = af(&["provider", "status", "--json"]);
     assert_eq!(code(&json), 0, "{}", err(&json));
     assert_eq!(
         only_provider(&document(&json))["auth"],
