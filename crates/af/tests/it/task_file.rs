@@ -341,8 +341,24 @@ fn a_codex_writing_a_malformed_line_before_its_identity_answer_is_refused_at_adm
     );
 }
 
-/// An installed client that cannot serve af's invocation; the case then ends at the admission
-/// refusal.
+/// Issue #259, round 7: a response answers a request only if af read it after writing the
+/// request. A codex whose app-server writes a well-formed `account/read` answer for
+/// `wrong@example.test` before its `initialize` answer, then exits on af's `account/read` without
+/// answering it, is refused at admission for the missing identity answer: the premature line binds
+/// no principal and no Worker process starts.
+#[test]
+fn a_codex_answering_account_read_before_it_was_asked_is_refused_at_admission() {
+    native_model_drift_case_with(
+        false,
+        true,
+        None,
+        ClientUpdate::None,
+        Some(Incompatible::IdentityPremature),
+    );
+}
+
+/// An installed client that cannot serve af's invocation or answer its identity probe; the case
+/// then ends at the admission refusal.
 #[derive(Clone, Copy)]
 enum Incompatible<'a> {
     /// A Claude Code whose help page is this one, without some option af passes.
@@ -358,6 +374,10 @@ enum Incompatible<'a> {
     /// A codex whose bare app-server answers `initialize`, then writes `{"id":2,"foo":"bar"}` in
     /// place of its `account/read` response and stays running.
     IdentityMalformed,
+    /// A codex whose bare app-server writes a well-formed `account/read` answer for another
+    /// account before its `initialize` answer, then exits 0 on af's `account/read` without
+    /// answering it.
+    IdentityPremature,
 }
 
 fn native_model_drift_case(
@@ -470,7 +490,9 @@ if sys.argv[1:2]==['app-server'] and os.path.isfile(home+'/app-server-malformed'
 if sys.argv[1:2]==['app-server']:
  for line in sys.stdin:
   request=json.loads(line)
+  if request.get('id')==1 and os.path.isfile(home+'/app-server-identity-premature'): print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':'wrong@example.test'}}})+'\n'+json.dumps({'id':1,'result':{}}),flush=True); continue
   if request.get('id')==1: print(json.dumps({'method':'remoteControl/status/changed','params':{}})+'\n'+json.dumps({'id':7,'result':{}})+'\n'+json.dumps({'id':1,'result':{}}),flush=True)
+  if request.get('id')==2 and os.path.isfile(home+'/app-server-identity-premature'): sys.exit(0)
   if request.get('id')==2 and os.path.isfile(home+'/app-server-identity-malformed'): print('{"id":2,"foo":"bar"}',flush=True); continue
   if request.get('id')==2: print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':open(home+'/account-email').read()}}}),flush=True)
  sys.exit(0)
@@ -506,6 +528,9 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     }
     if matches!(incompatible, Some(Incompatible::IdentityMalformed)) {
         std::fs::write(home.join("app-server-identity-malformed"), b"fixture").unwrap();
+    }
+    if matches!(incompatible, Some(Incompatible::IdentityPremature)) {
+        std::fs::write(home.join("app-server-identity-premature"), b"fixture").unwrap();
     }
     let version = if old_help.is_some() {
         "2.1.101"
@@ -615,7 +640,11 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     let plan = run(&["review", "plan", "--file", "review.json"]);
     if matches!(
         incompatible,
-        Some(Incompatible::InitializeMalformed(_) | Incompatible::IdentityMalformed)
+        Some(
+            Incompatible::InitializeMalformed(_)
+                | Incompatible::IdentityMalformed
+                | Incompatible::IdentityPremature
+        )
     ) {
         // Refused at once, not waited on until the raised probe timeout: well within the
         // production one of 15 seconds.
@@ -648,6 +677,11 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
                 "Task Provider admission refused before any Worker was dispatched: provider codex-personal: incompatible Provider CLI: the codex CLI `{}` (version codex-cli 0.121.0) does not accept af's invocation; missing: `codex app-server` answering JSON-RPC `initialize` over its default stdio transport; codex app-server was stopped by af after answering initialize with a line that is not a JSON-RPC message: {line}; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`",
                 program.display()
             ),
+            // Unavailable, not incompatible: the app-server serves the protocol, it only never
+            // answered the request af wrote.
+            Incompatible::IdentityPremature => {
+                "fixture/review: codex app-server exited 0 after initialize without answering `account/read`".to_string()
+            }
             Incompatible::IdentityMalformed => format!(
                 "Task Provider admission refused before any Worker was dispatched: provider codex-personal: incompatible Provider CLI: the codex CLI `{}` (version codex-cli 0.121.0) does not accept af's invocation; missing: `codex app-server` answering JSON-RPC `initialize` over its default stdio transport; codex app-server was stopped by af after answering initialize, before answering `account/read`, with a line that is not a JSON-RPC message: {{\"id\":2,\"foo\":\"bar\"}}; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`",
                 program.display()
@@ -658,6 +692,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             let stderr = String::from_utf8_lossy(&refused.stderr);
             assert!(stderr.contains(&refusal), "{stderr}");
             assert!(!stderr.contains("login"), "{stderr}");
+            assert!(!stderr.contains("wrong@example.test"), "{stderr}");
         }
         // No Worker process ran: the fixture records every model invocation it receives.
         assert!(

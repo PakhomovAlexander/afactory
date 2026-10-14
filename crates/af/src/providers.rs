@@ -4437,11 +4437,17 @@ enum Awaited<'a> {
 /// The first complete stdout line that settles a wait for the response with `id`: that response,
 /// or a malformed line before it. Blank lines, notifications, requests and responses to other ids
 /// are skipped; a line still being written is not read.
-fn awaited_response(captured: &[u8], id: u64) -> Option<Awaited<'_>> {
-    complete_lines(captured).find_map(|line| match rpc_line(line) {
+///
+/// `sent` is how many bytes of `captured` af had read when it wrote the request with `id`. A
+/// response satisfies a request only if it was received after the request was written, so the
+/// response with `id` counts only in a line starting at or after `sent`; one before it answers
+/// nothing af asked and is skipped like a response to another id (issue #259). Every line, before
+/// `sent` or after, still passes [`rpc_line`].
+fn awaited_response(captured: &[u8], id: u64, sent: usize) -> Option<Awaited<'_>> {
+    complete_lines(captured).find_map(|(start, line)| match rpc_line(line) {
         RpcLine::Blank | RpcLine::Notification => None,
-        RpcLine::Response(message) => (message.get("id").and_then(serde_json::Value::as_u64)
-            == Some(id))
+        RpcLine::Response(message) => (start >= sent
+            && message.get("id").and_then(serde_json::Value::as_u64) == Some(id))
         .then_some(Awaited::Response(message, line)),
         RpcLine::Malformed => Some(Awaited::Malformed(line)),
     })
@@ -4452,13 +4458,14 @@ fn observed_line(line: &[u8]) -> String {
     review_runner::cli::bounded_cli_line(&String::from_utf8_lossy(line))
 }
 
-/// The answer to af's `initialize` (id 1), read under [`awaited_response`].
+/// The answer to af's `initialize` (id 1), read under [`awaited_response`]. af writes
+/// `initialize` before it reads a byte of stdout, so every line it reads was read after it.
 fn initialize_answer(captured: &[u8]) -> Option<InitializeAnswer> {
     let refused = |how, line: &[u8]| InitializeAnswer::Refused {
         how,
         line: observed_line(line),
     };
-    Some(match awaited_response(captured, 1)? {
+    Some(match awaited_response(captured, 1, 0)? {
         Awaited::Response(message, line) if message.get("error").is_some() => {
             refused("with an error", line)
         }
@@ -4553,7 +4560,8 @@ fn probe_codex_request_observed(
     let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT.min(4096));
     let mut said = Vec::new();
     let mut exceeded = false;
-    let mut requested_limits = false;
+    // How many stdout bytes af had read when it wrote its id-2 request, once it has.
+    let mut request_sent: Option<usize> = None;
     let drain_stderr = |stderr: &mut std::process::ChildStderr, said: &mut Vec<u8>| {
         // Output past the bound is read and dropped: only the first lines are ever reported.
         let mut chunk = [0_u8; 8192];
@@ -4576,7 +4584,9 @@ fn probe_codex_request_observed(
                 "Codex app-server output exceeds {MAX_PROBE_OUTPUT} bytes"
             ));
         }
-        if !requested_limits && let Some(answer) = initialize_answer(&captured) {
+        if request_sent.is_none()
+            && let Some(answer) = initialize_answer(&captured)
+        {
             let response = match answer {
                 InitializeAnswer::Result(response) => response,
                 InitializeAnswer::Refused { how, line } => {
@@ -4605,11 +4615,14 @@ fn probe_codex_request_observed(
                     "cannot send `{method}` to the Codex app-server: {error}"
                 ));
             }
-            requested_limits = true;
+            request_sent = Some(captured.len());
         }
         // The lines after the `initialize` answer pass the same grammar: a malformed one before
-        // the id-2 response is the missing protocol capability, reported at once.
-        if requested_limits && let Some(answer) = awaited_response(&captured, 2) {
+        // the id-2 response is the missing protocol capability, reported at once. Only a response
+        // read after the request was written answers it.
+        if let Some(sent) = request_sent
+            && let Some(answer) = awaited_response(&captured, 2, sent)
+        {
             match answer {
                 Awaited::Response(response, _) => break Ok(response),
                 Awaited::Malformed(line) => {
@@ -4632,7 +4645,9 @@ fn probe_codex_request_observed(
                 while let Ok(true) = drain_available(&mut stdout, &mut captured, &mut exceeded) {}
                 drain_stderr(&mut stderr, &mut said);
                 let exit = review_runner::cli::exit_description(&status);
-                if requested_limits && let Some(answer) = awaited_response(&captured, 2) {
+                if let Some(sent) = request_sent
+                    && let Some(answer) = awaited_response(&captured, 2, sent)
+                {
                     match answer {
                         Awaited::Response(response, _) => break Ok(response),
                         Awaited::Malformed(line) => {
@@ -4641,7 +4656,7 @@ fn probe_codex_request_observed(
                         }
                     }
                 }
-                let answer = if requested_limits {
+                let answer = if request_sent.is_some() {
                     None
                 } else {
                     initialize_answer(&captured)
@@ -4683,7 +4698,7 @@ fn probe_codex_request_observed(
             }
         }
         if let Err(error) = &initialize
-            && !requested_limits
+            && request_sent.is_none()
             && Instant::now() >= deadline
         {
             break Err(format!("cannot initialize Codex app-server probe: {error}"));
@@ -4740,15 +4755,20 @@ fn malformed_before_answering(exit: &str, method: &str, line: &[u8]) -> String {
     )
 }
 
-/// The newline-terminated lines of a stream, without their line endings: a line still being
-/// written is not read.
-fn complete_lines(captured: &[u8]) -> impl Iterator<Item = &[u8]> {
+/// The newline-terminated lines of a stream, each with the offset it starts at, without their
+/// line endings: a line still being written is not read.
+fn complete_lines(captured: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
     captured
         .split_inclusive(|byte| *byte == b'\n')
-        .filter(|line| line.ends_with(b"\n"))
-        .map(|line| {
+        .scan(0, |start, line| {
+            let at = *start;
+            *start += line.len();
+            Some((at, line))
+        })
+        .filter(|(_, line)| line.ends_with(b"\n"))
+        .map(|(start, line)| {
             let line = line.strip_suffix(b"\n").unwrap_or(line);
-            line.strip_suffix(b"\r").unwrap_or(line)
+            (start, line.strip_suffix(b"\r").unwrap_or(line))
         })
 }
 
@@ -6775,22 +6795,170 @@ auth_dir = "{}"
         let captured = br#"{"id":1,"result":{}}
 {"id":2,"result":{"rateLimits":{}}}"#;
         assert!(matches!(
-            awaited_response(captured, 1),
+            awaited_response(captured, 1, 0),
             Some(Awaited::Response(..))
         ));
-        assert_eq!(awaited_response(captured, 2), None);
+        assert_eq!(awaited_response(captured, 2, 0), None);
         let complete = [captured.as_slice(), b"\n"].concat();
         assert!(matches!(
-            awaited_response(&complete, 2),
+            awaited_response(&complete, 2, 0),
             Some(Awaited::Response(..))
         ));
         // The same grammar holds while waiting for id 2: a malformed line after the `initialize`
         // answer settles the wait, a notification or another id does not.
         let captured = b"{\"id\":1,\"result\":{}}\n{\"method\":\"x\"}\n{\"id\":7,\"result\":{}}\n{\"id\":2,\"foo\":\"bar\"}\n";
         assert_eq!(
-            awaited_response(captured, 2),
+            awaited_response(captured, 2, 0),
             Some(Awaited::Malformed(b"{\"id\":2,\"foo\":\"bar\"}"))
         );
+    }
+
+    /// Issue #259, round 7: a response answers a request only if it was read after the request
+    /// was written. A well-formed id-2 response before that point is skipped like a response to
+    /// another id, so is one in a line that began before it; the grammar still judges every line.
+    #[test]
+    fn a_response_read_before_its_request_was_written_answers_nothing() {
+        let premature = b"{\"id\":2,\"result\":{\"account\":{\"type\":\"chatgpt\",\"email\":\"wrong@example.test\"}}}\n{\"id\":1,\"result\":{}}\n";
+        let sent = premature.len();
+        assert!(matches!(
+            awaited_response(premature, 1, 0),
+            Some(Awaited::Response(..))
+        ));
+        assert_eq!(awaited_response(premature, 2, sent), None);
+        let answered = [
+            premature.as_slice(),
+            b"{\"method\":\"x/changed\"}\n{\"id\":2,\"result\":{\"account\":{\"type\":\"chatgpt\",\"email\":\"right@example.test\"}}}\n",
+        ]
+        .concat();
+        let Some(Awaited::Response(response, _)) = awaited_response(&answered, 2, sent) else {
+            panic!("the answer read after the request was not accepted");
+        };
+        assert_eq!(response["result"]["account"]["email"], "right@example.test");
+        // A line already being written when the request was sent is no answer to it either.
+        let straddling = b"{\"id\":1,\"result\":{}}\n{\"id\":2,\"result\":{}}\n";
+        assert_eq!(awaited_response(straddling, 2, straddling.len() - 4), None);
+        // A malformed line before the request still refuses the wait for its answer.
+        let malformed = b"{\"id\":2,\"foo\":\"bar\"}\n{\"id\":1,\"result\":{}}\n";
+        assert_eq!(
+            awaited_response(malformed, 2, malformed.len()),
+            Some(Awaited::Malformed(b"{\"id\":2,\"foo\":\"bar\"}"))
+        );
+    }
+
+    /// Issue #259, round 7: an app-server that writes a well-formed id-2 response before its
+    /// `initialize` answer, then stays running and never answers the request af sends, gives the
+    /// identity and usage probes no answer: each times out, and neither the premature account nor
+    /// the premature limits are returned. The same app-server answering in order is accepted.
+    #[test]
+    fn a_premature_id_2_response_never_answers_the_identity_or_usage_probe() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let spec = ProviderSpec {
+            id: "codex-test".to_string(),
+            kind: ProviderKind::Codex,
+            auth_dir: None,
+            explicit_selector: false,
+            registry_declared: false,
+            source: "test".to_string(),
+        };
+        let probe_path = sanitized_path();
+        let account =
+            r#"{"id":2,"result":{"account":{"type":"chatgpt","email":"wrong@example.test"}}}"#;
+        let limits = r#"{"id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":91,"windowDurationMins":10080,"resetsAt":1787831613},"secondary":null,"planType":"pro"}}}"#;
+        let fake = |name: &str, premature: &str, in_order: Option<&str>| {
+            let program = directory.path().join(name);
+            let answer = in_order.map_or_else(
+                || "while IFS= read -r _; do :; done".to_string(),
+                |line| format!("printf '%s\\n' '{line}'\nwhile IFS= read -r _; do :; done"),
+            );
+            fs::write(
+                &program,
+                format!(
+                    "#!/bin/sh\nIFS= read -r _\nprintf '%s\\n' '{premature}' '{{\"id\":1,\"result\":{{}}}}'\nIFS= read -r _\nIFS= read -r _\n{answer}\n"
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+            program
+        };
+        let identity = fake("codex-identity", account, None);
+        let usage = fake("codex-usage", limits, None);
+        let timeout = probe_timeout(PROBE_TIMEOUT).as_secs();
+        thread::scope(|scope| {
+            let identity = scope.spawn(|| {
+                let mut observed = AppServerProbe::default();
+                let outcome = probe_codex_request_observed(
+                    &identity,
+                    &spec,
+                    &probe_path,
+                    &AtomicBool::new(false),
+                    Some(&serde_json::json!({"method":"account/read","id":2,"params":{"refreshToken":false}})),
+                    None,
+                    &mut observed,
+                );
+                (outcome, observed)
+            });
+            let usage = scope.spawn(|| {
+                let mut observed = AppServerProbe::default();
+                let outcome = probe_codex_subscription(
+                    &usage,
+                    &spec,
+                    &probe_path,
+                    &AtomicBool::new(false),
+                    &mut observed,
+                );
+                (outcome, observed)
+            });
+            let (identity, observed) = identity.join().unwrap();
+            assert_eq!(
+                identity.unwrap_err(),
+                format!("Codex subscription probe timed out after {timeout} seconds")
+            );
+            assert!(observed.answered && !observed.lacks_protocol);
+            let (usage, observed) = usage.join().unwrap();
+            let Err(usage) = usage else {
+                panic!("a premature id-2 response was read as the rate limits");
+            };
+            assert_eq!(
+                usage,
+                format!("Codex subscription probe timed out after {timeout} seconds")
+            );
+            assert!(observed.answered && !observed.lacks_protocol);
+        });
+
+        let identity = fake(
+            "codex-identity-in-order",
+            account,
+            Some(
+                r#"{"id":2,"result":{"account":{"type":"chatgpt","email":"right@example.test"}}}"#,
+            ),
+        );
+        let response = probe_codex_request_observed(
+            &identity,
+            &spec,
+            &probe_path,
+            &AtomicBool::new(false),
+            Some(&serde_json::json!({"method":"account/read","id":2,"params":{"refreshToken":false}})),
+            None,
+            &mut AppServerProbe::default(),
+        )
+        .unwrap();
+        assert_eq!(response["result"]["account"]["email"], "right@example.test");
+        let usage = fake(
+            "codex-usage-in-order",
+            limits,
+            Some(&limits.replace("\"usedPercent\":91", "\"usedPercent\":37")),
+        );
+        let snapshot = probe_codex_subscription(
+            &usage,
+            &spec,
+            &probe_path,
+            &AtomicBool::new(false),
+            &mut AppServerProbe::default(),
+        )
+        .unwrap();
+        assert_eq!(snapshot.limits.len(), 1);
+        assert_eq!(snapshot.limits[0].used_percent, 37);
     }
 
     /// Issue #259, round 6: an app-server that answers `initialize` and then, still running,

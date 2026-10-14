@@ -71,7 +71,13 @@ invocation af builds, and the diagnostics hid the one line that said so.
    {"id":1,"error":{"code":-32600,"message":"bad init"}}`. The identity and usage probes read
    the `initialize` answer by the same rule, and every line after it until their id-2 answer by
    the same grammar, so a malformed line there makes admission and `status --usage` report the
-   CLI `incompatible` at once, never a usage or identity timeout. When `--version` also fails it is an ADR-0130 installation
+   CLI `incompatible` at once, never a usage or identity timeout. A response answers a request
+   only if af read it after writing that request: af remembers how much stdout it had read when
+   it wrote the id-2 request and looks for the id-2 answer only in lines starting after that
+   point. A well-formed id-2 response read earlier, before the `initialize` answer for example,
+   answers nothing af asked and is skipped like a response to another id, so admission binds no
+   principal and `status --usage` shows no limits from it; the wait goes on until a real answer,
+   the app-server's exit or the timeout. af writes `initialize` before it reads any stdout. When `--version` also fails it is an ADR-0130 installation
    failure. A check af gave up on, by timeout, deadline or cancellation, leaves the CLI unchecked:
    `unavailable` in status, never `authenticated`. Plain status, `status --usage`, setup and
    admission therefore all give the same report for an app-server that cannot initialize. A help

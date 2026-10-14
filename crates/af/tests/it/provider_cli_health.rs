@@ -753,6 +753,72 @@ exit 64
     }
 }
 
+/// Issue #259, round 7: a response answers a request only if af read it after writing the
+/// request. An app-server that writes a well-formed rate-limit answer before its `initialize`
+/// answer, then exits on af's `account/rateLimits/read` without answering it, leaves usage
+/// unavailable on `status --usage`: the premature limits are never shown. The same app-server
+/// answering after the request is shown.
+#[test]
+fn a_codex_rate_limit_answer_written_before_the_request_is_never_shown() {
+    const CODEX: &str = r#"#!/bin/sh
+if [ "$1" = --version ]; then
+  printf '%s\n' 'codex-cli 0.149.0'
+  exit 0
+fi
+if [ "$1" = login ] && [ "$2" = status ]; then
+  printf '%s\n' 'Logged in using ChatGPT' >&2
+  exit 0
+fi
+if [ "$1" = app-server ]; then
+  while IFS= read -r request; do
+    case "$request" in
+      *'"id":1'*) printf '%s\n' '{"id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":91,"windowDurationMins":10080,"resetsAt":1787831613},"secondary":null,"planType":"pro"}}}' '{"id":1,"result":{}}' ;;
+      *'"id":2'*)
+        if [ -f "$CODEX_HOME/answers-in-order" ]; then
+          printf '%s\n' '{"id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":37,"windowDurationMins":10080,"resetsAt":1787831613},"secondary":null,"planType":"pro"}}}'
+        else
+          exit 0
+        fi ;;
+    esac
+  done
+  exit 0
+fi
+exit 64
+"#;
+    let machine = Machine::registered();
+    machine.install("codex", &with_help("codex", CODEX), 0o755);
+    let premature = machine.af(&["provider", "status", "--json", "--usage"]);
+    assert_eq!(code(&premature), 7, "{}", err(&premature));
+    let reported = document(&premature);
+    let provider = only_provider(&reported);
+    assert_eq!(provider["auth"], "authenticated", "{provider}");
+    assert_eq!(provider["usage"]["state"], "unavailable", "{provider}");
+    assert_eq!(
+        provider["usage"]["windows"],
+        serde_json::json!([]),
+        "{provider}"
+    );
+    let human = machine.af(&["provider", "status", "--usage"]);
+    assert_eq!(code(&human), 7, "{}", err(&human));
+    assert!(
+        out(&human).contains(
+            "subscription status unavailable: codex app-server exited 0 after initialize without answering `account/rateLimits/read`"
+        ),
+        "{}",
+        out(&human)
+    );
+    assert!(!out(&human).contains("91%"), "{}", out(&human));
+    assert!(!out(&human).contains("ChatGPT Pro"), "{}", out(&human));
+
+    std::fs::write(machine.auth.join("answers-in-order"), b"").unwrap();
+    let in_order = machine.af(&["provider", "status", "--json", "--usage"]);
+    assert_eq!(code(&in_order), 0, "{}", err(&in_order));
+    let reported = document(&in_order);
+    let provider = only_provider(&reported);
+    assert_eq!(provider["usage"]["state"], "available", "{provider}");
+    assert_eq!(provider["usage"]["windows"][0]["used_percent"], 37);
+}
+
 /// `answer` refuses the protocol capability as `refusal` says; the report carries it, then the
 /// line itself.
 fn a_refused_initialize_is_incompatible_on_status_and_setup(answer: &str, refusal: &str) {

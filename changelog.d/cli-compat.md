@@ -9,7 +9,9 @@
   `result` or `error`) nor a notification or request (`{"foo":"bar"}`, `{"id":2,"foo":"bar"}`,
   `[1,2]`, prose; refused at once rather than waited on) is `incompatible` on plain status,
   `--usage`, setup and admission alike; the identity and usage probes judge every line before
-  their own answer by the same grammar. No isolation flag
+  their own answer by the same grammar, and accept only an answer read after af wrote the request,
+  so an id-2 response written early, before the `initialize` answer, never binds an account or
+  shows limits. No isolation flag
   is ever dropped to make a CLI run. The report names the Provider, the path, the version, every
   missing option and the upgrade command. `af provider status` shows the new state `incompatible`
   and exits 4, and `--json` now emits `af/provider-status@2`. Task admission refuses before any
