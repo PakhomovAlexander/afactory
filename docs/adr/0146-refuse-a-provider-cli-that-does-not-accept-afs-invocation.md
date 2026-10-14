@@ -55,16 +55,23 @@ invocation af builds, and the diagnostics hid the one line that said so.
    timeout and the Attempt deadline bound it. Only a JSON-RPC response with id 1 whose `result` is
    a JSON object proves the protocol. An app-server that exits before such a response, answers
    `initialize` with an error, answers it without a `result` object (`{"id":1}`, a `null` or
-   non-object `result`) or writes, before that answer, a line that is neither a JSON-RPC response
-   carrying an `id` nor a notification carrying a `method` (`{"foo":"bar"}`, any non-JSON line)
-   is refused as missing that protocol capability when the CLI's own `--version` succeeds. Such a
-   line refuses at once, never waited on as silence until the timeout; a notification before the
-   result is accepted. Every such refusal carries the process
+   non-object `result`) or writes, before that answer, a malformed line is refused as missing
+   that protocol capability when the CLI's own `--version` succeeds. One line grammar judges every
+   stdout line a probe reads, from the first byte until the response it waits for: a line is
+   well-formed only as a JSON object that is a response (an `id` and exactly one of `result` or
+   `error`) or a notification or request (a string `method`); anything else is malformed: not
+   JSON, not an object (`[1,2]`), an `id` with neither `result` nor `error`
+   (`{"id":2,"foo":"bar"}`), neither `id` nor `method` (`{"foo":"bar"}`). A malformed line
+   refuses at once and af stops the app-server, never waiting on it as silence until the timeout;
+   a notification, a request or a response to another id is skipped and the wait goes on, and a
+   blank line is framing between messages. Every such refusal carries the process
    outcome, its exit status when it exited or the af-authored `was stopped by af` when it was
    still running after a one-second grace, and the bounded line it answered with, an error
    response included: `codex app-server exited 0 after answering initialize with an error:
    {"id":1,"error":{"code":-32600,"message":"bad init"}}`. The identity and usage probes read
-   the `initialize` answer by the same rule. When `--version` also fails it is an ADR-0130 installation
+   the `initialize` answer by the same rule, and every line after it until their id-2 answer by
+   the same grammar, so a malformed line there makes admission and `status --usage` report the
+   CLI `incompatible` at once, never a usage or identity timeout. When `--version` also fails it is an ADR-0130 installation
    failure. A check af gave up on, by timeout, deadline or cancellation, leaves the CLI unchecked:
    `unavailable` in status, never `authenticated`. Plain status, `status --usage`, setup and
    admission therefore all give the same report for an app-server that cannot initialize. A help
@@ -104,9 +111,13 @@ invocation af builds, and the diagnostics hid the one line that said so.
    argument`, `unrecognized …`, a `Usage:` block) is its own `NativeFailureKind`,
    `UnsupportedInvocation` (`unsupported_invocation`), whose diagnostic says the installed CLI
    does not accept af's invocation and names the upgrade. When the Worker left no parsable result,
-   that argument error takes precedence over every other classification, an authentication hint
-   on the same stderr and unrelated events a Codex Worker framed first included; auth text beside
-   it still keeps the captured streams replaced. It is not an authentication failure, and
+   each adapter decides the classification at one place
+   (`review_runner::cli::classify_without_result`), in this order: that argument error on stderr
+   first, whatever the exit status (`0` included), the events a Codex Worker framed first, the
+   native classification (an authentication hint on the same stderr among them) or the transport
+   outcome; then the native classification; then `unknown`. A parsable result is never
+   reclassified by what stderr says. Auth text beside an argument error still keeps the captured
+   streams replaced. It is not an authentication failure, and
    its unknown-usage cause is `unreported`
    ([ADR-0143](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)).
 6. **One credential filter for every Provider-authored line.** Every line of Provider text that

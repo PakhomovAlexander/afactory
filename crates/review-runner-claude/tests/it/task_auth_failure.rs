@@ -533,3 +533,92 @@ fn json_that_is_not_an_envelope_is_no_parsable_result() {
         );
     }
 }
+
+/// Issue #259, round 6: without a parsable result a CLI argument error on stderr decides the
+/// classification whatever the exit status: exit 0 with no envelope, exit 2 after JSON that is no
+/// envelope, and exit 1 beside an authentication hint are each `unsupported_invocation` with the
+/// exit and the bounded excerpt. A parsable result is a success whatever stderr warns about,
+/// even a warning that names an unknown option.
+#[test]
+fn an_argument_error_without_a_result_is_an_unsupported_invocation_whatever_the_exit() {
+    use review_runner::native_failure::NativeFailureKind;
+    let envelope =
+        r#"{"is_error":false,"result":"done","usage":{"input_tokens":1,"output_tokens":1}}"#;
+    for (stdout, stderr, exit, refused) in [
+        (
+            "",
+            "error: unknown option '--safe-mode'\n",
+            0,
+            Some("error: unknown option '--safe-mode'"),
+        ),
+        (
+            "{}",
+            "error: unknown option '--safe-mode'\n",
+            2,
+            Some("error: unknown option '--safe-mode'"),
+        ),
+        (
+            "",
+            "Authentication required\nerror: unknown option '--safe-mode'\n",
+            1,
+            Some("Authentication required | error: unknown option '--safe-mode'"),
+        ),
+        (envelope, "warning: the update check was skipped\n", 0, None),
+        (
+            envelope,
+            "warning: unknown option 'theme' in settings.json was ignored\n",
+            0,
+            None,
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        std::fs::write(temp.path().join("stdout"), stdout).unwrap();
+        std::fs::write(temp.path().join("stderr"), stderr).unwrap();
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\ncat '{0}/stdout'\ncat '{0}/stderr' >&2\nexit {exit}\n",
+                temp.path().display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter = ClaudeTaskAdapter::new(&Command::new(
+            script.to_str().unwrap(),
+            vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+        ))
+        .unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            LOAD_SAFE_WALL,
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        let Some(excerpt) = refused else {
+            assert_eq!(returned.native_failure, None, "{stderr}");
+            assert_eq!(returned.message.unwrap(), b"done", "{stderr}");
+            continue;
+        };
+        assert_eq!(
+            returned.native_failure,
+            Some(NativeFailureKind::UnsupportedInvocation),
+            "{stdout}{stderr}"
+        );
+        assert_eq!(
+            returned.message.unwrap_err(),
+            format!(
+                "Claude Worker failed: the installed claude CLI does not accept af's invocation (unsupported_invocation); it exited {exit}: {excerpt}; fix: upgrade it with `npm install -g @anthropic-ai/claude-code@latest`, then rerun `af provider status`"
+            )
+        );
+        assert!(returned.usage.is_none(), "no usage was reported");
+        for id in &returned.raw_artifact_ids {
+            let kept = String::from_utf8(cas.get(id).unwrap()).unwrap();
+            assert!(!kept.contains("Authentication required"), "{kept}");
+        }
+    }
+}

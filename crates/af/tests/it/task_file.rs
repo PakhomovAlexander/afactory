@@ -305,15 +305,39 @@ fn a_codex_rejecting_initialize_is_refused_at_admission() {
 /// Issue #259, round 5: a codex whose bare app-server writes `{"foo":"bar"}`, neither a response
 /// nor a notification, before any `initialize` answer and stays running is refused at admission
 /// at once, with the line and the report that af stopped it, before any Worker process starts.
-/// Every other case's app-server writes a notification before its result, which is accepted.
+/// Every other case's app-server writes a notification and a response to another id before its
+/// result, which are accepted. Round 6: `{"id":2,"foo":"bar"}`, `[1,2]` and `not json` are refused
+/// by the same line grammar.
 #[test]
 fn a_codex_writing_a_malformed_object_before_initialize_is_refused_at_admission() {
+    for line in [
+        r#"{"foo":"bar"}"#,
+        r#"{"id":2,"foo":"bar"}"#,
+        "[1,2]",
+        "not json",
+    ] {
+        native_model_drift_case_with(
+            false,
+            true,
+            None,
+            ClientUpdate::None,
+            Some(Incompatible::InitializeMalformed(line)),
+        );
+    }
+}
+
+/// Issue #259, round 6: the identity probe reads the lines after the `initialize` answer by the
+/// same grammar. A codex whose app-server answers `initialize` but writes `{"id":2,"foo":"bar"}`
+/// in place of its `account/read` response and stays running is refused at admission at once as
+/// missing the protocol, before any Worker process starts.
+#[test]
+fn a_codex_writing_a_malformed_line_before_its_identity_answer_is_refused_at_admission() {
     native_model_drift_case_with(
         false,
         true,
         None,
         ClientUpdate::None,
-        Some(Incompatible::InitializeMalformed),
+        Some(Incompatible::IdentityMalformed),
     );
 }
 
@@ -329,8 +353,11 @@ enum Incompatible<'a> {
     InitializeWithoutResult,
     /// A codex whose bare app-server answers `initialize` with an error object and exits 0.
     InitializeRejected,
-    /// A codex whose bare app-server writes `{"foo":"bar"}` and stays running.
-    InitializeMalformed,
+    /// A codex whose bare app-server writes this malformed line and stays running.
+    InitializeMalformed(&'a str),
+    /// A codex whose bare app-server answers `initialize`, then writes `{"id":2,"foo":"bar"}` in
+    /// place of its `account/read` response and stays running.
+    IdentityMalformed,
 }
 
 fn native_model_drift_case(
@@ -437,13 +464,14 @@ if sys.argv[1:2]==['app-server'] and os.path.isfile(home+'/app-server-rejects'):
  sys.exit(0)
 if sys.argv[1:2]==['app-server'] and os.path.isfile(home+'/app-server-malformed'):
  sys.stdin.readline()
- print('{"foo":"bar"}',flush=True)
+ print(open(home+'/app-server-malformed').read(),flush=True)
  for line in sys.stdin: pass
  sys.exit(0)
 if sys.argv[1:2]==['app-server']:
  for line in sys.stdin:
   request=json.loads(line)
-  if request.get('id')==1: print(json.dumps({'method':'remoteControl/status/changed','params':{}})+'\n'+json.dumps({'id':1,'result':{}}),flush=True)
+  if request.get('id')==1: print(json.dumps({'method':'remoteControl/status/changed','params':{}})+'\n'+json.dumps({'id':7,'result':{}})+'\n'+json.dumps({'id':1,'result':{}}),flush=True)
+  if request.get('id')==2 and os.path.isfile(home+'/app-server-identity-malformed'): print('{"id":2,"foo":"bar"}',flush=True); continue
   if request.get('id')==2: print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':open(home+'/account-email').read()}}}),flush=True)
  sys.exit(0)
 sys.stdin.read()
@@ -473,8 +501,11 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     if matches!(incompatible, Some(Incompatible::InitializeRejected)) {
         std::fs::write(home.join("app-server-rejects"), b"fixture").unwrap();
     }
-    if matches!(incompatible, Some(Incompatible::InitializeMalformed)) {
-        std::fs::write(home.join("app-server-malformed"), b"fixture").unwrap();
+    if let Some(Incompatible::InitializeMalformed(line)) = incompatible {
+        std::fs::write(home.join("app-server-malformed"), line).unwrap();
+    }
+    if matches!(incompatible, Some(Incompatible::IdentityMalformed)) {
+        std::fs::write(home.join("app-server-identity-malformed"), b"fixture").unwrap();
     }
     let version = if old_help.is_some() {
         "2.1.101"
@@ -582,7 +613,10 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     };
     let started = std::time::Instant::now();
     let plan = run(&["review", "plan", "--file", "review.json"]);
-    if matches!(incompatible, Some(Incompatible::InitializeMalformed)) {
+    if matches!(
+        incompatible,
+        Some(Incompatible::InitializeMalformed(_) | Incompatible::IdentityMalformed)
+    ) {
         // Refused at once, not waited on until the raised probe timeout: well within the
         // production one of 15 seconds.
         assert!(
@@ -610,8 +644,12 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
                 "Task Provider admission refused before any Worker was dispatched: provider codex-personal: incompatible Provider CLI: the codex CLI `{}` (version codex-cli 0.121.0) does not accept af's invocation; missing: `codex app-server` answering JSON-RPC `initialize` over its default stdio transport; codex app-server exited 0 after answering initialize with an error: {{\"id\":1,\"error\":{{\"code\":-32600,\"message\":\"bad init\"}}}}; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`",
                 program.display()
             ),
-            Incompatible::InitializeMalformed => format!(
-                "Task Provider admission refused before any Worker was dispatched: provider codex-personal: incompatible Provider CLI: the codex CLI `{}` (version codex-cli 0.121.0) does not accept af's invocation; missing: `codex app-server` answering JSON-RPC `initialize` over its default stdio transport; codex app-server was stopped by af after answering initialize with a line that is not a JSON-RPC message: {{\"foo\":\"bar\"}}; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`",
+            Incompatible::InitializeMalformed(line) => format!(
+                "Task Provider admission refused before any Worker was dispatched: provider codex-personal: incompatible Provider CLI: the codex CLI `{}` (version codex-cli 0.121.0) does not accept af's invocation; missing: `codex app-server` answering JSON-RPC `initialize` over its default stdio transport; codex app-server was stopped by af after answering initialize with a line that is not a JSON-RPC message: {line}; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`",
+                program.display()
+            ),
+            Incompatible::IdentityMalformed => format!(
+                "Task Provider admission refused before any Worker was dispatched: provider codex-personal: incompatible Provider CLI: the codex CLI `{}` (version codex-cli 0.121.0) does not accept af's invocation; missing: `codex app-server` answering JSON-RPC `initialize` over its default stdio transport; codex app-server was stopped by af after answering initialize, before answering `account/read`, with a line that is not a JSON-RPC message: {{\"id\":2,\"foo\":\"bar\"}}; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`",
                 program.display()
             ),
         };

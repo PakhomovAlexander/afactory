@@ -76,13 +76,15 @@ const FIX_MARKERS: [&str; 8] = [
 /// What an argument parser prints when it refuses an option or argument it does not know:
 /// commander (`error: unknown option '--safe-mode'`), clap (`error: unexpected argument '--stdio'
 /// found`), argparse and getopt (`unrecognized arguments`, `unrecognised option`).
-const INVOCATION_ERROR_MARKERS: [&str; 7] = [
+const INVOCATION_ERROR_MARKERS: [&str; 9] = [
     "unknown option",
     "unexpected argument",
     "unrecognized option",
     "unrecognized argument",
+    "unrecognized subcommand",
     "unrecognised option",
     "unrecognised argument",
+    "unrecognised subcommand",
     "unknown argument",
 ];
 
@@ -246,8 +248,8 @@ fn is_option_name(name: &str) -> bool {
     }
 }
 
-/// Whether a failed process's own words say it refused af's arguments: an unknown or unexpected
-/// option or argument, or a usage block printed in place of any work.
+/// Whether a process's own words say it refused af's arguments: an unknown, unexpected or
+/// unrecognized option, argument or subcommand, or a usage block printed in place of any work.
 pub fn is_invocation_error(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     INVOCATION_ERROR_MARKERS
@@ -256,6 +258,45 @@ pub fn is_invocation_error(text: &str) -> bool {
         || lower
             .lines()
             .any(|line| line.trim_start().starts_with("usage:"))
+}
+
+/// The one classification of a Worker process that left no parsable result, whatever its exit
+/// status (0 or not), the events it framed, its native classification or its transport outcome.
+/// Each adapter decides it at exactly one place, in this order: a CLI argument error on stderr,
+/// or in `native_stdout` (stdout outside any framing that may carry model text), first, as such
+/// a CLI never reached a model; then the `native` candidates, an authentication one before any
+/// other recognized one; then [`NativeFailureKind::Unknown`].
+///
+/// [`NativeFailureKind::Unknown`]: crate::native_failure::NativeFailureKind::Unknown
+pub fn classify_without_result(
+    stderr: &[u8],
+    native_stdout: &str,
+    native: &[crate::native_failure::NativeFailureKind],
+) -> crate::native_failure::NativeFailureKind {
+    use crate::native_failure::NativeFailureKind;
+    if is_invocation_error(&String::from_utf8_lossy(stderr)) || is_invocation_error(native_stdout) {
+        return NativeFailureKind::UnsupportedInvocation;
+    }
+    strongest_native_failure(native)
+}
+
+/// Of several native classifications, an authentication one before any other recognized one,
+/// else [`NativeFailureKind::Unknown`](crate::native_failure::NativeFailureKind::Unknown).
+pub fn strongest_native_failure(
+    candidates: &[crate::native_failure::NativeFailureKind],
+) -> crate::native_failure::NativeFailureKind {
+    use crate::native_failure::NativeFailureKind;
+    candidates
+        .iter()
+        .copied()
+        .find(|kind| kind.is_auth())
+        .or_else(|| {
+            candidates
+                .iter()
+                .copied()
+                .find(|kind| *kind != NativeFailureKind::Unknown)
+        })
+        .unwrap_or(NativeFailureKind::Unknown)
 }
 
 /// Whether one line of Provider text looks like credential material, so that none of it may be
@@ -738,6 +779,7 @@ Options:
             "error: unknown option '--safe-mode'",
             "error: unexpected argument '--stdio' found\n\nUsage: codex app-server [OPTIONS]",
             "codex: unrecognized arguments: --frobnicate",
+            "error: unrecognized subcommand 'app-server'",
             "Usage: claude [options] [command] [prompt]",
         ] {
             assert!(is_invocation_error(text), "{text}");
@@ -749,6 +791,29 @@ Options:
         ] {
             assert!(!is_invocation_error(text), "{text}");
         }
+    }
+
+    /// Without a parsable result an argument error decides first, whatever the native
+    /// candidates say; then an authentication candidate, then any recognized one, then unknown.
+    #[test]
+    fn without_a_result_an_argument_error_decides_before_any_native_classification() {
+        use NativeFailureKind::*;
+        let refused = b"error: unexpected argument '--ephemeral' found\nAuthentication required\n";
+        assert_eq!(
+            classify_without_result(refused, "", &[AuthMissing, Network]),
+            UnsupportedInvocation
+        );
+        assert_eq!(
+            classify_without_result(b"", "error: unknown option '--safe-mode'", &[Capacity]),
+            UnsupportedInvocation
+        );
+        assert_eq!(
+            classify_without_result(b"warning: slow disk", "", &[Network, AuthExpired]),
+            AuthExpired
+        );
+        assert_eq!(classify_without_result(b"", "", &[Unknown, Quota]), Quota);
+        assert_eq!(classify_without_result(b"", "", &[Unknown]), Unknown);
+        assert_eq!(classify_without_result(b"", "", &[]), Unknown);
     }
 
     #[test]

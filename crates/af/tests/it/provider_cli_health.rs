@@ -615,7 +615,8 @@ fn codex_answering_initialize(answer: &str) -> String {
     codex_answering_initialize_then(answer, "exit 0")
 }
 
-/// [`codex_answering_initialize`], whose app-server runs `then` after writing `answer`.
+/// [`codex_answering_initialize`], whose app-server runs `then` after writing `answer`. Its
+/// proper answer is preceded by a notification and a response to another id, both skipped.
 fn codex_answering_initialize_then(answer: &str, then: &str) -> String {
     format!(
         r#"#!/bin/sh
@@ -630,7 +631,7 @@ fi
 if [ "$1" = app-server ]; then
   IFS= read -r _
   if [ -f "$CODEX_HOME/initialize-result" ]; then
-    printf '%s\n' '{{"method":"remoteControl/status/changed","params":{{}}}}' '{{"id":1,"result":{{}}}}'
+    printf '%s\n' '{{"method":"x/changed","params":{{}}}}' '{{"id":7,"result":{{}}}}' '{{"id":1,"result":{{}}}}'
     exit 0
   fi
   printf '%s\n' '{answer}'
@@ -670,16 +671,86 @@ fn a_codex_rejecting_initialize_is_incompatible_with_its_exit_and_line() {
 /// refused at once, never waited on as silence: `incompatible` under exit 4 on status, with and
 /// without `--usage`, and on setup, within the probe timeout, reporting that af stopped it and the
 /// line it wrote. The same app-server writing a notification before its result is accepted.
+///
+/// Round 6: every line before the answer passes the one JSON-RPC line grammar, so an object with
+/// an `id` but neither `result` nor `error` (`{"id":2,"foo":"bar"}`), an array and prose are
+/// refused the same way, while a notification and a response to another id before the result are
+/// accepted (the accepted half of each case).
 #[test]
 fn a_codex_writing_a_malformed_object_before_initialize_is_incompatible_at_once() {
-    a_refused_initialize_is_incompatible_on_status_and_setup_with(
-        &codex_answering_initialize_then(
-            r#"{"foo":"bar"}"#,
-            "while IFS= read -r _; do :; done\n  exit 0",
-        ),
+    for line in [
         r#"{"foo":"bar"}"#,
-        "was stopped by af after answering initialize with a line that is not a JSON-RPC message",
+        r#"{"id":2,"foo":"bar"}"#,
+        "[1,2]",
+        "not json",
+    ] {
+        a_refused_initialize_is_incompatible_on_status_and_setup_with(
+            &codex_answering_initialize_then(line, "while IFS= read -r _; do :; done\n  exit 0"),
+            line,
+            "was stopped by af after answering initialize with a line that is not a JSON-RPC message",
+        );
+    }
+}
+
+/// Issue #259, round 6: the lines after the `initialize` answer pass the same grammar. An
+/// app-server that answers `initialize` but, still running, writes `{"id":2,"foo":"bar"}` in place
+/// of its rate-limit response is `incompatible` under exit 4 on `status --usage` at once, with
+/// the line and the report that af stopped it, never a usage timeout; plain status, which asks
+/// only for `initialize`, stays authenticated.
+#[test]
+fn a_codex_writing_a_malformed_line_before_its_rate_limit_answer_is_incompatible_at_once() {
+    const CODEX: &str = r#"#!/bin/sh
+if [ "$1" = --version ]; then
+  printf '%s\n' 'codex-cli 0.149.0'
+  exit 0
+fi
+if [ "$1" = login ] && [ "$2" = status ]; then
+  printf '%s\n' 'Logged in using ChatGPT' >&2
+  exit 0
+fi
+if [ "$1" = app-server ]; then
+  while IFS= read -r request; do
+    case "$request" in
+      *'"id":1'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+      *'"id":2'*) printf '%s\n' '{"method":"x/changed","params":{}}' '{"id":7,"result":{}}' '{"id":2,"foo":"bar"}' ;;
+    esac
+  done
+  exit 0
+fi
+exit 64
+"#;
+    let machine = Machine::registered();
+    let program = machine.install("codex", &with_help("codex", CODEX), 0o755);
+    let plain = machine.af(&["provider", "status", "--json"]);
+    assert_eq!(code(&plain), 0, "{}", err(&plain));
+    assert_eq!(only_provider(&document(&plain))["auth"], "authenticated");
+    let report = format!(
+        "provider codex-main: incompatible Provider CLI: the codex CLI `{}` (version codex-cli 0.149.0) does not accept af's invocation; missing: {APP_SERVER_PROTOCOL}; codex app-server was stopped by af after answering initialize, before answering `account/rateLimits/read`, with a line that is not a JSON-RPC message: {{\"id\":2,\"foo\":\"bar\"}}; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`",
+        program.display()
     );
+    for json in [true, false] {
+        let mut args = vec!["provider", "status", "--usage"];
+        if json {
+            args.push("--json");
+        }
+        let started = std::time::Instant::now();
+        let output = machine.af(&args);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(15),
+            "waited {:?}",
+            started.elapsed()
+        );
+        assert_eq!(code(&output), 4, "{}", err(&output));
+        assert!(err(&output).contains(&report), "{}", err(&output));
+        if json {
+            let provider = document(&output)["providers"][0].clone();
+            assert_eq!(provider["auth"], "incompatible");
+            assert_eq!(provider["usability"], "unusable");
+        } else {
+            assert!(out(&output).contains("incompatible"), "{}", out(&output));
+            assert!(!out(&output).contains("authenticated"), "{}", out(&output));
+        }
+    }
 }
 
 /// `answer` refuses the protocol capability as `refusal` says; the report carries it, then the

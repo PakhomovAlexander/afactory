@@ -1,6 +1,9 @@
 //! Claude framing for generic typed Task Workers. No review-result parser or retry loop.
 use super::*;
-use review_runner::cli::{WorkerStderr, is_invocation_error, startup_failure, transport_outcome};
+use review_runner::cli::{
+    WorkerStderr, classify_without_result, startup_failure, strongest_native_failure,
+    transport_outcome,
+};
 use review_runner::native_failure::{NativeFailureKind, classify_native_failure};
 use review_runner::task::{ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter};
 
@@ -236,41 +239,31 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 // The Worker's own last words, bounded and filtered, before the privacy filter
                 // below may replace the stream.
                 said = WorkerStderr::read(stderr, stdout);
-                if failed || native_failed {
-                    // A parsed envelope speaks only through its native error fields, so model
-                    // text cannot choose the category. Any other stdout is native output.
-                    let kind = match envelope {
-                        Some(value) => native_failure(value, native_failed),
-                        None => classify_native_failure(&String::from_utf8_lossy(stdout)),
-                    };
-                    let candidates = [
-                        kind,
-                        classify_native_failure(&String::from_utf8_lossy(stderr)),
-                    ];
-                    failure = candidates
-                        .iter()
-                        .copied()
-                        .find(|kind| kind.is_auth())
-                        .or_else(|| {
-                            candidates
-                                .into_iter()
-                                .find(|kind| *kind != NativeFailureKind::Unknown)
-                        });
-                    let auth_seen = failure.is_some_and(NativeFailureKind::is_auth);
-                    // A CLI whose own argument parser refused af's invocation printed no
-                    // envelope, only its parser's error; it never reached a model, so the
-                    // refusal outranks every other classification, an auth hint among them.
-                    if envelope.is_none()
-                        && [&*stderr, &*stdout]
-                            .iter()
-                            .any(|stream| is_invocation_error(&String::from_utf8_lossy(stream)))
-                    {
-                        failure = Some(NativeFailureKind::UnsupportedInvocation);
+                let stderr_kind = classify_native_failure(&String::from_utf8_lossy(stderr));
+                let (kind, auth_seen) = match envelope {
+                    // No parsable result, whatever the exit status or transport outcome: the
+                    // one place its classification is decided. Stdout is native output here.
+                    None => {
+                        let native_stdout = String::from_utf8_lossy(stdout);
+                        let candidates = [classify_native_failure(&native_stdout), stderr_kind];
+                        (
+                            classify_without_result(stderr, &native_stdout, &candidates),
+                            strongest_native_failure(&candidates).is_auth(),
+                        )
                     }
-                    failure
-                        .unwrap_or(NativeFailureKind::Unknown)
-                        .redact_capture(auth_seen, stdout, stderr);
-                }
+                    // A parsed envelope speaks only through its native error fields, so model
+                    // text cannot choose the category.
+                    Some(value) if failed || native_failed => {
+                        let kind = strongest_native_failure(&[
+                            native_failure(value, native_failed),
+                            stderr_kind,
+                        ]);
+                        (kind, kind.is_auth())
+                    }
+                    Some(_) => return,
+                };
+                failure = (kind != NativeFailureKind::Unknown).then_some(kind);
+                kind.redact_capture(auth_seen, stdout, stderr);
             },
         );
         // The process has exited, whatever its outcome: what it kept in the operator's Claude
@@ -290,9 +283,9 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 output_schema.is_some(),
             )
         } else if envelope.is_none() {
-            // No envelope, whether stdout was empty, prose or JSON of another shape (`{}`): the
-            // process's exit and its own last words are all there is, whatever the failure was
-            // classified as.
+            // No envelope, whether stdout was empty, prose or JSON of another shape (`{}`), and
+            // whatever the exit: the process's exit and its own last words are all there is,
+            // under the one classification decided above.
             Err(startup_failure(
                 "Claude Worker",
                 &CLAUDE_INVOCATION,
@@ -367,16 +360,7 @@ fn native_failure(value: &serde_json::Value, is_error: bool) -> NativeFailureKin
         }
     }
     let kinds: Vec<_> = messages.into_iter().map(classify_native_failure).collect();
-    kinds
-        .iter()
-        .copied()
-        .find(|kind| kind.is_auth())
-        .or_else(|| {
-            kinds
-                .into_iter()
-                .find(|kind| *kind != NativeFailureKind::Unknown)
-        })
-        .unwrap_or(NativeFailureKind::Unknown)
+    strongest_native_failure(&kinds)
 }
 
 fn parse_usage(

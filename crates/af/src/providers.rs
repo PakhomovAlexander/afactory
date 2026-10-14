@@ -3650,15 +3650,8 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool, usage: UsageProbe)
     let probe_path = sanitized_path();
     // Whatever the CLI would say about a login, af cannot dispatch to one that refuses its
     // invocation (ADR-0146).
-    match check_invocation(&program, &spec, &probe_path, cancelled, None) {
-        Ok(()) => {}
-        Err(CliRefusal::CannotStart(failure)) => {
-            return installation_failed_status(&spec, &failure);
-        }
-        Err(CliRefusal::Incompatible(incompatibility)) => {
-            return incompatible_status(&spec, &incompatibility);
-        }
-        Err(CliRefusal::Unchecked(reason)) => return unavailable_status(&spec, &reason),
+    if let Err(refusal) = check_invocation(&program, &spec, &probe_path, cancelled, None) {
+        return refused_status(&spec, refusal);
     }
     let output = match run_probe(&program, &spec, &probe_path, cancelled) {
         Ok(output) => output,
@@ -3726,7 +3719,8 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool, usage: UsageProbe)
         && status == "authenticated"
         && auth_type == "ChatGPT"
     {
-        match probe_codex_subscription(&program, &spec, &probe_path, cancelled) {
+        let mut observed = AppServerProbe::default();
+        match probe_codex_subscription(&program, &spec, &probe_path, cancelled, &mut observed) {
             Ok(snapshot) => {
                 subscription = snapshot.subscription;
                 limits = snapshot.limits;
@@ -3737,6 +3731,21 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool, usage: UsageProbe)
                     }
                     detail.push_str(&format!("subscription status partial: {warning}"));
                 }
+            }
+            // An app-server that broke the protocol is the CLI's failure, never the usage
+            // axis's: the same report as the capability check gives.
+            Err(error) if observed.lacks_protocol => {
+                return refused_status(
+                    &spec,
+                    compatibility::protocol_incompatibility(
+                        &program,
+                        &spec,
+                        &probe_path,
+                        cancelled,
+                        None,
+                        &error,
+                    ),
+                );
             }
             Err(error) => {
                 usage_state = UsageState::Unavailable;
@@ -3813,6 +3822,16 @@ fn installation_failed_status(
         status: INSTALLATION_FAILED.to_string(),
         detail: failure.message(),
         ..unavailable_status(spec, "")
+    }
+}
+
+/// The status of a context whose CLI af refused: it cannot start, does not accept af's
+/// invocation, or could not be checked.
+fn refused_status(spec: &ProviderSpec, refusal: CliRefusal) -> ProviderStatus {
+    match refusal {
+        CliRefusal::CannotStart(failure) => installation_failed_status(spec, &failure),
+        CliRefusal::Incompatible(incompatibility) => incompatible_status(spec, &incompatibility),
+        CliRefusal::Unchecked(reason) => unavailable_status(spec, &reason),
     }
 }
 
@@ -4325,40 +4344,24 @@ fn configure_probe_environment(
     }
 }
 
+/// The Codex rate limits, read from the app-server; `observed` says how far the probe got.
 fn probe_codex_subscription(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
+    observed: &mut AppServerProbe,
 ) -> Result<SubscriptionSnapshot, String> {
     // The bounded request is called directly: only Task identity checks add an Attempt deadline.
-    parse_codex_subscription_response(&probe_codex_request_before(
+    parse_codex_subscription_response(&probe_codex_request_observed(
         program,
         spec,
         probe_path,
         cancelled,
-        &serde_json::json!({"method":"account/rateLimits/read","id":2}),
+        Some(&serde_json::json!({"method":"account/rateLimits/read","id":2})),
         None,
+        observed,
     )?)
-}
-
-fn probe_codex_request_before(
-    program: &Path,
-    spec: &ProviderSpec,
-    probe_path: &std::ffi::OsStr,
-    cancelled: &AtomicBool,
-    request: &serde_json::Value,
-    attempt_deadline: Option<Instant>,
-) -> Result<serde_json::Value, String> {
-    probe_codex_request_observed(
-        program,
-        spec,
-        probe_path,
-        cancelled,
-        Some(request),
-        attempt_deadline,
-        &mut AppServerProbe::default(),
-    )
 }
 
 /// How far one Codex app-server probe got.
@@ -4368,8 +4371,9 @@ struct AppServerProbe {
     /// started and serves the protocol, whatever the request itself concludes.
     answered: bool,
     /// The app-server did not prove the protocol: it exited before a result object, answered
-    /// `initialize` with an error, or wrote a malformed answer ([`InitializeAnswer`]). The
-    /// probe's error carries the exit status when it exited and the bounded observed line.
+    /// `initialize` with an error, or wrote a line [`rpc_line`] finds malformed before the
+    /// response the probe waited for, `initialize`'s or the request's. The probe's error carries
+    /// the exit status when it exited and the bounded observed line.
     lacks_protocol: bool,
 }
 
@@ -4380,50 +4384,99 @@ enum InitializeAnswer {
     /// protocol capability.
     Result(serde_json::Value),
     /// A refusal of the protocol capability: a response with id 1 carrying an `error`, one whose
-    /// `result` is absent, `null` or not an object, or a line before it that is not a JSON-RPC
-    /// message. Carries how, and the line, bounded and filtered.
+    /// `result` is absent, `null` or not an object, or a line before it that [`rpc_line`] finds
+    /// malformed. Carries how, and the line, bounded and filtered.
     Refused { how: &'static str, line: String },
 }
 
-/// The first complete stdout line that answers `initialize`, or that no JSON-RPC peer would
-/// write: blank lines, notifications (a `method`, no `id`) and responses to other ids are
-/// skipped; any other line, an object with neither `id` nor `method` among them, refuses.
+/// One line of a Codex app-server's stdout under the JSON-RPC line grammar. [`rpc_line`] is the
+/// one predicate every line a probe reads passes, from the first byte until the response it waits
+/// for, whichever request that is.
+#[derive(Debug, PartialEq)]
+enum RpcLine {
+    /// A line of whitespace alone: framing between messages, not a message.
+    Blank,
+    /// A response: a JSON object with an `id` and exactly one of `result` or `error`.
+    Response(serde_json::Value),
+    /// A notification or a request: a JSON object with a string `method`.
+    Notification,
+    /// Anything else: not JSON, not an object (`[1,2]`, `42`), an object with an `id` but neither
+    /// `result` nor `error` (`{"id":2,"foo":"bar"}`), or with neither `id` nor `method`. No
+    /// JSON-RPC peer writes it, so it is the missing protocol capability, never silence.
+    Malformed,
+}
+
+fn rpc_line(line: &[u8]) -> RpcLine {
+    if line.iter().all(u8::is_ascii_whitespace) {
+        return RpcLine::Blank;
+    }
+    let Ok(serde_json::Value::Object(object)) = serde_json::from_slice(line) else {
+        return RpcLine::Malformed;
+    };
+    if object.contains_key("id") && object.contains_key("result") != object.contains_key("error") {
+        RpcLine::Response(serde_json::Value::Object(object))
+    } else if object
+        .get("method")
+        .is_some_and(serde_json::Value::is_string)
+    {
+        RpcLine::Notification
+    } else {
+        RpcLine::Malformed
+    }
+}
+
+/// What settles a probe's wait for the response with one id.
+#[derive(Debug, PartialEq)]
+enum Awaited<'a> {
+    /// The response with that id, and the line it was written as.
+    Response(serde_json::Value, &'a [u8]),
+    /// A line [`rpc_line`] finds malformed, written before that response.
+    Malformed(&'a [u8]),
+}
+
+/// The first complete stdout line that settles a wait for the response with `id`: that response,
+/// or a malformed line before it. Blank lines, notifications, requests and responses to other ids
+/// are skipped; a line still being written is not read.
+fn awaited_response(captured: &[u8], id: u64) -> Option<Awaited<'_>> {
+    complete_lines(captured).find_map(|line| match rpc_line(line) {
+        RpcLine::Blank | RpcLine::Notification => None,
+        RpcLine::Response(message) => (message.get("id").and_then(serde_json::Value::as_u64)
+            == Some(id))
+        .then_some(Awaited::Response(message, line)),
+        RpcLine::Malformed => Some(Awaited::Malformed(line)),
+    })
+}
+
+/// A Provider-written stdout line as a report may quote it: bounded and filtered.
+fn observed_line(line: &[u8]) -> String {
+    review_runner::cli::bounded_cli_line(&String::from_utf8_lossy(line))
+}
+
+/// The answer to af's `initialize` (id 1), read under [`awaited_response`].
 fn initialize_answer(captured: &[u8]) -> Option<InitializeAnswer> {
-    complete_lines(captured).find_map(|line| {
-        let refused = |how| InitializeAnswer::Refused {
-            how,
-            line: review_runner::cli::bounded_cli_line(&String::from_utf8_lossy(line)),
-        };
-        if line.iter().all(u8::is_ascii_whitespace) {
-            return None;
+    let refused = |how, line: &[u8]| InitializeAnswer::Refused {
+        how,
+        line: observed_line(line),
+    };
+    Some(match awaited_response(captured, 1)? {
+        Awaited::Response(message, line) if message.get("error").is_some() => {
+            refused("with an error", line)
         }
-        let Ok(message) = serde_json::from_slice::<serde_json::Value>(line) else {
-            return Some(refused("with a line that is not a JSON-RPC message"));
-        };
-        let Some(object) = message.as_object() else {
-            return Some(refused("with a line that is not a JSON-RPC message"));
-        };
-        // Only a response, which carries an `id`, or a notification, which carries a `method`,
-        // may precede the answer; an object with neither is no JSON-RPC message, never silence.
-        if !object.contains_key("id") {
-            return (!object
-                .get("method")
-                .is_some_and(serde_json::Value::is_string))
-            .then(|| refused("with a line that is not a JSON-RPC message"));
-        }
-        if message.get("id").and_then(serde_json::Value::as_u64) != Some(1) {
-            return None;
-        }
-        Some(if message.get("error").is_some() {
-            refused("with an error")
-        } else if message
-            .get("result")
-            .is_some_and(serde_json::Value::is_object)
-        {
+        Awaited::Response(message, _) if message["result"].is_object() => {
             InitializeAnswer::Result(message)
-        } else {
-            refused("without a result object")
-        })
+        }
+        Awaited::Response(_, line) => refused("without a result object", line),
+        // `{"id":1}`: an answer to af's request, malformed for want of its result.
+        Awaited::Malformed(line)
+            if serde_json::from_slice::<serde_json::Value>(line).is_ok_and(|message| {
+                message.get("id").and_then(serde_json::Value::as_u64) == Some(1)
+                    && message.get("result").is_none()
+                    && message.get("error").is_none()
+            }) =>
+        {
+            refused("without a result object", line)
+        }
+        Awaited::Malformed(line) => refused("with a line that is not a JSON-RPC message", line),
     })
 }
 
@@ -4431,9 +4484,9 @@ fn initialize_answer(captured: &[u8]) -> Option<InitializeAnswer> {
 /// exit grace ended, so af stopped it.
 const APP_SERVER_STOPPED_BY_AF: &str = "was stopped by af";
 
-/// How long a probe that read a refused `initialize` answer waits for the app-server to exit,
-/// so the report can carry its exit status; the answer already refused the CLI, so the wait is
-/// only for the report, and the probe deadline still bounds it.
+/// How long a probe that read a refused `initialize` answer or a malformed line waits for the
+/// app-server to exit, so the report can carry its exit status; the line already refused the CLI,
+/// so the wait is only for the report, and the probe deadline still bounds it.
 const REFUSED_ANSWER_EXIT_GRACE: Duration = Duration::from_secs(1);
 
 /// The bytes of the app-server's stderr a probe keeps: enough for its first error lines.
@@ -4528,21 +4581,13 @@ fn probe_codex_request_observed(
                 InitializeAnswer::Result(response) => response,
                 InitializeAnswer::Refused { how, line } => {
                     observed.lacks_protocol = true;
-                    // Report the exit too when the app-server ends right after its answer.
-                    let grace = Instant::now() + REFUSED_ANSWER_EXIT_GRACE.min(timeout);
-                    let exit = loop {
-                        match review_process::try_reap_killing_group(&mut child, &mut watch) {
-                            Ok(Some(status)) => {
-                                reaped = true;
-                                break Some(review_runner::cli::exit_description(&status));
-                            }
-                            Ok(None) if Instant::now() < grace.min(deadline) => {
-                                thread::sleep(Duration::from_millis(10));
-                            }
-                            Ok(None) | Err(_) => break None,
-                        }
-                    };
-                    let exit = exit.unwrap_or_else(|| APP_SERVER_STOPPED_BY_AF.to_string());
+                    let exit = outcome_after_refusal(
+                        &mut child,
+                        &mut watch,
+                        &mut reaped,
+                        Instant::now() + REFUSED_ANSWER_EXIT_GRACE.min(timeout),
+                        deadline,
+                    );
                     break Err(format!(
                         "codex app-server {exit} after answering initialize {how}: {line}"
                     ));
@@ -4562,8 +4607,23 @@ fn probe_codex_request_observed(
             }
             requested_limits = true;
         }
-        if requested_limits && let Some(response) = response_for_id(&captured, 2) {
-            break Ok(response);
+        // The lines after the `initialize` answer pass the same grammar: a malformed one before
+        // the id-2 response is the missing protocol capability, reported at once.
+        if requested_limits && let Some(answer) = awaited_response(&captured, 2) {
+            match answer {
+                Awaited::Response(response, _) => break Ok(response),
+                Awaited::Malformed(line) => {
+                    observed.lacks_protocol = true;
+                    let exit = outcome_after_refusal(
+                        &mut child,
+                        &mut watch,
+                        &mut reaped,
+                        Instant::now() + REFUSED_ANSWER_EXIT_GRACE.min(timeout),
+                        deadline,
+                    );
+                    break Err(malformed_before_answering(&exit, &method, line));
+                }
+            }
         }
         match review_process::try_reap_killing_group(&mut child, &mut watch) {
             Ok(Some(status)) => {
@@ -4571,10 +4631,16 @@ fn probe_codex_request_observed(
                 // Whatever it wrote before exiting is still in the pipes.
                 while let Ok(true) = drain_available(&mut stdout, &mut captured, &mut exceeded) {}
                 drain_stderr(&mut stderr, &mut said);
-                if requested_limits && let Some(response) = response_for_id(&captured, 2) {
-                    break Ok(response);
-                }
                 let exit = review_runner::cli::exit_description(&status);
+                if requested_limits && let Some(answer) = awaited_response(&captured, 2) {
+                    match answer {
+                        Awaited::Response(response, _) => break Ok(response),
+                        Awaited::Malformed(line) => {
+                            observed.lacks_protocol = true;
+                            break Err(malformed_before_answering(&exit, &method, line));
+                        }
+                    }
+                }
                 let answer = if requested_limits {
                     None
                 } else {
@@ -4641,6 +4707,39 @@ fn probe_codex_request_observed(
     result
 }
 
+/// How an app-server that wrote a refusal ended: its exit when it ends within `grace`, else
+/// [`APP_SERVER_STOPPED_BY_AF`], as af stops it. The refusal already decided the probe, so the wait
+/// is only for the report, and `deadline` still bounds it.
+fn outcome_after_refusal(
+    child: &mut std::process::Child,
+    watch: &mut review_process::ExitWatch,
+    reaped: &mut bool,
+    grace: Instant,
+    deadline: Instant,
+) -> String {
+    loop {
+        match review_process::try_reap_killing_group(child, watch) {
+            Ok(Some(status)) => {
+                *reaped = true;
+                break review_runner::cli::exit_description(&status);
+            }
+            Ok(None) if Instant::now() < grace.min(deadline) => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) | Err(_) => break APP_SERVER_STOPPED_BY_AF.to_string(),
+        }
+    }
+}
+
+/// The report of an app-server that answered `initialize` and then wrote a malformed line before
+/// answering the request `method`.
+fn malformed_before_answering(exit: &str, method: &str, line: &[u8]) -> String {
+    format!(
+        "codex app-server {exit} after answering initialize, before answering `{method}`, with a line that is not a JSON-RPC message: {}",
+        observed_line(line)
+    )
+}
+
 /// The newline-terminated lines of a stream, without their line endings: a line still being
 /// written is not read.
 fn complete_lines(captured: &[u8]) -> impl Iterator<Item = &[u8]> {
@@ -4651,12 +4750,6 @@ fn complete_lines(captured: &[u8]) -> impl Iterator<Item = &[u8]> {
             let line = line.strip_suffix(b"\n").unwrap_or(line);
             line.strip_suffix(b"\r").unwrap_or(line)
         })
-}
-
-fn response_for_id(captured: &[u8], expected_id: u64) -> Option<serde_json::Value> {
-    complete_lines(captured)
-        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
-        .find(|message| message.get("id").and_then(serde_json::Value::as_u64) == Some(expected_id))
 }
 
 fn parse_codex_subscription_response(
@@ -6440,9 +6533,14 @@ auth_dir = "{}"
             source: "test".to_string(),
         };
         let probe_path = sanitized_path();
-        let snapshot =
-            probe_codex_subscription(&program, &spec, &probe_path, &AtomicBool::new(false))
-                .unwrap();
+        let snapshot = probe_codex_subscription(
+            &program,
+            &spec,
+            &probe_path,
+            &AtomicBool::new(false),
+            &mut AppServerProbe::default(),
+        )
+        .unwrap();
         assert!(!snapshot.limits.is_empty());
 
         fs::write(
@@ -6500,9 +6598,13 @@ auth_dir = "{}"
         };
 
         let probe_path = sanitized_path();
-        let Err(error) =
-            probe_codex_subscription(&program, &spec, &probe_path, &AtomicBool::new(false))
-        else {
+        let Err(error) = probe_codex_subscription(
+            &program,
+            &spec,
+            &probe_path,
+            &AtomicBool::new(false),
+            &mut AppServerProbe::default(),
+        ) else {
             panic!("early app-server exit unexpectedly returned subscription data");
         };
         assert_eq!(
@@ -6585,6 +6687,18 @@ auth_dir = "{}"
                 b"{\"method\":7}\n",
                 "with a line that is not a JSON-RPC message",
             ),
+            // Issue #259, round 6: an `id` without `result` or `error` is no response, whatever
+            // the id, and an array or prose is no message.
+            (
+                b"{\"id\":2,\"foo\":\"bar\"}\n{\"id\":1,\"result\":{}}\n",
+                "with a line that is not a JSON-RPC message",
+            ),
+            (b"[1,2]\n", "with a line that is not a JSON-RPC message"),
+            (b"not json\n", "with a line that is not a JSON-RPC message"),
+            (
+                b"{\"id\":1,\"result\":{},\"error\":{}}\n",
+                "with a line that is not a JSON-RPC message",
+            ),
         ] {
             let Some(InitializeAnswer::Refused { how: said, line }) = initialize_answer(captured)
             else {
@@ -6600,9 +6714,59 @@ auth_dir = "{}"
                     .trim_end()
             );
         }
+        // A response to another id and a notification are skipped, never refusals.
+        assert_eq!(
+            initialize_answer(b"{\"id\":7,\"result\":{}}\n{\"id\":1,\"result\":{}}\n"),
+            Some(InitializeAnswer::Result(
+                serde_json::json!({"id":1,"result":{}})
+            ))
+        );
+        assert_eq!(
+            initialize_answer(
+                b"{\"method\":\"x/changed\",\"params\":{}}\n{\"id\":1,\"result\":{}}\n"
+            ),
+            Some(InitializeAnswer::Result(
+                serde_json::json!({"id":1,"result":{}})
+            ))
+        );
         // Nothing yet: no line, a line still being written, or another id.
         for captured in [&b""[..], b"{\"id\":1,\"res", b"{\"id\":2,\"result\":{}}\n"] {
             assert_eq!(initialize_answer(captured), None);
+        }
+    }
+
+    /// Issue #259, round 6: the one line grammar every app-server line a probe reads passes.
+    #[test]
+    fn every_app_server_line_is_a_response_a_notification_or_malformed() {
+        for line in [
+            &br#"{"id":1,"result":{}}"#[..],
+            br#"{"id":2,"error":{"code":-32600,"message":"no"}}"#,
+            br#"{"id":"a","result":null}"#,
+        ] {
+            assert!(matches!(rpc_line(line), RpcLine::Response(_)), "{line:?}");
+        }
+        for line in [
+            &br#"{"method":"x/changed","params":{}}"#[..],
+            br#"{"id":9,"method":"item/requestApproval","params":{}}"#,
+        ] {
+            assert_eq!(rpc_line(line), RpcLine::Notification, "{line:?}");
+        }
+        for line in [&b""[..], b"  ", b"\t"] {
+            assert_eq!(rpc_line(line), RpcLine::Blank, "{line:?}");
+        }
+        for line in [
+            &br#"{"id":2,"foo":"bar"}"#[..],
+            br#"{"id":1}"#,
+            br#"{"id":1,"result":{},"error":{}}"#,
+            br#"{"foo":"bar"}"#,
+            br#"{"method":7}"#,
+            b"[1,2]",
+            b"42",
+            b"\"text\"",
+            b"not json",
+            br#"{"id":1,"res"#,
+        ] {
+            assert_eq!(rpc_line(line), RpcLine::Malformed, "{line:?}");
         }
     }
 
@@ -6610,10 +6774,90 @@ auth_dir = "{}"
     fn app_server_response_scanner_waits_for_a_complete_matching_line() {
         let captured = br#"{"id":1,"result":{}}
 {"id":2,"result":{"rateLimits":{}}}"#;
-        assert!(response_for_id(captured, 1).is_some());
-        assert!(response_for_id(captured, 2).is_none());
+        assert!(matches!(
+            awaited_response(captured, 1),
+            Some(Awaited::Response(..))
+        ));
+        assert_eq!(awaited_response(captured, 2), None);
         let complete = [captured.as_slice(), b"\n"].concat();
-        assert!(response_for_id(&complete, 2).is_some());
+        assert!(matches!(
+            awaited_response(&complete, 2),
+            Some(Awaited::Response(..))
+        ));
+        // The same grammar holds while waiting for id 2: a malformed line after the `initialize`
+        // answer settles the wait, a notification or another id does not.
+        let captured = b"{\"id\":1,\"result\":{}}\n{\"method\":\"x\"}\n{\"id\":7,\"result\":{}}\n{\"id\":2,\"foo\":\"bar\"}\n";
+        assert_eq!(
+            awaited_response(captured, 2),
+            Some(Awaited::Malformed(b"{\"id\":2,\"foo\":\"bar\"}"))
+        );
+    }
+
+    /// Issue #259, round 6: an app-server that answers `initialize` and then, still running,
+    /// writes a malformed line before its id-2 response is refused at once as missing the
+    /// protocol, with the process outcome and the line, never waited on until the timeout.
+    #[test]
+    fn a_malformed_line_before_the_id_2_answer_refuses_at_once() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("codex");
+        let spec = ProviderSpec {
+            id: "codex-test".to_string(),
+            kind: ProviderKind::Codex,
+            auth_dir: None,
+            explicit_selector: false,
+            registry_declared: false,
+            source: "test".to_string(),
+        };
+        let probe_path = sanitized_path();
+        for line in [r#"{"id":2,"foo":"bar"}"#, "[1,2]", "not json"] {
+            fs::write(
+                &program,
+                format!(
+                    "#!/bin/sh
+\
+                     IFS= read -r _
+\
+                     printf '%s\\n' '{{\"id\":1,\"result\":{{}}}}'
+\
+                     IFS= read -r _
+\
+                     IFS= read -r _
+\
+                     printf '%s\\n' '{{\"method\":\"x/changed\",\"params\":{{}}}}' '{{\"id\":7,\"result\":{{}}}}' '{line}'
+\
+                     while IFS= read -r _; do :; done
+\
+                     sleep 60
+"
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+            let started = Instant::now();
+            let mut observed = AppServerProbe::default();
+            let error = probe_codex_request_observed(
+                &program,
+                &spec,
+                &probe_path,
+                &AtomicBool::new(false),
+                Some(&serde_json::json!({"method":"account/read","id":2})),
+                None,
+                &mut observed,
+            )
+            .unwrap_err();
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "{line}: {error}"
+            );
+            assert_eq!(
+                error,
+                format!(
+                    "codex app-server was stopped by af after answering initialize, before answering `account/read`, with a line that is not a JSON-RPC message: {line}"
+                )
+            );
+            assert!(observed.answered && observed.lacks_protocol, "{line}");
+        }
     }
 
     #[test]

@@ -229,8 +229,8 @@ struct IdentityFailure {
     /// start at all. A CLI that answered — logged out, another account — never is.
     cli_silent: bool,
     /// The Codex app-server gave no `initialize` result object — it exited first, rejected it or
-    /// answered it malformed: unless the CLI cannot start at all, it lacks the protocol
-    /// capability the probe needs.
+    /// answered it malformed — or wrote a malformed line before the identity answer: unless the
+    /// CLI cannot start at all, it lacks the protocol capability the probe needs.
     protocol_unanswered: bool,
 }
 
@@ -339,7 +339,10 @@ fn observe_identity(
                 &mut observed,
             )
             .map_err(|message| IdentityFailure {
-                cli_silent: !observed.answered && !probe_gave_up(&message),
+                // A malformed line, before or after the `initialize` answer, is no answer af
+                // recognizes either.
+                cli_silent: observed.lacks_protocol
+                    || !observed.answered && !probe_gave_up(&message),
                 protocol_unanswered: observed.lacks_protocol,
                 message,
             })?;
