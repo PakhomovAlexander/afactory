@@ -2,9 +2,12 @@
 //!
 //! Before `af provider status`, `af provider setup` or Task Provider admission asks a CLI about
 //! its login, af runs the token-free capability check: `claude --help` or `codex exec --help`
-//! must declare every option af's invocation passes. A fixture CLI whose subject is something
-//! else answers that check through [`with_help`]; a fixture whose subject is the check writes its
-//! own page, usually [`CLAUDE_HELP`] or [`CODEX_EXEC_HELP`] with lines removed.
+//! must declare every option af's invocation passes, and a bare `codex app-server` must answer
+//! `initialize`. A fixture CLI whose subject is something else answers that check through
+//! [`with_help`]; a fixture whose subject is the check writes its own page, usually
+//! [`CLAUDE_HELP`] or [`CODEX_EXEC_HELP`] with lines removed. A Codex fixture that serves
+//! `app-server` itself keeps doing so; any other gets one that answers `initialize`, reads the
+//! next two messages and exits, so a later request gets no answer.
 
 /// The options section of `claude --help` in Claude Code's commander layout, abridged to what af
 /// passes plus the usual neighbours; the layout and option names are those of 2.1.299, checked by
@@ -73,6 +76,7 @@ pub fn with_help(kind: &str, script: &str) -> String {
 
 /// `script` answering the capability check with `help` as its page.
 pub fn with_page(kind: &str, script: &str, help: &str) -> String {
+    let serves_app_server = script.contains("app-server");
     let (interpreter, body) = script.split_once('\n').expect("a script with a body");
     assert!(interpreter.starts_with("#!"), "{interpreter}");
     let python = interpreter.contains("python");
@@ -82,18 +86,32 @@ pub fn with_page(kind: &str, script: &str, help: &str) -> String {
         ("claude", false) => {
             format!("if [ \"$1\" = --help ]; then\nprintf '%s' '{quoted}'\nexit 0\nfi\n")
         }
-        ("codex", false) => format!(
-            "if [ \"$1\" = exec ] && [ \"$2\" = --help ]; then\nprintf '%s' '{quoted}'\nexit 0\nfi\n"
-        ),
+        ("codex", false) => {
+            let mut branch = format!(
+                "if [ \"$1\" = exec ] && [ \"$2\" = --help ]; then\nprintf '%s' '{quoted}'\nexit 0\nfi\n"
+            );
+            if !serves_app_server {
+                branch.push_str(
+                    "if [ \"$1\" = app-server ] && [ -z \"$2\" ]; then\nIFS= read -r _af_line\nprintf '%s\\n' '{\"id\":1,\"result\":{}}'\nIFS= read -r _af_line\nIFS= read -r _af_line\nexit 0\nfi\n",
+                );
+            }
+            branch
+        }
         (_, true) => {
             let argv = if kind == "claude" {
                 "['--help']"
             } else {
                 "['exec','--help']"
             };
-            format!(
+            let mut branch = format!(
                 "import sys as _af_sys\nif _af_sys.argv[1:]=={argv}:\n _af_sys.stdout.write({help:?})\n _af_sys.exit(0)\n"
-            )
+            );
+            if kind == "codex" && !serves_app_server {
+                branch.push_str(
+                    "if _af_sys.argv[1:]==['app-server']:\n _af_sys.stdin.readline()\n _af_sys.stdout.write('{\"id\":1,\"result\":{}}\\n')\n _af_sys.stdout.flush()\n _af_sys.stdin.readline()\n _af_sys.stdin.readline()\n _af_sys.exit(0)\n",
+                );
+            }
+            branch
         }
         _ => panic!("unknown Provider kind {kind}"),
     };

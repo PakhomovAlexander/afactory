@@ -428,7 +428,9 @@ exit 64
 }
 
 /// Status is a registry and authentication check; usage is a separate, opt-in axis that can
-/// fail without saying anything about the login.
+/// fail without saying anything about the login. The app-server answers the compatibility
+/// check's `initialize` (ADR-0146) and fails only the rate-limit request, which default status
+/// never sends.
 #[test]
 fn status_keeps_authentication_when_optional_usage_is_unavailable() {
     let root = tempfile::tempdir().unwrap();
@@ -443,8 +445,13 @@ if [ "$1" = login ] && [ "$2" = status ]; then
   exit 0
 fi
 if [ "$1" = app-server ]; then
-  printf '%s\n' app-server >> "$CODEX_HOME/usage-probe-log"
-  exit 1
+  while IFS= read -r request; do
+    case "$request" in
+      *'"id":1'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+      *'"id":2'*) printf '%s\n' app-server >> "$CODEX_HOME/usage-probe-log"; exit 1 ;;
+    esac
+  done
+  exit 0
 fi
 exit 64
 "#,

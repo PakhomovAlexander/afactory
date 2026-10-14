@@ -1,6 +1,6 @@
 //! Claude framing for generic typed Task Workers. No review-result parser or retry loop.
 use super::*;
-use review_runner::cli::{is_invocation_error, startup_failure, transport_outcome};
+use review_runner::cli::{WorkerStderr, is_invocation_error, startup_failure, transport_outcome};
 use review_runner::native_failure::{NativeFailureKind, classify_native_failure};
 use review_runner::task::{ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter};
 
@@ -215,6 +215,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         }
         let mut parsed = None;
         let mut failure: Option<NativeFailureKind> = None;
+        let mut said = WorkerStderr::default();
         let capture = runner.capture_filtered(
             cas,
             &command,
@@ -227,6 +228,9 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 let native_failed = parsed.as_ref().is_some_and(|value| {
                     value.get("is_error").and_then(serde_json::Value::as_bool) == Some(true)
                 });
+                // The Worker's own last words, bounded and filtered, before the privacy filter
+                // below may replace the stream.
+                said = WorkerStderr::read(stderr);
                 if failed || native_failed {
                     // A parsed envelope speaks only through its native error fields, so model
                     // text cannot choose the category. Unparsed stdout is native output.
@@ -278,13 +282,15 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 parsed.as_ref().expect("successful envelope"),
                 output_schema.is_some(),
             )
-        } else if failure == Some(NativeFailureKind::UnsupportedInvocation) {
+        } else if parsed.is_none() {
+            // No envelope at all: the process's exit and its own last words are all there is,
+            // whatever the failure was classified as.
             Err(startup_failure(
                 "Claude Worker",
                 &CLAUDE_INVOCATION,
                 &capture.status,
-                &capture.stderr,
-                true,
+                &said,
+                failure.unwrap_or(NativeFailureKind::Unknown),
             ))
         } else if let Some(kind) = failure.filter(|kind| *kind != NativeFailureKind::Unknown) {
             let mut error = format!(
@@ -301,15 +307,6 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             Err(error)
         } else if let Some(error) = accounting.error {
             Err(error.into())
-        } else if parsed.is_none() {
-            // No envelope at all: the process's exit and its own last words are all there is.
-            Err(startup_failure(
-                "Claude Worker",
-                &CLAUDE_INVOCATION,
-                &capture.status,
-                &capture.stderr,
-                false,
-            ))
         } else {
             Err(format!(
                 "Claude Worker failed; transport: {}",

@@ -363,3 +363,111 @@ fn a_cli_that_refuses_afs_arguments_is_an_unsupported_invocation_with_its_own_li
     assert!(!error.contains("ExitStatus"), "{error}");
     assert!(returned.usage.is_none(), "no usage was reported");
 }
+
+/// Issue #259, round 2: a Worker that exits without a parsable result keeps its exit and its own
+/// bounded stderr excerpt whatever its failure is classified as, and a line that looks like
+/// credential material is withheld whole while the exit and the classification stay.
+#[test]
+fn a_classified_failure_without_events_keeps_its_exit_and_stderr_excerpt() {
+    use review_runner::cli::WITHHELD_LINE;
+    use review_runner::native_failure::NativeFailureKind;
+    for (stderr, kind, quoted) in [
+        (
+            "error: connection refused while loading the native runtime",
+            NativeFailureKind::Network,
+            "error: connection refused while loading the native runtime",
+        ),
+        (
+            "network failed: proxy refused connection",
+            NativeFailureKind::Network,
+            "network failed: proxy refused connection",
+        ),
+        (
+            "error: unknown option '--safe-mode'; API_KEY=sk-secret",
+            NativeFailureKind::UnsupportedInvocation,
+            WITHHELD_LINE,
+        ),
+        (
+            "network failed; OPENAI_API_KEY=\"sk-proj-FIXTURE\"",
+            NativeFailureKind::Network,
+            WITHHELD_LINE,
+        ),
+        (
+            "network failed: 3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f",
+            NativeFailureKind::Network,
+            WITHHELD_LINE,
+        ),
+        (
+            "Authorization: Bearer FIXTUREabcdef",
+            NativeFailureKind::Unknown,
+            WITHHELD_LINE,
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        let said = temp.path().join("stderr");
+        std::fs::write(&said, format!("{stderr}\n")).unwrap();
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\ncat '{}' >&2\nexit 1\n",
+                said.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter =
+            CodexTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            LOAD_SAFE_WALL,
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        let error = returned.message.unwrap_err();
+        assert_eq!(
+            returned.native_failure,
+            (kind != NativeFailureKind::Unknown).then_some(kind),
+            "{error}"
+        );
+        assert!(error.contains("exited 1"), "{error}");
+        assert!(error.contains(quoted), "{error}");
+        if kind != NativeFailureKind::Unknown {
+            let closed = kind.diagnostic();
+            assert!(
+                error.contains(&closed[closed.rfind('(').unwrap()..]),
+                "{error}"
+            );
+        }
+        for secret in ["sk-", "FIXTURE", "3f9a1c0b"] {
+            assert!(!error.contains(secret), "{error}");
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let script = temp.path().join("provider");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ncat >/dev/null\necho 'network failed: proxy refused connection' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = CodexTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"input".to_vec(),
+        LOAD_SAFE_WALL,
+        WorkerAccess::ReadOnly,
+        None,
+        &[],
+    );
+    assert_eq!(
+        returned.message.unwrap_err(),
+        "Codex Worker failed: Provider network request failed (network); it exited 1 without a parsable result; stderr: network failed: proxy refused connection"
+    );
+}

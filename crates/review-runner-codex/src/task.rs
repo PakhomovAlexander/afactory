@@ -1,6 +1,6 @@
 //! Codex framing for generic typed Task Workers, preserving failed and malformed usage.
 use super::*;
-use review_runner::cli::{is_invocation_error, startup_failure, transport_outcome};
+use review_runner::cli::{WorkerStderr, is_invocation_error, startup_failure, transport_outcome};
 use review_runner::native_failure::{NativeFailureKind, classify_native_failure};
 use review_runner::task::{
     MAX_WORKER_BYTES, ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter,
@@ -143,6 +143,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         }
         let mut events = TaskEvents::default();
         let mut failure = None;
+        let mut said = WorkerStderr::default();
         let capture = runner.capture_filtered(
             cas,
             &command,
@@ -151,6 +152,9 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             |failed, stdout, stderr| {
                 // Parse the bill before privacy filtering removes an authentication envelope.
                 events = TaskEvents::parse(stdout);
+                // The Worker's own last words, bounded and filtered, before the privacy filter
+                // below may replace the stream.
+                said = WorkerStderr::read(stderr);
                 if failed || events.upstream_failure.is_some() {
                     // Framed events speak only through their error fields: an agent message
                     // that quotes an auth error is model output, never a native diagnostic.
@@ -200,50 +204,40 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             // An `error` or `turn.failed` event is a native failure even when its message is
             // unclassified: its closed diagnostic names that, never the bare exit status.
             returned.native_failure = failure.or(events.upstream_failure);
-            returned.message = Err(
-                if failure == Some(NativeFailureKind::UnsupportedInvocation) {
-                    startup_failure(
-                        "Codex Worker",
-                        &CODEX_INVOCATION,
-                        &capture.status,
-                        &capture.stderr,
-                        true,
-                    )
-                } else if let Some(kind) = failure
-                    .filter(|kind| *kind != NativeFailureKind::Unknown)
-                    .or(events.upstream_failure.filter(|_| !events.malformed_usage))
-                {
-                    let mut message = format!(
-                        "Codex Worker failed: {}; transport: {}",
-                        kind.diagnostic(),
-                        transport_outcome(&capture.status)
-                    );
-                    if events.malformed_usage {
-                        message.push_str("; Codex Worker returned malformed native usage");
-                    }
-                    message
-                } else if events.malformed_usage {
-                    format!(
-                        "Codex Worker returned malformed native usage: {:?}",
-                        events.error
-                    )
-                } else if !events.framed {
-                    // No event at all: the process's exit and its own last words are all there
-                    // is. A secret-bearing stderr was already cleared above.
-                    startup_failure(
-                        "Codex Worker",
-                        &CODEX_INVOCATION,
-                        &capture.status,
-                        &capture.stderr,
-                        false,
-                    )
-                } else {
-                    format!(
-                        "Codex Worker failed; transport: {}",
-                        transport_outcome(&capture.status)
-                    )
-                },
-            );
+            returned.message = Err(if !events.framed {
+                // No event at all: the process's exit and its own last words are all there is,
+                // whatever the failure was classified as.
+                startup_failure(
+                    "Codex Worker",
+                    &CODEX_INVOCATION,
+                    &capture.status,
+                    &said,
+                    failure.unwrap_or(NativeFailureKind::Unknown),
+                )
+            } else if let Some(kind) = failure
+                .filter(|kind| *kind != NativeFailureKind::Unknown)
+                .or(events.upstream_failure.filter(|_| !events.malformed_usage))
+            {
+                let mut message = format!(
+                    "Codex Worker failed: {}; transport: {}",
+                    kind.diagnostic(),
+                    transport_outcome(&capture.status)
+                );
+                if events.malformed_usage {
+                    message.push_str("; Codex Worker returned malformed native usage");
+                }
+                message
+            } else if events.malformed_usage {
+                format!(
+                    "Codex Worker returned malformed native usage: {:?}",
+                    events.error
+                )
+            } else {
+                format!(
+                    "Codex Worker failed; transport: {}",
+                    transport_outcome(&capture.status)
+                )
+            });
             return if capture.started {
                 Ok(returned)
             } else {

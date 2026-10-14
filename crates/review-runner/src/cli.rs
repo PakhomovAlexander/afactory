@@ -6,12 +6,49 @@
 //! by a version string: a wrapper or a fork is judged by what it accepts, and a CLI that lacks one
 //! is refused before any paid dispatch instead of being run with a weaker invocation.
 //!
-//! Provider-authored text (a help page, an error line, a stderr tail) reaches human output and
-//! Attempt diagnostics only through [`bounded_cli_line`] and [`stderr_excerpt`]: terminal escapes
-//! and control characters removed, whitespace collapsed, every line and the whole excerpt bounded,
-//! and nothing at all when the text carries credential or challenge material.
+//! Provider-authored text (a help page, an error line, a stderr tail) reaches human output, probe
+//! errors and Attempt diagnostics only through [`bounded_cli_line`] and [`stderr_excerpt`]:
+//! terminal escapes and control characters removed, whitespace collapsed, every line and the whole
+//! excerpt bounded, and every line that [`looks_like_credential`] replaced as a whole by the
+//! af-authored [`WITHHELD_LINE`]. A stream carrying login-challenge material anywhere is withheld
+//! as a whole.
 
 use std::collections::BTreeSet;
+
+/// What af prints in place of a Provider-authored line that looks like credential material.
+pub const WITHHELD_LINE: &str = "[line withheld: looks like credential material]";
+
+/// Name parts that make an assignment (`NAME=value`, `NAME: value`) look like a secret.
+const SECRET_NAME_PARTS: [&str; 7] = [
+    "key",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "auth",
+];
+
+/// Prefixes Providers and forges give their tokens, matched at the start of a word.
+const TOKEN_PREFIXES: [&str; 14] = [
+    "sk-",
+    "sk_",
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "xoxb-",
+    "xoxp-",
+    "xoxa-",
+    "xoxr-",
+    "xoxs-",
+    "glpat-",
+];
+
+/// A run of base64 or hex characters at least this long looks like a key or token.
+const MIN_SECRET_RUN: usize = 32;
 
 /// One Provider-authored line is at most this many characters, plus an ellipsis.
 pub const MAX_CLI_LINE_CHARS: usize = 240;
@@ -217,8 +254,107 @@ pub fn is_invocation_error(text: &str) -> bool {
             .any(|line| line.trim_start().starts_with("usage:"))
 }
 
+/// Whether one line of Provider text looks like credential material, so that none of it may be
+/// printed: a key, token, secret, password, credential or auth assignment (`API_KEY=…`,
+/// `"refresh_token": "…"`, `password: …`, any case and any prefix), `Bearer` and a token, an
+/// `Authorization` header, a token prefix (`sk-`, `sk-ant-`, `sk-proj-`, `ghp_`, `xoxb-`, …), a
+/// run of [`MIN_SECRET_RUN`] or more base64 or hex characters, or login-challenge material. The
+/// one run exempt is a plain lower-case word, option or path (`--dangerously-bypass-approvals-…`):
+/// a key or token of that length holds a digit, an upper-case letter, `+` or `=`.
+pub fn looks_like_credential(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    secret_assignment(&lower)
+        || bearer_token(&lower)
+        || authorization_header(&lower)
+        || token_prefix(&lower)
+        || secret_run(line)
+        || crate::native_failure::carries_auth_material(line.as_bytes())
+}
+
+fn is_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')
+}
+
+/// After a name: an optional closing quote, `=` or `:`, an optional opening quote, and a value.
+fn assigned_after(rest: &str) -> bool {
+    let rest = rest.strip_prefix(['"', '\'']).unwrap_or(rest).trim_start();
+    let Some(value) = rest.strip_prefix(['=', ':']) else {
+        return false;
+    };
+    let value = value.trim_start();
+    let value = value.strip_prefix(['"', '\'']).unwrap_or(value);
+    value
+        .chars()
+        .next()
+        .is_some_and(|c| !c.is_whitespace() && !matches!(c, '"' | '\'' | '=' | ':'))
+}
+
+fn secret_assignment(lower: &str) -> bool {
+    let mut rest = lower;
+    while let Some(start) = rest.find(is_name_char) {
+        let after_start = &rest[start..];
+        let end = after_start
+            .find(|c: char| !is_name_char(c))
+            .unwrap_or(after_start.len());
+        let (name, after) = after_start.split_at(end);
+        if SECRET_NAME_PARTS.iter().any(|part| name.contains(part)) && assigned_after(after) {
+            return true;
+        }
+        rest = after;
+    }
+    false
+}
+
+fn bearer_token(lower: &str) -> bool {
+    lower.match_indices("bearer").any(|(at, word)| {
+        let after = &lower[at + word.len()..];
+        let token = after.trim_start();
+        token.len() < after.len()
+            && token
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || "-._~+/".contains(c))
+    })
+}
+
+fn authorization_header(lower: &str) -> bool {
+    lower.match_indices("authorization").any(|(at, word)| {
+        let rest = &lower[at + word.len()..];
+        let rest = rest.strip_prefix(['"', '\'']).unwrap_or(rest).trim_start();
+        rest.starts_with([':', '='])
+    })
+}
+
+fn token_prefix(lower: &str) -> bool {
+    TOKEN_PREFIXES.iter().any(|prefix| {
+        lower.match_indices(prefix).any(|(at, _)| {
+            let starts_word = lower[..at]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !c.is_ascii_alphanumeric());
+            starts_word
+                && lower[at + prefix.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphanumeric())
+        })
+    })
+}
+
+fn secret_run(line: &str) -> bool {
+    line.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-')))
+        .filter(|run| run.len() >= MIN_SECRET_RUN)
+        .any(|run| {
+            run.chars().all(|c| c.is_ascii_hexdigit())
+                || run
+                    .chars()
+                    .any(|c| c.is_ascii_digit() || c.is_ascii_uppercase() || matches!(c, '+' | '='))
+        })
+}
+
 /// One line of Provider text made safe to print: terminal escapes and control characters
-/// removed, whitespace collapsed, and the length bounded.
+/// removed, whitespace collapsed, the length bounded, and the whole line replaced by
+/// [`WITHHELD_LINE`] when it [`looks_like_credential`].
 pub fn bounded_cli_line(line: &str) -> String {
     let mut plain = String::with_capacity(line.len().min(MAX_CLI_LINE_CHARS * 4));
     let mut chars = line.chars();
@@ -239,6 +375,10 @@ pub fn bounded_cli_line(line: &str) -> String {
         }
     }
     let collapsed = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Judged whole, before the bound could cut a secret into an innocent-looking prefix.
+    if looks_like_credential(&collapsed) {
+        return WITHHELD_LINE.to_string();
+    }
     if collapsed.chars().count() <= MAX_CLI_LINE_CHARS {
         return collapsed;
     }
@@ -248,13 +388,14 @@ pub fn bounded_cli_line(line: &str) -> String {
 }
 
 /// The CLI's own first error line — the first line starting with "error", else its first line,
-/// stderr before stdout — and the first sentence suggesting an install or upgrade command. Both
-/// are withheld when the output carries credential or challenge material.
+/// stderr before stdout — and the first sentence suggesting an install or upgrade command. A line
+/// that looks like credential material is [`WITHHELD_LINE`] and suggests no fix; when the output
+/// carries credential or challenge material anywhere, the line is that marker and there is no fix.
 pub fn error_and_fix(stderr: &[u8], stdout: &[u8]) -> (Option<String>, Option<String>) {
     if crate::native_failure::carries_auth_material(stderr)
         || crate::native_failure::carries_auth_material(stdout)
     {
-        return (None, None);
+        return (Some(WITHHELD_LINE.to_string()), None);
     }
     let stderr = String::from_utf8_lossy(stderr);
     let stdout = String::from_utf8_lossy(stdout);
@@ -283,11 +424,12 @@ pub fn error_and_fix(stderr: &[u8], stdout: &[u8]) -> (Option<String>, Option<St
 
 /// A bounded, sanitized excerpt of a failed process's stderr for an Attempt diagnostic: its
 /// first error line when one precedes the tail, then its last [`MAX_STDERR_TAIL_LINES`] non-blank
-/// lines, joined by ` | ` and cut at [`MAX_STDERR_TAIL_CHARS`]. `None` when there is nothing to
-/// show, or when the stream carries credential or challenge material.
+/// lines, joined by ` | ` and cut at [`MAX_STDERR_TAIL_CHARS`]. Each line that looks like
+/// credential material is [`WITHHELD_LINE`], and a stream carrying credential or challenge
+/// material anywhere is that marker alone. `None` when there is nothing to show.
 pub fn stderr_excerpt(stderr: &[u8]) -> Option<String> {
     if crate::native_failure::carries_auth_material(stderr) {
-        return None;
+        return Some(WITHHELD_LINE.to_string());
     }
     let text = String::from_utf8_lossy(stderr);
     let lines: Vec<String> = text
@@ -336,43 +478,68 @@ pub fn transport_outcome(status: &Result<std::process::ExitStatus, crate::Runner
     }
 }
 
-/// The diagnostic of a Worker process that ended without an answer af can parse. `worker` names
-/// it (`Claude Worker`). When its CLI refused af's own arguments the diagnostic says so, with the
-/// exit, the bounded stderr excerpt and the fix: the CLI's own upgrade hint when it printed one,
-/// else the Provider's upgrade command. Otherwise it carries the exit and the excerpt alone.
+/// What a failed Worker's stderr says that a diagnostic may quote: its bounded, sanitized
+/// [`stderr_excerpt`] and the CLI's own upgrade hint. Read before any privacy filter replaces the
+/// captured stream, so a recognized failure keeps the Worker's own last words; every line went
+/// through the credential filter, and a challenge-bearing stream is the marker alone.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkerStderr {
+    excerpt: Option<String>,
+    fix: Option<String>,
+}
+
+impl WorkerStderr {
+    pub fn read(stderr: &[u8]) -> Self {
+        Self {
+            excerpt: stderr_excerpt(stderr),
+            fix: error_and_fix(stderr, b"").1,
+        }
+    }
+}
+
+/// The diagnostic of a Worker process that ended without an answer af can parse, for every
+/// classification `kind` of its failure. `worker` names it (`Claude Worker`). Each carries the
+/// exit and the bounded stderr excerpt. When its CLI refused af's own arguments the diagnostic
+/// says so, with the fix: the CLI's own upgrade hint when it printed one, else the Provider's
+/// upgrade command. A recognized failure leads with its closed diagnostic; an unclassified one
+/// with the exit alone.
 pub fn startup_failure(
     worker: &str,
     invocation: &CliInvocation,
     status: &Result<std::process::ExitStatus, crate::RunnerError>,
-    stderr: &[u8],
-    unsupported: bool,
+    stderr: &WorkerStderr,
+    kind: crate::native_failure::NativeFailureKind,
 ) -> String {
+    use crate::native_failure::NativeFailureKind;
     let outcome = match status {
         Ok(status) => exit_description(status),
         Err(error) => format!("ended ({error})"),
     };
-    let excerpt = stderr_excerpt(stderr);
-    if !unsupported {
-        return match excerpt {
-            Some(excerpt) => {
-                format!("{worker} {outcome} without a parsable result; stderr: {excerpt}")
-            }
-            None => format!("{worker} {outcome} without a parsable result and wrote no stderr"),
-        };
+    let said = match &stderr.excerpt {
+        Some(excerpt) => format!("{outcome} without a parsable result; stderr: {excerpt}"),
+        None => format!("{outcome} without a parsable result and wrote no stderr"),
+    };
+    match kind {
+        NativeFailureKind::Unknown => format!("{worker} {said}"),
+        NativeFailureKind::UnsupportedInvocation => {
+            let fix = stderr
+                .fix
+                .clone()
+                .unwrap_or_else(|| format!("upgrade it with `{}`", invocation.upgrade));
+            format!(
+                "{worker} failed: the installed {} CLI does not accept af's invocation (unsupported_invocation); it {outcome}: {}; fix: {fix}, then rerun `af provider status`",
+                invocation.program,
+                stderr.excerpt.as_deref().unwrap_or("(no stderr)"),
+            )
+        }
+        kind => format!("{worker} failed: {}; it {said}", kind.diagnostic()),
     }
-    let fix = error_and_fix(stderr, b"")
-        .1
-        .unwrap_or_else(|| format!("upgrade it with `{}`", invocation.upgrade));
-    format!(
-        "{worker} failed: the installed {} CLI does not accept af's invocation (unsupported_invocation); it {outcome}: {}; fix: {fix}, then rerun `af provider status`",
-        invocation.program,
-        excerpt.as_deref().unwrap_or("(no stderr)"),
-    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native_failure::NativeFailureKind;
 
     /// The shape Claude Code's commander help prints (abridged from 2.1.299 on 2026-10-14).
     const COMMANDER_HELP: &str = "\
@@ -525,7 +692,8 @@ Options:
         let (line, fix) = error_and_fix(b"", b"panic: nothing useful here\n");
         assert_eq!(line.as_deref(), Some("panic: nothing useful here"));
         assert_eq!(fix, None);
-        let long = "e".repeat(1000);
+        // Not a hex run: that would be withheld whole, never bounded.
+        let long = "x".repeat(1000);
         assert_eq!(
             bounded_cli_line(&long).chars().count(),
             MAX_CLI_LINE_CHARS + 1
@@ -536,9 +704,12 @@ Options:
         );
         assert_eq!(
             error_and_fix(b"error: refresh_token=FIXTURE_SECRET\n", b""),
-            (None, None)
+            (Some(WITHHELD_LINE.to_string()), None)
         );
-        assert_eq!(stderr_excerpt(b"access_token=FIXTURE_SECRET\n"), None);
+        assert_eq!(
+            stderr_excerpt(b"access_token=FIXTURE_SECRET\n").as_deref(),
+            Some(WITHHELD_LINE)
+        );
     }
 
     #[test]
@@ -570,18 +741,173 @@ Options:
                 "Claude Worker",
                 invocation,
                 &exited_1,
-                b"error: unknown option '--safe-mode'\n",
-                true,
+                &WorkerStderr::read(b"error: unknown option '--safe-mode'\n"),
+                NativeFailureKind::UnsupportedInvocation,
             ),
             "Claude Worker failed: the installed claude CLI does not accept af's invocation (unsupported_invocation); it exited 1: error: unknown option '--safe-mode'; fix: upgrade it with `npm install -g @anthropic-ai/claude-code@latest`, then rerun `af provider status`"
         );
         assert_eq!(
-            startup_failure("Claude Worker", invocation, &exited_1, b"", false),
+            startup_failure(
+                "Claude Worker",
+                invocation,
+                &exited_1,
+                &WorkerStderr::read(b""),
+                NativeFailureKind::Unknown
+            ),
             "Claude Worker exited 1 without a parsable result and wrote no stderr"
         );
         let flood = format!("{}\n", "x".repeat(10_000)).repeat(10);
         let excerpt = stderr_excerpt(flood.as_bytes()).unwrap();
         assert!(excerpt.chars().count() <= MAX_STDERR_TAIL_CHARS + 1);
         assert_eq!(stderr_excerpt(b"\n \n"), None);
+    }
+
+    /// Lines shaped like credential material in every spelling issue #259's review named, each
+    /// with a secret marker that must never be printed.
+    const CREDENTIAL_LINES: [&str; 4] = [
+        "error: unknown option '--safe-mode'; API_KEY=sk-secret",
+        "Authorization: Bearer abcFIXTUREdefFIXTUREghi",
+        "fetch failed for 3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f",
+        "config: OPENAI_API_KEY=\"sk-proj-FIXTURE\"",
+    ];
+
+    #[test]
+    fn every_credential_spelling_is_withheld_as_a_whole_line() {
+        for line in CREDENTIAL_LINES.into_iter().chain([
+            "anthropic_api_key: sk-ant-FIXTURE",
+            "ANTHROPIC_API_KEY=FIXTURE",
+            "{\"refresh_token\": \"FIXTURE\"}",
+            "db password = FIXTURE",
+            "client_secret:'FIXTURE'",
+            "x-auth: FIXTURE",
+            "CREDENTIALS=FIXTURE",
+            "using bearer FIXTURE",
+            "authorization=FIXTURE",
+            "token ghp_FIXTURE from the environment",
+            "slack xoxb-FIXTURE",
+            "key aGVsbG8gd29ybGQgdGhpcyBpcyBhIGZpeHR1cmU=",
+            "visit https://auth.openai.com/codex/device",
+        ]) {
+            assert!(looks_like_credential(line), "{line}");
+            assert_eq!(bounded_cli_line(line), WITHHELD_LINE, "{line}");
+        }
+    }
+
+    #[test]
+    fn ordinary_cli_lines_pass_through_the_credential_filter() {
+        for line in [
+            "error: unexpected argument '--stdio' found",
+            "error: unknown option '--safe-mode'",
+            "error: unexpected argument '--dangerously-bypass-approvals-and-sandbox' found",
+            "Usage: codex app-server [OPTIONS] [COMMAND]",
+            "error: connection refused while loading the native runtime",
+            "network failed: proxy refused connection",
+            "Not logged in. Please run /login",
+            "Your API key is invalid",
+            "Error: Cannot find module '/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js'",
+            "codex-cli 0.121.0",
+            "risk-free task-id disk-usage",
+        ] {
+            assert!(!looks_like_credential(line), "{line}");
+            assert_eq!(bounded_cli_line(line), line, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_withheld_line_keeps_the_rest_of_the_excerpt_and_the_fix() {
+        for line in CREDENTIAL_LINES {
+            let stderr = format!("{line}\nnext line\n");
+            let excerpt = stderr_excerpt(stderr.as_bytes()).unwrap();
+            // A header the stream-level challenge filter also knows withholds the whole stream.
+            if crate::native_failure::carries_auth_material(stderr.as_bytes()) {
+                assert_eq!(excerpt, WITHHELD_LINE, "{line}");
+            } else {
+                assert_eq!(excerpt, format!("{WITHHELD_LINE} | next line"));
+            }
+            assert!(
+                !excerpt.contains("FIXTURE") && !excerpt.contains("sk-"),
+                "{excerpt}"
+            );
+            let (error, _) = error_and_fix(stderr.as_bytes(), b"");
+            assert!(
+                error
+                    .as_deref()
+                    .is_some_and(|error| error == WITHHELD_LINE || error == "next line"),
+                "{error:?}"
+            );
+        }
+        let (error, fix) = error_and_fix(
+            b"error: install broken; API_KEY=sk-secret\nRun `npm i -g @openai/codex` to repair.\n",
+            b"",
+        );
+        assert_eq!(error.as_deref(), Some(WITHHELD_LINE));
+        assert_eq!(
+            fix.as_deref(),
+            Some("Run `npm i -g @openai/codex` to repair")
+        );
+    }
+
+    #[test]
+    fn every_classification_carries_the_exit_and_the_excerpt() {
+        use std::os::unix::process::ExitStatusExt;
+        const INVOCATION: CliInvocation = CliInvocation {
+            program: "codex",
+            help_args: &["exec", "--help"],
+            flags: &[CliFlag::long("--json")],
+            upgrade: "npm install -g @openai/codex@latest",
+        };
+        let exited_1 = Ok(std::process::ExitStatus::from_raw(256));
+        let said = WorkerStderr::read(b"network failed: proxy refused connection\n");
+        for kind in [
+            NativeFailureKind::Network,
+            NativeFailureKind::AuthMissing,
+            NativeFailureKind::AuthRevoked,
+            NativeFailureKind::AuthExpired,
+            NativeFailureKind::AuthRefreshContended,
+            NativeFailureKind::AuthRefreshFailed,
+            NativeFailureKind::AuthRejected,
+            NativeFailureKind::Quota,
+            NativeFailureKind::Capacity,
+            NativeFailureKind::ModelUnavailable,
+            NativeFailureKind::Unknown,
+            NativeFailureKind::UnsupportedInvocation,
+        ] {
+            let message = startup_failure("Codex Worker", &INVOCATION, &exited_1, &said, kind);
+            assert!(message.contains("exited 1"), "{message}");
+            assert!(
+                message.contains("network failed: proxy refused connection"),
+                "{message}"
+            );
+            if kind != NativeFailureKind::Unknown {
+                let closed = kind.diagnostic();
+                let category = &closed[closed.rfind('(').unwrap()..];
+                assert!(message.contains(category), "{message}");
+            }
+        }
+        assert_eq!(
+            startup_failure(
+                "Codex Worker",
+                &INVOCATION,
+                &exited_1,
+                &said,
+                NativeFailureKind::Network
+            ),
+            "Codex Worker failed: Provider network request failed (network); it exited 1 without a parsable result; stderr: network failed: proxy refused connection"
+        );
+        let secret =
+            WorkerStderr::read(b"error: unknown option '--safe-mode'; API_KEY=sk-secret\n");
+        let message = startup_failure(
+            "Codex Worker",
+            &INVOCATION,
+            &exited_1,
+            &secret,
+            NativeFailureKind::UnsupportedInvocation,
+        );
+        assert!(message.contains("(unsupported_invocation)"), "{message}");
+        assert!(
+            message.contains(&format!("it exited 1: {WITHHELD_LINE}")),
+            "{message}"
+        );
+        assert!(!message.contains("sk-secret"), "{message}");
     }
 }

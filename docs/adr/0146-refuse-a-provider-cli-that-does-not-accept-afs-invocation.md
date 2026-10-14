@@ -49,11 +49,17 @@ invocation af builds, and the diagnostics hid the one line that said so.
    declares, and refuses the CLI unless every listed option is among them. The decision is made on
    the help page, never on a version string, so a wrapper or fork is judged by what it accepts.
    `--version` runs only once a CLI is refused, to report the version it prints. For Codex, the
-   app-server protocol is proven by the identity probe's own `initialize` round trip with the bare
-   invocation. An app-server that exits before `initialize`, on a CLI whose own `--version`
-   succeeds, is refused as missing that protocol capability; one whose `--version` fails is an
-   ADR-0130 installation failure. A help page that cannot be read follows the same rule: an
-   installation failure when `--version` also fails, otherwise an incompatible CLI.
+   same check then proves the app-server protocol. It starts the bare `codex app-server` in the
+   same probe environment, sends `initialize`, accepts its answer and stops the process. It sends
+   no account or rate-limit request, and the answer never counts as a login answer. The probe
+   timeout and the Attempt deadline bound it. An app-server that exits before answering
+   `initialize`, or answers it with an error, is refused as missing that protocol capability when
+   the CLI's own `--version` succeeds. When `--version` also fails it is an ADR-0130 installation
+   failure. A check af gave up on, by timeout, deadline or cancellation, leaves the CLI unchecked:
+   `unavailable` in status, never `authenticated`. Plain status, `status --usage`, setup and
+   admission therefore all give the same report for an app-server that cannot initialize. A help
+   page that cannot be read follows the same rule: an installation failure when `--version` also
+   fails, otherwise an incompatible CLI.
 4. **An incompatible CLI is reported as itself.** The report names the Provider ID and kind, the
    executable path, the detected version, every missing option or protocol capability, and the
    remediation, the Provider's own upgrade command (`npm install -g
@@ -72,19 +78,42 @@ invocation af builds, and the diagnostics hid the one line that said so.
 5. **Worker startup failures carry their own words.** A Claude or Codex Worker that exits without
    a parsable result now has its exit status (`exited 1`, never a debug-printed `ExitStatus`) and
    a bounded, sanitized stderr excerpt in its Attempt diagnostic: its first error line and its last
-   six lines, at most 1,024 characters, control characters and terminal escapes removed, grant
-   values redacted as before, and nothing at all when the stream carries credential or challenge
-   material. A failure whose output is the CLI's own argument error (`unknown option`, `unexpected
+   six lines, at most 1,024 characters, control characters and terminal escapes removed, and grant
+   values redacted as before. This holds for every classification: `network`, every `auth_*`,
+   `quota`, `capacity`, `model_unavailable`, `unknown` and `unsupported_invocation`. A recognized
+   failure keeps its closed diagnostic first, as in `Codex Worker failed: Provider network request
+   failed (network); it exited 1 without a parsable result; stderr: …`. The excerpt is read before
+   the privacy filter replaces the captured stream, so an auth failure's diagnostic keeps the
+   Worker's words while its Task evidence stays replaced. A failure whose output is the CLI's own argument error (`unknown option`, `unexpected
    argument`, `unrecognized …`, a `Usage:` block) is its own `NativeFailureKind`,
    `UnsupportedInvocation` (`unsupported_invocation`), whose diagnostic says the installed CLI
    does not accept af's invocation and names the upgrade. It is not an authentication failure, and
    its unknown-usage cause is `unreported`
    ([ADR-0143](0143-charge-zero-and-record-unknown-usage-when-no-usage-is-reported.md)).
-6. **No weaker invocation, ever.** No isolation flag is dropped, reordered behind package flags or
+6. **One credential filter for every Provider-authored line.** Every line of Provider text that
+   may reach a diagnostic, a probe error or human output goes through
+   `review_runner::cli::bounded_cli_line`. That covers stderr excerpts, app-server error lines,
+   help and version lines. The function replaces the whole line with the af-authored
+   `[line withheld: looks like credential material]` when `looks_like_credential` finds any of:
+   - a key, token, secret, password, credential or auth assignment (`NAME=value`, `NAME: value`,
+     `NAME="value"`, any case, any prefix such as `API_KEY`, `OPENAI_API_KEY`,
+     `ANTHROPIC_API_KEY`);
+   - `Bearer` and a token;
+   - an `Authorization` header;
+   - a token prefix (`sk-`, `sk-ant-`, `sk-proj-`, `ghp_`, `xoxb-` and their kin);
+   - a run of 32 or more base64 or hex characters;
+   - login-challenge material.
+
+   The one exempt run is made only of lower-case letters, `-`, `_` and `/`, and not only of hex
+   digits, as a long option name or path is; a key or token that long has a digit, an upper-case
+   letter, `+` or `=`. The line is judged whole, before it is cut to its bound. A stream carrying
+   challenge material anywhere is still withheld as a whole, now as that marker rather than as
+   silence. The exit status and the classification always stay; only the line goes.
+7. **No weaker invocation, ever.** No isolation flag is dropped, reordered behind package flags or
    replaced to make an older CLI run, and there is no fallback invocation for an older CLI. The
    capability check never runs paid inference, never alters credentials, and its diagnostics carry
    no secret; Provider-authored text reaches stderr, the human table and Attempt diagnostics under
-   ADR-0130's bounds, and never a versioned document or retry feedback.
+   ADR-0130's bounds and the filter above, and never a versioned document or retry feedback.
 
 ## Considered options
 
@@ -109,6 +138,21 @@ invocation af builds, and the diagnostics hid the one line that said so.
 - **A new setup result and `af/provider-setup@2`.** Rejected for now. Setup's closed
   `provider_cli_missing` result and exit 4 already say the CLI cannot serve af. The af-authored
   diagnostic says why, so no new shape is needed to act on it.
+- **Prove the Codex protocol only where a probe already starts the app-server.** Rejected. Plain
+  status never starts it, so it called a Codex whose app-server exits at once `authenticated`,
+  setup registered it, and `status --usage` blamed only the usage axis. Only admission refused it.
+  The `initialize` round trip is token-free and costs one bounded process, so every surface that
+  names a CLI usable runs it.
+- **Quote the excerpt only for unclassified and `unsupported_invocation` failures.** Rejected. A
+  recognized category says what kind of failure happened, but not which proxy, file or runtime
+  failed; the Worker's own line says that, and without it an operator cannot act.
+- **Drop the whole stream when any line looks like a secret.** Rejected for the line-level
+  rules. Withholding only the offending line keeps the CLI's other words, such as the argument
+  error before a leaked key. Challenge material, which a terminal may wrap across lines, still
+  withholds the stream.
+- **Recognize only the spellings seen so far.** Rejected. `API_KEY=` reached a diagnostic because
+  the filter knew `token=` and `access_token` but not that spelling. The filter now matches names
+  by their secret-bearing part and token shapes by their form.
 - **Re-run the capability check before every private Worker send.** Rejected. ADR-0130 rejected
   re-diagnosis after every invocation for its cost and false positives, and the check holds for the
   executable admission resolved. A client that updates itself mid-Task (ADR-0126) to an
@@ -122,11 +166,17 @@ invocation af builds, and the diagnostics hid the one line that said so.
   and the upgrade from `af provider status`, setup or the Task command that refused. No Worker
   runs and no token is charged before they do.
 - Every status row and every admission runs one more process, the help page, and a refused CLI one
-  more, `--version`. A CLI whose help page is unreadable is no longer usable even if its login
-  probe answers. Test doubles must answer the help page; the fixture CLIs in this repository do.
+  more, `--version`. A Codex row also starts its app-server once for `initialize`, so a Codex
+  whose app-server cannot initialize is `incompatible` on plain status, and a slow one is
+  `unavailable` rather than `authenticated`. A CLI whose help page is unreadable is no longer
+  usable even if its login probe answers. Test doubles must answer the help page, and Codex
+  doubles a bare `app-server` `initialize`; the fixture CLIs in this repository do.
 - codex-cli 0.121.0 works again with every af probe.
 - `provider-status-v2.json` replaces `provider-status-v1.json`. Consumers of `--json` read
   `af/provider-status@2`; the only change is the `incompatible` state and the exit-4 rule that
   covers it.
 - Worker diagnostics that used to print `Ok(ExitStatus(unix_wait_status(256)))` now print the exit
-  status and the CLI's own last words, bounded.
+  status and the CLI's own last words, bounded, for every classification.
+- A diagnostic, probe error or table note may now show `[line withheld: looks like credential
+  material]`, including for a long hex or base64 run that was not a secret. af errs toward
+  withholding.

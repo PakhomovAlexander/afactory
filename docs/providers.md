@@ -176,9 +176,12 @@ login, `af` runs a token-free **capability check** of the resolved executable
   holds each list equal to what its command builder emits.
 - The decision is made on the help page, never on a version string, so a wrapper or a fork is
   judged by what it accepts. Only a refused CLI is also asked for `--version`, to report it.
-- For Codex, the app-server protocol the identity and usage probes need is proven by their own
-  `initialize` round trip. `af` starts `codex app-server` with no transport flag: `stdio://` is
-  the default on every verified version, and `--stdio` does not exist on 0.121.0.
+- For Codex, the check also proves the app-server protocol the identity and usage probes need: it
+  starts the bare `codex app-server` in the same probe environment, sends `initialize`, accepts its
+  answer and stops the process. It sends no account or rate-limit request, its answer is never a
+  login answer, and it is bounded by the probe timeout. `af` starts `codex app-server` with no
+  transport flag: `stdio://` is the default on every verified version, and `--stdio` does not
+  exist on 0.121.0.
 - No isolation flag is ever dropped, reordered or replaced to make an older CLI run. A CLI that
   lacks one is refused; there is no weaker fallback invocation.
 
@@ -202,7 +205,7 @@ login, `af` runs a token-free **capability check** of the resolved executable
 | af invokes | `codex exec --ephemeral --skip-git-repo-check --json -C <sandbox> -s <mode> -o <file> [--model M -c model_reasoning_effort=…] -`, prompt on stdin |
 | Required options (`codex exec --help`) | `--ephemeral`, `--skip-git-repo-check`, `--json`, `-C`/`--cd`, `-s`/`--sandbox`, `-o`/`--output-last-message`, `--model`, `-c`/`--config` |
 | Required protocol | `codex app-server`, started bare, answers JSON-RPC `initialize` (id 1) over its default stdio transport, then `account/read` or `account/rateLimits/read` (id 2); `codex login status` answers the status probe |
-| Checked | the options by `af provider status`, `af provider setup` and Task Provider admission; the protocol by the identity probe at admission and before every private Worker send, and by `status --usage` |
+| Checked | the options and the `initialize` answer by `af provider status` (with or without `--usage`), `af provider setup` and Task Provider admission; the whole protocol again by the identity probe before every private Worker send, and by `status --usage` |
 | Floor | 0.121.0 verified; older not verified |
 | Verified | 0.121.0 and 0.162.1 pass with the bare `codex app-server` (verified by hand on 2026-10-14: on a ChatGPT login `account/rateLimits/read` returns the rate limits, on an API-key login a JSON-RPC error `chatgpt authentication required to read rate limits`); 0.162.1's `codex exec --help` was rerun on 2026-10-14 |
 | Remediation | `npm install -g @openai/codex@latest` |
@@ -219,13 +222,28 @@ af provider status: provider claude-main: incompatible Provider CLI: the claude 
 | `af provider status` | The context's `auth` is `incompatible` and its usability `unusable`, whatever its login. The command exits 4. stderr carries the report above, and the table's note repeats it. |
 | `af provider setup` | `provider_cli_missing`, exit 4, before any login is asked about or started. The document's `diagnostic` is the af-authored summary, without the version; the report goes to stderr. |
 | Task Provider admission | Refused before any Worker process starts and before any Attempt is reserved or charged: `Task Provider admission refused before any Worker was dispatched: provider …: incompatible Provider CLI: …`. A refused selection also names each candidate's reason after `No Pipeline selected: …` on stderr. |
-| A Codex app-server that exits before `initialize` | The probe reports `codex app-server exited 2 before answering initialize: error: unexpected argument '--stdio' found` — its exit status and the CLI's own first error line. At admission, and before a private Worker send, the CLI is refused as missing the app-server protocol, unless its own `--version` check fails, which makes it an installation failure. Under `status --usage` the usage axis is `unavailable` with that line. |
-| A Worker the CLI still refuses | When a Worker process exits without a parsable result, the Attempt diagnostic carries its exit status and a bounded stderr excerpt. When the CLI refused af's own arguments (`unknown option`, `unexpected argument`, `unrecognized …`, a `Usage:` block), the failure is classified `unsupported_invocation` and the diagnostic says the installed CLI does not accept af's invocation and names the upgrade. |
+| A Codex app-server that exits before `initialize` | The check reports `codex app-server exited 2 before answering initialize: error: unrecognized subcommand 'app-server'` — its exit status and the CLI's own first error line — and refuses the CLI as missing the protocol capability `` `codex app-server` answering JSON-RPC `initialize` over its default stdio transport ``. Plain `af provider status`, `status --usage`, setup and admission give the same `incompatible` report and exit 4; an app-server that answers `initialize` with an error is refused the same way. When the CLI's own `--version` check also fails it is an installation failure instead. A check that times out leaves the context `unavailable`, never `authenticated`. Before a private Worker send the identity recheck refuses an app-server that stopped answering. |
+| A Worker the CLI still refuses | When a Worker process exits without a parsable result, the Attempt diagnostic carries its exit status and a bounded stderr excerpt, whatever the failure is classified as (`network`, every `auth_*`, `quota`, `capacity`, `model_unavailable`, `unknown`, `unsupported_invocation`), and keeps the classification: `Codex Worker failed: Provider network request failed (network); it exited 1 without a parsable result; stderr: network failed: proxy refused connection`. The excerpt is read before the privacy filter replaces the captured stream. When the CLI refused af's own arguments (`unknown option`, `unexpected argument`, `unrecognized …`, a `Usage:` block), the failure is classified `unsupported_invocation` and the diagnostic says the installed CLI does not accept af's invocation and names the upgrade. |
 
 The help page, the version, the CLI's error line and every stderr excerpt are Provider-authored
-text. They are bounded, stripped of terminal escapes and control characters, and dropped whole when
-they carry credential or login-challenge material. They appear on stderr, in the human table and in
-Attempt diagnostics, never in a versioned JSON document or in retry feedback.
+text. They are bounded and stripped of terminal escapes and control characters. One shared
+credential filter judges every such line before it reaches stderr, the human table, a probe error or
+an Attempt diagnostic, and replaces the whole line with `[line withheld: looks like credential
+material]` when it contains:
+
+- a key, token, secret, password, credential or auth assignment, in any case and with any prefix:
+  `API_KEY=…`, `OPENAI_API_KEY="…"`, `ANTHROPIC_API_KEY: …`, `"refresh_token": "…"`;
+- `Bearer` followed by a token, or an `Authorization` header;
+- a token prefix such as `sk-`, `sk-ant-`, `sk-proj-`, `ghp_`, `github_pat_`, `xoxb-` or `glpat-`;
+- a run of 32 or more base64 or hex characters. A run made only of lower-case letters, `-`, `_`
+  and `/`, and not only of hex digits, is exempt, because long option names and paths look like
+  that (`--dangerously-bypass-approvals-and-sandbox`). A key or token that long has a digit, an
+  upper-case letter, `+` or `=`.
+
+An ordinary argument error such as `error: unexpected argument '--stdio' found` passes through. A
+stream that carries login-challenge material anywhere (an official login origin, a device or user
+code, an OAuth parameter) is that marker alone. The exit status and the classification always
+stay. Provider-authored text never reaches a versioned JSON document or retry feedback.
 
 ## Output and exit codes
 

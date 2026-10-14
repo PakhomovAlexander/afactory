@@ -251,7 +251,37 @@ fn an_authenticated_claude_without_its_isolation_flags_is_refused_at_admission()
         .filter(|line| !line.contains("--safe-mode") && !line.contains("--restricted"))
         .map(|line| format!("{line}\n"))
         .collect();
-    native_model_drift_case_with(false, false, None, ClientUpdate::None, Some(&old));
+    native_model_drift_case_with(
+        false,
+        false,
+        None,
+        ClientUpdate::None,
+        Some(Incompatible::Help(&old)),
+    );
+}
+
+/// Issue #259, round 2: a codex whose `exec --help` is complete and whose account answers, but
+/// whose bare app-server exits 2 before `initialize`, is refused at Provider admission with the
+/// report `af provider status` and setup give, before any Worker process starts.
+#[test]
+fn a_codex_whose_app_server_exits_before_initialize_is_refused_at_admission() {
+    native_model_drift_case_with(
+        false,
+        true,
+        None,
+        ClientUpdate::None,
+        Some(Incompatible::AppServer),
+    );
+}
+
+/// An installed client that cannot serve af's invocation; the case then ends at the admission
+/// refusal.
+#[derive(Clone, Copy)]
+enum Incompatible<'a> {
+    /// A Claude Code whose help page is this one, without some option af passes.
+    Help(&'a str),
+    /// A codex whose bare app-server exits 2 before answering `initialize`.
+    AppServer,
 }
 
 fn native_model_drift_case(
@@ -263,14 +293,14 @@ fn native_model_drift_case(
     native_model_drift_case_with(wide, codex, switch_after, client_update, None);
 }
 
-/// `old_help`, when given, is the help page of an installed Claude Code too old for af's
-/// invocation; the case then ends at the admission refusal.
+/// `incompatible`, when given, is how the installed client cannot serve af's invocation; the case
+/// then ends at the admission refusal.
 fn native_model_drift_case_with(
     wide: bool,
     codex: bool,
     switch_after: Option<usize>,
     client_update: ClientUpdate,
-    old_help: Option<&str>,
+    incompatible: Option<Incompatible>,
 ) {
     use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     use std::os::unix::fs::PermissionsExt;
@@ -342,6 +372,12 @@ if 'AF_TEST_PROVIDER_PROBE_TIMEOUT_MS' in os.environ: open(home+'/probe-setting-
 if sys.argv[1:]==['exec','--help']:
  sys.stdout.write(open(home+'/help').read())
  sys.exit(0)
+if sys.argv[1:]==['--version']:
+ print('codex-cli 0.121.0')
+ sys.exit(0)
+if sys.argv[1:2]==['app-server'] and os.path.isfile(home+'/app-server-exits'):
+ sys.stderr.write("error: unrecognized subcommand 'app-server'\n")
+ sys.exit(2)
 if sys.argv[1:2]==['app-server']:
  for line in sys.stdin:
   request=json.loads(line)
@@ -357,11 +393,18 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     let kind = if codex { "codex" } else { "claude" };
     let provider = format!("{kind}-personal");
     // What the installed client's capability check answers (ADR-0146).
+    let old_help = match incompatible {
+        Some(Incompatible::Help(page)) => Some(page),
+        _ => None,
+    };
     std::fs::write(
         home.join("help"),
         old_help.unwrap_or(crate::provider_cli::page(kind)),
     )
     .unwrap();
+    if matches!(incompatible, Some(Incompatible::AppServer)) {
+        std::fs::write(home.join("app-server-exits"), b"fixture").unwrap();
+    }
     let version = if old_help.is_some() {
         "2.1.101"
     } else {
@@ -467,18 +510,22 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             .unwrap()
     };
     let plan = run(&["review", "plan", "--file", "review.json"]);
-    if old_help.is_some() {
+    if let Some(incompatible) = incompatible {
         let program = std::fs::canonicalize(&installed).unwrap();
+        let refusal = match incompatible {
+            Incompatible::Help(_) => format!(
+                "Task Provider admission refused before any Worker was dispatched: provider claude-personal: incompatible Provider CLI: the claude CLI `{}` (version 2.1.101 (Claude Code)) does not accept af's invocation; missing: --safe-mode, --restricted; fix: upgrade it with `npm install -g @anthropic-ai/claude-code@latest`, then rerun `af provider status`",
+                program.display()
+            ),
+            Incompatible::AppServer => format!(
+                "Task Provider admission refused before any Worker was dispatched: provider codex-personal: incompatible Provider CLI: the codex CLI `{}` (version codex-cli 0.121.0) does not accept af's invocation; missing: `codex app-server` answering JSON-RPC `initialize` over its default stdio transport; codex app-server exited 2 before answering initialize: error: unrecognized subcommand 'app-server'; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`",
+                program.display()
+            ),
+        };
         for refused in [plan, run(&["review", "run", "--file", "review.json"])] {
             assert!(!refused.status.success());
             let stderr = String::from_utf8_lossy(&refused.stderr);
-            assert!(
-                stderr.contains(&format!(
-                    "Task Provider admission refused before any Worker was dispatched: provider claude-personal: incompatible Provider CLI: the claude CLI `{}` (version 2.1.101 (Claude Code)) does not accept af's invocation; missing: --safe-mode, --restricted; fix: upgrade it with `npm install -g @anthropic-ai/claude-code@latest`, then rerun `af provider status`",
-                    program.display()
-                )),
-                "{stderr}"
-            );
+            assert!(stderr.contains(&refusal), "{stderr}");
             assert!(!stderr.contains("login"), "{stderr}");
         }
         // No Worker process ran: the fixture records every model invocation it receives.

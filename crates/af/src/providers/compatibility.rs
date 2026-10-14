@@ -15,9 +15,10 @@
 //! reported as one — with its Provider, kind, path, version, every missing option and the
 //! Provider's upgrade command — never as a login or account problem, and before any Worker or
 //! admission Attempt starts. No isolation flag is ever dropped to make an older CLI run: the
-//! refusal is the only outcome. For Codex, the app-server protocol the identity and usage probes
-//! need is proven by their own `initialize` round trip, and an app-server that exits before
-//! answering it is reported here as the missing protocol capability ([`protocol_incompatibility`]).
+//! refusal is the only outcome. For Codex, the check also proves the app-server protocol the
+//! identity and usage probes need with a token-free `initialize` round trip of its own
+//! ([`check_app_server`]): an app-server that exits before answering it is reported as the missing
+//! protocol capability ([`protocol_incompatibility`]) on every surface alike.
 //!
 //! The help page, the version and the CLI's error line are Provider-authored text: they reach
 //! human output, stderr and Attempt diagnostics bounded and stripped of control characters, never
@@ -166,7 +167,12 @@ pub(super) fn check_invocation(
             page.push_str(&String::from_utf8_lossy(&stderr));
             let missing = invocation.missing_flags(&page);
             if missing.is_empty() {
-                return Ok(());
+                return match spec.kind {
+                    ProviderKind::Claude => Ok(()),
+                    ProviderKind::Codex => {
+                        check_app_server(program, spec, probe_path, cancelled, attempt_deadline)
+                    }
+                };
             }
             (missing, None)
         }
@@ -211,9 +217,52 @@ pub(super) fn check_invocation(
     }))
 }
 
-/// A Codex CLI whose app-server exited before answering `initialize`, and whose own version
-/// check says it starts: it lacks the protocol capability af's probes need. `observed` is the
-/// probe's own error, with the exit status and the CLI's first error line.
+/// The token-free half of the Codex app-server protocol every af probe needs: start the bare
+/// `codex app-server` in the probe environment, send `initialize`, accept its answer and stop the
+/// process. No account or rate-limit request is sent, the answer is never read as a login answer,
+/// and the round trip is bounded by the probe timeout and the Attempt deadline. An app-server that
+/// exits before answering, or rejects af's `initialize`, lacks the protocol capability; one af gave
+/// up waiting on, or could not run, leaves the CLI unchecked.
+fn check_app_server(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    attempt_deadline: Option<Instant>,
+) -> Result<(), CliRefusal> {
+    let mut observed = AppServerProbe::default();
+    match probe_codex_request_observed(
+        program,
+        spec,
+        probe_path,
+        cancelled,
+        None,
+        attempt_deadline,
+        &mut observed,
+    ) {
+        Ok(_) => Ok(()),
+        Err(error) if observed.exited_before_initialize || observed.rejected_initialize => {
+            Err(protocol_incompatibility(
+                program,
+                spec,
+                probe_path,
+                cancelled,
+                attempt_deadline,
+                &error,
+            ))
+        }
+        Err(error) => Err(CliRefusal::Unchecked(format!(
+            "provider {}: af could not check that the {} CLI `{}` serves {APP_SERVER_PROTOCOL}: {error}",
+            spec.id,
+            spec.kind.name(),
+            program.display()
+        ))),
+    }
+}
+
+/// A Codex CLI whose app-server exited before answering `initialize`, or rejected it, and whose
+/// own version check says it starts: it lacks the protocol capability af's probes need.
+/// `observed` is the probe's own error, with the exit status and the CLI's first error line.
 pub(super) fn protocol_incompatibility(
     program: &Path,
     spec: &ProviderSpec,
@@ -337,7 +386,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let help = help_of(ProviderKind::Codex);
         let body = format!(
-            "[ \"$1 $2\" = 'exec --help' ] && {{ printf '%s' '{help}'; exit 0; }}\nexit 64"
+            "[ \"$1 $2\" = 'exec --help' ] && {{ printf '%s' '{help}'; exit 0; }}\n{INITIALIZES}\nexit 64"
         );
         assert!(check(directory.path(), ProviderKind::Codex, &body).is_ok());
 
@@ -353,6 +402,136 @@ mod tests {
             message.contains("missing: --ephemeral, --skip-git-repo-check, --json, -C/--cd, -s/--sandbox, -o/--output-last-message, --model, -c/--config; `codex exec --help` exited 2: error: unrecognized subcommand 'exec'; fix: upgrade it with `npm install -g @openai/codex@latest`"),
             "{message}"
         );
+    }
+
+    /// A bare `codex app-server` that answers `initialize` and then waits for more.
+    const INITIALIZES: &str = "[ \"$1\" = app-server ] && [ -z \"$2\" ] && { IFS= read -r _; printf '%s\\n' '{\"id\":1,\"result\":{}}'; while IFS= read -r _; do :; done; exit 0; }";
+
+    /// A codex whose `exec --help` declares every option and whose `--version` answers, with
+    /// `app_server` as its bare `app-server`.
+    fn codex_with_app_server(app_server: &str) -> String {
+        let help = help_of(ProviderKind::Codex);
+        format!(
+            "[ \"$1\" = --version ] && {{ echo 'codex-cli 0.121.0'; exit 0; }}\n[ \"$1 $2\" = 'exec --help' ] && {{ printf '%s' '{help}'; exit 0; }}\nif [ \"$1\" = app-server ]; then\n{app_server}\nfi\nexit 64"
+        )
+    }
+
+    /// Issue #259, round 2: the check itself starts the bare app-server, so a codex whose help is
+    /// complete but whose app-server exits before `initialize` is refused for the protocol
+    /// capability with the exit and the CLI's own line, as it is by every surface that runs it.
+    #[test]
+    fn a_codex_whose_app_server_exits_before_initialize_lacks_the_protocol_capability() {
+        let directory = tempfile::tempdir().unwrap();
+        let body = codex_with_app_server(
+            "printf '%s\\n' \"error: unrecognized subcommand 'app-server'\" '' 'Usage: codex [OPTIONS] [PROMPT]' >&2\nexit 2",
+        );
+        let Err(CliRefusal::Incompatible(refused)) =
+            check(directory.path(), ProviderKind::Codex, &body)
+        else {
+            panic!("an app-server that exits before initialize was accepted");
+        };
+        let path = directory.path().join("codex").display().to_string();
+        assert_eq!(
+            refused.message(),
+            format!(
+                "provider codex-main: incompatible Provider CLI: the codex CLI `{path}` (version codex-cli 0.121.0) does not accept af's invocation; missing: {APP_SERVER_PROTOCOL}; codex app-server exited 2 before answering initialize: error: unrecognized subcommand 'app-server'; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`"
+            )
+        );
+        assert!(
+            refused
+                .summary()
+                .ends_with(&format!("missing: {APP_SERVER_PROTOCOL}")),
+            "{}",
+            refused.summary()
+        );
+
+        let rejecting = codex_with_app_server(
+            "IFS= read -r _\nprintf '%s\\n' '{\"id\":1,\"error\":{\"code\":-32600,\"message\":\"bad\"}}'\nexit 0",
+        );
+        let Err(CliRefusal::Incompatible(refused)) =
+            check(directory.path(), ProviderKind::Codex, &rejecting)
+        else {
+            panic!("an app-server that rejects initialize was accepted");
+        };
+        assert!(
+            refused
+                .message()
+                .contains("; Codex app-server rejected initialization; fix:"),
+            "{}",
+            refused.message()
+        );
+
+        // An answer is enough, however soon the app-server exits after giving it.
+        let answers_and_exits = codex_with_app_server(
+            "IFS= read -r _\nprintf '%s\\n' '{\"id\":1,\"result\":{}}'\nexit 0",
+        );
+        assert!(check(directory.path(), ProviderKind::Codex, &answers_and_exits).is_ok());
+    }
+
+    /// The protocol check is bounded by the probe timeout and the Attempt deadline, and a silent
+    /// app-server leaves the CLI unchecked, never incompatible and never logged in.
+    #[test]
+    fn a_silent_app_server_is_unchecked_within_the_deadline() {
+        let directory = tempfile::tempdir().unwrap();
+        let program = program(
+            directory.path(),
+            "codex",
+            &codex_with_app_server("sleep 30"),
+        );
+        let started = Instant::now();
+        let refusal = check_invocation(
+            &program,
+            &spec(directory.path(), ProviderKind::Codex),
+            std::ffi::OsStr::new("/usr/bin:/bin"),
+            &AtomicBool::new(false),
+            Some(Instant::now() + Duration::from_secs(2)),
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let Err(CliRefusal::Unchecked(reason)) = refusal else {
+            panic!("a silent app-server was judged");
+        };
+        assert!(reason.contains(APP_SERVER_PROTOCOL), "{reason}");
+    }
+
+    /// An app-server error line that looks like credential material is withheld whole, with the
+    /// exit kept; an ordinary clap error line passes through.
+    #[test]
+    fn an_app_server_error_line_carrying_credential_material_is_withheld() {
+        use review_runner::cli::WITHHELD_LINE;
+        let directory = tempfile::tempdir().unwrap();
+        for line in [
+            "error: unknown option '--safe-mode'; API_KEY=sk-secret",
+            "Authorization: Bearer abcFIXTUREdefFIXTUREghi",
+            "error: 3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f",
+            "error: OPENAI_API_KEY=\"sk-proj-FIXTURE\"",
+            "error: unexpected argument '--stdio' found",
+        ] {
+            std::fs::write(directory.path().join("said"), format!("{line}\n")).unwrap();
+            let body = codex_with_app_server(&format!(
+                "cat '{}' >&2\nexit 2",
+                directory.path().join("said").display()
+            ));
+            let Err(CliRefusal::Incompatible(refused)) =
+                check(directory.path(), ProviderKind::Codex, &body)
+            else {
+                panic!("{line}: an app-server that exits before initialize was accepted");
+            };
+            let message = refused.message();
+            let quoted = if line.contains("--stdio") {
+                line
+            } else {
+                WITHHELD_LINE
+            };
+            assert!(
+                message.contains(&format!(
+                    "codex app-server exited 2 before answering initialize: {quoted}; fix:"
+                )),
+                "{message}"
+            );
+            for secret in ["sk-", "FIXTURE", "3f9a1c0b"] {
+                assert!(!message.contains(secret), "{message}");
+            }
+        }
     }
 
     #[test]

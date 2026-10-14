@@ -4355,7 +4355,7 @@ fn probe_codex_request_before(
         spec,
         probe_path,
         cancelled,
-        request,
+        Some(request),
         attempt_deadline,
         &mut AppServerProbe::default(),
     )
@@ -4370,30 +4370,38 @@ struct AppServerProbe {
     /// The app-server exited before answering `initialize`; the probe's error then carries its
     /// exit status and the CLI's own first error line.
     exited_before_initialize: bool,
+    /// The app-server answered `initialize` with an error: it does not accept af's handshake.
+    rejected_initialize: bool,
 }
 
 /// The bytes of the app-server's stderr a probe keeps: enough for its first error lines.
 const MAX_APP_SERVER_STDERR: usize = 8 * 1024;
 
 /// One request to `codex app-server` on its default stdio transport, after the `initialize` /
-/// `initialized` handshake. The app-server is started with no transport flag: `stdio://` is the
-/// documented default on every verified codex-cli, and `--stdio` does not exist on 0.121.0
-/// (ADR-0146). Its stderr is kept, bounded, so an app-server that exits early is reported with
-/// its exit status and its own first error line.
+/// `initialized` handshake, or with no `request` the handshake's `initialize` answer alone: the
+/// token-free protocol check of ADR-0146, which asks nothing about an account or its limits. The
+/// app-server is started with no transport flag: `stdio://` is the documented default on every
+/// verified codex-cli, and `--stdio` does not exist on 0.121.0 (ADR-0146). Its stderr is kept,
+/// bounded, so an app-server that exits early is reported with its exit status and its own first
+/// error line.
 fn probe_codex_request_observed(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
-    request: &serde_json::Value,
+    request: Option<&serde_json::Value>,
     attempt_deadline: Option<Instant>,
     observed: &mut AppServerProbe,
 ) -> Result<serde_json::Value, String> {
     check_task_probe_control(attempt_deadline, cancelled)?;
     let method = request
-        .get("method")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("request")
+        .map(|request| {
+            request
+                .get("method")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("request")
+        })
+        .unwrap_or("initialize")
         .to_string();
     let directory = ProbeDirectory::new(spec)?;
     let mut command = Command::new(program);
@@ -4456,8 +4464,12 @@ fn probe_codex_request_observed(
         if !requested_limits && let Some(response) = response_for_id(&captured, 1) {
             observed.answered = true;
             if response.get("error").is_some() {
+                observed.rejected_initialize = true;
                 break Err("Codex app-server rejected initialization".to_string());
             }
+            let Some(request) = request else {
+                break Ok(response);
+            };
             if let Err(error) = writeln!(stdin, "{{\"method\":\"initialized\",\"params\":{{}}}}")
                 .and_then(|()| writeln!(stdin, "{request}"))
                 .and_then(|()| stdin.flush())
@@ -4478,6 +4490,18 @@ fn probe_codex_request_observed(
                 while let Ok(true) = drain_available(&mut stdout, &mut captured, &mut exceeded) {}
                 drain_stderr(&mut stderr, &mut said);
                 if requested_limits && let Some(response) = response_for_id(&captured, 2) {
+                    break Ok(response);
+                }
+                // The protocol check asks for the `initialize` answer alone, however soon the
+                // app-server exits after giving it.
+                if request.is_none()
+                    && let Some(response) = response_for_id(&captured, 1)
+                {
+                    observed.answered = true;
+                    if response.get("error").is_some() {
+                        observed.rejected_initialize = true;
+                        break Err("Codex app-server rejected initialization".to_string());
+                    }
                     break Ok(response);
                 }
                 let exit = review_runner::cli::exit_description(&status);
@@ -6294,7 +6318,7 @@ auth_dir = "{}"
             &spec,
             &probe_path,
             &AtomicBool::new(false),
-            &serde_json::json!({"method":"account/rateLimits/read","id":2}),
+            Some(&serde_json::json!({"method":"account/rateLimits/read","id":2})),
             None,
             &mut observed,
         )

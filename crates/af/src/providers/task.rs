@@ -333,7 +333,7 @@ fn observe_identity(
                 spec,
                 probe_path,
                 cancelled,
-                &serde_json::json!({"method":"account/read","id":2,"params":{"refreshToken":false}}),
+                Some(&serde_json::json!({"method":"account/read","id":2,"params":{"refreshToken":false}})),
                 deadline,
                 &mut observed,
             )

@@ -374,10 +374,16 @@ exit 64
 
 /// Issue #259: codex-cli 0.121.0 has no `--stdio`; its `app-server` serves stdio by default.
 /// The usage probe starts the bare app-server and reads the plan. An app-server that exits before
-/// answering `initialize` is reported with its exit status and its own first error line.
+/// answering `initialize` lacks the protocol capability: the compatibility check reports it
+/// `incompatible` under exit 4 with its exit status and its own first error line, before any
+/// login or usage question.
 #[test]
 fn the_codex_usage_probe_starts_the_bare_app_server_and_reports_an_early_exit() {
     const CODEX: &str = r#"#!/bin/sh
+if [ "$1" = --version ]; then
+  printf '%s\n' 'codex-cli 0.121.0'
+  exit 0
+fi
 if [ "$1" = login ] && [ "$2" = status ]; then
   printf '%s\n' 'Logged in using ChatGPT' >&2
   exit 0
@@ -409,13 +415,136 @@ exit 64
 
     std::fs::write(machine.auth.join("app-server-broken"), b"").unwrap();
     let human = machine.af(&["provider", "status", "--usage"]);
-    assert_eq!(code(&human), 7, "{}", err(&human));
+    assert_eq!(code(&human), 4, "{}", err(&human));
     let stdout = out(&human);
+    assert!(stdout.contains("incompatible"), "{stdout}");
     assert!(
-        stdout.contains("subscription status unavailable: codex app-server exited 2 before answering initialize: error: unexpected argument '--stdio' found"),
-        "{stdout}"
+        err(&human).contains(&format!("missing: {APP_SERVER_PROTOCOL}; codex app-server exited 2 before answering initialize: error: unexpected argument '--stdio' found")),
+        "{}",
+        err(&human)
     );
     assert!(!stdout.contains("rate-limit response"), "{stdout}");
+    assert!(
+        !stdout.contains("subscription status unavailable"),
+        "{stdout}"
+    );
+}
+
+/// The protocol capability a Codex CLI lacks when its bare app-server cannot answer `initialize`.
+const APP_SERVER_PROTOCOL: &str =
+    "`codex app-server` answering JSON-RPC `initialize` over its default stdio transport";
+
+/// A codex whose `exec --help` declares every option and whose login is ChatGPT, but whose bare
+/// `app-server` exits 2 before answering `initialize`, with its own error line.
+pub(crate) const CODEX_WITHOUT_APP_SERVER: &str = r#"#!/bin/sh
+if [ "$1" = --version ]; then
+  printf '%s\n' 'codex-cli 0.149.0'
+  exit 0
+fi
+if [ "$1" = login ] && [ "$2" = status ]; then
+  printf '%s\n' 'Logged in using ChatGPT' >&2
+  exit 0
+fi
+if [ "$1" = app-server ]; then
+  printf '%s\n' "error: unrecognized subcommand 'app-server'" '' 'Usage: codex [OPTIONS] [PROMPT]' >&2
+  exit 2
+fi
+exit 64
+"#;
+
+/// Issue #259, round 2: authentication never implies compatibility. A codex whose help page is
+/// complete and whose `login status` reports ChatGPT, but whose app-server exits before
+/// `initialize`, is `incompatible` under exit 4 on default status and on `--usage` alike, naming
+/// the protocol capability, the exit status and the CLI's own line, and setup refuses it with the
+/// same report before registering it.
+#[test]
+fn a_codex_whose_app_server_exits_before_initialize_is_incompatible_on_status_and_setup() {
+    let machine = Machine::registered();
+    let program = machine.install(
+        "codex",
+        &with_help("codex", CODEX_WITHOUT_APP_SERVER),
+        0o755,
+    );
+    let report = |provider: &str| {
+        format!(
+            "provider {provider}: incompatible Provider CLI: the codex CLI `{}` (version codex-cli 0.149.0) does not accept af's invocation; missing: {APP_SERVER_PROTOCOL}; codex app-server exited 2 before answering initialize: error: unrecognized subcommand 'app-server'; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`",
+            program.display()
+        )
+    };
+    for usage in [false, true] {
+        let mut args = vec!["provider", "status", "--json"];
+        if usage {
+            args.push("--usage");
+        }
+        let json = machine.af(&args);
+        assert_eq!(code(&json), 4, "{usage}: {}", err(&json));
+        let reported = document(&json);
+        assert_eq!(reported["exit_code"], 4);
+        let provider = only_provider(&reported);
+        assert_eq!(provider["auth"], "incompatible", "{usage}");
+        assert_eq!(provider["usability"], "unusable", "{usage}");
+        // The versioned document carries the closed state only, never the CLI's words.
+        assert!(
+            !out(&json).contains("unrecognized subcommand"),
+            "{}",
+            out(&json)
+        );
+        let stderr = err(&json);
+        assert!(
+            stderr.contains(&format!("af provider status: {}", report("codex-main"))),
+            "{usage}: {stderr}"
+        );
+        assert!(!stderr.contains("login"), "{stderr}");
+
+        args.retain(|arg| *arg != "--json");
+        let human = machine.af(&args);
+        assert_eq!(code(&human), 4, "{usage}: {}", err(&human));
+        let stdout = out(&human);
+        assert!(stdout.contains("incompatible"), "{stdout}");
+        assert!(!stdout.contains("authenticated"), "{stdout}");
+        assert!(!stdout.contains("usage unavailable"), "{stdout}");
+        assert!(
+            err(&human).contains(&report("codex-main")),
+            "{}",
+            err(&human)
+        );
+    }
+
+    let other = machine.root.path().join("codex-other");
+    let setup = machine.af(&[
+        "provider",
+        "setup",
+        "codex-other",
+        "--kind",
+        "codex",
+        "--auth-dir",
+        other.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(code(&setup), 4, "{}", err(&setup));
+    let stdout = out(&setup);
+    let reported: Value = serde_json::from_str(stdout.trim()).unwrap();
+    crate::schemas::valid(
+        &crate::schemas::validator("provider-setup-v1.json"),
+        &reported,
+    );
+    assert_eq!(reported["result"], "provider_cli_missing");
+    assert_eq!(
+        reported["diagnostic"],
+        format!(
+            "provider codex-other: incompatible Provider CLI: the codex CLI `{}` does not accept af's invocation; missing: {APP_SERVER_PROTOCOL}",
+            program.display()
+        )
+    );
+    assert!(!stdout.contains("unrecognized subcommand"), "{stdout}");
+    assert!(
+        err(&setup).contains(&report("codex-other")),
+        "{}",
+        err(&setup)
+    );
+    let registry =
+        std::fs::read_to_string(machine.root.path().join("config/af/providers.toml")).unwrap();
+    assert!(!registry.contains("codex-other"), "{registry}");
 }
 
 /// Setup refuses an incompatible CLI before asking it about a login, under the closed
