@@ -131,10 +131,20 @@ print(json.dumps({{'type':'turn.completed','usage':{{'input_tokens':184467440737
         "regular" => assert_eq!(returned.message.unwrap(), b"held regular file"),
         "exact_bound" => assert_eq!(returned.message.unwrap(), vec![b'x'; MAX_WORKER_BYTES]),
         // The stdout agent message never stands in for an absent or empty `-o` file.
-        "empty" | "missing" => assert_eq!(
-            returned.message.unwrap_err(),
-            "Codex Worker returned no final message"
-        ),
+        // No final message is no parsable result: the exit and the Worker's own words stay.
+        "empty" | "missing" => {
+            let error = returned.message.unwrap_err();
+            assert!(
+                error.starts_with(
+                    "Codex Worker returned no final message; it exited 0 without a parsable result; stderr: "
+                ),
+                "{error}"
+            );
+            assert!(
+                error.contains("native-final-message fixture diagnostic"),
+                "{error}"
+            );
+        }
         "fifo" | "directory" => {
             assert!(
                 returned

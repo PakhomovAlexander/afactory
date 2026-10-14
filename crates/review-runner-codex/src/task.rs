@@ -1,5 +1,9 @@
 //! Codex framing for generic typed Task Workers, preserving failed and malformed usage.
 use super::*;
+use review_runner::cli::{
+    WorkerStderr, classify_without_result, ended_without_result, startup_failure,
+    strongest_native_failure,
+};
 use review_runner::native_failure::{NativeFailureKind, classify_native_failure};
 use review_runner::task::{
     MAX_WORKER_BYTES, ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter,
@@ -142,6 +146,10 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         }
         let mut events = TaskEvents::default();
         let mut failure = None;
+        let mut said = WorkerStderr::default();
+        // The `-o` final message, read only for a process that exited 0 with no `error` or
+        // `turn.failed` event; `None` for every other ending.
+        let mut reply: Option<Result<Option<Vec<u8>>, String>> = None;
         let capture = runner.capture_filtered(
             cas,
             &command,
@@ -150,81 +158,113 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             |failed, stdout, stderr| {
                 // Parse the bill before privacy filtering removes an authentication envelope.
                 events = TaskEvents::parse(stdout);
-                if failed || events.upstream_failure.is_some() {
-                    // Framed events speak only through their error fields: an agent message
-                    // that quotes an auth error is model output, never a native diagnostic.
-                    let candidates = [
-                        events
-                            .upstream_failure
-                            .unwrap_or(NativeFailureKind::Unknown),
-                        classify_native_failure(&String::from_utf8_lossy(stderr)),
-                        classify_native_failure(&unframed(stdout)),
-                    ];
-                    // Any recognized auth error makes both streams sensitive, even if an
-                    // earlier error concerned another failure or stdout was not valid JSONL.
-                    failure = candidates
-                        .iter()
-                        .copied()
-                        .find(|kind| kind.is_auth())
-                        .or_else(|| {
-                            candidates
-                                .into_iter()
-                                .find(|kind| *kind != NativeFailureKind::Unknown)
-                        });
-                    failure
-                        .unwrap_or(NativeFailureKind::Unknown)
-                        .redact_auth_capture(stdout, stderr);
+                // The Worker's own last words, bounded and filtered, before the privacy filter
+                // below may replace the stream.
+                said = WorkerStderr::read(stderr, stdout);
+                if !failed && events.error.is_none() {
+                    reply = Some(read_final_message(&output_directory));
                 }
+                if matches!(reply, Some(Ok(Some(_)))) {
+                    return;
+                }
+                // No parsable result, whatever the exit status, the framed events or the
+                // transport outcome: the one place its classification is decided. Framed events
+                // speak only through their error fields: an agent message that quotes an auth or
+                // argument error is model output, never a native diagnostic.
+                let native_stdout = unframed(stdout);
+                let candidates = [
+                    events
+                        .upstream_failure
+                        .unwrap_or(NativeFailureKind::Unknown),
+                    classify_native_failure(&String::from_utf8_lossy(stderr)),
+                    classify_native_failure(&native_stdout),
+                ];
+                let kind = classify_without_result(stderr, &native_stdout, &candidates);
+                failure = (kind != NativeFailureKind::Unknown).then_some(kind);
+                // Any recognized auth error makes both streams sensitive, even if an earlier
+                // error concerned another failure, stdout was not valid JSONL, or an argument
+                // error took the classification.
+                kind.redact_capture(
+                    strongest_native_failure(&candidates).is_auth(),
+                    stdout,
+                    stderr,
+                );
             },
         );
         let mut returned = ModelWorkerReturn {
-            usage_observation: None,
+            usage_observation: events.observation(),
             message: Err("Codex Worker framing failed".into()),
-            usage: None,
+            usage: events.reported_usage(),
             raw_artifact_ids: capture.raw_artifact_ids,
             native_failure: None,
         };
-        returned.usage = events.reported_usage();
-        returned.usage_observation = events.observation();
-        if !capture.status.as_ref().is_ok_and(|status| status.success()) || events.error.is_some() {
-            // An `error` or `turn.failed` event is a native failure even when its message is
-            // unclassified: its closed diagnostic names that, never the bare exit status.
-            returned.native_failure = failure.or(events.upstream_failure);
-            returned.message = Err(
-                if let Some(kind) = failure
-                    .filter(|kind| *kind != NativeFailureKind::Unknown)
-                    .or(events.upstream_failure.filter(|_| !events.malformed_usage))
-                {
-                    let mut message = format!(
-                        "Codex Worker failed: {}; transport: {:?}",
-                        kind.diagnostic(),
-                        capture.status
-                    );
-                    if events.malformed_usage {
-                        message.push_str("; Codex Worker returned malformed native usage");
-                    }
-                    message
-                } else if events.malformed_usage {
-                    format!(
-                        "Codex Worker returned malformed native usage: {:?}",
-                        events.error
-                    )
-                } else {
-                    // A failed process with no failure event keeps its historical diagnostic
-                    // and artifact identity.
-                    format!("Codex Worker failed with {:?}", capture.status)
-                },
-            );
-            return if capture.started {
-                Ok(returned)
-            } else {
-                Err(Unstarted(Box::new(returned)))
-            };
+        // The only parsable result is the `-o` final message of a process that exited 0 with no
+        // `error` or `turn.failed` event. Every other ending, framed events or not, carries the
+        // exit and the Worker's own last words under the one classification decided above. A
+        // transport that failed after the process exited, storing its raw output, admits no
+        // message the process printed: the process left a result, so nothing was classified.
+        let reply = reply.filter(|_| capture.status.as_ref().is_ok_and(|status| status.success()));
+        let delivered = reply.is_some();
+        returned.message = match reply {
+            Some(Ok(Some(bytes))) => Ok(bytes),
+            reply => {
+                // An `error` or `turn.failed` event is a native failure even when its message is
+                // unclassified: its closed diagnostic names that, never the bare exit status.
+                returned.native_failure = failure.or(events.upstream_failure);
+                let ended = ended_without_result(&capture.status, &said);
+                let kind = failure.unwrap_or(NativeFailureKind::Unknown);
+                Err(
+                    if kind == NativeFailureKind::UnsupportedInvocation
+                        || !delivered && !events.framed
+                    {
+                        // A refused invocation, whatever events came first, or no event at all:
+                        // the process's exit and its own last words are all there is.
+                        startup_failure(
+                            "Codex Worker",
+                            &CODEX_INVOCATION,
+                            &capture.status,
+                            &said,
+                            kind,
+                        )
+                    } else if let Some(kind) =
+                        failure.or(events.upstream_failure.filter(|_| !events.malformed_usage))
+                    {
+                        let mut message =
+                            format!("Codex Worker failed: {}; it {ended}", kind.diagnostic());
+                        if events.malformed_usage {
+                            message.push_str("; Codex Worker returned malformed native usage");
+                        }
+                        message
+                    } else if events.malformed_usage {
+                        format!(
+                            "Codex Worker returned malformed native usage: {:?}; it {ended}",
+                            events.error
+                        )
+                    } else if let Some(read) = reply {
+                        // Exit 0 without a failure event: the `-o` file is the only final
+                        // message, and an absent or empty file is no reply.
+                        let error = read
+                            .err()
+                            .unwrap_or_else(|| "Codex Worker returned no final message".into());
+                        format!("{error}; it {ended}")
+                    } else {
+                        // Only events that carry no failure, such as `thread.started`.
+                        startup_failure(
+                            "Codex Worker",
+                            &CODEX_INVOCATION,
+                            &capture.status,
+                            &said,
+                            kind,
+                        )
+                    },
+                )
+            }
+        };
+        if capture.started {
+            Ok(returned)
+        } else {
+            Err(Unstarted(Box::new(returned)))
         }
-        // The `-o` file is the only final message: an absent or empty file is no reply.
-        returned.message = read_final_message(&output_directory)
-            .and_then(|bytes| bytes.ok_or_else(|| "Codex Worker returned no final message".into()));
-        Ok(returned)
     }
 }
 
@@ -266,6 +306,8 @@ struct TaskEvents {
     upstream_failure: Option<NativeFailureKind>,
     incomplete_charge: bool,
     malformed_usage: bool,
+    /// Whether stdout held any JSONL event at all: a CLI that refused its arguments frames none.
+    framed: bool,
 }
 
 impl TaskEvents {
@@ -336,6 +378,7 @@ impl TaskEvents {
             let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
                 continue;
             };
+            events.framed |= value.get("type").is_some_and(serde_json::Value::is_string);
             match value.get("type").and_then(|t| t.as_str()) {
                 Some("turn.completed") => {
                     events.add_usage(value.get("usage"));

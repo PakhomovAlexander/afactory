@@ -754,18 +754,21 @@ pub(crate) enum ProviderCommand {
     /// Show the provider registry and each harness login, without a model call
     #[command(
         long_about = "Show the provider registry and each harness login, without a model call.\n\n\
-Fast by default: the registry plus one bounded authentication check per context. Subscription \
+Fast by default: the registry, a token-free check that each context's CLI accepts af's \
+invocation, and one bounded authentication check per context. Subscription \
 and quota probes are opt-in behind --usage, and an unavailable usage probe never demotes an \
 authenticated Provider — it exits 7 and says so. End-to-end usability stays with the charged \
 `af provider doctor`.\n\n\
 A Provider whose official CLI is missing, not executable, or exits non-zero on its own version \
 check is reported as an installation failure, with the CLI's own first error line and the fix \
-it suggests on stderr.\n\n\
-Exit codes: 0 fine, 4 a Provider CLI cannot start, 7 optional usage unavailable.",
+it suggests on stderr. One whose help page does not declare every option af passes is reported \
+as incompatible, with its version, the missing options and the upgrade command on stderr.\n\n\
+Exit codes: 0 fine, 4 a Provider CLI cannot start or is incompatible, 7 optional usage \
+unavailable.",
         after_long_help = "Examples:\n  af provider status\n  af provider status --json\n  af provider status --usage"
     )]
     Status {
-        /// Emit the versioned `af/provider-status@1` document instead of the table
+        /// Emit the versioned `af/provider-status@2` document instead of the table
         #[arg(long)]
         json: bool,
         /// Also probe subscription and quota windows (slower, and may be unavailable)
@@ -784,7 +787,8 @@ human-action-required result and the exact command to run. With --login, setup s
 official Provider CLI login only when this process owns an interactive terminal on stdin, \
 stdout and stderr, because the OAuth URL and authorization code that login prints are \
 credentials in transit and must never reach a pipe, chat, an agent transcript, or logs.\n\n\
-Exit codes: 0 registered, 3 human action required, 4 Provider CLI missing or cannot start, 5 \
+Exit codes: 0 registered, 3 human action required, 4 Provider CLI missing, cannot start or \
+incompatible, 5 \
 registry conflict, 6 authentication failed. Re-running setup for the same binding is safe.",
         after_long_help = "Examples:\n  af provider setup codex-main --kind codex\n  af provider setup codex-main --kind codex --json\n  af provider setup claude-work --kind claude --auth-dir /secure/claude-work --login"
     )]

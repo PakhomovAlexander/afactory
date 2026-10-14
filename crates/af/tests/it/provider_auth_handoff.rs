@@ -26,7 +26,7 @@ impl Fixture {
         std::fs::create_dir(&bin).unwrap();
         let executable = bin.join("codex");
         // No model dispatch method exists: any accidental inference call fails the fixture.
-        std::fs::write(&executable, r#"#!/usr/bin/python3
+        std::fs::write(&executable, crate::provider_cli::with_help("codex", r#"#!/usr/bin/python3
 import os,sys,time
 from pathlib import Path
 root=Path(os.environ['CODEX_HOME'])
@@ -66,7 +66,7 @@ emit_diagnostic()
 if (root/'nonzero-exit').exists(): sys.exit(1)
 if not (root/'status-fails').exists(): (root/'ready').touch()
 print('Successfully logged in',file=sys.stderr)
-"#).unwrap();
+"#)).unwrap();
         std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::write(root.path().join("host.py"), r#"import os,sys,subprocess,threading
 from pathlib import Path
@@ -195,7 +195,7 @@ sys.exit(p.returncode)
     /// Claude 2.1.289's login frames. A `callback` marker completes without a pasted code.
     fn claude_cli(&self) {
         let path = self.root.path().join("bin/claude");
-        std::fs::write(&path, r#"#!/usr/bin/python3
+        std::fs::write(&path, crate::provider_cli::with_help("claude", r#"#!/usr/bin/python3
 import json,os,sys,time
 from pathlib import Path
 root=Path(os.environ['CLAUDE_CONFIG_DIR'])
@@ -219,7 +219,7 @@ else:
     if sys.stdin.readline().strip()!='AF-ONE-TIME-FIXTURE':sys.exit(65)
 (root/'ready').touch()
 print('Login successful.',flush=True)
-"#).unwrap();
+"#)).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 

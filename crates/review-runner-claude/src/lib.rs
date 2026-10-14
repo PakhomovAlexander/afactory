@@ -12,6 +12,14 @@
 //! [`ClaudeAdapter`] renders a package's input for `af review render`; [`task::ClaudeTaskAdapter`]
 //! runs it.
 //!
+//! **The invocation is a requirement on the installed CLI.** [`CLAUDE_INVOCATION`] lists every
+//! option the command passes; af reads `claude --help` before any paid dispatch and refuses a CLI
+//! that does not declare one of them (Claude Code before 2.1.248 has no `--restricted`, before
+//! 2.1.169 no `--safe-mode`), instead of dropping or replacing an isolation flag. A Worker that
+//! still exits on its own argument parser is classified
+//! [`UnsupportedInvocation`](review_runner::native_failure::NativeFailureKind::UnsupportedInvocation),
+//! with its exit status and a bounded stderr excerpt in the diagnostic (ADR-0146).
+//!
 //! **Auth is explicit grants, discovered by bisection against the real CLI.** Keychain auth
 //! needs `USER` (the keychain account) and the real `HOME` (the keychain search path). An
 //! operator-selected profile additionally needs `CLAUDE_CONFIG_DIR`. Never synthesize a config
@@ -39,6 +47,7 @@ use std::time::Duration;
 
 use review_core::{Arg, Command};
 use review_runner::ResolvedReviewer;
+use review_runner::cli::{CliFlag, CliInvocation};
 use review_runner::{
     InputTransport, ModelRunner, RenderedInput, ReviewerAdapter, ReviewerInputs, RunnerError,
     compose_model_prompt,
@@ -123,6 +132,30 @@ fn claude_model_flags(runner: &Command) -> Result<Vec<String>, String> {
     }
     Ok(flags)
 }
+
+/// Every option a Claude Attempt's command passes, in the spelling it passes it: what an installed
+/// `claude` must declare in `claude --help` before af dispatches to it (ADR-0146). A test holds
+/// this list equal to what [`claude_command`] and the Task adapter emit, so it cannot drift from
+/// the invocation. The isolation flags are required, never optional: a CLI without them is
+/// refused, never run without them.
+pub const CLAUDE_INVOCATION: CliInvocation = CliInvocation {
+    program: "claude",
+    help_args: &["--help"],
+    flags: &[
+        CliFlag::short("-p", "--print"),
+        CliFlag::long("--output-format"),
+        CliFlag::long("--model"),
+        CliFlag::long("--effort"),
+        CliFlag::long("--safe-mode"),
+        CliFlag::long("--restricted"),
+        CliFlag::long("--permission-mode"),
+        CliFlag::long("--strict-mcp-config"),
+        CliFlag::long("--tools"),
+        CliFlag::long("--allowedTools"),
+        CliFlag::long("--json-schema"),
+    ],
+    upgrade: "npm install -g @anthropic-ai/claude-code@latest",
+};
 
 /// The `claude -p` command one Attempt runs: the package model flags, then the adapter-owned
 /// security flags.

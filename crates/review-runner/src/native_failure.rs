@@ -15,6 +15,9 @@ pub enum NativeFailureKind {
     Capacity,
     ModelUnavailable,
     Network,
+    /// The installed CLI refused af's own arguments (`unknown option`, `unexpected argument`, a
+    /// usage block): it is older than, or otherwise different from, what af invokes.
+    UnsupportedInvocation,
     Unknown,
 }
 
@@ -46,6 +49,9 @@ impl NativeFailureKind {
             Self::Capacity => "Provider model at capacity (capacity)",
             Self::ModelUnavailable => "Provider model is unavailable (model_unavailable)",
             Self::Network => "Provider network request failed (network)",
+            Self::UnsupportedInvocation => {
+                "the installed Provider CLI does not accept af's invocation (unsupported_invocation)"
+            }
             Self::Unknown => "Provider returned an unclassified failure (unknown)",
         }
     }
@@ -65,7 +71,9 @@ impl NativeFailureKind {
             Self::Capacity => Cause::Capacity,
             Self::ModelUnavailable => Cause::ModelUnavailable,
             Self::Network => Cause::Network,
-            Self::Unknown => Cause::Unreported,
+            // The CLI refused its arguments before any model call: nothing better than an
+            // absent report is known about usage.
+            Self::UnsupportedInvocation | Self::Unknown => Cause::Unreported,
         }
     }
 
@@ -74,13 +82,26 @@ impl NativeFailureKind {
     /// suppress an obvious auth challenge/token on a non-auth failure (for example, a failed
     /// network request during refresh), without changing that failure's classification.
     pub fn redact_auth_capture(self, stdout: &mut Vec<u8>, stderr: &mut Vec<u8>) {
-        if self.is_auth() || auth_material(stdout) || auth_material(stderr) {
+        self.redact_capture(false, stdout, stderr);
+    }
+
+    /// [`Self::redact_auth_capture`] for a failure classified as `self` whose streams a native
+    /// classification also read as auth output (`auth_seen`): an invocation error takes the
+    /// classification, but the streams stay as sensitive as the auth text made them.
+    pub fn redact_capture(self, auth_seen: bool, stdout: &mut Vec<u8>, stderr: &mut Vec<u8>) {
+        if auth_seen || self.is_auth() || auth_material(stdout) || auth_material(stderr) {
             *stdout = self.diagnostic().as_bytes().to_vec();
             // One summary, not two identical CAS IDs: Attempt raw-evidence references are
             // required to be distinct. Neither original stream survives the replacement.
             stderr.clear();
         }
     }
+}
+
+/// Whether native output carries credential or login-challenge material, so that no part of it
+/// may be quoted in a diagnostic.
+pub fn carries_auth_material(bytes: &[u8]) -> bool {
+    auth_material(bytes)
 }
 
 fn auth_material(bytes: &[u8]) -> bool {

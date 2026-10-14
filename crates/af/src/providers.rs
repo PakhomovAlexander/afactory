@@ -2,10 +2,13 @@
 //!
 //! The registry names auth directories, never credentials, arbitrary commands, arguments, or
 //! environment variables. Explicit bindings are admitted by the common Task's Provider admission
-//! Attempts (see `task`). Authentication status is obtained from the two fixed adapter CLIs
-//! with bounded output and wall time, and is the only thing `af provider status` probes by
-//! default. Subscription and quota windows are opt-in behind `--usage`: Codex exposes them
-//! through the official local app-server protocol, while Claude has no headless usage-status
+//! Attempts (see `task`). Before any of them asks a CLI about a login, the token-free capability
+//! check (`compatibility`, ADR-0146) reads the help page of the (sub)command af invokes and
+//! refuses a CLI that does not declare every option its adapter passes. Authentication status is
+//! then obtained from the two fixed adapter CLIs with bounded output and wall time, and is the
+//! only thing `af provider status` probes beyond that check by default. Subscription and quota
+//! windows are opt-in behind `--usage`: Codex exposes them through the official local app-server
+//! protocol, started bare on its default stdio transport, while Claude has no headless usage-status
 //! command, so its fixed local `/usage` screen is opened in a bounded pseudo-terminal and only the
 //! weekly percentages are parsed. The probe neither reads credentials nor starts a billable
 //! model session. Accepted response shapes are pinned by fixtures.
@@ -35,9 +38,11 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 
 pub mod auth_handoff;
+mod compatibility;
 mod installation;
 pub mod task;
 
+use compatibility::{CliIncompatibility, CliRefusal, check_invocation};
 use installation::{
     CliInstallationFailure, diagnose_cli, locate_cli, probe_gave_up, status_answered,
 };
@@ -68,7 +73,8 @@ const MAX_CLAUDE_READER_SLOTS: usize = MAX_CONCURRENT_PROBES + MAX_ORPHANED_CLAU
 // neither is reused here.
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_HUMAN_ACTION_REQUIRED: i32 = 3;
-/// The official CLI is missing, not executable, or exits non-zero on its own version check.
+/// The official CLI as installed cannot serve af: it is missing, not executable, exits non-zero on
+/// its own version check, or does not accept af's invocation (ADR-0130, ADR-0146).
 pub const EXIT_PROVIDER_CLI_MISSING: i32 = 4;
 pub const EXIT_REGISTRY_CONFLICT: i32 = 5;
 pub const EXIT_AUTHENTICATION_FAILED: i32 = 6;
@@ -83,6 +89,9 @@ warning: never relay an OAuth URL or code through chat, an agent transcript, a t
 
 /// The status a context gets when its official CLI cannot start; `installation_failed` in JSON.
 const INSTALLATION_FAILED: &str = "installation failed";
+/// The status a context gets when its official CLI starts but does not accept af's invocation;
+/// `incompatible` in JSON (ADR-0146).
+const INCOMPATIBLE: &str = "incompatible";
 
 static CLAUDE_USAGE_CACHE: OnceLock<Mutex<BTreeMap<ClaudeUsageCacheKey, CachedClaudeUsage>>> =
     OnceLock::new();
@@ -301,12 +310,13 @@ pub fn print_status(json: bool, usage: UsageProbe) -> Result<i32, String> {
         .providers
         .iter()
         .any(|provider| provider.usage == UsageState::Unavailable);
+    // A CLI that cannot start or cannot serve af's invocation.
     let uninstalled: Vec<&ProviderStatus> = inventory
         .providers
         .iter()
-        .filter(|provider| provider.status == INSTALLATION_FAILED)
+        .filter(|provider| matches!(provider.status.as_str(), INSTALLATION_FAILED | INCOMPATIBLE))
         .collect();
-    // A CLI that cannot start outranks an unanswered optional usage probe.
+    // A CLI that cannot serve af outranks an unanswered optional usage probe.
     let code = if !uninstalled.is_empty() {
         EXIT_PROVIDER_CLI_MISSING
     } else if unavailable_usage {
@@ -430,7 +440,7 @@ fn status_document(
         .as_ref()
         .map(|path| path.display().to_string());
     serde_json::json!({
-        "schema": "af/provider-status@1",
+        "schema": "af/provider-status@2",
         "exit_code": exit_code,
         "usage_requested": usage == UsageProbe::Probe,
         "registry": {
@@ -479,6 +489,7 @@ fn auth_state_name(status: &str) -> &'static str {
         "not authenticated" => "not_authenticated",
         "unavailable" => "unavailable",
         INSTALLATION_FAILED => "installation_failed",
+        INCOMPATIBLE => "incompatible",
         "not probed" => "not_probed",
         _ => "unknown",
     }
@@ -499,7 +510,7 @@ fn credential_name(kind: &str, auth_type: &str) -> &'static str {
 pub(crate) fn usability_name(status: &str) -> &'static str {
     match status {
         "authenticated" => "usable_or_untested",
-        "not authenticated" | "unavailable" | INSTALLATION_FAILED => "unusable",
+        "not authenticated" | "unavailable" | INSTALLATION_FAILED | INCOMPATIBLE => "unusable",
         _ => "unknown",
     }
 }
@@ -652,6 +663,15 @@ impl SetupOutcome {
             report: failure.message(),
         }
     }
+
+    /// The CLI as installed cannot serve af's invocation: the same closed result and exit code
+    /// as a CLI that cannot start, never a failed login (ADR-0146).
+    fn cli_incompatible(incompatibility: &CliIncompatibility) -> Self {
+        Self::ProviderCliMissing {
+            diagnostic: incompatibility.summary(),
+            report: incompatibility.message(),
+        }
+    }
 }
 
 /// Own the complete first-run Provider flow while leaving credentials with the harness CLI.
@@ -782,6 +802,9 @@ fn probe_authentication(spec: &ProviderSpec, report: &SetupReport<'_>) -> Result
         }
         AuthenticationProbe::CliCannotStart(failure) => {
             report.emit(&SetupOutcome::cli_cannot_start(&failure))
+        }
+        AuthenticationProbe::CliIncompatible(incompatibility) => {
+            report.emit(&SetupOutcome::cli_incompatible(&incompatibility))
         }
     })
 }
@@ -1637,6 +1660,7 @@ fn inspect_registration(
 enum AuthenticationProbe {
     Failed(String),
     CliCannotStart(CliInstallationFailure),
+    CliIncompatible(CliIncompatibility),
 }
 
 impl From<String> for AuthenticationProbe {
@@ -1652,6 +1676,16 @@ fn authentication_ready(spec: &ProviderSpec) -> Result<bool, AuthenticationProbe
     let program = locate_cli(spec).map_err(AuthenticationProbe::CliCannotStart)?;
     let probe_path = sanitized_path();
     let cancelled = AtomicBool::new(false);
+    // A CLI that cannot serve af's invocation is refused before its login is asked about.
+    check_invocation(&program, spec, &probe_path, &cancelled, None).map_err(
+        |refusal| match refusal {
+            CliRefusal::CannotStart(failure) => AuthenticationProbe::CliCannotStart(failure),
+            CliRefusal::Incompatible(incompatibility) => {
+                AuthenticationProbe::CliIncompatible(incompatibility)
+            }
+            CliRefusal::Unchecked(reason) => AuthenticationProbe::Failed(reason),
+        },
+    )?;
     let output = match run_probe(&program, spec, &probe_path, &cancelled) {
         Ok(output) => output,
         Err(error) => {
@@ -3614,6 +3648,11 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool, usage: UsageProbe)
         Err(failure) => return installation_failed_status(&spec, &failure),
     };
     let probe_path = sanitized_path();
+    // Whatever the CLI would say about a login, af cannot dispatch to one that refuses its
+    // invocation (ADR-0146).
+    if let Err(refusal) = check_invocation(&program, &spec, &probe_path, cancelled, None) {
+        return refused_status(&spec, refusal);
+    }
     let output = match run_probe(&program, &spec, &probe_path, cancelled) {
         Ok(output) => output,
         Err(error) => {
@@ -3680,7 +3719,8 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool, usage: UsageProbe)
         && status == "authenticated"
         && auth_type == "ChatGPT"
     {
-        match probe_codex_subscription(&program, &spec, &probe_path, cancelled) {
+        let mut observed = AppServerProbe::default();
+        match probe_codex_subscription(&program, &spec, &probe_path, cancelled, &mut observed) {
             Ok(snapshot) => {
                 subscription = snapshot.subscription;
                 limits = snapshot.limits;
@@ -3691,6 +3731,21 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool, usage: UsageProbe)
                     }
                     detail.push_str(&format!("subscription status partial: {warning}"));
                 }
+            }
+            // An app-server that broke the protocol is the CLI's failure, never the usage
+            // axis's: the same report as the capability check gives.
+            Err(error) if observed.lacks_protocol => {
+                return refused_status(
+                    &spec,
+                    compatibility::protocol_incompatibility(
+                        &program,
+                        &spec,
+                        &probe_path,
+                        cancelled,
+                        None,
+                        &error,
+                    ),
+                );
             }
             Err(error) => {
                 usage_state = UsageState::Unavailable;
@@ -3766,6 +3821,29 @@ fn installation_failed_status(
     ProviderStatus {
         status: INSTALLATION_FAILED.to_string(),
         detail: failure.message(),
+        ..unavailable_status(spec, "")
+    }
+}
+
+/// The status of a context whose CLI af refused: it cannot start, does not accept af's
+/// invocation, or could not be checked.
+fn refused_status(spec: &ProviderSpec, refusal: CliRefusal) -> ProviderStatus {
+    match refusal {
+        CliRefusal::CannotStart(failure) => installation_failed_status(spec, &failure),
+        CliRefusal::Incompatible(incompatibility) => incompatible_status(spec, &incompatibility),
+        CliRefusal::Unchecked(reason) => unavailable_status(spec, &reason),
+    }
+}
+
+/// A context whose CLI starts but does not accept af's invocation: never a claim about its login,
+/// and never usable.
+fn incompatible_status(
+    spec: &ProviderSpec,
+    incompatibility: &CliIncompatibility,
+) -> ProviderStatus {
+    ProviderStatus {
+        status: INCOMPATIBLE.to_string(),
+        detail: incompatibility.message(),
         ..unavailable_status(spec, "")
     }
 }
@@ -4266,62 +4344,195 @@ fn configure_probe_environment(
     }
 }
 
+/// The Codex rate limits, read from the app-server; `observed` says how far the probe got.
 fn probe_codex_subscription(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
+    observed: &mut AppServerProbe,
 ) -> Result<SubscriptionSnapshot, String> {
     // The bounded request is called directly: only Task identity checks add an Attempt deadline.
-    parse_codex_subscription_response(&probe_codex_request_before(
+    parse_codex_subscription_response(&probe_codex_request_observed(
         program,
         spec,
         probe_path,
         cancelled,
-        &serde_json::json!({"method":"account/rateLimits/read","id":2}),
+        Some(&serde_json::json!({"method":"account/rateLimits/read","id":2})),
         None,
+        observed,
     )?)
 }
 
-fn probe_codex_request_before(
-    program: &Path,
-    spec: &ProviderSpec,
-    probe_path: &std::ffi::OsStr,
-    cancelled: &AtomicBool,
-    request: &serde_json::Value,
-    attempt_deadline: Option<Instant>,
-) -> Result<serde_json::Value, String> {
-    probe_codex_request_observed(
-        program,
-        spec,
-        probe_path,
-        cancelled,
-        request,
-        attempt_deadline,
-        &mut false,
-    )
+/// How far one Codex app-server probe got.
+#[derive(Default)]
+struct AppServerProbe {
+    /// The app-server answered `initialize` with a result object: from then on the CLI has
+    /// started and serves the protocol, whatever the request itself concludes.
+    answered: bool,
+    /// The app-server did not prove the protocol: it exited before a result object, answered
+    /// `initialize` with an error, or wrote a line [`rpc_line`] finds malformed before the
+    /// response the probe waited for, `initialize`'s or the request's. The probe's error carries
+    /// the exit status when it exited and the bounded observed line.
+    lacks_protocol: bool,
 }
 
-/// `answered` is set once the app-server answers initialization: from then on the CLI has
-/// started, whatever the request itself concludes.
+/// What the app-server's stdout says about af's `initialize`, read line by line in order.
+#[derive(Debug, PartialEq)]
+enum InitializeAnswer {
+    /// A JSON-RPC response with id 1 whose `result` is a JSON object: the only proof of the
+    /// protocol capability.
+    Result(serde_json::Value),
+    /// A refusal of the protocol capability: a response with id 1 carrying an `error`, one whose
+    /// `result` is absent, `null` or not an object, or a line before it that [`rpc_line`] finds
+    /// malformed. Carries how, and the line, bounded and filtered.
+    Refused { how: &'static str, line: String },
+}
+
+/// One line of a Codex app-server's stdout under the JSON-RPC line grammar. [`rpc_line`] is the
+/// one predicate every line a probe reads passes, from the first byte until the response it waits
+/// for, whichever request that is.
+#[derive(Debug, PartialEq)]
+enum RpcLine {
+    /// A line of whitespace alone: framing between messages, not a message.
+    Blank,
+    /// A response: a JSON object with an `id` and exactly one of `result` or `error`.
+    Response(serde_json::Value),
+    /// A notification or a request: a JSON object with a string `method`.
+    Notification,
+    /// Anything else: not JSON, not an object (`[1,2]`, `42`), an object with an `id` but neither
+    /// `result` nor `error` (`{"id":2,"foo":"bar"}`), or with neither `id` nor `method`. No
+    /// JSON-RPC peer writes it, so it is the missing protocol capability, never silence.
+    Malformed,
+}
+
+fn rpc_line(line: &[u8]) -> RpcLine {
+    if line.iter().all(u8::is_ascii_whitespace) {
+        return RpcLine::Blank;
+    }
+    let Ok(serde_json::Value::Object(object)) = serde_json::from_slice(line) else {
+        return RpcLine::Malformed;
+    };
+    if object.contains_key("id") && object.contains_key("result") != object.contains_key("error") {
+        RpcLine::Response(serde_json::Value::Object(object))
+    } else if object
+        .get("method")
+        .is_some_and(serde_json::Value::is_string)
+    {
+        RpcLine::Notification
+    } else {
+        RpcLine::Malformed
+    }
+}
+
+/// What settles a probe's wait for the response with one id.
+#[derive(Debug, PartialEq)]
+enum Awaited<'a> {
+    /// The response with that id, and the line it was written as.
+    Response(serde_json::Value, &'a [u8]),
+    /// A line [`rpc_line`] finds malformed, written before that response.
+    Malformed(&'a [u8]),
+}
+
+/// The first complete stdout line that settles a wait for the response with `id`: that response,
+/// or a malformed line before it. Blank lines, notifications, requests and responses to other ids
+/// are skipped; a line still being written is not read.
+///
+/// `sent` is how many bytes of `captured` af had read when it wrote the request with `id`. A
+/// response satisfies a request only if it was received after the request was written, so the
+/// response with `id` counts only in a line starting at or after `sent`; one before it answers
+/// nothing af asked and is skipped like a response to another id (issue #259). Every line, before
+/// `sent` or after, still passes [`rpc_line`].
+fn awaited_response(captured: &[u8], id: u64, sent: usize) -> Option<Awaited<'_>> {
+    complete_lines(captured).find_map(|(start, line)| match rpc_line(line) {
+        RpcLine::Blank | RpcLine::Notification => None,
+        RpcLine::Response(message) => (start >= sent
+            && message.get("id").and_then(serde_json::Value::as_u64) == Some(id))
+        .then_some(Awaited::Response(message, line)),
+        RpcLine::Malformed => Some(Awaited::Malformed(line)),
+    })
+}
+
+/// A Provider-written stdout line as a report may quote it: bounded and filtered.
+fn observed_line(line: &[u8]) -> String {
+    review_runner::cli::bounded_cli_line(&String::from_utf8_lossy(line))
+}
+
+/// The answer to af's `initialize` (id 1), read under [`awaited_response`]. af writes
+/// `initialize` before it reads a byte of stdout, so every line it reads was read after it.
+fn initialize_answer(captured: &[u8]) -> Option<InitializeAnswer> {
+    let refused = |how, line: &[u8]| InitializeAnswer::Refused {
+        how,
+        line: observed_line(line),
+    };
+    Some(match awaited_response(captured, 1, 0)? {
+        Awaited::Response(message, line) if message.get("error").is_some() => {
+            refused("with an error", line)
+        }
+        Awaited::Response(message, _) if message["result"].is_object() => {
+            InitializeAnswer::Result(message)
+        }
+        Awaited::Response(_, line) => refused("without a result object", line),
+        // `{"id":1}`: an answer to af's request, malformed for want of its result.
+        Awaited::Malformed(line)
+            if serde_json::from_slice::<serde_json::Value>(line).is_ok_and(|message| {
+                message.get("id").and_then(serde_json::Value::as_u64) == Some(1)
+                    && message.get("result").is_none()
+                    && message.get("error").is_none()
+            }) =>
+        {
+            refused("without a result object", line)
+        }
+        Awaited::Malformed(line) => refused("with a line that is not a JSON-RPC message", line),
+    })
+}
+
+/// The process outcome of an app-server that refused `initialize` and was still running when the
+/// exit grace ended, so af stopped it.
+const APP_SERVER_STOPPED_BY_AF: &str = "was stopped by af";
+
+/// How long a probe that read a refused `initialize` answer or a malformed line waits for the
+/// app-server to exit, so the report can carry its exit status; the line already refused the CLI,
+/// so the wait is only for the report, and the probe deadline still bounds it.
+const REFUSED_ANSWER_EXIT_GRACE: Duration = Duration::from_secs(1);
+
+/// The bytes of the app-server's stderr a probe keeps: enough for its first error lines.
+const MAX_APP_SERVER_STDERR: usize = 8 * 1024;
+
+/// One request to `codex app-server` on its default stdio transport, after the `initialize` /
+/// `initialized` handshake, or with no `request` the handshake's `initialize` answer alone: the
+/// token-free protocol check of ADR-0146, which asks nothing about an account or its limits. The
+/// app-server is started with no transport flag: `stdio://` is the documented default on every
+/// verified codex-cli, and `--stdio` does not exist on 0.121.0 (ADR-0146). Its stderr is kept,
+/// bounded, so an app-server that exits early is reported with its exit status and its own first
+/// error line.
 fn probe_codex_request_observed(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
-    request: &serde_json::Value,
+    request: Option<&serde_json::Value>,
     attempt_deadline: Option<Instant>,
-    answered: &mut bool,
+    observed: &mut AppServerProbe,
 ) -> Result<serde_json::Value, String> {
     check_task_probe_control(attempt_deadline, cancelled)?;
+    let method = request
+        .map(|request| {
+            request
+                .get("method")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("request")
+        })
+        .unwrap_or("initialize")
+        .to_string();
     let directory = ProbeDirectory::new(spec)?;
     let mut command = Command::new(program);
-    command.args(["app-server", "--stdio"]);
+    command.arg("app-server");
     configure_probe_environment(&mut command, spec, probe_path, directory.path());
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     command.process_group(0);
     let mut child = review_process::spawn(&mut command)
         .map_err(|error| format!("cannot start Codex app-server probe: {error}"))?;
@@ -4329,27 +4540,36 @@ fn probe_codex_request_observed(
     let mut reaped = false;
     let mut stdin = child.stdin.take().expect("provider stdin was piped");
     let mut stdout = child.stdout.take().expect("provider stdout was piped");
-    if let Err(error) = set_nonblocking(&stdout) {
+    let mut stderr = child.stderr.take().expect("provider stderr was piped");
+    if let Err(error) = set_nonblocking(&stdout).and_then(|()| set_nonblocking(&stderr)) {
         stop_probe(&mut child);
         return Err(error);
     }
-    if let Err(error) = writeln!(
+    // An app-server that already exited on its arguments closes stdin: the write fails, and its
+    // exit is reported below, with its own words, rather than as a broken pipe.
+    let initialize = writeln!(
         stdin,
         "{{\"method\":\"initialize\",\"id\":1,\"params\":{{\"clientInfo\":{{\"name\":\"afactory\",\"version\":\"{}\"}}}}}}",
         env!("CARGO_PKG_VERSION")
     )
-    .and_then(|()| stdin.flush())
-    {
-        stop_probe(&mut child);
-        return Err(format!("cannot initialize Codex app-server probe: {error}"));
-    }
+    .and_then(|()| stdin.flush());
 
     let timeout = probe_timeout(PROBE_TIMEOUT);
     let deadline = Instant::now() + timeout;
     let deadline = attempt_deadline.map_or(deadline, |limit| deadline.min(limit));
     let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT.min(4096));
+    let mut said = Vec::new();
     let mut exceeded = false;
-    let mut requested_limits = false;
+    // How many stdout bytes af had read when it wrote its id-2 request, once it has.
+    let mut request_sent: Option<usize> = None;
+    let drain_stderr = |stderr: &mut std::process::ChildStderr, said: &mut Vec<u8>| {
+        // Output past the bound is read and dropped: only the first lines are ever reported.
+        let mut chunk = [0_u8; 8192];
+        while let Ok(count @ 1..) = stderr.read(&mut chunk) {
+            let room = MAX_APP_SERVER_STDERR.saturating_sub(said.len());
+            said.extend_from_slice(&chunk[..count.min(room)]);
+        }
+    };
     let result = 'probe: loop {
         loop {
             match drain_available(&mut stdout, &mut captured, &mut exceeded) {
@@ -4358,36 +4578,130 @@ fn probe_codex_request_observed(
                 Err(error) => break 'probe Err(error),
             }
         }
+        drain_stderr(&mut stderr, &mut said);
         if exceeded {
             break Err(format!(
                 "Codex app-server output exceeds {MAX_PROBE_OUTPUT} bytes"
             ));
         }
-        if !requested_limits && let Some(response) = response_for_id(&captured, 1) {
-            *answered = true;
-            if response.get("error").is_some() {
-                break Err("Codex app-server rejected initialization".to_string());
-            }
+        if request_sent.is_none()
+            && let Some(answer) = initialize_answer(&captured)
+        {
+            let response = match answer {
+                InitializeAnswer::Result(response) => response,
+                InitializeAnswer::Refused { how, line } => {
+                    observed.lacks_protocol = true;
+                    let exit = outcome_after_refusal(
+                        &mut child,
+                        &mut watch,
+                        &mut reaped,
+                        Instant::now() + REFUSED_ANSWER_EXIT_GRACE.min(timeout),
+                        deadline,
+                    );
+                    break Err(format!(
+                        "codex app-server {exit} after answering initialize {how}: {line}"
+                    ));
+                }
+            };
+            observed.answered = true;
+            let Some(request) = request else {
+                break Ok(response);
+            };
             if let Err(error) = writeln!(stdin, "{{\"method\":\"initialized\",\"params\":{{}}}}")
                 .and_then(|()| writeln!(stdin, "{request}"))
                 .and_then(|()| stdin.flush())
             {
-                break Err(format!("cannot request Codex subscription status: {error}"));
+                break Err(format!(
+                    "cannot send `{method}` to the Codex app-server: {error}"
+                ));
             }
-            requested_limits = true;
+            request_sent = Some(captured.len());
         }
-        if requested_limits && let Some(response) = response_for_id(&captured, 2) {
-            break Ok(response);
+        // The lines after the `initialize` answer pass the same grammar: a malformed one before
+        // the id-2 response is the missing protocol capability, reported at once. Only a response
+        // read after the request was written answers it.
+        if let Some(sent) = request_sent
+            && let Some(answer) = awaited_response(&captured, 2, sent)
+        {
+            match answer {
+                Awaited::Response(response, _) => break Ok(response),
+                Awaited::Malformed(line) => {
+                    observed.lacks_protocol = true;
+                    let exit = outcome_after_refusal(
+                        &mut child,
+                        &mut watch,
+                        &mut reaped,
+                        Instant::now() + REFUSED_ANSWER_EXIT_GRACE.min(timeout),
+                        deadline,
+                    );
+                    break Err(malformed_before_answering(&exit, &method, line));
+                }
+            }
         }
         match review_process::try_reap_killing_group(&mut child, &mut watch) {
-            Ok(Some(_)) => {
+            Ok(Some(status)) => {
                 reaped = true;
-                break Err("Codex app-server probe exited without a rate-limit response".into());
+                // Whatever it wrote before exiting is still in the pipes.
+                while let Ok(true) = drain_available(&mut stdout, &mut captured, &mut exceeded) {}
+                drain_stderr(&mut stderr, &mut said);
+                let exit = review_runner::cli::exit_description(&status);
+                if let Some(sent) = request_sent
+                    && let Some(answer) = awaited_response(&captured, 2, sent)
+                {
+                    match answer {
+                        Awaited::Response(response, _) => break Ok(response),
+                        Awaited::Malformed(line) => {
+                            observed.lacks_protocol = true;
+                            break Err(malformed_before_answering(&exit, &method, line));
+                        }
+                    }
+                }
+                let answer = if request_sent.is_some() {
+                    None
+                } else {
+                    initialize_answer(&captured)
+                };
+                match answer {
+                    // The protocol check asks for the `initialize` answer alone, however soon
+                    // the app-server exits after giving it.
+                    Some(InitializeAnswer::Result(response)) if request.is_none() => {
+                        observed.answered = true;
+                        break Ok(response);
+                    }
+                    Some(InitializeAnswer::Result(_)) => observed.answered = true,
+                    Some(InitializeAnswer::Refused { how, line }) => {
+                        observed.lacks_protocol = true;
+                        break Err(format!(
+                            "codex app-server {exit} after answering initialize {how}: {line}"
+                        ));
+                    }
+                    None => {}
+                }
+                if observed.answered {
+                    let (line, _) = review_runner::cli::error_and_fix(&said, b"");
+                    let line = line.map(|line| format!(": {line}")).unwrap_or_default();
+                    break Err(format!(
+                        "codex app-server {exit} after initialize without answering `{method}`{line}"
+                    ));
+                }
+                // Its own error line, else what it printed on stdout, is what it said.
+                let (line, _) = review_runner::cli::error_and_fix(&said, &captured);
+                let line = line.map(|line| format!(": {line}")).unwrap_or_default();
+                observed.lacks_protocol = true;
+                break Err(format!(
+                    "codex app-server {exit} before answering initialize{line}"
+                ));
             }
             Ok(None) => {}
             Err(error) => {
                 break Err(format!("Codex app-server probe failed: {error}"));
             }
+        }
+        if let Err(error) = &initialize
+            && request_sent.is_none()
+            && Instant::now() >= deadline
+        {
+            break Err(format!("cannot initialize Codex app-server probe: {error}"));
         }
         if cancelled.load(Ordering::Acquire) {
             break Err("provider status refresh cancelled".to_string());
@@ -4408,19 +4722,54 @@ fn probe_codex_request_observed(
     result
 }
 
-fn response_for_id(captured: &[u8], expected_id: u64) -> Option<serde_json::Value> {
+/// How an app-server that wrote a refusal ended: its exit when it ends within `grace`, else
+/// [`APP_SERVER_STOPPED_BY_AF`], as af stops it. The refusal already decided the probe, so the wait
+/// is only for the report, and `deadline` still bounds it.
+fn outcome_after_refusal(
+    child: &mut std::process::Child,
+    watch: &mut review_process::ExitWatch,
+    reaped: &mut bool,
+    grace: Instant,
+    deadline: Instant,
+) -> String {
+    loop {
+        match review_process::try_reap_killing_group(child, watch) {
+            Ok(Some(status)) => {
+                *reaped = true;
+                break review_runner::cli::exit_description(&status);
+            }
+            Ok(None) if Instant::now() < grace.min(deadline) => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) | Err(_) => break APP_SERVER_STOPPED_BY_AF.to_string(),
+        }
+    }
+}
+
+/// The report of an app-server that answered `initialize` and then wrote a malformed line before
+/// answering the request `method`.
+fn malformed_before_answering(exit: &str, method: &str, line: &[u8]) -> String {
+    format!(
+        "codex app-server {exit} after answering initialize, before answering `{method}`, with a line that is not a JSON-RPC message: {}",
+        observed_line(line)
+    )
+}
+
+/// The newline-terminated lines of a stream, each with the offset it starts at, without their
+/// line endings: a line still being written is not read.
+fn complete_lines(captured: &[u8]) -> impl Iterator<Item = (usize, &[u8])> {
     captured
         .split_inclusive(|byte| *byte == b'\n')
-        .filter(|line| line.ends_with(b"\n"))
-        .filter_map(|line| {
-            let line = line
-                .strip_suffix(b"\n")
-                .unwrap_or(line)
-                .strip_suffix(b"\r")
-                .unwrap_or(line);
-            serde_json::from_slice::<serde_json::Value>(line).ok()
+        .scan(0, |start, line| {
+            let at = *start;
+            *start += line.len();
+            Some((at, line))
         })
-        .find(|message| message.get("id").and_then(serde_json::Value::as_u64) == Some(expected_id))
+        .filter(|(_, line)| line.ends_with(b"\n"))
+        .map(|(start, line)| {
+            let line = line.strip_suffix(b"\n").unwrap_or(line);
+            (start, line.strip_suffix(b"\r").unwrap_or(line))
+        })
 }
 
 fn parse_codex_subscription_response(
@@ -4456,10 +4805,11 @@ fn parse_codex_subscription_response(
     let mut skipped_windows = 0_usize;
     let mut truncated = false;
     for snapshot in snapshots {
-        let bucket = snapshot
+        let label = snapshot
             .get("limitName")
             .and_then(serde_json::Value::as_str)
-            .or_else(|| snapshot.get("limitId").and_then(serde_json::Value::as_str))
+            .or_else(|| snapshot.get("limitId").and_then(serde_json::Value::as_str));
+        let bucket = label
             .map(|value| safe_display(value, "Codex"))
             .unwrap_or_else(|| "Codex".to_string());
         for field in ["primary", "secondary"] {
@@ -4481,7 +4831,8 @@ fn parse_codex_subscription_response(
             let window_minutes = window
                 .get("windowDurationMins")
                 .and_then(serde_json::Value::as_u64);
-            if !seen_limits.insert((bucket.clone(), window_minutes)) {
+            // The same snapshot under two keys is one limit; two withheld labels are not.
+            if !seen_limits.insert((label, window_minutes)) {
                 continue;
             }
             if limits.len() == MAX_PROVIDER_LIMITS {
@@ -4632,12 +4983,16 @@ fn logged_out_detail(spec: &ProviderSpec) -> String {
     detail
 }
 
+/// A Provider-authored label made safe to show: [`review_runner::cli::bounded_cli_line`], the one
+/// credential filter, judges it whole, so a label that looks like credential material is the fixed
+/// [`review_runner::cli::WITHHELD_LINE`]; any other is cut at 48 characters, and an empty one is
+/// `fallback`.
 fn safe_display(value: &str, fallback: &str) -> String {
-    let value: String = value
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(48)
-        .collect();
+    let value = review_runner::cli::bounded_cli_line(value);
+    if value == review_runner::cli::WITHHELD_LINE {
+        return value;
+    }
+    let value: String = value.chars().take(48).collect();
     if value.is_empty() {
         fallback.to_string()
     } else {
@@ -6096,6 +6451,41 @@ auth_dir = "{}"
         );
     }
 
+    /// Issue #259, round 5: a rate-limit label or plan type that looks like credential material
+    /// never reaches a limit name or the subscription; the window figures stay.
+    #[test]
+    fn credential_looking_codex_labels_are_withheld_and_their_windows_kept() {
+        use review_runner::cli::WITHHELD_LINE;
+        for label in ["OPENAI_API_KEY=sk-proj-FIXTURE", "API_KEY=abcd"] {
+            let response = serde_json::json!({"id":2,"result":{"rateLimitsByLimitId":{
+                "named":{"limitId":"named","limitName":label,"planType":label,
+                    "primary":{"usedPercent":37,"windowDurationMins":300}},
+                "bare":{"limitId":label,"limitName":null,
+                    "primary":{"usedPercent":12,"windowDurationMins":10080}}
+            }}});
+            let snapshot = parse_codex_subscription_response(&response).unwrap();
+            assert_eq!(snapshot.subscription, "ChatGPT (plan unavailable)");
+            let shown: Vec<_> = snapshot
+                .limits
+                .iter()
+                .map(|limit| (limit.name.as_str(), limit.used_percent))
+                .collect();
+            assert_eq!(
+                shown,
+                [
+                    (format!("{WITHHELD_LINE} 1w").as_str(), 12),
+                    (format!("{WITHHELD_LINE} 5h").as_str(), 37)
+                ]
+            );
+        }
+        assert_eq!(
+            safe_display("GPT-5.3-Codex-Spark", "Codex"),
+            "GPT-5.3-Codex-Spark"
+        );
+        assert_eq!(safe_display("\u{1b}[31m\n", "Codex"), "Codex");
+        assert_eq!(safe_display(&"x".repeat(60), "Codex"), "x".repeat(48));
+    }
+
     #[test]
     fn malformed_codex_windows_do_not_hide_valid_subscription_data() {
         let response: serde_json::Value = serde_json::from_str(include_str!(
@@ -6126,6 +6516,74 @@ auth_dir = "{}"
             snapshot.warning.as_deref(),
             Some("skipped 1 malformed rate-limit windows")
         );
+    }
+
+    /// codex-cli 0.121.0 refuses `--stdio` (clap, exit 2) and serves stdio by default; the probe
+    /// starts the bare app-server, so the usage probe reads its rate limits. An app-server that
+    /// exits before answering `initialize` is reported with its exit status and its own first
+    /// error line, never as a missing rate-limit response (issue #259).
+    #[test]
+    fn codex_subscription_probe_starts_the_bare_app_server_and_reports_an_early_exit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("codex");
+        let limits = include_str!("../tests/fixtures/providers/codex-0.149.0-rate-limits.json")
+            .replace('\n', "");
+        let script = format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = app-server ] && [ -n \"$2\" ]; then\n\
+               printf '%s\\n' \"error: unexpected argument '$2' found\" '' 'Usage: codex app-server [OPTIONS] [COMMAND]' >&2\n\
+               exit 2\n\
+             fi\n\
+             IFS= read -r _\n\
+             printf '%s\\n' '{{\"id\":1,\"result\":{{}}}}'\n\
+             IFS= read -r _\n\
+             IFS= read -r _\n\
+             cat <<'JSON'\n{limits}\nJSON\n"
+        );
+        fs::write(&program, script).unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        let spec = ProviderSpec {
+            id: "codex-test".to_string(),
+            kind: ProviderKind::Codex,
+            auth_dir: None,
+            explicit_selector: false,
+            registry_declared: false,
+            source: "test".to_string(),
+        };
+        let probe_path = sanitized_path();
+        let snapshot = probe_codex_subscription(
+            &program,
+            &spec,
+            &probe_path,
+            &AtomicBool::new(false),
+            &mut AppServerProbe::default(),
+        )
+        .unwrap();
+        assert!(!snapshot.limits.is_empty());
+
+        fs::write(
+            &program,
+            "#!/bin/sh\nprintf '%s\\n' \"error: unexpected argument '--stdio' found\" '' 'Usage: codex app-server [OPTIONS]' >&2\nexit 2\n",
+        )
+        .unwrap();
+        let mut observed = AppServerProbe::default();
+        let error = probe_codex_request_observed(
+            &program,
+            &spec,
+            &probe_path,
+            &AtomicBool::new(false),
+            Some(&serde_json::json!({"method":"account/rateLimits/read","id":2})),
+            None,
+            &mut observed,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "codex app-server exited 2 before answering initialize: error: unexpected argument '--stdio' found"
+        );
+        assert!(observed.lacks_protocol && !observed.answered);
     }
 
     #[test]
@@ -6160,12 +6618,19 @@ auth_dir = "{}"
         };
 
         let probe_path = sanitized_path();
-        let Err(error) =
-            probe_codex_subscription(&program, &spec, &probe_path, &AtomicBool::new(false))
-        else {
+        let Err(error) = probe_codex_subscription(
+            &program,
+            &spec,
+            &probe_path,
+            &AtomicBool::new(false),
+            &mut AppServerProbe::default(),
+        ) else {
             panic!("early app-server exit unexpectedly returned subscription data");
         };
-        assert!(error.contains("exited without a rate-limit response"));
+        assert_eq!(
+            error,
+            "codex app-server exited 0 after initialize without answering `account/rateLimits/read`"
+        );
         let process = nix::unistd::Pid::from_raw(
             fs::read_to_string(&pid_file)
                 .unwrap()
@@ -6205,13 +6670,362 @@ auth_dir = "{}"
     }
 
     #[test]
+    fn an_initialize_answer_is_proof_only_with_a_result_object() {
+        assert_eq!(
+            initialize_answer(
+                b"{\"method\":\"remoteControl/status/changed\",\"params\":{}}\n{\"id\":1,\"result\":{}}\n"
+            ),
+            Some(InitializeAnswer::Result(
+                serde_json::json!({"id":1,"result":{}})
+            ))
+        );
+        assert_eq!(
+            initialize_answer(b"{\"method\":\"note\"}\n\n{\"id\":1,\"result\":{}}\n"),
+            Some(InitializeAnswer::Result(
+                serde_json::json!({"id":1,"result":{}})
+            ))
+        );
+        for (captured, how) in [
+            (
+                &b"{\"id\":1,\"error\":{\"code\":-32600,\"message\":\"bad init\"}}\n"[..],
+                "with an error",
+            ),
+            (b"{\"id\":1}\n", "without a result object"),
+            (b"{\"id\":1,\"result\":null}\n", "without a result object"),
+            (b"{\"id\":1,\"result\":[]}\r\n", "without a result object"),
+            (
+                b"starting\n{\"id\":1,\"result\":{}}\n",
+                "with a line that is not a JSON-RPC message",
+            ),
+            (b"42\n", "with a line that is not a JSON-RPC message"),
+            // Issue #259, round 5: an object with neither `id` nor `method` is no message.
+            (
+                b"{\"foo\":\"bar\"}\n{\"id\":1,\"result\":{}}\n",
+                "with a line that is not a JSON-RPC message",
+            ),
+            (
+                b"{\"method\":7}\n",
+                "with a line that is not a JSON-RPC message",
+            ),
+            // Issue #259, round 6: an `id` without `result` or `error` is no response, whatever
+            // the id, and an array or prose is no message.
+            (
+                b"{\"id\":2,\"foo\":\"bar\"}\n{\"id\":1,\"result\":{}}\n",
+                "with a line that is not a JSON-RPC message",
+            ),
+            (b"[1,2]\n", "with a line that is not a JSON-RPC message"),
+            (b"not json\n", "with a line that is not a JSON-RPC message"),
+            (
+                b"{\"id\":1,\"result\":{},\"error\":{}}\n",
+                "with a line that is not a JSON-RPC message",
+            ),
+        ] {
+            let Some(InitializeAnswer::Refused { how: said, line }) = initialize_answer(captured)
+            else {
+                panic!("{captured:?} was not refused");
+            };
+            assert_eq!(said, how);
+            assert_eq!(
+                line,
+                String::from_utf8_lossy(captured)
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .trim_end()
+            );
+        }
+        // A response to another id and a notification are skipped, never refusals.
+        assert_eq!(
+            initialize_answer(b"{\"id\":7,\"result\":{}}\n{\"id\":1,\"result\":{}}\n"),
+            Some(InitializeAnswer::Result(
+                serde_json::json!({"id":1,"result":{}})
+            ))
+        );
+        assert_eq!(
+            initialize_answer(
+                b"{\"method\":\"x/changed\",\"params\":{}}\n{\"id\":1,\"result\":{}}\n"
+            ),
+            Some(InitializeAnswer::Result(
+                serde_json::json!({"id":1,"result":{}})
+            ))
+        );
+        // Nothing yet: no line, a line still being written, or another id.
+        for captured in [&b""[..], b"{\"id\":1,\"res", b"{\"id\":2,\"result\":{}}\n"] {
+            assert_eq!(initialize_answer(captured), None);
+        }
+    }
+
+    /// Issue #259, round 6: the one line grammar every app-server line a probe reads passes.
+    #[test]
+    fn every_app_server_line_is_a_response_a_notification_or_malformed() {
+        for line in [
+            &br#"{"id":1,"result":{}}"#[..],
+            br#"{"id":2,"error":{"code":-32600,"message":"no"}}"#,
+            br#"{"id":"a","result":null}"#,
+        ] {
+            assert!(matches!(rpc_line(line), RpcLine::Response(_)), "{line:?}");
+        }
+        for line in [
+            &br#"{"method":"x/changed","params":{}}"#[..],
+            br#"{"id":9,"method":"item/requestApproval","params":{}}"#,
+        ] {
+            assert_eq!(rpc_line(line), RpcLine::Notification, "{line:?}");
+        }
+        for line in [&b""[..], b"  ", b"\t"] {
+            assert_eq!(rpc_line(line), RpcLine::Blank, "{line:?}");
+        }
+        for line in [
+            &br#"{"id":2,"foo":"bar"}"#[..],
+            br#"{"id":1}"#,
+            br#"{"id":1,"result":{},"error":{}}"#,
+            br#"{"foo":"bar"}"#,
+            br#"{"method":7}"#,
+            b"[1,2]",
+            b"42",
+            b"\"text\"",
+            b"not json",
+            br#"{"id":1,"res"#,
+        ] {
+            assert_eq!(rpc_line(line), RpcLine::Malformed, "{line:?}");
+        }
+    }
+
+    #[test]
     fn app_server_response_scanner_waits_for_a_complete_matching_line() {
         let captured = br#"{"id":1,"result":{}}
 {"id":2,"result":{"rateLimits":{}}}"#;
-        assert!(response_for_id(captured, 1).is_some());
-        assert!(response_for_id(captured, 2).is_none());
+        assert!(matches!(
+            awaited_response(captured, 1, 0),
+            Some(Awaited::Response(..))
+        ));
+        assert_eq!(awaited_response(captured, 2, 0), None);
         let complete = [captured.as_slice(), b"\n"].concat();
-        assert!(response_for_id(&complete, 2).is_some());
+        assert!(matches!(
+            awaited_response(&complete, 2, 0),
+            Some(Awaited::Response(..))
+        ));
+        // The same grammar holds while waiting for id 2: a malformed line after the `initialize`
+        // answer settles the wait, a notification or another id does not.
+        let captured = b"{\"id\":1,\"result\":{}}\n{\"method\":\"x\"}\n{\"id\":7,\"result\":{}}\n{\"id\":2,\"foo\":\"bar\"}\n";
+        assert_eq!(
+            awaited_response(captured, 2, 0),
+            Some(Awaited::Malformed(b"{\"id\":2,\"foo\":\"bar\"}"))
+        );
+    }
+
+    /// Issue #259, round 7: a response answers a request only if it was read after the request
+    /// was written. A well-formed id-2 response before that point is skipped like a response to
+    /// another id, so is one in a line that began before it; the grammar still judges every line.
+    #[test]
+    fn a_response_read_before_its_request_was_written_answers_nothing() {
+        let premature = b"{\"id\":2,\"result\":{\"account\":{\"type\":\"chatgpt\",\"email\":\"wrong@example.test\"}}}\n{\"id\":1,\"result\":{}}\n";
+        let sent = premature.len();
+        assert!(matches!(
+            awaited_response(premature, 1, 0),
+            Some(Awaited::Response(..))
+        ));
+        assert_eq!(awaited_response(premature, 2, sent), None);
+        let answered = [
+            premature.as_slice(),
+            b"{\"method\":\"x/changed\"}\n{\"id\":2,\"result\":{\"account\":{\"type\":\"chatgpt\",\"email\":\"right@example.test\"}}}\n",
+        ]
+        .concat();
+        let Some(Awaited::Response(response, _)) = awaited_response(&answered, 2, sent) else {
+            panic!("the answer read after the request was not accepted");
+        };
+        assert_eq!(response["result"]["account"]["email"], "right@example.test");
+        // A line already being written when the request was sent is no answer to it either.
+        let straddling = b"{\"id\":1,\"result\":{}}\n{\"id\":2,\"result\":{}}\n";
+        assert_eq!(awaited_response(straddling, 2, straddling.len() - 4), None);
+        // A malformed line before the request still refuses the wait for its answer.
+        let malformed = b"{\"id\":2,\"foo\":\"bar\"}\n{\"id\":1,\"result\":{}}\n";
+        assert_eq!(
+            awaited_response(malformed, 2, malformed.len()),
+            Some(Awaited::Malformed(b"{\"id\":2,\"foo\":\"bar\"}"))
+        );
+    }
+
+    /// Issue #259, round 7: an app-server that writes a well-formed id-2 response before its
+    /// `initialize` answer, then stays running and never answers the request af sends, gives the
+    /// identity and usage probes no answer: each times out, and neither the premature account nor
+    /// the premature limits are returned. The same app-server answering in order is accepted.
+    #[test]
+    fn a_premature_id_2_response_never_answers_the_identity_or_usage_probe() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let spec = ProviderSpec {
+            id: "codex-test".to_string(),
+            kind: ProviderKind::Codex,
+            auth_dir: None,
+            explicit_selector: false,
+            registry_declared: false,
+            source: "test".to_string(),
+        };
+        let probe_path = sanitized_path();
+        let account =
+            r#"{"id":2,"result":{"account":{"type":"chatgpt","email":"wrong@example.test"}}}"#;
+        let limits = r#"{"id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":91,"windowDurationMins":10080,"resetsAt":1787831613},"secondary":null,"planType":"pro"}}}"#;
+        let fake = |name: &str, premature: &str, in_order: Option<&str>| {
+            let program = directory.path().join(name);
+            let answer = in_order.map_or_else(
+                || "while IFS= read -r _; do :; done".to_string(),
+                |line| format!("printf '%s\\n' '{line}'\nwhile IFS= read -r _; do :; done"),
+            );
+            fs::write(
+                &program,
+                format!(
+                    "#!/bin/sh\nIFS= read -r _\nprintf '%s\\n' '{premature}' '{{\"id\":1,\"result\":{{}}}}'\nIFS= read -r _\nIFS= read -r _\n{answer}\n"
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+            program
+        };
+        let identity = fake("codex-identity", account, None);
+        let usage = fake("codex-usage", limits, None);
+        let timeout = probe_timeout(PROBE_TIMEOUT).as_secs();
+        thread::scope(|scope| {
+            let identity = scope.spawn(|| {
+                let mut observed = AppServerProbe::default();
+                let outcome = probe_codex_request_observed(
+                    &identity,
+                    &spec,
+                    &probe_path,
+                    &AtomicBool::new(false),
+                    Some(&serde_json::json!({"method":"account/read","id":2,"params":{"refreshToken":false}})),
+                    None,
+                    &mut observed,
+                );
+                (outcome, observed)
+            });
+            let usage = scope.spawn(|| {
+                let mut observed = AppServerProbe::default();
+                let outcome = probe_codex_subscription(
+                    &usage,
+                    &spec,
+                    &probe_path,
+                    &AtomicBool::new(false),
+                    &mut observed,
+                );
+                (outcome, observed)
+            });
+            let (identity, observed) = identity.join().unwrap();
+            assert_eq!(
+                identity.unwrap_err(),
+                format!("Codex subscription probe timed out after {timeout} seconds")
+            );
+            assert!(observed.answered && !observed.lacks_protocol);
+            let (usage, observed) = usage.join().unwrap();
+            let Err(usage) = usage else {
+                panic!("a premature id-2 response was read as the rate limits");
+            };
+            assert_eq!(
+                usage,
+                format!("Codex subscription probe timed out after {timeout} seconds")
+            );
+            assert!(observed.answered && !observed.lacks_protocol);
+        });
+
+        let identity = fake(
+            "codex-identity-in-order",
+            account,
+            Some(
+                r#"{"id":2,"result":{"account":{"type":"chatgpt","email":"right@example.test"}}}"#,
+            ),
+        );
+        let response = probe_codex_request_observed(
+            &identity,
+            &spec,
+            &probe_path,
+            &AtomicBool::new(false),
+            Some(&serde_json::json!({"method":"account/read","id":2,"params":{"refreshToken":false}})),
+            None,
+            &mut AppServerProbe::default(),
+        )
+        .unwrap();
+        assert_eq!(response["result"]["account"]["email"], "right@example.test");
+        let usage = fake(
+            "codex-usage-in-order",
+            limits,
+            Some(&limits.replace("\"usedPercent\":91", "\"usedPercent\":37")),
+        );
+        let snapshot = probe_codex_subscription(
+            &usage,
+            &spec,
+            &probe_path,
+            &AtomicBool::new(false),
+            &mut AppServerProbe::default(),
+        )
+        .unwrap();
+        assert_eq!(snapshot.limits.len(), 1);
+        assert_eq!(snapshot.limits[0].used_percent, 37);
+    }
+
+    /// Issue #259, round 6: an app-server that answers `initialize` and then, still running,
+    /// writes a malformed line before its id-2 response is refused at once as missing the
+    /// protocol, with the process outcome and the line, never waited on until the timeout.
+    #[test]
+    fn a_malformed_line_before_the_id_2_answer_refuses_at_once() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("codex");
+        let spec = ProviderSpec {
+            id: "codex-test".to_string(),
+            kind: ProviderKind::Codex,
+            auth_dir: None,
+            explicit_selector: false,
+            registry_declared: false,
+            source: "test".to_string(),
+        };
+        let probe_path = sanitized_path();
+        for line in [r#"{"id":2,"foo":"bar"}"#, "[1,2]", "not json"] {
+            fs::write(
+                &program,
+                format!(
+                    "#!/bin/sh
+\
+                     IFS= read -r _
+\
+                     printf '%s\\n' '{{\"id\":1,\"result\":{{}}}}'
+\
+                     IFS= read -r _
+\
+                     IFS= read -r _
+\
+                     printf '%s\\n' '{{\"method\":\"x/changed\",\"params\":{{}}}}' '{{\"id\":7,\"result\":{{}}}}' '{line}'
+\
+                     while IFS= read -r _; do :; done
+\
+                     sleep 60
+"
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+            let started = Instant::now();
+            let mut observed = AppServerProbe::default();
+            let error = probe_codex_request_observed(
+                &program,
+                &spec,
+                &probe_path,
+                &AtomicBool::new(false),
+                Some(&serde_json::json!({"method":"account/read","id":2})),
+                None,
+                &mut observed,
+            )
+            .unwrap_err();
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "{line}: {error}"
+            );
+            assert_eq!(
+                error,
+                format!(
+                    "codex app-server was stopped by af after answering initialize, before answering `account/read`, with a line that is not a JSON-RPC message: {line}"
+                )
+            );
+            assert!(observed.answered && observed.lacks_protocol, "{line}");
+        }
     }
 
     #[test]

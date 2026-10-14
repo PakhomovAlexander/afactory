@@ -13,12 +13,13 @@ use std::process::Output;
 
 use serde_json::Value;
 
-/// A shell stand-in for an official Provider CLI, on a `PATH` that holds nothing else.
+/// A shell stand-in for an official Provider CLI, on a `PATH` that holds nothing else. It answers
+/// af's capability check with a page declaring every option af passes (ADR-0146).
 fn fake_provider(root: &Path, name: &str, script: &str) -> PathBuf {
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let path = bin.join(name);
-    std::fs::write(&path, script).unwrap();
+    std::fs::write(&path, crate::provider_cli::with_help(name, script)).unwrap();
     let mut permissions = std::fs::metadata(&path).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&path, permissions).unwrap();
@@ -269,7 +270,7 @@ fn documents_redact_identity_and_provider_output() {
         &["provider", "status", "--json", "--usage"],
     );
     let reported = document(&status);
-    valid("provider-status-v1.json", &reported);
+    valid("provider-status-v2.json", &reported);
 
     for rendered in [out(&setup), out(&status)] {
         for leaked in [
@@ -427,7 +428,9 @@ exit 64
 }
 
 /// Status is a registry and authentication check; usage is a separate, opt-in axis that can
-/// fail without saying anything about the login.
+/// fail without saying anything about the login. The app-server answers the compatibility
+/// check's `initialize` (ADR-0146) and fails only the rate-limit request, which default status
+/// never sends.
 #[test]
 fn status_keeps_authentication_when_optional_usage_is_unavailable() {
     let root = tempfile::tempdir().unwrap();
@@ -442,8 +445,13 @@ if [ "$1" = login ] && [ "$2" = status ]; then
   exit 0
 fi
 if [ "$1" = app-server ]; then
-  printf '%s\n' app-server >> "$CODEX_HOME/usage-probe-log"
-  exit 1
+  while IFS= read -r request; do
+    case "$request" in
+      *'"id":1'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+      *'"id":2'*) printf '%s\n' app-server >> "$CODEX_HOME/usage-probe-log"; exit 1 ;;
+    esac
+  done
+  exit 0
 fi
 exit 64
 "#,
@@ -477,7 +485,7 @@ exit 64
     let fast = run(&["provider", "status", "--json"]);
     assert_eq!(code(&fast), 0, "{}", err(&fast));
     let reported = document(&fast);
-    valid("provider-status-v1.json", &reported);
+    valid("provider-status-v2.json", &reported);
     assert_eq!(reported["usage_requested"], false);
     let provider = reported["providers"][0].clone();
     assert_eq!(provider["id"], "codex-main");
@@ -492,7 +500,7 @@ exit 64
     let probed = run(&["provider", "status", "--json", "--usage"]);
     assert_eq!(code(&probed), 7, "{}", err(&probed));
     let reported = document(&probed);
-    valid("provider-status-v1.json", &reported);
+    valid("provider-status-v2.json", &reported);
     assert_eq!(reported["usage_requested"], true);
     assert_eq!(reported["exit_code"], 7);
     let provider = reported["providers"][0].clone();

@@ -1708,9 +1708,8 @@ fn silent_selection(
 ) -> Result<Option<selection::PreparedSelection>, String> {
     match selection::assess(cas, authority, compiler, revision, None)? {
         selection::SelectionAssessment::Prepared(prepared) => Ok(Some(prepared)),
-        selection::SelectionAssessment::Refused { decision, .. } => {
-            let decision = serde_json::to_string(&decision).map_err(|e| e.to_string())?;
-            Err(format!("No Pipeline selected: {decision}"))
+        selection::SelectionAssessment::Refused { decision, view, .. } => {
+            Err(selection::refusal_line(&decision, &view)?)
         }
     }
 }

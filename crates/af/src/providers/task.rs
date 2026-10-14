@@ -1,5 +1,12 @@
 //! Fresh token-free account identity proof for Task bindings. Capability probes are dispatched
 //! later as paid nodes by the common Task runtime. Credentials and raw account data stay local.
+//!
+//! Admission first checks, token-free, that the installed CLI accepts af's invocation
+//! ([`check_invocation`], ADR-0146), so an authenticated but incompatible CLI is refused before
+//! any Worker or admission Attempt starts and before its account is asked about. The Codex
+//! identity probe then proves the app-server protocol through its own `initialize` round trip; an
+//! app-server that exits before answering it is refused as the missing protocol capability.
+use super::compatibility::protocol_incompatibility;
 use super::*;
 use review_core::task::plan::WorkerExecutionV1;
 use review_runner::task::{ModelWorkerReturn, Unstarted, WorkerModelAdapter};
@@ -21,10 +28,14 @@ impl TaskProviderIdentity {
         if spec.kind.name() != expected_kind || spec.auth_dir.is_none() {
             return Err("Task Provider binding differs from its configured implementation".into());
         }
-        // A CLI that cannot start is refused here, before any Worker or admission Attempt runs.
-        let program = locate_cli(&spec).map_err(|failure| admission_refusal(&failure))?;
+        // A CLI that cannot start, or does not accept af's invocation, is refused here, before
+        // any Worker or admission Attempt runs and before its account is asked about.
+        let program = locate_cli(&spec)
+            .map_err(|failure| admission_refusal(&CliRefusal::CannotStart(failure)))?;
         let probe_path = sanitized_path();
         let cancelled = AtomicBool::new(false);
+        check_invocation(&program, &spec, &probe_path, &cancelled, None)
+            .map_err(|refusal| admission_refusal(&refusal))?;
         let (principal_id, auth_method) = observe_identity(
             &program,
             &spec,
@@ -33,8 +44,8 @@ impl TaskProviderIdentity {
             None,
         )
         .map_err(|failure| {
-            match cli_cannot_start(&program, &spec, &probe_path, &cancelled, None, &failure) {
-                Some(installation) => admission_refusal(&installation),
+            match cli_cannot_serve(&program, &spec, &probe_path, &cancelled, None, &failure) {
+                Some(refusal) => admission_refusal(&refusal),
                 None => failure.message,
             }
         })?;
@@ -182,7 +193,7 @@ impl TaskProviderIdentity {
             Some(deadline),
         )
         .map_err(|failure| {
-            match cli_cannot_start(
+            match cli_cannot_serve(
                 &self.program,
                 &self.spec,
                 &self.probe_path,
@@ -190,7 +201,7 @@ impl TaskProviderIdentity {
                 Some(deadline),
                 &failure,
             ) {
-                Some(installation) => Recheck::CliCannotStart(installation),
+                Some(refusal) => Recheck::CliCannotServe(refusal),
                 None => Recheck::NotCurrent,
             }
         })?;
@@ -206,8 +217,9 @@ impl TaskProviderIdentity {
 enum Recheck {
     /// The captured Provider identity is no longer current or could not be verified.
     NotCurrent,
-    /// The Provider's CLI cannot start: an environment failure, not the model's or the login's.
-    CliCannotStart(CliInstallationFailure),
+    /// The Provider's CLI cannot start, or its app-server no longer answers `initialize`: an
+    /// environment failure, not the model's or the login's.
+    CliCannotServe(CliRefusal),
 }
 
 /// Why an account identity probe proved nothing.
@@ -216,6 +228,10 @@ struct IdentityFailure {
     /// The CLI gave no answer af recognizes, and af did not give up waiting for one: it may not
     /// start at all. A CLI that answered — logged out, another account — never is.
     cli_silent: bool,
+    /// The Codex app-server gave no `initialize` result object — it exited first, rejected it or
+    /// answered it malformed — or wrote a malformed line before the identity answer: unless the
+    /// CLI cannot start at all, it lacks the protocol capability the probe needs.
+    protocol_unanswered: bool,
 }
 
 impl IdentityFailure {
@@ -223,38 +239,51 @@ impl IdentityFailure {
         Self {
             message: message.into(),
             cli_silent: false,
+            protocol_unanswered: false,
         }
     }
 }
 
-/// The installation failure behind a silent identity probe, when the CLI's own version check
-/// confirms it.
-fn cli_cannot_start(
+/// Why a silent identity probe's CLI cannot serve af: an installation failure when its own
+/// version check confirms one, else, for an app-server that gave no `initialize` result object,
+/// the missing protocol capability.
+fn cli_cannot_serve(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
     deadline: Option<Instant>,
     failure: &IdentityFailure,
-) -> Option<CliInstallationFailure> {
+) -> Option<CliRefusal> {
     if !failure.cli_silent {
         return None;
     }
-    diagnose_cli(program, spec, probe_path, cancelled, deadline)
+    if failure.protocol_unanswered {
+        return Some(protocol_incompatibility(
+            program,
+            spec,
+            probe_path,
+            cancelled,
+            deadline,
+            &failure.message,
+        ));
+    }
+    diagnose_cli(program, spec, probe_path, cancelled, deadline).map(CliRefusal::CannotStart)
 }
 
-fn admission_refusal(failure: &CliInstallationFailure) -> String {
+fn admission_refusal(refusal: &CliRefusal) -> String {
     format!(
         "Task Provider admission refused before any Worker was dispatched: {}",
-        failure.message()
+        refusal.message()
     )
 }
 
-/// The Attempt diagnostic for a CLI that stopped starting after admission.
-fn environment_failure(failure: &CliInstallationFailure) -> String {
+/// The Attempt diagnostic for a CLI that stopped starting, or serving its protocol, after
+/// admission.
+fn environment_failure(refusal: &CliRefusal) -> String {
     format!(
         "Provider environment failure, not a model or credential failure: {}",
-        failure.message()
+        refusal.message()
     )
 }
 
@@ -282,12 +311,14 @@ fn observe_identity(
                 |message| IdentityFailure {
                     cli_silent: !probe_gave_up(&message),
                     message,
+                    protocol_unanswered: false,
                 },
             )?;
             if !output.status.success() {
                 return Err(IdentityFailure {
                     message: "Claude account identity probe failed".into(),
                     cli_silent: !status_answered(spec.kind, &output.stdout),
+                    protocol_unanswered: false,
                 });
             }
             let status: serde_json::Value = serde_json::from_str(&output.stdout).map_err(|_| {
@@ -297,18 +328,22 @@ fn observe_identity(
             Ok((principal, status["authMethod"].as_str().unwrap().into()))
         }
         ProviderKind::Codex => {
-            let mut answered = false;
+            let mut observed = AppServerProbe::default();
             let response = probe_codex_request_observed(
                 program,
                 spec,
                 probe_path,
                 cancelled,
-                &serde_json::json!({"method":"account/read","id":2,"params":{"refreshToken":false}}),
+                Some(&serde_json::json!({"method":"account/read","id":2,"params":{"refreshToken":false}})),
                 deadline,
-                &mut answered,
+                &mut observed,
             )
             .map_err(|message| IdentityFailure {
-                cli_silent: !answered && !probe_gave_up(&message),
+                // A malformed line, before or after the `initialize` answer, is no answer af
+                // recognizes either.
+                cli_silent: observed.lacks_protocol
+                    || !observed.answered && !probe_gave_up(&message),
+                protocol_unanswered: observed.lacks_protocol,
                 message,
             })?;
             let principal = codex_principal(&response).map_err(IdentityFailure::answered)?;
@@ -419,8 +454,8 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             match identity.check_current(deadline, cancelled) {
                 Ok(()) => {}
                 Err(_) if !is_executable(&identity.program) => continue,
-                Err(Recheck::CliCannotStart(failure)) => {
-                    return refuse(&environment_failure(&failure));
+                Err(Recheck::CliCannotServe(refusal)) => {
+                    return refuse(&environment_failure(&refusal));
                 }
                 Err(Recheck::NotCurrent) => return refused(),
             }

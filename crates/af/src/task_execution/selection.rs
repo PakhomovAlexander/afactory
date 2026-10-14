@@ -150,13 +150,36 @@ pub(super) fn prepare(
                 }
                 .map_err(|e| e.to_string())?
             );
-            eprintln!(
-                "No Pipeline selected: {}",
-                serde_json::to_string(&decision).map_err(|e| e.to_string())?
-            );
+            eprintln!("{}", refusal_line(&decision, &view)?);
             Ok(None)
         }
     }
+}
+
+/// The closed decision, then each refused candidate's own reason. A Provider admission that
+/// refused an incompatible CLI or one that cannot start reads as itself on stderr, not only as
+/// `{"kind":"unavailable"}` (ADR-0146); the document on stdout carries the same reasons.
+pub(super) fn refusal_line(
+    decision: &SelectionDecision,
+    view: &serde_json::Value,
+) -> Result<String, String> {
+    let mut line = format!(
+        "No Pipeline selected: {}",
+        serde_json::to_string(decision).map_err(|e| e.to_string())?
+    );
+    for candidate in view["selection"]["candidates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        if let (Some(pipeline), Some(reason)) = (
+            candidate["pipeline"].as_str(),
+            candidate["state"]["reason"].as_str(),
+        ) {
+            line.push_str(&format!("; {pipeline}: {reason}"));
+        }
+    }
+    Ok(line)
 }
 
 pub(super) fn assess(

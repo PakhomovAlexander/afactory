@@ -252,3 +252,373 @@ fn model_text_about_revoked_credentials_cannot_replace_a_network_failure() {
         );
     }
 }
+
+/// Issue #259: Claude Code 2.1.101 refuses `--safe-mode` on its argument parser, exits 1, and
+/// prints no envelope. The Attempt diagnostic names the exit, the CLI's own line and the
+/// `unsupported_invocation` classification with the upgrade, never a debug-printed exit status;
+/// a generic envelope-less failure keeps its exit and a bounded, sanitized stderr excerpt.
+#[test]
+fn a_cli_that_refuses_afs_arguments_is_an_unsupported_invocation_with_its_own_line() {
+    use review_runner::native_failure::NativeFailureKind;
+    for (stderr, unsupported) in [
+        ("error: unknown option '--safe-mode'\n", true),
+        (
+            "\x1b[31mfatal\x1b[0m: cannot open the bundled runtime\nsecond line\n",
+            false,
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        let said = temp.path().join("stderr");
+        std::fs::write(&said, stderr).unwrap();
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\ncat '{}' >&2\nexit 1\n",
+                said.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter = ClaudeTaskAdapter::new(&Command::new(
+            script.to_str().unwrap(),
+            vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+        ))
+        .unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            LOAD_SAFE_WALL,
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        let error = returned.message.unwrap_err();
+        assert!(!error.contains("ExitStatus"), "{error}");
+        assert!(returned.usage.is_none(), "no usage was reported");
+        if unsupported {
+            assert_eq!(
+                returned.native_failure,
+                Some(NativeFailureKind::UnsupportedInvocation)
+            );
+            assert_eq!(
+                error,
+                "Claude Worker failed: the installed claude CLI does not accept af's invocation (unsupported_invocation); it exited 1: error: unknown option '--safe-mode'; fix: upgrade it with `npm install -g @anthropic-ai/claude-code@latest`, then rerun `af provider status`"
+            );
+        } else {
+            assert_eq!(returned.native_failure, None);
+            assert_eq!(
+                error,
+                "Claude Worker exited 1 without a parsable result; stderr: fatal: cannot open the bundled runtime | second line"
+            );
+        }
+    }
+}
+
+/// Issue #259, round 5: a CLI argument error outranks an authentication hint beside it. A Worker
+/// that prints no envelope and whose stderr holds both `error: unknown option '--safe-mode'` and
+/// `Authentication required` is `unsupported_invocation`, with its exit and the bounded excerpt,
+/// never blamed on credentials; its raw streams stay as withheld as the auth text made them.
+#[test]
+fn an_argument_error_outranks_an_authentication_hint() {
+    use review_runner::native_failure::NativeFailureKind;
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let script = temp.path().join("provider");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"error: unknown option '--safe-mode'\" 'Authentication required' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = ClaudeTaskAdapter::new(&Command::new(
+        script.to_str().unwrap(),
+        vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+    ))
+    .unwrap();
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"input".to_vec(),
+        LOAD_SAFE_WALL,
+        WorkerAccess::ReadOnly,
+        None,
+        &[],
+    );
+    assert_eq!(
+        returned.native_failure,
+        Some(NativeFailureKind::UnsupportedInvocation)
+    );
+    let error = returned.message.unwrap_err();
+    assert_eq!(
+        error,
+        "Claude Worker failed: the installed claude CLI does not accept af's invocation (unsupported_invocation); it exited 1: error: unknown option '--safe-mode' | Authentication required; fix: upgrade it with `npm install -g @anthropic-ai/claude-code@latest`, then rerun `af provider status`"
+    );
+    assert!(!error.contains("auth_missing"), "{error}");
+    assert!(returned.usage.is_none(), "no usage was reported");
+    for id in &returned.raw_artifact_ids {
+        let kept = String::from_utf8(cas.get(id).unwrap()).unwrap();
+        assert!(!kept.contains("Authentication required"), "{kept}");
+    }
+}
+
+/// Issue #259, round 2: a Worker that exits without a parsable result keeps its exit and its own
+/// bounded stderr excerpt whatever its failure is classified as, and a line that looks like
+/// credential material is withheld whole while the exit and the classification stay.
+#[test]
+fn a_classified_failure_without_events_keeps_its_exit_and_stderr_excerpt() {
+    use review_runner::cli::WITHHELD_LINE;
+    use review_runner::native_failure::NativeFailureKind;
+    for (stderr, kind, quoted) in [
+        (
+            "error: connection refused while loading the native runtime",
+            NativeFailureKind::Network,
+            "error: connection refused while loading the native runtime",
+        ),
+        (
+            "network failed: proxy refused connection",
+            NativeFailureKind::Network,
+            "network failed: proxy refused connection",
+        ),
+        (
+            "error: unknown option '--safe-mode'; API_KEY=sk-secret",
+            NativeFailureKind::UnsupportedInvocation,
+            WITHHELD_LINE,
+        ),
+        (
+            "network failed; OPENAI_API_KEY=\"sk-proj-FIXTURE\"",
+            NativeFailureKind::Network,
+            WITHHELD_LINE,
+        ),
+        (
+            "network failed: 3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f",
+            NativeFailureKind::Network,
+            WITHHELD_LINE,
+        ),
+        (
+            "Authorization: Bearer FIXTUREabcdef",
+            NativeFailureKind::Unknown,
+            WITHHELD_LINE,
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        let said = temp.path().join("stderr");
+        std::fs::write(&said, format!("{stderr}\n")).unwrap();
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\ncat '{}' >&2\nexit 1\n",
+                said.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter = ClaudeTaskAdapter::new(&Command::new(
+            script.to_str().unwrap(),
+            vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+        ))
+        .unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            LOAD_SAFE_WALL,
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        let error = returned.message.unwrap_err();
+        assert_eq!(
+            returned.native_failure,
+            (kind != NativeFailureKind::Unknown).then_some(kind),
+            "{error}"
+        );
+        assert!(error.contains("exited 1"), "{error}");
+        assert!(error.contains(quoted), "{error}");
+        if kind != NativeFailureKind::Unknown {
+            let closed = kind.diagnostic();
+            assert!(
+                error.contains(&closed[closed.rfind('(').unwrap()..]),
+                "{error}"
+            );
+        }
+        for secret in ["sk-", "FIXTURE", "3f9a1c0b"] {
+            assert!(!error.contains(secret), "{error}");
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let script = temp.path().join("provider");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ncat >/dev/null\necho 'network failed: proxy refused connection' >&2\nexit 1\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = ClaudeTaskAdapter::new(&Command::new(
+        script.to_str().unwrap(),
+        vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+    ))
+    .unwrap();
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"input".to_vec(),
+        LOAD_SAFE_WALL,
+        WorkerAccess::ReadOnly,
+        None,
+        &[],
+    );
+    assert_eq!(
+        returned.message.unwrap_err(),
+        "Claude Worker failed: Provider network request failed (network); it exited 1 without a parsable result; stderr: network failed: proxy refused connection"
+    );
+}
+
+/// Issue #259, round 3: an envelope is only a JSON object carrying a boolean `is_error` and the
+/// `result`. Any other JSON on stdout, `{}` among it, is no parsable result, so the Worker keeps
+/// its exit, its stderr excerpt and its classification.
+#[test]
+fn json_that_is_not_an_envelope_is_no_parsable_result() {
+    use review_runner::native_failure::NativeFailureKind;
+    for stdout in [
+        "{}",
+        "[]",
+        "\"done\"",
+        r#"{"is_error":"false","result":"OK"}"#,
+        r#"{"is_error":false}"#,
+        r#"{"result":"OK"}"#,
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        let said = temp.path().join("stdout");
+        std::fs::write(&said, stdout).unwrap();
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\ncat '{}'\necho 'network failed: proxy refused connection' >&2\nexit 1\n",
+                said.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter = ClaudeTaskAdapter::new(&Command::new(
+            script.to_str().unwrap(),
+            vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+        ))
+        .unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            LOAD_SAFE_WALL,
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        assert_eq!(
+            returned.native_failure,
+            Some(NativeFailureKind::Network),
+            "{stdout}"
+        );
+        assert_eq!(
+            returned.message.unwrap_err(),
+            "Claude Worker failed: Provider network request failed (network); it exited 1 without a parsable result; stderr: network failed: proxy refused connection",
+            "{stdout}"
+        );
+    }
+}
+
+/// Issue #259, round 6: without a parsable result a CLI argument error on stderr decides the
+/// classification whatever the exit status: exit 0 with no envelope, exit 2 after JSON that is no
+/// envelope, and exit 1 beside an authentication hint are each `unsupported_invocation` with the
+/// exit and the bounded excerpt. A parsable result is a success whatever stderr warns about,
+/// even a warning that names an unknown option.
+#[test]
+fn an_argument_error_without_a_result_is_an_unsupported_invocation_whatever_the_exit() {
+    use review_runner::native_failure::NativeFailureKind;
+    let envelope =
+        r#"{"is_error":false,"result":"done","usage":{"input_tokens":1,"output_tokens":1}}"#;
+    for (stdout, stderr, exit, refused) in [
+        (
+            "",
+            "error: unknown option '--safe-mode'\n",
+            0,
+            Some("error: unknown option '--safe-mode'"),
+        ),
+        (
+            "{}",
+            "error: unknown option '--safe-mode'\n",
+            2,
+            Some("error: unknown option '--safe-mode'"),
+        ),
+        (
+            "",
+            "Authentication required\nerror: unknown option '--safe-mode'\n",
+            1,
+            Some("Authentication required | error: unknown option '--safe-mode'"),
+        ),
+        (envelope, "warning: the update check was skipped\n", 0, None),
+        (
+            envelope,
+            "warning: unknown option 'theme' in settings.json was ignored\n",
+            0,
+            None,
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        std::fs::write(temp.path().join("stdout"), stdout).unwrap();
+        std::fs::write(temp.path().join("stderr"), stderr).unwrap();
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\ncat '{0}/stdout'\ncat '{0}/stderr' >&2\nexit {exit}\n",
+                temp.path().display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter = ClaudeTaskAdapter::new(&Command::new(
+            script.to_str().unwrap(),
+            vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+        ))
+        .unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            LOAD_SAFE_WALL,
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        let Some(excerpt) = refused else {
+            assert_eq!(returned.native_failure, None, "{stderr}");
+            assert_eq!(returned.message.unwrap(), b"done", "{stderr}");
+            continue;
+        };
+        assert_eq!(
+            returned.native_failure,
+            Some(NativeFailureKind::UnsupportedInvocation),
+            "{stdout}{stderr}"
+        );
+        assert_eq!(
+            returned.message.unwrap_err(),
+            format!(
+                "Claude Worker failed: the installed claude CLI does not accept af's invocation (unsupported_invocation); it exited {exit}: {excerpt}; fix: upgrade it with `npm install -g @anthropic-ai/claude-code@latest`, then rerun `af provider status`"
+            )
+        );
+        assert!(returned.usage.is_none(), "no usage was reported");
+        for id in &returned.raw_artifact_ids {
+            let kept = String::from_utf8(cas.get(id).unwrap()).unwrap();
+            assert!(!kept.contains("Authentication required"), "{kept}");
+        }
+    }
+}

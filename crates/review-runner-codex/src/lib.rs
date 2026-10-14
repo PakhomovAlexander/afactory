@@ -14,6 +14,13 @@
 //! else — and `read-only` otherwise. A source-writing Worker and a reviewer declaring
 //! `execute-checks` both write their copy; only the first has it captured as a candidate.
 //!
+//! [`CODEX_INVOCATION`] lists every option that command passes. af reads `codex exec --help`
+//! before any paid dispatch and refuses a CLI that does not declare one of them, instead of
+//! dropping the sandbox mode or any other flag; a Worker that still exits on its own argument
+//! parser is classified
+//! [`UnsupportedInvocation`](review_runner::native_failure::NativeFailureKind::UnsupportedInvocation),
+//! with its exit status and a bounded stderr excerpt in the diagnostic (ADR-0146).
+//!
 //! Chargeable usage is uncached input plus output. Codex includes cache reads in
 //! `input_tokens` but also reports `cached_input_tokens`, so subtracting the latter makes the
 //! budget unit match the Claude adapter instead of charging one repeatedly cached context as
@@ -26,6 +33,7 @@ use std::time::Duration;
 
 use review_core::{Arg, Command};
 use review_runner::ResolvedReviewer;
+use review_runner::cli::{CliFlag, CliInvocation};
 use review_runner::{
     InputTransport, ModelRunner, RenderedInput, ReviewerAdapter, ReviewerInputs, RunnerError,
     compose_model_prompt,
@@ -112,6 +120,27 @@ fn codex_model_flags(runner: &Command) -> Result<Vec<String>, String> {
     Ok(flags)
 }
 
+/// Every option a Codex Attempt's `codex exec` passes, in the spelling it passes it: what an
+/// installed `codex` must declare in `codex exec --help` before af dispatches to it (ADR-0146). A
+/// test holds this list equal to what [`codex_command`] emits, so it cannot drift from the
+/// invocation. `-s` carries the sandbox mode, the isolation boundary: a CLI without it is
+/// refused, never run without it.
+pub const CODEX_INVOCATION: CliInvocation = CliInvocation {
+    program: "codex",
+    help_args: &["exec", "--help"],
+    flags: &[
+        CliFlag::long("--ephemeral"),
+        CliFlag::long("--skip-git-repo-check"),
+        CliFlag::long("--json"),
+        CliFlag::short("-C", "--cd"),
+        CliFlag::short("-s", "--sandbox"),
+        CliFlag::short("-o", "--output-last-message"),
+        CliFlag::long("--model"),
+        CliFlag::short("-c", "--config"),
+    ],
+    upgrade: "npm install -g @openai/codex@latest",
+};
+
 fn codex_command(
     program: &str,
     model_flags: &[String],
@@ -147,5 +176,72 @@ impl ReviewerAdapter for CodexAdapter {
             bytes: prompt.into_bytes(),
             manifest,
         })
+    }
+}
+
+#[cfg(test)]
+mod invocation_tests {
+    use super::*;
+    use review_runner::task::WorkerAccess;
+    use std::collections::BTreeSet;
+
+    /// [`CODEX_INVOCATION`] is the single source of truth for what `codex exec --help` must
+    /// declare: every option any Attempt's command can emit is in it, and nothing else is.
+    #[test]
+    fn the_required_flag_list_is_exactly_what_the_command_builder_emits() {
+        let model_flags = codex_model_flags(&Command::new(
+            "codex",
+            [
+                "--model",
+                "gpt-fixture-1",
+                "-c",
+                "model_reasoning_effort=\"high\"",
+            ]
+            .map(Arg::literal)
+            .into(),
+        ))
+        .unwrap();
+        let mut emitted = BTreeSet::new();
+        for access in [
+            WorkerAccess::ReadOnly,
+            WorkerAccess::ExecuteChecks,
+            WorkerAccess::WriteSource,
+            WorkerAccess::WriteSourceWithShell,
+        ] {
+            let command = codex_command(
+                "codex",
+                &model_flags,
+                Path::new("/sandbox"),
+                task::task_sandbox_mode(access),
+                Path::new("/staging/last-message"),
+            );
+            let argv = command.resolve().unwrap();
+            assert_eq!(argv[0], "exec", "the help checked is the subcommand's");
+            assert_eq!(
+                argv.last().map(String::as_str),
+                Some("-"),
+                "prompt on stdin"
+            );
+            for value in &argv[1..argv.len() - 1] {
+                if value.starts_with('-') {
+                    assert!(
+                        CODEX_INVOCATION.declares(value),
+                        "`{value}` is emitted but not required of the installed CLI"
+                    );
+                    emitted.insert(value.clone());
+                }
+            }
+        }
+        let required: BTreeSet<String> = CODEX_INVOCATION
+            .flags
+            .iter()
+            .map(|flag| flag.spelling.to_string())
+            .collect();
+        assert_eq!(emitted, required, "a required flag is never emitted");
+        assert_eq!(CODEX_INVOCATION.help_args, ["exec", "--help"]);
+        assert!(
+            CODEX_INVOCATION.declares("-s"),
+            "the sandbox mode is required"
+        );
     }
 }

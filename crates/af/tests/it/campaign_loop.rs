@@ -1611,7 +1611,9 @@ fn native_diff_fixture(directory: &Path) -> (PathBuf, PathBuf, String) {
     let codex = home.join("codex");
     std::fs::write(
         &codex,
-        r#"#!/bin/sh
+        crate::provider_cli::with_help(
+            "codex",
+            r#"#!/bin/sh
 if [ "$1" = "app-server" ]; then
   while IFS= read -r request; do
     case "$request" in
@@ -1637,7 +1639,7 @@ elif [ -n "$out" ]; then
 fi
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
-"#,
+"#),
     )
     .unwrap();
     {

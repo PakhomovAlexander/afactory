@@ -16,20 +16,9 @@
 //! document, which carries only the af-authored [`CliInstallationFailure::summary`].
 
 use super::*;
+use review_runner::cli::{bounded_cli_line, error_and_fix, exit_description};
 
 const VERSION_ARGUMENT: &str = "--version";
-const MAX_CLI_LINE_CHARS: usize = 240;
-/// Install commands a CLI's own error text may suggest; the sentence carrying one is the fix.
-const FIX_MARKERS: [&str; 8] = [
-    "reinstall",
-    "npm install",
-    "npm i ",
-    "pnpm add",
-    "yarn global add",
-    "brew install",
-    "brew reinstall",
-    "brew upgrade",
-];
 
 /// A Provider whose official CLI cannot start, named by Provider ID and program path.
 pub(crate) struct CliInstallationFailure {
@@ -39,7 +28,7 @@ pub(crate) struct CliInstallationFailure {
     cause: Box<StartFailure>,
 }
 
-enum StartFailure {
+pub(super) enum StartFailure {
     /// No `claude` or `codex` on PATH.
     Missing,
     /// A file of that name is on PATH, without an execute bit.
@@ -55,7 +44,7 @@ enum StartFailure {
 }
 
 impl CliInstallationFailure {
-    fn new(spec: &ProviderSpec, program: String, cause: StartFailure) -> Self {
+    pub(super) fn new(spec: &ProviderSpec, program: String, cause: StartFailure) -> Self {
         Self {
             provider: spec.id.clone(),
             kind: spec.kind,
@@ -169,28 +158,113 @@ pub(super) fn diagnose_cli(
     cancelled: &AtomicBool,
     attempt_deadline: Option<Instant>,
 ) -> Option<CliInstallationFailure> {
-    version_check(program, spec, probe_path, cancelled, attempt_deadline)
-        .map(|cause| CliInstallationFailure::new(spec, program.display().to_string(), cause))
+    match version_check(program, spec, probe_path, cancelled, attempt_deadline) {
+        VersionCheck::Failed(cause) => Some(CliInstallationFailure::new(
+            spec,
+            program.display().to_string(),
+            cause,
+        )),
+        VersionCheck::Reported(_) | VersionCheck::Undetermined => None,
+    }
 }
 
-fn version_check(
+/// What a CLI's own `--version` check concluded.
+pub(super) enum VersionCheck {
+    /// It exited zero, printing this first line, when it printed one af may quote.
+    Reported(Option<String>),
+    /// It cannot start, or exited non-zero: an installation failure.
+    Failed(StartFailure),
+    /// af gave up waiting, or could not run the check at all; this proves nothing.
+    Undetermined,
+}
+
+pub(super) fn version_check(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
     attempt_deadline: Option<Instant>,
-) -> Option<StartFailure> {
-    if cancelled.load(Ordering::Acquire)
-        || check_task_probe_control(attempt_deadline, cancelled).is_err()
-    {
-        return None;
+) -> VersionCheck {
+    match run_bounded(
+        program,
+        &[VERSION_ARGUMENT],
+        spec,
+        probe_path,
+        cancelled,
+        attempt_deadline,
+        probe_timeout(PROBE_TIMEOUT),
+    ) {
+        BoundedRun::GaveUp(_) => VersionCheck::Undetermined,
+        BoundedRun::Unstartable(error) => {
+            VersionCheck::Failed(StartFailure::Unstartable(bounded_cli_line(&error)))
+        }
+        BoundedRun::Exited {
+            status,
+            stdout,
+            stderr,
+        } if status.success() => VersionCheck::Reported(first_line(&stdout, &stderr)),
+        BoundedRun::Exited {
+            status,
+            stdout,
+            stderr,
+        } => {
+            let (error_line, fix) = error_and_fix(&stderr, &stdout);
+            VersionCheck::Failed(StartFailure::VersionCheck {
+                exit: exit_description(&status),
+                error_line,
+                fix,
+            })
+        }
     }
-    // A version check is a probe too: it runs in a directory af made for it (ADR-0144).
-    let Ok(directory) = ProbeDirectory::new(spec) else {
-        return None;
+}
+
+/// The first line a CLI printed, stdout before stderr, made safe to print; withheld when its
+/// output carries credential or challenge material.
+fn first_line(stdout: &[u8], stderr: &[u8]) -> Option<String> {
+    let (line, _) = error_and_fix(b"", stdout);
+    line.or_else(|| error_and_fix(stderr, b"").0)
+}
+
+/// How one bounded run of the CLI with fixed arguments ended.
+pub(super) enum BoundedRun {
+    /// It exited. Output past the probe bound was read and dropped: only its first lines are ever
+    /// reported or parsed.
+    Exited {
+        status: ExitStatus,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    },
+    /// The operating system refused to start it.
+    Unstartable(String),
+    /// af stopped waiting — the timeout, the Attempt deadline or cancellation — or could not
+    /// read the process's streams. Nothing about the CLI follows.
+    GaveUp(String),
+}
+
+/// Run `program args…` once, token-free, in the probe environment and a probe directory af made
+/// for it (ADR-0144), with stdin closed, until it exits, `timeout` or the Attempt deadline
+/// elapses, or the probe is cancelled. The process group is ended either way.
+pub(super) fn run_bounded(
+    program: &Path,
+    args: &[&str],
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    attempt_deadline: Option<Instant>,
+    timeout: Duration,
+) -> BoundedRun {
+    if cancelled.load(Ordering::Acquire) {
+        return BoundedRun::GaveUp("was cancelled".into());
+    }
+    if let Err(error) = check_task_probe_control(attempt_deadline, cancelled) {
+        return BoundedRun::GaveUp(error);
+    }
+    let directory = match ProbeDirectory::new(spec) {
+        Ok(directory) => directory,
+        Err(error) => return BoundedRun::GaveUp(error),
     };
     let mut command = Command::new(program);
-    command.arg(VERSION_ARGUMENT);
+    command.args(args);
     configure_probe_environment(&mut command, spec, probe_path, directory.path());
     command
         .stdin(Stdio::null())
@@ -199,130 +273,63 @@ fn version_check(
     command.process_group(0);
     let mut child = match review_process::spawn(&mut command) {
         Ok(child) => child,
-        Err(error) => {
-            return Some(StartFailure::Unstartable(bounded_cli_line(
-                &error.to_string(),
-            )));
-        }
+        Err(error) => return BoundedRun::Unstartable(error.to_string()),
     };
     let mut watch = review_process::ExitWatch::new(child.id());
-    let mut stdout = child.stdout.take().expect("version check stdout was piped");
-    let mut stderr = child.stderr.take().expect("version check stderr was piped");
-    if set_nonblocking(&stdout)
-        .and_then(|()| set_nonblocking(&stderr))
-        .is_err()
-    {
+    let mut stdout = child.stdout.take().expect("bounded run stdout was piped");
+    let mut stderr = child.stderr.take().expect("bounded run stderr was piped");
+    if let Err(error) = set_nonblocking(&stdout).and_then(|()| set_nonblocking(&stderr)) {
         stop_probe(&mut child);
-        return None;
+        return BoundedRun::GaveUp(error);
     }
-    // Output past the bound is read and dropped: only the first lines are ever reported.
-    let (mut out, mut err, mut exceeded) = (Vec::new(), Vec::new(), false);
-    let deadline = Instant::now() + probe_timeout(PROBE_TIMEOUT);
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let (mut out_exceeded, mut err_exceeded) = (false, false);
+    let deadline = Instant::now() + timeout;
     let deadline = attempt_deadline.map_or(deadline, |limit| deadline.min(limit));
     let status = loop {
-        let drained = drain_available(&mut stdout, &mut out, &mut exceeded)
-            .and_then(|_| drain_available(&mut stderr, &mut err, &mut exceeded));
-        if drained.is_err() {
+        let drained = drain_available(&mut stdout, &mut out, &mut out_exceeded)
+            .and_then(|_| drain_available(&mut stderr, &mut err, &mut err_exceeded));
+        if let Err(error) = drained {
             stop_probe(&mut child);
-            return None;
+            return BoundedRun::GaveUp(error);
         }
         match review_process::try_reap_killing_group(&mut child, &mut watch) {
             Ok(Some(status)) => break status,
             Ok(None) => {}
-            Err(_) => {
+            Err(error) => {
                 stop_probe(&mut child);
-                return None;
+                return BoundedRun::GaveUp(error.to_string());
             }
         }
-        if cancelled.load(Ordering::Acquire) || Instant::now() >= deadline {
+        if cancelled.load(Ordering::Acquire) {
             stop_probe(&mut child);
-            return None;
+            return BoundedRun::GaveUp("was cancelled".into());
+        }
+        if Instant::now() >= deadline {
+            stop_probe(&mut child);
+            return BoundedRun::GaveUp(
+                if attempt_deadline.is_some_and(|limit| limit <= deadline) {
+                    "stopped: Task Provider identity check deadline elapsed".into()
+                } else {
+                    format!("timed out after {} seconds", timeout.as_secs())
+                },
+            );
         }
         thread::sleep(Duration::from_millis(25));
     };
     // The group was ended before the reap, inside `try_reap_killing_group`.
     while matches!(
         (
-            drain_available(&mut stdout, &mut out, &mut exceeded),
-            drain_available(&mut stderr, &mut err, &mut exceeded),
+            drain_available(&mut stdout, &mut out, &mut out_exceeded),
+            drain_available(&mut stderr, &mut err, &mut err_exceeded),
         ),
         (Ok(true), _) | (_, Ok(true))
     ) {}
-    if status.success() {
-        return None;
+    BoundedRun::Exited {
+        status,
+        stdout: out,
+        stderr: err,
     }
-    let exit = match (
-        status.code(),
-        std::os::unix::process::ExitStatusExt::signal(&status),
-    ) {
-        (Some(code), _) => format!("exited {code}"),
-        (None, Some(signal)) => format!("was ended by signal {signal}"),
-        (None, None) => "exited unsuccessfully".to_string(),
-    };
-    let (error_line, fix) = cli_error_and_fix(&err, &out);
-    Some(StartFailure::VersionCheck {
-        exit,
-        error_line,
-        fix,
-    })
-}
-
-/// The CLI's own first error line — the first line starting with "error", else its first line,
-/// stderr before stdout — and the first sentence suggesting an install command.
-fn cli_error_and_fix(stderr: &[u8], stdout: &[u8]) -> (Option<String>, Option<String>) {
-    let stderr = String::from_utf8_lossy(stderr);
-    let stdout = String::from_utf8_lossy(stdout);
-    let lines: Vec<String> = stderr
-        .lines()
-        .chain(stdout.lines())
-        .map(bounded_cli_line)
-        .filter(|line| !line.is_empty())
-        .collect();
-    let error_line = lines
-        .iter()
-        .find(|line| line.to_ascii_lowercase().starts_with("error"))
-        .or_else(|| lines.first())
-        .cloned();
-    let fix = lines.iter().find_map(|line| {
-        line.split(". ")
-            .map(|sentence| sentence.trim().trim_end_matches('.'))
-            .find(|sentence| {
-                let lower = sentence.to_ascii_lowercase();
-                FIX_MARKERS.iter().any(|marker| lower.contains(marker))
-            })
-            .map(str::to_string)
-    });
-    (error_line, fix)
-}
-
-/// One line of Provider text made safe to print: terminal escapes and control characters
-/// removed, whitespace collapsed, and the length bounded.
-fn bounded_cli_line(line: &str) -> String {
-    let mut plain = String::with_capacity(line.len().min(MAX_CLI_LINE_CHARS * 4));
-    let mut chars = line.chars();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            // A CSI sequence ends at its first final byte; any other escape drops one character.
-            if chars.next() == Some('[') {
-                for c in chars.by_ref() {
-                    if ('@'..='~').contains(&c) {
-                        break;
-                    }
-                }
-            }
-        } else if c.is_control() {
-            plain.push(' ');
-        } else {
-            plain.push(c);
-        }
-    }
-    let collapsed = plain.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.chars().count() <= MAX_CLI_LINE_CHARS {
-        return collapsed;
-    }
-    let mut bounded: String = collapsed.chars().take(MAX_CLI_LINE_CHARS).collect();
-    bounded.push('…');
-    bounded
 }
 
 #[cfg(test)]
@@ -441,31 +448,6 @@ mod tests {
         assert!(
             message.contains("; fix: reinstall the official codex CLI"),
             "{message}"
-        );
-    }
-
-    #[test]
-    fn a_suggested_fix_and_error_line_are_found_and_made_safe_to_print() {
-        let (line, fix) = cli_error_and_fix(
-            b"\x1b[31mwarning\x1b[0m: something\nerror: broken install\x07\nRun `npm i -g @openai/codex` to repair.\n",
-            b"",
-        );
-        assert_eq!(line.as_deref(), Some("error: broken install"));
-        assert_eq!(
-            fix.as_deref(),
-            Some("Run `npm i -g @openai/codex` to repair")
-        );
-        let (line, fix) = cli_error_and_fix(b"", b"panic: nothing useful here\n");
-        assert_eq!(line.as_deref(), Some("panic: nothing useful here"));
-        assert_eq!(fix, None);
-        let long = "e".repeat(1000);
-        assert_eq!(
-            bounded_cli_line(&long).chars().count(),
-            MAX_CLI_LINE_CHARS + 1
-        );
-        assert_eq!(
-            bounded_cli_line("\x1b[1;31mError:\x1b[0m\tgone"),
-            "Error: gone"
         );
     }
 
