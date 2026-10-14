@@ -264,6 +264,8 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Pin it on main
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }} # the refresh reads the release's SHA256SUMS through gh
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
