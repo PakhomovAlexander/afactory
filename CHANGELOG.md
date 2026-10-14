@@ -19,6 +19,67 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.12.0-rc.3] - 2026-10-14
+
+### Authority compatibility
+
+Committed .af/ policy keeps working as is relative to 0.12.0-rc.2; no authority migration is required. `af provider status --json` now emits `af/provider-status@2` (new state `incompatible`); readers of the @1 document need updating.
+
+### Changes
+
+- release: v0.12.0-rc.2 (#238)
+- test: replace redundant stale-view repair process case with contract coverage (#242)
+- Remove dormant session protocol and obsolete compatibility code (#256)
+- Detect incompatible Claude Code and Codex CLIs before dispatching Workers (#260)
+
+- Tests: the real-process `task_repair` case for a fix verifier that names a stale Finding view is
+  replaced by the `stale_snapshot_view` contract case, which applies the same mutation to the
+  shared `validate_context` predicate behind `validate_fix_output` and `repair_acceptance`; exit 4,
+  8 Attempts and an unchanged replay stay asserted by the stale-subject case. The claim-less receipt
+  case stays real-process, because the Worker output schema rejects it before `validate_context`.
+
+- A release now reads only the state, configuration and flags it writes itself: no reader,
+  migration or fallback is kept for anything an earlier release wrote, and a changed persisted
+  shape takes a new version whose predecessor is refused
+  ([ADR-0145](docs/adr/0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)).
+  Finish or discard in-flight Campaigns and Tasks before upgrading. The Warm Set is now
+  `review.kernel/WarmSet@2`, selected by `WarmSetSelected@2`, with no session layer; a Campaign
+  that recorded `WarmSetSelected@1` is refused by its replay error. The never-hosted Claude
+  session layer and Cold Closeout are removed with their events, so a pipeline that sets
+  `warm.session`, `warm.session_max_age_secs` or `convergence.cold_closeout` no longer loads:
+  delete the key. A Campaign the pre-Task executor wrote is refused by the same replay error as
+  any other record this release does not write, instead of a dedicated message. The `.af/`
+  layout no longer declares `task-compat/`, so a tracked copy is reported as undeclared.
+
+- af now checks, token-free, that the installed `claude` or `codex` accepts its invocation before
+  `af provider status`, `af provider setup` or Task Provider admission asks about a login
+  ([ADR-0146](docs/adr/0146-refuse-a-provider-cli-that-does-not-accept-afs-invocation.md)). It
+  reads `claude --help` or `codex exec --help` and refuses a CLI that does not declare every
+  option af passes, such as Claude Code before 2.1.248, which has no `--restricted`. No isolation
+  flag is ever dropped to make a CLI run. The report names the Provider, the path, the version,
+  every missing option and the upgrade command. `af provider status` shows the new state
+  `incompatible` and exits 4, and `--json` now emits `af/provider-status@2`. Task admission
+  refuses before any Worker runs or any token is charged.
+- The Codex app-server is started without `--stdio`, so codex-cli 0.121.0 works again. For Codex
+  the check also starts the bare `codex app-server` and asks it to `initialize`; only an answer
+  whose `result` is a JSON object proves it. An app-server that exits first, rejects the request,
+  answers `{"id":1}`, or writes a line that is neither a response (an `id` and exactly one of
+  `result` or `error`) nor a notification or request is `incompatible` at once on plain status,
+  `--usage`, setup and admission alike, reported with its exit status (or `was stopped by af`) and
+  the line it answered with. The identity and usage probes judge every line by the same grammar
+  and accept only an answer read after af wrote the request, so a response written early never
+  binds an account or shows limits.
+- A Worker that exits without a parsable result (for Claude, anything but an object with a
+  boolean `is_error` and its `result`; for Codex, anything but the `-o` final message after a
+  clean exit) now reports its exit status and a bounded stderr excerpt whatever its failure is
+  classified as, and one whose CLI refused af's arguments is classified `unsupported_invocation`
+  whatever its exit status, even beside an authentication hint or after unrelated Codex events.
+- One shared filter replaces any Provider-authored line that looks like credential material
+  (`API_KEY=…`, `Bearer …`, `Authorization:`, `sk-…`, 32 or more hex characters, 32 or more
+  base64 characters mixing cases and digits, a JSON Web Token of three whole base64url segments)
+  with `[line withheld: looks like credential material]`, the Codex rate-limit names shown by
+  `status --usage` included.
+
 ## [0.12.0-rc.2] - 2026-10-09
 
 ### Authority compatibility
