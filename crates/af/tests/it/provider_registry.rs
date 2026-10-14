@@ -32,11 +32,13 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// A stand-in for an official Provider CLI that answers af's capability check with a page
+/// declaring every option af passes (ADR-0146).
 fn fake_provider(root: &Path, name: &str, script: &str) -> std::path::PathBuf {
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let path = bin.join(name);
-    std::fs::write(&path, script).unwrap();
+    std::fs::write(&path, crate::provider_cli::with_help(name, script)).unwrap();
     let mut permissions = std::fs::metadata(&path).unwrap().permissions();
     permissions.set_mode(0o755);
     std::fs::set_permissions(&path, permissions).unwrap();

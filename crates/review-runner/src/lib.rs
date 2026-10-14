@@ -6,6 +6,7 @@
 //! adapter is then a *different runner behind the same contract*, and nothing above it has to
 //! change.
 
+pub mod cli;
 pub mod model;
 pub mod native_failure;
 pub mod task;

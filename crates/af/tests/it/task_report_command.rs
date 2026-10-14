@@ -1161,7 +1161,11 @@ fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own
     std::fs::create_dir(&bin).unwrap();
     let ready = root.join("worker-ready");
     std::fs::write(home.join("ready-path"), ready.to_str().unwrap()).unwrap();
-    std::fs::write(bin.join("codex"), HOLDING_CODEX).unwrap();
+    std::fs::write(
+        bin.join("codex"),
+        crate::provider_cli::with_help("codex", HOLDING_CODEX),
+    )
+    .unwrap();
     std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();
     let providers = home.join("providers.toml");
     std::fs::write(

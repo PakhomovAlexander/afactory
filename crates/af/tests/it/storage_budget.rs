@@ -558,7 +558,11 @@ fn claude_review(machine: &Machine) -> (PathBuf, PathBuf, PathBuf) {
     std::fs::create_dir_all(config.join("projects/-")).unwrap();
     std::fs::write(config.join("projects/-/root.jsonl"), b"{\"keep\":true}\n").unwrap();
     std::fs::create_dir_all(&bin).unwrap();
-    std::fs::write(bin.join("claude"), FAKE_CLAUDE).unwrap();
+    std::fs::write(
+        bin.join("claude"),
+        crate::provider_cli::with_help("claude", FAKE_CLAUDE),
+    )
+    .unwrap();
     std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
     let registry = machine.root.join("config/af/providers.toml");
     std::fs::create_dir_all(registry.parent().unwrap()).unwrap();

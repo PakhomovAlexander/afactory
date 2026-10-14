@@ -285,7 +285,7 @@ fn a_recheck_whose_cli_cannot_start_is_an_environment_failure_not_an_identity_on
             Instant::now() + Duration::from_secs(30),
             &AtomicBool::new(false),
         );
-        let Err(Recheck::CliCannotStart(failure)) = checked else {
+        let Err(Recheck::CliCannotServe(failure @ CliRefusal::CannotStart(_))) = checked else {
             panic!("a CLI that cannot start was reported as an identity refusal");
         };
         let diagnostic = environment_failure(&failure);
@@ -350,4 +350,85 @@ exit 64"#;
             kind.name()
         );
     }
+}
+
+/// codex-cli 0.121.0 has no `--stdio`: its `app-server` serves stdio by default and clap refuses
+/// the flag with exit 2 (issue #259). The probe starts the bare app-server, so such a CLI is
+/// probed successfully.
+const CODEX_WITHOUT_STDIO_FLAG: &str = r#"if [ "$1" = app-server ] && [ -n "$2" ]; then
+  printf '%s\n' "error: unexpected argument '$2' found" '' 'Usage: codex app-server [OPTIONS] [COMMAND]' >&2
+  exit 2
+fi
+if [ "$1" = app-server ]; then
+  while read -r line; do
+    case "$line" in
+      *'"id":1'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+      *'"id":2'*) printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","email":"developer@example.test"}}}' ;;
+    esac
+  done
+  exit 0
+fi
+exit 64"#;
+
+#[test]
+fn the_identity_probe_starts_the_bare_app_server_a_cli_without_stdio_flag_serves() {
+    let directory = tempfile::tempdir().unwrap();
+    let (program, spec) = fixture(
+        ProviderKind::Codex,
+        directory.path(),
+        CODEX_WITHOUT_STDIO_FLAG,
+    );
+    let (principal, method) = probe_identity(
+        &program,
+        &spec,
+        std::ffi::OsStr::new("/usr/bin:/bin"),
+        &AtomicBool::new(false),
+        Some(Instant::now() + LOAD_SAFE_WALL),
+    )
+    .unwrap();
+    assert_eq!(
+        principal,
+        super::principal("codex", Some("developer@example.test")).unwrap()
+    );
+    assert_eq!(method, "chatgpt");
+}
+
+/// An app-server that exits before answering `initialize` is reported with its exit status and
+/// its own first error line, never as a missing response; when its version check says the CLI
+/// starts, the refusal names the missing protocol capability, and it is never a login problem.
+#[test]
+fn an_app_server_that_exits_before_initialize_is_reported_with_its_exit_and_line() {
+    let directory = tempfile::tempdir().unwrap();
+    let (program, spec) = fixture(
+        ProviderKind::Codex,
+        directory.path(),
+        r#"if [ "$1" = --version ]; then echo 'codex-cli 0.99.0'; exit 0; fi
+if [ "$1" = app-server ]; then
+  printf '%s
+' "error: unrecognized subcommand 'app-server'" '' 'Usage: codex [OPTIONS] [PROMPT]' >&2
+  exit 2
+fi
+exit 64"#,
+    );
+    let path = std::ffi::OsStr::new("/usr/bin:/bin");
+    let error = probe_identity(&program, &spec, path, &AtomicBool::new(false), None).unwrap_err();
+    assert_eq!(
+        error,
+        "codex app-server exited 2 before answering initialize: error: unrecognized subcommand 'app-server'"
+    );
+    let checked = identity(spec, program.clone())
+        .recheck_identity(Instant::now() + LOAD_SAFE_WALL, &AtomicBool::new(false));
+    let Err(Recheck::CliCannotServe(refusal @ CliRefusal::Incompatible(_))) = checked else {
+        panic!("an app-server without the protocol was not refused as incompatible");
+    };
+    let refusal = admission_refusal(&refusal);
+    assert_eq!(
+        refusal,
+        format!(
+            "Task Provider admission refused before any Worker was dispatched: provider fixture: incompatible Provider CLI: the codex CLI `{}` (version codex-cli 0.99.0) does not accept af's invocation; missing: {}; codex app-server exited 2 before answering initialize: error: unrecognized subcommand 'app-server'; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`",
+            program.display(),
+            super::super::compatibility::APP_SERVER_PROTOCOL
+        )
+    );
+    assert!(!refusal.contains("login"), "{refusal}");
 }

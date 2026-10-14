@@ -38,7 +38,7 @@ const SCHEMAS: [&str; 169] = [
     "measurement-comparison-v1.json",
     "task-input-bindings-v1.json",
     "task-source-origin-v2.json",
-    "provider-status-v1.json",
+    "provider-status-v2.json",
     "provider-setup-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",

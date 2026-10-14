@@ -1,5 +1,6 @@
 //! Claude framing for generic typed Task Workers. No review-result parser or retry loop.
 use super::*;
+use review_runner::cli::{is_invocation_error, startup_failure, transport_outcome};
 use review_runner::native_failure::{NativeFailureKind, classify_native_failure};
 use review_runner::task::{ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter};
 
@@ -19,6 +20,31 @@ pub fn task_tools(access: WorkerAccess) -> &'static str {
         // Edits plus a shell to format, lint and test them; still no MCP or permission flags.
         WorkerAccess::WriteSourceWithShell => "Read,Glob,Grep,Edit,Write,Bash",
     }
+}
+
+/// The whole command one Task Attempt runs: [`claude_command`] with the access's tool grant in
+/// place of the read-only one, then `--json-schema` when the Worker declares a structured reply.
+/// The same restricted root and customization isolation as review; only the tool list widens,
+/// and only as far as the kernel-derived access.
+fn task_command(
+    program: &str,
+    model_flags: &[String],
+    access: WorkerAccess,
+    output_schema: Option<&str>,
+) -> Command {
+    let mut command = claude_command(program, model_flags);
+    if let Some(schema) = output_schema {
+        command
+            .args
+            .extend([Arg::literal("--json-schema"), Arg::literal(schema)]);
+    }
+    let tools = task_tools(access);
+    for arg in &mut command.args {
+        if arg.value == "Read,Glob,Grep" {
+            *arg = Arg::literal(tools);
+        }
+    }
+    command
 }
 
 pub struct ClaudeTaskAdapter {
@@ -163,20 +189,12 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 });
             }
         };
-        let mut command = claude_command(&self.program, &self.model_flags);
-        if let Some(schema) = &output_schema {
-            command
-                .args
-                .extend([Arg::literal("--json-schema"), Arg::literal(schema)]);
-        }
-        // The same restricted root and customization isolation as review; only the tool list
-        // widens, and only as far as the kernel-derived access.
-        let tools = task_tools(access);
-        for arg in &mut command.args {
-            if arg.value == "Read,Glob,Grep" {
-                *arg = Arg::literal(tools);
-            }
-        }
+        let command = task_command(
+            &self.program,
+            &self.model_flags,
+            access,
+            output_schema.as_deref(),
+        );
         // Native 2.1.272 uses these guards to latch automatic title generation before its
         // auxiliary inference. They preserve OAuth/auth grants, unlike --bare. This is a
         // bounded client mitigation, not proof that every internal model request is disabled.
@@ -196,7 +214,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             runner = runner.with_env(name, value);
         }
         let mut parsed = None;
-        let mut failure = None;
+        let mut failure: Option<NativeFailureKind> = None;
         let capture = runner.capture_filtered(
             cas,
             &command,
@@ -229,6 +247,16 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                                 .into_iter()
                                 .find(|kind| *kind != NativeFailureKind::Unknown)
                         });
+                    // A CLI whose own argument parser refused af's invocation printed no
+                    // envelope, only its parser's error; it never reached a model.
+                    if parsed.is_none()
+                        && !failure.is_some_and(NativeFailureKind::is_auth)
+                        && [&*stderr, &*stdout]
+                            .iter()
+                            .any(|stream| is_invocation_error(&String::from_utf8_lossy(stream)))
+                    {
+                        failure = Some(NativeFailureKind::UnsupportedInvocation);
+                    }
                     failure
                         .unwrap_or(NativeFailureKind::Unknown)
                         .redact_auth_capture(stdout, stderr);
@@ -250,11 +278,19 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 parsed.as_ref().expect("successful envelope"),
                 output_schema.is_some(),
             )
+        } else if failure == Some(NativeFailureKind::UnsupportedInvocation) {
+            Err(startup_failure(
+                "Claude Worker",
+                &CLAUDE_INVOCATION,
+                &capture.status,
+                &capture.stderr,
+                true,
+            ))
         } else if let Some(kind) = failure.filter(|kind| *kind != NativeFailureKind::Unknown) {
             let mut error = format!(
-                "Claude Worker failed: {}; transport: {:?}",
+                "Claude Worker failed: {}; transport: {}",
                 kind.diagnostic(),
-                capture.status
+                transport_outcome(&capture.status)
             );
             if let Some(accounting_error) = accounting.error {
                 error.push_str("; ");
@@ -265,8 +301,20 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             Err(error)
         } else if let Some(error) = accounting.error {
             Err(error.into())
+        } else if parsed.is_none() {
+            // No envelope at all: the process's exit and its own last words are all there is.
+            Err(startup_failure(
+                "Claude Worker",
+                &CLAUDE_INVOCATION,
+                &capture.status,
+                &capture.stderr,
+                false,
+            ))
         } else {
-            Err(format!("Claude Worker failed with {:?}", capture.status))
+            Err(format!(
+                "Claude Worker failed; transport: {}",
+                transport_outcome(&capture.status)
+            ))
         };
         let returned = ModelWorkerReturn {
             usage_observation: accounting.observation,
@@ -366,3 +414,48 @@ fn parse_usage(
 
 #[cfg(test)]
 mod usage_tests;
+
+#[cfg(test)]
+mod invocation_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// [`CLAUDE_INVOCATION`] is the single source of truth for what `claude --help` must declare:
+    /// every option any Attempt's command can emit is in it, and nothing else is.
+    #[test]
+    fn the_required_flag_list_is_exactly_what_the_command_builder_emits() {
+        let model_flags: Vec<String> = ["--model", "claude-fixture-1", "--effort", "high"]
+            .map(String::from)
+            .into();
+        let mut emitted = BTreeSet::new();
+        for access in [
+            WorkerAccess::ReadOnly,
+            WorkerAccess::ExecuteChecks,
+            WorkerAccess::WriteSource,
+            WorkerAccess::WriteSourceWithShell,
+        ] {
+            for schema in [None, Some("{\"type\":\"object\"}")] {
+                let command = task_command("claude", &model_flags, access, schema);
+                for value in command.resolve().unwrap() {
+                    if value.starts_with('-') {
+                        assert!(
+                            CLAUDE_INVOCATION.declares(&value),
+                            "`{value}` is emitted but not required of the installed CLI"
+                        );
+                        emitted.insert(value);
+                    }
+                }
+            }
+        }
+        let required: BTreeSet<String> = CLAUDE_INVOCATION
+            .flags
+            .iter()
+            .map(|flag| flag.spelling.to_string())
+            .collect();
+        assert_eq!(emitted, required, "a required flag is never emitted");
+        // The isolation flags are among them, so a CLI without them is refused, not weakened.
+        for isolation in ["--safe-mode", "--restricted", "--tools", "--allowedTools"] {
+            assert!(CLAUDE_INVOCATION.declares(isolation), "{isolation}");
+        }
+    }
+}

@@ -120,8 +120,9 @@ const EXIT_CODES: &str = "\
 
   3    human action required — a login is needed; af prints the exact command a human runs at a
        private interactive terminal and never starts the OAuth exchange itself
-  4    Provider CLI missing or cannot start — the official `claude` or `codex` binary is not on
-       PATH, is not executable, or exits non-zero on its own version check (`setup`, `status`)
+  4    Provider CLI missing, cannot start or incompatible — the official `claude` or `codex`
+       binary is not on PATH, is not executable, exits non-zero on its own version check, or its
+       help page does not declare every option af passes (`setup`, `status`)
   5    registry conflict — the ID or the auth context already belongs to another entry
   6    authentication failed — the Provider CLI answered, and not with a usable login
   7    usage unavailable — `provider status --usage` only: an authenticated Provider's optional

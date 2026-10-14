@@ -4,6 +4,8 @@
 
 // Shared fixtures, declared once for every subject module.
 mod common;
+#[path = "support/provider_cli.rs"]
+mod provider_cli;
 #[path = "support/review_memo.rs"]
 mod review_memo;
 #[path = "support/schemas.rs"]

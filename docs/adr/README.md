@@ -261,3 +261,5 @@ future readers need.
 - [0144 — Hold af's disk use to a machine budget](0144-hold-afs-disk-use-to-a-machine-budget.md)
 - [0145 — Read only what this release writes, and version every changed
   shape](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)
+- [0146 — Refuse a Provider CLI that does not accept af's
+  invocation](0146-refuse-a-provider-cli-that-does-not-accept-afs-invocation.md)

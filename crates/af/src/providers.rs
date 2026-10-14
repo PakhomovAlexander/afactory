@@ -2,10 +2,13 @@
 //!
 //! The registry names auth directories, never credentials, arbitrary commands, arguments, or
 //! environment variables. Explicit bindings are admitted by the common Task's Provider admission
-//! Attempts (see `task`). Authentication status is obtained from the two fixed adapter CLIs
-//! with bounded output and wall time, and is the only thing `af provider status` probes by
-//! default. Subscription and quota windows are opt-in behind `--usage`: Codex exposes them
-//! through the official local app-server protocol, while Claude has no headless usage-status
+//! Attempts (see `task`). Before any of them asks a CLI about a login, the token-free capability
+//! check (`compatibility`, ADR-0146) reads the help page of the (sub)command af invokes and
+//! refuses a CLI that does not declare every option its adapter passes. Authentication status is
+//! then obtained from the two fixed adapter CLIs with bounded output and wall time, and is the
+//! only thing `af provider status` probes beyond that check by default. Subscription and quota
+//! windows are opt-in behind `--usage`: Codex exposes them through the official local app-server
+//! protocol, started bare on its default stdio transport, while Claude has no headless usage-status
 //! command, so its fixed local `/usage` screen is opened in a bounded pseudo-terminal and only the
 //! weekly percentages are parsed. The probe neither reads credentials nor starts a billable
 //! model session. Accepted response shapes are pinned by fixtures.
@@ -35,9 +38,11 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 
 pub mod auth_handoff;
+mod compatibility;
 mod installation;
 pub mod task;
 
+use compatibility::{CliIncompatibility, CliRefusal, check_invocation};
 use installation::{
     CliInstallationFailure, diagnose_cli, locate_cli, probe_gave_up, status_answered,
 };
@@ -68,7 +73,8 @@ const MAX_CLAUDE_READER_SLOTS: usize = MAX_CONCURRENT_PROBES + MAX_ORPHANED_CLAU
 // neither is reused here.
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_HUMAN_ACTION_REQUIRED: i32 = 3;
-/// The official CLI is missing, not executable, or exits non-zero on its own version check.
+/// The official CLI as installed cannot serve af: it is missing, not executable, exits non-zero on
+/// its own version check, or does not accept af's invocation (ADR-0130, ADR-0146).
 pub const EXIT_PROVIDER_CLI_MISSING: i32 = 4;
 pub const EXIT_REGISTRY_CONFLICT: i32 = 5;
 pub const EXIT_AUTHENTICATION_FAILED: i32 = 6;
@@ -83,6 +89,9 @@ warning: never relay an OAuth URL or code through chat, an agent transcript, a t
 
 /// The status a context gets when its official CLI cannot start; `installation_failed` in JSON.
 const INSTALLATION_FAILED: &str = "installation failed";
+/// The status a context gets when its official CLI starts but does not accept af's invocation;
+/// `incompatible` in JSON (ADR-0146).
+const INCOMPATIBLE: &str = "incompatible";
 
 static CLAUDE_USAGE_CACHE: OnceLock<Mutex<BTreeMap<ClaudeUsageCacheKey, CachedClaudeUsage>>> =
     OnceLock::new();
@@ -301,12 +310,13 @@ pub fn print_status(json: bool, usage: UsageProbe) -> Result<i32, String> {
         .providers
         .iter()
         .any(|provider| provider.usage == UsageState::Unavailable);
+    // A CLI that cannot start or cannot serve af's invocation.
     let uninstalled: Vec<&ProviderStatus> = inventory
         .providers
         .iter()
-        .filter(|provider| provider.status == INSTALLATION_FAILED)
+        .filter(|provider| matches!(provider.status.as_str(), INSTALLATION_FAILED | INCOMPATIBLE))
         .collect();
-    // A CLI that cannot start outranks an unanswered optional usage probe.
+    // A CLI that cannot serve af outranks an unanswered optional usage probe.
     let code = if !uninstalled.is_empty() {
         EXIT_PROVIDER_CLI_MISSING
     } else if unavailable_usage {
@@ -430,7 +440,7 @@ fn status_document(
         .as_ref()
         .map(|path| path.display().to_string());
     serde_json::json!({
-        "schema": "af/provider-status@1",
+        "schema": "af/provider-status@2",
         "exit_code": exit_code,
         "usage_requested": usage == UsageProbe::Probe,
         "registry": {
@@ -479,6 +489,7 @@ fn auth_state_name(status: &str) -> &'static str {
         "not authenticated" => "not_authenticated",
         "unavailable" => "unavailable",
         INSTALLATION_FAILED => "installation_failed",
+        INCOMPATIBLE => "incompatible",
         "not probed" => "not_probed",
         _ => "unknown",
     }
@@ -499,7 +510,7 @@ fn credential_name(kind: &str, auth_type: &str) -> &'static str {
 pub(crate) fn usability_name(status: &str) -> &'static str {
     match status {
         "authenticated" => "usable_or_untested",
-        "not authenticated" | "unavailable" | INSTALLATION_FAILED => "unusable",
+        "not authenticated" | "unavailable" | INSTALLATION_FAILED | INCOMPATIBLE => "unusable",
         _ => "unknown",
     }
 }
@@ -652,6 +663,15 @@ impl SetupOutcome {
             report: failure.message(),
         }
     }
+
+    /// The CLI as installed cannot serve af's invocation: the same closed result and exit code
+    /// as a CLI that cannot start, never a failed login (ADR-0146).
+    fn cli_incompatible(incompatibility: &CliIncompatibility) -> Self {
+        Self::ProviderCliMissing {
+            diagnostic: incompatibility.summary(),
+            report: incompatibility.message(),
+        }
+    }
 }
 
 /// Own the complete first-run Provider flow while leaving credentials with the harness CLI.
@@ -782,6 +802,9 @@ fn probe_authentication(spec: &ProviderSpec, report: &SetupReport<'_>) -> Result
         }
         AuthenticationProbe::CliCannotStart(failure) => {
             report.emit(&SetupOutcome::cli_cannot_start(&failure))
+        }
+        AuthenticationProbe::CliIncompatible(incompatibility) => {
+            report.emit(&SetupOutcome::cli_incompatible(&incompatibility))
         }
     })
 }
@@ -1637,6 +1660,7 @@ fn inspect_registration(
 enum AuthenticationProbe {
     Failed(String),
     CliCannotStart(CliInstallationFailure),
+    CliIncompatible(CliIncompatibility),
 }
 
 impl From<String> for AuthenticationProbe {
@@ -1652,6 +1676,16 @@ fn authentication_ready(spec: &ProviderSpec) -> Result<bool, AuthenticationProbe
     let program = locate_cli(spec).map_err(AuthenticationProbe::CliCannotStart)?;
     let probe_path = sanitized_path();
     let cancelled = AtomicBool::new(false);
+    // A CLI that cannot serve af's invocation is refused before its login is asked about.
+    check_invocation(&program, spec, &probe_path, &cancelled, None).map_err(
+        |refusal| match refusal {
+            CliRefusal::CannotStart(failure) => AuthenticationProbe::CliCannotStart(failure),
+            CliRefusal::Incompatible(incompatibility) => {
+                AuthenticationProbe::CliIncompatible(incompatibility)
+            }
+            CliRefusal::Unchecked(reason) => AuthenticationProbe::Failed(reason),
+        },
+    )?;
     let output = match run_probe(&program, spec, &probe_path, &cancelled) {
         Ok(output) => output,
         Err(error) => {
@@ -3614,6 +3648,18 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool, usage: UsageProbe)
         Err(failure) => return installation_failed_status(&spec, &failure),
     };
     let probe_path = sanitized_path();
+    // Whatever the CLI would say about a login, af cannot dispatch to one that refuses its
+    // invocation (ADR-0146).
+    match check_invocation(&program, &spec, &probe_path, cancelled, None) {
+        Ok(()) => {}
+        Err(CliRefusal::CannotStart(failure)) => {
+            return installation_failed_status(&spec, &failure);
+        }
+        Err(CliRefusal::Incompatible(incompatibility)) => {
+            return incompatible_status(&spec, &incompatibility);
+        }
+        Err(CliRefusal::Unchecked(reason)) => return unavailable_status(&spec, &reason),
+    }
     let output = match run_probe(&program, &spec, &probe_path, cancelled) {
         Ok(output) => output,
         Err(error) => {
@@ -3766,6 +3812,19 @@ fn installation_failed_status(
     ProviderStatus {
         status: INSTALLATION_FAILED.to_string(),
         detail: failure.message(),
+        ..unavailable_status(spec, "")
+    }
+}
+
+/// A context whose CLI starts but does not accept af's invocation: never a claim about its login,
+/// and never usable.
+fn incompatible_status(
+    spec: &ProviderSpec,
+    incompatibility: &CliIncompatibility,
+) -> ProviderStatus {
+    ProviderStatus {
+        status: INCOMPATIBLE.to_string(),
+        detail: incompatibility.message(),
         ..unavailable_status(spec, "")
     }
 }
@@ -4298,12 +4357,29 @@ fn probe_codex_request_before(
         cancelled,
         request,
         attempt_deadline,
-        &mut false,
+        &mut AppServerProbe::default(),
     )
 }
 
-/// `answered` is set once the app-server answers initialization: from then on the CLI has
-/// started, whatever the request itself concludes.
+/// How far one Codex app-server probe got.
+#[derive(Default)]
+struct AppServerProbe {
+    /// The app-server answered `initialize`: from then on the CLI has started, whatever the
+    /// request itself concludes.
+    answered: bool,
+    /// The app-server exited before answering `initialize`; the probe's error then carries its
+    /// exit status and the CLI's own first error line.
+    exited_before_initialize: bool,
+}
+
+/// The bytes of the app-server's stderr a probe keeps: enough for its first error lines.
+const MAX_APP_SERVER_STDERR: usize = 8 * 1024;
+
+/// One request to `codex app-server` on its default stdio transport, after the `initialize` /
+/// `initialized` handshake. The app-server is started with no transport flag: `stdio://` is the
+/// documented default on every verified codex-cli, and `--stdio` does not exist on 0.121.0
+/// (ADR-0146). Its stderr is kept, bounded, so an app-server that exits early is reported with
+/// its exit status and its own first error line.
 fn probe_codex_request_observed(
     program: &Path,
     spec: &ProviderSpec,
@@ -4311,17 +4387,22 @@ fn probe_codex_request_observed(
     cancelled: &AtomicBool,
     request: &serde_json::Value,
     attempt_deadline: Option<Instant>,
-    answered: &mut bool,
+    observed: &mut AppServerProbe,
 ) -> Result<serde_json::Value, String> {
     check_task_probe_control(attempt_deadline, cancelled)?;
+    let method = request
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("request")
+        .to_string();
     let directory = ProbeDirectory::new(spec)?;
     let mut command = Command::new(program);
-    command.args(["app-server", "--stdio"]);
+    command.arg("app-server");
     configure_probe_environment(&mut command, spec, probe_path, directory.path());
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     command.process_group(0);
     let mut child = review_process::spawn(&mut command)
         .map_err(|error| format!("cannot start Codex app-server probe: {error}"))?;
@@ -4329,27 +4410,35 @@ fn probe_codex_request_observed(
     let mut reaped = false;
     let mut stdin = child.stdin.take().expect("provider stdin was piped");
     let mut stdout = child.stdout.take().expect("provider stdout was piped");
-    if let Err(error) = set_nonblocking(&stdout) {
+    let mut stderr = child.stderr.take().expect("provider stderr was piped");
+    if let Err(error) = set_nonblocking(&stdout).and_then(|()| set_nonblocking(&stderr)) {
         stop_probe(&mut child);
         return Err(error);
     }
-    if let Err(error) = writeln!(
+    // An app-server that already exited on its arguments closes stdin: the write fails, and its
+    // exit is reported below, with its own words, rather than as a broken pipe.
+    let initialize = writeln!(
         stdin,
         "{{\"method\":\"initialize\",\"id\":1,\"params\":{{\"clientInfo\":{{\"name\":\"afactory\",\"version\":\"{}\"}}}}}}",
         env!("CARGO_PKG_VERSION")
     )
-    .and_then(|()| stdin.flush())
-    {
-        stop_probe(&mut child);
-        return Err(format!("cannot initialize Codex app-server probe: {error}"));
-    }
+    .and_then(|()| stdin.flush());
 
     let timeout = probe_timeout(PROBE_TIMEOUT);
     let deadline = Instant::now() + timeout;
     let deadline = attempt_deadline.map_or(deadline, |limit| deadline.min(limit));
     let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT.min(4096));
+    let mut said = Vec::new();
     let mut exceeded = false;
     let mut requested_limits = false;
+    let drain_stderr = |stderr: &mut std::process::ChildStderr, said: &mut Vec<u8>| {
+        // Output past the bound is read and dropped: only the first lines are ever reported.
+        let mut chunk = [0_u8; 8192];
+        while let Ok(count @ 1..) = stderr.read(&mut chunk) {
+            let room = MAX_APP_SERVER_STDERR.saturating_sub(said.len());
+            said.extend_from_slice(&chunk[..count.min(room)]);
+        }
+    };
     let result = 'probe: loop {
         loop {
             match drain_available(&mut stdout, &mut captured, &mut exceeded) {
@@ -4358,13 +4447,14 @@ fn probe_codex_request_observed(
                 Err(error) => break 'probe Err(error),
             }
         }
+        drain_stderr(&mut stderr, &mut said);
         if exceeded {
             break Err(format!(
                 "Codex app-server output exceeds {MAX_PROBE_OUTPUT} bytes"
             ));
         }
         if !requested_limits && let Some(response) = response_for_id(&captured, 1) {
-            *answered = true;
+            observed.answered = true;
             if response.get("error").is_some() {
                 break Err("Codex app-server rejected initialization".to_string());
             }
@@ -4372,7 +4462,9 @@ fn probe_codex_request_observed(
                 .and_then(|()| writeln!(stdin, "{request}"))
                 .and_then(|()| stdin.flush())
             {
-                break Err(format!("cannot request Codex subscription status: {error}"));
+                break Err(format!(
+                    "cannot send `{method}` to the Codex app-server: {error}"
+                ));
             }
             requested_limits = true;
         }
@@ -4380,14 +4472,37 @@ fn probe_codex_request_observed(
             break Ok(response);
         }
         match review_process::try_reap_killing_group(&mut child, &mut watch) {
-            Ok(Some(_)) => {
+            Ok(Some(status)) => {
                 reaped = true;
-                break Err("Codex app-server probe exited without a rate-limit response".into());
+                // Whatever it wrote before exiting is still in the pipes.
+                while let Ok(true) = drain_available(&mut stdout, &mut captured, &mut exceeded) {}
+                drain_stderr(&mut stderr, &mut said);
+                if requested_limits && let Some(response) = response_for_id(&captured, 2) {
+                    break Ok(response);
+                }
+                let exit = review_runner::cli::exit_description(&status);
+                let (line, _) = review_runner::cli::error_and_fix(&said, b"");
+                let line = line.map(|line| format!(": {line}")).unwrap_or_default();
+                if requested_limits || response_for_id(&captured, 1).is_some() {
+                    break Err(format!(
+                        "codex app-server {exit} after initialize without answering `{method}`{line}"
+                    ));
+                }
+                observed.exited_before_initialize = true;
+                break Err(format!(
+                    "codex app-server {exit} before answering initialize{line}"
+                ));
             }
             Ok(None) => {}
             Err(error) => {
                 break Err(format!("Codex app-server probe failed: {error}"));
             }
+        }
+        if let Err(error) = &initialize
+            && !requested_limits
+            && Instant::now() >= deadline
+        {
+            break Err(format!("cannot initialize Codex app-server probe: {error}"));
         }
         if cancelled.load(Ordering::Acquire) {
             break Err("provider status refresh cancelled".to_string());
@@ -6128,6 +6243,69 @@ auth_dir = "{}"
         );
     }
 
+    /// codex-cli 0.121.0 refuses `--stdio` (clap, exit 2) and serves stdio by default; the probe
+    /// starts the bare app-server, so the usage probe reads its rate limits. An app-server that
+    /// exits before answering `initialize` is reported with its exit status and its own first
+    /// error line, never as a missing rate-limit response (issue #259).
+    #[test]
+    fn codex_subscription_probe_starts_the_bare_app_server_and_reports_an_early_exit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("codex");
+        let limits = include_str!("../tests/fixtures/providers/codex-0.149.0-rate-limits.json")
+            .replace('\n', "");
+        let script = format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = app-server ] && [ -n \"$2\" ]; then\n\
+               printf '%s\\n' \"error: unexpected argument '$2' found\" '' 'Usage: codex app-server [OPTIONS] [COMMAND]' >&2\n\
+               exit 2\n\
+             fi\n\
+             IFS= read -r _\n\
+             printf '%s\\n' '{{\"id\":1,\"result\":{{}}}}'\n\
+             IFS= read -r _\n\
+             IFS= read -r _\n\
+             cat <<'JSON'\n{limits}\nJSON\n"
+        );
+        fs::write(&program, script).unwrap();
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+        let spec = ProviderSpec {
+            id: "codex-test".to_string(),
+            kind: ProviderKind::Codex,
+            auth_dir: None,
+            explicit_selector: false,
+            registry_declared: false,
+            source: "test".to_string(),
+        };
+        let probe_path = sanitized_path();
+        let snapshot =
+            probe_codex_subscription(&program, &spec, &probe_path, &AtomicBool::new(false))
+                .unwrap();
+        assert!(!snapshot.limits.is_empty());
+
+        fs::write(
+            &program,
+            "#!/bin/sh\nprintf '%s\\n' \"error: unexpected argument '--stdio' found\" '' 'Usage: codex app-server [OPTIONS]' >&2\nexit 2\n",
+        )
+        .unwrap();
+        let mut observed = AppServerProbe::default();
+        let error = probe_codex_request_observed(
+            &program,
+            &spec,
+            &probe_path,
+            &AtomicBool::new(false),
+            &serde_json::json!({"method":"account/rateLimits/read","id":2}),
+            None,
+            &mut observed,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "codex app-server exited 2 before answering initialize: error: unexpected argument '--stdio' found"
+        );
+        assert!(observed.exited_before_initialize && !observed.answered);
+    }
+
     #[test]
     fn codex_subscription_probe_reaps_descendants_after_an_early_exit() {
         use std::os::unix::fs::PermissionsExt;
@@ -6165,7 +6343,10 @@ auth_dir = "{}"
         else {
             panic!("early app-server exit unexpectedly returned subscription data");
         };
-        assert!(error.contains("exited without a rate-limit response"));
+        assert_eq!(
+            error,
+            "codex app-server exited 0 after initialize without answering `account/rateLimits/read`"
+        );
         let process = nix::unistd::Pid::from_raw(
             fs::read_to_string(&pid_file)
                 .unwrap()

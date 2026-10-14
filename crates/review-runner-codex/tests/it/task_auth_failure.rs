@@ -319,3 +319,47 @@ fn a_failure_event_without_usage_names_its_classified_cause() {
         );
     }
 }
+
+/// Issue #259: a codex-cli whose `exec` refuses one of af's options exits 2 with clap's usage on
+/// stderr and frames no event. The Attempt diagnostic carries the exit, the CLI's own line and
+/// the `unsupported_invocation` classification with the upgrade.
+#[test]
+fn a_cli_that_refuses_afs_arguments_is_an_unsupported_invocation_with_its_own_line() {
+    use review_runner::native_failure::NativeFailureKind;
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let script = temp.path().join("provider");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"error: unexpected argument '--ephemeral' found\" '' \"  tip: to pass '--ephemeral' as a value, use '-- --ephemeral'\" '' 'Usage: codex exec [OPTIONS] [PROMPT]' '' \"For more information, try '--help'.\" >&2\nexit 2\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = CodexTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"input".to_vec(),
+        LOAD_SAFE_WALL,
+        WorkerAccess::ReadOnly,
+        None,
+        &[],
+    );
+    let error = returned.message.unwrap_err();
+    assert_eq!(
+        returned.native_failure,
+        Some(NativeFailureKind::UnsupportedInvocation)
+    );
+    assert!(
+        error.starts_with(
+            "Codex Worker failed: the installed codex CLI does not accept af's invocation (unsupported_invocation); it exited 2: error: unexpected argument '--ephemeral' found"
+        ),
+        "{error}"
+    );
+    assert!(
+        error.ends_with("; fix: upgrade it with `npm install -g @openai/codex@latest`, then rerun `af provider status`"),
+        "{error}"
+    );
+    assert!(!error.contains("ExitStatus"), "{error}");
+    assert!(returned.usage.is_none(), "no usage was reported");
+}

@@ -1187,7 +1187,7 @@ fn d_removes_a_registered_provider_through_af_provider_remove() {
     let script = "#!/bin/sh\n\
         if [ \"$1\" = login ] && [ \"$2\" = status ]; then\n  \
         printf '%s\\n' 'Logged in using ChatGPT' >&2\n  exit 0\nfi\nexit 64\n";
-    std::fs::write(&codex, script).unwrap();
+    std::fs::write(&codex, crate::provider_cli::with_help("codex", script)).unwrap();
     let executable = std::os::unix::fs::PermissionsExt::from_mode(0o755);
     std::fs::set_permissions(&codex, executable).unwrap();
     let path = format!("{}:/usr/bin:/bin", bin.display());

@@ -198,7 +198,7 @@ fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_messa
         if timed_out {
             let message = returned.message.as_ref().unwrap_err();
             assert!(
-                message.contains("TimedOut { after_ms: 500 }"),
+                message.contains("did not answer within 500ms"),
                 "the 500 ms wall ends the provider: {message}"
             );
             assert_eq!(returned.raw_artifact_ids.len(), 2);

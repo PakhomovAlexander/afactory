@@ -240,11 +240,37 @@ fn native_model_fixture_widens_only_its_walls_and_the_reserve_that_covers_them()
     }
 }
 
+/// Issue #259: Claude Code 2.1.101 is authenticated but has no `--safe-mode` or `--restricted`.
+/// The Task binding to it is refused at Provider admission with the compatibility report, before
+/// any Worker process starts and before any token is charged; it is never worded as a login
+/// problem, and no isolation flag is dropped to make the old CLI run.
+#[test]
+fn an_authenticated_claude_without_its_isolation_flags_is_refused_at_admission() {
+    let old: String = crate::provider_cli::CLAUDE_HELP
+        .lines()
+        .filter(|line| !line.contains("--safe-mode") && !line.contains("--restricted"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    native_model_drift_case_with(false, false, None, ClientUpdate::None, Some(&old));
+}
+
 fn native_model_drift_case(
     wide: bool,
     codex: bool,
     switch_after: Option<usize>,
     client_update: ClientUpdate,
+) {
+    native_model_drift_case_with(wide, codex, switch_after, client_update, None);
+}
+
+/// `old_help`, when given, is the help page of an installed Claude Code too old for af's
+/// invocation; the case then ends at the admission refusal.
+fn native_model_drift_case_with(
+    wide: bool,
+    codex: bool,
+    switch_after: Option<usize>,
+    client_update: ClientUpdate,
+    old_help: Option<&str>,
 ) {
     use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     use std::os::unix::fs::PermissionsExt;
@@ -267,6 +293,9 @@ fn native_model_drift_case(
 import os,json,sys
 home=os.environ['CLAUDE_CONFIG_DIR']
 if 'AF_TEST_PROVIDER_PROBE_TIMEOUT_MS' in os.environ: open(home+'/probe-setting-leaked','a').write(' '.join(sys.argv[1:3])+'\n')
+if sys.argv[1:] in (['--help'],['--version']):
+ sys.stdout.write(open(home+'/'+sys.argv[1][2:]).read())
+ sys.exit(0)
 def update():
  import shutil
  try: os.mkdir(home+'/updated')
@@ -310,6 +339,9 @@ print(json.dumps(envelope))
 import os,json,sys
 home=os.environ['CODEX_HOME']
 if 'AF_TEST_PROVIDER_PROBE_TIMEOUT_MS' in os.environ: open(home+'/probe-setting-leaked','a').write(' '.join(sys.argv[1:3])+'\n')
+if sys.argv[1:]==['exec','--help']:
+ sys.stdout.write(open(home+'/help').read())
+ sys.exit(0)
 if sys.argv[1:2]==['app-server']:
  for line in sys.stdin:
   request=json.loads(line)
@@ -324,6 +356,18 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
 "#;
     let kind = if codex { "codex" } else { "claude" };
     let provider = format!("{kind}-personal");
+    // What the installed client's capability check answers (ADR-0146).
+    std::fs::write(
+        home.join("help"),
+        old_help.unwrap_or(crate::provider_cli::page(kind)),
+    )
+    .unwrap();
+    let version = if old_help.is_some() {
+        "2.1.101"
+    } else {
+        "2.1.299"
+    };
+    std::fs::write(home.join("version"), format!("{version} (Claude Code)\n")).unwrap();
     // An updating client installs each version as its own file behind a launcher symlink.
     let versions = directory.path().join("versions");
     let installed = if client_update != ClientUpdate::None {
@@ -423,6 +467,32 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             .unwrap()
     };
     let plan = run(&["review", "plan", "--file", "review.json"]);
+    if old_help.is_some() {
+        let program = std::fs::canonicalize(&installed).unwrap();
+        for refused in [plan, run(&["review", "run", "--file", "review.json"])] {
+            assert!(!refused.status.success());
+            let stderr = String::from_utf8_lossy(&refused.stderr);
+            assert!(
+                stderr.contains(&format!(
+                    "Task Provider admission refused before any Worker was dispatched: provider claude-personal: incompatible Provider CLI: the claude CLI `{}` (version 2.1.101 (Claude Code)) does not accept af's invocation; missing: --safe-mode, --restricted; fix: upgrade it with `npm install -g @anthropic-ai/claude-code@latest`, then rerun `af provider status`",
+                    program.display()
+                )),
+                "{stderr}"
+            );
+            assert!(!stderr.contains("login"), "{stderr}");
+        }
+        // No Worker process ran: the fixture records every model invocation it receives.
+        assert!(
+            !calls.exists(),
+            "an incompatible CLI reached model dispatch"
+        );
+        let listed = run(&["task", "list"]);
+        let listed: Value = serde_json::from_slice(&listed.stdout).unwrap_or(Value::Null);
+        for task in listed["tasks"].as_array().into_iter().flatten() {
+            assert_eq!(task["chargeable_tokens"], "0", "{task}");
+        }
+        return;
+    }
     assert!(
         plan.status.success(),
         "{}\n{}",

@@ -252,3 +252,67 @@ fn model_text_about_revoked_credentials_cannot_replace_a_network_failure() {
         );
     }
 }
+
+/// Issue #259: Claude Code 2.1.101 refuses `--safe-mode` on its argument parser, exits 1, and
+/// prints no envelope. The Attempt diagnostic names the exit, the CLI's own line and the
+/// `unsupported_invocation` classification with the upgrade, never a debug-printed exit status;
+/// a generic envelope-less failure keeps its exit and a bounded, sanitized stderr excerpt.
+#[test]
+fn a_cli_that_refuses_afs_arguments_is_an_unsupported_invocation_with_its_own_line() {
+    use review_runner::native_failure::NativeFailureKind;
+    for (stderr, unsupported) in [
+        ("error: unknown option '--safe-mode'\n", true),
+        (
+            "\x1b[31mfatal\x1b[0m: cannot open the bundled runtime\nsecond line\n",
+            false,
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        let said = temp.path().join("stderr");
+        std::fs::write(&said, stderr).unwrap();
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\ncat '{}' >&2\nexit 1\n",
+                said.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter = ClaudeTaskAdapter::new(&Command::new(
+            script.to_str().unwrap(),
+            vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+        ))
+        .unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            LOAD_SAFE_WALL,
+            WorkerAccess::ReadOnly,
+            None,
+            &[],
+        );
+        let error = returned.message.unwrap_err();
+        assert!(!error.contains("ExitStatus"), "{error}");
+        assert!(returned.usage.is_none(), "no usage was reported");
+        if unsupported {
+            assert_eq!(
+                returned.native_failure,
+                Some(NativeFailureKind::UnsupportedInvocation)
+            );
+            assert_eq!(
+                error,
+                "Claude Worker failed: the installed claude CLI does not accept af's invocation (unsupported_invocation); it exited 1: error: unknown option '--safe-mode'; fix: upgrade it with `npm install -g @anthropic-ai/claude-code@latest`, then rerun `af provider status`"
+            );
+        } else {
+            assert_eq!(returned.native_failure, None);
+            assert_eq!(
+                error,
+                "Claude Worker exited 1 without a parsable result; stderr: fatal: cannot open the bundled runtime | second line"
+            );
+        }
+    }
+}

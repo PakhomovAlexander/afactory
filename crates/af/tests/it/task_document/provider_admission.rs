@@ -23,9 +23,13 @@ impl Fixture {
         let bin = root.path().join("bin");
         std::fs::create_dir(&home).unwrap();
         std::fs::create_dir(&bin).unwrap();
+        // Like codex-cli 0.121.0, the app-server refuses `--stdio` and serves stdio by default.
         let native = r#"#!/usr/bin/python3 -B
 import json,os,sys
 home=os.environ['CODEX_HOME']
+if sys.argv[1:2]==['app-server'] and sys.argv[2:]:
+ sys.stderr.write("error: unexpected argument '"+sys.argv[2]+"' found\n\nUsage: codex app-server [OPTIONS] [COMMAND]\n")
+ sys.exit(2)
 if sys.argv[1:2]==['app-server']:
  for line in sys.stdin:
   request=json.loads(line)
@@ -48,7 +52,11 @@ print(json.dumps({'type':'thread.started','thread_id':'synthetic-'+kind}))
 print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':message}}))
 print(json.dumps({'type':'turn.completed','usage':usage}))
 "#;
-        std::fs::write(bin.join("codex"), native).unwrap();
+        std::fs::write(
+            bin.join("codex"),
+            crate::provider_cli::with_help("codex", native),
+        )
+        .unwrap();
         std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755))
             .unwrap();
         let usage = match actual {

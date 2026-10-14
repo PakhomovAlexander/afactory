@@ -15,6 +15,9 @@ pub enum NativeFailureKind {
     Capacity,
     ModelUnavailable,
     Network,
+    /// The installed CLI refused af's own arguments (`unknown option`, `unexpected argument`, a
+    /// usage block): it is older than, or otherwise different from, what af invokes.
+    UnsupportedInvocation,
     Unknown,
 }
 
@@ -46,6 +49,9 @@ impl NativeFailureKind {
             Self::Capacity => "Provider model at capacity (capacity)",
             Self::ModelUnavailable => "Provider model is unavailable (model_unavailable)",
             Self::Network => "Provider network request failed (network)",
+            Self::UnsupportedInvocation => {
+                "the installed Provider CLI does not accept af's invocation (unsupported_invocation)"
+            }
             Self::Unknown => "Provider returned an unclassified failure (unknown)",
         }
     }
@@ -65,7 +71,9 @@ impl NativeFailureKind {
             Self::Capacity => Cause::Capacity,
             Self::ModelUnavailable => Cause::ModelUnavailable,
             Self::Network => Cause::Network,
-            Self::Unknown => Cause::Unreported,
+            // The CLI refused its arguments before any model call: nothing better than an
+            // absent report is known about usage.
+            Self::UnsupportedInvocation | Self::Unknown => Cause::Unreported,
         }
     }
 
@@ -81,6 +89,12 @@ impl NativeFailureKind {
             stderr.clear();
         }
     }
+}
+
+/// Whether native output carries credential or login-challenge material, so that no part of it
+/// may be quoted in a diagnostic.
+pub fn carries_auth_material(bytes: &[u8]) -> bool {
+    auth_material(bytes)
 }
 
 fn auth_material(bytes: &[u8]) -> bool {

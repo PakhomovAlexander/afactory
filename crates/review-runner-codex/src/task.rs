@@ -1,5 +1,6 @@
 //! Codex framing for generic typed Task Workers, preserving failed and malformed usage.
 use super::*;
+use review_runner::cli::{is_invocation_error, startup_failure, transport_outcome};
 use review_runner::native_failure::{NativeFailureKind, classify_native_failure};
 use review_runner::task::{
     MAX_WORKER_BYTES, ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter,
@@ -171,6 +172,15 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                                 .into_iter()
                                 .find(|kind| *kind != NativeFailureKind::Unknown)
                         });
+                    // A CLI whose own argument parser refused af's invocation framed no event,
+                    // only its parser's error; it never reached a model.
+                    if !events.framed
+                        && !failure.is_some_and(NativeFailureKind::is_auth)
+                        && (is_invocation_error(&String::from_utf8_lossy(stderr))
+                            || is_invocation_error(&unframed(stdout)))
+                    {
+                        failure = Some(NativeFailureKind::UnsupportedInvocation);
+                    }
                     failure
                         .unwrap_or(NativeFailureKind::Unknown)
                         .redact_auth_capture(stdout, stderr);
@@ -191,14 +201,22 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             // unclassified: its closed diagnostic names that, never the bare exit status.
             returned.native_failure = failure.or(events.upstream_failure);
             returned.message = Err(
-                if let Some(kind) = failure
+                if failure == Some(NativeFailureKind::UnsupportedInvocation) {
+                    startup_failure(
+                        "Codex Worker",
+                        &CODEX_INVOCATION,
+                        &capture.status,
+                        &capture.stderr,
+                        true,
+                    )
+                } else if let Some(kind) = failure
                     .filter(|kind| *kind != NativeFailureKind::Unknown)
                     .or(events.upstream_failure.filter(|_| !events.malformed_usage))
                 {
                     let mut message = format!(
-                        "Codex Worker failed: {}; transport: {:?}",
+                        "Codex Worker failed: {}; transport: {}",
                         kind.diagnostic(),
-                        capture.status
+                        transport_outcome(&capture.status)
                     );
                     if events.malformed_usage {
                         message.push_str("; Codex Worker returned malformed native usage");
@@ -209,10 +227,21 @@ impl WorkerModelAdapter for CodexTaskAdapter {
                         "Codex Worker returned malformed native usage: {:?}",
                         events.error
                     )
+                } else if !events.framed {
+                    // No event at all: the process's exit and its own last words are all there
+                    // is. A secret-bearing stderr was already cleared above.
+                    startup_failure(
+                        "Codex Worker",
+                        &CODEX_INVOCATION,
+                        &capture.status,
+                        &capture.stderr,
+                        false,
+                    )
                 } else {
-                    // A failed process with no failure event keeps its historical diagnostic
-                    // and artifact identity.
-                    format!("Codex Worker failed with {:?}", capture.status)
+                    format!(
+                        "Codex Worker failed; transport: {}",
+                        transport_outcome(&capture.status)
+                    )
                 },
             );
             return if capture.started {
@@ -266,6 +295,8 @@ struct TaskEvents {
     upstream_failure: Option<NativeFailureKind>,
     incomplete_charge: bool,
     malformed_usage: bool,
+    /// Whether stdout held any JSONL event at all: a CLI that refused its arguments frames none.
+    framed: bool,
 }
 
 impl TaskEvents {
@@ -336,6 +367,7 @@ impl TaskEvents {
             let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
                 continue;
             };
+            events.framed |= value.get("type").is_some_and(serde_json::Value::is_string);
             match value.get("type").and_then(|t| t.as_str()) {
                 Some("turn.completed") => {
                     events.add_usage(value.get("usage"));
