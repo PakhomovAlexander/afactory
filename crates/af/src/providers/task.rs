@@ -24,11 +24,27 @@ pub struct TaskProviderIdentity {
 }
 impl TaskProviderIdentity {
     /// Refuse a binding whose model or effort is outside grammar G (ADR-0147), token-free and
-    /// with the adapter's own words, naming the rule and the byte length, never the value. The
-    /// callers run it before [`Self::probe`] too, so such a binding starts no process at all.
+    /// with the adapter's own words, naming the rule and the byte length, never the value.
     pub fn check_spelling(model: &str, effort: &str) -> Result<(), String> {
         review_runner_claude::hint::check_binding("--model", model)?;
         review_runner_claude::hint::check_binding("--effort", effort)
+    }
+    /// The token-free static rules of a Model binding, in their one order: grammar G on the
+    /// model and the effort first, so a value outside G is refused with G's words whatever else
+    /// it fails, then the versioned-ID rule. [`Self::execution`] applies them, and the binders
+    /// apply them to every Model Worker in a first pass before any [`Self::probe`] (ADR-0147).
+    pub fn check_static_rules(model: &str, effort: &str) -> Result<(), String> {
+        Self::check_spelling(model, effort)?;
+        // Bare family aliases are mutable selectors, not exact plan identities.
+        if model.len() > 256
+            || !model.contains('-')
+            || !model.bytes().any(|b| b.is_ascii_digit())
+            || model.ends_with("-latest")
+            || model.chars().any(char::is_whitespace)
+        {
+            return Err("Task Model binding requires an explicit versioned model ID".into());
+        }
+        Ok(())
     }
     pub fn probe(provider: &str, expected_kind: &str) -> Result<Self, String> {
         let spec = configured_spec(provider)?;
@@ -67,16 +83,7 @@ impl TaskProviderIdentity {
         })
     }
     pub fn execution(&self, model: &str, effort: &str) -> Result<WorkerExecutionV1, String> {
-        // Bare family aliases are mutable selectors, not exact plan identities.
-        if model.len() > 256
-            || !model.contains('-')
-            || !model.bytes().any(|b| b.is_ascii_digit())
-            || model.ends_with("-latest")
-            || model.chars().any(char::is_whitespace)
-        {
-            return Err("Task Model binding requires an explicit versioned model ID".into());
-        }
-        Self::check_spelling(model, effort)?;
+        Self::check_static_rules(model, effort)?;
         let execution = WorkerExecutionV1::Model {
             provider: self.spec.id.clone(),
             provider_kind: self.spec.kind.name().into(),
@@ -562,6 +569,61 @@ mod tests {
         ] {
             assert!(codex_principal(&json!({"result":{"account":account}})).is_err());
         }
+    }
+
+    /// Grammar G is checked before the versioned-ID rule: a value outside G is refused with G's
+    /// words and its byte length whatever else it fails, and the older rule's words are kept for
+    /// values inside G.
+    #[test]
+    fn execution_applies_grammar_g_before_the_versioned_id_rule() {
+        let identity = TaskProviderIdentity {
+            spec: ProviderSpec {
+                id: "fixture".into(),
+                kind: ProviderKind::Claude,
+                auth_dir: Some(PathBuf::from("/nonexistent")),
+                explicit_selector: true,
+                registry_declared: true,
+                source: "fixture".into(),
+            },
+            program: PathBuf::from("/nonexistent/claude"),
+            principal_id: "sha256:".to_string() + &"0".repeat(64),
+            auth_method: "claude.ai".into(),
+            probe_path: std::ffi::OsString::from("/usr/bin:/bin"),
+            home: None,
+            user: None,
+        };
+        let long = "a".repeat(300);
+        for (model, effort, option, bytes) in [
+            ("bad@account", "high", "--model", 11),
+            ("/Users/alice/keys", "high", "--model", 17),
+            (long.as_str(), "high", "--model", 300),
+            ("claude-fable-5-1", "x@y", "--effort", 3),
+        ] {
+            for refusal in [
+                identity.execution(model, effort).unwrap_err(),
+                TaskProviderIdentity::check_static_rules(model, effort).unwrap_err(),
+            ] {
+                assert_eq!(
+                    refusal,
+                    format!(
+                        "Model binding refused: its {option} value ({bytes} bytes) is not a model \
+                         spelling af accepts: {}",
+                        review_runner_claude::hint::PRINTABLE_RULE
+                    )
+                );
+                for part in ["versioned", "bad", "account", "Users", "alice", "aaaa"] {
+                    assert!(!refusal.contains(part), "{part}: {refusal}");
+                }
+            }
+        }
+        for model in ["fable", "claude-opus-latest", "claude-opus"] {
+            assert_eq!(
+                identity.execution(model, "high").unwrap_err(),
+                "Task Model binding requires an explicit versioned model ID",
+                "{model}"
+            );
+        }
+        assert!(identity.execution("claude-fable-5-1", "xhigh").is_ok());
     }
 }
 

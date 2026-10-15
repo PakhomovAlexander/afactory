@@ -486,3 +486,153 @@ fn admission_bounds_are_paired_positive_finite_cli_values() {
         assert!(f.calls().is_empty());
     }
 }
+
+/// ADR-0147: every captured reviewer's binding passes the static rules, grammar G first and then
+/// the versioned-ID rule, before any Provider CLI starts. A valid first reviewer and an invalid
+/// second one are refused by node, with the Provider label and the rule, and no process ran.
+#[test]
+fn an_invalid_second_captured_reviewer_is_refused_before_any_provider_process() {
+    for (second, rule) in [
+        (
+            "bad@account",
+            "Model binding refused: its --model value (11 bytes) is not a model spelling af accepts",
+        ),
+        (
+            "fixture",
+            "Task Model binding requires an explicit versioned model ID",
+        ),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let (repo, home, state) = native_diff_fixture(root.path());
+        // The fake records every process af starts and answers none of them.
+        let started = home.join("started");
+        std::fs::write(
+            home.join("codex"),
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >>'{}'\nexit 1\n",
+                started.display()
+            ),
+        )
+        .unwrap();
+        let workers = repo.join(".af/workers");
+        let first = std::fs::read_to_string(workers.join("tester/reviewer.toml")).unwrap();
+        std::fs::create_dir_all(workers.join("tester-two")).unwrap();
+        std::fs::write(
+            workers.join("tester-two/reviewer.toml"),
+            first
+                .replace("name = \"tester\"", "name = \"tester-two\"")
+                .replace("gpt-fixture-1", second),
+        )
+        .unwrap();
+        std::fs::copy(
+            workers.join("tester/reviewer.md"),
+            workers.join("tester-two/reviewer.md"),
+        )
+        .unwrap();
+        let registry = review_config::lock::Registry::new(&workers);
+        let mut lockfile = review_config::lock::Lockfile::empty();
+        for name in ["tester", "tester-two"] {
+            lockfile.workers.insert(
+                name.into(),
+                review_config::lock::Lockfile::pin(name, &registry).unwrap(),
+            );
+        }
+        std::fs::write(repo.join(".af/af.lock"), lockfile.to_toml()).unwrap();
+        let reviewer = |id: &str, package: &str| {
+            format!(
+                r#"[[nodes]]
+id = "{id}"
+kind = "reviewer"
+package = "{package}"
+inputs = [
+  {{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }},
+  {{ name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+]
+outputs = [{{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+[[edges]]
+from = {{ node = "generation", port = "findings" }}
+to = {{ node = "{id}", port = "prior_findings" }}
+[[edges]]
+from = {{ node = "generation", port = "change_set" }}
+to = {{ node = "{id}", port = "change_set" }}
+[[edges]]
+from = {{ node = "{id}", port = "result" }}
+to = {{ node = "gather", port = "{id}" }}
+"#
+            )
+        };
+        let pipeline = format!(
+            r#"version = 2
+[subject]
+kind = "diff"
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [
+  {{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }},
+  {{ name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+]
+{}{}[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = [
+  {{ name = "a-first", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+  {{ name = "b-second", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+]
+outputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
+outputs = [
+  {{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+  {{ name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }},
+]
+[[edges]]
+from = {{ node = "gather", port = "reports" }}
+to = {{ node = "ledger", port = "reports" }}
+[convergence]
+clean_rounds = 1
+max_rounds = 2
+gate = "major"
+"#,
+            reviewer("a-first", "tester"),
+            reviewer("b-second", "tester-two"),
+        );
+        set_pipeline(&repo, &pipeline);
+        git(&repo, &home, &["add", "-A"]);
+        git(&repo, &home, &["commit", "-qm", "two captured reviewers"]);
+        let (code, stdout, stderr) = af(
+            &repo,
+            &home,
+            &[
+                "run",
+                "--campaign",
+                "two-reviewers",
+                "--state",
+                &state,
+                "--base",
+                "HEAD^",
+                "--candidate",
+                "HEAD",
+                "--provider",
+                "a-first=test-codex",
+                "--provider",
+                "b-second=test-codex",
+            ],
+        );
+        assert_eq!(code, 1, "{second}: {stdout}\n{stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "Model Worker b-second on Provider test-codex: {rule}"
+            )),
+            "{second}: {stderr}"
+        );
+        assert!(!stderr.contains("account"), "{stderr}");
+        assert!(
+            !started.exists(),
+            "{second}: a Provider process started: {}",
+            std::fs::read_to_string(&started).unwrap_or_default()
+        );
+    }
+}

@@ -25,7 +25,11 @@ model or effort outside grammar G, the one spelling af prints verbatim (an ASCII
 then at most 127 ASCII letters, digits, `-`, `.`, `_` or `:`; no `/`, `@` or whitespace), is
 refused before any process starts, the Provider's own probes included, by `af task plan`, `af
 review run` and the Claude Task adapter alike: the refusal names the rule and the value's byte
-length, never the value, so a path or an account identifier is never echoed.
+length, never the value, so a path or an account identifier is never echoed. G is checked first,
+so such a value gets G's refusal even when it is also not a versioned model ID. Both rules run
+over every Model Worker, in Worker-name order, or every captured reviewer, in node order, in a
+first pass before any Provider is probed, and a refusal names the Worker or node, the Provider
+label and the rule; only then is each Provider label probed, once.
 
 Planning performs no model inference. The compiler adds a visible internal capability node
 for each distinct effective Model binding and invocation policy. Slots with the same capability
@@ -149,10 +153,14 @@ set, because it also disables the model substitution compaction may need. Three 
   `claude-fable-5-1` with 0 output tokens and `claude-opus-5` with 4, charges 9496). The
   diagnostic names both models, their output tokens, `safety_stops` and `num_turns`, and says
   whether it was a safety-classifier fallback (`model_refused`) or an unexplained switch
-  (`model_switched`). This refusal outranks every other accounting reason: the diagnostic starts
-  with it whenever `modelUsage` carries a well-formed, not explicitly unused entry for another
-  model, and every other reason found (malformed usage, an unreconciled summary) follows it after
-  a semicolon; the charge is unchanged. A model ID outside grammar G is counted all the same and named
+  (`model_switched`). A switch is at least one foreign activity anywhere in `modelUsage`, however
+  many entries it holds: an entry whose key is a well-formed ID other than the bound model and
+  its aliases, whose counters parse completely and at least one of whose four counters is above
+  zero. An empty or malformed foreign entry is malformed usage, and an all-zero one is explicitly
+  unused; neither is a switch. This refusal outranks every other accounting reason: the
+  diagnostic starts with it, naming every foreign activity in map order, and every other reason
+  found (malformed usage, more than 32 entries, an unreconciled summary) follows it after a
+  semicolon; the charge, which reads at most 32 entries, is unchanged. A model ID outside grammar G is counted all the same and named
   `[not printable]` with its byte length.
 - **`model_unavailable`.** Claude Code answered that there is an issue with the selected model:
   it does not know the model ID or the account cannot use it. The diagnostic quotes the spelling

@@ -8,6 +8,13 @@ use std::collections::BTreeMap;
 
 const MAX_MODELS: usize = 32;
 const MAX_MODEL_ID_BYTES: usize = 256;
+/// The four counters of one `modelUsage` entry, in [`Counters::parse`] order.
+const MODEL_COUNTERS: [&str; 4] = [
+    "inputTokens",
+    "outputTokens",
+    "cacheCreationInputTokens",
+    "cacheReadInputTokens",
+];
 
 pub(super) struct Accounting {
     pub usage: Option<TaskTokenUsageV3>,
@@ -53,6 +60,13 @@ impl Counters {
             malformed: !complete || read == NativeCounter::Invalid,
             charge_floor: 0,
         }
+    }
+
+    /// At least one counter is above zero.
+    fn active(self) -> bool {
+        [self.input, self.output, self.write, self.read]
+            .iter()
+            .any(|counter| counter.is_some_and(|n| n > 0))
     }
 
     fn same_bill(self, other: Self) -> bool {
@@ -117,6 +131,41 @@ fn valid_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-._:/".contains(&b))
 }
 
+/// Whether the entry `key` is well formed and names the bound model `selected`: the bound ID
+/// itself, or an alias whose `canonicalModel` is it. Returns (well formed, bound).
+fn identity(key: &str, model: &Value, selected: &str) -> (bool, bool) {
+    let canonical = model.get("canonicalModel");
+    let canonical_id = canonical.and_then(Value::as_str);
+    let valid = valid_id(key)
+        && canonical.is_none_or(|_| canonical_id.is_some_and(valid_id))
+        && !(key == selected && canonical_id.is_some_and(|id| id != selected));
+    let bound = valid
+        && if key == selected {
+            canonical_id.is_none_or(|id| id == selected)
+        } else {
+            canonical_id == Some(selected)
+        };
+    (valid, bound)
+}
+
+/// FOREIGN ACTIVITY (ADR-0147): an entry whose key is a well-formed ID that is neither the bound
+/// model nor an alias whose `canonicalModel` is the bound model, whose four counters parse
+/// completely and at least one of which is above zero. A malformed or all-zero foreign entry is
+/// never one; a key outside grammar G is named `[not printable]` by the hint.
+fn foreign_activity(key: &str, model: &Value, selected: &str) -> Option<OtherModel> {
+    if !valid_id(key)
+        || key == selected
+        || model.get("canonicalModel").and_then(Value::as_str) == Some(selected)
+    {
+        return None;
+    }
+    let counters = Counters::parse(model, MODEL_COUNTERS);
+    (!counters.malformed && counters.active()).then(|| OtherModel {
+        model: key.into(),
+        output_tokens: model.get("outputTokens").and_then(Value::as_u64),
+    })
+}
+
 /// Account for one result, `selected` being the bound `--model` and `effort` its `--effort`.
 pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str>) -> Accounting {
     let (top_usage, top_observation) = super::parse_usage(value);
@@ -130,13 +179,21 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
         };
     };
     let mut reasons = Vec::new();
-    // Whether `modelUsage` carries a well-formed entry for a model other than the bound one that
-    // is not explicitly unused: then the switch refusal leads, whatever else was found.
-    let mut switched = false;
-    // What the switch refusal names: the bound model's own output and every other model that
-    // was active, with its output.
+    // The switch decision reads every entry of the map, however many: the charge below reads at
+    // most 32 (ADR-0102), but a foreign activity anywhere is a switch, and the switch refusal
+    // then leads, whatever else was found. It names the bound model's own output and every
+    // foreign activity, with its output, in map order.
     let mut bound_output_tokens = None;
     let mut others = Vec::new();
+    if let Some(entries) = map.as_object() {
+        for (key, model) in entries {
+            if bound_output_tokens.is_none() && identity(key, model, selected).1 {
+                bound_output_tokens = model.get("outputTokens").and_then(Value::as_u64);
+            }
+            others.extend(foreign_activity(key, model, selected));
+        }
+    }
+    let switched = !others.is_empty();
     let top = value
         .and_then(|v| v.get("usage"))
         .map(|v| {
@@ -166,61 +223,38 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
             );
         }
         for (key, model) in entries.iter().take(MAX_MODELS) {
-            let counters = Counters::parse(
-                model,
-                [
-                    "inputTokens",
-                    "outputTokens",
-                    "cacheCreationInputTokens",
-                    "cacheReadInputTokens",
-                ],
-            );
+            let counters = Counters::parse(model, MODEL_COUNTERS);
             complete &= counters.complete;
             if counters.malformed {
                 refuse(&mut reasons, "Claude per-model usage is malformed");
             }
-            let canonical = model.get("canonicalModel");
-            let canonical_id = canonical.and_then(Value::as_str);
-            let identity_valid = valid_id(key)
-                && canonical.is_none_or(|_| canonical_id.is_some_and(valid_id))
-                && !(key == selected && canonical_id.is_some_and(|id| id != selected));
+            let (identity_valid, matches) = identity(key, model, selected);
             if !identity_valid {
                 complete = false;
                 refuse(&mut reasons, "Claude model usage identity is malformed");
             }
-            let matches = identity_valid
-                && if key == selected {
-                    canonical_id.is_none_or(|id| id == selected)
-                } else {
-                    canonical_id == Some(selected)
-                };
             if matches {
                 scopes.push(counters);
-                if bound_output_tokens.is_none() {
-                    bound_output_tokens = model.get("outputTokens").and_then(Value::as_u64);
-                }
             }
-            let explicitly_unused = [
-                "inputTokens",
-                "outputTokens",
-                "cacheCreationInputTokens",
-                "cacheReadInputTokens",
-            ]
-            .iter()
-            .all(|key| model.get(key).and_then(Value::as_u64) == Some(0));
-            if !(matches || identity_valid && explicitly_unused) {
-                // Detection follows the native invocation. Retain its charge even on refusal;
-                // this check cannot prevent an internal client request from having occurred.
-                // Only a well-formed ID is a switch; a malformed one was refused above. The hint
-                // prints a well-formed ID outside grammar G as `[not printable]`.
-                if identity_valid {
-                    switched = true;
-                    others.push(OtherModel {
-                        model: key.clone(),
-                        output_tokens: model.get("outputTokens").and_then(Value::as_u64),
-                    });
-                }
+            let explicitly_unused = MODEL_COUNTERS
+                .iter()
+                .all(|key| model.get(key).and_then(Value::as_u64) == Some(0));
+            // A foreign activity was found above, and its charge is retained even on refusal:
+            // this check cannot prevent an internal client request from having occurred. A
+            // well-formed foreign entry with complete counters, none above zero, that leaves one
+            // out is neither a switch nor explicitly unused, and is still refused.
+            if identity_valid
+                && !matches
+                && !counters.malformed
+                && !counters.active()
+                && !explicitly_unused
+            {
+                refuse(
+                    &mut reasons,
+                    "Claude model usage leaves another model's activity unreported",
+                );
             }
+            let canonical_id = model.get("canonicalModel").and_then(Value::as_str);
             let group = canonical_id.filter(|id| valid_id(id)).unwrap_or(key);
             if let Some(prior) = groups.get_mut(group) {
                 // Aliased entries may overlap. Keep the larger observed total with unavailable

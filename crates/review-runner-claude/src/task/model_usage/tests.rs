@@ -220,8 +220,11 @@ fn explicitly_unused_foreign_models_are_metadata_but_cache_read_activity_is_not(
         .as_object_mut()
         .unwrap()
         .remove("cacheReadInputTokens");
-    assert!(
-        account(Some(&value), OPUS, None).error.is_some(),
+    let result = account(Some(&value), OPUS, None);
+    assert!(!result.switched, "no counter above zero is no switch");
+    assert_eq!(
+        result.error.as_deref(),
+        Some("Claude model usage leaves another model's activity unreported"),
         "unknown activity is not explicitly zero"
     );
 }
@@ -489,4 +492,132 @@ fn a_foreign_key_outside_g_is_counted_but_never_echoed() {
         error.contains("but us.anthropic.claude-opus-5-5-v1:0 (4 output tokens) answered"),
         "{error}"
     );
+}
+
+/// Round 3, (1): the switch decision reads every entry, however many. 32 explicitly unused
+/// entries and one active foreign entry after them: the hint leads and names it, and the
+/// map-size reason follows; the charge still reads only the first 32 entries (ADR-0102).
+#[test]
+fn a_foreign_activity_after_32_unused_entries_is_a_switch() {
+    let mut models = serde_json::Map::new();
+    for i in 0..MAX_MODELS {
+        models.insert(
+            format!("claude-unused-{i:02}"),
+            model(json!(0), json!(0), json!(0)),
+        );
+    }
+    models.insert(OPUS.into(), model(json!(2), json!(4), json!(6278)));
+    let value = json!({"safety_stops":0,"num_turns":1,
+        "usage":{"input_tokens":2,"output_tokens":4,"cache_creation_input_tokens":6278},
+        "modelUsage":models});
+    let result = account(Some(&value), "claude-fable-5-1", Some("xhigh"));
+    assert!(result.switched);
+    let hint = compose(
+        BoundModel {
+            model: "claude-fable-5-1",
+            effort: Some("xhigh"),
+        },
+        &ModelOutcome::Switched {
+            bound_output_tokens: None,
+            others: &[OtherModel {
+                model: OPUS.into(),
+                output_tokens: Some(4),
+            }],
+            safety_stops: Some(0),
+            num_turns: Some(1),
+        },
+    );
+    assert_eq!(
+        result.error.unwrap(),
+        format!(
+            "{hint}; Claude model usage exceeds its finite nonempty model bound; Claude top-level \
+             and per-model usage cannot be reconciled"
+        )
+    );
+    assert!(
+        hint.contains("but claude-opus-5 (4 output tokens) answered"),
+        "{hint}"
+    );
+    assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 6284);
+    assert!(!result.observation.unwrap().charge_complete);
+}
+
+/// Every foreign activity is named in map order, wherever it stands, and an entry past the 32nd
+/// is named but never charged.
+#[test]
+fn every_foreign_activity_is_named_in_map_order() {
+    let mut value = recorded_fallback();
+    let map = value["modelUsage"].as_object_mut().unwrap();
+    for i in 0..MAX_MODELS {
+        map.insert(
+            format!("claude-unused-{i:02}"),
+            model(json!(0), json!(0), json!(0)),
+        );
+    }
+    map.insert(
+        "claude-haiku-4-5".into(),
+        model(json!(1), json!(3), json!(0)),
+    );
+    let result = account(Some(&value), "claude-fable-5-1", Some("xhigh"));
+    assert!(result.switched);
+    let error = result.error.unwrap();
+    assert!(
+        error.contains(
+            "which wrote 0 output tokens, but claude-opus-5 (4 output tokens), claude-haiku-4-5 \
+             (3 output tokens) answered (safety_stops 2, num_turns 2)"
+        ),
+        "{error}"
+    );
+    assert!(
+        error.ends_with("; Claude model usage exceeds its finite nonempty model bound"),
+        "{error}"
+    );
+    assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 9496);
+}
+
+/// Round 3, (2): an empty foreign entry beside the bound model reported no activity. It is the
+/// malformed-usage refusal only, never a switch.
+#[test]
+fn an_empty_foreign_entry_is_malformed_usage_not_a_switch() {
+    let value = json!({"safety_stops":0,"num_turns":1,
+        "usage":{"input_tokens":2,"output_tokens":0,"cache_creation_input_tokens":3210,"cache_read_input_tokens":3001},
+        "modelUsage":{
+            "claude-fable-5-1":{"inputTokens":2,"outputTokens":0,"cacheCreationInputTokens":3210,"cacheReadInputTokens":3001,"canonicalModel":"claude-fable-5-1"},
+            OPUS:{}}});
+    let result = account(Some(&value), "claude-fable-5-1", Some("xhigh"));
+    assert!(!result.switched);
+    assert_eq!(
+        result.error.as_deref(),
+        Some("Claude per-model usage is malformed")
+    );
+    assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 3212);
+    assert!(!result.observation.unwrap().charge_complete);
+
+    // Malformed counters are never activity, even beside a counter above zero.
+    let mut value = value;
+    value["modelUsage"][OPUS] = json!({"inputTokens":5,"outputTokens":"4"});
+    let result = account(Some(&value), "claude-fable-5-1", Some("xhigh"));
+    assert!(!result.switched);
+    assert!(
+        result
+            .error
+            .as_deref()
+            .unwrap()
+            .starts_with("Claude per-model usage is malformed"),
+        "{:?}",
+        result.error
+    );
+}
+
+/// A foreign entry with all four counters at zero is explicitly unused: no switch, no reason.
+#[test]
+fn an_all_zero_foreign_entry_is_explicitly_unused() {
+    let mut value = recorded_fallback();
+    value["modelUsage"][OPUS] = model(json!(0), json!(0), json!(0));
+    value["usage"] = json!({"input_tokens":2,"output_tokens":0,"cache_creation_input_tokens":3210,"cache_read_input_tokens":3001});
+    let result = account(Some(&value), "claude-fable-5-1", Some("xhigh"));
+    assert!(!result.switched);
+    assert!(result.error.is_none(), "{:?}", result.error);
+    assert!(result.observation.is_none());
+    assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 3212);
 }

@@ -60,9 +60,10 @@ fn local_workers(
             ));
         }
     }
-    let mut identities = BTreeMap::new();
+    // First pass, token-free: every captured reviewer's binding passes the static rules, in node
+    // order, before any Provider CLI starts (ADR-0147).
     let mut executions = BTreeMap::new();
-    let mut adapters = BTreeMap::new();
+    let mut models = Vec::new();
     for (node, command) in loaded.reviewers() {
         let kind = super::packaged_runner(command);
         if !matches!(kind.as_str(), "claude" | "codex") {
@@ -92,10 +93,17 @@ fn local_workers(
         .map_err(|e| e.to_string())?;
         let settings = review_config::lock::reviewer_runner_settings_from_manifest(&manifest)
             .map_err(|e| e.to_string())?;
-        super::providers::task::TaskProviderIdentity::check_spelling(
+        super::providers::task::TaskProviderIdentity::check_static_rules(
             &settings.model,
             &settings.effort,
-        )?;
+        )
+        .map_err(|rule| format!("Model Worker {node} on Provider {alias}: {rule}"))?;
+        models.push((node, kind, alias, settings));
+    }
+    // Second pass: one probe per Provider label, then each reviewer's execution and adapter.
+    let mut identities = BTreeMap::new();
+    let mut adapters = BTreeMap::new();
+    for (node, kind, alias, settings) in models {
         if !identities.contains_key(alias) {
             identities.insert(
                 alias.clone(),

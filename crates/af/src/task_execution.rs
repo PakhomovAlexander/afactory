@@ -859,8 +859,9 @@ fn bind_named_models(
     authority: &RunAuthority,
     required: BTreeSet<String>,
 ) -> Result<BTreeMap<String, Box<dyn review_runner::task::WorkerModelAdapter>>, String> {
-    let mut identities = BTreeMap::new();
-    let mut adapters = BTreeMap::new();
+    // First pass, token-free: every Model Worker's binding passes the static rules, in Worker-name
+    // order, before any Provider CLI starts (ADR-0147).
+    let mut models = Vec::new();
     for name in required {
         let worker = compiler.worker(&name).ok_or("Required Worker is absent")?;
         let TaskWorkerRunner::Model {
@@ -872,16 +873,29 @@ fn bind_named_models(
             continue;
         };
         let alias = authority.providers.get(&name).ok_or_else(||format!("Worker {name} requires an explicit local Provider binding in the catalog providers table"))?;
-        super::providers::task::TaskProviderIdentity::check_spelling(model, effort)?;
-        if !identities.contains_key(alias) {
+        super::providers::task::TaskProviderIdentity::check_static_rules(model, effort)
+            .map_err(|rule| format!("Worker {name} on Provider {alias}: {rule}"))?;
+        models.push((
+            name,
+            alias.clone(),
+            provider_kind.clone(),
+            model.clone(),
+            effort.clone(),
+        ));
+    }
+    // Second pass: one probe per Provider label, then each Worker's execution and adapter.
+    let mut identities = BTreeMap::new();
+    let mut adapters = BTreeMap::new();
+    for (name, alias, provider_kind, model, effort) in models {
+        if !identities.contains_key(&alias) {
             identities.insert(
                 alias.clone(),
-                super::providers::task::TaskProviderIdentity::probe(alias, provider_kind)?,
+                super::providers::task::TaskProviderIdentity::probe(&alias, &provider_kind)?,
             );
         }
-        let identity = &identities[alias];
-        let execution = identity.execution(model, effort)?;
-        if !matches!(&execution,WorkerExecutionV1::Model {provider_kind:kind,..} if kind==provider_kind)
+        let identity = &identities[&alias];
+        let execution = identity.execution(&model, &effort)?;
+        if !matches!(&execution,WorkerExecutionV1::Model {provider_kind:kind,..} if *kind==provider_kind)
         {
             return Err("Worker and Provider implementation families differ".into());
         }

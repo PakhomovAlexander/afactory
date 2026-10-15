@@ -82,13 +82,23 @@ classified it `unknown`.
    safety-classifier fallback when `safety_stops >= 1`, classified `model_refused`; otherwise an
    unexplained switch, `model_switched`), that af refused the reply from the unrequested model,
    that this is neither a credential nor a spelling problem, and what to do. `account` returns an
-   owned error to carry it. The switch refusal outranks every other accounting reason: whenever
-   `modelUsage` carries a well-formed entry for a model other than the bound one that is not
-   explicitly unused, the error is the switch hint, whatever reasons were found before or after
-   it, and every other reason found follows it, each after a semicolon, so the diagnostic starts
-   with the hint and no accounting fact is lost. The charge, `charge_complete` and the usage
-   observation are exactly what the accounting rules decide; every other accounting rule and
-   refusal is unchanged.
+   owned error to carry it. An entry of `modelUsage` is a **foreign activity** when its key is a
+   well-formed ID (`valid_id`) that is neither the bound model nor an alias whose
+   `canonicalModel` is the bound model, its four counters parse completely (`Counters::parse`
+   finds them not malformed), and at least one of `inputTokens`, `outputTokens`,
+   `cacheCreationInputTokens` and `cacheReadInputTokens` is above zero. A switch is at least one
+   foreign activity, and the switch decision reads every entry of the map however many it holds;
+   the hint names every foreign activity, key and output tokens, in map order. A foreign entry
+   with malformed counters (`{}` included) is the malformed-usage refusal only and never a
+   switch; one with all four counters at zero is explicitly unused and refused for nothing; one
+   with complete counters, none above zero, that leaves a counter out is neither and is refused
+   with `Claude model usage leaves another model's activity unreported`. The charge keeps reading
+   at most 32 entries, as ADR-0102 says. The switch refusal outranks every other accounting
+   reason: whenever a switch is detected, the error is the switch hint, whatever reasons were
+   found before or after it, and every other reason found (the map-size bound included) follows
+   it, each after a semicolon, so the diagnostic starts with the hint and no accounting fact is
+   lost. The charge, `charge_complete` and the usage observation are exactly what the accounting
+   rules decide; every other accounting rule and refusal is unchanged.
 5. **A model Claude Code does not know is `model_unavailable`.** "issue with the selected model"
    and "may not exist or you may not have access" classify as `ModelUnavailable`. The diagnostic
    quotes the rejected spelling, says Claude Code does not know the model ID or the account cannot
@@ -111,11 +121,18 @@ classified it `unknown`.
    `us.anthropic.claude-opus-5-5-v1:0` included) and any other value as `[not printable]` with
    its byte length, never any part of it; `attempt_line` uses it for the node, the Provider ID
    and kind, the model and the effort. `ClaudeTaskAdapter::new` refuses a `--model` or
-   `--effort` outside G before any process starts, and `TaskProviderIdentity::execution`
-   applies the same check beside its versioned-model rule; `af task plan` and `af review run` also
-   run it before the Provider's token-free probes, so no process starts. Each refusal names the rule and the
-   value's byte length, never the value. A `modelUsage` key outside G is still counted as
-   ADR-0102 says and is named `[not printable]` in the hint.
+   `--effort` outside G before any process starts. The token-free static rules of a Model binding
+   live in one function, `TaskProviderIdentity::check_static_rules`: G on the model and on the
+   effort first, then the versioned-model rule, so a value outside G is refused with G's words
+   whatever else it fails, and the versioned-model rule's words are used only for values inside
+   G. `TaskProviderIdentity::execution` applies it, and so does a first pass over every Model
+   Worker (`bind_named_models`, in Worker-name order, for `af task plan` and the Task path of `af
+   review run`) and over every captured reviewer (`review_task::local_workers`, in node order),
+   before any Provider probe starts; its refusal names the Worker or node, the Provider label and
+   the rule. Only then does the second pass probe each Provider label once and build the
+   executions, so an invalid binding anywhere in a Task or review starts no process. Each refusal
+   names the rule and the value's byte length, never the value. A `modelUsage` key outside G is
+   still counted as ADR-0102 says and is named `[not printable]` in the hint.
 8. **No new public schema version.** The classification lives in the diagnostic prose of the
    existing `af.task-diagnostic/1` shape and in process memory; no record, event or document
    changes shape
@@ -156,9 +173,11 @@ classified it `unknown`.
   business Worker starts, as `tests/it/task_file/model_fallback.rs` in the `af` crate shows.
 - A misspelled model reads `model_unavailable` with the spelling it rejected, instead of
   `unknown`.
-- A switch is named first even when the result's usage is also malformed; the accounting reasons
-  follow the hint, and the stderr line is printed.
+- A switch is named first even when the result's usage is also malformed or the map holds more
+  than 32 entries; the accounting reasons follow the hint, and the stderr line is printed. An
+  empty or all-zero foreign entry is never reported as a switch.
 - A binding whose model or effort is a path, an `@`-bearing account identifier or anything else
-  outside G is refused before any process starts, and no output echoes it.
+  outside G is refused with G's words before any process starts, and no output echoes it; an
+  invalid binding on a later Worker or reviewer is refused before the first Provider is probed.
 - `af task run` and `af review run` may print more stderr lines; documents and exit codes are
   unchanged.

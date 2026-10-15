@@ -26,6 +26,12 @@ struct Fixture {
 
 impl Fixture {
     fn new(model: &str, result: &str) -> Self {
+        Self::with_models([model, model], result)
+    }
+
+    /// The fixture with `fixture/bugs` bound to `models[0]` and `fixture/correctness` to
+    /// `models[1]`, both on the one Claude Provider `claude-personal`.
+    fn with_models(models: [&str; 2], result: &str) -> Self {
         use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
@@ -43,7 +49,7 @@ impl Fixture {
         let stub = r#"#!/usr/bin/python3
 import os,json,sys
 home=os.environ['CLAUDE_CONFIG_DIR']
-with open(home+'/started','a') as f: f.write('started\n')
+with open(home+'/started','a') as f: f.write(' '.join(sys.argv[1:3])+'\n')
 if sys.argv[1:] in (['--help'],['--version']):
  sys.stdout.write(open(home+'/'+sys.argv[1][2:]).read())
  sys.exit(0)
@@ -64,7 +70,7 @@ sys.stdout.write(open(home+'/result').read())
         let mut catalog: toml::Value =
             toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
         let mut providers = toml::map::Map::new();
-        for name in ["bugs", "correctness"] {
+        for (name, model) in ["bugs", "correctness"].into_iter().zip(models) {
             let package = format!("fixture/{name}");
             let path = repo.join(format!(".af/task-packages/{package}"));
             let mut worker: TaskWorkerManifest =
@@ -148,6 +154,12 @@ sys.stdout.write(open(home+'/result').read())
     /// guards.
     fn calls(&self) -> String {
         std::fs::read_to_string(self.home.join("calls")).unwrap_or_default()
+    }
+
+    /// Every process the fake was started as, one line each with its first two arguments; empty
+    /// when none started.
+    fn started(&self) -> String {
+        std::fs::read_to_string(self.home.join("started")).unwrap_or_default()
     }
 
     /// The lines on `stderr` that name a failed Provider-admission Attempt.
@@ -330,4 +342,118 @@ fn a_safeguards_refusal_beside_stringless_errors_is_named_and_not_retried() {
         );
         assert_eq!(shown["chargeable_tokens"], "3212", "{shown}");
     }
+}
+
+/// Round 3, (1): 32 explicitly unused entries and then one active foreign entry. The switch
+/// decision reads the whole map: the diagnostic starts with the hint naming that entry, the
+/// map-size reason follows it, and `af task run` prints the hint on its stderr.
+#[test]
+fn a_foreign_activity_after_32_unused_entries_is_named_on_task_run_stderr() {
+    let unused = (0..32)
+        .map(|i| format!(r#""claude-unused-{i:02}":{{"inputTokens":0,"outputTokens":0,"cacheCreationInputTokens":0,"cacheReadInputTokens":0}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    let result = format!(
+        r#"{{"type":"result","subtype":"success","is_error":false,"result":"OK","num_turns":2,"safety_stops":2,"stop_reason":"end_turn","usage":{{"input_tokens":2,"output_tokens":4,"cache_creation_input_tokens":6278,"cache_read_input_tokens":0}},"modelUsage":{{{unused},"claude-opus-5":{{"inputTokens":2,"outputTokens":4,"cacheCreationInputTokens":6278,"cacheReadInputTokens":0}}}}}}"#
+    );
+    let fixture = Fixture::new("claude-fable-5-1", &result);
+    let plan = fixture.run(&["review", "plan", "--file", "review.json"]);
+    assert!(
+        plan.status.success(),
+        "{}",
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    let output = fixture.run(&["task", "run", "--execute", "review-cli"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert_eq!(fixture.calls(), "admission 1 unset\n", "{stderr}");
+    let lines = Fixture::admission_lines(&stderr);
+    assert_eq!(lines.len(), 1, "{stderr}");
+    assert!(
+        lines[0].contains(
+            "model claude-fable-5-1, effort xhigh: the safety classifier of claude-fable-5-1 \
+             flagged the request and Claude Code switched models, a safety-classifier fallback \
+             (model_refused): the Worker bound claude-fable-5-1 (effort xhigh), which reported no \
+             usage, but claude-opus-5 (4 output tokens) answered (safety_stops 2, num_turns 2)"
+        ),
+        "{}",
+        lines[0]
+    );
+    let (shown, diagnostics) = fixture.shown();
+    assert_eq!(diagnostics.len(), 1, "{shown}");
+    let found = review_runner_claude::hint::find(&diagnostics[0]).unwrap();
+    assert!(lines[0].ends_with(found), "{}", lines[0]);
+    assert!(
+        diagnostics[0].contains(&format!(
+            "Claude Worker failed: {found}; Claude model usage exceeds its finite nonempty model \
+             bound"
+        )),
+        "{}",
+        diagnostics[0]
+    );
+    // The charge reads at most 32 entries (ADR-0102): the top-level summary is the floor.
+    assert_eq!(shown["chargeable_tokens"], "6284", "{shown}");
+}
+
+/// Round 3, (4): every Model Worker passes the static rules before any Provider CLI starts. A
+/// valid first Worker and an invalid second one are refused by name, with the Provider label and
+/// the rule, and the fake `claude` never ran.
+#[test]
+fn an_invalid_second_binding_is_refused_before_any_provider_process() {
+    for (second, rule) in [
+        (
+            "bad@account",
+            "Model binding refused: its --model value (11 bytes) is not a model spelling af accepts",
+        ),
+        (
+            "fable",
+            "Task Model binding requires an explicit versioned model ID",
+        ),
+    ] {
+        let fixture = Fixture::with_models(["claude-fable-5-1", second], RECORDED_FALLBACK);
+        for args in [
+            &["task", "plan", "--file", "review.json"][..],
+            &["review", "run", "--file", "review.json"][..],
+        ] {
+            let output = fixture.run(args);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!output.status.success(), "{args:?}: {stderr}");
+            assert!(
+                stderr.contains(&format!(
+                    "Worker fixture/correctness on Provider claude-personal: {rule}"
+                )),
+                "{args:?}: {stderr}"
+            );
+            assert!(!stderr.contains("account"), "{stderr}");
+        }
+        assert_eq!(
+            fixture.started(),
+            "",
+            "{second}: a Provider process started"
+        );
+        assert_eq!(fixture.calls(), "", "{second}");
+    }
+}
+
+/// Round 3, (4): with every binding valid, the second pass probes the Provider once per label,
+/// however many Workers share it.
+#[test]
+fn all_valid_bindings_probe_each_provider_label_once() {
+    let fixture = Fixture::new("claude-fable-5-1", RECORDED_FALLBACK);
+    let output = fixture.run(&["task", "plan", "--file", "review.json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let started = fixture.started();
+    assert_eq!(
+        started
+            .lines()
+            .filter(|line| *line == "auth status")
+            .count(),
+        1,
+        "{started}"
+    );
+    assert_eq!(fixture.calls(), "", "planning made a model call");
 }
