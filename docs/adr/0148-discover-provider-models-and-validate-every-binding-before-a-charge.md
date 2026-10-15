@@ -129,7 +129,12 @@ What the harnesses offer, verified 2026-10-15:
    or the refusal) once per Provider of that kind with a catalog, each prefixed by its ID in
    inventory order (`verdict claude-personal: ok  claude-work: effort not listed: low, medium,
    high`), and `verdict (static rules): …` from the static rules alone when no Provider of that
-   kind has one. The Tasks pane is unchanged.
+   kind has one. The Workers pane follows the Providers pane's catalogs as they arrive: every
+   hand-over advances a generation of the shared catalogs, and the Workers pane's poll rebuilds
+   its rows for the same selection when that generation moved since they were built, so a
+   Worker opened before discovery finishes shows the per-Provider verdicts on the next tick
+   without a key or a reopen, and a catalog a re-probe loses takes the row back to the static
+   rules the same way. The Tasks pane is unchanged.
 6. **One new public document.** `af/provider-models@1` and its schema; every other document,
    record and event keeps its shape. The plan lines are text, and `af/review-plan@1` is
    unchanged.

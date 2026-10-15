@@ -13,6 +13,10 @@
 //!
 //! The pane reads nothing until its folder or one of its entries is first opened: STATE scans
 //! every Task's records (section 8), so the browser does not pay for it on start.
+//!
+//! A runner's verdict is judged against the catalogs the Providers pane read (ADR-0148), and
+//! the pane follows them as they arrive: each poll compares the shared catalogs' generation with
+//! the one its rows were built with and rebuilds them for the same selection when it moved.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -623,6 +627,8 @@ pub(crate) struct WorkersPane {
     prompt_row: usize,
     /// The catalogs the Providers pane read, which a runner's verdict is judged against.
     catalogs: super::providers::SharedCatalogs,
+    /// The catalogs' generation the rows were built with.
+    generation: u64,
 }
 
 impl WorkersPane {
@@ -706,6 +712,7 @@ impl WorkersPane {
     }
 
     fn rebuild(&mut self) {
+        self.generation = self.catalogs.generation();
         let (rows, prompt_row) = match self.selected_entry() {
             Some(entry) => self.entry_rows(entry),
             None => (self.folder_rows(), usize::MAX),
@@ -1149,6 +1156,17 @@ impl Pane for WorkersPane {
             self.rebuild();
         }
         Ok(())
+    }
+
+    /// The Providers pane's discovery hands its catalogs over on its own thread: when the shared
+    /// generation moved since the rows were built, they are built again for the same selection,
+    /// so an open Worker's verdict follows the catalogs as they arrive or go away.
+    fn poll(&mut self) -> bool {
+        if self.catalogs.generation() == self.generation {
+            return false;
+        }
+        self.rebuild();
+        true
     }
 
     /// The prompt's working-tree file at and below the PROMPT rule, committed or not: that is

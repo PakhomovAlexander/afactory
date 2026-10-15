@@ -6,13 +6,14 @@
 //! folded to its header line in the list and unfolds to one row per exact ID when the Provider
 //! is opened or `m` unfolds every section, and shows that Provider's own catalog only. The
 //! catalogs read are shared with the Workers pane under each Provider's id, which gives a
-//! runner's verdict once per Provider of its kind.
+//! runner's verdict once per Provider of its kind and follows the catalogs as they arrive: each
+//! hand-over advances the shared generation the Workers pane polls.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use review_runner_claude::models::{Catalog, Kind};
 
@@ -41,33 +42,49 @@ pub(crate) struct SharedCatalog {
 
 /// The catalogs the Providers pane read, one per probed Provider whose catalog was listed, in
 /// inventory order: what the Workers pane judges a runner against, once per Provider of the
-/// runner's kind. A Provider of the same kind never hides another's catalog.
+/// runner's kind. A Provider of the same kind never hides another's catalog. Every `set`
+/// advances the generation, which the Workers pane polls to rebuild its rows when the catalogs
+/// it judged against change.
 #[derive(Clone, Default)]
-pub(crate) struct SharedCatalogs(Arc<Mutex<Vec<SharedCatalog>>>);
+pub(crate) struct SharedCatalogs(Arc<Mutex<Shared>>);
+
+#[derive(Default)]
+struct Shared {
+    generation: u64,
+    catalogs: Vec<SharedCatalog>,
+}
 
 impl SharedCatalogs {
+    fn lock(&self) -> MutexGuard<'_, Shared> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// How many times the catalogs were set: a reader that recorded another generation judged
+    /// against catalogs that are no longer the ones shared.
+    pub(crate) fn generation(&self) -> u64 {
+        self.lock().generation
+    }
+
     /// The catalogs of every Provider of `kind`, in inventory order.
     pub(crate) fn of_kind(&self, kind: Kind) -> Vec<SharedCatalog> {
-        let catalogs = self
-            .0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        catalogs
+        self.lock()
+            .catalogs
             .iter()
             .filter(|catalog| catalog.kind == kind)
             .cloned()
             .collect()
     }
 
+    /// Replace the catalogs with those `read` listed and advance the generation.
     pub(crate) fn set(&self, read: &[ProviderCatalog]) {
-        let mut catalogs = self
-            .0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        catalogs.clear();
+        let mut shared = self.lock();
+        shared.generation += 1;
+        shared.catalogs.clear();
         for catalog in read {
             if let Some(report) = catalog.outcome.report() {
-                catalogs.push(SharedCatalog {
+                shared.catalogs.push(SharedCatalog {
                     id: catalog.id.clone(),
                     kind: catalog.kind,
                     catalog: report.catalog.clone(),

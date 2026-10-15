@@ -1410,3 +1410,52 @@ fn the_runner_row_gives_one_verdict_per_provider_of_its_kind() {
     let row = runner(&mut WorkersPane::default());
     assert!(row.ends_with("verdict (static rules): ok"), "{row}");
 }
+
+/// A Worker opened before discovery finishes follows the catalogs as they arrive: the next poll
+/// after the Providers pane hands them over rebuilds the open Worker's rows with each Provider's
+/// verdict, a poll with nothing new changes nothing, and catalogs that go away on a re-probe take
+/// the row back to the static rules.
+#[test]
+fn the_runner_row_follows_the_catalogs_as_they_arrive() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        ".af/task-packages/fable/worker.toml",
+        "schema = \"af.worker/1\"\nname = \"kernel/fable\"\nversion = \"1.0.0\"\n\n\
+         [runner]\nkind = \"model\"\nprovider_kind = \"claude\"\n\
+         model = \"claude-fable-5-1\"\neffort = \"xhigh\"\n",
+    );
+    commit_all(root, "declarations");
+    let runner = |pane: &WorkersPane| {
+        texts(pane.rows())
+            .into_iter()
+            .find(|row| row.starts_with("runner "))
+            .unwrap()
+    };
+    let shared = super::super::providers::SharedCatalogs::default();
+    let mut pane = WorkersPane::with_catalogs(shared.clone());
+    pane.load(&scope(root)).unwrap();
+    pane.open(Some(".af/task-packages/fable/worker.toml"));
+    let row = runner(&pane);
+    assert!(row.ends_with("verdict (static rules): ok"), "{row}");
+    assert!(!pane.poll());
+
+    shared.set(&super::super::providers::tests::two_claude_catalogs());
+    assert!(pane.poll());
+    let row = runner(&pane);
+    assert!(
+        row.ends_with(
+            "verdict claude-personal: ok  claude-work: effort not listed: low, medium, high"
+        ),
+        "{row}"
+    );
+    let rows = texts(pane.rows());
+    assert!(!pane.poll());
+    assert_eq!(texts(pane.rows()), rows);
+
+    shared.set(&[]);
+    assert!(pane.poll());
+    let row = runner(&pane);
+    assert!(row.ends_with("verdict (static rules): ok"), "{row}");
+}
