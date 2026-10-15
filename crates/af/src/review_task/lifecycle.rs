@@ -13,6 +13,7 @@ pub(crate) fn run(
     repo: &review_source_git::Repo,
     campaign: &str,
 ) -> Result<review_pipeline::RunVerdict, String> {
+    let started = now_ms()?;
     let PreparedReviewSession {
         mut captured,
         prepared,
@@ -46,9 +47,13 @@ pub(crate) fn run(
         let execution = execute_current(cas, store, &captured, &lease)?;
         prepare_presentation(options, cas, store, &lease, &captured, &execution)
     })();
-    release_then_emit(cas, store, &lease, work, |prepared| {
+    let verdict = release_then_emit(cas, store, &lease, work, |prepared| {
         Ok(prepared.emit(options))
-    })
+    });
+    // Whatever the outcome, a model the bound one did not answer for is named on stderr
+    // (ADR-0147).
+    crate::model_failures::print(cas, store, &captured.revision.task_id, started);
+    verdict
 }
 
 /// Keep all fallible reads and serialization under renewal, without holding the writer

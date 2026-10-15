@@ -263,3 +263,5 @@ future readers need.
   shape](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)
 - [0146 — Refuse a Provider CLI that does not accept af's
   invocation](0146-refuse-a-provider-cli-that-does-not-accept-afs-invocation.md)
+- [0147 — Stop the Claude model fallback, and name the model that
+  answered](0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)

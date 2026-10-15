@@ -354,6 +354,7 @@ impl CampaignReviewTaskHost<'_, '_> {
             usage_id: None,
             feedback_id: None,
             unknown_usage_cause: None,
+            refused_input: false,
         }
     }
 

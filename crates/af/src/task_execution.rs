@@ -1678,7 +1678,13 @@ fn start_captured(
         execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
         Ok(())
     })();
-    release(&cas, &mut store, &lease, outcome)?;
+    let released = release(&cas, &mut store, &lease, outcome);
+    // Whatever the outcome, a model the bound one did not answer for is named on stderr
+    // (ADR-0147).
+    if presentation == Presentation::Print {
+        crate::model_failures::print(&cas, &store, &revision.task_id, started);
+    }
+    released?;
     if presentation == Presentation::Silent {
         return Ok(0);
     }
@@ -2067,6 +2073,7 @@ pub(super) fn run(
     confirm_plan: Option<&str>,
     execute_now: bool,
 ) -> Result<i32, String> {
+    let started = clock()?;
     let (_, state) = state_path(repo, state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     if !state.join("events.sqlite").is_file() {
@@ -2212,7 +2219,11 @@ pub(super) fn run(
         execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
         Ok(())
     })();
-    release(&cas, &mut store, &lease, outcome)?;
+    let released = release(&cas, &mut store, &lease, outcome);
+    // Whatever the outcome, a model the bound one did not answer for is named on stderr
+    // (ADR-0147).
+    crate::model_failures::print(&cas, &store, id, started);
+    released?;
     present(&cas, &store, id, json, false)
 }
 

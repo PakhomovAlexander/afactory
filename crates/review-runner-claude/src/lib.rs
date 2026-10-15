@@ -29,6 +29,16 @@
 //! the real `HOME` is a deliberate loosening relative to the codex adapter; every grant's value
 //! is redacted from everything stored.
 //!
+//! **The bound model is the only model.** A Task Attempt runs with
+//! `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`, beside the nonessential-traffic and terminal-title
+//! guards: when the bound model's safety classifier flags a request, Claude Code would otherwise
+//! re-run it on a fallback model and keep the session there. With it the turn ends as a refusal,
+//! classified `model_refused`, charged what it reports and never retried.
+//! `CLAUDE_CODE_NO_MODEL_FALLBACK` is not set, since it also disables compaction's model
+//! substitution. The guard is a client mitigation; the identity check over `modelUsage` stays the
+//! authority and refuses, by name, any reply another model took part in. [`hint`] words all of it
+//! for the run's own stderr (ADR-0147). [`ClaudeAdapter`] starts no process, so it sets no guard.
+//!
 //! **No session is carried.** An Attempt's command assigns no session identity and resumes
 //! nothing; the history the CLI keeps for an Attempt's own working directory is removed when the
 //! process exits ([`session::ClaudeSessionStore::remove_attempt_project`]).
@@ -39,6 +49,7 @@
 //! bookkeeping. Codex reports cached reads inside `input_tokens`, so the two adapters differ
 //! exactly where their providers do.
 
+pub mod hint;
 pub mod session;
 pub mod task;
 

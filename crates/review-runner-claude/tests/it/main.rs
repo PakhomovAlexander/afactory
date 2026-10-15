@@ -10,6 +10,7 @@ mod fake_claude;
 mod task_auth_failure;
 mod task_cancellation;
 mod task_capture;
+mod task_model_fallback;
 mod task_model_usage;
 mod task_structured;
 mod task_worker;

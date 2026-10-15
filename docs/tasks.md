@@ -114,7 +114,14 @@ adds nothing to the Task's, a node's or the verification reserve's charged token
 Attempt limits bound repeated failures of this kind. `task list` prints such a Task's tokens as
 `1200 tokens (+1 unknown)` rather than as spend, `task show` adds the line
 `tokens 1200 (+1 unknown: capacity)` naming the causes, and their `--json` documents carry
-`unknown_usage_attempts`. The
+`unknown_usage_attempts`. A Claude Attempt whose bound model's safety classifier refused it
+(`model_refused`) has known usage: it is charged what its result reports and is not retried,
+because the same input is flagged again. A reply from a model the Worker did not bind is refused
+and charged the same way, and a model ID Claude Code does not know fails as `model_unavailable`.
+For each of these, `task run` and `review run` print one stderr line with the node, the Provider,
+the bound model and effort, the classification and the next step; `task show` keeps the full
+diagnostic ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md),
+[model bindings](task-execution/model-bindings.md)). The
 Task ID is also the delivery confirmation. An unverified Task is evidence, not a deliverable:
 read `task show`, fix the catalog, check, Worker or goal problem, then start a corrected Task
 under a new Task ID.

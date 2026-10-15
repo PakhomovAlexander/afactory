@@ -1,5 +1,6 @@
 //! Reconcile overlapping native summaries; never add top-level usage to its model breakdown
 //! (ADR-0102, ADR-0125).
+use crate::hint::{BoundModel, ModelOutcome, OtherModel, compose};
 use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
 use review_runner::task::usage::NativeCounter;
 use serde_json::Value;
@@ -11,7 +12,20 @@ const MAX_MODEL_ID_BYTES: usize = 256;
 pub(super) struct Accounting {
     pub usage: Option<TaskTokenUsageV3>,
     pub observation: Option<TaskUsageObservationV1>,
-    pub error: Option<&'static str>,
+    pub error: Option<String>,
+    /// The error is the model-switch refusal, worded by [`crate::hint::compose`] (ADR-0147).
+    pub switched: bool,
+}
+
+/// Why the reply is refused. The first reason found is the one reported.
+enum Refusal {
+    Reason(&'static str),
+    /// `modelUsage` reports activity of a model the Worker did not bind.
+    Switched,
+}
+
+fn refuse(error: &mut Option<Refusal>, reason: Refusal) {
+    error.get_or_insert(reason);
 }
 
 #[derive(Clone, Copy, Default)]
@@ -105,7 +119,9 @@ fn valid_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-._:/".contains(&b))
 }
 
-pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
+/// Account for one result, `selected` being the bound `--model` and `effort` its `--effort`.
+pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str>) -> Accounting {
+    use Refusal::Reason;
     let (top_usage, top_observation) = super::parse_usage(value);
     let Some(map) = value.and_then(|v| v.get("modelUsage")) else {
         // Preserve the top-level-only native contract, including its malformed-usage observation.
@@ -113,12 +129,14 @@ pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
             usage: top_usage,
             observation: top_observation,
             error: None,
+            switched: false,
         };
     };
     let mut error = None;
-    let mut refuse = |reason| {
-        error.get_or_insert(reason);
-    };
+    // What the switch refusal names: the bound model's own output and every other model that
+    // was active, with its output.
+    let mut bound_output_tokens = None;
+    let mut others = Vec::new();
     let top = value
         .and_then(|v| v.get("usage"))
         .map(|v| {
@@ -135,14 +153,17 @@ pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
         .unwrap_or_default();
     let mut complete = top.complete;
     if top.malformed {
-        refuse("Claude top-level usage is malformed");
+        refuse(&mut error, Reason("Claude top-level usage is malformed"));
     }
     let mut groups = BTreeMap::<&str, Counters>::new();
     let mut scopes = Vec::new();
     if let Some(entries) = map.as_object() {
         if entries.is_empty() || entries.len() > MAX_MODELS {
             complete = false;
-            refuse("Claude model usage exceeds its finite nonempty model bound");
+            refuse(
+                &mut error,
+                Reason("Claude model usage exceeds its finite nonempty model bound"),
+            );
         }
         for (key, model) in entries.iter().take(MAX_MODELS) {
             let counters = Counters::parse(
@@ -156,7 +177,7 @@ pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
             );
             complete &= counters.complete;
             if counters.malformed {
-                refuse("Claude per-model usage is malformed");
+                refuse(&mut error, Reason("Claude per-model usage is malformed"));
             }
             let canonical = model.get("canonicalModel");
             let canonical_id = canonical.and_then(Value::as_str);
@@ -165,7 +186,10 @@ pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
                 && !(key == selected && canonical_id.is_some_and(|id| id != selected));
             if !identity_valid {
                 complete = false;
-                refuse("Claude model usage identity is malformed");
+                refuse(
+                    &mut error,
+                    Reason("Claude model usage identity is malformed"),
+                );
             }
             let matches = identity_valid
                 && if key == selected {
@@ -175,6 +199,9 @@ pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
                 };
             if matches {
                 scopes.push(counters);
+                if bound_output_tokens.is_none() {
+                    bound_output_tokens = model.get("outputTokens").and_then(Value::as_u64);
+                }
             }
             let explicitly_unused = [
                 "inputTokens",
@@ -187,7 +214,14 @@ pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
             if !(matches || identity_valid && explicitly_unused) {
                 // Detection follows the native invocation. Retain its charge even on refusal;
                 // this check cannot prevent an internal client request from having occurred.
-                refuse("Claude model usage reports an unexpected model identity");
+                // Only a well-formed ID is named; a malformed one was refused above.
+                if identity_valid {
+                    others.push(OtherModel {
+                        model: key.clone(),
+                        output_tokens: model.get("outputTokens").and_then(Value::as_u64),
+                    });
+                }
+                refuse(&mut error, Refusal::Switched);
             }
             let group = canonical_id.filter(|id| valid_id(id)).unwrap_or(key);
             if let Some(prior) = groups.get_mut(group) {
@@ -195,14 +229,17 @@ pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
                 // dimensions, rather than summing duplicate identities as independent spend.
                 *prior = prior.lower_bound(counters);
                 complete = false;
-                refuse("Claude model usage contains ambiguous duplicate identities");
+                refuse(
+                    &mut error,
+                    Reason("Claude model usage contains ambiguous duplicate identities"),
+                );
             } else {
                 groups.insert(group, counters);
             }
         }
     } else {
         complete = false;
-        refuse("Claude model usage is not an object");
+        refuse(&mut error, Reason("Claude model usage is not an object"));
     }
     let mut sum = Counters {
         complete: true,
@@ -233,12 +270,18 @@ pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
     let covered = matching_scope.is_none() && top.within(sum);
     if matching_scope.is_none() && !covered {
         complete = false;
-        refuse("Claude top-level and per-model usage cannot be reconciled");
+        refuse(
+            &mut error,
+            Reason("Claude top-level and per-model usage cannot be reconciled"),
+        );
     }
     if matching_scope.is_some_and(|scope| top.read_conflicts(scope))
         || covered && top.read_exceeds(sum)
     {
-        refuse("Claude top-level and per-model cache-read metadata disagree");
+        refuse(
+            &mut error,
+            Reason("Claude top-level and per-model cache-read metadata disagree"),
+        );
     }
     let model_usage = sum.usage();
     let charge =
@@ -256,10 +299,28 @@ pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
             charge_complete: complete,
         }
     });
+    let switched = matches!(error, Some(Refusal::Switched));
+    let count = |key| value.and_then(|v| v.get(key)).and_then(Value::as_u64);
+    let error = error.map(|refusal| match refusal {
+        Reason(reason) => reason.to_owned(),
+        Refusal::Switched => compose(
+            BoundModel {
+                model: selected,
+                effort,
+            },
+            &ModelOutcome::Switched {
+                bound_output_tokens,
+                others: &others,
+                safety_stops: count("safety_stops"),
+                num_turns: count("num_turns"),
+            },
+        ),
+    });
     Accounting {
         usage,
         observation,
         error,
+        switched,
     }
 }
 

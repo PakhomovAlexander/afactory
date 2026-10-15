@@ -120,6 +120,7 @@ impl ProviderTaskDomain<'_> {
                     usage_id: None,
                     feedback_id: None,
                     unknown_usage_cause: None,
+                    refused_input: false,
                 };
             }
         };
@@ -185,6 +186,9 @@ impl ProviderTaskDomain<'_> {
             unknown_usage_cause: returned
                 .native_failure
                 .map(review_runner::native_failure::NativeFailureKind::unknown_usage_cause),
+            refused_input: returned
+                .native_failure
+                .is_some_and(review_runner::native_failure::NativeFailureKind::refuses_input),
         }
     }
 }

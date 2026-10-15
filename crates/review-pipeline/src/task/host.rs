@@ -1073,6 +1073,8 @@ impl<'a> CapturedTaskHost<'a> {
             feedback_id,
             unknown_usage_cause: native_failure
                 .map(review_runner::native_failure::NativeFailureKind::unknown_usage_cause),
+            refused_input: native_failure
+                .is_some_and(review_runner::native_failure::NativeFailureKind::refuses_input),
         }
     }
 }
@@ -1135,6 +1137,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
                 usage_id: None,
                 feedback_id: None,
                 unknown_usage_cause: None,
+                refused_input: false,
             },
             (None, _) => self
                 .domain

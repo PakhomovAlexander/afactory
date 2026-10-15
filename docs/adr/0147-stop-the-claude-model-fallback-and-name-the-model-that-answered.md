@@ -1,0 +1,139 @@
+# ADR-0147: Stop the Claude model fallback, and name the model that answered
+
+**Status:** accepted (2026-10-15). Extends
+[ADR-0102](0102-account-for-every-reported-claude-task-model.md) and
+[ADR-0125](0125-charge-a-claude-model-breakdown-that-covers-the-top-level-summary.md): the identity
+check and the charge stay as they are; the refusal now names what happened and the next step, a
+safety-classifier refusal is its own classification, and the Claude Task adapter turns Claude
+Code's automatic model fallback off.
+
+## Context
+
+[Issue #263](https://github.com/PakhomovAlexander/afactory/issues/263). Three `af review`
+Provider-admission Attempts (2026-10-13 23:47 and 2026-10-14 00:04 on af 0.12.0-rc.1 with Claude
+Code 2.1.299, 2026-10-15 01:11 on 0.12.0-rc.3 with 2.1.300), bound to `--model claude-fable-5-1
+--effort xhigh` with the input `Reply with exactly: OK`, each returned `is_error:false`,
+`result:"OK"`, `num_turns:2`, `safety_stops:2`, `stop_reason:"end_turn"`, `fallback_credit:null`,
+and a `modelUsage` with two models: `claude-fable-5-1` (inputTokens 2, outputTokens 0,
+cacheCreationInputTokens 3210, cacheReadInputTokens 3001) and `claude-opus-5` (inputTokens 2,
+outputTokens 4, cacheCreationInputTokens 6278, cacheReadInputTokens 0). The top-level `usage` was
+their sum (input 4, output 4, cache creation 9488, cache read 3001). `model_usage::account`
+refused the reply, which is right, the Attempt was charged 9496 tokens, and the campaign ended
+`incomplete (3 missing nodes)`. The only reason given was `Claude model usage reports an
+unexpected model identity`, in the Task record's diagnostic artifact, never on the run's stdout
+or stderr. An operator asking for Claude Fable 5.1 read it as a mysterious model denial.
+
+Eight hand replays of the same invocation on 2026-10-15 made one turn on `claude-fable-5-1` with
+`safety_stops:0`: the switch is not deterministic. Claude Code documents it (model configuration,
+"Automatic model fallback"): Fable 5.1, Fable 5, Opus 5.5, Sonnet 5.5 and Opus 5 run safety
+classifiers; a flagged request is re-run on a category-specific fallback model (Opus 5 or Opus 4.8
+for Fable 5.1 and Opus 5.5) and the session stays there; the first request can be flagged because
+it carries workspace context; `switchModelsOnFlag` only turns the switch into a question in
+interactive sessions. Users report switches on benign input and the setting being ignored
+(anthropics/claude-code issues 98875 and 66657).
+
+In Claude Code 2.1.300 the environment variable `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK` gates the
+whole refusal-fallback feature. `CLAUDE_CODE_NO_MODEL_FALLBACK` instead disables every model
+substitution, including the one compaction may need ("Compaction unavailable:
+CLAUDE_CODE_NO_MODEL_FALLBACK is set and model substitution is disabled"). With
+`CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1` a normal `claude-fable-5-1` run is unchanged (verified
+2026-10-15: one turn, one model, `safety_stops:0`). Without a fallback, a flagged request ends as
+a refusal: the API's `stop_reason:"refusal"` with `stop_details.category`, and in Claude Code the
+text "<Model>'s safeguards flagged this message (https://www.anthropic.com/legal/aup). This
+sometimes happens with safe, normal conversations." af reads `--output-format json`, whose result
+object carries `safety_stops`, `num_turns`, `stop_reason`, `usage` and `modelUsage`; af read none
+of the first three.
+
+A misspelled model (`claude -p --model claude-fable-5.1`) exits 1 with `is_error:true`, the result
+"There's an issue with the selected model (claude-fable-5.1). It may not exist or you may not have
+access to it. Run --model to pick a different model.", zero `usage` and no `modelUsage`. af
+classified it `unknown`.
+
+## Decision
+
+1. **af never runs a model the Worker did not bind and never accepts a reply from one.**
+   ADR-0102 and ADR-0125 stand: `model_usage::account` refuses any other model's activity, and the
+   Attempt is charged what the result reports (the recorded result charges 9496).
+2. **The fallback is turned off at the source.** The Claude Task adapter passes
+   `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1` to every Attempt, for every access mode, beside
+   `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` and `CLAUDE_CODE_DISABLE_TERMINAL_TITLE` and with
+   their status: a bounded client mitigation, not proof. The identity check in 1 stays the
+   authority. `CLAUDE_CODE_NO_MODEL_FALLBACK` is not set. The review-time Claude adapter
+   (`ClaudeAdapter` in `crates/review-runner-claude/src/lib.rs`) only renders a package's input for
+   `af review render` and starts no process, so it sets none of the three; every Review Worker
+   runs through the Task adapter. No isolation flag and no tool grant changes.
+3. **A classifier refusal is its own outcome.** `NativeFailureKind::ModelRefused`, spelled
+   `model_refused`, is recognised from a parsed result when `safety_stops` is a positive integer,
+   or `stop_reason` is `refusal`, or an error result carries the "safeguards flagged this message"
+   text, whatever `is_error` says. A result with `safety_stops >= 1` is never a success. The
+   diagnostic names the bound model and effort, the count, the category when the result names one
+   (`stop_details.category`), that af turned Claude Code's automatic switch off because af never
+   runs an unrequested model, and the next step. The Task runtime does not retry an Attempt that
+   failed this way (`TaskWorkOutput::refused_input`): the same input is flagged again, so the node
+   fails at once with its remaining Attempts unspent. The Attempt is charged exactly the usage the
+   result reports.
+4. **The identity refusal is specific.** When `modelUsage` names a model other than the bound one,
+   the diagnostic names the bound model with its output tokens, each other model with its output
+   tokens, `safety_stops` and `num_turns` when present, says Claude Code switched models (a
+   safety-classifier fallback when `safety_stops >= 1`, classified `model_refused`; otherwise an
+   unexplained switch, `model_switched`), that af refused the reply from the unrequested model,
+   that this is neither a credential nor a spelling problem, and what to do. `account` returns an
+   owned error to carry it; every other accounting rule and refusal is unchanged.
+5. **A model Claude Code does not know is `model_unavailable`.** "issue with the selected model"
+   and "may not exist or you may not have access" classify as `ModelUnavailable`. The diagnostic
+   quotes the rejected spelling, says Claude Code does not know the model ID or the account cannot
+   use it, and names `af provider status` (token-free) and `af provider doctor` (charged).
+6. **The calling site says it.** One function, `review_runner_claude::hint::compose`, writes the
+   hint for 3, 4 and 5; the Attempt diagnostic starts with it after `Claude Worker failed:`. When
+   a Provider-admission or Worker Attempt fails with one of these outcomes, `af task run` and `af
+   review run` print one stderr line per failed Attempt of that run: `af: NODE failed: Provider ID
+   (KIND), model MODEL, effort EFFORT: HINT`. The hint is read back with `hint::find`, which takes
+   only af's own head of the diagnostic up to its fixed next step, so no Worker text after it is
+   printed. `af review report` follows its `incomplete (N missing nodes)` final verdict, and `af
+   review run` its incomplete verdict line, with the same hint for each missing node it
+   explains. `af task show` keeps the full
+   diagnostic. A hint holds no secret, no prompt text, no Worker output and no path: model IDs and
+   efforts are printed only in their identifier alphabet, and a category only as a short
+   lower-case name.
+7. **No new public schema version.** The classification lives in the diagnostic prose of the
+   existing `af.task-diagnostic/1` shape and in process memory; no record, event or document
+   changes shape
+   ([ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)).
+
+## Considered options
+
+- **Set `CLAUDE_CODE_NO_MODEL_FALLBACK`.** Rejected. It disables every model substitution,
+  compaction's included, so a long Worker session could fail to compact. The refusal fallback is
+  the one substitution af must stop.
+- **Accept the fallback model's reply when the classifier switched.** Rejected. af never runs or
+  accepts a model the Worker did not bind (ADR-0102). The Worker, its plan and its cost were
+  approved for the bound model.
+- **Retry a refused Attempt.** Rejected. The classifier flags the same input again, so a retry
+  spends another Attempt and its tokens on a known outcome. A human may rerun; the hint says how.
+- **A new unknown-usage cause for a refusal.** Rejected. A classifier refusal reports its usage
+  (the API bills some categories before any output, others not, and counts both against rate
+  limits), so it is charged and is not an unknown-usage case. When a refusal does report nothing,
+  nothing better than `unreported` is known, and a new cause would change the closed
+  `TaskUnknownUsageCauseV1` fixed in `task-execution-record-v5.json` and `task-report-v1.json`,
+  which takes a new version (ADR-0145) for no gain. `unknown_usage_cause()` for `ModelRefused` is
+  `Unreported`.
+- **Read the stream-json `model_refusal_fallback` and `model_refusal_no_fallback` messages.**
+  Rejected for now. af reads `--output-format json`, whose one result object carries the counts
+  af needs; older CLIs do not emit those messages, and switching the output format would change
+  the invocation every adapter test and the capability check pin.
+- **Store the classification as a typed field of the diagnostic.** Rejected. It changes the
+  `af.task-diagnostic/1` shape and its schema. The hint is af's own words at a fixed place in the
+  diagnostic, found by one function beside the one that writes it.
+
+## Consequences
+
+- A flagged request on a client that honours the guard ends as `model_refused` on the bound
+  model, is charged what it reports and is not retried; the run's stderr says so with the next
+  step. A client that still switches is refused by name, `model_refused` with the safety-classifier
+  fallback or `model_switched`, and the hint tells the operator to upgrade Claude Code.
+- The recorded fallback result is refused, charged 9496 tokens and named on stderr before any
+  business Worker starts, as `tests/it/task_file/model_fallback.rs` in the `af` crate shows.
+- A misspelled model reads `model_unavailable` with the spelling it rejected, instead of
+  `unknown`.
+- `af task run` and `af review run` may print more stderr lines; documents and exit codes are
+  unchanged.

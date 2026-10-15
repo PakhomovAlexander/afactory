@@ -261,6 +261,7 @@ impl CampaignReviewTaskHost<'_, '_> {
             usage_id: None,
             feedback_id: None,
             unknown_usage_cause: None,
+            refused_input: false,
         };
         let mut feedback_code = TaskFeedbackCodeV1::ContextRejected;
         let mut runtime_evidence_id: Option<String> = None;
@@ -365,6 +366,9 @@ impl CampaignReviewTaskHost<'_, '_> {
             result.unknown_usage_cause = returned
                 .native_failure
                 .map(review_runner::native_failure::NativeFailureKind::unknown_usage_cause);
+            result.refused_input = returned
+                .native_failure
+                .is_some_and(review_runner::native_failure::NativeFailureKind::refuses_input);
             result.charged_tokens = result
                 .usage
                 .as_ref()

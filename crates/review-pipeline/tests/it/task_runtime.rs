@@ -23,6 +23,8 @@ const LOAD_SAFE_WALL: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[path = "task_runtime/control.rs"]
 mod control;
+#[path = "task_runtime/model_refused.rs"]
+mod model_refused;
 #[path = "task_runtime/output_admission.rs"]
 mod output_admission;
 #[path = "task_runtime/publication.rs"]

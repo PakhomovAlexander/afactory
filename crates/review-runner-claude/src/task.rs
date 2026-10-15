@@ -1,8 +1,9 @@
 //! Claude framing for generic typed Task Workers. No review-result parser or retry loop.
 use super::*;
+use crate::hint;
 use review_runner::cli::{
-    WorkerStderr, classify_without_result, startup_failure, strongest_native_failure,
-    transport_outcome,
+    WorkerStderr, classify_without_result, ended_without_result, startup_failure,
+    strongest_native_failure, transport_outcome,
 };
 use review_runner::native_failure::{NativeFailureKind, classify_native_failure};
 use review_runner::task::{ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter};
@@ -111,6 +112,48 @@ impl ClaudeTaskAdapter {
     /// After the Claude process of an Attempt in `workdir` exits, whatever the outcome, remove
     /// the history the CLI kept for that working directory (ADR-0144). Only a directory af
     /// created for this Attempt alone qualifies; a failure is reported, never the Attempt's.
+    fn effort(&self) -> Option<&str> {
+        self.model_flags
+            .chunks_exact(2)
+            .find(|pair| pair[0] == "--effort")
+            .map(|pair| pair[1].as_str())
+    }
+
+    /// The hint for an Attempt the bound model did not answer: another model answered, the
+    /// safety classifier refused, or Claude Code does not know the model (ADR-0147).
+    fn hint(
+        &self,
+        envelope: Option<&serde_json::Value>,
+        accounting: &model_usage::Accounting,
+        failure: Option<NativeFailureKind>,
+    ) -> Option<String> {
+        if accounting.switched {
+            return accounting.error.clone();
+        }
+        let bound = hint::BoundModel {
+            model: &self.model,
+            effort: self.effort(),
+        };
+        let outcome = match failure? {
+            NativeFailureKind::ModelRefused => {
+                let value = envelope?;
+                hint::ModelOutcome::Refused {
+                    safety_stops: value
+                        .get("safety_stops")
+                        .and_then(serde_json::Value::as_u64),
+                    stop_reason_refusal: value
+                        .get("stop_reason")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("refusal"),
+                    category: refusal_category(value),
+                }
+            }
+            NativeFailureKind::ModelUnavailable => hint::ModelOutcome::Unavailable,
+            _ => return None,
+        };
+        Some(hint::compose(bound, &outcome))
+    }
+
     fn remove_transcripts(&self, workdir: &Path) {
         if self.keep_transcripts {
             return;
@@ -198,13 +241,22 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             access,
             output_schema.as_deref(),
         );
-        // Native 2.1.272 uses these guards to latch automatic title generation before its
-        // auxiliary inference. They preserve OAuth/auth grants, unlike --bare. This is a
-        // bounded client mitigation, not proof that every internal model request is disabled.
-        // The working directory is the sandbox root the kernel materialized.
+        // Native 2.1.272 uses the first two guards to latch automatic title generation before
+        // its auxiliary inference. They preserve OAuth/auth grants, unlike --bare. The third
+        // turns off Claude Code's automatic model fallback: when the bound model's safety
+        // classifier flags a request, the client would re-run it on another model and keep the
+        // session there (2.1.300 gates that whole feature on this variable). With it set, a
+        // flagged request ends as a refusal on the bound model instead, which af classifies
+        // `model_refused`. CLAUDE_CODE_NO_MODEL_FALLBACK is deliberately not set: it disables
+        // every model substitution, compaction's included. All three are a bounded client
+        // mitigation, not proof that every internal model request is disabled or that no other
+        // model answers; the identity check in `model_usage::account` stays the authority
+        // (ADR-0102, ADR-0147). The working directory is the sandbox root the kernel
+        // materialized.
         let mut runner = ModelRunner::new(workdir, timeout)
             .with_env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-            .with_env("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1");
+            .with_env("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1")
+            .with_env("CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK", "1");
         if access.has_shell() {
             // A shell child must not outlive the Attempt that started it.
             runner = runner.killing_process_group_on_exit();
@@ -218,6 +270,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         }
         let mut parsed = None;
         let mut enveloped = false;
+        let mut refused = false;
         let mut failure: Option<NativeFailureKind> = None;
         let mut said = WorkerStderr::default();
         let capture = runner.capture_filtered(
@@ -236,6 +289,8 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 let native_failed = envelope.is_some_and(|value| {
                     value.get("is_error").and_then(serde_json::Value::as_bool) == Some(true)
                 });
+                // A classifier refusal is never a success, whatever `is_error` says.
+                refused = envelope.is_some_and(refusal_reported);
                 // The Worker's own last words, bounded and filtered, before the privacy filter
                 // below may replace the stream.
                 said = WorkerStderr::read(stderr, stdout);
@@ -251,8 +306,10 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                             strongest_native_failure(&candidates).is_auth(),
                         )
                     }
-                    // A parsed envelope speaks only through its native error fields, so model
-                    // text cannot choose the category.
+                    // A parsed envelope speaks only through its native fields, so model text
+                    // cannot choose the category. A reported refusal is one whatever else the
+                    // streams say.
+                    Some(_) if refused => (NativeFailureKind::ModelRefused, false),
                     Some(value) if failed || native_failed => {
                         let kind = strongest_native_failure(&[
                             native_failure(value, native_failed),
@@ -269,9 +326,10 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         // The process has exited, whatever its outcome: what it kept in the operator's Claude
         // history for this Attempt's working directory goes now.
         self.remove_transcripts(workdir);
-        let accounting = model_usage::account(parsed.as_ref(), &self.model);
+        let accounting = model_usage::account(parsed.as_ref(), &self.model, self.effort());
         let envelope = parsed.as_ref().filter(|_| enveloped);
         let success = accounting.error.is_none()
+            && !refused
             && accounting.observation.is_none()
             && capture.status.as_ref().is_ok_and(|status| status.success())
             && envelope.is_some_and(|v| {
@@ -282,6 +340,21 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 envelope.expect("successful envelope"),
                 output_schema.is_some(),
             )
+        } else if let Some(hint) = self.hint(envelope, &accounting, failure) {
+            // The bound model did not answer: one af-authored hint leads the diagnostic, so the
+            // calling site can print it again (ADR-0147).
+            let ended = match envelope {
+                Some(_) => format!("transport: {}", transport_outcome(&capture.status)),
+                None => format!("it {}", ended_without_result(&capture.status, &said)),
+            };
+            let mut error = format!("{}{hint}; {ended}", hint::DIAGNOSTIC_PREFIX);
+            if !accounting.switched
+                && let Some(accounting_error) = &accounting.error
+            {
+                error.push_str("; ");
+                error.push_str(accounting_error);
+            }
+            Err(error)
         } else if envelope.is_none() {
             // No envelope, whether stdout was empty, prose or JSON of another shape (`{}`), and
             // whatever the exit: the process's exit and its own last words are all there is,
@@ -299,7 +372,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 kind.diagnostic(),
                 transport_outcome(&capture.status)
             );
-            if let Some(accounting_error) = accounting.error {
+            if let Some(accounting_error) = &accounting.error {
                 error.push_str("; ");
                 error.push_str(accounting_error);
             } else if accounting.observation.is_some() {
@@ -307,7 +380,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             }
             Err(error)
         } else if let Some(error) = accounting.error {
-            Err(error.into())
+            Err(error)
         } else {
             Err(format!(
                 "Claude Worker failed; transport: {}",
@@ -327,6 +400,29 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             Err(Unstarted(Box::new(returned)))
         }
     }
+}
+
+/// Whether a result reports that the bound model's safety classifier flagged the request: a
+/// positive `safety_stops`, `stop_reason` `refusal`, or, in an error result, Claude Code's own
+/// "safeguards flagged this message" text. `is_error` does not decide it.
+fn refusal_reported(value: &serde_json::Value) -> bool {
+    value
+        .get("safety_stops")
+        .and_then(serde_json::Value::as_u64)
+        .is_some_and(|stops| stops >= 1)
+        || value.get("stop_reason").and_then(serde_json::Value::as_str) == Some("refusal")
+        || value.get("is_error").and_then(serde_json::Value::as_bool) == Some(true)
+            && native_failure(value, true) == NativeFailureKind::ModelRefused
+}
+
+/// The policy category a refusal result names, when it names one: `stop_details.category` as
+/// the API reports it, or the client's `api_refusal_category`.
+fn refusal_category(value: &serde_json::Value) -> Option<&str> {
+    value
+        .get("stop_details")
+        .and_then(|details| details.get("category"))
+        .or_else(|| value.get("api_refusal_category"))
+        .and_then(serde_json::Value::as_str)
 }
 
 /// Whether stdout is a result envelope: a JSON object carrying the fields the adapter reads, a

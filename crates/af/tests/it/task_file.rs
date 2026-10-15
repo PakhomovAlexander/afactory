@@ -4,6 +4,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+#[path = "task_file/model_fallback.rs"]
+mod model_fallback;
 #[path = "task_file/wall_bounds.rs"]
 mod wall_bounds;
 

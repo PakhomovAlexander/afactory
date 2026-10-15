@@ -123,6 +123,34 @@ An absent breakdown retains the plain native usage format. See
 [ADR-0102](../adr/0102-account-for-every-reported-claude-task-model.md) and
 [ADR-0125](../adr/0125-charge-a-claude-model-breakdown-that-covers-the-top-level-summary.md).
 
+What admission and Workers refuse about the model: af never runs a model the Worker did not bind and never accepts a reply from one. Claude Code
+runs safety classifiers on Claude Fable 5.1, Fable 5, Opus 5.5, Sonnet 5.5 and Opus 5. When one
+flags a request, even the first request of a session, the client would re-run it on a fallback
+model and keep the session there. Every Claude Attempt, the Provider-admission probe included,
+therefore runs with `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`, beside the two guards above and with
+their status: a client mitigation, never the authority. `CLAUDE_CODE_NO_MODEL_FALLBACK` is not
+set, because it also disables the model substitution compaction may need. Three outcomes follow:
+
+- **`model_refused`.** The result reports `safety_stops` above zero or `stop_reason`
+  `refusal`, or Claude Code's error says its safeguards flagged the message. It is never a
+  success, whatever `is_error` says. The Attempt is charged the usage the result reports and is
+  not retried, because the same input is flagged again; a refused admission starts no business
+  Worker.
+- **A switched model.** `modelUsage` names a model other than the bound one: af refuses the reply
+  as before and charges what the breakdown reports (the recorded admission result of 2026-10-15,
+  `claude-fable-5-1` with 0 output tokens and `claude-opus-5` with 4, charges 9496). The
+  diagnostic names both models, their output tokens, `safety_stops` and `num_turns`, and says
+  whether it was a safety-classifier fallback (`model_refused`) or an unexplained switch
+  (`model_switched`).
+- **`model_unavailable`.** Claude Code answered that there is an issue with the selected model:
+  it does not know the model ID or the account cannot use it. The diagnostic quotes the spelling
+  it rejected and names `af provider status` (token-free) and `af provider doctor` (charged).
+
+For each such failed admission or Worker Attempt, `af task run` and `af review run` print one
+stderr line naming the node, the Provider ID and kind, the bound model and effort, the
+classification and the next step; `af task show` keeps the full diagnostic. See
+[ADR-0147](../adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md).
+
 The native adapter's controlled invocation boundary can stop an owned process group and retain
 cancelled usage through bounded output draining. Unsupported adapters refuse a supplied control.
 Common CLI Task, planning, Review and doctor execution share that control with their writer

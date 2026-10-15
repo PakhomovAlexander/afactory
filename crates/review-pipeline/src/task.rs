@@ -63,6 +63,9 @@ pub struct TaskWorkOutput {
     /// What the host knows about why usage may be missing, such as the classified native
     /// failure; None when it knows nothing better than an absent report.
     pub unknown_usage_cause: Option<review_core::task::usage::TaskUnknownUsageCauseV1>,
+    /// The Provider refused this exact input: the bound model's safety classifier flagged it.
+    /// The same input is flagged again, so a failed Attempt with it is not retried (ADR-0147).
+    pub refused_input: bool,
 }
 
 pub trait TaskOperatorHost: Sync {
@@ -735,7 +738,9 @@ impl TaskRuntime<'_, '_> {
                 usage_id: None,
                 feedback_id: None,
                 unknown_usage_cause: None,
+                refused_input: false,
             });
+            let refused_input = result.refused_input;
             if let Some(attempt) = &attempt {
                 // Capture known charge before output CAS admission: a crash during output or
                 // diagnostic publication must not hide an already reported Provider overrun.
@@ -961,6 +966,9 @@ impl TaskRuntime<'_, '_> {
                     );
                     return Ok(artifact_map(&values));
                 }
+                // A refused input is flagged again: the node fails now, with its Attempts left
+                // unspent and nothing exhausted (ADR-0147).
+                Err(error) if refused_input => return Err(error),
                 Err(error) => last_error = error,
             }
         }
