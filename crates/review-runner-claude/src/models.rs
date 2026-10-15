@@ -334,9 +334,23 @@ pub fn check_static(kind: Kind, model: &str, effort: Option<&str>) -> Result<(),
         let nearest = nearest_of(known_ids(kind), model);
         return Err(Refusal::new(Rule::Unversioned, nearest));
     }
-    if let Some(effort) = effort
-        && !kind.efforts().contains(&effort)
-    {
+    match effort {
+        Some(effort) => check_effort(kind, effort),
+        None => Ok(()),
+    }
+}
+
+/// The effort-level rules alone, for a package that binds an effort level and leaves the model to
+/// the harness: grammar G, then the kind's effort vocabulary. Its refusal's hint is composed with
+/// an empty model, which the hint names as the harness's default model.
+pub fn check_effort(kind: Kind, effort: &str) -> Result<(), Refusal> {
+    if !hint::printable(effort) {
+        return Err(Refusal::new(
+            Rule::NotPrintable { option: "--effort" },
+            vec![],
+        ));
+    }
+    if !kind.efforts().contains(&effort) {
         let nearest = nearest_of(kind.efforts().iter().copied(), effort);
         return Err(Refusal::new(Rule::EffortVocabulary, nearest));
     }

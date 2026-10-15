@@ -98,17 +98,20 @@ What the harnesses offer, verified 2026-10-15:
    in the human `af review plan` output after the `provider` lines (on stderr under `--json`).
    A catalog the harness cannot give is skipped and the binding is `unverified`. A refusal
    refuses the plan. When a Provider is bound, the `af review plan` effects line says that its
-   catalog was read token-free instead of claiming no Provider calls. `af task run`, `af task start --execute` and `af review run` apply the static
-   rules only, so a run starts no Provider process the plan did not.
+   catalog was read token-free instead of claiming no Provider calls. `af task run`, `af task
+   start --execute` and `af review run` apply the static rules only, so a run starts no Provider
+   process the plan did not.
 4. **Every refusal through the one hint function.** `hint::compose` gains
    `ModelOutcome::NotAccepted` (`model_not_accepted`) and `BoundModel::provider`. A refusal names
    the Provider ID and kind (a package parser knows only the kind: `a claude Provider`), the
    rejected spelling (as G prints it), the rule or catalog fact, the nearest accepted spellings
    when there are any, `af provider models <id>` (token-free) and a fixed next step that
-   `hint::find` keeps finding. The runtime `model_unavailable` hint of ADR-0147 now names the
-   Provider (the Claude Task adapter is told its ID), the nearest exact IDs the static rules
-   know, and `af provider models <id>`, before its fixed next step. No secret, prompt text or
-   path outside the repository is printed.
+   `hint::find` keeps finding. A package that binds an effort level and leaves the model to the
+   harness is checked by the effort rules alone, and its refusal names the harness's default
+   model. The runtime `model_unavailable` hint of ADR-0147 now names the Provider (the Claude
+   Task adapter is told its ID), the nearest exact IDs the static rules know, and `af provider
+   models <id>`, before its fixed next step. No secret, prompt text or path outside the
+   repository is printed.
 5. **TUI.** The Providers pane's discovery job reads each probed Provider's catalog after the
    inventory, bounded and cancellable, and `R` reads it again with the usage windows. Under each
    Provider a `models` section shows the header line; it unfolds to one row per exact ID (ID,
@@ -143,9 +146,12 @@ What the harnesses offer, verified 2026-10-15:
 - `af provider models` tells a person or an agent the exact IDs, aliases and effort levels each
   Provider accepts, and `--resolve` prints the configuration to copy, without spending a token or
   reading a credential.
-- A binding to an alias, a misspelling of a known exact ID or an effort level the Provider does
-  not accept is refused at plan time, before any Provider process starts, and again by the
-  adapters before any process starts; Claude Code never silently runs another effort level.
+- A binding to an alias, a misspelling of a known exact ID or an effort level the Provider kind
+  does not accept is refused at plan time, before any Provider process starts, and again by the
+  adapters before any process starts, also for a package that leaves the model to the harness.
+  An effort level the catalog does not list for the model is refused at plan time, so Claude
+  Code does not silently run it at another level; a model the catalog does not list is checked
+  only against the kind's vocabulary.
 - Reviewer packages that named an alias (`--model opus`) are refused until they name the exact
   ID; the repository's own `.af` packages already do.
 - `af task plan` and `af review plan` start one more token-free Provider process per bound

@@ -143,28 +143,23 @@ fn claude_model_flags(runner: &Command) -> Result<Vec<String>, String> {
     }
     // The package's own words reach Claude Code only when they pass the static rules: no alias,
     // no misspelling of a known ID, no effort level Claude Code does not document (ADR-0148).
-    if let Some(model) = &model {
-        models::check_static(models::Kind::Claude, model, effort.as_deref()).map_err(
-            |refusal| {
-                refusal.hint(
-                    models::ProviderRef {
-                        id: None,
-                        kind: models::Kind::Claude,
-                    },
-                    model,
-                    effort.as_deref(),
-                )
+    // A package without --model leaves the model to Claude Code; its effort level is still
+    // checked, and refused through the same hint.
+    let checked = match (&model, &effort) {
+        (Some(model), _) => models::check_static(models::Kind::Claude, model, effort.as_deref()),
+        (None, Some(effort)) => models::check_effort(models::Kind::Claude, effort),
+        (None, None) => Ok(()),
+    };
+    checked.map_err(|refusal| {
+        refusal.hint(
+            models::ProviderRef {
+                id: None,
+                kind: models::Kind::Claude,
             },
-        )?;
-    } else if let Some(effort) = &effort
-        && !models::CLAUDE_EFFORTS.contains(&effort.as_str())
-    {
-        hint::check_binding("--effort", effort)?;
-        return Err(format!(
-            "Claude package effort level `{effort}` is not one Claude Code accepts: {}",
-            models::CLAUDE_EFFORTS.join(", ")
-        ));
-    }
+            model.as_deref().unwrap_or(""),
+            effort.as_deref(),
+        )
+    })?;
     let mut flags = Vec::new();
     if let Some(model) = model {
         flags.extend(["--model".into(), model]);
@@ -237,5 +232,52 @@ impl ReviewerAdapter for ClaudeAdapter {
             bytes: prompt.into_bytes(),
             manifest,
         })
+    }
+}
+
+#[cfg(test)]
+mod model_rule_tests {
+    use super::*;
+
+    fn flags(args: &[&str]) -> Result<Vec<String>, String> {
+        claude_model_flags(&Command::new(
+            "claude",
+            args.iter().copied().map(Arg::literal).collect(),
+        ))
+    }
+
+    /// A package that leaves the model to Claude Code still has its effort level checked, and its
+    /// refusal is the one hint, naming the harness's default model and `af provider models`
+    /// (ADR-0148).
+    #[test]
+    fn an_effort_level_without_a_model_is_refused_through_the_hint() {
+        assert_eq!(
+            flags(&["--effort", "xhigh"]).unwrap(),
+            ["--effort", "xhigh"]
+        );
+        let refused = flags(&["--effort", "ultra"]).unwrap_err();
+        for part in [
+            "af refused the binding of the harness's default model (effort ultra) for a claude \
+             Provider (model_not_accepted)",
+            "the effort level `ultra` is not one Claude Code accepts: low, medium, high, xhigh, max",
+            "`af provider models` (token-free)",
+        ] {
+            assert!(refused.contains(part), "{part}: {refused}");
+        }
+        let diagnostic = format!(
+            "{}{refused}; transport: not started",
+            hint::DIAGNOSTIC_PREFIX
+        );
+        assert_eq!(hint::find(&diagnostic), Some(refused.as_str()));
+        let refused = flags(&["--effort", "/Users/alice"]).unwrap_err();
+        assert!(
+            refused.contains("its --effort value (12 bytes)"),
+            "{refused}"
+        );
+        assert!(!refused.contains("alice"), "{refused}");
+        assert_eq!(
+            flags(&["--model", "claude-fable-5-1", "--effort", "max"]).unwrap(),
+            ["--model", "claude-fable-5-1", "--effort", "max"]
+        );
     }
 }

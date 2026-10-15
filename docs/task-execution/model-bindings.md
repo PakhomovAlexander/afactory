@@ -58,7 +58,9 @@ model fixture/review fable xhigh  refused: af refused the binding of model fable
 
 Every refusal, at plan time or from an adapter, names the Provider ID and kind, the rejected
 spelling, the rule or catalog fact, the nearest accepted spellings and `af provider models
-<id>`, through the one hint function. Runs apply the static rules only and read no catalog.
+<id>`, through the one hint function. A reviewer package that sets an effort level and leaves the
+model to the harness has its effort level checked by the same rules, and its refusal names the
+harness's default model. Runs apply the static rules only and read no catalog.
 
 Planning performs no model inference. The compiler adds a visible internal capability node
 for each distinct effective Model binding and invocation policy. Slots with the same capability

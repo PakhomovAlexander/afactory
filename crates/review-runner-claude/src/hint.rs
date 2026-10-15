@@ -70,7 +70,7 @@ const OPENERS: [&str; 4] = [
     "the safety classifier of ",
     "Claude Code switched models",
     "Claude Code rejected the model `",
-    "af refused the binding of model ",
+    "af refused the binding of ",
 ];
 
 /// The next step after a refusal.
@@ -221,8 +221,19 @@ pub fn compose(bound: BoundModel<'_>, outcome: &ModelOutcome<'_>) -> String {
                 .provider
                 .map(provider_words)
                 .unwrap_or_else(|| "its Provider".into());
+            // A package may bind an effort level and leave the model to the harness.
+            let subject = if bound.model.is_empty() {
+                match bound.effort {
+                    Some(effort) => {
+                        format!("the harness's default model (effort {})", shown(effort))
+                    }
+                    None => "the harness's default model".into(),
+                }
+            } else {
+                format!("model {with_effort}")
+            };
             format!(
-                "af refused the binding of model {with_effort} for {provider} ({class}): {fact}; \
+                "af refused the binding of {subject} for {provider} ({class}): {fact}; \
                  {}{}; {NOT_ACCEPTED_NEXT}",
                 nearest_words(nearest),
                 spellings_words(bound.provider)
@@ -453,6 +464,45 @@ mod tests {
             let incomplete = format!("{INCOMPLETE_BILLING}{diagnostic}");
             assert_eq!(find(&incomplete), Some(hint.as_str()));
             assert!(!find(&diagnostic).unwrap().contains("WORKER-TEXT"));
+        }
+    }
+
+    #[test]
+    fn every_binding_af_refuses_is_found_again_with_or_without_a_model() {
+        let nearest = ["claude-fable-5-1".to_owned()];
+        let provider = ProviderRef {
+            id: Some("claude-work"),
+            kind: crate::models::Kind::Claude,
+        };
+        for (model, provider, opening) in [
+            (
+                "fable",
+                Some(provider),
+                "af refused the binding of model fable (effort xhigh) for Provider claude-work \
+                 (claude) (model_not_accepted): ",
+            ),
+            (
+                "",
+                None,
+                "af refused the binding of the harness's default model (effort xhigh) for its \
+                 Provider (model_not_accepted): ",
+            ),
+        ] {
+            let hint = compose(
+                BoundModel {
+                    model,
+                    effort: Some("xhigh"),
+                    provider,
+                },
+                &ModelOutcome::NotAccepted {
+                    fact: "a fact",
+                    nearest: &nearest,
+                },
+            );
+            assert!(hint.starts_with(opening), "{hint}");
+            assert!(hint.contains("nearest accepted spellings: claude-fable-5-1; "));
+            let diagnostic = format!("{DIAGNOSTIC_PREFIX}{hint}; WORKER-TEXT");
+            assert_eq!(find(&diagnostic), Some(hint.as_str()));
         }
     }
 

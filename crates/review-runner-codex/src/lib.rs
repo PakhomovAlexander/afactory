@@ -124,26 +124,23 @@ fn codex_model_flags(runner: &Command) -> Result<Vec<String>, String> {
             .expect("the option was matched by this prefix")
             .trim_matches(['\'', '"'])
     });
-    if let Some(model) = &model {
-        models::check_static(models::Kind::Codex, model, level).map_err(|refusal| {
-            refusal.hint(
-                models::ProviderRef {
-                    id: None,
-                    kind: models::Kind::Codex,
-                },
-                model,
-                level,
-            )
-        })?;
-    } else if let Some(level) = level
-        && !models::CODEX_EFFORTS.contains(&level)
-    {
-        review_runner_claude::hint::check_binding("--effort", level)?;
-        return Err(format!(
-            "Codex package effort level `{level}` is not one Codex accepts: {}",
-            models::CODEX_EFFORTS.join(", ")
-        ));
-    }
+    // A package without a model leaves it to Codex; its effort level is still checked, and
+    // refused through the same hint.
+    let checked = match (&model, level) {
+        (Some(model), _) => models::check_static(models::Kind::Codex, model, level),
+        (None, Some(level)) => models::check_effort(models::Kind::Codex, level),
+        (None, None) => Ok(()),
+    };
+    checked.map_err(|refusal| {
+        refusal.hint(
+            models::ProviderRef {
+                id: None,
+                kind: models::Kind::Codex,
+            },
+            model.as_deref().unwrap_or(""),
+            level,
+        )
+    })?;
     let mut flags = Vec::new();
     if let Some(model) = model {
         flags.extend(["--model".into(), model]);
@@ -322,5 +319,36 @@ mod model_rule_tests {
             "{refused}"
         );
         assert!(!refused.contains("alice"), "{refused}");
+    }
+
+    /// A package that leaves the model to Codex still has its effort level checked, and its
+    /// refusal is the same hint, naming the harness's default model and `af provider models`.
+    #[test]
+    fn an_effort_level_without_a_model_is_refused_through_the_hint() {
+        let only = |effort: &str| {
+            codex_model_flags(&Command::new(
+                "codex",
+                ["-c", effort].into_iter().map(Arg::literal).collect(),
+            ))
+        };
+        assert_eq!(
+            only("model_reasoning_effort=\"ultra\"").unwrap(),
+            ["-c", "model_reasoning_effort=\"ultra\""]
+        );
+        let refused = only("model_reasoning_effort=\"minimal\"").unwrap_err();
+        for part in [
+            "af refused the binding of the harness's default model (effort minimal) for a codex \
+             Provider (model_not_accepted)",
+            "the effort level `minimal` is not one Codex accepts: low, medium, high, xhigh, max, ultra",
+            "`af provider models` (token-free)",
+        ] {
+            assert!(refused.contains(part), "{part}: {refused}");
+        }
+        let refused = only("model_reasoning_effort=\"a b\"").unwrap_err();
+        assert!(
+            refused.contains("its --effort value (3 bytes)"),
+            "{refused}"
+        );
+        assert!(!refused.contains("a b"), "{refused}");
     }
 }
