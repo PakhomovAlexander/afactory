@@ -21,6 +21,11 @@
 //! [`UnsupportedInvocation`](review_runner::native_failure::NativeFailureKind::UnsupportedInvocation),
 //! with its exit status and a bounded stderr excerpt in the diagnostic (ADR-0146).
 //!
+//! The package argument parser applies the static rules of `review_runner_claude::models`, the
+//! one validation authority for model and effort spellings (ADR-0148): a misspelled or
+//! unversioned model, or an effort level outside `low medium high xhigh max ultra`, is refused
+//! with a hint naming the rule and `af provider models` before any process starts.
+//!
 //! Chargeable usage is uncached input plus output. Codex includes cache reads in
 //! `input_tokens` but also reports `cached_input_tokens`, so subtracting the latter makes the
 //! budget unit match the Claude adapter instead of charging one repeatedly cached context as
@@ -38,6 +43,7 @@ use review_runner::{
     InputTransport, ModelRunner, RenderedInput, ReviewerAdapter, ReviewerInputs, RunnerError,
     compose_model_prompt,
 };
+use review_runner_claude::models;
 use review_store::Cas;
 
 pub struct CodexAdapter {
@@ -109,6 +115,34 @@ fn codex_model_flags(runner: &Command) -> Result<Vec<String>, String> {
             }
         }
         index += 2;
+    }
+    // The package's own words reach Codex only when they pass the static rules: no misspelling
+    // of a known ID, no unversioned model, no effort level outside Codex's (ADR-0148).
+    let level = effort.as_deref().map(|value| {
+        value
+            .strip_prefix("model_reasoning_effort=")
+            .expect("the option was matched by this prefix")
+            .trim_matches(['\'', '"'])
+    });
+    if let Some(model) = &model {
+        models::check_static(models::Kind::Codex, model, level).map_err(|refusal| {
+            refusal.hint(
+                models::ProviderRef {
+                    id: None,
+                    kind: models::Kind::Codex,
+                },
+                model,
+                level,
+            )
+        })?;
+    } else if let Some(level) = level
+        && !models::CODEX_EFFORTS.contains(&level)
+    {
+        review_runner_claude::hint::check_binding("--effort", level)?;
+        return Err(format!(
+            "Codex package effort level `{level}` is not one Codex accepts: {}",
+            models::CODEX_EFFORTS.join(", ")
+        ));
     }
     let mut flags = Vec::new();
     if let Some(model) = model {
@@ -243,5 +277,50 @@ mod invocation_tests {
             CODEX_INVOCATION.declares("-s"),
             "the sandbox mode is required"
         );
+    }
+}
+
+#[cfg(test)]
+mod model_rule_tests {
+    use super::*;
+
+    fn flags(model: &str, effort: &str) -> Result<Vec<String>, String> {
+        codex_model_flags(&Command::new(
+            "codex",
+            ["--model", model, "-c", effort]
+                .into_iter()
+                .map(Arg::literal)
+                .collect(),
+        ))
+    }
+
+    /// The package parser applies the one validation authority's static rules (ADR-0148).
+    #[test]
+    fn the_package_parser_accepts_codex_levels_and_refuses_what_codex_does_not_accept() {
+        for effort in [
+            "model_reasoning_effort=\"ultra\"",
+            "model_reasoning_effort=high",
+        ] {
+            assert!(flags("gpt-6-sol", effort).is_ok(), "{effort}");
+        }
+        let refused = flags("gpt-6-sol", "model_reasoning_effort=\"minimal\"").unwrap_err();
+        for part in [
+            "for a codex Provider (model_not_accepted)",
+            "the effort level `minimal` is not one Codex accepts: low, medium, high, xhigh, max, ultra",
+            "`af provider models` (token-free)",
+        ] {
+            assert!(refused.contains(part), "{part}: {refused}");
+        }
+        let refused = flags("gpt", "model_reasoning_effort=\"high\"").unwrap_err();
+        assert!(
+            refused.contains("Task Model binding requires an explicit versioned model ID"),
+            "{refused}"
+        );
+        let refused = flags("/Users/alice/m-1", "model_reasoning_effort=\"high\"").unwrap_err();
+        assert!(
+            refused.contains("its --model value (16 bytes)"),
+            "{refused}"
+        );
+        assert!(!refused.contains("alice"), "{refused}");
     }
 }

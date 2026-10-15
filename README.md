@@ -109,6 +109,7 @@ and supply its bindings explicitly (this step runs the Gate and spends model tok
 ```sh
 af provider setup codex-main --kind codex --login  # log in at YOUR terminal, then register
 af provider status                 # verify registered and ambient Claude / Codex contexts
+af provider models --resolve 'GPT-6 Sol/high'      # exact model IDs and effort levels, token-free
 af review run --campaign pr-123 --policy-rev "$policy_rev" --base "$base_rev" --uncommitted \
   --provider correctness=codex-main --provider architecture=codex-main --json
 ```
@@ -141,8 +142,12 @@ leaves each auth directory and its login untouched; it is machine-local too
 Ambient IDs shown by `status` are discovery labels and cannot be selected directly. `af provider
 status` is a fast registry and authentication check; `--usage` adds the optional subscription and
 quota probe, whose failure exits 7 and never demotes an authenticated Provider, and `af provider
-doctor` remains the charged end-to-end check. Both `status` and `setup` take `--json` for a stable
-versioned document; see [docs/providers.md](docs/providers.md). `af review
+doctor` remains the charged end-to-end check. `af provider models` lists each Provider's exact
+model IDs, aliases and effort levels from its harness's own protocol, token-free, and `--resolve`
+prints the configuration to copy; every binding is checked against the same rules before anything
+is charged ([ADR-0148](docs/adr/0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)).
+`status`, `models` and `setup` take `--json` for a stable versioned document; see
+[docs/providers.md](docs/providers.md). `af review
 plan` resolves policy, Base, candidate, the exact Change Set, the selected route, Gates, budgets,
 and required Provider bindings without Campaign state, external calls, or tokens — the route line
 reads like `route    route => .af/pipelines/docs.toml (docs); 3 changed path(s)`. `af review run`

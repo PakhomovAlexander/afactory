@@ -360,3 +360,75 @@ fn an_input_that_exhausts_its_attempt_cap_is_refused_before_admission() {
     );
     assert!(message.contains("Scatter"), "{message}");
 }
+
+/// `af review plan` names each captured Model Worker's verdict from the one validation authority,
+/// and refuses a binding the static rules refuse before any Provider process starts, naming the
+/// levels Codex accepts and `af provider models` (ADR-0148).
+#[test]
+fn review_plan_prints_each_model_line_and_refuses_an_effort_level_codex_does_not_accept() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = onboarded_repo_with_a_change(root.path());
+    let state_home = root.path().join("state");
+    let repo_arg = repo.to_str().unwrap();
+    let plan_args = [
+        "review",
+        "plan",
+        "--repo",
+        repo_arg,
+        "--pipeline",
+        ".af/pipelines/review.toml",
+        "--policy-rev",
+        "HEAD",
+        "--base",
+        "HEAD~1",
+        "--candidate",
+        "HEAD",
+    ];
+    let planned = af(&state_home, &plan_args);
+    assert!(planned.status.success(), "{}", stderr(&planned));
+    let text = String::from_utf8_lossy(&planned.stdout);
+    for node in ["correctness", "architecture"] {
+        let line = format!("model {node} gpt-6-sol high  unverified against the catalog");
+        assert!(text.lines().any(|row| row == line), "{line}:\n{text}");
+    }
+
+    let manifest = repo.join(".af/workers/correctness/reviewer.toml");
+    let declared = std::fs::read_to_string(&manifest).unwrap();
+    let edited = declared.replace(
+        "model_reasoning_effort=\"high\"",
+        "model_reasoning_effort=\"minimal\"",
+    );
+    assert_ne!(edited, declared);
+    std::fs::write(&manifest, edited).unwrap();
+    let lock_path = repo.join(".af/af.lock");
+    let mut lock =
+        review_config::lock::Lockfile::from_toml(&std::fs::read_to_string(&lock_path).unwrap())
+            .unwrap();
+    let registry = review_config::lock::Registry::new(repo.join(".af/workers"));
+    lock.workers.insert(
+        "correctness".into(),
+        review_config::lock::Lockfile::pin("correctness", &registry).unwrap(),
+    );
+    std::fs::write(&lock_path, lock.to_toml()).unwrap();
+    git(&repo, &["add", "-A"]);
+    git(
+        &repo,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "an effort level codex does not accept",
+        ],
+    );
+    let refused = af(&state_home, &plan_args);
+    assert!(!refused.status.success(), "the plan must refuse");
+    let message = stderr(&refused);
+    for part in [
+        "correctness",
+        "the effort level `minimal` is not one Codex accepts: low, medium, high, xhigh, max, ultra",
+        "(model_not_accepted)",
+        "`af provider models` (token-free)",
+    ] {
+        assert!(message.contains(part), "{part}:\n{message}");
+    }
+}

@@ -99,6 +99,15 @@ af task list
 af task show pagination-cli
 ```
 
+Before the plan, `af task plan` prints one line per Model Worker on stderr, `model WORKER MODEL
+EFFORT` followed by `ok` (the Provider's catalog lists the exact ID and the effort level),
+`unverified against the catalog` (a custom ID that passes the spelling rule, or a catalog the
+harness could not give) or `refused:` and the hint, which refuses the plan. The catalog is read
+token-free, once per Provider; a binding to an alias or an effort level the Provider does not
+accept is refused before any Provider process starts. `af provider models <id>` lists the
+spellings a Provider accepts ([model bindings](task-execution/model-bindings.md),
+[ADR-0148](adr/0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)).
+
 The [ASCII preview guide](task-execution/preview.md) covers the two plan views and agent
 approval. `task list` shows terminal outcome, chargeable tokens and current delivery state.
 `task show` adds exact Snapshot IDs and the append-only event history. Both accept `--json`.

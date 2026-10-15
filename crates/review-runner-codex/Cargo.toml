@@ -15,6 +15,9 @@ doctest = false
 [dependencies]
 review-core = { path = "../review-core" }
 review-runner = { path = "../review-runner" }
+# The one validation authority for model and effort spellings lives beside grammar G in the
+# Claude adapter crate, and serves both adapters (ADR-0148).
+review-runner-claude = { path = "../review-runner-claude" }
 review-store = { path = "../review-store" }
 rustix = { version = "1.1.4", features = ["fs"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }

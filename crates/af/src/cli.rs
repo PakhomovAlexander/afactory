@@ -100,13 +100,15 @@ are shorthand for `af review run`.",
         arg_required_else_help = true,
         long_about = "Inspect and preflight the configured model providers.\n\n\
 Providers are named in the user configuration (`~/.config/af/providers.toml`); `status` reads \
-that registry and the machine's harness logins without contacting any model. `doctor` runs a \
-bounded, charged preflight for the bindings you name.\n\n\
-Results go to stdout (add --json to `status` and `setup` for versioned documents); progress, \
-warnings and diagnostics go to stderr. Exit codes across this namespace: 0 success, 1 \
+that registry and the machine's harness logins without contacting any model. `models` lists \
+each Provider's model catalog and effort levels, token-free, from the harness's own protocol. \
+`doctor` runs a bounded, charged preflight for the bindings you name.\n\n\
+Results go to stdout (add --json to `status`, `models` and `setup` for versioned documents); \
+progress, warnings and diagnostics go to stderr. Exit codes across this namespace: 0 success, 1 \
 unclassified failure, 2 usage error, 3 human action required, 4 Provider CLI missing or \
-cannot start, 5 registry conflict, 6 authentication failed, 7 optional usage unavailable.",
-        after_long_help = "Examples:\n  af provider status\n  af provider setup codex-main --kind codex\n  af provider doctor --provider correctness=claude-code"
+cannot start, 5 registry conflict, 6 authentication failed, 7 optional usage or a model catalog \
+unavailable.",
+        after_long_help = "Examples:\n  af provider status\n  af provider models --resolve 'Fable 5.1/xhigh'\n  af provider setup codex-main --kind codex\n  af provider doctor --provider correctness=claude-code"
     )]
     Provider {
         #[command(subcommand)]
@@ -774,6 +776,40 @@ unavailable.",
         /// Also probe subscription and quota windows (slower, and may be unavailable)
         #[arg(long)]
         usage: bool,
+    },
+    /// List each Provider's model catalog and effort levels, without a model call
+    #[command(
+        long_about = "List each Provider's model catalog and effort levels, without a model call.\n\n\
+For every registered Provider, or the named ones, af reads the catalog its harness offers \
+through the harness's own local protocol, under that Provider's auth directory and the bounded \
+probe environment `af provider status` uses, and never starts a turn: Claude Code answers the \
+`list_models` control request of a stream-json session af closes before any turn, Codex answers \
+`model/list` on a bare `codex app-server`. Each Provider gets a header with the source, the \
+harness version and the freshness (Codex: `fetched_at` of `models_cache.json` when readable, \
+else live), one row per exact model ID with its display name, the aliases that resolve to it \
+and its effort levels with the default marked, and a sentence saying what the list proves: af \
+recognises these spellings for this Provider. It is not every ID the API accepts, and whether \
+this account can run one is proven only by the charged `af provider doctor`.\n\n\
+--resolve reads a human spelling (an alias, a display name, an exact ID, or a family and \
+version such as `Fable 5.1` or `GPT-6 Sol`) with an optional /EFFORT, says what it resolves to \
+and whether the effort level is listed, and prints the configuration to copy: the reviewer.toml \
+[runner] args, the worker.toml [runner] block and the bindings line. af binds exact IDs: an alias \
+is never bound, and an effort level a model does not list is never substituted.\n\n\
+Spends no model tokens and reads no credential.\n\n\
+Exit codes: 0 every catalog listed, 4 a Provider CLI cannot start or is incompatible, 7 a \
+catalog is unavailable (the static rules are printed and nothing is invented).",
+        after_long_help = "Examples:\n  af provider models\n  af provider models claude-work --json\n  af provider models claude-work --resolve 'Fable 5.1/xhigh'\n  af provider models codex-main --resolve 'GPT-6 Sol/ultra'"
+    )]
+    Models {
+        /// Provider IDs to list (default: every registered Provider)
+        #[arg(value_name = "ID")]
+        ids: Vec<String>,
+        /// Emit the versioned `af/provider-models@1` document instead of the table
+        #[arg(long)]
+        json: bool,
+        /// Resolve a human model spelling, with an optional /EFFORT, to an exact ID
+        #[arg(long, value_name = "SPELLING[/EFFORT]")]
+        resolve: Option<String>,
     },
     /// Register one named machine-local Provider, optionally opting in to its official login
     #[command(

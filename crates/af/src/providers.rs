@@ -11,7 +11,9 @@
 //! protocol, started bare on its default stdio transport, while Claude has no headless usage-status
 //! command, so its fixed local `/usage` screen is opened in a bounded pseudo-terminal and only the
 //! weekly percentages are parsed. The probe neither reads credentials nor starts a billable
-//! model session. Accepted response shapes are pinned by fixtures.
+//! model session. Accepted response shapes are pinned by fixtures. `af provider models` reads
+//! each Provider's model catalog the same token-free way, from the harness's own protocol
+//! (`models`, ADR-0148).
 //!
 //! Interactive login belongs to the official Provider CLI and to a human at a private terminal.
 //! `setup` starts one only when the operator opted in with `--login` *and* this process owns an
@@ -40,6 +42,7 @@ use std::os::unix::process::CommandExt;
 pub mod auth_handoff;
 mod compatibility;
 mod installation;
+pub mod models;
 pub mod task;
 
 use compatibility::{CliIncompatibility, CliRefusal, check_invocation};

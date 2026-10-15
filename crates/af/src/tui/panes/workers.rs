@@ -17,6 +17,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use review_runner_claude::models as rules;
 use serde_json::Value as Json;
 use toml::Value;
 
@@ -620,9 +621,18 @@ pub(crate) struct WorkersPane {
     rows: Vec<Row>,
     /// The first row of the opened Worker's PROMPT section.
     prompt_row: usize,
+    /// The catalogs the Providers pane read, which a runner's verdict is judged against.
+    catalogs: super::providers::SharedCatalogs,
 }
 
 impl WorkersPane {
+    pub(crate) fn with_catalogs(catalogs: super::providers::SharedCatalogs) -> WorkersPane {
+        WorkersPane {
+            catalogs,
+            ..WorkersPane::default()
+        }
+    }
+
     fn entry(&self, id: &str) -> Option<&Entry> {
         self.entries.iter().find(|entry| entry.id == id)
     }
@@ -787,7 +797,7 @@ impl WorkersPane {
             format!("IDENTITY  {file} at HEAD"),
             Paint::Title,
         ));
-        rows.extend(identity_rows(entry));
+        rows.extend(identity_rows(entry, &self.catalogs));
         rows.push(rule());
         let state = "STATE  Attempts in this scope's Task Stores";
         rows.push(Row::painted(state, Paint::Title));
@@ -931,9 +941,15 @@ fn words(value: &Value, path: &[&str]) -> String {
 }
 
 /// The runner a declaration names: its kind; its program, or the provider kind of a model
-/// runner; its model and effort; and its args as declared. A reviewer declares its model and
-/// effort in its args, and they are read the way the kernel reads them.
-fn runner_rows(entry: &Entry, value: &Value) -> Vec<Row> {
+/// runner; its model and effort; the verdict of the one validation authority on them, against
+/// the Providers pane's catalog of that kind when it has one and by the static rules otherwise
+/// (ADR-0148); and its args as declared. A reviewer declares its model and effort in its args,
+/// and they are read the way the kernel reads them.
+fn runner_rows(
+    entry: &Entry,
+    value: &Value,
+    catalogs: &super::providers::SharedCatalogs,
+) -> Vec<Row> {
     let runner = value
         .get("runner")
         .cloned()
@@ -942,12 +958,21 @@ fn runner_rows(entry: &Entry, value: &Value) -> Vec<Row> {
     let program = command.get("program").and_then(Value::as_str);
     let provider = runner.get("provider_kind").and_then(Value::as_str);
     let (mut model, mut effort) = (field(&runner, &["model"]), field(&runner, &["effort"]));
+    let mut judged = provider.and_then(rules::Kind::parse);
     if entry.kind == Kind::Reviewer
         && let Ok(manifest) = toml::from_str(&entry.declaration)
         && let Ok(settings) = review_config::lock::reviewer_runner_settings_from_manifest(&manifest)
     {
+        judged = rules::Kind::parse(&settings.backend.to_string());
         (model, effort) = (settings.model, settings.effort);
     }
+    let verdict = judged
+        .map(|kind| {
+            let catalog = catalogs.get(kind);
+            let verdict = rules::check(kind, catalog.as_ref(), &model, Some(&effort));
+            format!("  verdict {}", verdict.label(kind, &model, Some(&effort)))
+        })
+        .unwrap_or_default();
     let what = match (program, provider) {
         (Some(program), _) => format!("program {program}"),
         (None, Some(provider)) => format!("provider {provider}"),
@@ -970,7 +995,7 @@ fn runner_rows(entry: &Entry, value: &Value) -> Vec<Row> {
     let kind = field(&runner, &["kind"]);
     vec![
         Row::plain(format!(
-            "runner    kind {kind}  {what}  model {model}  effort {effort}"
+            "runner    kind {kind}  {what}  model {model}  effort {effort}{verdict}"
         )),
         Row::plain(format!("args      {args}")),
     ]
@@ -992,7 +1017,7 @@ fn pin_text(entry: &Entry) -> String {
     }
 }
 
-fn identity_rows(entry: &Entry) -> Vec<Row> {
+fn identity_rows(entry: &Entry, catalogs: &super::providers::SharedCatalogs) -> Vec<Row> {
     let value = declared(&entry.declaration);
     let mut rows = vec![
         Row::plain(format!("name      {}", field(&value, &["name"]))),
@@ -1001,7 +1026,7 @@ fn identity_rows(entry: &Entry) -> Vec<Row> {
         Row::plain(format!("path      {}", entry.directory)),
         Row::plain(format!("pin       {}", pin_text(entry))),
     ];
-    rows.extend(runner_rows(entry, &value));
+    rows.extend(runner_rows(entry, &value, catalogs));
     let tokens = field(&value, &["signature", "attempt", "tokens"]);
     let wall = field(&value, &["signature", "attempt", "wall_ms"]);
     rows.push(Row::plain(format!(

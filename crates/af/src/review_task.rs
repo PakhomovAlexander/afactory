@@ -61,7 +61,7 @@ fn local_workers(
         }
     }
     // First pass, token-free: every captured reviewer's binding passes the static rules, in node
-    // order, before any Provider CLI starts (ADR-0147).
+    // order, before any Provider CLI starts (ADR-0147, ADR-0148).
     let mut executions = BTreeMap::new();
     let mut models = Vec::new();
     for (node, command) in loaded.reviewers() {
@@ -93,11 +93,14 @@ fn local_workers(
         .map_err(|e| e.to_string())?;
         let settings = review_config::lock::reviewer_runner_settings_from_manifest(&manifest)
             .map_err(|e| e.to_string())?;
-        super::providers::task::TaskProviderIdentity::check_static_rules(
-            &settings.model,
-            &settings.effort,
-        )
-        .map_err(|rule| format!("Model Worker {node} on Provider {alias}: {rule}"))?;
+        crate::model_check::static_rules(&crate::model_check::Binding {
+            owner: format!("Model Worker {node}"),
+            label: node,
+            provider: Some(alias),
+            kind: &kind,
+            model: &settings.model,
+            effort: &settings.effort,
+        })?;
         models.push((node, kind, alias, settings));
     }
     // Second pass: one probe per Provider label, then each reviewer's execution and adapter.

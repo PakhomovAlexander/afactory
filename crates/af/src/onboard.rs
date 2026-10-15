@@ -105,6 +105,27 @@ impl RunnerKind {
             Self::Codex => "gpt-6-sol (high effort)",
         }
     }
+
+    /// The exact model ID and effort level the generated Worker binds.
+    fn binding(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Claude => ("claude-opus-5-5", "high"),
+            Self::Codex => ("gpt-6-sol", "high"),
+        }
+    }
+
+    /// The generated binding passes the static rules of the one validation authority: no
+    /// alias, a versioned exact ID and an effort level the Provider kind accepts (ADR-0148).
+    fn check_models(self) -> Result<(), String> {
+        use review_runner_claude::models::{Kind, ProviderRef, check_static};
+        let kind = match self {
+            Self::Claude => Kind::Claude,
+            Self::Codex => Kind::Codex,
+        };
+        let (model, effort) = self.binding();
+        check_static(kind, model, Some(effort))
+            .map_err(|refusal| refusal.hint(ProviderRef { id: None, kind }, model, Some(effort)))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -582,6 +603,9 @@ fn build_bundle(
         ("correctness", CORRECTNESS_PROMPT),
         ("architecture", ARCHITECTURE_PROMPT),
     ] {
+        // The generated defaults pass the one validation authority, as every binding must
+        // (ADR-0148).
+        profile.runner(name).check_models()?;
         worker_files.insert(
             name.to_string(),
             BTreeMap::from([
@@ -968,15 +992,21 @@ fn worker_manifest(name: &str, runner: RunnerKind) -> String {
         value: String,
     }
 
-    let values: &[&str] = match runner {
-        RunnerKind::Claude => &["--model", "claude-opus-5-5", "--effort", "high"],
+    let (model, effort) = runner.binding();
+    let values: Vec<String> = match runner {
+        RunnerKind::Claude => vec![
+            "--model".into(),
+            model.into(),
+            "--effort".into(),
+            effort.into(),
+        ],
         // The Codex adapter owns the `exec` invocation, sandbox, output, and stdin flags.
         // Package args are model flags only.
-        RunnerKind::Codex => &[
-            "--model",
-            "gpt-6-sol",
-            "-c",
-            "model_reasoning_effort=\"high\"",
+        RunnerKind::Codex => vec![
+            "--model".into(),
+            model.into(),
+            "-c".into(),
+            format!("model_reasoning_effort=\"{effort}\""),
         ],
     };
     let manifest = Manifest {
@@ -986,10 +1016,8 @@ fn worker_manifest(name: &str, runner: RunnerKind) -> String {
         runner: ManifestRunner {
             program: runner.program().to_string(),
             args: values
-                .iter()
-                .map(|value| ManifestArg {
-                    value: (*value).to_string(),
-                })
+                .into_iter()
+                .map(|value| ManifestArg { value })
                 .collect(),
         },
     };
@@ -1598,7 +1626,8 @@ fn atomic_replace_authority(path: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        RunnerKind, build_definition, runner_model, validate_budget_arithmetic, worker_manifest,
+        RunnerKind, RunnerProfile, build_definition, runner_model, validate_budget_arithmetic,
+        worker_manifest,
     };
     use review_core::{Arg, Command};
 
@@ -1628,6 +1657,30 @@ mod tests {
             codex.contains("value = 'model_reasoning_effort=\"high\"'"),
             "{codex}"
         );
+    }
+
+    /// Every `--runner` profile's generated Workers pass the one validation authority's static
+    /// rules, and the package argument parser of their adapter accepts them (ADR-0148).
+    #[test]
+    fn every_runner_profile_binds_a_spelling_the_validation_authority_accepts() {
+        for profile in [
+            RunnerProfile::Mixed,
+            RunnerProfile::Claude,
+            RunnerProfile::Codex,
+        ] {
+            for name in ["correctness", "architecture"] {
+                let runner = profile.runner(name);
+                assert_eq!(runner.check_models(), Ok(()), "{profile:?} {name}");
+                let manifest: review_config::lock::PackageManifest =
+                    toml::from_str(&worker_manifest(name, runner)).unwrap();
+                let settings =
+                    review_config::lock::reviewer_runner_settings_from_manifest(&manifest).unwrap();
+                assert_eq!(
+                    (settings.model.as_str(), settings.effort.as_str()),
+                    runner.binding()
+                );
+            }
+        }
     }
 
     #[test]

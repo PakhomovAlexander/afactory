@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:provider-models:1",
+  "title": "Provider models@1",
+  "$comment": "The machine-readable result of `af provider models` (ADR-0148): each Provider's model catalog as its harness's own local protocol answered it, token-free and without reading a credential — Claude Code's `list_models` control request on a stream-json session closed before any turn, Codex's `model/list` on a bare app-server. A catalog is what the harness offers, never every ID its API accepts (Claude Code's picker leaves out exact IDs the API still accepts), and never proof that this account can run a model: only the charged `af provider doctor` proves that. `state` is `listed` when the harness answered, `cli_refused` when the Provider CLI cannot start or does not accept af's invocation (exit 4), `unavailable` when the harness did not answer (exit 7); a Provider that is not listed has no models and only its `static_rules`, and nothing is invented. Every model ID, alias and effort level is in af's printable grammar; display names are bounded and pass af's credential filter. `resolution` is present only with `--resolve`: af never substitutes a model or an effort level, so `configuration` is null unless the catalog lists the exact ID and the effort level. Deliberately absent: account email or identity, credentials, the reasons on stderr, and any other Provider-authored text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "exit_code", "token_free", "proves", "providers"],
+  "properties": {
+    "schema": {
+      "const": "af/provider-models@1"
+    },
+    "exit_code": {
+      "$comment": "0 every catalog listed; 4 some Provider's CLI cannot start or is incompatible, which outranks 7; 7 some catalog is unavailable.",
+      "enum": [0, 4, 7]
+    },
+    "token_free": {
+      "const": true
+    },
+    "proves": {
+      "type": "string",
+      "minLength": 1
+    },
+    "providers": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/provider"
+      }
+    }
+  },
+  "$defs": {
+    "spelling": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "spellings": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/spelling"
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "state",
+        "source",
+        "harness_version",
+        "freshness",
+        "models",
+        "skipped_entries",
+        "static_rules",
+        "resolution"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "enum": ["claude", "codex"]
+        },
+        "state": {
+          "enum": ["listed", "cli_refused", "unavailable"]
+        },
+        "source": {
+          "enum": ["claude list_models", "codex app-server model/list"]
+        },
+        "harness_version": {
+          "oneOf": [{ "$ref": "#/$defs/spelling" }, { "type": "null" }]
+        },
+        "freshness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "fetched_at"],
+          "properties": {
+            "source": {
+              "$comment": "`models_cache` only for Codex, when `models_cache.json` under the Provider's auth directory was readable; its `fetched_at` is then given.",
+              "enum": ["live", "models_cache"]
+            },
+            "fetched_at": {
+              "oneOf": [
+                { "type": "string", "pattern": "^[A-Za-z0-9:.+-]{1,64}$" },
+                { "type": "null" }
+              ]
+            }
+          }
+        },
+        "models": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/model"
+          }
+        },
+        "skipped_entries": {
+          "$comment": "Entries the harness listed that af left out: an ID outside the printable grammar, or past 64 models.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "static_rules": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["effort_levels", "documented_aliases"],
+          "properties": {
+            "effort_levels": {
+              "$ref": "#/$defs/spellings"
+            },
+            "documented_aliases": {
+              "type": "array",
+              "maxItems": 16,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["alias", "id"],
+                "properties": {
+                  "alias": { "$ref": "#/$defs/spelling" },
+                  "id": { "$ref": "#/$defs/spelling" }
+                }
+              }
+            }
+          }
+        },
+        "resolution": {
+          "oneOf": [{ "$ref": "#/$defs/resolution" }, { "type": "null" }]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "listed" } } },
+          "else": {
+            "properties": {
+              "models": { "maxItems": 0 },
+              "harness_version": { "type": "null" },
+              "freshness": { "properties": { "source": { "const": "live" } } }
+            }
+          }
+        }
+      ]
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "display_name", "aliases", "effort_levels", "default_effort", "hidden"],
+      "properties": {
+        "id": { "$ref": "#/$defs/spelling" },
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "aliases": { "$ref": "#/$defs/spellings" },
+        "effort_levels": { "$ref": "#/$defs/spellings" },
+        "default_effort": {
+          "oneOf": [{ "$ref": "#/$defs/spelling" }, { "type": "null" }]
+        },
+        "hidden": { "type": "boolean" }
+      }
+    },
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "spelling",
+        "effort",
+        "outcome",
+        "id",
+        "nearest",
+        "spelling_rule",
+        "effort_check",
+        "effort_levels",
+        "configuration"
+      ],
+      "properties": {
+        "spelling": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9 ._:-]{1,128}$"
+        },
+        "effort": {
+          "oneOf": [{ "$ref": "#/$defs/spelling" }, { "type": "null" }]
+        },
+        "outcome": {
+          "enum": [
+            "exact",
+            "alias",
+            "display_name",
+            "family_version",
+            "misspelled",
+            "not_listed",
+            "unavailable"
+          ]
+        },
+        "id": {
+          "oneOf": [{ "$ref": "#/$defs/spelling" }, { "type": "null" }]
+        },
+        "nearest": { "$ref": "#/$defs/spellings" },
+        "spelling_rule": {
+          "$comment": "For `not_listed` only: whether the spelling passes af's static rules; usability is proven only by `af provider doctor`.",
+          "enum": ["passes", "fails", null]
+        },
+        "effort_check": {
+          "enum": ["not_requested", "listed", "not_listed", "in_vocabulary", "not_in_vocabulary"]
+        },
+        "effort_levels": { "$ref": "#/$defs/spellings" },
+        "configuration": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["reviewer_runner", "worker_runner", "binding"],
+              "properties": {
+                "reviewer_runner": { "type": "string", "minLength": 1 },
+                "worker_runner": { "type": "string", "minLength": 1 },
+                "binding": { "type": "string", "minLength": 1 }
+              }
+            },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": { "enum": ["exact", "alias", "display_name", "family_version"] }
+            }
+          },
+          "then": { "properties": { "id": { "$ref": "#/$defs/spelling" } } },
+          "else": {
+            "properties": { "id": { "type": "null" }, "configuration": { "type": "null" } }
+          }
+        },
+        {
+          "if": { "properties": { "outcome": { "const": "not_listed" } } },
+          "then": { "properties": { "spelling_rule": { "enum": ["passes", "fails"] } } },
+          "else": { "properties": { "spelling_rule": { "type": "null" } } }
+        },
+        {
+          "if": { "properties": { "effort_check": { "not": { "const": "listed" } } } },
+          "then": {
+            "if": { "properties": { "effort": { "type": "string" } } },
+            "then": { "properties": { "configuration": { "type": "null" } } }
+          }
+        }
+      ]
+    }
+  }
+}

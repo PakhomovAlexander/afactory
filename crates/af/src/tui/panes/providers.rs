@@ -1,14 +1,22 @@
-//! Providers: the inventory `af provider status` prints, from `providers::discover_with_cancel`.
-//! Discovery runs one bounded authentication check per context and `R` adds the bounded usage
-//! probe; both run on a thread the event loop polls, so a key is never waiting on a Provider.
+//! Providers: the inventory `af provider status` prints, from `providers::discover_with_cancel`,
+//! and each Provider's model catalog `af provider models` prints (ADR-0148). Discovery runs one
+//! bounded authentication check per context, then reads each probed Provider's catalog
+//! token-free, and `R` adds the bounded usage probe; all of it runs on a thread the event loop
+//! polls and cancels, so a key is never waiting on a Provider. A Provider's `models` section is
+//! folded to its header line in the list and unfolds to one row per exact ID when the Provider
+//! is opened or `m` unfolds every section. The catalogs read are shared with the Workers pane,
+//! which judges each runner against the catalog of its kind.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
+
+use review_runner_claude::models::{Catalog, Kind};
 
 use super::{Effect, Pane, Row, SPINNER};
+use crate::providers::models::{self as catalogs, CatalogOutcome, ProviderCatalog};
 use crate::providers::{self, ProviderInventory, ProviderStatus, UsageProbe};
 use crate::tui::keymap::Key;
 use crate::tui::paint::{Paint, Span, Tone};
@@ -22,8 +30,44 @@ const BAR: usize = 10;
 pub(crate) const REMOVE_NEEDS_A_PROVIDER: &str =
     "d removes a Provider: select one in the bar, or open it";
 
+/// The catalogs the Providers pane read, one per Provider kind (the first Provider of the kind
+/// whose catalog was listed): what the Workers pane judges a runner against.
+#[derive(Clone, Default)]
+pub(crate) struct SharedCatalogs(Arc<Mutex<BTreeMap<Kind, Catalog>>>);
+
+impl SharedCatalogs {
+    pub(crate) fn get(&self, kind: Kind) -> Option<Catalog> {
+        let catalogs = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        catalogs.get(&kind).cloned()
+    }
+
+    pub(crate) fn set(&self, read: &[ProviderCatalog]) {
+        let mut catalogs = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        catalogs.clear();
+        for catalog in read {
+            if let Some(report) = catalog.outcome.report() {
+                catalogs
+                    .entry(catalog.kind)
+                    .or_insert_with(|| report.catalog.clone());
+            }
+        }
+    }
+}
+
+/// What one discovery handed over: the inventory and the catalogs of the Providers it probed.
+struct Discovered {
+    inventory: ProviderInventory,
+    catalogs: Vec<ProviderCatalog>,
+}
+
 struct Job {
-    receiver: Receiver<ProviderInventory>,
+    receiver: Receiver<Discovered>,
     cancel: Arc<AtomicBool>,
     usage: UsageProbe,
 }
@@ -39,6 +83,11 @@ pub(crate) struct ProvidersPane {
     selected: Option<String>,
     rows: Vec<Row>,
     spinner: usize,
+    /// Each Provider's catalog, as the last complete discovery read it.
+    catalogs: Vec<ProviderCatalog>,
+    /// `m` unfolds every Provider's `models` section in the list.
+    models_open: bool,
+    shared: SharedCatalogs,
 }
 
 impl ProvidersPane {
@@ -52,7 +101,24 @@ impl ProvidersPane {
             selected: None,
             rows: Vec::new(),
             spinner: 0,
+            catalogs: Vec::new(),
+            models_open: false,
+            shared: SharedCatalogs::default(),
         }
+    }
+
+    /// Share the catalogs this pane reads with the Workers pane.
+    pub(crate) fn share(&mut self, shared: SharedCatalogs) {
+        shared.set(&self.catalogs);
+        self.shared = shared;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_catalogs(mut self, catalogs: Vec<ProviderCatalog>) -> ProvidersPane {
+        self.shared.set(&catalogs);
+        self.catalogs = catalogs;
+        self.rebuild();
+        self
     }
 
     #[cfg(test)]
@@ -89,7 +155,24 @@ impl ProvidersPane {
         let flag = Arc::clone(&cancel);
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = sender.send(providers::discover_with_cancel(&flag, usage));
+            let inventory = providers::discover_with_cancel(&flag, usage);
+            // A CLI that cannot start, or was not probed, has no catalog to read.
+            let ids: Vec<String> = inventory
+                .providers
+                .iter()
+                .filter(|provider| {
+                    !matches!(
+                        provider.status.as_str(),
+                        "installation failed" | "incompatible" | "not probed" | "unavailable"
+                    )
+                })
+                .map(|provider| provider.id.clone())
+                .collect();
+            let catalogs = catalogs::catalogs_with_cancel(&ids, &flag);
+            let _ = sender.send(Discovered {
+                inventory,
+                catalogs,
+            });
         });
         self.job = Some(Job {
             receiver,
@@ -108,15 +191,23 @@ impl ProvidersPane {
         match &self.inventory {
             Some(inventory) => {
                 let selected = self.selected.as_deref();
-                inventory_rows(inventory, selected, self.usage, &mut rows);
+                let models = Models {
+                    catalogs: &self.catalogs,
+                    open: self.models_open,
+                };
+                inventory_rows(inventory, selected, self.usage, &models, &mut rows);
             }
             None => rows.push(Row::plain("Discovering providers.")),
         }
         if let Some(job) = &self.job {
             let spinner = SPINNER[self.spinner % SPINNER.len()];
             let what = match job.usage {
-                UsageProbe::Skip => "checking authentication, bounded per context",
-                UsageProbe::Probe => "probing subscription and quota windows, bounded",
+                UsageProbe::Skip => {
+                    "checking authentication and reading model catalogs, bounded per context"
+                }
+                UsageProbe::Probe => {
+                    "probing subscription and quota windows and model catalogs, bounded"
+                }
             };
             rows.push(Row::blank());
             rows.push(Row::painted(format!("{spinner} {what}"), Paint::Muted));
@@ -160,8 +251,13 @@ impl Pane for ProvidersPane {
     }
 
     /// `d` fills the `:` line with `provider remove ID` for the opened Provider; nothing is
-    /// removed until the user runs that line.
+    /// removed until the user runs that line. `m` folds or unfolds the `models` sections.
     fn key(&mut self, key: Key, _row: usize) -> Result<Option<Effect>, String> {
+        if key == Key::Char('m') {
+            self.models_open = !self.models_open;
+            self.rebuild();
+            return Ok(None);
+        }
         if key != Key::Char('d') {
             return Ok(None);
         }
@@ -174,11 +270,14 @@ impl Pane for ProvidersPane {
     fn legend(&self) -> &'static str {
         match self.selected {
             Some(_) => "d remove  R probe usage  y yank id  gf registry  Tab bar  :cmd  q quit",
-            None => "j/k move  R probe usage  y yank id  gf registry  Tab bar  :cmd  q quit",
+            None => {
+                "j/k move  m models  R probe usage  y yank id  gf registry  Tab bar  :cmd  q quit"
+            }
         }
     }
 
-    /// `R` runs the bounded usage probe `af provider status --usage` runs.
+    /// `R` runs the bounded usage probe `af provider status --usage` runs, and reads every
+    /// catalog again.
     fn refresh(&mut self, _scope: &Scope) -> Result<(), String> {
         self.start(UsageProbe::Probe);
         Ok(())
@@ -199,7 +298,12 @@ impl Pane for ProvidersPane {
         };
         let usage = job.usage;
         match job.receiver.try_recv() {
-            Ok(inventory) => {
+            Ok(Discovered {
+                inventory,
+                catalogs,
+            }) => {
+                self.shared.set(&catalogs);
+                self.catalogs = catalogs;
                 // A Provider removed since the last discovery is no longer there to show: the
                 // folder shows what is registered now.
                 let listed = |id: &String| inventory.providers.iter().any(|p| p.id == *id);
@@ -245,12 +349,19 @@ impl Pane for ProvidersPane {
     }
 }
 
+/// The catalogs a rebuild shows, and whether `m` unfolded them.
+struct Models<'a> {
+    catalogs: &'a [ProviderCatalog],
+    open: bool,
+}
+
 /// The `af provider status` table for the selected provider, or for all of them, then each
-/// provider's limit bars and note, and the setup line for an ambient candidate.
+/// provider's limit bars, note and models, and the setup line for an ambient candidate.
 fn inventory_rows(
     inventory: &ProviderInventory,
     selected: Option<&str>,
     usage: UsageProbe,
+    models: &Models<'_>,
     rows: &mut Vec<Row>,
 ) {
     if let Some(warning) = &inventory.warning {
@@ -269,6 +380,10 @@ fn inventory_rows(
     for provider in &inventory.providers {
         if selected.is_none_or(|id| id == provider.id) {
             provider_rows(provider, selected.is_some(), &ids, rows);
+            let catalog = models.catalogs.iter().find(|c| c.id == provider.id);
+            if let Some(catalog) = catalog {
+                model_rows(catalog, selected.is_some() || models.open, rows);
+            }
         }
     }
     if usage == UsageProbe::Skip {
@@ -302,6 +417,48 @@ fn provider_rows(
         let hint = providers::setup_hint(&provider.kind, ids);
         rows.push(Row::painted(hint, Paint::Muted));
     }
+}
+
+/// A Provider's `models` section: the header line of `af provider models`, then, unfolded, one
+/// row per exact ID (ID, display name, effort levels, aliases); a catalog that could not be read
+/// says why.
+fn model_rows(catalog: &ProviderCatalog, unfolded: bool, rows: &mut Vec<Row>) {
+    let report = match &catalog.outcome {
+        CatalogOutcome::Listed(report) => report,
+        CatalogOutcome::CliRefused(reason) | CatalogOutcome::Unavailable(reason) => {
+            rows.push(Row::painted(
+                format!("models unavailable: {reason}; the static rules apply"),
+                Paint::Muted,
+            ));
+            return;
+        }
+    };
+    let count = report.catalog.models.len();
+    let fold = if unfolded { "" } else { "  (m unfolds)" };
+    rows.push(Row::plain(format!(
+        "models {}  {count} exact IDs{fold}",
+        report.header()
+    )));
+    if !unfolded {
+        return;
+    }
+    for model in &report.catalog.models {
+        let aliases = if model.aliases.is_empty() {
+            String::new()
+        } else {
+            format!("  aliases {}", model.aliases.join(", "))
+        };
+        rows.push(Row::plain(format!(
+            "  model  {:<24} {:<14} {}{aliases}",
+            model.id,
+            model.display_name,
+            catalogs::effort_levels(model)
+        )));
+    }
+    rows.push(Row::painted(
+        format!("  {}.", catalogs::PROOF),
+        Paint::Muted,
+    ));
 }
 
 /// The provider's `af provider status` row, its STATUS word as a chip: green for
@@ -339,8 +496,45 @@ fn bar(used_percent: u8) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::providers::models::{
+        CatalogReport, parse_claude_list_models, parse_codex_model_list,
+    };
+
+    /// The two recorded catalogs, as the discovery job would hand them over for `claude-work` and
+    /// `codex-main`.
+    pub(crate) fn fixture_catalogs() -> Vec<ProviderCatalog> {
+        let claude =
+            include_str!("../../../tests/fixtures/provider-models/claude-list-models.json");
+        let codex = include_str!("../../../tests/fixtures/provider-models/codex-model-list.json");
+        let (claude, _) = parse_claude_list_models(&serde_json::from_str(claude).unwrap()).unwrap();
+        let (codex, _) = parse_codex_model_list(&serde_json::from_str(codex).unwrap()).unwrap();
+        vec![
+            ProviderCatalog {
+                id: "claude-work".into(),
+                kind: Kind::Claude,
+                outcome: CatalogOutcome::Listed(CatalogReport {
+                    source: catalogs::CLAUDE_SOURCE,
+                    version: Some("2.1.300".into()),
+                    fetched_at: None,
+                    catalog: claude,
+                    skipped: 0,
+                }),
+            },
+            ProviderCatalog {
+                id: "codex-main".into(),
+                kind: Kind::Codex,
+                outcome: CatalogOutcome::Listed(CatalogReport {
+                    source: catalogs::CODEX_SOURCE,
+                    version: Some("0.162.1".into()),
+                    fetched_at: Some("2026-10-15T09:58:12Z".into()),
+                    catalog: codex,
+                    skipped: 0,
+                }),
+            },
+        ]
+    }
 
     #[test]
     fn limit_bars_round_to_the_nearest_column() {
@@ -379,7 +573,12 @@ mod tests {
             cancel: Arc::new(AtomicBool::new(false)),
             usage: UsageProbe::Skip,
         });
-        sender.send(inventory).unwrap();
+        sender
+            .send(Discovered {
+                inventory,
+                catalogs: Vec::new(),
+            })
+            .unwrap();
         assert!(pane.poll());
     }
 
@@ -402,5 +601,105 @@ mod tests {
         pane.open(Some("codex-main"));
         discovered(&mut pane, inventory(&["codex-main"]));
         assert_eq!(pane.selected.as_deref(), Some("codex-main"));
+    }
+
+    fn with_kinds() -> ProviderInventory {
+        let mut inventory = inventory(&["claude-work", "codex-main", "codex-work"]);
+        inventory.providers[0].kind = "claude".into();
+        inventory
+    }
+
+    #[test]
+    fn each_provider_shows_its_models_folded_in_the_list_and_unfolded_when_opened() {
+        let mut catalogs = fixture_catalogs();
+        catalogs.push(ProviderCatalog {
+            id: "codex-work".into(),
+            kind: Kind::Codex,
+            outcome: CatalogOutcome::Unavailable("codex app-server exited 1".into()),
+        });
+        let mut pane =
+            ProvidersPane::with_inventory(with_kinds(), UsageProbe::Skip).with_catalogs(catalogs);
+        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        assert!(
+            rows.contains(
+                &"models source claude list_models  version 2.1.300  freshness live  4 exact IDs  (m unfolds)"
+                    .to_owned()
+            ),
+            "{rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|row| row.starts_with(
+                "models source codex app-server model/list  version 0.162.1  freshness \
+                 models_cache.json fetched_at 2026-10-15T09:58:12Z  5 exact IDs"
+            )),
+            "{rows:#?}"
+        );
+        assert!(
+            rows.contains(
+                &"models unavailable: codex app-server exited 1; the static rules apply".to_owned()
+            ),
+            "{rows:#?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.starts_with("  model ")),
+            "folded"
+        );
+        // Opened, a Provider's section unfolds to one row per exact ID and what it proves.
+        pane.open(Some("claude-work"));
+        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        let fable = rows
+            .iter()
+            .find(|row| row.starts_with("  model  claude-fable-5-1"))
+            .unwrap_or_else(|| panic!("{rows:#?}"));
+        for part in ["Fable 5.1", "low medium high xhigh max", "aliases fable"] {
+            assert!(fable.contains(part), "{part}: {fable}");
+        }
+        assert!(rows.iter().any(|row| row.contains("af provider doctor")));
+        // `m` unfolds every section in the list, and folds them again.
+        pane.open(None);
+        assert_eq!(pane.key(Key::Char('m'), 0), Ok(None));
+        let rows: Vec<String> = pane.rows().iter().map(Row::text).collect();
+        assert!(
+            rows.iter()
+                .any(|row| row.starts_with("  model  gpt-6-luna") && !row.contains("ultra")),
+            "{rows:#?}"
+        );
+        assert_eq!(pane.key(Key::Char('m'), 0), Ok(None));
+        assert!(
+            !pane
+                .rows()
+                .iter()
+                .any(|row| row.text().starts_with("  model "))
+        );
+    }
+
+    #[test]
+    fn a_discovery_hands_its_catalogs_to_the_workers_pane() {
+        let shared = SharedCatalogs::default();
+        let mut pane = ProvidersPane::with_inventory(with_kinds(), UsageProbe::Skip);
+        pane.share(shared.clone());
+        assert!(shared.get(Kind::Claude).is_none());
+        let (sender, receiver) = mpsc::channel();
+        pane.job = Some(Job {
+            receiver,
+            cancel: Arc::new(AtomicBool::new(false)),
+            usage: UsageProbe::Probe,
+        });
+        sender
+            .send(Discovered {
+                inventory: with_kinds(),
+                catalogs: fixture_catalogs(),
+            })
+            .unwrap();
+        assert!(pane.poll());
+        let claude = shared.get(Kind::Claude).unwrap();
+        assert!(claude.model("claude-fable-5-1").is_some());
+        assert!(
+            shared
+                .get(Kind::Codex)
+                .unwrap()
+                .model("gpt-6-sol")
+                .is_some()
+        );
     }
 }

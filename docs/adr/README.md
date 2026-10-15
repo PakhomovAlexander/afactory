@@ -265,3 +265,5 @@ future readers need.
   invocation](0146-refuse-a-provider-cli-that-does-not-accept-afs-invocation.md)
 - [0147 — Stop the Claude model fallback, and name the model that
   answered](0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)
+- [0148 — Discover each Provider's models, and validate every binding before anything is
+  charged](0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)

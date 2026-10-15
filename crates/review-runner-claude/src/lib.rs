@@ -39,6 +39,12 @@
 //! authority and refuses, by name, any reply another model took part in. [`hint`] words all of it
 //! for the run's own stderr (ADR-0147). [`ClaudeAdapter`] starts no process, so it sets no guard.
 //!
+//! **The package names an exact ID.** The package argument parser applies the static rules of
+//! [`models`], the one validation authority for model and effort spellings (ADR-0148): an alias,
+//! a misspelling of a known exact ID, an unversioned model or an effort level Claude Code does not
+//! document is refused, with a hint naming the rule, the nearest accepted spellings and `af
+//! provider models`, before any process starts.
+//!
 //! **No session is carried.** An Attempt's command assigns no session identity and resumes
 //! nothing; the history the CLI keeps for an Attempt's own working directory is removed when the
 //! process exits ([`session::ClaudeSessionStore::remove_attempt_project`]).
@@ -50,6 +56,7 @@
 //! exactly where their providers do.
 
 pub mod hint;
+pub mod models;
 pub mod session;
 pub mod task;
 
@@ -133,6 +140,30 @@ fn claude_model_flags(runner: &Command) -> Result<Vec<String>, String> {
             return Err(format!("duplicate Claude package option `{option}`"));
         }
         index += 2;
+    }
+    // The package's own words reach Claude Code only when they pass the static rules: no alias,
+    // no misspelling of a known ID, no effort level Claude Code does not document (ADR-0148).
+    if let Some(model) = &model {
+        models::check_static(models::Kind::Claude, model, effort.as_deref()).map_err(
+            |refusal| {
+                refusal.hint(
+                    models::ProviderRef {
+                        id: None,
+                        kind: models::Kind::Claude,
+                    },
+                    model,
+                    effort.as_deref(),
+                )
+            },
+        )?;
+    } else if let Some(effort) = &effort
+        && !models::CLAUDE_EFFORTS.contains(&effort.as_str())
+    {
+        hint::check_binding("--effort", effort)?;
+        return Err(format!(
+            "Claude package effort level `{effort}` is not one Claude Code accepts: {}",
+            models::CLAUDE_EFFORTS.join(", ")
+        ));
     }
     let mut flags = Vec::new();
     if let Some(model) = model {

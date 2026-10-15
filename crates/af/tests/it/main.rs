@@ -4,6 +4,8 @@
 
 // Shared fixtures, declared once for every subject module.
 mod common;
+#[path = "support/fake_models.rs"]
+mod fake_models;
 #[path = "support/provider_cli.rs"]
 mod provider_cli;
 #[path = "support/review_memo.rs"]
@@ -23,6 +25,7 @@ mod onboard;
 mod onboarding_quickstart;
 mod provider_auth_handoff;
 mod provider_cli_health;
+mod provider_models;
 mod provider_onboarding;
 mod provider_registry;
 mod render;

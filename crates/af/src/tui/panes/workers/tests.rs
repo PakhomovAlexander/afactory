@@ -413,7 +413,8 @@ fn identity_shows_only_what_the_declaration_carries() {
             "schema    af.worker/1",
             "path      .af/task-packages/model",
             "pin       unpinned",
-            "runner    kind model  provider claude  model claude-opus-5-5  effort high",
+            "runner    kind model  provider claude  model claude-opus-5-5  effort high  verdict \
+             unverified against the catalog",
             "args      -",
             "attempt   tokens 1500  wall_ms 60000",
             "effects   read-source, execute-checks",
@@ -441,7 +442,8 @@ fn identity_shows_only_what_the_declaration_carries() {
     assert_eq!(rows[3], "schema    -");
     assert_eq!(
         rows[6],
-        "runner    kind -  program codex  model gpt-6-sol  effort high"
+        "runner    kind -  program codex  model gpt-6-sol  effort high  verdict unverified \
+         against the catalog"
     );
     assert_eq!(
         rows[7],
@@ -1284,4 +1286,80 @@ fn an_index_flag_does_not_hide_drift() {
         .find(|entry| entry.id == quiet)
         .unwrap();
     assert_eq!(entry.drifted, [quiet]);
+}
+
+/// The `runner` row ends with the one validation authority's verdict: against the Providers
+/// pane's catalog of that kind when it has one, by the static rules otherwise (ADR-0148).
+#[test]
+fn the_runner_row_carries_the_verdict_against_the_providers_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    worker(root, ".af/task-packages/model", "kernel/model");
+    let declared = |model: &str, effort: &str| {
+        format!(
+            "schema = \"af.worker/1\"\nname = \"kernel/{effort}\"\nversion = \"1.0.0\"\n\n\
+             [runner]\nkind = \"model\"\nprovider_kind = \"claude\"\nmodel = \"{model}\"\n\
+             effort = \"{effort}\"\n"
+        )
+    };
+    write(
+        root,
+        ".af/task-packages/alias/worker.toml",
+        &declared("default", "high"),
+    );
+    write(
+        root,
+        ".af/task-packages/custom/worker.toml",
+        &declared("claude-opus-4-8", "max"),
+    );
+    write(
+        root,
+        ".af/task-packages/ultra/worker.toml",
+        &declared("claude-fable-5-1", "ultra"),
+    );
+    reviewer(root, "bugs", "bugs");
+    commit_all(root, "declarations");
+    let shared = super::super::providers::SharedCatalogs::default();
+    shared.set(&super::super::providers::tests::fixture_catalogs());
+    let mut pane = WorkersPane::with_catalogs(shared);
+    pane.load(&scope(root)).unwrap();
+    let runner = |pane: &mut WorkersPane, id: &str| {
+        pane.open(Some(id));
+        texts(pane.rows())
+            .into_iter()
+            .find(|row| row.starts_with("runner "))
+            .unwrap()
+    };
+    for (id, verdict) in [
+        (".af/task-packages/model/worker.toml", "verdict ok"),
+        (
+            ".af/task-packages/alias/worker.toml",
+            "verdict alias -> claude-opus-5-5",
+        ),
+        (
+            ".af/task-packages/custom/worker.toml",
+            "verdict unverified against the catalog",
+        ),
+        (
+            ".af/task-packages/ultra/worker.toml",
+            "verdict effort not listed: low, medium, high, xhigh, max",
+        ),
+        (".af/workers/bugs/reviewer.toml", "verdict ok"),
+    ] {
+        let row = runner(&mut pane, id);
+        assert!(row.ends_with(verdict), "{id}: {row}");
+    }
+    // Without a catalog, the static rules alone: an alias Claude Code documents is still refused
+    // with its exact ID, and a listed pair is unverified.
+    let mut alone = WorkersPane::default();
+    alone.load(&scope(root)).unwrap();
+    assert!(
+        runner(&mut alone, ".af/task-packages/model/worker.toml")
+            .ends_with("verdict unverified against the catalog")
+    );
+    assert!(
+        runner(&mut alone, ".af/task-packages/alias/worker.toml").contains(
+            "verdict refused: Task Model binding requires an explicit versioned model ID"
+        )
+    );
 }
