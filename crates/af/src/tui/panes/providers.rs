@@ -4,10 +4,11 @@
 //! token-free, and `R` adds the bounded usage probe; all of it runs on a thread the event loop
 //! polls and cancels, so a key is never waiting on a Provider. A Provider's `models` section is
 //! folded to its header line in the list and unfolds to one row per exact ID when the Provider
-//! is opened or `m` unfolds every section. The catalogs read are shared with the Workers pane,
-//! which judges each runner against the catalog of its kind.
+//! is opened or `m` unfolds every section, and shows that Provider's own catalog only. The
+//! catalogs read are shared with the Workers pane under each Provider's id, which gives a
+//! runner's verdict once per Provider of its kind.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -30,18 +31,32 @@ const BAR: usize = 10;
 pub(crate) const REMOVE_NEEDS_A_PROVIDER: &str =
     "d removes a Provider: select one in the bar, or open it";
 
-/// The catalogs the Providers pane read, one per Provider kind (the first Provider of the kind
-/// whose catalog was listed): what the Workers pane judges a runner against.
+/// One probed Provider's catalog, under its Provider id and with its kind.
+#[derive(Clone)]
+pub(crate) struct SharedCatalog {
+    pub(crate) id: String,
+    pub(crate) kind: Kind,
+    pub(crate) catalog: Catalog,
+}
+
+/// The catalogs the Providers pane read, one per probed Provider whose catalog was listed, in
+/// inventory order: what the Workers pane judges a runner against, once per Provider of the
+/// runner's kind. A Provider of the same kind never hides another's catalog.
 #[derive(Clone, Default)]
-pub(crate) struct SharedCatalogs(Arc<Mutex<BTreeMap<Kind, Catalog>>>);
+pub(crate) struct SharedCatalogs(Arc<Mutex<Vec<SharedCatalog>>>);
 
 impl SharedCatalogs {
-    pub(crate) fn get(&self, kind: Kind) -> Option<Catalog> {
+    /// The catalogs of every Provider of `kind`, in inventory order.
+    pub(crate) fn of_kind(&self, kind: Kind) -> Vec<SharedCatalog> {
         let catalogs = self
             .0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        catalogs.get(&kind).cloned()
+        catalogs
+            .iter()
+            .filter(|catalog| catalog.kind == kind)
+            .cloned()
+            .collect()
     }
 
     pub(crate) fn set(&self, read: &[ProviderCatalog]) {
@@ -52,9 +67,11 @@ impl SharedCatalogs {
         catalogs.clear();
         for catalog in read {
             if let Some(report) = catalog.outcome.report() {
-                catalogs
-                    .entry(catalog.kind)
-                    .or_insert_with(|| report.catalog.clone());
+                catalogs.push(SharedCatalog {
+                    id: catalog.id.clone(),
+                    kind: catalog.kind,
+                    catalog: report.catalog.clone(),
+                });
             }
         }
     }
@@ -678,7 +695,7 @@ pub(crate) mod tests {
         let shared = SharedCatalogs::default();
         let mut pane = ProvidersPane::with_inventory(with_kinds(), UsageProbe::Skip);
         pane.share(shared.clone());
-        assert!(shared.get(Kind::Claude).is_none());
+        assert!(shared.of_kind(Kind::Claude).is_empty());
         let (sender, receiver) = mpsc::channel();
         pane.job = Some(Job {
             receiver,
@@ -692,14 +709,92 @@ pub(crate) mod tests {
             })
             .unwrap();
         assert!(pane.poll());
-        let claude = shared.get(Kind::Claude).unwrap();
-        assert!(claude.model("claude-fable-5-1").is_some());
+        let claude = shared.of_kind(Kind::Claude);
+        assert_eq!(claude.len(), 1);
+        assert_eq!(claude[0].id, "claude-work");
+        assert!(claude[0].catalog.model("claude-fable-5-1").is_some());
+        let codex = shared.of_kind(Kind::Codex);
+        assert_eq!(codex.len(), 1);
+        assert_eq!(codex[0].id, "codex-main");
+        assert!(codex[0].catalog.model("gpt-6-sol").is_some());
+    }
+
+    /// Two Claude Providers whose catalogs differ: the first lists claude-fable-5-1 with every
+    /// Claude effort level, the second with low, medium and high only.
+    pub(crate) fn two_claude_catalogs() -> Vec<ProviderCatalog> {
+        let claude =
+            include_str!("../../../tests/fixtures/provider-models/claude-list-models.json");
+        let (full, _) = parse_claude_list_models(&serde_json::from_str(claude).unwrap()).unwrap();
+        let mut short = full.clone();
+        for model in &mut short.models {
+            model
+                .efforts
+                .retain(|level| ["low", "medium", "high"].contains(&level.as_str()));
+        }
+        short.models.retain(|model| model.id == "claude-fable-5-1");
+        let listed = |id: &str, catalog| ProviderCatalog {
+            id: id.into(),
+            kind: Kind::Claude,
+            outcome: CatalogOutcome::Listed(CatalogReport {
+                source: catalogs::CLAUDE_SOURCE,
+                version: Some("2.1.300".into()),
+                fetched_at: None,
+                catalog,
+                skipped: 0,
+            }),
+        };
+        vec![
+            listed("claude-personal", full),
+            listed("claude-work", short),
+        ]
+    }
+
+    /// Each Provider's `models` section shows its own catalog only, and both catalogs are shared
+    /// under their own ids though the two Providers are of one kind.
+    #[test]
+    fn two_providers_of_one_kind_each_show_their_own_models() {
+        let mut inventory = inventory(&["claude-personal", "claude-work"]);
+        for provider in &mut inventory.providers {
+            provider.kind = "claude".into();
+        }
+        let shared = SharedCatalogs::default();
+        let mut pane = ProvidersPane::with_inventory(inventory, UsageProbe::Skip)
+            .with_catalogs(two_claude_catalogs());
+        pane.share(shared.clone());
+        let section = |pane: &mut ProvidersPane, id: &str| {
+            pane.open(Some(id));
+            pane.rows()
+                .iter()
+                .map(Row::text)
+                .filter(|row| row.starts_with("models ") || row.starts_with("  model "))
+                .collect::<Vec<_>>()
+        };
+        let personal = section(&mut pane, "claude-personal");
+        assert!(personal[0].ends_with("4 exact IDs"), "{personal:#?}");
+        let fable = personal
+            .iter()
+            .find(|row| row.starts_with("  model  claude-fable-5-1"))
+            .unwrap_or_else(|| panic!("{personal:#?}"));
+        assert!(fable.contains("low medium high xhigh max"), "{fable}");
         assert!(
-            shared
-                .get(Kind::Codex)
-                .unwrap()
-                .model("gpt-6-sol")
-                .is_some()
+            personal
+                .iter()
+                .any(|row| row.starts_with("  model  claude-opus-5-5"))
         );
+        let work = section(&mut pane, "claude-work");
+        assert_eq!(work.len(), 2, "{work:#?}");
+        assert!(work[0].ends_with("1 exact IDs"), "{work:#?}");
+        assert!(
+            work[1].starts_with("  model  claude-fable-5-1"),
+            "{work:#?}"
+        );
+        assert!(work[1].contains("low medium high"), "{work:#?}");
+        assert!(!work[1].contains("xhigh"), "{work:#?}");
+        let ids: Vec<String> = shared
+            .of_kind(Kind::Claude)
+            .into_iter()
+            .map(|catalog| catalog.id)
+            .collect();
+        assert_eq!(ids, ["claude-personal", "claude-work"]);
     }
 }

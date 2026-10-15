@@ -213,9 +213,21 @@
               "additionalProperties": false,
               "required": ["reviewer_runner", "worker_runner", "binding"],
               "properties": {
-                "reviewer_runner": { "type": "string", "minLength": 1 },
-                "worker_runner": { "type": "string", "minLength": 1 },
-                "binding": { "type": "string", "minLength": 1 }
+                "reviewer_runner": {
+                  "description": "The TOML text of the review package's [runner] table for reviewer.toml (program and args), its lines joined by \\n; it parses on its own.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "worker_runner": {
+                  "description": "The TOML text of the Task package's [runner] table for worker.toml (kind, provider_kind, model, effort), its lines joined by \\n; it parses on its own.",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "binding": {
+                  "description": "The TOML text of the bindings [providers] table naming the Provider for PACKAGE, with the review-time --provider NODE=ID as a # comment line, its lines joined by \\n; it parses on its own.",
+                  "type": "string",
+                  "minLength": 1
+                }
               }
             },
             { "type": "null" }

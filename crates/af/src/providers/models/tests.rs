@@ -184,14 +184,9 @@ fn resolve_names_the_exact_id_and_prints_both_configurations() {
         "resolve  `Fable 5.1/xhigh` on claude-work (claude)",
         "`Fable 5.1` is the display name of the exact ID claude-fable-5-1",
         "xhigh: confirmed, claude-fable-5-1 lists low, medium, high, xhigh, max",
-        "reviewer.toml  [runner] program = \"claude\"  args = [{ value = \"--model\" }, { value = \"claude-fable-5-1\" }, { value = \"--effort\" }, { value = \"xhigh\" }]",
-        "worker.toml    [runner]",
-        "kind = \"model\"",
-        "provider_kind = \"claude\"",
-        "model = \"claude-fable-5-1\"",
-        "effort = \"xhigh\"",
-        "bindings       [providers] \"PACKAGE\" = \"claude-work\"",
-        "--provider NODE=claude-work",
+        "    reviewer.toml  [runner]\n                   program = \"claude\"\n                   args = [{ value = \"--model\" }, { value = \"claude-fable-5-1\" }, { value = \"--effort\" }, { value = \"xhigh\" }]\n",
+        "    worker.toml    [runner]\n                   kind = \"model\"\n                   provider_kind = \"claude\"\n                   model = \"claude-fable-5-1\"\n                   effort = \"xhigh\"\n",
+        "    bindings       [providers]\n                   \"PACKAGE\" = \"claude-work\"\n                   # af review run … --provider NODE=claude-work",
     ] {
         assert!(lines.contains(part), "{part}:\n{lines}");
     }
@@ -234,8 +229,9 @@ fn resolve_names_the_exact_id_and_prints_both_configurations() {
     );
 }
 
-/// The printed configurations are af's own schemas: the worker block is a `TaskWorkerRunner`
-/// and the reviewer args read back as the resolved pair.
+/// The printed configurations are af's own schemas, each a TOML document on its own: the worker
+/// block is a `TaskWorkerRunner`, the reviewer args read back as the resolved pair and the
+/// bindings block is a `[providers]` table naming the Provider.
 #[test]
 fn the_configurations_parse_as_afs_own_schemas() {
     for (kind, model, effort) in [
@@ -254,10 +250,8 @@ fn the_configurations_parse_as_afs_own_schemas() {
                 effort: effort.into(),
             }
         );
-        let reviewer = configuration
-            .reviewer
-            .replace("[runner] ", "[runner]\n")
-            .replace("  args", "\nargs");
+        let reviewer = configuration.reviewer.join("\n");
+        toml::from_str::<toml::Value>(&reviewer).unwrap();
         let manifest =
             format!("name = \"x\"\nversion = \"1.0.0\"\nsubjects = [\"diff\"]\n{reviewer}\n");
         let manifest: review_config::lock::PackageManifest = toml::from_str(&manifest).unwrap();
@@ -266,6 +260,11 @@ fn the_configurations_parse_as_afs_own_schemas() {
         assert_eq!(
             (settings.model.as_str(), settings.effort.as_str()),
             (model, effort)
+        );
+        let binding: toml::Value = toml::from_str(&configuration.binding.join("\n")).unwrap();
+        assert_eq!(
+            binding,
+            toml::from_str::<toml::Value>("[providers]\nPACKAGE = \"p-1\"").unwrap()
         );
     }
 }

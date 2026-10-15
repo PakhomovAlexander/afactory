@@ -2,6 +2,7 @@
 //! ADR-0148): the table, the `af/provider-models@1` document, every `--resolve` case, and exits
 //! 4 and 7. No catalog read starts a turn.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Output;
 
@@ -84,6 +85,148 @@ fn document(output: &Output) -> Value {
         &document,
     );
     document
+}
+
+/// The width of the label column `--resolve` prints each configuration block under.
+const LABEL_COLUMN: usize = 19;
+
+/// The configuration blocks `--resolve` printed, by label (`reviewer.toml`, `worker.toml`,
+/// `bindings`), each with the label column removed: exactly the lines a person pastes.
+fn printed_blocks(text: &str) -> BTreeMap<String, String> {
+    let mut blocks = BTreeMap::<String, Vec<String>>::new();
+    let mut current: Option<String> = None;
+    for line in text.lines() {
+        let label = line
+            .get(..LABEL_COLUMN)
+            .filter(|column| column.starts_with("    "))
+            .map(str::trim);
+        match label {
+            Some(label @ ("reviewer.toml" | "worker.toml" | "bindings")) => {
+                assert!(
+                    blocks
+                        .insert(label.to_owned(), vec![line[LABEL_COLUMN..].to_owned()])
+                        .is_none(),
+                    "{label} printed twice:\n{text}"
+                );
+                current = Some(label.to_owned());
+            }
+            Some("") if current.is_some() && line.len() > LABEL_COLUMN => {
+                blocks
+                    .get_mut(current.as_deref().unwrap())
+                    .unwrap()
+                    .push(line[LABEL_COLUMN..].to_owned());
+            }
+            _ => current = None,
+        }
+    }
+    blocks
+        .into_iter()
+        .map(|(label, lines)| (label, lines.join("\n")))
+        .collect()
+}
+
+/// The resolved pair a configuration must carry.
+struct Pair<'a> {
+    provider: &'a str,
+    kind: &'a str,
+    args: [&'a str; 4],
+    model: &'a str,
+    effort: &'a str,
+}
+
+/// Each block is a TOML document on its own that yields the resolved pair through the parsers af
+/// reads `reviewer.toml`, `worker.toml` and a bindings `[providers]` table with.
+fn assert_configuration(reviewer: &str, worker: &str, binding: &str, pair: &Pair) {
+    let parsed: toml::Value = toml::from_str(reviewer)
+        .unwrap_or_else(|error| panic!("reviewer.toml block: {error}\n{reviewer}"));
+    assert_eq!(parsed.as_table().unwrap().len(), 1, "{reviewer}");
+    assert_eq!(parsed["runner"]["program"].as_str(), Some(pair.kind));
+    let args: Vec<&str> = parsed["runner"]["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(args, pair.args, "{reviewer}");
+    let runner: review_config::CommandSpec = parsed["runner"].clone().try_into().unwrap();
+    let manifest = review_config::lock::PackageManifest {
+        name: "x".into(),
+        version: "1.0.0".into(),
+        subjects: Vec::new(),
+        runner,
+    };
+    let settings = review_config::lock::reviewer_runner_settings_from_manifest(&manifest).unwrap();
+    assert_eq!(
+        (settings.model.as_str(), settings.effort.as_str()),
+        (pair.model, pair.effort)
+    );
+
+    let parsed: toml::Value = toml::from_str(worker)
+        .unwrap_or_else(|error| panic!("worker.toml block: {error}\n{worker}"));
+    assert_eq!(parsed.as_table().unwrap().len(), 1, "{worker}");
+    let table = &parsed["runner"];
+    assert_eq!(table["kind"].as_str(), Some("model"));
+    assert_eq!(table["provider_kind"].as_str(), Some(pair.kind));
+    assert_eq!(table["model"].as_str(), Some(pair.model));
+    assert_eq!(table["effort"].as_str(), Some(pair.effort));
+    let runner: review_config::task::catalog::TaskWorkerRunner = table.clone().try_into().unwrap();
+    let review_config::task::catalog::TaskWorkerRunner::Model {
+        provider_kind,
+        model,
+        effort,
+    } = runner
+    else {
+        panic!("not a Model runner: {worker}");
+    };
+    // The worker.toml parser's own check, then the one validation authority's static rules.
+    assert!(review_core::task::is_name(&provider_kind) && review_core::task::is_name(&effort));
+    assert!(!model.trim().is_empty());
+    let kind = review_runner_claude::models::Kind::parse(&provider_kind).unwrap();
+    assert!(review_runner_claude::models::check_static(kind, &model, Some(&effort)).is_ok());
+    assert_eq!((model.as_str(), effort.as_str()), (pair.model, pair.effort));
+
+    let parsed: toml::Value = toml::from_str(binding)
+        .unwrap_or_else(|error| panic!("bindings block: {error}\n{binding}"));
+    assert_eq!(parsed.as_table().unwrap().len(), 1, "{binding}");
+    let providers = parsed["providers"].as_table().unwrap();
+    assert_eq!(providers.len(), 1, "{binding}");
+    assert_eq!(providers["PACKAGE"].as_str(), Some(pair.provider));
+    // The review-time equivalent is a comment line of its own, never a trailer on a key.
+    let review = format!("# af review run … --provider NODE={}", pair.provider);
+    assert!(binding.lines().any(|line| line == review), "{binding}");
+    assert!(
+        binding
+            .lines()
+            .filter(|line| line.contains("--provider"))
+            .all(|line| line.starts_with('#')),
+        "{binding}"
+    );
+}
+
+/// The printed blocks and the document's `configuration` both carry the pair.
+fn assert_both_configurations(text: &str, configuration: &Value, pair: &Pair) {
+    let blocks = printed_blocks(text);
+    assert_eq!(
+        blocks.keys().collect::<Vec<_>>(),
+        ["bindings", "reviewer.toml", "worker.toml"],
+        "{text}"
+    );
+    assert_configuration(
+        &blocks["reviewer.toml"],
+        &blocks["worker.toml"],
+        &blocks["bindings"],
+        pair,
+    );
+    let field = |name: &str| configuration[name].as_str().unwrap().to_owned();
+    assert_configuration(
+        &field("reviewer_runner"),
+        &field("worker_runner"),
+        &field("binding"),
+        pair,
+    );
+    assert_eq!(field("reviewer_runner"), blocks["reviewer.toml"]);
+    assert_eq!(field("worker_runner"), blocks["worker.toml"]);
+    assert_eq!(field("binding"), blocks["bindings"]);
 }
 
 #[test]
@@ -184,12 +327,6 @@ fn resolve_on_the_claude_provider() {
     for part in [
         "`Fable 5.1` is the display name of the exact ID claude-fable-5-1",
         "xhigh: confirmed, claude-fable-5-1 lists low, medium, high, xhigh, max",
-        "reviewer.toml  [runner] program = \"claude\"  args = [{ value = \"--model\" }, { value = \"claude-fable-5-1\" }, { value = \"--effort\" }, { value = \"xhigh\" }]",
-        "worker.toml    [runner]",
-        "provider_kind = \"claude\"",
-        "model = \"claude-fable-5-1\"",
-        "effort = \"xhigh\"",
-        "bindings       [providers] \"PACKAGE\" = \"claude-work\"",
     ] {
         assert!(text.contains(part), "{part}:\n{text}");
     }
@@ -197,6 +334,7 @@ fn resolve_on_the_claude_provider() {
         !text.contains("codex-main"),
         "only the named Provider: {text}"
     );
+    let fable = text;
     let text = resolve("fable");
     assert!(
         text.contains("`fable` is an alias of the exact ID claude-fable-5-1; af binds exact IDs"),
@@ -217,12 +355,24 @@ fn resolve_on_the_claude_provider() {
     assert_eq!(resolution["outcome"], "display_name");
     assert_eq!(resolution["id"], "claude-fable-5-1");
     assert_eq!(resolution["effort_check"], "listed");
-    assert!(
-        resolution["configuration"]["worker_runner"]
-            .as_str()
-            .unwrap()
-            .contains("model = \"claude-fable-5-1\"")
+    assert_both_configurations(
+        &fable,
+        &resolution["configuration"],
+        &Pair {
+            provider: "claude-work",
+            kind: "claude",
+            args: ["--model", "claude-fable-5-1", "--effort", "xhigh"],
+            model: "claude-fable-5-1",
+            effort: "xhigh",
+        },
     );
+    for spelling in ["fable", "claude-fable-5.1", "claude-opus-4-8"] {
+        let text = resolve(spelling);
+        assert!(
+            printed_blocks(&text).is_empty(),
+            "af never substitutes: {text}"
+        );
+    }
     machine.assert_no_turn();
 }
 
@@ -235,11 +385,26 @@ fn resolve_on_the_codex_provider() {
     for part in [
         "`GPT-6 Sol` names the exact ID gpt-6-sol",
         "ultra: confirmed, gpt-6-sol lists low, medium, high, xhigh, max, ultra",
-        "{ value = \"model_reasoning_effort=\\\"ultra\\\"\" }",
-        "provider_kind = \"codex\"",
     ] {
         assert!(text.contains(part), "{part}:\n{text}");
     }
+    let output = machine.af(&["codex-main", "--json", "--resolve", "GPT-6 Sol/ultra"]);
+    assert_both_configurations(
+        &text,
+        &document(&output)["providers"][0]["resolution"]["configuration"],
+        &Pair {
+            provider: "codex-main",
+            kind: "codex",
+            args: [
+                "--model",
+                "gpt-6-sol",
+                "-c",
+                "model_reasoning_effort=\"ultra\"",
+            ],
+            model: "gpt-6-sol",
+            effort: "ultra",
+        },
+    );
     let output = machine.af(&["codex-main", "--json", "--resolve", "gpt-6-luna/ultra"]);
     let resolution = &document(&output)["providers"][0]["resolution"];
     assert_eq!(resolution["outcome"], "exact");

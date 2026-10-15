@@ -414,7 +414,7 @@ fn identity_shows_only_what_the_declaration_carries() {
             "path      .af/task-packages/model",
             "pin       unpinned",
             "runner    kind model  provider claude  model claude-opus-5-5  effort high  verdict \
-             unverified against the catalog",
+             (static rules): ok",
             "args      -",
             "attempt   tokens 1500  wall_ms 60000",
             "effects   read-source, execute-checks",
@@ -442,8 +442,8 @@ fn identity_shows_only_what_the_declaration_carries() {
     assert_eq!(rows[3], "schema    -");
     assert_eq!(
         rows[6],
-        "runner    kind -  program codex  model gpt-6-sol  effort high  verdict unverified \
-         against the catalog"
+        "runner    kind -  program codex  model gpt-6-sol  effort high  verdict (static \
+         rules): ok"
     );
     assert_eq!(
         rows[7],
@@ -1288,8 +1288,9 @@ fn an_index_flag_does_not_hide_drift() {
     assert_eq!(entry.drifted, [quiet]);
 }
 
-/// The `runner` row ends with the one validation authority's verdict: against the Providers
-/// pane's catalog of that kind when it has one, by the static rules otherwise (ADR-0148).
+/// The `runner` row ends with the one validation authority's verdict: against the catalog of
+/// each Provider of that kind the Providers pane read, named by its id, by the static rules
+/// otherwise (ADR-0148).
 #[test]
 fn the_runner_row_carries_the_verdict_against_the_providers_catalog() {
     let temp = tempfile::tempdir().unwrap();
@@ -1331,35 +1332,81 @@ fn the_runner_row_carries_the_verdict_against_the_providers_catalog() {
             .unwrap()
     };
     for (id, verdict) in [
-        (".af/task-packages/model/worker.toml", "verdict ok"),
+        (
+            ".af/task-packages/model/worker.toml",
+            "verdict claude-work: ok",
+        ),
         (
             ".af/task-packages/alias/worker.toml",
-            "verdict alias -> claude-opus-5-5",
+            "verdict claude-work: alias -> claude-opus-5-5",
         ),
         (
             ".af/task-packages/custom/worker.toml",
-            "verdict unverified against the catalog",
+            "verdict claude-work: unverified against the catalog",
         ),
         (
             ".af/task-packages/ultra/worker.toml",
-            "verdict effort not listed: low, medium, high, xhigh, max",
+            "verdict claude-work: effort not listed: low, medium, high, xhigh, max",
         ),
-        (".af/workers/bugs/reviewer.toml", "verdict ok"),
+        (".af/workers/bugs/reviewer.toml", "verdict codex-main: ok"),
     ] {
         let row = runner(&mut pane, id);
         assert!(row.ends_with(verdict), "{id}: {row}");
     }
     // Without a catalog, the static rules alone: an alias Claude Code documents is still refused
-    // with its exact ID, and a listed pair is unverified.
+    // with its exact ID, and a pair that passes them is ok by those rules.
     let mut alone = WorkersPane::default();
     alone.load(&scope(root)).unwrap();
     assert!(
         runner(&mut alone, ".af/task-packages/model/worker.toml")
-            .ends_with("verdict unverified against the catalog")
+            .ends_with("verdict (static rules): ok")
     );
     assert!(
         runner(&mut alone, ".af/task-packages/alias/worker.toml").contains(
-            "verdict refused: Task Model binding requires an explicit versioned model ID"
+            "verdict (static rules): refused: Task Model binding requires an explicit versioned model ID"
         )
     );
+}
+
+/// A declaration names a kind, never the Provider that will be bound: with two Claude Providers
+/// whose catalogs differ the row gives each Provider's verdict under its own id, in inventory
+/// order, and with no catalog the static rules' verdict.
+#[test]
+fn the_runner_row_gives_one_verdict_per_provider_of_its_kind() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    write(
+        root,
+        ".af/task-packages/fable/worker.toml",
+        "schema = \"af.worker/1\"\nname = \"kernel/fable\"\nversion = \"1.0.0\"\n\n\
+         [runner]\nkind = \"model\"\nprovider_kind = \"claude\"\n\
+         model = \"claude-fable-5-1\"\neffort = \"xhigh\"\n",
+    );
+    commit_all(root, "declarations");
+    let id = ".af/task-packages/fable/worker.toml";
+    let runner = |pane: &mut WorkersPane| {
+        pane.load(&scope(root)).unwrap();
+        pane.open(Some(id));
+        texts(pane.rows())
+            .into_iter()
+            .find(|row| row.starts_with("runner "))
+            .unwrap()
+    };
+    let shared = super::super::providers::SharedCatalogs::default();
+    shared.set(&super::super::providers::tests::two_claude_catalogs());
+    let row = runner(&mut WorkersPane::with_catalogs(shared.clone()));
+    assert!(
+        row.ends_with(
+            "verdict claude-personal: ok  claude-work: effort not listed: low, medium, high"
+        ),
+        "{row}"
+    );
+    // A Codex catalog says nothing about a Claude runner.
+    let mut codex = super::super::providers::tests::fixture_catalogs();
+    codex.retain(|catalog| catalog.id == "codex-main");
+    shared.set(&codex);
+    let row = runner(&mut WorkersPane::with_catalogs(shared));
+    assert!(row.ends_with("verdict (static rules): ok"), "{row}");
+    let row = runner(&mut WorkersPane::default());
+    assert!(row.ends_with("verdict (static rules): ok"), "{row}");
 }

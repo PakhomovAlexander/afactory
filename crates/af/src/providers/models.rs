@@ -889,15 +889,17 @@ pub(crate) fn table(catalogs: &[ProviderCatalog], resolve: Option<&ResolveReques
     lines
 }
 
-/// The copyable configuration for an exact ID and effort level, in af's own schemas.
+/// The copyable configuration for an exact ID and effort level, in af's own schemas. Each field
+/// holds the lines of one TOML document that parses on its own and pastes unchanged into the file
+/// it is named for.
 pub(crate) struct Configuration {
-    /// The review package's `[runner]` for `reviewer.toml`.
-    pub(crate) reviewer: String,
-    /// The Task package's `[runner]` block for `worker.toml`.
+    /// The review package's `[runner]` table for `reviewer.toml`.
+    pub(crate) reviewer: Vec<String>,
+    /// The Task package's `[runner]` table for `worker.toml`.
     pub(crate) worker: Vec<String>,
-    /// The bindings line: the Task catalog's (or `--bindings` file's) `[providers]` entry, and
-    /// the review's `--provider`.
-    pub(crate) binding: String,
+    /// The Task catalog's (or `--bindings` file's) `[providers]` table, with the review's
+    /// `--provider` as a comment line.
+    pub(crate) binding: Vec<String>,
 }
 
 pub(crate) fn configuration(
@@ -928,10 +930,11 @@ pub(crate) fn configuration(
         .collect::<Vec<_>>()
         .join(", ");
     Configuration {
-        reviewer: format!(
-            "[runner] program = {}  args = [{args}]",
-            quoted(kind.name())
-        ),
+        reviewer: vec![
+            "[runner]".into(),
+            format!("program = {}", quoted(kind.name())),
+            format!("args = [{args}]"),
+        ],
         worker: vec![
             "[runner]".into(),
             "kind = \"model\"".into(),
@@ -939,10 +942,11 @@ pub(crate) fn configuration(
             format!("model = {}", quoted(model)),
             format!("effort = {}", quoted(effort)),
         ],
-        binding: format!(
-            "[providers] \"PACKAGE\" = {}   (af review: --provider NODE={provider})",
-            quoted(provider)
-        ),
+        binding: vec![
+            "[providers]".into(),
+            format!("\"PACKAGE\" = {}", quoted(provider)),
+            format!("# af review run … --provider NODE={provider}"),
+        ],
     }
 }
 
@@ -1104,12 +1108,16 @@ fn resolution_lines(catalog: &ProviderCatalog, request: &ResolveRequest) -> Vec<
     }
     match &resolved.configuration {
         Some(configuration) => {
-            lines.push(format!("    reviewer.toml  {}", configuration.reviewer));
-            for (index, line) in configuration.worker.iter().enumerate() {
-                let label = if index == 0 { "worker.toml" } else { "" };
-                lines.push(format!("    {label:<14} {line}"));
+            for (label, block) in [
+                ("reviewer.toml", &configuration.reviewer),
+                ("worker.toml", &configuration.worker),
+                ("bindings", &configuration.binding),
+            ] {
+                for (index, line) in block.iter().enumerate() {
+                    let label = if index == 0 { label } else { "" };
+                    lines.push(format!("    {label:<14} {line}"));
+                }
             }
-            lines.push(format!("    bindings       {}", configuration.binding));
         }
         None if resolved
             .resolution
@@ -1221,9 +1229,9 @@ fn resolution_document(catalog: &ProviderCatalog, request: &ResolveRequest) -> s
         "effort_check": resolved.effort.name(),
         "effort_levels": resolved.levels,
         "configuration": resolved.configuration.as_ref().map(|configuration| serde_json::json!({
-            "reviewer_runner": configuration.reviewer,
+            "reviewer_runner": configuration.reviewer.join("\n"),
             "worker_runner": configuration.worker.join("\n"),
-            "binding": configuration.binding,
+            "binding": configuration.binding.join("\n"),
         })),
     })
 }

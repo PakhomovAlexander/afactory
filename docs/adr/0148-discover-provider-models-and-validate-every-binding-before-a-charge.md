@@ -65,9 +65,14 @@ What the harnesses offer, verified 2026-10-15:
    catalog IDs: the same family or at most two edits away), or an exact ID the catalog does not
    list (`passes af's spelling rule` or fails it with the rule; usability only by `af provider
    doctor`); then checks the effort level against that model's levels; and, only for a listed
-   pair, prints the review package's `[runner]` args for `reviewer.toml`, the Task package's
-   `[runner]` block (`kind = "model"`, `provider_kind`, `model`, `effort`) for `worker.toml`, and
-   the bindings line (`[providers] "PACKAGE" = "ID"`, and `--provider NODE=ID` for a review).
+   pair, prints three configurations, each a TOML document that parses on its own and pastes
+   unchanged into the file it is named for, one table header or key per line: the review
+   package's `[runner]` table (`program`, `args` with `--model` and the effort flags) for
+   `reviewer.toml`, the Task package's `[runner]` table (`kind = "model"`, `provider_kind`,
+   `model`, `effort`) for `worker.toml`, and the bindings `[providers]` table (`"PACKAGE" =
+   "ID"`) with the review-time `af review run … --provider NODE=ID` as a comment line. The
+   tests parse each block, printed and in the document, through the parsers af reads those
+   files with.
    `--json` prints `af/provider-models@1` (`schemas/provider-models-v1.json`). Exit 0; 4 when a
    CLI cannot start or is incompatible (outranks 7); 7 when a catalog is unavailable, in which
    case the static rules are printed and nothing is invented.
@@ -116,10 +121,15 @@ What the harnesses offer, verified 2026-10-15:
    inventory, bounded and cancellable, and `R` reads it again with the usage windows. Under each
    Provider a `models` section shows the header line; it unfolds to one row per exact ID (ID,
    display name, effort levels, aliases) when the Provider is opened or `m` unfolds it, and a
-   missing catalog says why. The Workers pane's `runner` row ends with the verdict of 2 (`ok`,
-   `alias -> ID` in the browser's printable ASCII, `effort not listed: …`, `unverified against
-   the catalog`, or the refusal), from the Providers pane's catalog of that kind when it has
-   one, from the static rules otherwise. The Tasks pane is unchanged.
+   missing catalog says why; each Provider's section shows its own catalog only. The catalogs
+   are shared with the Workers pane under each Provider's ID with its kind, and a Provider never
+   hides another of the same kind. A declaration names only a kind, never the Provider that
+   will be bound, so the Workers pane's `runner` row gives the verdict of 2 (`ok`, `alias -> ID`
+   in the browser's printable ASCII, `effort not listed: …`, `unverified against the catalog`,
+   or the refusal) once per Provider of that kind with a catalog, each prefixed by its ID in
+   inventory order (`verdict claude-personal: ok  claude-work: effort not listed: low, medium,
+   high`), and `verdict (static rules): …` from the static rules alone when no Provider of that
+   kind has one. The Tasks pane is unchanged.
 6. **One new public document.** `af/provider-models@1` and its schema; every other document,
    record and event keeps its shape. The plan lines are text, and `af/review-plan@1` is
    unchanged.

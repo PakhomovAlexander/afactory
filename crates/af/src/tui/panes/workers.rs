@@ -941,9 +941,11 @@ fn words(value: &Value, path: &[&str]) -> String {
 }
 
 /// The runner a declaration names: its kind; its program, or the provider kind of a model
-/// runner; its model and effort; the verdict of the one validation authority on them, against
-/// the Providers pane's catalog of that kind when it has one and by the static rules otherwise
-/// (ADR-0148); and its args as declared. A reviewer declares its model and effort in its args,
+/// runner; its model and effort; the verdict of the one validation authority on them (ADR-0148);
+/// and its args as declared. A declaration names only a kind, never the Provider that will be
+/// bound, so the verdict is given once per Provider of that kind whose catalog the Providers pane
+/// read, each prefixed by its id, in inventory order, and by the static rules alone when none
+/// has one. A reviewer declares its model and effort in its args,
 /// and they are read the way the kernel reads them.
 fn runner_rows(
     entry: &Entry,
@@ -968,9 +970,24 @@ fn runner_rows(
     }
     let verdict = judged
         .map(|kind| {
-            let catalog = catalogs.get(kind);
-            let verdict = rules::check(kind, catalog.as_ref(), &model, Some(&effort));
-            format!("  verdict {}", verdict.label(kind, &model, Some(&effort)))
+            let label = |verdict: rules::Verdict| verdict.label(kind, &model, Some(&effort));
+            let per_provider: Vec<String> = catalogs
+                .of_kind(kind)
+                .iter()
+                .map(|shared| {
+                    let verdict = rules::check(kind, Some(&shared.catalog), &model, Some(&effort));
+                    format!("{}: {}", shared.id, label(verdict))
+                })
+                .collect();
+            if per_provider.is_empty() {
+                let verdict = match rules::check_static(kind, &model, Some(&effort)) {
+                    Ok(()) => rules::Verdict::Ok,
+                    Err(refusal) => rules::Verdict::Refused(refusal),
+                };
+                format!("  verdict (static rules): {}", label(verdict))
+            } else {
+                format!("  verdict {}", per_provider.join("  "))
+            }
         })
         .unwrap_or_default();
     let what = match (program, provider) {

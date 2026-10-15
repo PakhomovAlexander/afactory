@@ -160,22 +160,40 @@ the catalog lists (confirmed), an alias of an exact ID (af binds exact IDs, neve
 display name or family form of an exact ID, a misspelling with the nearest catalog IDs (the
 same family or at most two edits away), or an exact ID the catalog does not list, which passes
 or fails af's spelling rule and whose usability only `af provider doctor` proves. It then checks
-the effort level against that model's levels and, for a listed pair only, prints the two
-configurations to copy:
+the effort level against that model's levels and, for a listed pair only, prints the three
+configurations to copy. Each is printed under its label, one table header or key per line, and
+is a TOML document that parses on its own and pastes unchanged into the file it is named for:
+the review package's `[runner]` table for `reviewer.toml`, the Task package's `[runner]` table
+for `worker.toml`, and the `[providers]` table of the Task catalog or a `--bindings` file, with
+the review-time equivalent as a comment line. `af provider models claude-work --resolve
+'Fable 5.1/xhigh'` prints:
 
 ```text
-    reviewer.toml  [runner] program = "claude"  args = [{ value = "--model" }, { value = "claude-fable-5-1" }, { value = "--effort" }, { value = "xhigh" }]
+    reviewer.toml  [runner]
+                   program = "claude"
+                   args = [{ value = "--model" }, { value = "claude-fable-5-1" }, { value = "--effort" }, { value = "xhigh" }]
     worker.toml    [runner]
                    kind = "model"
                    provider_kind = "claude"
                    model = "claude-fable-5-1"
                    effort = "xhigh"
-    bindings       [providers] "PACKAGE" = "claude-work"   (af review: --provider NODE=claude-work)
+    bindings       [providers]
+                   "PACKAGE" = "claude-work"
+                   # af review run … --provider NODE=claude-work
 ```
 
-A Codex reviewer passes the effort level as `{ value = "-c" }, { value =
-"model_reasoning_effort=\"ultra\"" }`. af never substitutes a model or an effort level, so
-an alias or an effort level the model does not list prints no configuration.
+A Codex reviewer names `program = "codex"` and passes the effort level as `{ value = "-c" },
+{ value = "model_reasoning_effort=\"ultra\"" }` in place of the last two args. With `--json`,
+`configuration.reviewer_runner`, `configuration.worker_runner` and `configuration.binding` each
+carry the text of one block, its lines joined by newlines. af never substitutes a model or an
+effort level, so an alias or an effort level the model does not list prints no configuration.
+
+In `af tui`, the Providers pane shows under each Provider a `models` section with that
+Provider's own catalog. A Worker declaration names only a Provider kind, never the Provider that
+will be bound, so the Workers pane's `runner` row gives the verdict once per Provider of that
+kind whose catalog was read, each named by its ID in inventory order (`verdict claude-personal:
+ok  claude-work: effort not listed: low, medium, high`), and `verdict (static rules): …` from the
+static rules alone when no Provider of that kind has a catalog.
 
 Every binding is checked against the same rules before anything is charged
 ([model bindings](task-execution/model-bindings.md)): grammar G, an alias Claude Code documents
