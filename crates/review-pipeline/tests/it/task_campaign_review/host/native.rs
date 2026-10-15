@@ -2,6 +2,7 @@ use super::super::capture::captured_fixture;
 use super::*;
 use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_pipeline::task::host::TaskModelBinding;
+use review_runner::task::provider::PROBE_INPUT;
 use review_runner::task::{ModelWorkerReturn, WorkerAccess, WorkerModelAdapter};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -32,7 +33,7 @@ impl WorkerModelAdapter for Model {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let (message, usage) = if n == 0 {
             assert_eq!(access, WorkerAccess::ReadOnly);
-            assert_eq!(input, b"Reply with exactly: OK\n");
+            assert_eq!(input, PROBE_INPUT);
             (if self.admitted { "OK" } else { "unavailable" }, 1)
         } else {
             assert!(self.admitted);
@@ -124,7 +125,8 @@ fn admitted_plan_with_provider(
         focus,
     );
     let mut settings = plan::settings();
-    settings.provider_admission.tokens = 32;
+    // Room for the probe's own context estimate: `PROBE_INPUT` is 196 bytes, 49 tokens.
+    settings.provider_admission.tokens = 64;
     settings.executions.insert(
         "reviewer".into(),
         WorkerExecutionV1::Model {
@@ -526,7 +528,6 @@ fn provider_admission_renders_only_its_fixed_context_and_refuses_changed_identit
     use review_core::task::execution::TaskInvocationV1;
     use review_graph::task::{CompiledOperator, CompiledTask};
     use review_pipeline::task::provider::ProviderTaskDomain;
-    use review_runner::task::provider::PROBE_INPUT;
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
@@ -1101,7 +1102,7 @@ fn incomplete_billing_on_captured_reviewers_never_publishes_a_selected_result() 
             let call = self.0.fetch_add(1, Ordering::SeqCst);
             assert!(call <= 2);
             if call == 0 {
-                assert_eq!(input, b"Reply with exactly: OK\n");
+                assert_eq!(input, PROBE_INPUT);
             } else {
                 assert!(
                     String::from_utf8(input)

@@ -118,6 +118,15 @@ context, or be missing entirely — none of which says anything about whether th
 authenticated. An unanswered probe leaves `auth` and `usability` exactly where they were and exits
 7. `af provider doctor` remains the charged, explicit end-to-end check, and is never implicit.
 
+`af provider doctor` and Task Provider admission send the bound model one fixed line on stdin,
+from a fresh empty directory, with no file to read and no tool to use: `This is a Provider
+admission check by the af review tool: it only verifies that this account can run the bound
+model. No file needs to be read and no tool needs to be used. Reply with exactly: OK`. Only the
+reply `OK` passes. The line states its purpose because Claude Fable 5.1's safety classifier
+refused the bare `Reply with exactly: OK` every time it was sent from an empty directory; a
+refusal that happens anyway is still `model_refused`
+([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)).
+
 ## A Provider CLI that cannot start
 
 An update can leave the official CLI unable to start at all. One npm auto-update left `codex`

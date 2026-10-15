@@ -37,7 +37,7 @@ if sys.argv[1:2]==['app-server']:
   if request.get('id')==2: print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':'fixture@example.invalid'}}}),flush=True)
  sys.exit(0)
 request=sys.stdin.read()
-if request=='Reply with exactly: OK\n':
+if request==PROBE_INPUT:
  kind='admission'; message='OK'; usage=json.load(open(home+'/usage.json'))
 else:
  kind='author'; r=json.loads(request)
@@ -54,7 +54,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
 "#;
         std::fs::write(
             bin.join("codex"),
-            crate::provider_cli::with_help("codex", native),
+            crate::provider_cli::with_help("codex", &crate::provider_cli::with_probe(native)),
         )
         .unwrap();
         std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755))

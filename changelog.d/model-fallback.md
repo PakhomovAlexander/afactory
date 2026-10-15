@@ -13,3 +13,7 @@
   of the versioned-model rule, and every Worker's binding is checked before the first Provider is
   probed; a reported model ID outside it reads `[not printable]`
   ([ADR-0147](docs/adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)).
+  The Provider admission probe, which `af provider doctor` also sends, now says what it is for (a Provider admission
+  check by the af review tool that needs no file and no tool) before asking for exactly `OK`,
+  because Claude Fable 5.1's safety classifier refused the bare instruction every time from an
+  empty directory.

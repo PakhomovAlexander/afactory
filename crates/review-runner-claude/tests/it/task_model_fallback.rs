@@ -5,6 +5,7 @@
 use crate::load_safe_wall::LOAD_SAFE_WALL;
 use review_core::{Arg, Command};
 use review_runner::native_failure::NativeFailureKind;
+use review_runner::task::provider::PROBE_INPUT;
 use review_runner::task::{ModelWorkerReturn, WorkerAccess, WorkerModelAdapter};
 use review_runner_claude::hint;
 use review_runner_claude::task::ClaudeTaskAdapter;
@@ -18,7 +19,7 @@ const SAFEGUARDS: &str = "Claude Fable 5.1's safeguards flagged this message (ht
 
 /// The result Claude Code returned to three Provider-admission Attempts (2026-10-13 23:47,
 /// 2026-10-14 00:04, 2026-10-15 01:11) asked for `claude-fable-5-1` at effort `xhigh` with the
-/// input `Reply with exactly: OK`.
+/// bare admission probe of rounds 1 to 3, which did not yet state its purpose.
 fn recorded_fallback() -> Value {
     json!({"type":"result","subtype":"success","is_error":false,"result":"OK","num_turns":2,
         "safety_stops":2,"stop_reason":"end_turn","fallback_credit":null,
@@ -26,6 +27,12 @@ fn recorded_fallback() -> Value {
         "modelUsage":{
             "claude-fable-5-1":{"inputTokens":2,"outputTokens":0,"cacheCreationInputTokens":3210,"cacheReadInputTokens":3001,"canonicalModel":"claude-fable-5-1"},
             "claude-opus-5":{"inputTokens":2,"outputTokens":4,"cacheCreationInputTokens":6278,"cacheReadInputTokens":0,"canonicalModel":"claude-opus-5"}}})
+}
+
+/// The probe's closing instruction, which no diagnostic repeats.
+fn probe_instruction() -> &'static str {
+    let probe = std::str::from_utf8(PROBE_INPUT).unwrap().trim_end();
+    probe.rsplit(". ").next().unwrap()
 }
 
 /// The bound model's own share of that result, alone.
@@ -59,7 +66,7 @@ fn attempt(model: &str, result: &Value, exit: u8) -> ModelWorkerReturn {
     adapter.invoke(
         &cas,
         temp.path(),
-        b"Reply with exactly: OK\n".to_vec(),
+        PROBE_INPUT.to_vec(),
         LOAD_SAFE_WALL,
         WorkerAccess::ReadOnly,
         None,
@@ -86,7 +93,7 @@ fn the_recorded_fallback_is_refused_by_name_and_charged_9496() {
         assert!(error.contains(part), "{part}: {error}");
     }
     assert!(!error.contains("unexpected model identity"), "{error}");
-    assert!(!error.contains("Reply with exactly"), "{error}");
+    assert!(!error.contains(probe_instruction()), "{error}");
     let found = hint::find(&error).unwrap();
     assert!(
         found.ends_with("change the input or bind another model"),

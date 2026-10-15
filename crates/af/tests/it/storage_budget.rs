@@ -531,12 +531,12 @@ if sys.argv[1:3]==['auth','status']:
  print(json.dumps({'loggedIn':True,'apiProvider':'firstParty','authMethod':'claude.ai','email':'developer@example.test'}))
  sys.exit(0)
 request=sys.stdin.read()
-if request=='Reply with exactly: OK\n':
+if request==PROBE_INPUT:
  result='OK'
 else:
  result=json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'reports':[],'benchmark_demands':[],'dispositions':[]}]}})
 envelope={'is_error':False,'result':result,'usage':{'input_tokens':10,'output_tokens':2,'cache_creation_input_tokens':0}}
-if request!='Reply with exactly: OK\n':
+if request!=PROBE_INPUT:
  envelope['structured_output']=json.loads(result)
 print(json.dumps(envelope))
 "#;
@@ -560,7 +560,7 @@ fn claude_review(machine: &Machine) -> (PathBuf, PathBuf, PathBuf) {
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(
         bin.join("claude"),
-        crate::provider_cli::with_help("claude", FAKE_CLAUDE),
+        crate::provider_cli::with_help("claude", &crate::provider_cli::with_probe(FAKE_CLAUDE)),
     )
     .unwrap();
     std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();

@@ -1344,7 +1344,7 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
             assert_eq!(access, review_runner::task::WorkerAccess::ReadOnly);
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             let (bytes, cost) = if n == 0 {
-                assert_eq!(input, b"Reply with exactly: OK\n");
+                assert_eq!(input, review_runner::task::provider::PROBE_INPUT);
                 (
                     if self.pass {
                         b"OK".to_vec()

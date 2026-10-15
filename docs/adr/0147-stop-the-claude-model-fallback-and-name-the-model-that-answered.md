@@ -5,7 +5,8 @@
 [ADR-0125](0125-charge-a-claude-model-breakdown-that-covers-the-top-level-summary.md): the identity
 check and the charge stay as they are; the refusal now names what happened and the next step, a
 safety-classifier refusal is its own classification, and the Claude Task adapter turns Claude
-Code's automatic model fallback off.
+Code's automatic model fallback off. Amended the same day: the admission probe states its purpose
+(see [The admission probe states its purpose](#the-admission-probe-states-its-purpose)).
 
 ## Context
 
@@ -138,6 +139,53 @@ classified it `unknown`.
    changes shape
    ([ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)).
 
+## The admission probe states its purpose
+
+**Measured** on 2026-10-15 on one machine with Claude Code 2.1.300, invoked as `claude -p
+--output-format json --model claude-fable-5-1 --effort xhigh --safe-mode --restricted
+--permission-mode dontAsk --strict-mcp-config --tools Read,Glob,Grep --allowedTools
+Read,Glob,Grep`, the prompt on stdin, with the environment `PATH`, `HOME`, `USER`,
+`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`,
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` and `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`:
+
+- The admission probe input of rounds 1 to 3, `Reply with exactly: OK` and a newline
+  (`PROBE_INPUT` in `crates/review-runner/src/task/provider.rs`), run from an empty or nearly
+  empty working directory under the temporary root, was refused by Fable 5.1's safety classifier
+  14 times out of 14. Five were af's own admission Attempts: the three campaigns of 2026-10-13, 14
+  and 15 recorded in the context above, before the fallback guard, and two `af provider doctor`
+  runs on round 3's binary, each `safety_stops` 2, `stop_reason` `refusal`, about 6,500 tokens
+  charged. Nine were hand runs from fresh `mktemp -d` directories: empty, holding one README, and a
+  git repository with one committed README. Every refused result read the same 11,188 tokens from
+  the prompt cache: the request is scored on its static preamble, and a content-free instruction
+  leaves nothing else to score.
+- The same probe run from a clone of this repository, a real project directory, passed 12 times
+  out of 12, in one turn on one model.
+- Opus 5.5 passed the same bare probe from an empty directory, and af's kernel admissions bound to
+  `claude-opus-5-5` passed three times that day.
+- A probe that states its purpose passed 6 times out of 6 from fresh empty directories, in one
+  turn, `safety_stops` 0, the reply `OK`, about 360 cache-creation tokens. Its exact text was
+  `This is a Provider admission check by the af review tool: it only verifies that this account
+  can run the bound model. No file needs to be read and no tool needs to be used. Reply with
+  exactly: OK`.
+- `LC_ALL=C` changed nothing.
+
+**Decision.** `PROBE_INPUT` is exactly that text followed by one newline, byte for byte, 196
+bytes. It is the one constant every admission probe, context digest and test reads; fake CLIs in
+tests match stdin against it rather than a copy. The expected reply stays exactly `OK`. The probe
+still reads no file and uses no tool, and its working directory stays
+`review_sandbox::attempt_directory()`, a fresh empty directory
+(`crates/review-pipeline/src/task/provider.rs`). The admission cost allowance of
+[ADR-0091](0091-capture-explicit-task-provider-admission-costs.md) is unchanged, and so are every
+isolation flag, tool grant, environment guard, charge rule, hint wording and schema.
+
+**Why.** A content-free request is scored on af's static preamble alone, and Fable 5.1's
+classifier refused that every time; a request that says what it is for was not refused. Running
+the probe from the repository would also pass, but admission proves the account and the bound
+model, not a project, and its fixed context must stay free of business inputs; binding another
+model for admission would prove the wrong model. The refusal handling of decisions 1 to 8 stays
+the authority for the day the classifier fires anyway: such a probe is still `model_refused`,
+charged what it reports, not retried and named on stderr.
+
 ## Considered options
 
 - **Set `CLAUDE_CODE_NO_MODEL_FALLBACK`.** Rejected. It disables every model substitution,
@@ -171,6 +219,8 @@ classified it `unknown`.
   fallback or `model_switched`, and the hint tells the operator to upgrade Claude Code.
 - The recorded fallback result is refused, charged 9496 tokens and named on stderr before any
   business Worker starts, as `tests/it/task_file/model_fallback.rs` in the `af` crate shows.
+- The admission probe sends the purpose-stating `PROBE_INPUT` and passes only on the reply `OK`,
+  as the same file shows with a fake `claude` that records its stdin.
 - A misspelled model reads `model_unavailable` with the spelling it rejected, instead of
   `unknown`.
 - A switch is named first even when the result's usage is also malformed or the map holds more

@@ -450,7 +450,7 @@ if os.path.isfile(home+'/switch-after') and len(open(home+'/calls').readlines())
 if os.path.isfile(home+'/wide-usage'):
  print(json.dumps({'is_error':True,'result':'fixture provider failed after reporting usage','usage':{'input_tokens':18446744073709551615,'output_tokens':20,'cache_creation_input_tokens':0}}))
  sys.exit(0)
-if request=='Reply with exactly: OK\n':
+if request==PROBE_INPUT:
  result='OK'
 else:
  value=json.loads(request)
@@ -458,7 +458,7 @@ else:
  assert value['inputs']['assignment'][0]['payload']['findings']==[]
  result=json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'reports':[],'benchmark_demands':[],'dispositions':[]}]}})
 envelope={'is_error':False,'result':result,'usage':{'input_tokens':10,'output_tokens':2,'cache_creation_input_tokens':0}}
-if request!='Reply with exactly: OK\n':
+if request!=PROBE_INPUT:
  assert '--json-schema' in sys.argv
  envelope['structured_output']=json.loads(result)
 print(json.dumps(envelope))
@@ -559,7 +559,15 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     } else {
         bin.join(kind)
     };
-    std::fs::write(&installed, if codex { codex_stub } else { stub }).unwrap();
+    std::fs::write(
+        &installed,
+        if codex {
+            codex_stub.to_owned()
+        } else {
+            crate::provider_cli::with_probe(stub)
+        },
+    )
+    .unwrap();
     std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
     let registry = home.join("providers.toml");
     std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":1,"providers":[{"id":provider,"kind":kind,"auth_dir":home}]})).unwrap()).unwrap();

@@ -43,9 +43,9 @@ impl Fixture {
         std::fs::write(home.join("help"), crate::provider_cli::CLAUDE_HELP).unwrap();
         std::fs::write(home.join("version"), "2.1.300 (Claude Code)\n").unwrap();
         std::fs::write(home.join("result"), result).unwrap();
-        // The fake records every process af starts, and every model call with the guard it
-        // received, and answers each model call with `result`; any request other than the
-        // admission probe is a business Worker.
+        // The fake records every process af starts, every model call with the guard it
+        // received, and the stdin of the first model call, and answers each model call with
+        // `result`; any request other than the admission probe is a business Worker.
         let stub = r#"#!/usr/bin/python3
 import os,json,sys
 home=os.environ['CLAUDE_CONFIG_DIR']
@@ -57,12 +57,13 @@ if sys.argv[1:3]==['auth','status']:
  print(json.dumps({'loggedIn':True,'apiProvider':'firstParty','authMethod':'claude.ai','email':'developer@example.test'}))
  sys.exit(0)
 request=sys.stdin.read()
-kind='admission' if request=='Reply with exactly: OK\n' else 'business'
+if not os.path.exists(home+'/first-stdin'): open(home+'/first-stdin','w').write(request)
+kind='admission' if request==PROBE_INPUT else 'business'
 with open(home+'/calls','a') as f: f.write(kind+' '+os.environ.get('CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK','unset')+' '+os.environ.get('CLAUDE_CODE_NO_MODEL_FALLBACK','unset')+'\n')
 sys.stdout.write(open(home+'/result').read())
 "#;
         let installed = bin.join("claude");
-        std::fs::write(&installed, stub).unwrap();
+        std::fs::write(&installed, crate::provider_cli::with_probe(stub)).unwrap();
         std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
         let registry = home.join("providers.toml");
         std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":1,"providers":[{"id":"claude-personal","kind":"claude","auth_dir":home}]})).unwrap()).unwrap();
@@ -156,6 +157,11 @@ sys.stdout.write(open(home+'/result').read())
         std::fs::read_to_string(self.home.join("calls")).unwrap_or_default()
     }
 
+    /// The exact stdin of the first model call, the admission probe; empty when none ran.
+    fn first_stdin(&self) -> Vec<u8> {
+        std::fs::read(self.home.join("first-stdin")).unwrap_or_default()
+    }
+
     /// Every process the fake was started as, one line each with its first two arguments; empty
     /// when none started.
     fn started(&self) -> String {
@@ -210,7 +216,8 @@ fn a_safety_classifier_fallback_at_admission_is_refused_charged_and_named_on_std
     ] {
         assert!(line.contains(part), "{part}: {line}");
     }
-    for absent in ["Reply with exactly", "developer@example.test", "transport:"] {
+    let probe = std::str::from_utf8(review_runner::task::provider::PROBE_INPUT).unwrap();
+    for absent in [probe.trim_end(), "developer@example.test", "transport:"] {
         assert!(!line.contains(absent), "{absent}: {line}");
     }
     // The probe is charged exactly what its result reports, and `af task show` keeps the full
@@ -456,4 +463,44 @@ fn all_valid_bindings_probe_each_provider_label_once() {
         "{started}"
     );
     assert_eq!(fixture.calls(), "", "planning made a model call");
+}
+
+/// Round 4: the admission Attempt sends exactly [`PROBE_INPUT`], the text that states its purpose,
+/// and passes only on the reply `OK`. A clean one-model result answering `OK` admits the Provider
+/// and the business Workers start; the same result answering anything else refuses it before
+/// any business Worker.
+///
+/// [`PROBE_INPUT`]: review_runner::task::provider::PROBE_INPUT
+#[test]
+fn the_admission_probe_sends_the_purpose_stating_text_and_passes_only_on_ok() {
+    use review_runner::task::provider::PROBE_INPUT;
+    let answer = |reply: &str| {
+        format!(
+            r#"{{"type":"result","subtype":"success","is_error":false,"result":"{reply}","num_turns":1,"safety_stops":0,"stop_reason":"end_turn","usage":{{"input_tokens":3,"output_tokens":1,"cache_creation_input_tokens":360,"cache_read_input_tokens":0}},"modelUsage":{{"claude-fable-5-1":{{"inputTokens":3,"outputTokens":1,"cacheCreationInputTokens":360,"cacheReadInputTokens":0}}}}}}"#
+        )
+    };
+    let admitted = Fixture::new("claude-fable-5-1", &answer("OK"));
+    let output = admitted.run(&["review", "run", "--file", "review.json"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(admitted.first_stdin(), PROBE_INPUT, "{stderr}");
+    let calls = admitted.calls();
+    assert!(
+        calls.starts_with("admission 1 unset\nbusiness 1 unset\n"),
+        "{calls}\n{stderr}"
+    );
+    assert_eq!(calls.matches("admission").count(), 1, "{calls}");
+    assert!(Fixture::admission_lines(&stderr).is_empty(), "{stderr}");
+    for reply in ["Okay", "NO"] {
+        let refused = Fixture::new("claude-fable-5-1", &answer(reply));
+        let output = refused.run(&["review", "run", "--file", "review.json"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{reply}: {stderr}");
+        assert_eq!(refused.first_stdin(), PROBE_INPUT, "{reply}: {stderr}");
+        let calls = refused.calls();
+        assert!(!calls.is_empty(), "{reply}: {stderr}");
+        assert!(
+            calls.lines().all(|line| line == "admission 1 unset"),
+            "{reply}: {calls}\n{stderr}"
+        );
+    }
 }

@@ -8,6 +8,10 @@
 //! [`CLAUDE_HELP`] or [`CODEX_EXEC_HELP`] with lines removed. A Codex fixture that serves
 //! `app-server` itself keeps doing so; any other gets one that answers `initialize`, reads the
 //! next two messages and exits, so a later request gets no answer.
+//!
+//! A fixture that tells the Provider admission probe from a business request by its stdin names
+//! the probe `PROBE_INPUT` and goes through [`with_probe`], so every fake reads the one constant
+//! af sends.
 
 /// The options section of `claude --help` in Claude Code's commander layout, abridged to what af
 /// passes plus the usual neighbours; the layout and option names are those of 2.1.299, checked by
@@ -116,6 +120,23 @@ pub fn with_page(kind: &str, script: &str, help: &str) -> String {
         _ => panic!("unknown Provider kind {kind}"),
     };
     format!("{interpreter}\n{branch}{body}")
+}
+
+/// `script` with every `PROBE_INPUT` replaced by af's Provider admission probe,
+/// [`review_runner::task::provider::PROBE_INPUT`]. Under a `python` interpreter line it becomes a
+/// string literal of the whole stdin, newline included; under a shell one, a single-quoted word of
+/// the text without its newline, which `$(cat)` strips.
+pub fn with_probe(script: &str) -> String {
+    let probe = std::str::from_utf8(review_runner::task::provider::PROBE_INPUT).unwrap();
+    let (interpreter, _) = script.split_once('\n').expect("a script with a body");
+    assert!(script.contains("PROBE_INPUT"), "{script}");
+    let literal = if interpreter.contains("python") {
+        format!("{probe:?}")
+    } else {
+        assert!(!probe.contains('\''), "{probe}");
+        format!("'{}'", probe.trim_end_matches('\n'))
+    };
+    script.replace("PROBE_INPUT", &literal)
 }
 
 /// The help page of a CLI accepting af's whole invocation.

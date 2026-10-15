@@ -70,7 +70,15 @@ account identity probe       planning: no model call
 ```
 
 The capability probe receives only the installed acknowledgement prompt in an empty working
-directory. Its exact prompt and context manifest are persisted before dispatch. It uses the
+directory, one line that says what it is for: `This is a Provider admission check by the af
+review tool: it only verifies that this account can run the bound model. No file needs to be read
+and no tool needs to be used. Reply with exactly: OK` (`PROBE_INPUT`, one trailing newline). Only
+the reply `OK` passes; the probe reads no file and uses no tool. A bare `Reply with exactly: OK`
+gave the safety classifier of Claude Fable 5.1 nothing to score but the client's static preamble,
+and it refused that 14 times out of 14; the purpose-stating line passed 6 times out of 6 (see
+[ADR-0147](../adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md), "The
+admission probe states its purpose"). Its exact prompt and context manifest are persisted before
+dispatch. It uses the
 same native adapter as downstream Workers. Failure retains reported usage and blocks their
 dispatch. Unknown usage is conservatively charged under the common runtime's existing rule.
 Successful receipts survive replay without another paid probe.

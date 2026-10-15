@@ -1613,7 +1613,7 @@ fn native_diff_fixture(directory: &Path) -> (PathBuf, PathBuf, String) {
         &codex,
         crate::provider_cli::with_help(
             "codex",
-            r#"#!/bin/sh
+            &crate::provider_cli::with_probe(r#"#!/bin/sh
 if [ "$1" = "app-server" ]; then
   while IFS= read -r request; do
     case "$request" in
@@ -1632,14 +1632,14 @@ while [ "$#" -gt 0 ]; do
   if [ "$1" = "-o" ]; then out=$2; shift 2; else shift; fi
 done
 input=$(cat)
-if [ -n "$out" ] && [ "$input" = 'Reply with exactly: OK' ]; then
+if [ -n "$out" ] && [ "$input" = PROBE_INPUT ]; then
   printf '%s' 'OK' >"$out"
 elif [ -n "$out" ]; then
   printf '%s' '{"findings":[],"benchmark_demands":[],"dispositions":[]}' >"$out"
 fi
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
-"#),
+"#)),
     )
     .unwrap();
     {

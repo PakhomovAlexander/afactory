@@ -1112,7 +1112,7 @@ if sys.argv[1:2]==['app-server']:
   if request.get('id')==2: print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':'fixture@example.invalid'}}}),flush=True)
  sys.exit(0)
 request=sys.stdin.read()
-if request!='Reply with exactly: OK\n':
+if request!=PROBE_INPUT:
  ready=open(home+'/ready-path').read()
  open(ready+'.tmp','w').write('%d %d' % (os.getpid(), os.getpgrp()))
  os.rename(ready+'.tmp',ready)
@@ -1151,7 +1151,7 @@ fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own
     std::fs::write(home.join("ready-path"), ready.to_str().unwrap()).unwrap();
     std::fs::write(
         bin.join("codex"),
-        crate::provider_cli::with_help("codex", HOLDING_CODEX),
+        crate::provider_cli::with_help("codex", &crate::provider_cli::with_probe(HOLDING_CODEX)),
     )
     .unwrap();
     std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();

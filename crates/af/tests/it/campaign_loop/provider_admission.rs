@@ -14,7 +14,7 @@ impl Fixture {
     fn new(actual: u64, run_cap: Option<u64>) -> Self {
         let root = tempfile::tempdir().unwrap();
         let (repo, home, state) = native_diff_fixture(root.path());
-        std::fs::write(home.join("codex"), crate::provider_cli::with_help("codex", r#"#!/usr/bin/python3 -B
+        std::fs::write(home.join("codex"), crate::provider_cli::with_help("codex", &crate::provider_cli::with_probe(r#"#!/usr/bin/python3 -B
 import os,sys,json
 home=os.environ['CODEX_HOME']
 if sys.argv[1:2]==['app-server']:
@@ -24,13 +24,13 @@ if sys.argv[1:2]==['app-server']:
   if request.get('id')==2: print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':'fixture@example.test'}}}),flush=True)
  sys.exit(0)
 request=sys.stdin.read()
-probe=request=='Reply with exactly: OK\n'
+probe=request==PROBE_INPUT
 with open(home+'/calls','a') as f: f.write('admission\n' if probe else 'reviewer\n')
 message='OK' if probe else json.dumps({'findings':[],'benchmark_demands':[],'dispositions':[]})
 with open(sys.argv[sys.argv.index('-o')+1],'w') as f: f.write(message)
 usage=json.load(open(home+'/usage.json')) if probe else {'input_tokens':1,'output_tokens':1}
 print(json.dumps({'type':'turn.completed','usage':usage}))
-"#)).unwrap();
+"#))).unwrap();
         let usage = match actual {
             5712 => json!({"input_tokens":16331,"cached_input_tokens":10624,"output_tokens":5}),
             16336 => json!({"input_tokens":16331,"cached_input_tokens":0,"output_tokens":5}),
