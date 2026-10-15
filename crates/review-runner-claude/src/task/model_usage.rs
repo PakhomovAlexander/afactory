@@ -13,19 +13,17 @@ pub(super) struct Accounting {
     pub usage: Option<TaskTokenUsageV3>,
     pub observation: Option<TaskUsageObservationV1>,
     pub error: Option<String>,
-    /// The error is the model-switch refusal, worded by [`crate::hint::compose`] (ADR-0147).
+    /// The error starts with the model-switch refusal, worded by [`crate::hint::compose`]
+    /// (ADR-0147).
     pub switched: bool,
 }
 
-/// Why the reply is refused. The first reason found is the one reported.
-enum Refusal {
-    Reason(&'static str),
-    /// `modelUsage` reports activity of a model the Worker did not bind.
-    Switched,
-}
-
-fn refuse(error: &mut Option<Refusal>, reason: Refusal) {
-    error.get_or_insert(reason);
+/// Record why the reply is refused, once per reason, in the order found. Without a model switch
+/// the first reason is the one reported; a switch outranks them all and they follow its hint.
+fn refuse(reasons: &mut Vec<&'static str>, reason: &'static str) {
+    if !reasons.contains(&reason) {
+        reasons.push(reason);
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -121,7 +119,6 @@ fn valid_id(value: &str) -> bool {
 
 /// Account for one result, `selected` being the bound `--model` and `effort` its `--effort`.
 pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str>) -> Accounting {
-    use Refusal::Reason;
     let (top_usage, top_observation) = super::parse_usage(value);
     let Some(map) = value.and_then(|v| v.get("modelUsage")) else {
         // Preserve the top-level-only native contract, including its malformed-usage observation.
@@ -132,7 +129,10 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
             switched: false,
         };
     };
-    let mut error = None;
+    let mut reasons = Vec::new();
+    // Whether `modelUsage` carries a well-formed entry for a model other than the bound one that
+    // is not explicitly unused: then the switch refusal leads, whatever else was found.
+    let mut switched = false;
     // What the switch refusal names: the bound model's own output and every other model that
     // was active, with its output.
     let mut bound_output_tokens = None;
@@ -153,7 +153,7 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
         .unwrap_or_default();
     let mut complete = top.complete;
     if top.malformed {
-        refuse(&mut error, Reason("Claude top-level usage is malformed"));
+        refuse(&mut reasons, "Claude top-level usage is malformed");
     }
     let mut groups = BTreeMap::<&str, Counters>::new();
     let mut scopes = Vec::new();
@@ -161,8 +161,8 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
         if entries.is_empty() || entries.len() > MAX_MODELS {
             complete = false;
             refuse(
-                &mut error,
-                Reason("Claude model usage exceeds its finite nonempty model bound"),
+                &mut reasons,
+                "Claude model usage exceeds its finite nonempty model bound",
             );
         }
         for (key, model) in entries.iter().take(MAX_MODELS) {
@@ -177,7 +177,7 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
             );
             complete &= counters.complete;
             if counters.malformed {
-                refuse(&mut error, Reason("Claude per-model usage is malformed"));
+                refuse(&mut reasons, "Claude per-model usage is malformed");
             }
             let canonical = model.get("canonicalModel");
             let canonical_id = canonical.and_then(Value::as_str);
@@ -186,10 +186,7 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
                 && !(key == selected && canonical_id.is_some_and(|id| id != selected));
             if !identity_valid {
                 complete = false;
-                refuse(
-                    &mut error,
-                    Reason("Claude model usage identity is malformed"),
-                );
+                refuse(&mut reasons, "Claude model usage identity is malformed");
             }
             let matches = identity_valid
                 && if key == selected {
@@ -214,14 +211,15 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
             if !(matches || identity_valid && explicitly_unused) {
                 // Detection follows the native invocation. Retain its charge even on refusal;
                 // this check cannot prevent an internal client request from having occurred.
-                // Only a well-formed ID is named; a malformed one was refused above.
+                // Only a well-formed ID is a switch; a malformed one was refused above. The hint
+                // prints a well-formed ID outside grammar G as `[not printable]`.
                 if identity_valid {
+                    switched = true;
                     others.push(OtherModel {
                         model: key.clone(),
                         output_tokens: model.get("outputTokens").and_then(Value::as_u64),
                     });
                 }
-                refuse(&mut error, Refusal::Switched);
             }
             let group = canonical_id.filter(|id| valid_id(id)).unwrap_or(key);
             if let Some(prior) = groups.get_mut(group) {
@@ -230,8 +228,8 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
                 *prior = prior.lower_bound(counters);
                 complete = false;
                 refuse(
-                    &mut error,
-                    Reason("Claude model usage contains ambiguous duplicate identities"),
+                    &mut reasons,
+                    "Claude model usage contains ambiguous duplicate identities",
                 );
             } else {
                 groups.insert(group, counters);
@@ -239,7 +237,7 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
         }
     } else {
         complete = false;
-        refuse(&mut error, Reason("Claude model usage is not an object"));
+        refuse(&mut reasons, "Claude model usage is not an object");
     }
     let mut sum = Counters {
         complete: true,
@@ -271,16 +269,16 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
     if matching_scope.is_none() && !covered {
         complete = false;
         refuse(
-            &mut error,
-            Reason("Claude top-level and per-model usage cannot be reconciled"),
+            &mut reasons,
+            "Claude top-level and per-model usage cannot be reconciled",
         );
     }
     if matching_scope.is_some_and(|scope| top.read_conflicts(scope))
         || covered && top.read_exceeds(sum)
     {
         refuse(
-            &mut error,
-            Reason("Claude top-level and per-model cache-read metadata disagree"),
+            &mut reasons,
+            "Claude top-level and per-model cache-read metadata disagree",
         );
     }
     let model_usage = sum.usage();
@@ -293,17 +291,17 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
     };
     // Partial maps and conflicting summaries overlap: use the larger valid charge floor,
     // never top-level + map. Store retains the original reservation when reporting is incomplete.
-    let observation = (!complete || error.is_some() || top_observation.is_some()).then(|| {
-        TaskUsageObservationV1 {
+    let refused = switched || !reasons.is_empty();
+    let observation =
+        (!complete || refused || top_observation.is_some()).then(|| TaskUsageObservationV1 {
             reported_usage: usage.clone(),
             charge_complete: complete,
-        }
-    });
-    let switched = matches!(error, Some(Refusal::Switched));
+        });
     let count = |key| value.and_then(|v| v.get(key)).and_then(Value::as_u64);
-    let error = error.map(|refusal| match refusal {
-        Reason(reason) => reason.to_owned(),
-        Refusal::Switched => compose(
+    let error = if switched {
+        // The switch refusal outranks every other reason; each one found follows it, so no
+        // accounting fact is lost and the diagnostic still starts with the hint.
+        let mut error = compose(
             BoundModel {
                 model: selected,
                 effort,
@@ -314,8 +312,15 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
                 safety_stops: count("safety_stops"),
                 num_turns: count("num_turns"),
             },
-        ),
-    });
+        );
+        for reason in &reasons {
+            error.push_str("; ");
+            error.push_str(reason);
+        }
+        Some(error)
+    } else {
+        reasons.first().map(|reason| (*reason).to_owned())
+    };
     Accounting {
         usage,
         observation,

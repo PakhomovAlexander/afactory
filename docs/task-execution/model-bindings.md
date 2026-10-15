@@ -20,7 +20,12 @@ Planning probes only accounts used by the selected Pipeline. It obtains account 
 `claude auth status --json` or Codex's local `account/read` protocol, then records a
 domain-separated principal digest. Raw account metadata and email addresses are not stored in
 Task artifacts. Provider family, principal, explicit model/effort and invocation policy become
-part of the exact binding. Bare model-family aliases and `-latest` selectors are refused.
+part of the exact binding. Bare model-family aliases and `-latest` selectors are refused. A
+model or effort outside grammar G, the one spelling af prints verbatim (an ASCII letter or digit,
+then at most 127 ASCII letters, digits, `-`, `.`, `_` or `:`; no `/`, `@` or whitespace), is
+refused before any process starts, the Provider's own probes included, by `af task plan`, `af
+review run` and the Claude Task adapter alike: the refusal names the rule and the value's byte
+length, never the value, so a path or an account identifier is never echoed.
 
 Planning performs no model inference. The compiler adds a visible internal capability node
 for each distinct effective Model binding and invocation policy. Slots with the same capability
@@ -132,8 +137,11 @@ their status: a client mitigation, never the authority. `CLAUDE_CODE_NO_MODEL_FA
 set, because it also disables the model substitution compaction may need. Three outcomes follow:
 
 - **`model_refused`.** The result reports `safety_stops` above zero or `stop_reason`
-  `refusal`, or Claude Code's error says its safeguards flagged the message. It is never a
-  success, whatever `is_error` says. The Attempt is charged the usage the result reports and is
+  `refusal`, or Claude Code's error says its safeguards flagged the message: an error result
+  whose `result` carries that text is a refusal whatever `errors` or `error` hold, and its
+  `result` is read as Claude Code's error text whenever `errors` and `error` yield no string
+  (`[]`, `null`, an object without a string `message`). It is never a success, whatever
+  `is_error` says. The Attempt is charged the usage the result reports and is
   not retried, because the same input is flagged again; a refused admission starts no business
   Worker.
 - **A switched model.** `modelUsage` names a model other than the bound one: af refuses the reply
@@ -141,7 +149,11 @@ set, because it also disables the model substitution compaction may need. Three 
   `claude-fable-5-1` with 0 output tokens and `claude-opus-5` with 4, charges 9496). The
   diagnostic names both models, their output tokens, `safety_stops` and `num_turns`, and says
   whether it was a safety-classifier fallback (`model_refused`) or an unexplained switch
-  (`model_switched`).
+  (`model_switched`). This refusal outranks every other accounting reason: the diagnostic starts
+  with it whenever `modelUsage` carries a well-formed, not explicitly unused entry for another
+  model, and every other reason found (malformed usage, an unreconciled summary) follows it after
+  a semicolon; the charge is unchanged. A model ID outside grammar G is counted all the same and named
+  `[not printable]` with its byte length.
 - **`model_unavailable`.** Claude Code answered that there is an issue with the selected model:
   it does not know the model ID or the account cannot use it. The diagnostic quotes the spelling
   it rejected and names `af provider status` (token-free) and `af provider doctor` (charged).

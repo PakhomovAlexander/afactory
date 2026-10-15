@@ -287,3 +287,127 @@ printf '%s' '{"is_error":false,"result":"OK","usage":{"input_tokens":0,"output_t
         );
     }
 }
+
+/// Round 2, (1): the recorded fallback with its top-level `output_tokens` malformed. The
+/// diagnostic still starts with the switch hint, the accounting reason follows it, and the
+/// charge is the breakdown's 9496, incomplete.
+#[test]
+fn a_malformed_top_level_usage_never_hides_the_recorded_fallback() {
+    let mut result = recorded_fallback();
+    result["usage"]["output_tokens"] = json!("4");
+    let returned = attempt("claude-fable-5-1", &result, 0);
+    let error = returned.message.unwrap_err();
+    let found = hint::find(&error).unwrap();
+    assert!(
+        error.starts_with(&format!(
+            "{}{found}; Claude top-level usage is malformed",
+            hint::DIAGNOSTIC_PREFIX
+        )),
+        "{error}"
+    );
+    for part in [
+        "the safety classifier of claude-fable-5-1 flagged the request and Claude Code switched models, a safety-classifier fallback (model_refused)",
+        "the Worker bound claude-fable-5-1 (effort xhigh), which wrote 0 output tokens",
+        "but claude-opus-5 (4 output tokens) answered (safety_stops 2, num_turns 2)",
+    ] {
+        assert!(found.contains(part), "{part}: {found}");
+    }
+    assert!(error.ends_with("; transport: exited 0"), "{error}");
+    assert_eq!(
+        returned.native_failure,
+        Some(NativeFailureKind::ModelRefused)
+    );
+    assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 9496);
+    assert!(!returned.usage_observation.unwrap().charge_complete);
+}
+
+/// Round 2, (2): a binding outside grammar G is refused by the constructor, before any process
+/// starts, naming the rule and the byte length and never the value.
+#[test]
+fn a_binding_outside_g_is_refused_before_any_process_starts() {
+    let temp = tempfile::tempdir().unwrap();
+    let program = temp.path().join("claude");
+    let ran = temp.path().join("ran");
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\ntouch '{}'\nexit 0\n", ran.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for (model, effort, option, length) in [
+        ("/Users/alice/keys-1", "xhigh", "--model", 19),
+        ("claude-fable-5-1@20261015", "xhigh", "--model", 25),
+        ("claude-fable-5-1", "developer@example.test", "--effort", 22),
+    ] {
+        let refused = ClaudeTaskAdapter::new(&Command::new(
+            program.to_str().unwrap(),
+            ["--model", model, "--effort", effort]
+                .into_iter()
+                .map(Arg::literal)
+                .collect(),
+        ))
+        .err()
+        .unwrap();
+        assert!(
+            refused.contains(&format!("{option} value ({length} bytes)")),
+            "{refused}"
+        );
+        assert!(refused.contains(hint::PRINTABLE_RULE), "{refused}");
+        for secret in ["Users", "alice", "20261015", "example"] {
+            assert!(!refused.contains(secret), "{secret}: {refused}");
+        }
+    }
+    assert!(!ran.exists(), "a binding outside G started a process");
+    // A Bedrock-style ID is in G and is accepted.
+    assert!(
+        ClaudeTaskAdapter::new(&Command::new(
+            program.to_str().unwrap(),
+            ["--model", "us.anthropic.claude-opus-5-5-v1:0"]
+                .into_iter()
+                .map(Arg::literal)
+                .collect(),
+        ))
+        .is_ok()
+    );
+}
+
+/// Round 2, (3): the safeguards text in `result` of an error result is a refusal whatever
+/// `errors` holds: `[]`, `null`, an array without strings, an object without a string
+/// `message`, or a string of its own. Each is `model_refused`, not retried, with the hint at the
+/// head.
+#[test]
+fn the_safeguards_text_in_result_is_a_refusal_whatever_errors_holds() {
+    for errors in [
+        json!([]),
+        Value::Null,
+        json!([1, {"code": 2}]),
+        json!({"code": 2}),
+        json!(["Request failed"]),
+    ] {
+        for key in ["errors", "error"] {
+            let mut result = json!({"type":"result","subtype":"success","is_error":true,
+                "result":SAFEGUARDS,"safety_stops":0,
+                "usage":{"input_tokens":2,"output_tokens":0,"cache_creation_input_tokens":3210}});
+            result[key] = errors.clone();
+            let returned = attempt("claude-fable-5-1", &result, 1);
+            let error = returned.message.unwrap_err();
+            let found = hint::find(&error).unwrap_or_else(|| panic!("{key} {errors}: {error}"));
+            assert!(error.starts_with(hint::DIAGNOSTIC_PREFIX), "{error}");
+            assert!(
+                found.starts_with(
+                    "the safety classifier of claude-fable-5-1 (effort xhigh) flagged the \
+                     request and claude-fable-5-1 refused it (model_refused; safety_stops 0)"
+                ),
+                "{key} {errors}: {found}"
+            );
+            assert!(found.ends_with("then rerun"), "{found}");
+            assert_eq!(
+                returned.native_failure,
+                Some(NativeFailureKind::ModelRefused),
+                "{key} {errors}"
+            );
+            assert!(returned.native_failure.unwrap().refuses_input());
+            assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 3212);
+        }
+    }
+}

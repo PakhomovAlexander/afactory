@@ -193,6 +193,15 @@ fn auth_material(bytes: &[u8]) -> bool {
     .any(|marker| text.contains(marker))
 }
 
+/// Claude Code's own words, lower-cased, when the bound model's safety classifier flagged a
+/// request and no fallback model answered (ADR-0147).
+pub const SAFEGUARDS_FLAGGED: &str = "safeguards flagged this message";
+
+/// Whether `message` carries Claude Code's safeguards text, in any letter case.
+pub fn says_safeguards_flagged(message: &str) -> bool {
+    message.to_ascii_lowercase().contains(SAFEGUARDS_FLAGGED)
+}
+
 /// Recognize bounded native failure descriptions, not arbitrary successful model text. A
 /// caller must establish failure from the protocol or process status before using this hint.
 /// Network, quota and model errors cannot become refresh failures merely because a client
@@ -262,7 +271,7 @@ pub fn classify_native_failure(message: &str) -> NativeFailureKind {
     // Claude Code's own words when the bound model's safety classifier flagged a request and no
     // fallback model answered: "<Model>'s safeguards flagged this message (…/aup). This
     // sometimes happens with safe, normal conversations."
-    if contains(&["safeguards flagged this message"]) {
+    if contains(&[SAFEGUARDS_FLAGGED]) {
         return ModelRefused;
     }
     if contains(&[

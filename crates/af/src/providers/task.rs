@@ -23,6 +23,13 @@ pub struct TaskProviderIdentity {
     user: Option<std::ffi::OsString>,
 }
 impl TaskProviderIdentity {
+    /// Refuse a binding whose model or effort is outside grammar G (ADR-0147), token-free and
+    /// with the adapter's own words, naming the rule and the byte length, never the value. The
+    /// callers run it before [`Self::probe`] too, so such a binding starts no process at all.
+    pub fn check_spelling(model: &str, effort: &str) -> Result<(), String> {
+        review_runner_claude::hint::check_binding("--model", model)?;
+        review_runner_claude::hint::check_binding("--effort", effort)
+    }
     pub fn probe(provider: &str, expected_kind: &str) -> Result<Self, String> {
         let spec = configured_spec(provider)?;
         if spec.kind.name() != expected_kind || spec.auth_dir.is_none() {
@@ -69,6 +76,7 @@ impl TaskProviderIdentity {
         {
             return Err("Task Model binding requires an explicit versioned model ID".into());
         }
+        Self::check_spelling(model, effort)?;
         let execution = WorkerExecutionV1::Model {
             provider: self.spec.id.clone(),
             provider_kind: self.spec.kind.name().into(),

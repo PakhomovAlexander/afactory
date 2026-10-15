@@ -5,7 +5,9 @@ use review_runner::cli::{
     WorkerStderr, classify_without_result, ended_without_result, startup_failure,
     strongest_native_failure, transport_outcome,
 };
-use review_runner::native_failure::{NativeFailureKind, classify_native_failure};
+use review_runner::native_failure::{
+    NativeFailureKind, classify_native_failure, says_safeguards_flagged,
+};
 use review_runner::task::{ModelWorkerReturn, Unstarted, WorkerAccess, WorkerModelAdapter};
 
 mod model_usage;
@@ -63,7 +65,9 @@ pub struct ClaudeTaskAdapter {
 
 impl ClaudeTaskAdapter {
     /// Refuses a command without an explicit `--model`: usage accounting needs the selected
-    /// model to tell its own spend from unexpected model activity.
+    /// model to tell its own spend from unexpected model activity. Refuses a `--model` or
+    /// `--effort` value outside grammar G ([`hint::printable`]) before any process starts, so a
+    /// path or an account identifier never reaches Claude Code or a hint (ADR-0147).
     pub fn new(command: &Command) -> Result<Self, String> {
         let model_flags = claude_model_flags(command)?;
         let model = model_flags
@@ -71,6 +75,9 @@ impl ClaudeTaskAdapter {
             .find(|pair| pair[0] == "--model")
             .map(|pair| pair[1].clone())
             .ok_or("Claude Task Worker requires an explicit --model")?;
+        for pair in model_flags.chunks_exact(2) {
+            hint::check_binding(&pair[0], &pair[1])?;
+        }
         Ok(Self {
             program: command.program.clone(),
             model_flags,
@@ -404,15 +411,21 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
 
 /// Whether a result reports that the bound model's safety classifier flagged the request: a
 /// positive `safety_stops`, `stop_reason` `refusal`, or, in an error result, Claude Code's own
-/// "safeguards flagged this message" text. `is_error` does not decide it.
+/// "safeguards flagged this message" text, in its `result` whatever `errors` or `error` hold, or
+/// in the error text [`native_failure`] reads. `is_error` does not decide the first two.
 fn refusal_reported(value: &serde_json::Value) -> bool {
+    let is_error = value.get("is_error").and_then(serde_json::Value::as_bool) == Some(true);
     value
         .get("safety_stops")
         .and_then(serde_json::Value::as_u64)
         .is_some_and(|stops| stops >= 1)
         || value.get("stop_reason").and_then(serde_json::Value::as_str) == Some("refusal")
-        || value.get("is_error").and_then(serde_json::Value::as_bool) == Some(true)
-            && native_failure(value, true) == NativeFailureKind::ModelRefused
+        || is_error
+            && value
+                .get("result")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(says_safeguards_flagged)
+        || is_error && native_failure(value, true) == NativeFailureKind::ModelRefused
 }
 
 /// The policy category a refusal result names, when it names one: `stop_details.category` as
@@ -435,26 +448,35 @@ fn is_envelope(value: &serde_json::Value, typed: bool) -> bool {
         && (value.get("result").is_some() || typed && value.get("structured_output").is_some())
 }
 
-/// `result` is the CLI's own API error text only in an `is_error` envelope without structured
-/// errors; anywhere else it is the model's reply and is never classified.
+/// In an `is_error` envelope, `result` is the CLI's own error text whenever `errors` and `error`
+/// yield no string (absent, `null`, `[]`, an array without strings, an object without a string
+/// `message`); anywhere else it is the model's reply and is never classified.
 fn native_failure(value: &serde_json::Value, is_error: bool) -> NativeFailureKind {
-    let api_error_text = is_error && value.get("errors").is_none() && value.get("error").is_none();
-    let mut messages = Vec::new();
-    for key in ["errors", "error", "result", "message"] {
-        if key == "result" && !api_error_text {
-            continue;
-        }
+    let strings = |key: &str| -> Vec<&str> {
         let Some(value) = value.get(key) else {
-            continue;
+            return Vec::new();
         };
         if let Some(message) = value.as_str() {
-            messages.push(message);
+            vec![message]
         } else if let Some(values) = value.as_array() {
-            messages.extend(values.iter().filter_map(serde_json::Value::as_str));
-        } else if let Some(message) = value.get("message").and_then(serde_json::Value::as_str) {
-            messages.push(message);
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect()
+        } else {
+            value
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .into_iter()
+                .collect()
         }
+    };
+    let mut messages = strings("errors");
+    messages.extend(strings("error"));
+    if is_error && messages.is_empty() {
+        messages.extend(strings("result"));
     }
+    messages.extend(strings("message"));
     let kinds: Vec<_> = messages.into_iter().map(classify_native_failure).collect();
     strongest_native_failure(&kinds)
 }

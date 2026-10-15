@@ -872,6 +872,7 @@ fn bind_named_models(
             continue;
         };
         let alias = authority.providers.get(&name).ok_or_else(||format!("Worker {name} requires an explicit local Provider binding in the catalog providers table"))?;
+        super::providers::task::TaskProviderIdentity::check_spelling(model, effort)?;
         if !identities.contains_key(alias) {
             identities.insert(
                 alias.clone(),

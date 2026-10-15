@@ -13,24 +13,37 @@ use crate::task_cli::fixture_named;
 /// The recorded result, byte for byte in its numbers.
 const RECORDED_FALLBACK: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"OK","num_turns":2,"safety_stops":2,"stop_reason":"end_turn","fallback_credit":null,"usage":{"input_tokens":4,"output_tokens":4,"cache_creation_input_tokens":9488,"cache_read_input_tokens":3001},"modelUsage":{"claude-fable-5-1":{"inputTokens":2,"outputTokens":0,"cacheCreationInputTokens":3210,"cacheReadInputTokens":3001,"canonicalModel":"claude-fable-5-1"},"claude-opus-5":{"inputTokens":2,"outputTokens":4,"cacheCreationInputTokens":6278,"cacheReadInputTokens":0,"canonicalModel":"claude-opus-5"}}}"#;
 
-#[test]
-fn a_safety_classifier_fallback_at_admission_is_refused_charged_and_named_on_stderr() {
-    use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
-    use std::os::unix::fs::PermissionsExt;
-    let directory = tempfile::tempdir().unwrap();
-    let (repo, state) = fixture_named(directory.path(), "review");
-    let home = directory.path().join("home");
-    let bin = directory.path().join("bin");
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::write(home.join("help"), crate::provider_cli::CLAUDE_HELP).unwrap();
-    std::fs::write(home.join("version"), "2.1.300 (Claude Code)\n").unwrap();
-    std::fs::write(home.join("result"), RECORDED_FALLBACK).unwrap();
-    // The fake records every model call with the guard it received, and answers the admission
-    // probe with the recorded fallback; any other request is a business Worker.
-    let stub = r#"#!/usr/bin/python3
+/// The review fixture with both business Workers bound to `model` at effort `xhigh` on one Claude
+/// Provider, whose fake `claude` answers every model call with `result`.
+struct Fixture {
+    _directory: tempfile::TempDir,
+    repo: std::path::PathBuf,
+    state: std::path::PathBuf,
+    home: std::path::PathBuf,
+    path: std::ffi::OsString,
+    registry: std::path::PathBuf,
+}
+
+impl Fixture {
+    fn new(model: &str, result: &str) -> Self {
+        use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let (repo, state) = fixture_named(directory.path(), "review");
+        let home = directory.path().join("home");
+        let bin = directory.path().join("bin");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(home.join("help"), crate::provider_cli::CLAUDE_HELP).unwrap();
+        std::fs::write(home.join("version"), "2.1.300 (Claude Code)\n").unwrap();
+        std::fs::write(home.join("result"), result).unwrap();
+        // The fake records every process af starts, and every model call with the guard it
+        // received, and answers each model call with `result`; any request other than the
+        // admission probe is a business Worker.
+        let stub = r#"#!/usr/bin/python3
 import os,json,sys
 home=os.environ['CLAUDE_CONFIG_DIR']
+with open(home+'/started','a') as f: f.write('started\n')
 if sys.argv[1:] in (['--help'],['--version']):
  sys.stdout.write(open(home+'/'+sys.argv[1][2:]).read())
  sys.exit(0)
@@ -42,99 +55,136 @@ kind='admission' if request=='Reply with exactly: OK\n' else 'business'
 with open(home+'/calls','a') as f: f.write(kind+' '+os.environ.get('CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK','unset')+' '+os.environ.get('CLAUDE_CODE_NO_MODEL_FALLBACK','unset')+'\n')
 sys.stdout.write(open(home+'/result').read())
 "#;
-    let installed = bin.join("claude");
-    std::fs::write(&installed, stub).unwrap();
-    std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let registry = home.join("providers.toml");
-    std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":1,"providers":[{"id":"claude-personal","kind":"claude","auth_dir":home}]})).unwrap()).unwrap();
-    let catalog_path = repo.join(".af/task-catalog.toml");
-    let mut catalog: toml::Value =
-        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
-    let mut providers = toml::map::Map::new();
-    for name in ["bugs", "correctness"] {
-        let package = format!("fixture/{name}");
-        let path = repo.join(format!(".af/task-packages/{package}"));
-        let mut worker: TaskWorkerManifest =
-            toml::from_str(&std::fs::read_to_string(path.join("worker.toml")).unwrap()).unwrap();
-        worker.runner = TaskWorkerRunner::Model {
-            provider_kind: "claude".into(),
-            model: "claude-fable-5-1".into(),
-            effort: "xhigh".into(),
-        };
-        let attempt = worker.signature.attempt.as_mut().unwrap();
-        attempt.tokens = 1000;
-        attempt.wall_ms = super::NATIVE_REVIEWER_WALL_MS;
-        std::fs::write(path.join("worker.toml"), toml::to_string(&worker).unwrap()).unwrap();
-        catalog["packages"][&package]["digest"] =
-            toml::Value::String(review_config::lock::package_digest(&package, &path).unwrap());
-        providers.insert(package, toml::Value::String("claude-personal".into()));
-    }
-    let pipeline_dir = repo.join(".af/task-packages/fixture/review");
-    let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
-        toml::from_str(&std::fs::read_to_string(pipeline_dir.join("pipeline.toml")).unwrap())
-            .unwrap();
-    pipeline.max_attempts = 4;
-    std::fs::write(
-        pipeline_dir.join("pipeline.toml"),
-        toml::to_string(&pipeline).unwrap(),
-    )
-    .unwrap();
-    catalog["packages"]["fixture/review"]["digest"] = toml::Value::String(
-        review_config::lock::package_digest("fixture/review", &pipeline_dir).unwrap(),
-    );
-    catalog
-        .as_table_mut()
-        .unwrap()
-        .insert("providers".into(), toml::Value::Table(providers));
-    std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
-    let file_path = repo.join("review.json");
-    let mut file: Value = serde_json::from_slice(&std::fs::read(&file_path).unwrap()).unwrap();
-    file["limits"] = super::native_model_limits();
-    std::fs::write(file_path, serde_json::to_vec(&file).unwrap()).unwrap();
-    for args in [vec!["add", "-A"], vec!["commit", "-qm", "model bindings"]] {
-        assert!(
-            Command::new("git")
-                .current_dir(&repo)
-                .args(args)
-                .status()
-                .unwrap()
-                .success()
+        let installed = bin.join("claude");
+        std::fs::write(&installed, stub).unwrap();
+        std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let registry = home.join("providers.toml");
+        std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":1,"providers":[{"id":"claude-personal","kind":"claude","auth_dir":home}]})).unwrap()).unwrap();
+        let catalog_path = repo.join(".af/task-catalog.toml");
+        let mut catalog: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+        let mut providers = toml::map::Map::new();
+        for name in ["bugs", "correctness"] {
+            let package = format!("fixture/{name}");
+            let path = repo.join(format!(".af/task-packages/{package}"));
+            let mut worker: TaskWorkerManifest =
+                toml::from_str(&std::fs::read_to_string(path.join("worker.toml")).unwrap())
+                    .unwrap();
+            worker.runner = TaskWorkerRunner::Model {
+                provider_kind: "claude".into(),
+                model: model.into(),
+                effort: "xhigh".into(),
+            };
+            let attempt = worker.signature.attempt.as_mut().unwrap();
+            attempt.tokens = 1000;
+            attempt.wall_ms = super::NATIVE_REVIEWER_WALL_MS;
+            std::fs::write(path.join("worker.toml"), toml::to_string(&worker).unwrap()).unwrap();
+            catalog["packages"][&package]["digest"] =
+                toml::Value::String(review_config::lock::package_digest(&package, &path).unwrap());
+            providers.insert(package, toml::Value::String("claude-personal".into()));
+        }
+        let pipeline_dir = repo.join(".af/task-packages/fixture/review");
+        let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
+            toml::from_str(&std::fs::read_to_string(pipeline_dir.join("pipeline.toml")).unwrap())
+                .unwrap();
+        pipeline.max_attempts = 4;
+        std::fs::write(
+            pipeline_dir.join("pipeline.toml"),
+            toml::to_string(&pipeline).unwrap(),
+        )
+        .unwrap();
+        catalog["packages"]["fixture/review"]["digest"] = toml::Value::String(
+            review_config::lock::package_digest("fixture/review", &pipeline_dir).unwrap(),
         );
+        catalog
+            .as_table_mut()
+            .unwrap()
+            .insert("providers".into(), toml::Value::Table(providers));
+        std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+        let file_path = repo.join("review.json");
+        let mut file: Value = serde_json::from_slice(&std::fs::read(&file_path).unwrap()).unwrap();
+        file["limits"] = super::native_model_limits();
+        std::fs::write(file_path, serde_json::to_vec(&file).unwrap()).unwrap();
+        for args in [vec!["add", "-A"], vec!["commit", "-qm", "model bindings"]] {
+            assert!(
+                Command::new("git")
+                    .current_dir(&repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let path = std::env::join_paths(
+            std::iter::once(bin.clone())
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        Self {
+            _directory: directory,
+            repo,
+            state,
+            home,
+            path,
+            registry,
+        }
     }
-    let path = std::env::join_paths(
-        std::iter::once(bin.clone())
-            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
-    )
-    .unwrap();
-    let run = |args: &[&str]| {
+
+    fn run(&self, args: &[&str]) -> std::process::Output {
         crate::common::af()
-            .current_dir(&repo)
-            .env("HOME", &home)
+            .current_dir(&self.repo)
+            .env("HOME", &self.home)
             .env("USER", "fixture")
-            .env("PATH", &path)
-            .env("AF_PROVIDERS_FILE", &registry)
+            .env("PATH", &self.path)
+            .env("AF_PROVIDERS_FILE", &self.registry)
             .args(args)
             .args(["--json", "--state"])
-            .arg(&state)
+            .arg(&self.state)
             .output()
             .unwrap()
-    };
-    let output = run(&["review", "run", "--file", "review.json"]);
+    }
+
+    /// The model calls the fake received, one line each: admission or business, then the two
+    /// guards.
+    fn calls(&self) -> String {
+        std::fs::read_to_string(self.home.join("calls")).unwrap_or_default()
+    }
+
+    /// The lines on `stderr` that name a failed Provider-admission Attempt.
+    fn admission_lines(stderr: &str) -> Vec<&str> {
+        stderr
+            .lines()
+            .filter(|line| line.starts_with("af: root.providers."))
+            .collect()
+    }
+
+    /// `af task show review-cli`, and the diagnostics of its failed Attempts.
+    fn shown(&self) -> (Value, Vec<String>) {
+        let shown = self.run(&["task", "show", "review-cli"]);
+        let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
+        let diagnostics = shown["execution_records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|record| record["diagnostic"]["error"].as_str())
+            .map(str::to_owned)
+            .collect();
+        (shown, diagnostics)
+    }
+}
+
+#[test]
+fn a_safety_classifier_fallback_at_admission_is_refused_charged_and_named_on_stderr() {
+    let fixture = Fixture::new("claude-fable-5-1", RECORDED_FALLBACK);
+    let output = fixture.run(&["review", "run", "--file", "review.json"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{stdout}\n{stderr}");
     // Only the admission probe ran, with the fallback turned off and model substitution kept.
-    assert_eq!(
-        std::fs::read_to_string(home.join("calls")).unwrap(),
-        "admission 1 unset\n",
-        "{stderr}"
-    );
+    assert_eq!(fixture.calls(), "admission 1 unset\n", "{stderr}");
     // One line on the run's own stderr names the node, the Provider, the bound model and effort,
     // both models with their output tokens, the counts, the cause, af's refusal and the next step.
-    let lines: Vec<&str> = stderr
-        .lines()
-        .filter(|line| line.starts_with("af: root.providers."))
-        .collect();
+    let lines = Fixture::admission_lines(&stderr);
     assert_eq!(lines.len(), 1, "{stderr}");
     let line = lines[0];
     for part in [
@@ -153,15 +203,8 @@ sys.stdout.write(open(home+'/result').read())
     }
     // The probe is charged exactly what its result reports, and `af task show` keeps the full
     // diagnostic.
-    let shown = run(&["task", "show", "review-cli"]);
-    let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
+    let (shown, diagnostics) = fixture.shown();
     assert_eq!(shown["chargeable_tokens"], "9496", "{shown}");
-    let diagnostics: Vec<&str> = shown["execution_records"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|record| record["diagnostic"]["error"].as_str())
-        .collect();
     assert_eq!(diagnostics.len(), 1, "{shown}");
     assert!(
         diagnostics[0]
@@ -174,4 +217,117 @@ sys.stdout.write(open(home+'/result').read())
         "{}",
         diagnostics[0]
     );
+}
+
+/// Round 2, (1): the recorded fallback with its top-level `output_tokens` malformed. The
+/// diagnostic starts with the switch hint, the accounting reason follows it, and `af task run`
+/// prints the hint on its stderr.
+#[test]
+fn a_malformed_top_level_usage_still_names_the_fallback_on_task_run_stderr() {
+    let malformed = RECORDED_FALLBACK.replacen(r#""output_tokens":4"#, r#""output_tokens":"4""#, 1);
+    assert_ne!(malformed, RECORDED_FALLBACK);
+    let fixture = Fixture::new("claude-fable-5-1", &malformed);
+    let plan = fixture.run(&["review", "plan", "--file", "review.json"]);
+    assert!(
+        plan.status.success(),
+        "{}",
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    assert_eq!(fixture.calls(), "", "planning made a model call");
+    let output = fixture.run(&["task", "run", "--execute", "review-cli"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert_eq!(fixture.calls(), "admission 1 unset\n", "{stderr}");
+    let lines = Fixture::admission_lines(&stderr);
+    assert_eq!(lines.len(), 1, "{stderr}");
+    for part in [
+        "failed: Provider claude-personal (claude), model claude-fable-5-1, effort xhigh: the safety classifier of claude-fable-5-1 flagged the request and Claude Code switched models, a safety-classifier fallback (model_refused)",
+        "the Worker bound claude-fable-5-1 (effort xhigh), which wrote 0 output tokens, but claude-opus-5 (4 output tokens) answered (safety_stops 2, num_turns 2)",
+    ] {
+        assert!(lines[0].contains(part), "{part}: {}", lines[0]);
+    }
+    let (shown, diagnostics) = fixture.shown();
+    assert_eq!(diagnostics.len(), 1, "{shown}");
+    let found = review_runner_claude::hint::find(&diagnostics[0]).unwrap();
+    assert!(lines[0].ends_with(found), "{}", lines[0]);
+    assert!(
+        diagnostics[0].contains(&format!(
+            "Claude Worker failed: {found}; Claude top-level usage is malformed"
+        )),
+        "{}",
+        diagnostics[0]
+    );
+}
+
+/// Round 2, (2): a binding whose `--model` is a path is refused by `af task plan` and `af review
+/// run` before any process starts, and no output names the path.
+#[test]
+fn a_binding_outside_g_is_refused_before_any_process_and_never_printed() {
+    let fixture = Fixture::new("/Users/alice/keys-1", RECORDED_FALLBACK);
+    for args in [
+        &["task", "plan", "--file", "review.json"][..],
+        &["review", "run", "--file", "review.json"][..],
+    ] {
+        let output = fixture.run(args);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{args:?}: {stdout}\n{stderr}");
+        assert!(
+            stderr.contains(
+                "Model binding refused: its --model value (19 bytes) is not a model spelling af accepts"
+            ),
+            "{args:?}: {stderr}"
+        );
+        assert!(
+            stderr.contains(review_runner_claude::hint::PRINTABLE_RULE),
+            "{stderr}"
+        );
+        for text in [&stdout, &stderr] {
+            for part in ["/Users", "alice", "keys-1"] {
+                assert!(!text.contains(part), "{args:?} {part}: {text}");
+            }
+        }
+    }
+    assert!(
+        !fixture.home.join("started").exists(),
+        "a binding outside G started a process"
+    );
+}
+
+/// Round 2, (3): an error result whose `result` carries the safeguards text and whose `errors`
+/// is `[]`, `null` or an object without a string `message` is `model_refused`: not retried, its
+/// hint at the head of the diagnostic and on the run's stderr.
+#[test]
+fn a_safeguards_refusal_beside_stringless_errors_is_named_and_not_retried() {
+    for errors in ["[]", "null", r#"{"code":2}"#] {
+        let result = format!(
+            r#"{{"type":"result","subtype":"success","is_error":true,"result":"Claude Fable 5.1's safeguards flagged this message (https://www.anthropic.com/legal/aup). This sometimes happens with safe, normal conversations.","errors":{errors},"usage":{{"input_tokens":2,"output_tokens":0,"cache_creation_input_tokens":3210,"cache_read_input_tokens":3001}},"modelUsage":{{"claude-fable-5-1":{{"inputTokens":2,"outputTokens":0,"cacheCreationInputTokens":3210,"cacheReadInputTokens":3001}}}}}}"#
+        );
+        let fixture = Fixture::new("claude-fable-5-1", &result);
+        let output = fixture.run(&["review", "run", "--file", "review.json"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{errors}: {stderr}");
+        // One Attempt of four allowed: a refusal is never retried.
+        assert_eq!(fixture.calls(), "admission 1 unset\n", "{errors}: {stderr}");
+        let lines = Fixture::admission_lines(&stderr);
+        assert_eq!(lines.len(), 1, "{errors}: {stderr}");
+        assert!(
+            lines[0].contains(
+                "model claude-fable-5-1, effort xhigh: the safety classifier of claude-fable-5-1 \
+                 (effort xhigh) flagged the request and claude-fable-5-1 refused it \
+                 (model_refused; Claude Code reported that its safeguards flagged this message)"
+            ),
+            "{errors}: {}",
+            lines[0]
+        );
+        assert!(lines[0].ends_with("then rerun"), "{}", lines[0]);
+        let (shown, diagnostics) = fixture.shown();
+        assert_eq!(diagnostics.len(), 1, "{shown}");
+        assert!(
+            review_runner_claude::hint::find(&diagnostics[0]).is_some(),
+            "{}",
+            diagnostics[0]
+        );
+        assert_eq!(shown["chargeable_tokens"], "3212", "{shown}");
+    }
 }

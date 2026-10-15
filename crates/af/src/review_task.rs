@@ -92,6 +92,10 @@ fn local_workers(
         .map_err(|e| e.to_string())?;
         let settings = review_config::lock::reviewer_runner_settings_from_manifest(&manifest)
             .map_err(|e| e.to_string())?;
+        super::providers::task::TaskProviderIdentity::check_spelling(
+            &settings.model,
+            &settings.effort,
+        )?;
         if !identities.contains_key(alias) {
             identities.insert(
                 alias.clone(),

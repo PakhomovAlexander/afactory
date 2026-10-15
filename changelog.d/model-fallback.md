@@ -4,5 +4,10 @@
   model the Worker did not bind is still refused, now naming both models, their output tokens,
   `safety_stops` and `num_turns`; a model ID Claude Code does not know is `model_unavailable`.
   `af task run` and `af review run` print the reason and the next step on stderr for each such
-  failed Attempt
+  failed Attempt, the switch first even when the result's usage is also malformed, with those
+  accounting reasons after it in the diagnostic. An error result whose `result` carries Claude
+  Code's safeguards text is `model_refused` whatever its `errors` holds. A model or effort binding
+  outside the one spelling af prints (an ASCII letter or digit, then at most 127 letters, digits,
+  `-`, `.`, `_` or `:`) is refused before any process starts, naming only its byte length, and a
+  reported model ID outside it reads `[not printable]`
   ([ADR-0147](docs/adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)).

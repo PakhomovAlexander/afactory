@@ -359,3 +359,134 @@ fn only_the_bound_model_is_no_switch() {
     assert!(result.error.is_none());
     assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 3212);
 }
+
+/// A reviewer case: the recorded fallback with its top-level `output_tokens` made malformed. The
+/// switch still leads, the accounting reasons follow it, and the charge stays what the
+/// accounting rules decide: the breakdown, 9496, now incomplete.
+#[test]
+fn a_malformed_top_level_usage_never_hides_the_recorded_switch() {
+    for bad in [Value::Null, json!("4"), json!(-1)] {
+        let mut value = recorded_fallback();
+        value["usage"]["output_tokens"] = bad;
+        let result = account(Some(&value), "claude-fable-5-1", Some("xhigh"));
+        assert!(result.switched);
+        let error = result.error.unwrap();
+        let hint = crate::hint::compose(
+            BoundModel {
+                model: "claude-fable-5-1",
+                effort: Some("xhigh"),
+            },
+            &ModelOutcome::Switched {
+                bound_output_tokens: Some(0),
+                others: &[OtherModel {
+                    model: "claude-opus-5".into(),
+                    output_tokens: Some(4),
+                }],
+                safety_stops: Some(2),
+                num_turns: Some(2),
+            },
+        );
+        assert_eq!(
+            error,
+            format!(
+                "{hint}; Claude top-level usage is malformed; Claude top-level and per-model \
+                 usage cannot be reconciled"
+            )
+        );
+        let diagnostic = format!("{}{error}", crate::hint::DIAGNOSTIC_PREFIX);
+        assert_eq!(crate::hint::find(&diagnostic), Some(hint.as_str()));
+        assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 9496);
+        assert!(!result.observation.unwrap().charge_complete);
+    }
+}
+
+/// A reviewer case: malformed top-level usage, `safety_stops` 0 and one valid active foreign
+/// entry, the only one. An unexplained switch, its reasons after it.
+#[test]
+fn a_lone_active_foreign_entry_beside_malformed_usage_is_an_unexplained_switch() {
+    let value = json!({"safety_stops":0,"num_turns":1,
+        "usage":{"input_tokens":"2","output_tokens":4,"cache_creation_input_tokens":6278},
+        "modelUsage":{OPUS:{"inputTokens":2,"outputTokens":4,"cacheCreationInputTokens":6278,"cacheReadInputTokens":0}}});
+    let result = account(Some(&value), "claude-fable-5-1", None);
+    assert!(result.switched);
+    let error = result.error.unwrap();
+    assert!(
+        error.starts_with(
+            "Claude Code switched models without reporting a safety stop, an unexplained switch \
+             (model_switched): the Worker bound claude-fable-5-1, which reported no usage, but \
+             claude-opus-5 (4 output tokens) answered (safety_stops 0, num_turns 1)"
+        ),
+        "{error}"
+    );
+    assert!(
+        error.ends_with("change the input or bind another model; Claude top-level usage is malformed; Claude top-level and per-model usage cannot be reconciled"),
+        "{error}"
+    );
+    assert!(
+        crate::hint::find(&format!("{}{error}", crate::hint::DIAGNOSTIC_PREFIX)).is_some(),
+        "{error}"
+    );
+    assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 6284);
+    assert!(!result.observation.unwrap().charge_complete);
+}
+
+/// A reason found after the switch follows it too, and a reason found twice is said once.
+#[test]
+fn reasons_found_after_the_switch_follow_its_hint_once_each() {
+    let value = json!({"usage":{"input_tokens":10,"output_tokens":3},"modelUsage":{
+        "a-dated-id":{"inputTokens":12,"outputTokens":2,"canonicalModel":OPUS},
+        "b-other":{"inputTokens":1,"outputTokens":1},
+        "c-dated-id":{"inputTokens":10,"outputTokens":null,"canonicalModel":OPUS},
+        "d-dated-id":{"inputTokens":null,"outputTokens":3,"canonicalModel":OPUS}}});
+    let result = account(Some(&value), OPUS, None);
+    assert!(result.switched);
+    let error = result.error.unwrap();
+    assert!(error.starts_with("Claude Code switched models"), "{error}");
+    let tail = error.split("bind another model; ").nth(1).unwrap();
+    assert_eq!(
+        tail,
+        "Claude per-model usage is malformed; Claude model usage contains ambiguous duplicate \
+         identities; Claude top-level and per-model usage cannot be reconciled"
+    );
+    assert!(!result.observation.unwrap().charge_complete);
+}
+
+/// A well-formed foreign key outside grammar G is counted as ADR-0102 says and named
+/// `[not printable]`; a Bedrock-style ID is named verbatim.
+#[test]
+fn a_foreign_key_outside_g_is_counted_but_never_echoed() {
+    let mut value = recorded_fallback();
+    let opus = value["modelUsage"]["claude-opus-5"].take();
+    let map = value["modelUsage"].as_object_mut().unwrap();
+    map.remove("claude-opus-5");
+    let mut foreign = opus.clone();
+    foreign["canonicalModel"] = json!("/Users/alice/keys-1");
+    map.insert("/Users/alice/keys-1".into(), foreign);
+    let result = account(Some(&value), "claude-fable-5-1", Some("xhigh"));
+    assert!(result.switched);
+    let error = result.error.unwrap();
+    assert!(
+        error.contains("but [not printable] (19 bytes) (4 output tokens) answered"),
+        "{error}"
+    );
+    assert!(
+        !error.contains("Users") && !error.contains("alice"),
+        "{error}"
+    );
+    assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 9496);
+    assert!(result.observation.unwrap().charge_complete);
+
+    let mut value = recorded_fallback();
+    let map = value["modelUsage"].as_object_mut().unwrap();
+    map.remove("claude-opus-5");
+    let mut bedrock = opus;
+    bedrock["canonicalModel"] = json!("us.anthropic.claude-opus-5-5-v1:0");
+    map.insert("us.anthropic.claude-opus-5-5-v1:0".into(), bedrock);
+    let error = account(Some(&value), "claude-fable-5-1", Some("xhigh"))
+        .error
+        .unwrap();
+    assert!(
+        error.contains("but us.anthropic.claude-opus-5-5-v1:0 (4 output tokens) answered"),
+        "{error}"
+    );
+}

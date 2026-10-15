@@ -65,7 +65,11 @@ classified it `unknown`.
 3. **A classifier refusal is its own outcome.** `NativeFailureKind::ModelRefused`, spelled
    `model_refused`, is recognised from a parsed result when `safety_stops` is a positive integer,
    or `stop_reason` is `refusal`, or an error result carries the "safeguards flagged this message"
-   text, whatever `is_error` says. A result with `safety_stops >= 1` is never a success. The
+   text, whatever `is_error` says. In an `is_error:true` result, `result` is Claude Code's own
+   error text whenever `errors` and `error` yield no string (absent, `null`, `[]`, an array
+   without strings, an object without a string `message`), and is classified then; independently,
+   an `is_error:true` result whose `result` string contains the safeguards text is a refusal
+   whatever `errors` or `error` hold. A result with `safety_stops >= 1` is never a success. The
    diagnostic names the bound model and effort, the count, the category when the result names one
    (`stop_details.category`), that af turned Claude Code's automatic switch off because af never
    runs an unrequested model, and the next step. The Task runtime does not retry an Attempt that
@@ -78,7 +82,13 @@ classified it `unknown`.
    safety-classifier fallback when `safety_stops >= 1`, classified `model_refused`; otherwise an
    unexplained switch, `model_switched`), that af refused the reply from the unrequested model,
    that this is neither a credential nor a spelling problem, and what to do. `account` returns an
-   owned error to carry it; every other accounting rule and refusal is unchanged.
+   owned error to carry it. The switch refusal outranks every other accounting reason: whenever
+   `modelUsage` carries a well-formed entry for a model other than the bound one that is not
+   explicitly unused, the error is the switch hint, whatever reasons were found before or after
+   it, and every other reason found follows it, each after a semicolon, so the diagnostic starts
+   with the hint and no accounting fact is lost. The charge, `charge_complete` and the usage
+   observation are exactly what the accounting rules decide; every other accounting rule and
+   refusal is unchanged.
 5. **A model Claude Code does not know is `model_unavailable`.** "issue with the selected model"
    and "may not exist or you may not have access" classify as `ModelUnavailable`. The diagnostic
    quotes the rejected spelling, says Claude Code does not know the model ID or the account cannot
@@ -92,10 +102,21 @@ classified it `unknown`.
    printed. `af review report` follows its `incomplete (N missing nodes)` final verdict, and `af
    review run` its incomplete verdict line, with the same hint for each missing node it
    explains. `af task show` keeps the full
-   diagnostic. A hint holds no secret, no prompt text, no Worker output and no path: model IDs and
-   efforts are printed only in their identifier alphabet, and a category only as a short
-   lower-case name.
-7. **No new public schema version.** The classification lives in the diagnostic prose of the
+   diagnostic. A hint holds no secret, no prompt text, no Worker output and no path, and a
+   category is printed only as a short lower-case name.
+7. **One grammar G for every spelling af prints.** `review_runner_claude::hint` defines it once:
+   a spelling starts with an ASCII letter or digit and continues with at most 127 further bytes,
+   each an ASCII letter, digit, `-`, `.`, `_` or `:`; it holds no `/`, no `@`, no whitespace and
+   no other byte. `shown` prints a value in G verbatim (a Bedrock-style ID such as
+   `us.anthropic.claude-opus-5-5-v1:0` included) and any other value as `[not printable]` with
+   its byte length, never any part of it; `attempt_line` uses it for the node, the Provider ID
+   and kind, the model and the effort. `ClaudeTaskAdapter::new` refuses a `--model` or
+   `--effort` outside G before any process starts, and `TaskProviderIdentity::execution`
+   applies the same check beside its versioned-model rule; `af task plan` and `af review run` also
+   run it before the Provider's token-free probes, so no process starts. Each refusal names the rule and the
+   value's byte length, never the value. A `modelUsage` key outside G is still counted as
+   ADR-0102 says and is named `[not printable]` in the hint.
+8. **No new public schema version.** The classification lives in the diagnostic prose of the
    existing `af.task-diagnostic/1` shape and in process memory; no record, event or document
    changes shape
    ([ADR-0145](0145-read-only-what-this-release-writes-and-version-every-changed-shape.md)).
@@ -135,5 +156,9 @@ classified it `unknown`.
   business Worker starts, as `tests/it/task_file/model_fallback.rs` in the `af` crate shows.
 - A misspelled model reads `model_unavailable` with the spelling it rejected, instead of
   `unknown`.
+- A switch is named first even when the result's usage is also malformed; the accounting reasons
+  follow the hint, and the stderr line is printed.
+- A binding whose model or effort is a path, an `@`-bearing account identifier or anything else
+  outside G is refused before any process starts, and no output echoes it.
 - `af task run` and `af review run` may print more stderr lines; documents and exit codes are
   unchanged.

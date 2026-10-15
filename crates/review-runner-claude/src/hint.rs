@@ -9,6 +9,8 @@
 //! stderr through [`attempt_line`], so an operator reads the same words on the run's own output
 //! that `af task show` keeps in the full diagnostic. A hint carries af's own words, model IDs,
 //! counts and a closed category only: no secret, no prompt text, no Worker output and no path.
+//! Every model ID, effort and name is printed only in grammar G ([`printable`]); anything else
+//! is `[not printable]` with its byte length, and a binding outside G never starts a process.
 
 /// The model the Worker bound, exactly as the adapter passed it to Claude Code.
 #[derive(Clone, Copy, Debug)]
@@ -227,18 +229,55 @@ fn output(tokens: Option<u64>) -> String {
     }
 }
 
-/// An identifier as af prints it: model IDs, efforts and names keep their own spelling; anything
-/// else is replaced, never echoed.
-fn shown(value: &str) -> String {
-    if !value.is_empty()
-        && value.len() <= 256
+/// Grammar G, the one shape of a spelling af prints verbatim (ADR-0147): an ASCII letter or digit,
+/// then at most 127 further bytes, each an ASCII letter, digit, `-`, `.`, `_` or `:`. No `/`, no
+/// `@`, no whitespace and no other byte, so a path or an account identifier never matches it.
+pub const PRINTABLE_RULE: &str = "a spelling af prints starts with an ASCII letter or digit and \
+continues with at most 127 ASCII letters, digits, '-', '.', '_' or ':', with no '/', '@' or \
+whitespace";
+
+/// The most bytes a spelling in grammar G holds.
+const PRINTABLE_MAX_BYTES: usize = 128;
+
+/// Whether `value` is in grammar G ([`PRINTABLE_RULE`]).
+pub fn printable(value: &str) -> bool {
+    value.len() <= PRINTABLE_MAX_BYTES
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
         && value
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-._:/@".contains(&b))
-    {
+            .all(|b| b.is_ascii_alphanumeric() || b"-._:".contains(&b))
+}
+
+/// Refuse a binding's `--model` or `--effort` value outside grammar G before any process starts.
+/// The refusal names the rule and the value's byte length, never the value.
+pub fn check_binding(option: &str, value: &str) -> Result<(), String> {
+    if printable(value) {
+        return Ok(());
+    }
+    Err(format!(
+        "Model binding refused: its {option} value ({}) is not a model spelling af accepts: \
+         {PRINTABLE_RULE}",
+        byte_length(value.len())
+    ))
+}
+
+/// An identifier as af prints it: a spelling in grammar G keeps its own spelling; anything else
+/// is replaced by `[not printable]` and its byte length, never any part of it.
+pub fn shown(value: &str) -> String {
+    if printable(value) {
         value.into()
     } else {
-        "[not printable]".into()
+        format!("[not printable] ({})", byte_length(value.len()))
+    }
+}
+
+fn byte_length(bytes: usize) -> String {
+    match bytes {
+        1 => "1 byte".into(),
+        n => format!("{n} bytes"),
     }
 }
 
@@ -424,5 +463,87 @@ mod tests {
         assert!(
             attempt_line("node", "p", "claude", "a b", "x\ny", &hint).contains("[not printable]")
         );
+    }
+
+    #[test]
+    fn grammar_g_prints_model_ids_and_never_a_path_or_an_account() {
+        for value in [
+            "claude-fable-5-1",
+            "claude-fable-5.1",
+            "us.anthropic.claude-opus-5-5-v1:0",
+            "xhigh",
+            "claude_opus_5",
+            &"a".repeat(128),
+        ] {
+            assert!(printable(value), "{value}");
+            assert_eq!(shown(value), value);
+            assert_eq!(check_binding("--model", value), Ok(()));
+        }
+        for value in [
+            "/Users/alice/keys-1",
+            "developer@example.test",
+            "claude-opus-5@20260101",
+            "anthropic/claude-opus-5",
+            "-claude",
+            ".claude",
+            "claude opus",
+            "claude\n",
+            "",
+            &"a".repeat(129),
+        ] {
+            assert!(!printable(value), "{value:?}");
+            let printed = shown(value);
+            assert_eq!(
+                printed,
+                format!("[not printable] ({} bytes)", value.len()),
+                "{value:?}"
+            );
+            let refusal = check_binding("--model", value).unwrap_err();
+            assert!(refusal.contains(PRINTABLE_RULE), "{refusal}");
+            assert!(
+                refusal.contains(&format!("--model value ({} bytes)", value.len())),
+                "{refusal}"
+            );
+            for part in ["Users", "alice", "example", "anthropic/", "opus"] {
+                assert!(
+                    !printed.contains(part) && !refusal.contains(part),
+                    "{refusal}"
+                );
+            }
+        }
+        assert_eq!(shown("?"), "[not printable] (1 byte)");
+    }
+
+    #[test]
+    fn a_foreign_model_outside_g_is_named_not_printable_and_a_bedrock_id_verbatim() {
+        let others = [
+            OtherModel {
+                model: "/Users/alice/keys-1".into(),
+                output_tokens: Some(4),
+            },
+            OtherModel {
+                model: "us.anthropic.claude-opus-5-5-v1:0".into(),
+                output_tokens: Some(3),
+            },
+        ];
+        let hint = compose(
+            FABLE,
+            &ModelOutcome::Switched {
+                bound_output_tokens: Some(0),
+                others: &others,
+                safety_stops: Some(0),
+                num_turns: Some(1),
+            },
+        );
+        assert!(
+            hint.contains(
+                "but [not printable] (19 bytes) (4 output tokens), \
+                 us.anthropic.claude-opus-5-5-v1:0 (3 output tokens) answered"
+            ),
+            "{hint}"
+        );
+        assert!(!hint.contains("Users") && !hint.contains("alice"), "{hint}");
+        let diagnostic = format!("{DIAGNOSTIC_PREFIX}{hint}; transport: exited 0");
+        assert_eq!(find(&diagnostic), Some(hint.as_str()));
     }
 }
