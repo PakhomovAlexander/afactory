@@ -37,6 +37,7 @@ mod caches;
 mod cli;
 mod config;
 mod interrupt;
+mod model_failures;
 mod onboard;
 mod project;
 mod providers;
@@ -2776,6 +2777,10 @@ struct ReviewReportView {
     runs_recorded: usize,
     ledger_round: u32,
     final_verdict: Option<String>,
+    /// Why the final verdict is incomplete, when a model the bound one did not answer for is
+    /// the reason: printed after it, never part of the document (ADR-0147).
+    #[serde(skip)]
+    final_reasons: Vec<String>,
     rounds: Vec<ReportRoundView>,
     /// Empty only for a Campaign whose first Task capture failed, which has no Rounds either.
     task_accounting: Vec<report_tasks::TaskAccountingView>,
@@ -3005,6 +3010,17 @@ fn read_report_view(
             .last()
             .map(|event| run_report(event).map(|report| render_verdict_v3(report.verdict)))
             .transpose()?,
+        final_reasons: match reports.last().map(|event| run_report(event)).transpose()? {
+            Some(RunReportPayloadV6 {
+                verdict: RunVerdictV3::Incomplete { missing_nodes },
+                ..
+            }) => model_failures::missing_node_reasons(
+                missing_nodes
+                    .iter()
+                    .map(|missing| (missing.node.as_str(), missing.reason.as_str())),
+            ),
+            _ => Vec::new(),
+        },
         rounds,
         task_accounting: task_accounting.tasks,
         demands: ledger.demand_views(),
@@ -3061,6 +3077,9 @@ fn print_report_text(report: &ReviewReportView) {
         "Final verdict: {}",
         report.final_verdict.as_deref().unwrap_or("not recorded")
     );
+    for reason in &report.final_reasons {
+        println!("  reason: {reason}");
+    }
     if let Some(wall) = report.wall_ms {
         println!("Wall-clock: {}", human_duration(wall));
     }
@@ -3145,6 +3164,9 @@ fn print_report_markdown(report: &ReviewReportView) {
         "- Final verdict: {}",
         report.final_verdict.as_deref().unwrap_or("not recorded")
     );
+    for reason in &report.final_reasons {
+        println!("  - reason: {}", markdown_line(reason));
+    }
     if let Some(wall) = report.wall_ms {
         println!("- Wall-clock: {}", human_duration(wall));
     }

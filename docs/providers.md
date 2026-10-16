@@ -118,6 +118,15 @@ context, or be missing entirely — none of which says anything about whether th
 authenticated. An unanswered probe leaves `auth` and `usability` exactly where they were and exits
 7. `af provider doctor` remains the charged, explicit end-to-end check, and is never implicit.
 
+`af provider doctor` and Task Provider admission send the bound model one fixed line on stdin,
+from a fresh empty directory, with no file to read and no tool to use: `This is a Provider
+admission check by the af review tool: it only verifies that this account can run the bound
+model. No file needs to be read and no tool needs to be used. Reply with exactly: OK`. Only the
+reply `OK` passes. The line states its purpose because Claude Fable 5.1's safety classifier
+refused the bare `Reply with exactly: OK` every time it was sent from an empty directory; a
+refusal that happens anyway is still `model_refused`
+([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)).
+
 ## A Provider CLI that cannot start
 
 An update can leave the official CLI unable to start at all. One npm auto-update left `codex`
@@ -191,6 +200,7 @@ login, `af` runs a token-free **capability check** of the resolved executable
 | What | Value |
 |---|---|
 | af invokes | `claude -p --output-format json [--model M --effort E] --safe-mode --restricted --permission-mode dontAsk --strict-mcp-config --tools … --allowedTools … [--json-schema …]`, prompt on stdin |
+| Attempt environment | `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` and `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`, for every access mode, beside the auth grants. The third stops Claude Code's automatic model fallback: when the bound model's safety classifier flags a request, the client would otherwise re-run it on another model (Opus 5 or Opus 4.8 for Claude Fable 5.1) and keep the session there; with it a flagged request ends as a refusal on the bound model. `CLAUDE_CODE_NO_MODEL_FALLBACK` is not set, because it also disables the model substitution compaction may need. These are a bounded client mitigation: af still refuses any reply whose usage names a model the Worker did not bind ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)) |
 | Required options (`claude --help`) | `-p`/`--print`, `--output-format`, `--model`, `--effort`, `--safe-mode`, `--restricted`, `--permission-mode`, `--strict-mcp-config`, `--tools`, `--allowedTools`, `--json-schema` |
 | Required protocol | `claude auth status --json` answers the identity probe |
 | Checked | by `af provider status` and `af provider setup` for every context, and by Task Provider admission before any Worker or admission Attempt |
@@ -285,6 +295,10 @@ table keeps the Provider's own window labels.
 | exit 4, `incompatible` | The CLI starts but is too old for af's invocation. Run the upgrade printed on stderr, then rerun `af provider status`. |
 | exit 5, `registry_conflict` | The ID or the auth directory already belongs to another entry. Choose a different ID, or point `--auth-dir` at the context you meant. |
 | exit 6, `authentication_failed` | The Provider CLI answered, and not with a usable login. Repeat the login at a private terminal and confirm with `af provider status`. |
+| `model_refused` on the stderr of `af task run` or `af review run`, or in an Attempt diagnostic: `the safety classifier of MODEL (effort E) flagged the request and MODEL refused it` | The bound model's safety classifier flagged the Worker's input and Claude Code, with its automatic fallback turned off, ended the turn with a refusal (`safety_stops` above zero, `stop_reason` `refusal`, or `…'s safeguards flagged this message` in the result of an error result, whatever its `errors` holds). It is not a credential or spelling problem. af charged what the result reported and did not retry, because the same input is flagged again. Change the input or bind another model, then rerun ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)). |
+| `Claude Code switched models, a safety-classifier fallback (model_refused)` or `an unexplained switch (model_switched)` | Claude Code answered with a model the Worker did not bind; the line names the bound model, each model that answered with its output tokens (a model ID outside the printable grammar reads `[not printable]` with its byte length), and `safety_stops` and `num_turns`. The diagnostic in `af task show` starts with it even when the usage was also malformed or listed more than 32 models, and gives those accounting reasons after it; an entry for another model that reports no activity, or only malformed counters, is not a switch. af refused the reply, because it never runs or accepts an unrequested model, and charged what the result reported. af already sets `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`, so a client that still switches ignores it: upgrade it with `npm install -g @anthropic-ai/claude-code@latest` and rerun. If the classifier flags the input again, change it or bind another model. |
+| `model_unavailable` after `Claude Code rejected the model`, quoting the model ID | Claude Code answered "There's an issue with the selected model (…). It may not exist or you may not have access to it.": it does not know that model ID or the account cannot use it. Correct the binding's model ID (Claude IDs use hyphens, such as `claude-fable-5-1`), then check the Provider with `af provider status` (token-free) and `af provider doctor` (charged). |
+| `Model binding refused: its --model value (N bytes) is not a model spelling af accepts` | The binding's model (or `--effort`) is outside the one grammar af prints: an ASCII letter or digit, then at most 127 ASCII letters, digits, `-`, `.`, `_` or `:`, with no `/`, `@` or whitespace. `af task plan`, `af review run` and the Claude Task adapter refuse it before any process starts and never print the value, prefixed with the Worker or node and its Provider label; every Worker's binding is checked before the first Provider is probed, and this rule before `Task Model binding requires an explicit versioned model ID`. Put the model ID itself in the binding, such as `claude-fable-5-1` or `us.anthropic.claude-opus-5-5-v1:0` ([ADR-0147](adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)). |
 | exit 7 from `status --usage` | Optional usage probing did not answer. Authentication is unaffected; drop `--usage` if you only needed that. |
 | `auth directory … is writable by another user` | Tighten ownership and permissions on the directory (and its rename-controlling parents) before registering it. |
 | `provider registry … is invalid` after an auth directory was deleted | Run `af provider remove ID` for the entry that names it; name every stale entry in one command. |

@@ -23,6 +23,8 @@ const LOAD_SAFE_WALL: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[path = "task_runtime/control.rs"]
 mod control;
+#[path = "task_runtime/model_refused.rs"]
+mod model_refused;
 #[path = "task_runtime/output_admission.rs"]
 mod output_admission;
 #[path = "task_runtime/publication.rs"]
@@ -1342,7 +1344,7 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
             assert_eq!(access, review_runner::task::WorkerAccess::ReadOnly);
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             let (bytes, cost) = if n == 0 {
-                assert_eq!(input, b"Reply with exactly: OK\n");
+                assert_eq!(input, review_runner::task::provider::PROBE_INPUT);
                 (
                     if self.pass {
                         b"OK".to_vec()

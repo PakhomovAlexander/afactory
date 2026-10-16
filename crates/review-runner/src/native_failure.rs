@@ -18,6 +18,11 @@ pub enum NativeFailureKind {
     /// The installed CLI refused af's own arguments (`unknown option`, `unexpected argument`, a
     /// usage block): it is older than, or otherwise different from, what af invokes.
     UnsupportedInvocation,
+    /// The bound model's safety classifier flagged the request and the model refused it: the
+    /// result reports `safety_stops` above zero or `stop_reason` `refusal`, or the client's
+    /// error says its safeguards flagged the message. The same input is flagged again, so the
+    /// Attempt is never retried automatically.
+    ModelRefused,
     Unknown,
 }
 
@@ -52,8 +57,36 @@ impl NativeFailureKind {
             Self::UnsupportedInvocation => {
                 "the installed Provider CLI does not accept af's invocation (unsupported_invocation)"
             }
+            Self::ModelRefused => {
+                "the bound model's safety classifier flagged the request (model_refused)"
+            }
             Self::Unknown => "Provider returned an unclassified failure (unknown)",
         }
+    }
+
+    /// The classification as an Attempt diagnostic spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthMissing => "auth_missing",
+            Self::AuthRevoked => "auth_revoked",
+            Self::AuthExpired => "auth_expired",
+            Self::AuthRefreshContended => "auth_refresh_contended",
+            Self::AuthRefreshFailed => "auth_refresh_failed",
+            Self::AuthRejected => "auth_rejected",
+            Self::Quota => "quota",
+            Self::Capacity => "capacity",
+            Self::ModelUnavailable => "model_unavailable",
+            Self::Network => "network",
+            Self::UnsupportedInvocation => "unsupported_invocation",
+            Self::ModelRefused => "model_refused",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Whether the Provider refused this exact input, so that the same input sent again is
+    /// refused again: such an Attempt is not retried automatically (ADR-0147).
+    pub fn refuses_input(self) -> bool {
+        self == Self::ModelRefused
     }
 
     /// Why an Attempt that ended with this failure and no usage report has unknown usage
@@ -72,8 +105,10 @@ impl NativeFailureKind {
             Self::ModelUnavailable => Cause::ModelUnavailable,
             Self::Network => Cause::Network,
             // The CLI refused its arguments before any model call: nothing better than an
-            // absent report is known about usage.
-            Self::UnsupportedInvocation | Self::Unknown => Cause::Unreported,
+            // absent report is known about usage. A classifier refusal normally reports its
+            // usage and is charged it; when it does not, nothing better is known either
+            // (ADR-0147).
+            Self::UnsupportedInvocation | Self::ModelRefused | Self::Unknown => Cause::Unreported,
         }
     }
 
@@ -158,6 +193,15 @@ fn auth_material(bytes: &[u8]) -> bool {
     .any(|marker| text.contains(marker))
 }
 
+/// Claude Code's own words, lower-cased, when the bound model's safety classifier flagged a
+/// request and no fallback model answered (ADR-0147).
+pub const SAFEGUARDS_FLAGGED: &str = "safeguards flagged this message";
+
+/// Whether `message` carries Claude Code's safeguards text, in any letter case.
+pub fn says_safeguards_flagged(message: &str) -> bool {
+    message.to_ascii_lowercase().contains(SAFEGUARDS_FLAGGED)
+}
+
 /// Recognize bounded native failure descriptions, not arbitrary successful model text. A
 /// caller must establish failure from the protocol or process status before using this hint.
 /// Network, quota and model errors cannot become refresh failures merely because a client
@@ -224,6 +268,12 @@ pub fn classify_native_failure(message: &str) -> NativeFailureKind {
     {
         return AuthMissing;
     }
+    // Claude Code's own words when the bound model's safety classifier flagged a request and no
+    // fallback model answered: "<Model>'s safeguards flagged this message (…/aup). This
+    // sometimes happens with safe, normal conversations."
+    if contains(&[SAFEGUARDS_FLAGGED]) {
+        return ModelRefused;
+    }
     if contains(&[
         "rate_limit",
         "rate limit",
@@ -255,6 +305,11 @@ pub fn classify_native_failure(message: &str) -> NativeFailureKind {
         "unsupported model",
         "unknown model",
         "model access denied",
+        // Claude Code, for a model ID it does not know or the account cannot use: "There's an
+        // issue with the selected model (claude-fable-5.1). It may not exist or you may not
+        // have access to it. Run --model to pick a different model."
+        "issue with the selected model",
+        "may not exist or you may not have access",
     ]) {
         return ModelUnavailable;
     }
@@ -334,6 +389,14 @@ mod tests {
                 Capacity,
             ),
             ("API Error: 529 overloaded_error", Capacity),
+            (
+                "There's an issue with the selected model (claude-fable-5.1). It may not exist or you may not have access to it. Run --model to pick a different model.",
+                ModelUnavailable,
+            ),
+            (
+                "Claude Fable 5.1's safeguards flagged this message (https://www.anthropic.com/legal/aup). This sometimes happens with safe, normal conversations.",
+                ModelRefused,
+            ),
             ("HTTP 403 forbidden", Unknown),
             ("Worker failed with status 1", Unknown),
         ] {

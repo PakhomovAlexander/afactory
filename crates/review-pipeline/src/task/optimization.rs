@@ -715,6 +715,7 @@ impl TaskOperatorHost for OptimizationTaskDomain {
             usage_id: None,
             feedback_id: None,
             unknown_usage_cause: None,
+            refused_input: false,
         };
         if let Err(error) = super::control::check(cancellation) {
             return super::control::refused(error);
@@ -2453,6 +2454,7 @@ impl TaskOperatorHost for OptimizationCandidateTaskDomain {
             usage_id: None,
             feedback_id: None,
             unknown_usage_cause: None,
+            refused_input: false,
         };
         if let Err(error) = super::control::check(cancellation) {
             return super::control::refused(error);

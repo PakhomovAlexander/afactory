@@ -372,6 +372,34 @@ fn failed_provider_task_with(
 ) -> (Fixture, Value) {
     let f = Fixture::new(true, 5712, 49152);
     if let Some(model) = model(&f.home) {
+        bind_author_model(&f, &model);
+    }
+    // The fixture's native Codex answers the capability probe and then fails the author's call.
+    let codex = f._root.path().join("bin/codex");
+    let native = std::fs::read_to_string(&codex).unwrap();
+    let author = " kind='author'; r=json.loads(request)\n";
+    assert_eq!(native.matches(author).count(), 1);
+    std::fs::write(&codex, native.replace(author, failure)).unwrap();
+    let planned = f.cli(&["task", "plan", "--file", "document.json"]);
+    assert!(
+        planned.status.success(),
+        "{}",
+        String::from_utf8_lossy(&planned.stderr)
+    );
+    let ran = f.cli(&["task", "run", "--execute", "release-notes"]);
+    let done: Value = serde_json::from_slice(&ran.stdout).unwrap_or_else(|_| {
+        panic!(
+            "{}\n{}",
+            String::from_utf8_lossy(&ran.stdout),
+            String::from_utf8_lossy(&ran.stderr)
+        )
+    });
+    (f, done)
+}
+
+/// Bind the fixture's author Worker to `model` and commit it.
+fn bind_author_model(f: &Fixture, model: &str) {
+    {
         let catalog_path = f.repo.join(".af/task-catalog.toml");
         let mut catalog: toml::Value =
             toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
@@ -395,27 +423,6 @@ fn failed_provider_task_with(
         std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
         task_document::commit(&f.repo);
     }
-    // The fixture's native Codex answers the capability probe and then fails the author's call.
-    let codex = f._root.path().join("bin/codex");
-    let native = std::fs::read_to_string(&codex).unwrap();
-    let author = " kind='author'; r=json.loads(request)\n";
-    assert_eq!(native.matches(author).count(), 1);
-    std::fs::write(&codex, native.replace(author, failure)).unwrap();
-    let planned = f.cli(&["task", "plan", "--file", "document.json"]);
-    assert!(
-        planned.status.success(),
-        "{}",
-        String::from_utf8_lossy(&planned.stderr)
-    );
-    let ran = f.cli(&["task", "run", "--execute", "release-notes"]);
-    let done: Value = serde_json::from_slice(&ran.stdout).unwrap_or_else(|_| {
-        panic!(
-            "{}\n{}",
-            String::from_utf8_lossy(&ran.stdout),
-            String::from_utf8_lossy(&ran.stderr)
-        )
-    });
-    (f, done)
 }
 
 /// `af task report` over the fixture's document Task: the `--json` document, validated against
@@ -804,15 +811,15 @@ fn a_collected_task_keeps_its_unknown_usage_count() {
     );
 }
 
-/// A model value that is a path, a URL or an account is recorded in the plan as the Worker's
-/// model, and the author's Attempt under it fails at the Provider. The report names that
-/// Worker's model `unknown` in both forms and carries the value in neither: a path into the
-/// machine's home and auth directory, a `file://` URL, a drive-letter path and an email address
-/// before a model name, each versioned as the kernel requires of a model ID it binds. The URL
-/// and the drive-letter path passed the denylist this rule replaced; the email address passed
-/// the rule while it allowed `@`.
+/// A model value that is a path, a URL or an account never reaches a plan, a Task or a report:
+/// `af task plan` refuses the binding before any process starts, naming only the rule and the
+/// value's byte length (ADR-0147), and neither stream carries the value. Each is a path into the
+/// machine's home and auth directory, a `file://` URL, a drive-letter path or an email address
+/// before a model name, versioned as the kernel requires of a model ID it binds. The report's own
+/// rule, which names any recorded value outside it `unknown`, keeps its table in
+/// `review_core::task::task_report`.
 #[test]
-fn a_path_valued_model_is_reported_as_unknown_even_on_a_failed_attempt() {
+fn a_path_valued_model_is_refused_at_planning_and_never_printed() {
     type Spell = fn(&Path) -> String;
     let cases: [(Spell, &[&str]); 4] = [
         (
@@ -830,52 +837,33 @@ fn a_path_valued_model_is_reported_as_unknown_even_on_a_failed_attempt() {
         ),
     ];
     for (spell, parts) in cases {
-        let (f, _) = failed_provider_task(|home| Some(spell(home)));
+        let f = Fixture::new(true, 5712, 49152);
         let model = spell(&f.home);
         assert!(!is_model_identity(&model), "{model}");
         let relative = model.trim_start_matches('/').to_owned();
-        // The plan really binds the value: the report is what keeps it out.
-        let cas = Cas::open_existing(f.state.join("cas")).unwrap();
-        let store = EventStore::open_read_only(f.state.join("events.sqlite")).unwrap();
-        let projection = store
-            .task_projection(&cas, "release-notes")
-            .unwrap()
-            .unwrap();
-        let plan = cas
-            .get_json(projection.plan_id.as_deref().unwrap())
-            .unwrap();
-        assert!(plan.to_string().contains(&model), "{plan}");
-        drop(store);
-
-        let value: Value = serde_json::from_str(&fixture_report(&f, true)).unwrap();
-        let task = &value["tasks"][0];
-        assert_eq!(
-            task["attempts"]["failures"][0]["class"], "provider_failure",
-            "{task:#}"
+        bind_author_model(&f, &model);
+        let planned = f.cli(&["task", "plan", "--file", "document.json"]);
+        let stdout = String::from_utf8_lossy(&planned.stdout);
+        let stderr = String::from_utf8_lossy(&planned.stderr);
+        assert!(!planned.status.success(), "{model}: {stdout}");
+        assert!(
+            stderr.contains(&format!(
+                "Model binding refused: its --model value ({} bytes) is not a model spelling af \
+                 accepts",
+                model.len()
+            )),
+            "{stderr}"
         );
-        let author = task["nodes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|node| node["node"] == "root.nodes.author")
-            .unwrap();
-        assert_eq!(author["failed_attempts"], 1, "{author:#}");
-        assert_eq!(
-            author["worker"],
-            serde_json::json!({"kind":"model","provider_kind":"codex","model":"unknown","effort":"high"})
-        );
-        let markdown = fixture_report(&f, false);
-        assert!(markdown.contains("| codex unknown/high |"), "{markdown}");
-        assert_block_is_checked(&markdown);
-        let mut forbidden = vec![
-            model.as_str(),
-            relative.as_str(),
-            "codex-personal",
-            f.home.to_str().unwrap(),
-            f.state.to_str().unwrap(),
-        ];
+        let mut forbidden = vec![model.as_str(), relative.as_str(), f.home.to_str().unwrap()];
         forbidden.extend_from_slice(parts);
-        assert_private(&[&markdown, &value.to_string()], &forbidden);
+        assert_private(&[&stdout, &stderr], &forbidden);
+        // No Task was planned under it.
+        let shown = f.cli(&["task", "show", "release-notes"]);
+        assert!(
+            !shown.status.success(),
+            "{}",
+            String::from_utf8_lossy(&shown.stdout)
+        );
     }
 }
 
@@ -1124,7 +1112,7 @@ if sys.argv[1:2]==['app-server']:
   if request.get('id')==2: print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':'fixture@example.invalid'}}}),flush=True)
  sys.exit(0)
 request=sys.stdin.read()
-if request!='Reply with exactly: OK\n':
+if request!=PROBE_INPUT:
  ready=open(home+'/ready-path').read()
  open(ready+'.tmp','w').write('%d %d' % (os.getpid(), os.getpgrp()))
  os.rename(ready+'.tmp',ready)
@@ -1163,7 +1151,7 @@ fn a_refresh_that_binds_a_node_to_another_worker_charges_each_attempt_to_its_own
     std::fs::write(home.join("ready-path"), ready.to_str().unwrap()).unwrap();
     std::fs::write(
         bin.join("codex"),
-        crate::provider_cli::with_help("codex", HOLDING_CODEX),
+        crate::provider_cli::with_help("codex", &crate::provider_cli::with_probe(HOLDING_CODEX)),
     )
     .unwrap();
     std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).unwrap();

@@ -1,5 +1,6 @@
 //! Reconcile overlapping native summaries; never add top-level usage to its model breakdown
 //! (ADR-0102, ADR-0125).
+use crate::hint::{BoundModel, ModelOutcome, OtherModel, compose};
 use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
 use review_runner::task::usage::NativeCounter;
 use serde_json::Value;
@@ -7,11 +8,29 @@ use std::collections::BTreeMap;
 
 const MAX_MODELS: usize = 32;
 const MAX_MODEL_ID_BYTES: usize = 256;
+/// The four counters of one `modelUsage` entry, in [`Counters::parse`] order.
+const MODEL_COUNTERS: [&str; 4] = [
+    "inputTokens",
+    "outputTokens",
+    "cacheCreationInputTokens",
+    "cacheReadInputTokens",
+];
 
 pub(super) struct Accounting {
     pub usage: Option<TaskTokenUsageV3>,
     pub observation: Option<TaskUsageObservationV1>,
-    pub error: Option<&'static str>,
+    pub error: Option<String>,
+    /// The error starts with the model-switch refusal, worded by [`crate::hint::compose`]
+    /// (ADR-0147).
+    pub switched: bool,
+}
+
+/// Record why the reply is refused, once per reason, in the order found. Without a model switch
+/// the first reason is the one reported; a switch outranks them all and they follow its hint.
+fn refuse(reasons: &mut Vec<&'static str>, reason: &'static str) {
+    if !reasons.contains(&reason) {
+        reasons.push(reason);
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -41,6 +60,13 @@ impl Counters {
             malformed: !complete || read == NativeCounter::Invalid,
             charge_floor: 0,
         }
+    }
+
+    /// At least one counter is above zero.
+    fn active(self) -> bool {
+        [self.input, self.output, self.write, self.read]
+            .iter()
+            .any(|counter| counter.is_some_and(|n| n > 0))
     }
 
     fn same_bill(self, other: Self) -> bool {
@@ -105,7 +131,43 @@ fn valid_id(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-._:/".contains(&b))
 }
 
-pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
+/// Whether the entry `key` is well formed and names the bound model `selected`: the bound ID
+/// itself, or an alias whose `canonicalModel` is it. Returns (well formed, bound).
+fn identity(key: &str, model: &Value, selected: &str) -> (bool, bool) {
+    let canonical = model.get("canonicalModel");
+    let canonical_id = canonical.and_then(Value::as_str);
+    let valid = valid_id(key)
+        && canonical.is_none_or(|_| canonical_id.is_some_and(valid_id))
+        && !(key == selected && canonical_id.is_some_and(|id| id != selected));
+    let bound = valid
+        && if key == selected {
+            canonical_id.is_none_or(|id| id == selected)
+        } else {
+            canonical_id == Some(selected)
+        };
+    (valid, bound)
+}
+
+/// FOREIGN ACTIVITY (ADR-0147): an entry whose key is a well-formed ID that is neither the bound
+/// model nor an alias whose `canonicalModel` is the bound model, whose four counters parse
+/// completely and at least one of which is above zero. A malformed or all-zero foreign entry is
+/// never one; a key outside grammar G is named `[not printable]` by the hint.
+fn foreign_activity(key: &str, model: &Value, selected: &str) -> Option<OtherModel> {
+    if !valid_id(key)
+        || key == selected
+        || model.get("canonicalModel").and_then(Value::as_str) == Some(selected)
+    {
+        return None;
+    }
+    let counters = Counters::parse(model, MODEL_COUNTERS);
+    (!counters.malformed && counters.active()).then(|| OtherModel {
+        model: key.into(),
+        output_tokens: model.get("outputTokens").and_then(Value::as_u64),
+    })
+}
+
+/// Account for one result, `selected` being the bound `--model` and `effort` its `--effort`.
+pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str>) -> Accounting {
     let (top_usage, top_observation) = super::parse_usage(value);
     let Some(map) = value.and_then(|v| v.get("modelUsage")) else {
         // Preserve the top-level-only native contract, including its malformed-usage observation.
@@ -113,12 +175,25 @@ pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
             usage: top_usage,
             observation: top_observation,
             error: None,
+            switched: false,
         };
     };
-    let mut error = None;
-    let mut refuse = |reason| {
-        error.get_or_insert(reason);
-    };
+    let mut reasons = Vec::new();
+    // The switch decision reads every entry of the map, however many: the charge below reads at
+    // most 32 (ADR-0102), but a foreign activity anywhere is a switch, and the switch refusal
+    // then leads, whatever else was found. It names the bound model's own output and every
+    // foreign activity, with its output, in map order.
+    let mut bound_output_tokens = None;
+    let mut others = Vec::new();
+    if let Some(entries) = map.as_object() {
+        for (key, model) in entries {
+            if bound_output_tokens.is_none() && identity(key, model, selected).1 {
+                bound_output_tokens = model.get("outputTokens").and_then(Value::as_u64);
+            }
+            others.extend(foreign_activity(key, model, selected));
+        }
+    }
+    let switched = !others.is_empty();
     let top = value
         .and_then(|v| v.get("usage"))
         .map(|v| {
@@ -135,74 +210,68 @@ pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
         .unwrap_or_default();
     let mut complete = top.complete;
     if top.malformed {
-        refuse("Claude top-level usage is malformed");
+        refuse(&mut reasons, "Claude top-level usage is malformed");
     }
     let mut groups = BTreeMap::<&str, Counters>::new();
     let mut scopes = Vec::new();
     if let Some(entries) = map.as_object() {
         if entries.is_empty() || entries.len() > MAX_MODELS {
             complete = false;
-            refuse("Claude model usage exceeds its finite nonempty model bound");
+            refuse(
+                &mut reasons,
+                "Claude model usage exceeds its finite nonempty model bound",
+            );
         }
         for (key, model) in entries.iter().take(MAX_MODELS) {
-            let counters = Counters::parse(
-                model,
-                [
-                    "inputTokens",
-                    "outputTokens",
-                    "cacheCreationInputTokens",
-                    "cacheReadInputTokens",
-                ],
-            );
+            let counters = Counters::parse(model, MODEL_COUNTERS);
             complete &= counters.complete;
             if counters.malformed {
-                refuse("Claude per-model usage is malformed");
+                refuse(&mut reasons, "Claude per-model usage is malformed");
             }
-            let canonical = model.get("canonicalModel");
-            let canonical_id = canonical.and_then(Value::as_str);
-            let identity_valid = valid_id(key)
-                && canonical.is_none_or(|_| canonical_id.is_some_and(valid_id))
-                && !(key == selected && canonical_id.is_some_and(|id| id != selected));
+            let (identity_valid, matches) = identity(key, model, selected);
             if !identity_valid {
                 complete = false;
-                refuse("Claude model usage identity is malformed");
+                refuse(&mut reasons, "Claude model usage identity is malformed");
             }
-            let matches = identity_valid
-                && if key == selected {
-                    canonical_id.is_none_or(|id| id == selected)
-                } else {
-                    canonical_id == Some(selected)
-                };
             if matches {
                 scopes.push(counters);
             }
-            let explicitly_unused = [
-                "inputTokens",
-                "outputTokens",
-                "cacheCreationInputTokens",
-                "cacheReadInputTokens",
-            ]
-            .iter()
-            .all(|key| model.get(key).and_then(Value::as_u64) == Some(0));
-            if !(matches || identity_valid && explicitly_unused) {
-                // Detection follows the native invocation. Retain its charge even on refusal;
-                // this check cannot prevent an internal client request from having occurred.
-                refuse("Claude model usage reports an unexpected model identity");
+            let explicitly_unused = MODEL_COUNTERS
+                .iter()
+                .all(|key| model.get(key).and_then(Value::as_u64) == Some(0));
+            // A foreign activity was found above, and its charge is retained even on refusal:
+            // this check cannot prevent an internal client request from having occurred. A
+            // well-formed foreign entry with complete counters, none above zero, that leaves one
+            // out is neither a switch nor explicitly unused, and is still refused.
+            if identity_valid
+                && !matches
+                && !counters.malformed
+                && !counters.active()
+                && !explicitly_unused
+            {
+                refuse(
+                    &mut reasons,
+                    "Claude model usage leaves another model's activity unreported",
+                );
             }
+            let canonical_id = model.get("canonicalModel").and_then(Value::as_str);
             let group = canonical_id.filter(|id| valid_id(id)).unwrap_or(key);
             if let Some(prior) = groups.get_mut(group) {
                 // Aliased entries may overlap. Keep the larger observed total with unavailable
                 // dimensions, rather than summing duplicate identities as independent spend.
                 *prior = prior.lower_bound(counters);
                 complete = false;
-                refuse("Claude model usage contains ambiguous duplicate identities");
+                refuse(
+                    &mut reasons,
+                    "Claude model usage contains ambiguous duplicate identities",
+                );
             } else {
                 groups.insert(group, counters);
             }
         }
     } else {
         complete = false;
-        refuse("Claude model usage is not an object");
+        refuse(&mut reasons, "Claude model usage is not an object");
     }
     let mut sum = Counters {
         complete: true,
@@ -233,12 +302,18 @@ pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
     let covered = matching_scope.is_none() && top.within(sum);
     if matching_scope.is_none() && !covered {
         complete = false;
-        refuse("Claude top-level and per-model usage cannot be reconciled");
+        refuse(
+            &mut reasons,
+            "Claude top-level and per-model usage cannot be reconciled",
+        );
     }
     if matching_scope.is_some_and(|scope| top.read_conflicts(scope))
         || covered && top.read_exceeds(sum)
     {
-        refuse("Claude top-level and per-model cache-read metadata disagree");
+        refuse(
+            &mut reasons,
+            "Claude top-level and per-model cache-read metadata disagree",
+        );
     }
     let model_usage = sum.usage();
     let charge =
@@ -250,16 +325,41 @@ pub(super) fn account(value: Option<&Value>, selected: &str) -> Accounting {
     };
     // Partial maps and conflicting summaries overlap: use the larger valid charge floor,
     // never top-level + map. Store retains the original reservation when reporting is incomplete.
-    let observation = (!complete || error.is_some() || top_observation.is_some()).then(|| {
-        TaskUsageObservationV1 {
+    let refused = switched || !reasons.is_empty();
+    let observation =
+        (!complete || refused || top_observation.is_some()).then(|| TaskUsageObservationV1 {
             reported_usage: usage.clone(),
             charge_complete: complete,
+        });
+    let count = |key| value.and_then(|v| v.get(key)).and_then(Value::as_u64);
+    let error = if switched {
+        // The switch refusal outranks every other reason; each one found follows it, so no
+        // accounting fact is lost and the diagnostic still starts with the hint.
+        let mut error = compose(
+            BoundModel {
+                model: selected,
+                effort,
+            },
+            &ModelOutcome::Switched {
+                bound_output_tokens,
+                others: &others,
+                safety_stops: count("safety_stops"),
+                num_turns: count("num_turns"),
+            },
+        );
+        for reason in &reasons {
+            error.push_str("; ");
+            error.push_str(reason);
         }
-    });
+        Some(error)
+    } else {
+        reasons.first().map(|reason| (*reason).to_owned())
+    };
     Accounting {
         usage,
         observation,
         error,
+        switched,
     }
 }
 

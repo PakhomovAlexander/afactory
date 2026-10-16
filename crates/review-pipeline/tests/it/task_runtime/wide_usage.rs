@@ -66,7 +66,7 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
             assert_eq!(access, review_runner::task::WorkerAccess::ReadOnly);
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             let (bytes, cost) = if n == 0 {
-                assert_eq!(input, b"Reply with exactly: OK\n");
+                assert_eq!(input, review_runner::task::provider::PROBE_INPUT);
                 (b"OK".to_vec(), 7)
             } else {
                 assert_eq!(self.overrun_at, 1, "an overrun reached another Worker");

@@ -34,7 +34,7 @@ impl WorkerModelAdapter for Model {
             "no retries beyond the original Provider or Worker allowance"
         );
         if call == 0 {
-            assert_eq!(input, b"Reply with exactly: OK\n");
+            assert_eq!(input, review_runner::task::provider::PROBE_INPUT);
         }
         let usage =
             TaskTokenUsageV3::charge_only(if call >= self.fail_at { self.floor } else { 7 });

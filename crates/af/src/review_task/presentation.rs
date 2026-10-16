@@ -403,6 +403,14 @@ fn human(options: &crate::Options, value: &Value, verdict: &RunVerdict) {
         crate::run_progress(options, format_args!("{line}"));
     }
     crate::run_progress(options, format_args!("verdict  {verdict:?}"));
+    // An incomplete verdict is followed by why, when a model the bound one did not answer for
+    // is the reason (ADR-0147).
+    if let RunVerdict::Incomplete { missing } = verdict {
+        let missing = missing.iter().map(|(n, r)| (n.as_str(), r.as_str()));
+        for reason in crate::model_failures::missing_node_reasons(missing) {
+            crate::run_progress(options, format_args!("reason   {reason}"));
+        }
+    }
 }
 
 fn light_guidance(value: &Value) -> Option<&'static str> {

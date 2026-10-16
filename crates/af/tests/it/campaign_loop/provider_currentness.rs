@@ -10,7 +10,7 @@ fn account_fixture(directory: &Path, change_during_identity: bool) -> (PathBuf, 
     if change_during_identity {
         std::fs::write(auth.join("change-during-identity"), b"fixture").unwrap();
     }
-    std::fs::write(home.join("codex"), crate::provider_cli::with_help("codex", r#"#!/usr/bin/python3
+    std::fs::write(home.join("codex"), crate::provider_cli::with_help("codex", &crate::provider_cli::with_probe(r#"#!/usr/bin/python3
 import os,sys,json
 home=os.environ['CODEX_HOME']
 if sys.argv[1:2]==['app-server']:
@@ -24,12 +24,12 @@ if sys.argv[1:2]==['app-server']:
    print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':email}}}),flush=True)
  sys.exit(0)
 request=sys.stdin.read()
-with open(home+'/calls','a') as f: f.write(open(home+'/email').read()+' '+('probe' if request=='Reply with exactly: OK\n' else 'worker')+'\n')
-assert request=='Reply with exactly: OK\n', 'private Reviewer context must not reach this changed account'
+with open(home+'/calls','a') as f: f.write(open(home+'/email').read()+' '+('probe' if request==PROBE_INPUT else 'worker')+'\n')
+assert request==PROBE_INPUT, 'private Reviewer context must not reach this changed account'
 with open(sys.argv[sys.argv.index('-o')+1],'w') as f: f.write('OK')
 with open(home+'/email','w') as f: f.write('private-other@example.test')
 print(json.dumps({'type':'turn.completed','usage':{'input_tokens':1,'output_tokens':1}}))
-"#)).unwrap();
+"#))).unwrap();
     (repo, home, state)
 }
 

@@ -54,7 +54,7 @@ impl WorkerModelAdapter for OutageModel {
             "CAS failure reached another model invocation"
         );
         if call == 0 {
-            assert_eq!(input, b"Reply with exactly: OK\n");
+            assert_eq!(input, review_runner::task::provider::PROBE_INPUT);
         }
         if call == self.fail_at {
             // Replace only this fixture's object directory. Unlike permission bits, a file
