@@ -31,6 +31,37 @@ over every Model Worker, in Worker-name order, or every captured reviewer, in no
 first pass before any Provider is probed, and a refusal names the Worker or node, the Provider
 label and the rule; only then is each Provider label probed, once.
 
+Every model and effort level is validated before anything is charged, by one validation
+authority shared by `af provider models`, the binders, both adapters and the TUI
+([ADR-0148](../adr/0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)).
+Its static rules need no catalog and run in the first pass above, after G: an alias Claude Code
+documents (`fable`, `opus`, `sonnet`, `haiku`) is refused with the exact ID it resolves to today
+(`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`), because af
+binds exact IDs and never an alias; a case or separator variant of a known exact ID
+(`claude-fable-5.1`) is refused with that ID; the versioned-ID rule follows; and the effort
+level must be one the Provider kind accepts, Claude `low medium high xhigh max` and Codex `low
+medium high xhigh max ultra`. At plan time, `af task plan` and `af review plan` then read each
+bound Provider's catalog token-free, once per Provider, and apply its rules: an alias the
+catalog lists is refused with the exact ID it resolves to, a near miss of a listed ID with the
+nearest IDs, and an effort level the model does not list with the levels it lists, so Claude
+Code never silently runs a lower level. A custom or deployment ID that passes the static rules
+and that the catalog does not list is accepted as `unverified against the catalog`, as is every
+binding when the harness cannot answer; the receipts keep recording what actually ran, and only
+the charged `af provider doctor` proves the account can run it. af never substitutes a model or
+an effort level. Each plan prints one line per Model Worker:
+
+```text
+model fixture/bugs claude-fable-5-1 xhigh  ok
+model fixture/correctness claude-opus-4-8 high  unverified against the catalog
+model fixture/review fable xhigh  refused: af refused the binding of model fable (effort xhigh) for Provider claude-personal (claude) (model_not_accepted): …
+```
+
+Every refusal, at plan time or from an adapter, names the Provider ID and kind, the rejected
+spelling, the rule or catalog fact, the nearest accepted spellings and `af provider models
+<id>`, through the one hint function. A reviewer package that sets an effort level and leaves the
+model to the harness has its effort level checked by the same rules, and its refusal names the
+harness's default model. Runs apply the static rules only and read no catalog.
+
 Planning performs no model inference. The compiler adds a visible internal capability node
 for each distinct effective Model binding and invocation policy. Slots with the same capability
 share that node. A catalog that declares no explicit cost reserves **4,096 tokens, one Attempt
@@ -172,7 +203,8 @@ set, because it also disables the model substitution compaction may need. Three 
   `[not printable]` with its byte length.
 - **`model_unavailable`.** Claude Code answered that there is an issue with the selected model:
   it does not know the model ID or the account cannot use it. The diagnostic quotes the spelling
-  it rejected and names `af provider status` (token-free) and `af provider doctor` (charged).
+  it rejected, names the Provider, the nearest exact IDs af knows and `af provider models <id>`,
+  and names `af provider status` (token-free) and `af provider doctor` (charged).
 
 For each such failed admission or Worker Attempt, `af task run` and `af review run` print one
 stderr line naming the node, the Provider ID and kind, the bound model and effort, the

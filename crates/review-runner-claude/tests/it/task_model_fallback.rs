@@ -191,22 +191,28 @@ fn a_safety_stop_on_the_bound_model_alone_is_never_a_success() {
     assert_eq!(returned.native_failure, None);
 }
 
-/// (d) A misspelled model: Claude Code exits 1 with its own "issue with the selected model" text,
-/// zero usage and no `modelUsage`. Classified `model_unavailable`, quoting the rejected spelling.
+/// (d) A model Claude Code does not know: it exits 1 with its own "issue with the selected model"
+/// text, zero usage and no `modelUsage`. Classified `model_unavailable`, quoting the rejected
+/// spelling and naming `af provider models` beside both Provider checks. A spelling af's static
+/// rules already refuse never gets this far (ADR-0148).
 #[test]
-fn a_misspelled_model_is_model_unavailable_and_names_both_provider_checks() {
+fn a_model_claude_code_does_not_know_is_model_unavailable_and_names_the_provider_checks() {
     let result = json!({"type":"result","subtype":"success","is_error":true,
-        "result":"There's an issue with the selected model (claude-fable-5.1). It may not exist or you may not have access to it. Run --model to pick a different model.",
+        "result":"There's an issue with the selected model (claude-opus-4-9). It may not exist or you may not have access to it. Run --model to pick a different model.",
         "usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}});
-    let returned = attempt("claude-fable-5.1", &result, 1);
+    let returned = attempt("claude-opus-4-9", &result, 1);
     let error = returned.message.unwrap_err();
     let found = hint::find(&error).unwrap();
     assert!(
-        found.starts_with("Claude Code rejected the model `claude-fable-5.1` (model_unavailable)"),
+        found.starts_with("Claude Code rejected the model `claude-opus-4-9` (model_unavailable)"),
         "{found}"
     );
     assert!(
         found.contains("does not know this model ID or the account cannot use it"),
+        "{found}"
+    );
+    assert!(
+        found.contains("`af provider models` (token-free)"),
         "{found}"
     );
     assert!(
@@ -219,6 +225,53 @@ fn a_misspelled_model_is_model_unavailable_and_names_both_provider_checks() {
         Some(NativeFailureKind::ModelUnavailable)
     );
     assert_eq!(returned.usage.unwrap().chargeable_tokens.get(), 0);
+}
+
+/// (d') The recorded misspelling `claude-fable-5.1`, an alias and an effort level Claude Code does
+/// not document are refused by the package parser before any process starts, naming the exact
+/// ID or the levels and `af provider models` (ADR-0148).
+#[test]
+fn an_alias_a_misspelling_and_an_unknown_effort_never_start_a_process() {
+    let temp = tempfile::tempdir().unwrap();
+    let program = temp.path().join("claude");
+    let ran = temp.path().join("ran");
+    std::fs::write(
+        &program,
+        format!("#!/bin/sh\ntouch '{}'\nexit 0\n", ran.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for (model, effort, named) in [
+        (
+            "claude-fable-5.1",
+            "xhigh",
+            "nearest accepted spellings: claude-fable-5-1",
+        ),
+        (
+            "fable",
+            "xhigh",
+            "resolves to the exact ID claude-fable-5-1",
+        ),
+        (
+            "claude-fable-5-1",
+            "ultra",
+            "is not one Claude Code accepts: low, medium, high, xhigh, max",
+        ),
+    ] {
+        let refused = ClaudeTaskAdapter::new(&Command::new(
+            program.to_str().unwrap(),
+            ["--model", model, "--effort", effort]
+                .into_iter()
+                .map(Arg::literal)
+                .collect(),
+        ))
+        .err()
+        .unwrap();
+        assert!(refused.contains(named), "{refused}");
+        assert!(refused.contains("(model_not_accepted)"), "{refused}");
+        assert!(refused.contains("`af provider models`"), "{refused}");
+    }
+    assert!(!ran.exists(), "a refused binding started a process");
 }
 
 /// (e) Every Attempt's environment carries the new guard beside the two existing ones, for every

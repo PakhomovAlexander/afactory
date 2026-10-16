@@ -2,7 +2,11 @@
 //! (ADR-0147): its safety classifier flagged the request and it refused (`model_refused`),
 //! Claude Code switched to a model the Worker did not bind (`model_refused` after a
 //! safety-classifier fallback, `model_switched` otherwise), or Claude Code does not know the
-//! model (`model_unavailable`).
+//! model (`model_unavailable`); and for a binding af itself refuses, at plan time or before any
+//! process starts, because a rule of [`crate::models`] refuses its model or effort level
+//! (`model_not_accepted`, ADR-0148). A refusal about a spelling names the Provider ID and kind
+//! when af knows them, the rejected spelling, the rule or catalog fact, the nearest accepted
+//! spellings and `af provider models <id>`.
 //!
 //! [`compose`] writes the hint, and the Attempt diagnostic starts with it after `Claude Worker
 //! failed: `. `af task run` and `af review run` find it there again with [`find`] and print it on
@@ -12,12 +16,16 @@
 //! Every model ID, effort and name is printed only in grammar G ([`printable`]); anything else
 //! is `[not printable]` with its byte length, and a binding outside G never starts a process.
 
+pub use crate::models::ProviderRef;
+
 /// The model the Worker bound, exactly as the adapter passed it to Claude Code.
 #[derive(Clone, Copy, Debug)]
 pub struct BoundModel<'a> {
     pub model: &'a str,
     /// `--effort`, when the binding carries one.
     pub effort: Option<&'a str>,
+    /// The Provider the binding runs on, when the caller knows it.
+    pub provider: Option<ProviderRef<'a>>,
 }
 
 /// One model other than the bound one that Claude Code reported activity for.
@@ -48,14 +56,21 @@ pub enum ModelOutcome<'a> {
     },
     /// Claude Code does not know the model ID, or the account cannot use it.
     Unavailable,
+    /// af refused the binding before any process started: `fact` is the rule or catalog fact
+    /// it failed, in af's words, and `nearest` the nearest spellings the Provider accepts.
+    NotAccepted {
+        fact: &'a str,
+        nearest: &'a [String],
+    },
 }
 
 /// How a hint begins: a refusal or a safety-classifier fallback, an unexplained switch, an
-/// unknown model.
-const OPENERS: [&str; 3] = [
+/// unknown model, a binding af refused.
+const OPENERS: [&str; 4] = [
     "the safety classifier of ",
     "Claude Code switched models",
     "Claude Code rejected the model `",
+    "af refused the binding of ",
 ];
 
 /// The next step after a refusal.
@@ -73,8 +88,18 @@ const UNAVAILABLE_NEXT: &str = "next: correct the model ID in the binding (Claud
 spelled with hyphens, such as claude-fable-5-1), then check the Provider with `af provider \
 status` (token-free) and `af provider doctor` (charged)";
 
+/// The next step for a binding af refused.
+const NOT_ACCEPTED_NEXT: &str = "next: bind an exact model ID and an effort level this \
+Provider lists, then rerun; only the charged `af provider doctor` proves that the Provider runs \
+it";
+
 /// Every way a hint ends: [`find`] reads up to the first of them.
-const ENDINGS: [&str; 3] = [REFUSED_NEXT, SWITCHED_NEXT, UNAVAILABLE_NEXT];
+const ENDINGS: [&str; 4] = [
+    REFUSED_NEXT,
+    SWITCHED_NEXT,
+    UNAVAILABLE_NEXT,
+    NOT_ACCEPTED_NEXT,
+];
 
 /// The Attempt diagnostic's own prefix, which the hint follows.
 pub const DIAGNOSTIC_PREFIX: &str = "Claude Worker failed: ";
@@ -92,6 +117,7 @@ pub fn classification(outcome: &ModelOutcome<'_>) -> &'static str {
         } => "model_refused",
         ModelOutcome::Switched { .. } => "model_switched",
         ModelOutcome::Unavailable => "model_unavailable",
+        ModelOutcome::NotAccepted { .. } => "model_not_accepted",
     }
 }
 
@@ -176,12 +202,74 @@ pub fn compose(bound: BoundModel<'_>, outcome: &ModelOutcome<'_>) -> String {
                  problem; {SWITCHED_NEXT}"
             )
         }
-        ModelOutcome::Unavailable => format!(
-            "Claude Code rejected the model `{model}` ({class}): there is an issue with the \
-             selected model, so Claude Code does not know this model ID or the account cannot \
-             use it; {UNAVAILABLE_NEXT}"
-        ),
+        ModelOutcome::Unavailable => {
+            let nearest = crate::models::static_nearest(crate::models::Kind::Claude, bound.model);
+            let on = bound
+                .provider
+                .map(|provider| format!(" on {}", provider_words(provider)))
+                .unwrap_or_default();
+            format!(
+                "Claude Code rejected the model `{model}` ({class}){on}: there is an issue with \
+                 the selected model, so Claude Code does not know this model ID or the account \
+                 cannot use it; {}{}; {UNAVAILABLE_NEXT}",
+                nearest_words(&nearest),
+                spellings_words(bound.provider)
+            )
+        }
+        ModelOutcome::NotAccepted { fact, nearest } => {
+            let provider = bound
+                .provider
+                .map(provider_words)
+                .unwrap_or_else(|| "its Provider".into());
+            // A package may bind an effort level and leave the model to the harness.
+            let subject = if bound.model.is_empty() {
+                match bound.effort {
+                    Some(effort) => {
+                        format!("the harness's default model (effort {})", shown(effort))
+                    }
+                    None => "the harness's default model".into(),
+                }
+            } else {
+                format!("model {with_effort}")
+            };
+            format!(
+                "af refused the binding of {subject} for {provider} ({class}): {fact}; \
+                 {}{}; {NOT_ACCEPTED_NEXT}",
+                nearest_words(nearest),
+                spellings_words(bound.provider)
+            )
+        }
     }
+}
+
+/// `Provider ID (KIND)`, or `a KIND Provider` when only the kind is known.
+fn provider_words(provider: ProviderRef<'_>) -> String {
+    match provider.id {
+        Some(id) => format!("Provider {} ({})", shown(id), provider.kind.name()),
+        None => format!("a {} Provider", provider.kind.name()),
+    }
+}
+
+/// `nearest accepted spellings: A, B; ` when there are any.
+fn nearest_words(nearest: &[String]) -> String {
+    if nearest.is_empty() {
+        return String::new();
+    }
+    let listed = nearest
+        .iter()
+        .map(|value| shown(value))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("nearest accepted spellings: {listed}; ")
+}
+
+/// The command that lists the spellings the Provider accepts.
+fn spellings_words(provider: Option<ProviderRef<'_>>) -> String {
+    let command = match provider.and_then(|provider| provider.id) {
+        Some(id) if printable(id) => format!("af provider models {id}"),
+        _ => "af provider models".into(),
+    };
+    format!("the spellings this Provider accepts: `{command}` (token-free)")
 }
 
 /// The hint an Attempt diagnostic starts with, if it starts with one. Only af's own head of the
@@ -297,6 +385,7 @@ mod tests {
     const FABLE: BoundModel<'static> = BoundModel {
         model: "claude-fable-5-1",
         effort: Some("xhigh"),
+        provider: None,
     };
 
     fn every_outcome(others: &[OtherModel]) -> Vec<ModelOutcome<'_>> {
@@ -379,6 +468,45 @@ mod tests {
     }
 
     #[test]
+    fn every_binding_af_refuses_is_found_again_with_or_without_a_model() {
+        let nearest = ["claude-fable-5-1".to_owned()];
+        let provider = ProviderRef {
+            id: Some("claude-work"),
+            kind: crate::models::Kind::Claude,
+        };
+        for (model, provider, opening) in [
+            (
+                "fable",
+                Some(provider),
+                "af refused the binding of model fable (effort xhigh) for Provider claude-work \
+                 (claude) (model_not_accepted): ",
+            ),
+            (
+                "",
+                None,
+                "af refused the binding of the harness's default model (effort xhigh) for its \
+                 Provider (model_not_accepted): ",
+            ),
+        ] {
+            let hint = compose(
+                BoundModel {
+                    model,
+                    effort: Some("xhigh"),
+                    provider,
+                },
+                &ModelOutcome::NotAccepted {
+                    fact: "a fact",
+                    nearest: &nearest,
+                },
+            );
+            assert!(hint.starts_with(opening), "{hint}");
+            assert!(hint.contains("nearest accepted spellings: claude-fable-5-1; "));
+            let diagnostic = format!("{DIAGNOSTIC_PREFIX}{hint}; WORKER-TEXT");
+            assert_eq!(find(&diagnostic), Some(hint.as_str()));
+        }
+    }
+
+    #[test]
     fn a_hint_is_found_only_at_the_head_of_an_af_diagnostic() {
         let hint = compose(FABLE, &ModelOutcome::Unavailable);
         for diagnostic in [
@@ -399,6 +527,7 @@ mod tests {
             BoundModel {
                 model: "claude-fable-5.1",
                 effort: Some("xhigh"),
+                provider: None,
             },
             &ModelOutcome::Unavailable,
         );

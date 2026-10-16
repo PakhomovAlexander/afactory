@@ -4,6 +4,8 @@ use std::process::Command;
 
 use serde_json::Value;
 
+#[path = "task_file/model_discovery.rs"]
+mod model_discovery;
 #[path = "task_file/model_fallback.rs"]
 mod model_fallback;
 #[path = "task_file/wall_bounds.rs"]
@@ -417,12 +419,16 @@ fn native_model_drift_case_with(
     if wide {
         std::fs::write(home.join("wide-usage"), b"fixture").unwrap();
     }
+    // The fake serves no model catalog: it ends the token-free catalog session of plan time at
+    // once, so af plans every binding as unverified against the catalog (ADR-0148).
     let stub = r#"#!/usr/bin/python3
 import os,json,sys
 home=os.environ['CLAUDE_CONFIG_DIR']
 if 'AF_TEST_PROVIDER_PROBE_TIMEOUT_MS' in os.environ: open(home+'/probe-setting-leaked','a').write(' '.join(sys.argv[1:3])+'\n')
 if sys.argv[1:] in (['--help'],['--version']):
  sys.stdout.write(open(home+'/'+sys.argv[1][2:]).read())
+ sys.exit(0)
+if '--input-format' in sys.argv:
  sys.exit(0)
 def update():
  import shutil

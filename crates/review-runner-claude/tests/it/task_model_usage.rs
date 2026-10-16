@@ -186,7 +186,7 @@ fn top_level_and_model_usage_charges_persist_and_reopen_exact() {
     for expanded in [false, true] {
         let mut native = json!({"is_error":false,"result":"OK","usage":{"input_tokens":2,"output_tokens":9451,"cache_creation_input_tokens":132688}});
         if expanded {
-            native["modelUsage"] = json!({"opus":{"inputTokens":2,"outputTokens":9451,"cacheCreationInputTokens":132688},"aux":{"inputTokens":100687,"outputTokens":17}});
+            native["modelUsage"] = json!({"claude-opus-5-5":{"inputTokens":2,"outputTokens":9451,"cacheCreationInputTokens":132688},"aux":{"inputTokens":100687,"outputTokens":17}});
         }
         let program = temp
             .path()
@@ -202,7 +202,7 @@ fn top_level_and_model_usage_charges_persist_and_reopen_exact() {
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         let adapter = ClaudeTaskAdapter::new(&Command::new(
             program.to_str().unwrap(),
-            vec![Arg::literal("--model"), Arg::literal("opus")],
+            vec![Arg::literal("--model"), Arg::literal("claude-opus-5-5")],
         ))
         .unwrap();
         let result = adapter.invoke(

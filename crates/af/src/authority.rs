@@ -336,10 +336,17 @@ fn token_free_effects() -> serde_json::Value {
 }
 
 /// Resolve review authority and Subject without creating Campaign state or executing external
-/// work, and project the result as `af/review-plan@1`.
-pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_json::Value, String> {
+/// work, and project the result as `af/review-plan@1`, with one `model` line per Model Worker:
+/// its verdict from the one validation authority, against its bound Provider's catalog when the
+/// harness answers token-free (ADR-0148). A binding the rules refuse refuses the plan.
+pub(super) fn plan(
+    options: &Options,
+    cas: &Cas,
+    repo: &Repo,
+) -> Result<(serde_json::Value, Vec<String>), String> {
     let plan = resolve_plan(options, cas, repo)?;
     let loaded = &plan.loaded;
+    let models = model_lines(options, loaded)?;
     let mut providers = Vec::new();
     for (node, package) in loaded.packages() {
         let runner = Path::new(&package.runner.program)
@@ -382,32 +389,96 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
             value
         })
         .collect::<Vec<_>>();
-    Ok(serde_json::json!({
-        "schema": "af/review-plan@1",
-        "token_free": true,
-        "selectors": plan.selectors,
-        "resolved": plan.resolved,
-        "subject": plan.subject,
-        "route": plan.route,
-        "pipeline": {
-            "path": plan.pipeline_path,
-            "topology": plan.topology,
-            "gates": checks,
-            "budgets": loaded.budgets(),
-            "reservations": reservations,
-            "max_simultaneous_reservation": crate::project::max_simultaneous_reservation(loaded)?,
-            "inputs_fit": input_sizes.iter().all(|size| size.fits),
-            "convergence": {
-                "mode": options.mode.as_str(),
-                "clean_rounds": convergence.clean_rounds,
-                "max_rounds": convergence.max_rounds,
-                "gate": format!("{:?}", convergence.gate).to_lowercase(),
+    Ok((
+        serde_json::json!({
+            "schema": "af/review-plan@1",
+            "token_free": true,
+            "selectors": plan.selectors,
+            "resolved": plan.resolved,
+            "subject": plan.subject,
+            "route": plan.route,
+            "pipeline": {
+                "path": plan.pipeline_path,
+                "topology": plan.topology,
+                "gates": checks,
+                "budgets": loaded.budgets(),
+                "reservations": reservations,
+                "max_simultaneous_reservation": crate::project::max_simultaneous_reservation(loaded)?,
+                "inputs_fit": input_sizes.iter().all(|size| size.fits),
+                "convergence": {
+                    "mode": options.mode.as_str(),
+                    "clean_rounds": convergence.clean_rounds,
+                    "max_rounds": convergence.max_rounds,
+                    "gate": format!("{:?}", convergence.gate).to_lowercase(),
+                },
             },
-        },
-        "provider_admission": crate::review_task::initial_provider_admission(options),
-        "providers": providers,
-        "external_effects": token_free_effects(),
-    }))
+            "provider_admission": crate::review_task::initial_provider_admission(options),
+            "providers": providers,
+            "external_effects": token_free_effects(),
+        }),
+        models,
+    ))
+}
+
+/// The `model` line of every captured Model Worker, in node order: the static rules first, over
+/// every reviewer before any catalog is read, then each bound Provider's catalog, read once.
+fn model_lines(options: &Options, loaded: &review_config::Loaded) -> Result<Vec<String>, String> {
+    let mut settings = Vec::new();
+    for (node, package) in loaded.packages() {
+        let runner = Path::new(&package.runner.program)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !matches!(runner.as_str(), "claude" | "codex") {
+            continue;
+        }
+        let manifest: review_config::lock::PackageManifest = toml::from_str(
+            std::str::from_utf8(
+                package
+                    .file("reviewer.toml")
+                    .ok_or("Captured Worker has no manifest")?,
+            )
+            .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let read = review_config::lock::reviewer_runner_settings_from_manifest(&manifest)
+            .map_err(|e| e.to_string())?;
+        settings.push((node.clone(), runner, read));
+    }
+    let owners: Vec<String> = settings
+        .iter()
+        .map(|(node, ..)| format!("Model Worker {node}"))
+        .collect();
+    let bindings: Vec<crate::model_check::Binding<'_>> = settings
+        .iter()
+        .zip(&owners)
+        .map(
+            |((node, runner, read), owner)| crate::model_check::Binding {
+                owner: owner.clone(),
+                label: node,
+                provider: options.provider_bindings.get(node).map(String::as_str),
+                kind: runner,
+                model: &read.model,
+                effort: &read.effort,
+            },
+        )
+        .collect();
+    for binding in &bindings {
+        crate::model_check::static_rules(binding)?;
+    }
+    let mut lines = Vec::new();
+    for (binding, verdict) in crate::model_check::verdicts(&bindings)? {
+        let text = crate::model_check::verdict_text(binding, &verdict)?;
+        if matches!(verdict, review_runner_claude::models::Verdict::Refused(_)) {
+            return Err(format!(
+                "{}: {}",
+                binding.owner,
+                text.trim_start_matches("refused: ")
+            ));
+        }
+        lines.push(binding.line(&text));
+    }
+    Ok(lines)
 }
 
 /// Where a first Attempt's Change Set comes from: the plan's freshly computed value, a Round's

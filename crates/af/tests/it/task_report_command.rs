@@ -848,8 +848,7 @@ fn a_path_valued_model_is_refused_at_planning_and_never_printed() {
         assert!(!planned.status.success(), "{model}: {stdout}");
         assert!(
             stderr.contains(&format!(
-                "Model binding refused: its --model value ({} bytes) is not a model spelling af \
-                 accepts",
+                "its --model value ({} bytes) is not a model spelling af accepts",
                 model.len()
             )),
             "{stderr}"

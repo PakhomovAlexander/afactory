@@ -45,7 +45,8 @@ impl Fixture {
         std::fs::write(home.join("result"), result).unwrap();
         // The fake records every process af starts, every model call with the guard it
         // received, and the stdin of the first model call, and answers each model call with
-        // `result`; any request other than the admission probe is a business Worker.
+        // `result`; any request other than the admission probe is a business Worker. It serves
+        // no model catalog: it ends plan time's token-free catalog session at once (ADR-0148).
         let stub = r#"#!/usr/bin/python3
 import os,json,sys
 home=os.environ['CLAUDE_CONFIG_DIR']
@@ -55,6 +56,8 @@ if sys.argv[1:] in (['--help'],['--version']):
  sys.exit(0)
 if sys.argv[1:3]==['auth','status']:
  print(json.dumps({'loggedIn':True,'apiProvider':'firstParty','authMethod':'claude.ai','email':'developer@example.test'}))
+ sys.exit(0)
+if '--input-format' in sys.argv:
  sys.exit(0)
 request=sys.stdin.read()
 if not os.path.exists(home+'/first-stdin'): open(home+'/first-stdin','w').write(request)
@@ -292,9 +295,7 @@ fn a_binding_outside_g_is_refused_before_any_process_and_never_printed() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(!output.status.success(), "{args:?}: {stdout}\n{stderr}");
         assert!(
-            stderr.contains(
-                "Model binding refused: its --model value (19 bytes) is not a model spelling af accepts"
-            ),
+            stderr.contains("its --model value (19 bytes) is not a model spelling af accepts"),
             "{args:?}: {stderr}"
         );
         assert!(
@@ -410,10 +411,14 @@ fn an_invalid_second_binding_is_refused_before_any_provider_process() {
     for (second, rule) in [
         (
             "bad@account",
-            "Model binding refused: its --model value (11 bytes) is not a model spelling af accepts",
+            "its --model value (11 bytes) is not a model spelling af accepts",
         ),
         (
             "fable",
+            "resolves to the exact ID claude-fable-5-1 today, and af binds exact IDs",
+        ),
+        (
+            "claude-fable",
             "Task Model binding requires an explicit versioned model ID",
         ),
     ] {
@@ -426,9 +431,15 @@ fn an_invalid_second_binding_is_refused_before_any_provider_process() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(!output.status.success(), "{args:?}: {stderr}");
             assert!(
-                stderr.contains(&format!(
-                    "Worker fixture/correctness on Provider claude-personal: {rule}"
-                )),
+                stderr.contains(
+                    "Worker fixture/correctness on Provider claude-personal: af refused the \
+                     binding of model "
+                ),
+                "{args:?}: {stderr}"
+            );
+            assert!(stderr.contains(rule), "{args:?}: {stderr}");
+            assert!(
+                stderr.contains("`af provider models claude-personal`"),
                 "{args:?}: {stderr}"
             );
             assert!(!stderr.contains("account"), "{stderr}");

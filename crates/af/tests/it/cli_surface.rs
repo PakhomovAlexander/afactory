@@ -30,6 +30,7 @@ fn namespace_help_is_scoped_to_the_namespace() {
     assert!(help.status.success());
     let text = out(&help);
     assert!(text.contains("status"), "{text}");
+    assert!(text.contains("models"), "{text}");
     assert!(text.contains("doctor"), "{text}");
     assert!(
         !text.contains("ledger"),
@@ -153,6 +154,7 @@ fn completion_scripts_delegate_to_the_binary() {
     assert!(dynamic.status.success(), "{}", err(&dynamic));
     let text = out(&dynamic);
     assert!(text.contains("status"), "{text}");
+    assert!(text.contains("models"), "{text}");
     assert!(text.contains("doctor"), "{text}");
     assert!(!text.contains("ledger"), "{text}");
 }
@@ -216,6 +218,49 @@ fn task_report_help_and_man_page_describe_the_command() {
     assert!(page.contains("af\\-task\\-report") || page.contains("af-task-report"));
     assert!(page.contains("TASK_ID"), "{page}");
     assert!(page.contains("Never"), "{page}");
+}
+
+/// `af provider models` says what it reads, what the list proves, its options and its exit codes,
+/// in `--help`, in `af help provider models` and in its man page (ADR-0148).
+#[test]
+fn provider_models_help_and_man_page_describe_the_command() {
+    for help in [
+        af(&["provider", "models", "--help"]),
+        af(&["help", "provider", "models"]),
+    ] {
+        assert!(help.status.success(), "{}", err(&help));
+        let text = out(&help).split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            "Usage: af provider models [OPTIONS] [ID]...",
+            "--json",
+            "--resolve <SPELLING[/EFFORT]>",
+            "af/provider-models@1",
+            "`list_models` control request",
+            "`model/list` on a bare `codex app-server`",
+            "`models_cache.json`",
+            "af recognises these spellings for this Provider",
+            "the charged `af provider doctor`",
+            "reviewer.toml [runner] args, the worker.toml [runner] block and the bindings line",
+            "Spends no model tokens and reads no credential.",
+            "Exit codes: 0 every catalog listed, 4 a Provider CLI cannot start or is incompatible, 7 a catalog is unavailable",
+            "af provider models claude-work --resolve 'Fable 5.1/xhigh'",
+        ] {
+            assert!(text.contains(needle), "`{needle}` missing:\n{text}");
+        }
+    }
+    let provider = out(&af(&["provider", "--help"]));
+    assert!(
+        provider
+            .lines()
+            .any(|line| line.trim_start().starts_with("models ")),
+        "{provider}"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let man = af(&["self", "man", dir.path().to_str().unwrap()]);
+    assert!(man.status.success(), "{}", err(&man));
+    let page = std::fs::read_to_string(dir.path().join("af-provider-models.1")).unwrap();
+    assert!(page.contains("SPELLING"), "{page}");
+    assert!(page.contains("list_models"), "{page}");
 }
 
 fn write(path: &Path, text: &str) {

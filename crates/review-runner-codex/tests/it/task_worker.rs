@@ -86,7 +86,7 @@ fn execute_checks_runs_workspace_write_rooted_at_the_sandbox() {
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         let adapter = CodexTaskAdapter::new(&Command::new(
             program.to_str().unwrap(),
-            ["--model", "gpt-x", "-c", "model_reasoning_effort=high"]
+            ["--model", "gpt-x-1", "-c", "model_reasoning_effort=high"]
                 .into_iter()
                 .map(Arg::literal)
                 .collect(),
@@ -120,7 +120,13 @@ fn execute_checks_runs_workspace_write_rooted_at_the_sandbox() {
         let output = at("-o");
         assert_eq!(
             &flags[output + 2..],
-            ["--model", "gpt-x", "-c", "model_reasoning_effort=high", "-",]
+            [
+                "--model",
+                "gpt-x-1",
+                "-c",
+                "model_reasoning_effort=high",
+                "-",
+            ]
         );
         assert!(!flags.iter().any(|flag| flag.contains("dangerously")));
     }

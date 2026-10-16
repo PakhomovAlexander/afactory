@@ -128,6 +128,7 @@ mod tests {
             hint::BoundModel {
                 model: "claude-fable-5-1",
                 effort: Some("xhigh"),
+                provider: None,
             },
             &hint::ModelOutcome::Unavailable,
         );

@@ -269,12 +269,16 @@ pub(crate) struct Panes {
 }
 
 impl Panes {
-    pub(crate) fn new(providers: ProvidersPane) -> Panes {
+    pub(crate) fn new(mut providers: ProvidersPane) -> Panes {
+        // The Workers pane judges each runner against the catalog of each Provider of its kind
+        // that the Providers pane reads, kept under that Provider's id.
+        let catalogs = panes::providers::SharedCatalogs::default();
+        providers.share(catalogs.clone());
         Panes {
             settings: SettingsPane::default(),
             providers,
             pipelines: PipelinesPane::default(),
-            workers: WorkersPane::default(),
+            workers: WorkersPane::with_catalogs(catalogs),
             tasks: TasksPane::default(),
         }
     }

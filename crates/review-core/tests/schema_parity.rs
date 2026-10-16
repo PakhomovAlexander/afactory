@@ -30,8 +30,9 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 169] = [
+const SCHEMAS: [&str; 170] = [
     "task-report-v1.json",
+    "provider-models-v1.json",
     "code-task-policy-v1.json",
     "remote-check-evidence-v1.json",
     "measurement-v1.json",
@@ -3915,6 +3916,8 @@ mod review_outcome;
 #[path = "schema_parity/provider_doctor.rs"]
 mod provider_doctor;
 
+#[path = "schema_parity/provider_models.rs"]
+mod provider_models;
 #[path = "schema_parity/provider_onboarding.rs"]
 mod provider_onboarding;
 

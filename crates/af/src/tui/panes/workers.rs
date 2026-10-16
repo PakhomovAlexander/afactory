@@ -13,10 +13,15 @@
 //!
 //! The pane reads nothing until its folder or one of its entries is first opened: STATE scans
 //! every Task's records (section 8), so the browser does not pay for it on start.
+//!
+//! A runner's verdict is judged against the catalogs the Providers pane read (ADR-0148), and
+//! the pane follows them as they arrive: each poll compares the shared catalogs' generation with
+//! the one its rows were built with and rebuilds them for the same selection when it moved.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use review_runner_claude::models as rules;
 use serde_json::Value as Json;
 use toml::Value;
 
@@ -620,9 +625,20 @@ pub(crate) struct WorkersPane {
     rows: Vec<Row>,
     /// The first row of the opened Worker's PROMPT section.
     prompt_row: usize,
+    /// The catalogs the Providers pane read, which a runner's verdict is judged against.
+    catalogs: super::providers::SharedCatalogs,
+    /// The catalogs' generation the rows were built with.
+    generation: u64,
 }
 
 impl WorkersPane {
+    pub(crate) fn with_catalogs(catalogs: super::providers::SharedCatalogs) -> WorkersPane {
+        WorkersPane {
+            catalogs,
+            ..WorkersPane::default()
+        }
+    }
+
     fn entry(&self, id: &str) -> Option<&Entry> {
         self.entries.iter().find(|entry| entry.id == id)
     }
@@ -696,6 +712,7 @@ impl WorkersPane {
     }
 
     fn rebuild(&mut self) {
+        self.generation = self.catalogs.generation();
         let (rows, prompt_row) = match self.selected_entry() {
             Some(entry) => self.entry_rows(entry),
             None => (self.folder_rows(), usize::MAX),
@@ -787,7 +804,7 @@ impl WorkersPane {
             format!("IDENTITY  {file} at HEAD"),
             Paint::Title,
         ));
-        rows.extend(identity_rows(entry));
+        rows.extend(identity_rows(entry, &self.catalogs));
         rows.push(rule());
         let state = "STATE  Attempts in this scope's Task Stores";
         rows.push(Row::painted(state, Paint::Title));
@@ -931,9 +948,17 @@ fn words(value: &Value, path: &[&str]) -> String {
 }
 
 /// The runner a declaration names: its kind; its program, or the provider kind of a model
-/// runner; its model and effort; and its args as declared. A reviewer declares its model and
-/// effort in its args, and they are read the way the kernel reads them.
-fn runner_rows(entry: &Entry, value: &Value) -> Vec<Row> {
+/// runner; its model and effort; the verdict of the one validation authority on them (ADR-0148);
+/// and its args as declared. A declaration names only a kind, never the Provider that will be
+/// bound, so the verdict is given once per Provider of that kind whose catalog the Providers pane
+/// read, each prefixed by its id, in inventory order, and by the static rules alone when none
+/// has one. A reviewer declares its model and effort in its args,
+/// and they are read the way the kernel reads them.
+fn runner_rows(
+    entry: &Entry,
+    value: &Value,
+    catalogs: &super::providers::SharedCatalogs,
+) -> Vec<Row> {
     let runner = value
         .get("runner")
         .cloned()
@@ -942,12 +967,36 @@ fn runner_rows(entry: &Entry, value: &Value) -> Vec<Row> {
     let program = command.get("program").and_then(Value::as_str);
     let provider = runner.get("provider_kind").and_then(Value::as_str);
     let (mut model, mut effort) = (field(&runner, &["model"]), field(&runner, &["effort"]));
+    let mut judged = provider.and_then(rules::Kind::parse);
     if entry.kind == Kind::Reviewer
         && let Ok(manifest) = toml::from_str(&entry.declaration)
         && let Ok(settings) = review_config::lock::reviewer_runner_settings_from_manifest(&manifest)
     {
+        judged = rules::Kind::parse(&settings.backend.to_string());
         (model, effort) = (settings.model, settings.effort);
     }
+    let verdict = judged
+        .map(|kind| {
+            let label = |verdict: rules::Verdict| verdict.label(kind, &model, Some(&effort));
+            let per_provider: Vec<String> = catalogs
+                .of_kind(kind)
+                .iter()
+                .map(|shared| {
+                    let verdict = rules::check(kind, Some(&shared.catalog), &model, Some(&effort));
+                    format!("{}: {}", shared.id, label(verdict))
+                })
+                .collect();
+            if per_provider.is_empty() {
+                let verdict = match rules::check_static(kind, &model, Some(&effort)) {
+                    Ok(()) => rules::Verdict::Ok,
+                    Err(refusal) => rules::Verdict::Refused(refusal),
+                };
+                format!("  verdict (static rules): {}", label(verdict))
+            } else {
+                format!("  verdict {}", per_provider.join("  "))
+            }
+        })
+        .unwrap_or_default();
     let what = match (program, provider) {
         (Some(program), _) => format!("program {program}"),
         (None, Some(provider)) => format!("provider {provider}"),
@@ -970,7 +1019,7 @@ fn runner_rows(entry: &Entry, value: &Value) -> Vec<Row> {
     let kind = field(&runner, &["kind"]);
     vec![
         Row::plain(format!(
-            "runner    kind {kind}  {what}  model {model}  effort {effort}"
+            "runner    kind {kind}  {what}  model {model}  effort {effort}{verdict}"
         )),
         Row::plain(format!("args      {args}")),
     ]
@@ -992,7 +1041,7 @@ fn pin_text(entry: &Entry) -> String {
     }
 }
 
-fn identity_rows(entry: &Entry) -> Vec<Row> {
+fn identity_rows(entry: &Entry, catalogs: &super::providers::SharedCatalogs) -> Vec<Row> {
     let value = declared(&entry.declaration);
     let mut rows = vec![
         Row::plain(format!("name      {}", field(&value, &["name"]))),
@@ -1001,7 +1050,7 @@ fn identity_rows(entry: &Entry) -> Vec<Row> {
         Row::plain(format!("path      {}", entry.directory)),
         Row::plain(format!("pin       {}", pin_text(entry))),
     ];
-    rows.extend(runner_rows(entry, &value));
+    rows.extend(runner_rows(entry, &value, catalogs));
     let tokens = field(&value, &["signature", "attempt", "tokens"]);
     let wall = field(&value, &["signature", "attempt", "wall_ms"]);
     rows.push(Row::plain(format!(
@@ -1107,6 +1156,17 @@ impl Pane for WorkersPane {
             self.rebuild();
         }
         Ok(())
+    }
+
+    /// The Providers pane's discovery hands its catalogs over on its own thread: when the shared
+    /// generation moved since the rows were built, they are built again for the same selection,
+    /// so an open Worker's verdict follows the catalogs as they arrive or go away.
+    fn poll(&mut self) -> bool {
+        if self.catalogs.generation() == self.generation {
+            return false;
+        }
+        self.rebuild();
+        true
     }
 
     /// The prompt's working-tree file at and below the PROMPT rule, committed or not: that is
