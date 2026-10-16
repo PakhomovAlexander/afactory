@@ -19,6 +19,59 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`.
 Changes since the last release are notes under [`changelog.d/`](changelog.d/), one file per
 pull request; the release pull request collects them here.
 
+## [0.12.0-rc.4] - 2026-10-16
+
+### Authority compatibility
+
+Committed .af/ policy keeps working as is relative to 0.12.0-rc.3; no authority migration is required. Model bindings are now validated before any Provider process starts: a binding that names an alias (opus, fable), an effort level the model does not list, or a misspelt ID is refused with the exact spellings to use (af provider models <id>); custom IDs that pass the spelling rule are accepted as unverified.
+
+### Changes
+
+- release: v0.12.0-rc.3 (#261)
+- ci: authenticate gh in the release pin job (#262)
+- Stop the Claude model fallback and name the model that answered (#264)
+- Model discovery: af provider models, one validation authority, hints and TUI (#268)
+
+- Claude Task Attempts now run with `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1`, so Claude Code no
+  longer answers with another model when the bound model's safety classifier flags a request. A
+  refusal is classified `model_refused`, charged what it reports and not retried; a reply from a
+  model the Worker did not bind is still refused, now naming both models, their output tokens,
+  `safety_stops` and `num_turns`; a model ID Claude Code does not know is `model_unavailable`.
+  `af task run` and `af review run` print the reason and the next step on stderr for each such
+  failed Attempt, the switch first even when the result's usage is also malformed or lists more
+  than 32 models, with those accounting reasons after it in the diagnostic; an entry for another
+  model that reports no activity, or only malformed counters, is never a switch. An error result whose `result` carries Claude
+  Code's safeguards text is `model_refused` whatever its `errors` holds. A model or effort binding
+  outside the one spelling af prints (an ASCII letter or digit, then at most 127 letters, digits,
+  `-`, `.`, `_` or `:`) is refused before any process starts, naming only its byte length, ahead
+  of the versioned-model rule, and every Worker's binding is checked before the first Provider is
+  probed; a reported model ID outside it reads `[not printable]`
+  ([ADR-0147](docs/adr/0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)).
+  The Provider admission probe, which `af provider doctor` also sends, now says what it is for (a Provider admission
+  check by the af review tool that needs no file and no tool) before asking for exactly `OK`,
+  because Claude Fable 5.1's safety classifier refused the bare instruction every time from an
+  empty directory.
+
+- `af provider models [ID …] [--json] [--resolve SPELLING[/EFFORT]]` lists each Provider's model
+  catalog token-free, from the harness's own protocol (Claude Code's `list_models` on a
+  stream-json session closed before any turn, Codex's `model/list` on a bare app-server), with
+  its source, harness version and freshness, one row per exact ID with its display name, aliases
+  and effort levels, and what the list proves; only the charged `af provider doctor` proves that
+  an account can run a model. `--resolve 'Fable 5.1/xhigh'` names the exact ID, checks the effort
+  level and prints the `reviewer.toml` `[runner]`, the `worker.toml` `[runner]` and the bindings
+  `[providers]` blocks, each a TOML document that parses on its own; `--json` prints
+  `af/provider-models@1`; exit 4 when a CLI cannot serve af, 7 when a catalog is unavailable. One validation module now checks every model and effort level before
+  anything is charged: an alias is refused with the exact ID it resolves to, an effort level the
+  Provider or model does not list with the levels it lists, a misspelling of a known ID with the
+  nearest IDs, and a custom ID that passes the spelling rule is accepted as `unverified against
+  the catalog`. `af task plan` and `af review plan` print a `model` line per Model Worker and
+  refuse before any Provider process starts; both adapters refuse such packages too, so a
+  reviewer package naming `--model opus` must name `claude-opus-5-5`. Every refusal names the
+  Provider, the rule, the nearest accepted spellings and `af provider models <id>`. The TUI's
+  Providers pane shows each Provider's own models and the Workers pane each runner's verdict
+  once per Provider of its kind, named by its ID
+  ([ADR-0148](docs/adr/0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)).
+
 ## [0.12.0-rc.3] - 2026-10-14
 
 ### Authority compatibility
