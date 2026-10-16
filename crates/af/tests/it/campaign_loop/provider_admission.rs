@@ -487,15 +487,16 @@ fn admission_bounds_are_paired_positive_finite_cli_values() {
     }
 }
 
-/// ADR-0147: every captured reviewer's binding passes the static rules, grammar G first and then
-/// the versioned-ID rule, before any Provider CLI starts. A valid first reviewer and an invalid
-/// second one are refused by node, with the Provider label and the rule, and no process ran.
+/// ADR-0147, ADR-0148: every captured reviewer's binding passes the static rules, grammar G first
+/// and then the versioned-ID rule, before any Provider CLI starts. A valid first reviewer and an
+/// invalid second one are refused by node with the rule, by the package argument parser as the
+/// captured package is loaded, and no process ran.
 #[test]
 fn an_invalid_second_captured_reviewer_is_refused_before_any_provider_process() {
     for (second, rule) in [
         (
             "bad@account",
-            "Model binding refused: its --model value (11 bytes) is not a model spelling af accepts",
+            "its --model value (11 bytes) is not a model spelling af accepts",
         ),
         (
             "fixture",
@@ -623,9 +624,12 @@ gate = "major"
         );
         assert_eq!(code, 1, "{second}: {stdout}\n{stderr}");
         assert!(
-            stderr.contains(&format!(
-                "Model Worker b-second on Provider test-codex: {rule}"
-            )),
+            stderr.contains("b-second: package `tester-two` runner args: af refused the binding"),
+            "{second}: {stderr}"
+        );
+        assert!(stderr.contains(rule), "{second}: {stderr}");
+        assert!(
+            stderr.contains("`af provider models`"),
             "{second}: {stderr}"
         );
         assert!(!stderr.contains("account"), "{stderr}");

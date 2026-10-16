@@ -339,6 +339,7 @@ pub(super) fn account(value: Option<&Value>, selected: &str, effort: Option<&str
             BoundModel {
                 model: selected,
                 effort,
+                provider: None,
             },
             &ModelOutcome::Switched {
                 bound_output_tokens,

@@ -860,7 +860,7 @@ fn bind_named_models(
     required: BTreeSet<String>,
 ) -> Result<BTreeMap<String, Box<dyn review_runner::task::WorkerModelAdapter>>, String> {
     // First pass, token-free: every Model Worker's binding passes the static rules, in Worker-name
-    // order, before any Provider CLI starts (ADR-0147).
+    // order, before any Provider CLI starts (ADR-0147, ADR-0148).
     let mut models = Vec::new();
     for name in required {
         let worker = compiler.worker(&name).ok_or("Required Worker is absent")?;
@@ -873,8 +873,14 @@ fn bind_named_models(
             continue;
         };
         let alias = authority.providers.get(&name).ok_or_else(||format!("Worker {name} requires an explicit local Provider binding in the catalog providers table"))?;
-        super::providers::task::TaskProviderIdentity::check_static_rules(model, effort)
-            .map_err(|rule| format!("Worker {name} on Provider {alias}: {rule}"))?;
+        crate::model_check::static_rules(&crate::model_check::Binding {
+            owner: format!("Worker {name}"),
+            label: &name,
+            provider: Some(alias),
+            kind: provider_kind,
+            model,
+            effort,
+        })?;
         models.push((
             name,
             alias.clone(),
@@ -883,6 +889,28 @@ fn bind_named_models(
             effort.clone(),
         ));
     }
+    // At plan time, each Provider's catalog, read token-free once, judges every binding and a
+    // `model` line names each verdict, before any Provider identity is probed.
+    let owners: Vec<String> = models
+        .iter()
+        .map(|(name, ..)| format!("Worker {name}"))
+        .collect();
+    crate::model_check::catalog_rules(
+        &models
+            .iter()
+            .zip(&owners)
+            .map(
+                |((name, alias, kind, model, effort), owner)| crate::model_check::Binding {
+                    owner: owner.clone(),
+                    label: name,
+                    provider: Some(alias),
+                    kind,
+                    model,
+                    effort,
+                },
+            )
+            .collect::<Vec<_>>(),
+    )?;
     // Second pass: one probe per Provider label, then each Worker's execution and adapter.
     let mut identities = BTreeMap::new();
     let mut adapters = BTreeMap::new();

@@ -37,6 +37,7 @@ mod caches;
 mod cli;
 mod config;
 mod interrupt;
+mod model_check;
 mod model_failures;
 mod onboard;
 mod project;
@@ -770,6 +771,9 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
             })
         }
         R::Plan(args) => {
+            // A plan reads each bound Provider's catalog token-free and names every Model
+            // binding's verdict (ADR-0148).
+            model_check::enable_plan_time();
             if args.task_file.is_some() {
                 return task_execution::start_review(task_review_options(args, true));
             }
@@ -1234,19 +1238,24 @@ fn main() {
                     authority,
                     uncommitted,
                     json,
-                } => task_execution::start(task_execution::StartOptions {
-                    file,
-                    bindings,
-                    source_bindings,
-                    repo,
-                    state,
-                    authority,
-                    uncommitted,
-                    json,
-                    plan_only: true,
-                    timeout_secs: None,
-                    optimization_history: None,
-                }),
+                } => {
+                    // A plan reads each bound Provider's catalog token-free and names every
+                    // Model binding's verdict (ADR-0148).
+                    model_check::enable_plan_time();
+                    task_execution::start(task_execution::StartOptions {
+                        file,
+                        bindings,
+                        source_bindings,
+                        repo,
+                        state,
+                        authority,
+                        uncommitted,
+                        json,
+                        plan_only: true,
+                        timeout_secs: None,
+                        optimization_history: None,
+                    })
+                }
                 cli::TaskCommand::DecisionPayload {
                     task_id,
                     developer,
@@ -1639,6 +1648,9 @@ fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
             let kind = provider_kind(kind);
             providers::setup(&id, kind, auth_dir.as_deref(), login, json)
         }
+        cli::ProviderCommand::Models { ids, json, resolve } => {
+            providers::models::print_models(&ids, json, resolve.as_deref())
+        }
         cli::ProviderCommand::Add { id, kind, auth_dir } => {
             let kind = provider_kind(kind);
             providers::add(&id, kind, auth_dir.as_deref())
@@ -1756,8 +1768,12 @@ fn print_plan(options: &Options) -> Result<(), String> {
     std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
     let repo = Repo::open(repository, git_home)
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
-    let plan = authority::plan(options, &cas, &repo)?;
+    let (plan, models) = authority::plan(options, &cas, &repo)?;
     if options.json {
+        // The document's shape is unchanged; the model lines go to stderr (ADR-0148).
+        for line in &models {
+            eprintln!("{line}");
+        }
         println!(
             "{}",
             serde_json::to_string(&plan).map_err(|error| error.to_string())?
@@ -1924,7 +1940,22 @@ fn print_plan(options: &Options) -> Result<(), String> {
             provider["binding"].as_str().unwrap_or("MISSING")
         );
     }
-    println!("effects  no state, Gates, Provider calls, Workers, or token spend");
+    for line in &models {
+        println!("{line}");
+    }
+    let bound = plan["providers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|provider| provider["required"] == true && provider["binding"].is_string());
+    if bound {
+        // The plan read each bound Provider's catalog, token-free (ADR-0148).
+        println!(
+            "effects  no state, Gates, Provider admission, Workers, or token spend; each bound Provider's model catalog was read token-free"
+        );
+    } else {
+        println!("effects  no state, Gates, Provider calls, Workers, or token spend");
+    }
     Ok(())
 }
 

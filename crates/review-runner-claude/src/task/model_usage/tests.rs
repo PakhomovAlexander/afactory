@@ -378,6 +378,7 @@ fn a_malformed_top_level_usage_never_hides_the_recorded_switch() {
             BoundModel {
                 model: "claude-fable-5-1",
                 effort: Some("xhigh"),
+                provider: None,
             },
             &ModelOutcome::Switched {
                 bound_output_tokens: Some(0),
@@ -516,6 +517,7 @@ fn a_foreign_activity_after_32_unused_entries_is_a_switch() {
         BoundModel {
             model: "claude-fable-5-1",
             effort: Some("xhigh"),
+            provider: None,
         },
         &ModelOutcome::Switched {
             bound_output_tokens: None,

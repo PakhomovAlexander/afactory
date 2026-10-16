@@ -61,6 +61,8 @@ pub struct ClaudeTaskAdapter {
     grants: Vec<(String, String)>,
     /// Keep the harness's project directory of each Attempt instead of removing it.
     keep_transcripts: bool,
+    /// The registry ID of the Provider this adapter runs for, which its hints name.
+    provider: Option<String>,
 }
 
 impl ClaudeTaskAdapter {
@@ -84,7 +86,14 @@ impl ClaudeTaskAdapter {
             model,
             grants: vec![],
             keep_transcripts: false,
+            provider: None,
         })
+    }
+
+    /// Name the registry ID of the Provider this adapter runs for in its hints (ADR-0148).
+    pub fn for_provider(mut self, id: impl Into<String>) -> Self {
+        self.provider = Some(id.into());
+        self
     }
     pub fn with_auth(mut self, config_dir: Option<String>, user: String, home: String) -> Self {
         self.grants = vec![("USER".into(), user), ("HOME".into(), home)];
@@ -140,6 +149,10 @@ impl ClaudeTaskAdapter {
         let bound = hint::BoundModel {
             model: &self.model,
             effort: self.effort(),
+            provider: Some(crate::models::ProviderRef {
+                id: self.provider.as_deref(),
+                kind: crate::models::Kind::Claude,
+            }),
         };
         let outcome = match failure? {
             NativeFailureKind::ModelRefused => {

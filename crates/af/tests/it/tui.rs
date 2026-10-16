@@ -596,7 +596,10 @@ fn the_tasks_pane_shows_the_numbers_af_task_show_json_records() {
     let shown = af(&repo, &home, &["task", "show", "pagination-cli", "--json"]);
     assert!(shown.status.success());
     let show: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
-    let mut browser = Browser::launch(&repo, &home);
+    // The PLAN line ends with the Task's elapsed time, whose width depends on how long the
+    // Task ran (`848ms`, `1.2s`, `1m 02s`); at 100 columns the main pane clips its last
+    // characters whenever it takes more than four. 120 columns show every form whole.
+    let mut browser = Browser::launch_sized(&repo, &home, ROWS, 120);
     browser.wait_for("the bar", |screen| shows(screen, "  v tasks/"));
     // ]] four times reaches tasks/; its first group is done/, and in it the Task.
     browser.keys(b"]]]]]]]]");

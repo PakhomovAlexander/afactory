@@ -809,14 +809,17 @@ pub(crate) fn normalize_materialized_metadata(
         nix::fcntl::open(path, flags, NixMode::empty()).map_err(std::io::Error::other)?;
     let file = std::fs::File::from(descriptor);
 
-    normalize_macos_metadata(&file, directory)?;
+    normalize_macos_metadata(path, &file, directory)?;
     fchmod(&file, NixMode::from_bits_truncate(mode as _)).map_err(std::io::Error::other)?;
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn normalize_macos_metadata(file: &std::fs::File, directory: bool) -> std::io::Result<()> {
-    use std::os::fd::AsRawFd;
+fn normalize_macos_metadata(
+    path: &Path,
+    file: &std::fs::File,
+    directory: bool,
+) -> std::io::Result<()> {
     use xattr::FileExt;
 
     if !directory {
@@ -841,20 +844,42 @@ fn normalize_macos_metadata(file: &std::fs::File, directory: bool) -> std::io::R
         }
     }
 
-    // The cache tree is private and no worker has started, and `/dev/fd` binds the ACL operation
-    // to the no-follow descriptor above rather than resolving the candidate path a second time.
-    let descriptor_path = PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd()));
-    exacl::setfacl(&[&descriptor_path], &[], None)?;
-    if !exacl::getfacl(&descriptor_path, None)?.is_empty() {
+    // The cache tree is private and no worker has started. The ACL calls take a path and never
+    // follow its last component, and the path must name the no-follow descriptor's object before
+    // and after them. A `/dev/fd/<n>` path is not used: its lookup goes through the fdesc vnode
+    // macOS shares between processes, so under parallel materializations it intermittently fails
+    // with ENOENT or EBADF while this process still holds descriptor `<n>`.
+    let options = exacl::AclOption::SYMLINK_ACL;
+    same_object(path, file)?;
+    exacl::setfacl(&[path], &[], options)?;
+    if !exacl::getfacl(path, options)?.is_empty() {
         return Err(std::io::Error::other(
             "materialized cache object retained an extended ACL",
+        ));
+    }
+    same_object(path, file)
+}
+
+#[cfg(target_os = "macos")]
+fn same_object(path: &Path, file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let named = std::fs::symlink_metadata(path)?;
+    let held = file.metadata()?;
+    if named.dev() != held.dev() || named.ino() != held.ino() {
+        return Err(std::io::Error::other(
+            "materialized cache path changed away from its opened object",
         ));
     }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn normalize_macos_metadata(_file: &std::fs::File, _directory: bool) -> std::io::Result<()> {
+fn normalize_macos_metadata(
+    _path: &Path,
+    _file: &std::fs::File,
+    _directory: bool,
+) -> std::io::Result<()> {
     Ok(())
 }
 
