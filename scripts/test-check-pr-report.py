@@ -17,6 +17,25 @@ BLOCK = (ROOT / 'fixtures' / 'task-report' / 'report.md').read_text(encoding='ut
 TEMPLATE = (ROOT / '.github' / 'PULL_REQUEST_TEMPLATE.md').read_text(encoding='utf-8')
 HOW = 'af task report TASK_ID'
 COLUMNS = ['Round', 'Task', 'Outcome', 'Findings', 'Tokens', 'Active']
+# Issue #193: the type 6 names of GFM 0.29 and CommonMark 0.31 together, each with whether
+# GitHub rendered the pipeline line when the name's open tag sat on the line under an `Intro`
+# paragraph line right above it, as GitHub's markdown API rendered the renderer fixture (the
+# round table rendered in every case). Every name but one is a type 6 tag on GitHub: it
+# interrupts the paragraph, and its block, up to the blank line, holds the pipeline line.
+# `search`, which only CommonMark 0.31 lists, is a type 7 tag there, which cannot; `source`,
+# which only GFM 0.29 lists, is type 6.
+TYPE6_AUDIT = {
+    **dict.fromkeys((
+        'address', 'article', 'aside', 'base', 'basefont', 'blockquote', 'body', 'caption',
+        'center', 'col', 'colgroup', 'dd', 'details', 'dialog', 'dir', 'div', 'dl', 'dt',
+        'fieldset', 'figcaption', 'figure', 'footer', 'form', 'frame', 'frameset', 'h1', 'h2',
+        'h3', 'h4', 'h5', 'h6', 'head', 'header', 'hr', 'html', 'iframe', 'legend', 'li', 'link',
+        'main', 'menu', 'menuitem', 'nav', 'noframes', 'ol', 'optgroup', 'option', 'p', 'param',
+        'section', 'source', 'summary', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'title',
+        'tr', 'track', 'ul'), False),
+    'search': True,
+}
+assert len(TYPE6_AUDIT) == 63, len(TYPE6_AUDIT)
 
 
 def description(block):
@@ -56,7 +75,10 @@ def main():
     table = BLOCK.split(separator + '\n', 1)[1].split('\n\n', 1)[0].splitlines()
     rows, total = table[:-1], table[-1]
     assert rows and total.startswith('|  | Total: '), BLOCK
+    main_table = '\n'.join([header, separator] + table) + '\n'
     pipeline = line_starting(BLOCK, '**')
+    prefix, steps = pipeline.split('**: ', 1)
+    steps_in_code = prefix + '**: `' + steps + '`'
     begin, end = '<!-- af-task-report:v1 -->', '<!-- /af-task-report -->'
     empty_table = BLOCK
     for row in rows:
@@ -133,6 +155,89 @@ def main():
         # right after it is a paragraph line, not a list item's: it still counts.
         'the block after a paragraph line that reads like an item': event(right_after(
             'The Tasks ran in\n2024. These are they:\n\n', BLOCK)),
+        # Issue #193: a raw HTML block closed before the block hides only its own lines, and
+        # an element that does not stop Markdown rendering, such as `<details>`, hides nothing.
+        'the block after a closed multi-line pre': event(description(
+            '<pre>\naf task report T1\n</pre>\n\n' + BLOCK)),
+        'the block after a pre closed on its line': event(right_after(
+            '<pre>af task report T1</pre>\n', BLOCK)),
+        'the block inside a details element': event(description(
+            '<details>\n<summary>af task report</summary>\n\n' + BLOCK + '\n</details>\n')),
+        # A raw block ends at the closing tag of any of the four names, not only its own.
+        'the block after a script closed by </pre>': event(description(
+            '<script>\n</pre>\n\n' + BLOCK)),
+        'the block after a textarea closed by </pre>': event(description(
+            '<textarea>\n</pre>\n\n' + BLOCK)),
+        'the block after a pre closed by </textarea>': event(description(
+            '<pre>\n</textarea>\n\n' + BLOCK)),
+        # A comment left open above the block closes at the begin marker's `-->`: the block
+        # renders after it.
+        'a comment left open above the block': event(right_after(
+            '<!-- paste the report below\n', BLOCK)),
+        # A tag nested in an HTML block does not change where that block ends (CommonMark
+        # 4.6): this `<pre>` opens no raw block, the `<div>` ends at the block's first blank
+        # line, and GitHub renders the pipeline line and the table.
+        'the block inside a pre nested in a div': event(description(
+            '<div>\n<pre>\n' + BLOCK + '</pre>\n</div>\n')),
+        # A raw block ends on the first line holding a closing tag, even inside a comment.
+        'the block after a pre closed inside a comment': event(description(
+            '<pre>\n<!-- </pre> -->\n' + BLOCK + '</pre>\n')),
+        'the block after a div whose attribute names pre': event(description(
+            '<div data-note="<pre>"></div>\n\n' + BLOCK)),
+        'the block after a div holding a commented pre': event(description(
+            '<div>\n<!--\n<pre>\n-->\n</div>\n\n' + BLOCK)),
+        # A multi-line comment inside the block hides only itself.
+        'a multi-line comment inside the block': event(description(BLOCK.replace(
+            pipeline + '\n', pipeline + '\n\n<!-- a note\nthat spans lines -->\n'))),
+        # A `<!--` that GitHub shows as text opens no comment: in a quoted attribute value, in
+        # a code span, escaped, or inline and not closed within its paragraph.
+        'the block after a div whose attribute holds <!--': event(description(
+            '<div data-note="<!--"></div>\n\n' + BLOCK)),
+        'a pipeline line between code spans of <!-- and -->': event(description(BLOCK.replace(
+            pipeline + '\n', '`<!--`\n' + pipeline + '\n`-->`\n'))),
+        'a pipeline line between an escaped <!-- and -->': event(description(BLOCK.replace(
+            pipeline + '\n', '\\<!--\n' + pipeline + '\n-->\n'))),
+        'a pipeline line after a paragraph that leaves <!-- open': event(description(
+            BLOCK.replace(pipeline + '\n', 'Prefix <!--\n\n' + pipeline + '\n\n-->\n'))),
+        # A comment hides only its own text: what comes before and after it shows.
+        'a pipeline line after an inline comment closed above it': event(description(
+            BLOCK.replace(pipeline + '\n', 'Prefix <!-- a\nnote -->\n' + pipeline + '\n'))),
+        # A comment an HTML block leaves open closes at the first `-->` of raw HTML, here an
+        # inline comment before the block's content.
+        'a block comment closed by an inline comment': event(description(BLOCK.replace(
+            begin + '\n', begin + '\n<div>\n<!--\n\nClosed <!-- here -->\n\n'))),
+        # A comment opened in a table cell and closed in a later row is text: each row is
+        # inline content of its own.
+        'a table cell that opens <!-- above a row that has -->': event(description(
+            after_row(cells_with(3, '<!-- x') + '\n' + cells_with(3, 'y -->')))),
+        # A line indented four columns that continues a paragraph is not code.
+        'an indented line continuing the pipeline line': event(description(BLOCK.replace(
+            pipeline + '\n', pipeline + '\n    continued\n'))),
+        # A fence inside an HTML block is the block's text, and closed inside it hides nothing
+        # after the block's blank line.
+        'the block after a div holding a closed fence': event(description(
+            '<div>\n```\n```\n</div>\n\n' + BLOCK)),
+        # A quoted attribute value closed within its HTML block hides nothing after it.
+        'the block after a div whose quoted attribute spans lines': event(description(
+            '<div data-note="a\nb">\n</div>\n\n' + BLOCK)),
+        # A code span hides nothing GitHub renders around it: a bold pipeline prefix before
+        # steps in a code span, a Task cell in a code span, a backtick line a blank line ends,
+        # and a table under a backtick line, whose header the paragraph above it cannot hold.
+        'pipeline steps in a code span': event(description(BLOCK.replace(
+            pipeline, steps_in_code))),
+        'a Task cell in a code span': event(description(with_row(
+            cells_with(1, '`' + round_cells[1] + '`')))),
+        'a pipeline line after a blank line ends a backtick line': event(description(
+            BLOCK.replace(pipeline + '\n', '`\n\n' + pipeline + '\n`\n'))),
+        'the round table between backtick lines closed after its blank line': event(
+            description(BLOCK.replace(header + '\n', '`\n' + header + '\n').replace(
+                total + '\n\n', total + '\n\n`\n'))),
+        'the round table right after a paragraph line': event(description(BLOCK.replace(
+            header + '\n', 'The rounds:\n' + header + '\n'))),
+        'the round table right after a paragraph and a blank line': event(description(
+            BLOCK.replace(header + '\n', 'The rounds:\n\n' + header + '\n'))),
+        'a pipeline line after a code span closed above it': event(description(BLOCK.replace(
+            pipeline + '\n', 'Ran `af\ntask report`\n' + pipeline + '\n'))),
     }
     for case, payload in passing.items():
         code, said = check(payload)
@@ -141,6 +246,27 @@ def main():
     assert code == 0, said
 
     inside_code = 'the af task report block is inside a code block'
+    inside_raw = 'the af task report block is inside a raw HTML block'
+    hidden = 'part of the af task report block is inside an HTML block'
+    # Issue #193: GitHub shows a raw HTML block's lines as literal text, or hides them, however
+    # they are indented: its markers are text, and between visible markers its pipeline line
+    # and table do not count.
+    raw_cases = {}
+    for tag in ('pre', 'script', 'style', 'textarea'):
+        raw_cases[f'the block inside <{tag}>'] = (event(description(
+            f'<{tag}>\n' + BLOCK + f'</{tag}>\n')), inside_raw)
+        raw_cases[f'the block indented four spaces inside <{tag}>'] = (event(description(
+            f'<{tag}>\n' + four + f'</{tag}>\n')), inside_raw)
+        raw_cases[f'visible markers around a body inside <{tag}>'] = (event(description(
+            BLOCK.replace(begin + '\n', begin + f'\n<{tag}>\n').replace(
+                end + '\n', f'</{tag}>\n' + end + '\n'))), hidden)
+    # GitHub escapes a `<script>`, `<style>` or `<textarea>` tag and keeps the `<!--` the
+    # block holds: that comment stays open after the raw block's closing tag and hides the
+    # pipeline line and the round table (its markdown API, audited for issue #193).
+    heading = '### af task report\n\n'
+    for tag in ('script', 'style', 'textarea'):
+        raw_cases[f'a comment opened in <{tag}> left open past its close'] = (event(description(
+            BLOCK.replace(heading, heading + f'<{tag}>\n<!--\n</{tag}>\n'))), hidden)
     failing = {
         'a missing block': (event(description('')), 'no af task report block'),
         'a null body': (event(None), 'no af task report block'),
@@ -244,6 +370,83 @@ def main():
         'a Dependabot-like name': (event('', 'dependabot'), 'no af task report block'),
         'a branch that only mentions release': (event('', branch='af/release/notes'),
                                                 'no af task report block'),
+        **raw_cases,
+        'the block inside an uppercase PRE with an attribute': (event(description(
+            '<PRE class="report">\n' + BLOCK + '</PRE>\n')), inside_raw),
+        'the block inside a pre left open': (event(description('<pre>\n' + BLOCK)),
+                                             inside_raw),
+        'the block inside a pre that interrupts a paragraph': (event(right_after(
+            'The report:\n<pre>\n', BLOCK + '</pre>\n')), inside_raw),
+        # A fence inside a raw block is its text: it does not end the block.
+        'the block after a closed fence inside a pre': (event(description(
+            '<pre>\n```\n```\n' + BLOCK + '</pre>\n')), inside_raw),
+        'the round table inside a pre': (event(description(BLOCK.replace(
+            header + '\n', '<pre>\n' + header + '\n').replace(
+                total + '\n\n', total + '\n\n</pre>\n'))), 'no round table'),
+        # A comment opened after the begin marker hides everything up to the end marker's
+        # `-->`, which closes it.
+        'visible markers around a body inside a comment': (event(description(BLOCK.replace(
+            begin + '\n', begin + '\n<!--\n'))), hidden),
+        'the pipeline line inside a multi-line comment': (event(description(BLOCK.replace(
+            pipeline + '\n', '<!--\n' + pipeline + '\n-->\n'))), 'no pipeline line'),
+        # A comment opened inside an HTML block stays open after the block ends at its blank
+        # line, and Markdown text never closes it, `-->` included: here it runs to the end
+        # marker's `-->`.
+        'a comment left open in a div after the begin marker': (event(description(
+            BLOCK.replace(begin + '\n', begin + '\n<div>\n<!--\n\n'))), hidden),
+        'a comment left open in a div past a text -->': (event(description(BLOCK.replace(
+            begin + '\n', begin + '\n<div>\n<!--\n\n-->\n\n'))), hidden),
+        # An inline comment spans the lines of its paragraph.
+        'the pipeline line inside an inline multi-line comment': (event(description(
+            BLOCK.replace(pipeline + '\n', 'Prefix <!--\n' + pipeline + '\n-->\n'))),
+            'no pipeline line'),
+        # Between visible markers, a pipeline line or a round table shown as code does not
+        # count: GitHub renders neither.
+        'the pipeline line in a fence': (event(description(BLOCK.replace(
+            pipeline + '\n', '```\n' + pipeline + '\n```\n'))), 'no pipeline line'),
+        'the round table in a fence closed after a blank line': (event(description(
+            BLOCK.replace(header + '\n', '```\n' + header + '\n').replace(
+                total + '\n\n', total + '\n\n```\n'))), 'no round table'),
+        'the pipeline line indented four spaces': (event(description(BLOCK.replace(
+            pipeline, '    ' + pipeline))), 'no pipeline line'),
+        'the round table indented four spaces': (event(description(BLOCK.replace(
+            main_table, indented(main_table, '    ')))), 'no round table'),
+        # A fence does not end a `<div>` block, which runs to its blank line: GitHub shows the
+        # lines after the fence as the block's literal text.
+        'the pipeline line in a div after a closed fence': (event(description(BLOCK.replace(
+            pipeline + '\n', '<div>\n```\n```\n' + pipeline + '\n'))), 'no pipeline line'),
+        'the round table in a div after a closed fence': (event(description(BLOCK.replace(
+            header + '\n', '<div>\n```\n```\n' + header + '\n'))), 'no round table'),
+        # A tag an HTML block leaves in a quoted attribute value at its blank line swallows
+        # what GitHub renders after it, up to that quote in raw HTML.
+        'the block inside an unfinished quoted attribute': (event(description(
+            '<div data-note="\n\n' + BLOCK + '\n">\n')), 'no pipeline line'),
+        'the pipeline line inside an unfinished quoted attribute': (event(description(
+            BLOCK.replace(pipeline + '\n', '<div data-note="\n\n' + pipeline
+                          + '\n\n<p>"</p>\n'))), 'no pipeline line'),
+        'the round table inside an unfinished quoted attribute': (event(description(
+            BLOCK.replace(header + '\n', '<div data-note="\n\n' + header + '\n').replace(
+                total + '\n\n', total + '\n\n<p>"</p>\n'))), 'no round table'),
+        # A code span may span the lines of a paragraph: GitHub shows a pipeline line between
+        # backtick lines as code, its `**` included, as it does a header row whose delimiter
+        # row the closing backtick line keeps from it.
+        'the pipeline line in a code span across lines': (event(description(BLOCK.replace(
+            pipeline + '\n', '`\n' + pipeline + '\n`\n'))), 'no pipeline line'),
+        'the pipeline line in a double-backtick code span across lines': (event(description(
+            BLOCK.replace(pipeline + '\n', '``\n' + pipeline + '\n``\n'))),
+            'no pipeline line'),
+        'the pipeline line in a code span opened at the end of a paragraph line': (event(
+            description(BLOCK.replace(pipeline + '\n', 'The pipeline: `\n' + pipeline
+                                      + '`\n'))), 'no pipeline line'),
+        'a pipeline prefix in a code span closed after it': (event(description(BLOCK.replace(
+            pipeline + '\n', '`\n' + prefix + '**: ` ' + steps + '\n'))), 'no pipeline line'),
+        'the round table header in a code span across lines': (event(description(BLOCK.replace(
+            header + '\n', '`\n' + header + '\n`\n'))), 'no round table'),
+        # A backtick line right below the totals row is a row of the table, not a code span's
+        # end: the table's last row is then no totals row.
+        'the round table between backtick lines closed without a blank line': (event(
+            description(BLOCK.replace(header + '\n', '`\n' + header + '\n').replace(
+                total + '\n', total + '\n`\n'))), 'has no `Total:` row'),
     }
     messages = {}
     for case, (payload, expected) in failing.items():
@@ -252,14 +455,55 @@ def main():
         assert expected in said, f'{case}: expected {expected!r} in:\n{said}'
         assert HOW in said, f'{case} does not say how to produce the block:\n{said}'
         messages[case] = said
+    # The pipeline line and the round table are each required: hiding one fails on it alone,
+    # and says why GitHub does not render it.
+    in_code = 'part of the af task report block is inside a code block'
+    in_span = 'part of the af task report block is inside a code span'
+    alone = {
+        'the pipeline line in a fence': ('no round table', in_code),
+        'the round table in a fence closed after a blank line': ('no pipeline line', in_code),
+        'the pipeline line indented four spaces': ('no round table', in_code),
+        'the round table indented four spaces': ('no pipeline line', in_code),
+        'the pipeline line in a div after a closed fence': ('no round table', hidden),
+        'the round table in a div after a closed fence': ('no pipeline line', hidden),
+        'the pipeline line inside an unfinished quoted attribute': ('no round table', hidden),
+        'the round table inside an unfinished quoted attribute': ('no pipeline line', hidden),
+        'the pipeline line in a code span across lines': ('no round table', in_span),
+        'the pipeline line in a double-backtick code span across lines': ('no round table',
+                                                                          in_span),
+        'the pipeline line in a code span opened at the end of a paragraph line': (
+            'no round table', in_span),
+        'a pipeline prefix in a code span closed after it': ('no round table', in_span),
+    }
+    for case, (other, why) in alone.items():
+        assert other not in messages[case], f'{case}: {other!r} in:\n{messages[case]}'
+        assert why in messages[case], f'{case}: expected {why!r} in:\n{messages[case]}'
+    assert hidden in messages['the block inside an unfinished quoted attribute']
+    for tag in ('script', 'style', 'textarea'):
+        said = messages[f'a comment opened in <{tag}> left open past its close']
+        assert 'no pipeline line' in said and 'no round table' in said, said
     distinct = ['a missing block', 'a missing end marker', 'a missing pipeline line',
                 'a missing column', 'an extra column', 'reordered columns', 'an empty table',
                 'two blocks', 'a missing totals row', 'a one-cell placeholder row',
                 'a short row', 'an empty Task cell', 'a separator of the wrong width',
-                'the block in a backtick fence']
+                'the block in a backtick fence', 'the block inside <pre>',
+                'visible markers around a body inside <pre>',
+                'the pipeline line in a code span across lines']
     assert len({messages[case] for case in distinct}) == len(distinct), \
         'each required part has its own message'
-    print(f'check-pr-report: {len(passing) + 1} passing and {len(failing)} failing cases')
+
+    # Each type 6 name of GFM 0.29 or CommonMark 0.31, opened on the line under an `Intro`
+    # paragraph line right above the pipeline line: the checker passes exactly where GitHub
+    # renders that pipeline line (TYPE6_AUDIT).
+    for tag, rendered in TYPE6_AUDIT.items():
+        code, said = check(event(description(BLOCK.replace(
+            pipeline + '\n', f'Intro\n<{tag}>\n' + pipeline + '\n'))))
+        assert code == (0 if rendered else 1), f'<{tag}>: exit {code}:\n{said}'
+        if not rendered:
+            assert 'no pipeline line' in said and 'no round table' not in said, \
+                f'<{tag}>:\n{said}'
+    print(f'check-pr-report: {len(passing) + 1} passing and {len(failing)} failing cases, '
+          f'{len(TYPE6_AUDIT)} type 6 names')
 
 
 if __name__ == '__main__':
