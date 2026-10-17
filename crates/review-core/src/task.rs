@@ -82,6 +82,20 @@ fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
+/// The reader of a count that is absent when zero: omission defaults to zero, while a present
+/// count is at least one, as its wire schema requires.
+fn present_count<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match u64::deserialize(deserializer)? {
+        0 => Err(serde::de::Error::custom(
+            "a count that is absent when zero is never spelled as zero",
+        )),
+        count => Ok(count),
+    }
+}
+
 /// Optional properties allow omission, not JSON null. Keep serde admission aligned with
 /// the wire schema before the value is canonicalized and receives an identity.
 pub fn present_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
