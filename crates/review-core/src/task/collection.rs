@@ -31,7 +31,11 @@ pub struct TaskCollectedV1 {
     /// Settled Attempts whose usage was unknown when the Task was collected: no usage was
     /// reported, so each was charged zero (ADR-0143) and `chargeable_tokens` is not their spend.
     /// Absent when none.
-    #[serde(default, skip_serializing_if = "super::is_zero")]
+    #[serde(
+        default,
+        skip_serializing_if = "super::is_zero",
+        deserialize_with = "super::present_count"
+    )]
     pub unknown_usage_attempts: u64,
     /// Policy time of the Task's last event before the tombstone.
     pub last_event_unix_ms: u64,
@@ -206,6 +210,30 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<TaskCollectedV1>(value).unwrap(),
             none
+        );
+    }
+
+    /// Its schema requires a present count to be at least one, so an explicit zero is refused
+    /// on admission while an omitted count still reads as zero (#194).
+    #[test]
+    fn a_tombstone_refuses_an_explicit_zero_unknown_usage_count() {
+        let mut value = serde_json::to_value(tombstone()).unwrap();
+        value["unknown_usage_attempts"] = serde_json::json!(0);
+        assert!(serde_json::from_value::<TaskCollectedV1>(value.clone()).is_err());
+        value["unknown_usage_attempts"] = serde_json::json!(1);
+        assert_eq!(
+            serde_json::from_value::<TaskCollectedV1>(value.clone()).unwrap(),
+            tombstone()
+        );
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("unknown_usage_attempts");
+        assert_eq!(
+            serde_json::from_value::<TaskCollectedV1>(value)
+                .unwrap()
+                .unknown_usage_attempts,
+            0
         );
     }
 
