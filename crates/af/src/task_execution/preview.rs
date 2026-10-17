@@ -39,6 +39,27 @@ fn line(out: &mut String, value: &str) {
         writeln!(out, "{}", std::str::from_utf8(chunk).expect("ASCII")).unwrap();
     }
 }
+/// A suggested shell command: sanitized like every row but never wrapped, so a copied command
+/// keeps every token, its `\` continuation and an ID of any admitted length intact.
+fn command(out: &mut String, value: &str) {
+    writeln!(out, "{}", text(value)).unwrap();
+}
+/// The action that approves and runs exactly `plan_id`, continued only between arguments.
+fn run_action(out: &mut String, task_id: &str, plan_id: &str) {
+    line(out, "Approve and run this plan:");
+    command(out, &format!("  af task run {task_id} \\"));
+    command(out, &format!("    --confirm-plan {plan_id}"));
+    line(
+        out,
+        "Use the same --repo and --state selectors as this preview.",
+    );
+}
+fn details_hint(out: &mut String, task_id: &str) {
+    command(
+        out,
+        &format!("Details: af task explain {task_id} --tree (or --json)"),
+    );
+}
 pub(super) fn package_label(
     cas: &Cas,
     plan: &ExecutionPlanV1,
@@ -608,24 +629,9 @@ fn render_marked(
                 "First inspect and sign this exact generated plan with task decision-payload / approve.",
             );
         }
-        line(&mut out, "Approve and run this plan:");
-        line(
-            &mut out,
-            &format!("  af task run {} \\", text(&revision.task_id)),
-        );
-        line(&mut out, &format!("    --confirm-plan {plan_id}"));
-        line(
-            &mut out,
-            "Use the same --repo and --state selectors as this preview.",
-        );
+        run_action(&mut out, &revision.task_id, plan_id);
     }
-    line(
-        &mut out,
-        &format!(
-            "Details: af task explain {} --tree (or --json)",
-            text(&revision.task_id)
-        ),
-    );
+    details_hint(&mut out, &revision.task_id);
     Ok((out, marks))
 }
 
@@ -698,6 +704,66 @@ mod tests {
 
     fn digest(byte: char) -> String {
         format!("sha256:{}", byte.to_string().repeat(64))
+    }
+
+    /// The shell tokens of the command that starts on the row holding `start`, following `\`
+    /// continuations the way a shell joins copied lines.
+    fn copied(out: &str, start: &str) -> Vec<String> {
+        let mut rows = out.lines().skip_while(|row| !row.contains(start));
+        let mut tokens = Vec::new();
+        for row in rows.by_ref() {
+            let row = &row[row.find("af task").unwrap_or(0)..];
+            let (row, continued) = match row.strip_suffix(" \\") {
+                Some(row) => (row, true),
+                None => (row, false),
+            };
+            tokens.extend(row.split_whitespace().map(str::to_owned));
+            if !continued {
+                break;
+            }
+        }
+        tokens
+    }
+
+    #[test]
+    fn suggested_commands_keep_every_token_of_short_and_maximum_length_ids() {
+        let plan = digest('p');
+        let longest = "a".repeat(128);
+        assert!(review_core::task::is_name(&longest));
+        for id in ["pagination-cli", "x", longest.as_str()] {
+            let mut out = String::new();
+            run_action(&mut out, id, &plan);
+            details_hint(&mut out, id);
+            assert_eq!(
+                copied(&out, "af task run"),
+                ["af", "task", "run", id, "--confirm-plan", &plan]
+            );
+            assert_eq!(
+                copied(&out, "af task explain"),
+                ["af", "task", "explain", id, "--tree", "(or", "--json)"]
+            );
+            // Every row ending in `\` is a continuation of the command, never a split token.
+            let continued: Vec<_> = out.lines().filter(|row| row.ends_with('\\')).collect();
+            assert_eq!(continued, [format!("  af task run {id} \\")]);
+            assert!(out.contains("Use the same --repo and --state selectors as this preview."));
+            let prose = out.lines().filter(|row| !row.contains("af task"));
+            assert!(prose.into_iter().all(|row| row.len() <= WIDTH));
+        }
+    }
+
+    #[test]
+    fn unwrapped_commands_are_still_sanitized() {
+        let mut out = String::new();
+        run_action(
+            &mut out,
+            "ticket\nAPPROVED\u{1b}[2J\u{202e}run",
+            &digest('p'),
+        );
+        details_hint(&mut out, "x\r\u{7}y");
+        assert!(out.is_ascii() && !out.contains('\u{1b}') && !out.contains('\r'));
+        assert!(out.contains("  af task run ticket?APPROVED?[2J?run \\\n"));
+        assert!(out.ends_with("Details: af task explain x??y --tree (or --json)\n"));
+        assert_eq!(out.lines().count(), 5);
     }
 
     /// One exact-artifact binding and one Task binding whose Task ID is hostile display data

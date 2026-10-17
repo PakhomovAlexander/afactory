@@ -267,3 +267,5 @@ future readers need.
   answered](0147-stop-the-claude-model-fallback-and-name-the-model-that-answered.md)
 - [0148 — Discover each Provider's models, and validate every binding before anything is
   charged](0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)
+- [0149 — Never wrap a suggested command inside a shell
+  token](0149-never-wrap-a-suggested-command-inside-a-shell-token.md)
