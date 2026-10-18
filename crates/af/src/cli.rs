@@ -76,6 +76,15 @@ pub(crate) struct Af {
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Command {
     /// Capture shared Pipeline, Worker and Task-kind packages from an exact Git revision
+    #[command(
+        long_about = "Capture shared Pipeline, Worker and Task-kind packages from an exact Git revision.\n\n\
+`init` writes starter packages and `sync` writes a captured import into --destination. The \
+destination is a safe project-relative path under --repo (default `.`) that must not exist yet: \
+an absolute path, a backslash, an empty, `.`, `..` or `.git` segment, or a path through a \
+symlink or a non-directory is refused, and an existing destination is never overwritten. \
+`init --profile` names a starter set, not an installed Task-kind profile.",
+        after_long_help = "Examples:\n  af catalog init --profile software --destination task-demo\n  af catalog sync --source ../team-pipelines --revision main --manifest catalog.toml --destination catalog-copy --json\n  af catalog test --source . --json"
+    )]
     Catalog {
         #[command(subcommand)]
         command: CatalogCommand,
@@ -120,7 +129,9 @@ unavailable.",
 Behavior:\n\
   * Without .af/: preview a deterministic multi-review scaffold; --apply atomically creates it.\n\
   * With .af/: validate the selected pipeline, exact pins, Worker packages, graph, and Gates.\n\
-  * --refresh-lock: explicitly recompute only the selected pipeline and referenced Worker pins.\n\
+  * --refresh-lock: explicitly re-pin the selected pipeline, every pipeline a route or the \
+oversized policy names, and the Worker packages they reference; it drops a pin whose \
+`.af/workers/NAME` package or `.af/pipelines/NAME.toml` file no longer exists.\n\
   * .af/af.lock records the af release that wrote it and the archive digest of that release for \
 every target. Inside such a project any `af` on PATH runs that release, installing it on demand \
 only when the bytes match; --refresh-lock re-pins to the running release, and --af VERSION runs \
@@ -976,7 +987,7 @@ pub(crate) struct OnboardArgs {
     /// Write the previewed bundle (absent-only; never overwrites)
     #[arg(long, help_heading = "Action", conflicts_with = "refresh_lock")]
     pub(crate) apply: bool,
-    /// Repin the selected pipeline and its Workers after a reviewed edit
+    /// Repin the selected, routed and oversized pipelines and their Workers; drop stale pins
     #[arg(long, help_heading = "Action")]
     pub(crate) refresh_lock: bool,
     /// Run this command under release VERSION, installing it on demand (how a pin moves)
@@ -1005,6 +1016,7 @@ pub(crate) enum CatalogCommand {
         developer_public_key: Option<PathBuf>,
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Absent directory, as a safe path relative to --repo (an absolute path is refused)
         #[arg(long)]
         destination: String,
         #[arg(long)]
@@ -1039,6 +1051,7 @@ pub(crate) enum CatalogCommand {
         manifest: String,
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Absent directory, as a safe path relative to --repo (an absolute path is refused)
         #[arg(long)]
         destination: String,
         #[arg(long)]
@@ -1203,6 +1216,7 @@ pub(crate) enum TaskCommand {
         task_id: String,
         #[arg(long)]
         name: String,
+        /// Absent directory, as a safe path relative to --repo (an absolute path is refused)
         #[arg(long)]
         destination: String,
         #[command(flatten)]

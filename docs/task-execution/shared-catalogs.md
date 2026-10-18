@@ -24,13 +24,15 @@ precedence: ambiguous package names are errors. A shared catalog cannot contain 
 packages. Worker input/output schemas are validated during sync using the runtime's contract
 capture, without executing the Worker.
 
-Sync publishes only an absent destination. The imported `catalog.lock.json` records the exact
-commit, requested revision, catalog content identities and package digests. Package bytes and
-their original catalog files are stored beside it. Machine paths and private remote URLs are
-represented by a source identity hash. Import depth is at most four, with 32 catalogs, 128
-packages, 4,096 files and 64 MiB of captured source bytes. Each package retains the runtime's
-16 MiB bound. These are capture limits; the explicit HTTPS transport also has a 120-second
-process bound.
+Sync publishes only to an absent destination given as a safe path relative to `--repo` (default
+`.`): an absolute path, an empty, `.`, `..` or `.git` segment, or a path through a symlink or
+non-directory is refused, and an existing directory is never overwritten. The imported
+`catalog.lock.json` records the exact commit, requested revision, catalog content identities and
+package digests. Package bytes and their original catalog files are stored beside it. Machine
+paths and private remote URLs are represented by a source identity hash. Import depth is at most
+four, with 32 catalogs, 128 packages, 4,096 files and 64 MiB of captured source bytes. Each
+package retains the runtime's 16 MiB bound. These are capture limits; the explicit HTTPS
+transport also has a 120-second process bound.
 
 After reviewing the import, add its lock to the committed project `.af/task-catalog.toml`:
 
@@ -63,9 +65,14 @@ profile = "reviewed_implementation"
 Pin that package and add `[kinds] "team/feature" = "team/feature-kind"` to the project catalog.
 Tasks with `kind = "team/feature"` then require embedded Review acceptance; their selected
 Pipeline must accept that kind. The kind package becomes an exact plan dependency. A Task-file
-verification override cannot weaken its profile. `implementation`, `reviewed_implementation`, `repair_allowed_implementation`, `review` and
-`document` are the installed profiles. Packages cannot install arbitrary domain
-handlers or replace engine acceptance rules.
+verification override cannot weaken its profile.
+
+The installed profiles are exactly `implementation`, `reviewed_implementation`,
+`repair_allowed_implementation`, `review`, `document`, `report`, `optimization_analysis` and
+`optimization_candidate`; a `kind.toml` naming any other `profile` is refused. A package only
+gives a business name to one of these engine-owned profiles: it cannot install an arbitrary
+domain handler or replace the engine's acceptance rules. These are not the starter names that
+`af catalog init --profile` takes ([starters](starters.md)).
 
 Tests sync a transitive catalog, remove its original repository, plan an imported Task, modify
 the imported Worker and execute the captured plan. Fresh admission rejects the mutated package.

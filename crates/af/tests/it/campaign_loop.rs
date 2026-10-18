@@ -1806,6 +1806,35 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     assert_eq!(code, 0, "{empty_stdout}\n{empty_stderr}");
     let empty: serde_json::Value = serde_json::from_str(&empty_stdout).unwrap();
     assert_eq!(empty["subject"]["empty"], true);
+    assert!(
+        empty["subject"]["changed_paths"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    // Plan inspection of an empty Diff succeeds and only announces the refusal; `run` below is
+    // the guard (docs/task-execution/preflight.md keeps the two apart).
+    let (code, empty_text, empty_text_stderr) = invoke_af(
+        &repo,
+        &home,
+        &[
+            "plan",
+            "--pipeline",
+            PIPELINE,
+            "--policy-rev",
+            "HEAD",
+            "--base",
+            "HEAD",
+            "--candidate",
+            "HEAD",
+        ],
+        None,
+    );
+    assert_eq!(code, 0, "{empty_text}\n{empty_text_stderr}");
+    assert!(
+        empty_text.contains("EMPTY — run will refuse"),
+        "{empty_text}"
+    );
 
     let (code, empty_run_stdout, empty_run_stderr) = af(
         &repo,

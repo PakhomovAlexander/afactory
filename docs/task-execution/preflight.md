@@ -88,8 +88,15 @@ remains explicitly unverified, even with a matched nonempty diff.
 The consumed format is `af/review-plan@1`, specifically `resolved.base_snapshot_id`,
 `resolved.candidate_snapshot_id` and `subject.kind`, `subject.empty`, `subject.changed_paths`.
 A real capture is retained in `fixtures/task-runtime/preflight/review-plan.json`. The helper
-does not validate the full Review plan schema. AF refuses native empty-Diff planning itself;
-the helper also rejects an empty summary supplied in an edited export.
+does not validate the full Review plan schema.
+
+Three behaviours meet an empty Diff, and they stay distinct. `af review plan` inspects it and
+succeeds: it exits 0, exports `subject.empty` as `true` with no `changed_paths`, and its text
+output marks the subject `EMPTY — run will refuse`. `af review run` is the guard: it refuses
+the empty Diff before Gates, Provider admission or Worker dispatch, so make a real candidate
+change first ([Quickstart](../../README.md#quickstart)). This helper only reads a supplied
+export: a matched summary that is empty, whether native or edited, is the
+`empty_intended_diff` conflict (exit 2), never a successful diff check.
 
 ## Budget explanation
 
