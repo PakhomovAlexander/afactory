@@ -269,3 +269,5 @@ future readers need.
   charged](0148-discover-provider-models-and-validate-every-binding-before-a-charge.md)
 - [0149 — Never wrap a suggested command inside a shell
   token](0149-never-wrap-a-suggested-command-inside-a-shell-token.md)
+- [0150 — Name the path a status-line error
+  carries](0150-name-the-path-a-status-line-error-carries.md)

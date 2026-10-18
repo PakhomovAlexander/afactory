@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use clap::{CommandFactory as _, Parser as _};
 
 use crate::cli;
+use crate::config::Refusal;
 
 mod keymap;
 mod paint;
@@ -454,9 +455,13 @@ impl App {
     /// An error naming `path`: `<path>: <reason>`, of which the status line shortens the path,
     /// as one path whatever it holds, and never the reason.
     fn say_path_error(&mut self, path: &Path, reason: &str) {
-        let named = path.display().to_string();
-        self.say_error(format!("{named}: {reason}"));
-        self.message_path = Some(0..named.len());
+        self.say_refusal(Refusal::naming("", path, &format!(": {reason}")));
+    }
+
+    /// An error and the path it names, if any, which the status line shortens as one path.
+    fn say_refusal(&mut self, refusal: Refusal) {
+        self.say_error(refusal.text);
+        self.message_path = refusal.path;
     }
 
     fn opened_tab(&self) -> Option<Tab> {
@@ -1033,7 +1038,7 @@ impl App {
         }
         match Scope::resolve(Some(path.as_path())) {
             Ok(scope) => self.enter_scope(scope),
-            Err(error) => self.say_error(error),
+            Err(refusal) => self.say_refusal(refusal),
         }
     }
 
@@ -1041,22 +1046,25 @@ impl App {
         let scope = match which {
             "user" => Scope::user(),
             "project" => self.project_scope(),
-            other => Err(format!("the scope is user or project, not {other}")),
+            other => Err(format!("the scope is user or project, not {other}").into()),
         };
         match scope {
             Ok(scope) => self.enter_scope(scope),
-            Err(error) => self.say_error(error),
+            Err(refusal) => self.say_refusal(refusal),
         }
     }
 
-    fn project_scope(&self) -> Result<Scope, String> {
+    fn project_scope(&self) -> Result<Scope, Refusal> {
         let start = self.start.clone();
         let start = start.ok_or("no repository to return to; :cd DIR into one")?;
         let scope = Scope::resolve(Some(start.as_path()))?;
-        let start = start.display();
         match scope.kind {
             ScopeKind::Project => Ok(scope),
-            ScopeKind::User => Err(format!("{start} is not inside a git repository")),
+            ScopeKind::User => Err(Refusal::naming(
+                "",
+                &start,
+                " is not inside a git repository",
+            )),
         }
     }
 

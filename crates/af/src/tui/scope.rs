@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::config::{self, Config};
+use crate::config::{self, Config, Refusal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ScopeKind {
@@ -30,8 +30,8 @@ pub(crate) struct Scope {
 
 impl Scope {
     /// `dir`, or the current directory, inside a repository is that project's scope; anywhere
-    /// else is the user scope.
-    pub(crate) fn resolve(dir: Option<&Path>) -> Result<Scope, String> {
+    /// else is the user scope. An error names the configuration file it is about.
+    pub(crate) fn resolve(dir: Option<&Path>) -> Result<Scope, Refusal> {
         // Outside a repository the user scope reads the machine-owned layers only, so a
         // directory layer above the start, valid or not, is never opened for it.
         let start = match dir {
@@ -43,19 +43,19 @@ impl Scope {
         if config::git_toplevel(&start).is_none() {
             return Scope::user();
         }
-        let config = config::load(dir)?;
+        let config = config::load_naming(dir)?;
         match config.toplevel.clone() {
             Some(toplevel) => Ok(Scope::project(toplevel, config)),
             None => Scope::user(),
         }
     }
 
-    pub(crate) fn user() -> Result<Scope, String> {
+    pub(crate) fn user() -> Result<Scope, Refusal> {
         let home = config::home()?;
         Ok(Scope {
             kind: ScopeKind::User,
             root: home.clone(),
-            config: config::load_machine()?,
+            config: config::load_machine_naming()?,
             home: Some(home),
             registry: crate::providers::registry_location(),
             state: crate::xdg_state_root().ok(),
