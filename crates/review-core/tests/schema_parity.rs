@@ -2499,6 +2499,8 @@ fn a_task_tombstone_is_one_closed_transition_referencing_no_artifact() {
         ("schema", json!("af/TaskCollected@2")),
         ("chargeable_tokens", json!("012")),
         ("collected_bytes", json!(-1)),
+        // A present count is at least one; none is spelled by omission (#194).
+        ("unknown_usage_attempts", json!(0)),
         ("unknown_usage_attempts", json!(-1)),
         ("unknown_usage_attempts", json!(9_007_199_254_740_992_u64)),
         ("result_id", json!(format!("sha256:{}", "b".repeat(64)))),
