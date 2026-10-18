@@ -29,8 +29,13 @@ automatic Integration are outside this path.
 
 - a local Git clone with no staged, tracked or untracked changes at the commit used to start
   the Task;
-- an installed `af` release, verified against the release's `SHA256SUMS` and
-  `SHA256SUMS.minisig` (the release's `install.sh` does this);
+- an installed `af` release whose archive digest and `SHA256SUMS.minisig` signature were both
+  verified. The release's `install.sh` always checks the digest against `SHA256SUMS`, but checks
+  the signature only when `minisign` is on `PATH`: put it there before you run the installer
+  ([install](../README.md#install)). Without it, the installer reports that only the checksum
+  was verified, and the install receipt records `verified_by = "sha256sums"` rather than
+  `"minisign"`; that checksum-only install does not meet this prerequisite. The running
+  release's `receipt.verified_by` is shown by `af self status --json`;
 - machine-local Provider authentication for every model Worker the Pipeline binds, checked with
   `af provider status` and established as [`providers.md`](providers.md) describes — an
   interactive login is opt-in and happens only at your own terminal; command Workers need none;
@@ -42,6 +47,8 @@ automatic Integration are outside this path.
 `af catalog init --profile software --destination task-demo` creates a new starter directory,
 which must not exist yet, holding a working, credential-free catalog and runnable Task files
 ([starters](task-execution/starters.md)); it does not add a catalog to the current repository.
+Its `--destination`, like that of `af catalog sync`, is a safe path relative to `--repo`
+(default `.`); an absolute path is refused.
 `af catalog sync` imports shared definitions from Git
 ([shared catalogs](task-execution/shared-catalogs.md)). The catalog pins every package by digest,
 so changing any package byte requires a newly reviewed pin. Checks are project-specific, so the

@@ -1,6 +1,7 @@
 # Shared starter Pipelines and Workers
 
-Create a complete credential-free catalog in an absent directory:
+Create a complete credential-free catalog in an absent directory. `--destination` is a safe
+path relative to `--repo` (default `.`); an absolute path or an existing directory is refused:
 
 ```sh
 af catalog init --profile all --destination task-demo --json

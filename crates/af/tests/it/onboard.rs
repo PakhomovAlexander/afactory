@@ -249,6 +249,20 @@ fn apply_creates_valid_authority_and_never_overwrites_it() {
     assert!(readme.contains("Plain `af review run` is light"));
     assert!(readme.contains("Do not open a follow-up review Campaign"));
     assert!(readme.contains("human-requested `--heavy`"));
+    // The guide names the whole `--refresh-lock` scope: route and oversized targets too, and
+    // the stale pins it drops.
+    let guide = readme.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        guide.contains(
+            "re-pins the selected pipeline, every pipeline a route or the oversized policy names, \
+             and the Worker packages they reference; it drops a pin whose"
+        ),
+        "{readme}"
+    );
+    assert!(
+        !guide.contains("recomputes only the selected pipeline"),
+        "{readme}"
+    );
     assert!(repo.join(".af/pipelines/review.toml").is_file());
     let pipeline = std::fs::read_to_string(repo.join(".af/pipelines/review.toml")).unwrap();
     assert_eq!(pipeline.matches("demands = \"required\"").count(), 2);
@@ -361,4 +375,28 @@ fn absent_gate_is_a_refusal_and_help_is_self_contained() {
     assert!(stdout(&help).contains("Review Campaigns are light by default"));
     assert!(stdout(&help).contains("Use `--heavy` only when a human"));
     assert!(stdout(&help).contains("--refresh-lock"));
+    // `--refresh-lock` re-pins every configured pipeline, not only the selected one, and drops
+    // pins whose package or pipeline file is gone; the help says so.
+    let text = stdout(&help)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        text.contains(
+            "--refresh-lock: explicitly re-pin the selected pipeline, every pipeline a route or \
+             the oversized policy names, and the Worker packages they reference; it drops a pin \
+             whose `.af/workers/NAME` package or `.af/pipelines/NAME.toml` file no longer exists."
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "Repin the selected, routed and oversized pipelines and their Workers; drop stale pins"
+        ),
+        "{text}"
+    );
+    assert!(
+        !text.contains("recompute only the selected pipeline"),
+        "{text}"
+    );
 }
