@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -345,14 +346,63 @@ fn is_git_repository(dot_git: &Path) -> bool {
 // ------------------------------------------------------------------------------------------
 // loading
 
+/// A load's error and the byte range of the file it names in that text, when it names one, so
+/// a display too narrow for the whole text can shorten the path as one path, spaces and all,
+/// and keep the reason. The text is the error every other caller reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Refusal {
+    pub(crate) text: String,
+    pub(crate) path: Option<Range<usize>>,
+}
+
+impl Refusal {
+    /// `<before><path><after>`, naming `path`.
+    pub(crate) fn naming(before: &str, path: &Path, after: &str) -> Refusal {
+        let named = path.display().to_string();
+        let start = before.len();
+        Refusal {
+            text: format!("{before}{named}{after}"),
+            path: Some(start..start + named.len()),
+        }
+    }
+}
+
+impl From<String> for Refusal {
+    fn from(text: String) -> Refusal {
+        Refusal { text, path: None }
+    }
+}
+
+impl From<&str> for Refusal {
+    fn from(text: &str) -> Refusal {
+        Refusal::from(text.to_owned())
+    }
+}
+
+impl From<Refusal> for String {
+    fn from(refusal: Refusal) -> String {
+        refusal.text
+    }
+}
+
 /// The whole ladder, for `af config show` and project-facing settings.
 pub(crate) fn load(repo: Option<&Path>) -> Result<Config, String> {
+    Ok(load_naming(repo)?)
+}
+
+/// [`load`], its error naming the file it is about.
+pub(crate) fn load_naming(repo: Option<&Path>) -> Result<Config, Refusal> {
     load_with(repo, false)
 }
 
 /// Built-in, system, user, and environment only: the layers a repository cannot write. This is
 /// the only load `af self` and dispatch consult.
 pub(crate) fn load_machine() -> Result<Config, String> {
+    Ok(load_machine_naming()?)
+}
+
+/// [`load_machine`], its error naming the file it is about.
+pub(crate) fn load_machine_naming() -> Result<Config, Refusal> {
     load_with(None, true)
 }
 
@@ -375,7 +425,7 @@ impl MachineRoots {
     }
 }
 
-fn load_with(repo: Option<&Path>, machine_scope: bool) -> Result<Config, String> {
+fn load_with(repo: Option<&Path>, machine_scope: bool) -> Result<Config, Refusal> {
     load_rooted(repo, machine_scope, &MachineRoots::current()?)
 }
 
@@ -383,7 +433,7 @@ pub(crate) fn load_rooted(
     repo: Option<&Path>,
     machine_scope: bool,
     roots: &MachineRoots,
-) -> Result<Config, String> {
+) -> Result<Config, Refusal> {
     let start = match repo {
         Some(repo) => repo.to_path_buf(),
         None => std::env::current_dir().map_err(|error| format!("current directory: {error}"))?,
@@ -432,9 +482,9 @@ pub(crate) fn load_rooted(
         let present = path.is_file();
         if present {
             let text = std::fs::read_to_string(&path)
-                .map_err(|error| format!("reading {}: {error}", path.display()))?;
+                .map_err(|error| Refusal::naming("reading ", &path, &format!(": {error}")))?;
             let mut value: Value = toml::from_str(&text)
-                .map_err(|error| format!("{}: {}", path.display(), error.message()))?;
+                .map_err(|error| Refusal::naming("", &path, &format!(": {}", error.message())))?;
             if matches!(layer, "directory" | "project" | "local")
                 && let Some(table) = value.as_table_mut()
             {
@@ -893,6 +943,45 @@ mod tests {
         );
         assert_eq!(config.origins["storage.max_bytes"].layer, "built-in");
         assert_eq!(config.origins["storage.keep_days"].layer, "environment");
+    }
+
+    /// A layer that does not parse is refused with the text `load` always gave, and the span
+    /// of exactly the file it names, spaces and all.
+    #[test]
+    fn a_broken_layer_is_refused_naming_its_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let repo = root.join("a repo with spaces");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(repo.join(".af")).unwrap();
+        let file = repo.join(".af/af.toml");
+        std::fs::write(&file, "this is not toml\n").unwrap();
+        let roots = MachineRoots {
+            system: root.join("etc"),
+            user: root.join("user"),
+            environment: Vec::new(),
+        };
+        let refusal = load_rooted(Some(&repo), false, &roots).unwrap_err();
+        let reason = toml::from_str::<Value>("this is not toml\n")
+            .unwrap_err()
+            .message()
+            .to_owned();
+        assert_eq!(refusal.text, format!("{}: {reason}", file.display()));
+        let span = refusal.path.clone().unwrap();
+        assert_eq!(&refusal.text[span], file.display().to_string());
+        assert_eq!(
+            String::from(refusal),
+            format!("{}: {reason}", file.display())
+        );
+
+        // A layer that cannot be read is named after `reading `; a refusal naming nothing
+        // carries no span.
+        let refusal = Refusal::naming("reading ", &file, ": denied");
+        assert_eq!(refusal.text, format!("reading {}: denied", file.display()));
+        let span = refusal.path.clone().unwrap();
+        assert_eq!(&refusal.text[span], file.display().to_string());
+        assert_eq!(Refusal::from("plain").path, None);
     }
 
     #[test]

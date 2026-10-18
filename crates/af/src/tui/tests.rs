@@ -1399,6 +1399,106 @@ fn a_wide_name_or_a_path_with_spaces_keeps_the_reason_visible() {
     );
 }
 
+/// The status line at 80 columns, after the message is checked to be `full`.
+fn status_at_80(app: &mut App, full: &str) -> String {
+    assert_eq!(app.message, Some((full.to_owned(), true)));
+    let frame = app.frame(80, 24).text();
+    let status = frame.lines().last().unwrap().to_owned();
+    assert!(status.len() <= 80, "{status}");
+    status
+}
+
+/// `:scope project` from a start outside any repository names the start as one path, so at
+/// 80 columns a long start whose components hold spaces is shortened and the reason stays.
+#[test]
+fn scope_project_outside_a_repository_keeps_the_reason_for_a_spaced_start() {
+    let (_temp, root) = temp_root();
+    let repo = hub_repo(&root);
+    let reason = " is not inside a git repository";
+    let final_component = format!("{}caf\u{e9} end", "many words ".repeat(5));
+    let start = root
+        .join("a directory with spaces/".repeat(3))
+        .join(&final_component);
+    std::fs::create_dir_all(&start).unwrap();
+    let scope = hub_scope(&root, &repo);
+    let providers = ProvidersPane::with_inventory(inventory(), UsageProbe::Probe);
+    let mut app = App::new(scope, Some(start.clone()), Panes::new(providers));
+    let mut host = Recorder::default();
+    press(&mut app, &mut host, b":scope project\r");
+    let full = format!("{}{reason}", start.display());
+    assert!(full.len() > 80, "{full}");
+    let status = status_at_80(&mut app, &full);
+    // The final component alone is wider than the room beside the reason, so its tail stays,
+    // made printable, and the line is exactly the 80 columns.
+    let printable = paint::ascii(&final_component);
+    let room = 80 - reason.len() - "...".len();
+    assert!(printable.len() > room, "{printable}");
+    let shortened = format!("...{}{reason}", &printable[printable.len() - room..]);
+    assert_eq!(status, shortened);
+    assert!(
+        status.ends_with(" words caf? end is not inside a git repository"),
+        "{status}"
+    );
+
+    // Room beside the reason for whole trailing components: they stay whole after `...`.
+    let start = root
+        .join("a directory with spaces/".repeat(3))
+        .join("plain dir");
+    std::fs::create_dir_all(&start).unwrap();
+    app.start = Some(start.clone());
+    press(&mut app, &mut host, b":scope project\r");
+    let full = format!("{}{reason}", start.display());
+    assert!(full.len() > 80, "{full}");
+    let status = status_at_80(&mut app, &full);
+    let kept = "  .../a directory with spaces/plain dir is not inside a git repository";
+    assert!(status.ends_with(kept), "{status}");
+
+    // A short start is unchanged.
+    app.start = Some(PathBuf::from("/"));
+    press(&mut app, &mut host, b":scope project\r");
+    let status = status_at_80(&mut app, "/ is not inside a git repository");
+    assert!(
+        status.ends_with("  / is not inside a git repository"),
+        "{status}"
+    );
+    assert!(!status.contains("..."), "{status}");
+}
+
+/// `:cd` into a repository whose project layer does not parse names that file as one path, so
+/// at 80 columns a long repository path with spaces is shortened and the parse error stays.
+#[test]
+fn cd_into_a_repository_with_a_broken_layer_keeps_the_reason_for_a_spaced_path() {
+    let (_temp, root) = temp_root();
+    let mut app = hub_app(&root);
+    let mut host = Recorder::default();
+    let broken = "this is not toml\n";
+    let reason = toml::from_str::<toml::Value>(broken)
+        .unwrap_err()
+        .message()
+        .to_owned();
+    let other = root
+        .join("a repository path with spaces/".repeat(3))
+        .join("the repo");
+    std::fs::create_dir_all(other.join(".af")).unwrap();
+    git(&other, &["init", "-q", "-b", "main"]);
+    let file = other.join(".af/af.toml");
+    std::fs::write(&file, broken).unwrap();
+    press(
+        &mut app,
+        &mut host,
+        format!(":cd \"{}\"\r", other.display()).as_bytes(),
+    );
+    // The error is `config::load`'s own text, and the scope stays where it was.
+    let full = format!("{}: {reason}", file.display());
+    assert!(full.len() > 80, "{full}");
+    let status = status_at_80(&mut app, &full);
+    assert_eq!(app.scope.root, root.join("hub"));
+    let tail = format!("/.af/af.toml: {reason}");
+    assert!(tail.len() + "...".len() < 80, "{tail}");
+    assert!(status.ends_with(&tail), "{status}");
+    assert!(status.contains("..."), "{status}");
+}
+
 /// Released before the child, re-entered after the wait; then the panes the child may have
 /// changed are read again, keeping what is opened and the bar's selection.
 #[test]
