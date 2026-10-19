@@ -609,7 +609,7 @@ fn administrative_names(administrative: &Path) -> Result<BTreeSet<OsString>, Str
 /// has none), is one `git worktree add` made for the worktree at `path`: git names the entry by
 /// the worktree's basename, followed by digits when that name is taken, and writes into `gitdir`
 /// the path of the worktree's `.git` file.
-pub(super) fn owns_entry(path: &Path, name: &OsStr, gitdir: Option<&str>) -> bool {
+pub(super) fn owns_entry(path: &Path, name: &OsStr, gitdir: Option<&[u8]>) -> bool {
     let Some(basename) = path.file_name() else {
         return false;
     };
@@ -619,8 +619,8 @@ pub(super) fn owns_entry(path: &Path, name: &OsStr, gitdir: Option<&str>) -> boo
         .is_some_and(|digits| digits.iter().all(u8::is_ascii_digit));
     named
         && gitdir.is_none_or(|gitdir| {
-            let gitdir = gitdir.strip_suffix('\n').unwrap_or(gitdir);
-            Path::new(gitdir) == path.join(".git")
+            let gitdir = gitdir.strip_suffix(b"\n").unwrap_or(gitdir);
+            gitdir == path.join(".git").as_os_str().as_encoded_bytes()
         })
 }
 
@@ -633,7 +633,7 @@ fn added_entries(
     let mut added = Vec::new();
     for name in administrative_names(administrative)?.difference(before) {
         let file = administrative.join(name).join("gitdir");
-        let gitdir = match std::fs::read_to_string(&file) {
+        let gitdir = match std::fs::read(&file) {
             Ok(gitdir) => Some(gitdir),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(format!("reading {}: {error}", file.display())),

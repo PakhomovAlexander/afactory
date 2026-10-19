@@ -515,9 +515,32 @@ fn an_administrative_entry_belongs_to_the_add_whose_basename_and_gitdir_it_bears
         ),
     ] {
         assert_eq!(
-            commands::owns_entry(path, OsStr::new(name), gitdir),
+            commands::owns_entry(path, OsStr::new(name), gitdir.map(str::as_bytes)),
             owned,
             "{name} {gitdir:?}"
+        );
+    }
+}
+
+// A unit test only: APFS refuses non-UTF-8 file names, so no integration test creates such a path.
+#[cfg(unix)]
+#[test]
+fn an_administrative_entry_of_a_non_utf8_path_belongs_to_its_add() {
+    use std::os::unix::ffi::OsStrExt;
+    let path = Path::new(OsStr::from_bytes(b"/work/fixture-wt-\xffspike"));
+    let name = OsStr::from_bytes(b"fixture-wt-\xffspike");
+    let own = b"/work/fixture-wt-\xffspike/.git".to_vec();
+    let own_newline = [own.as_slice(), b"\n"].concat();
+    for (gitdir, owned) in [
+        (None, true),
+        (Some(own.as_slice()), true),
+        (Some(own_newline.as_slice()), true),
+        (Some(b"/work/fixture-wt-\xfeother/.git\n".as_slice()), false),
+    ] {
+        assert_eq!(
+            commands::owns_entry(path, name, gitdir),
+            owned,
+            "{gitdir:?}"
         );
     }
 }
