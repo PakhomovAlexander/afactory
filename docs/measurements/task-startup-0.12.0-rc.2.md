@@ -1,9 +1,8 @@
 # Task startup profile, af 0.12.0-rc.2
 
 Measured on 2026-10-13 and first published as
-[issue #255](https://github.com/PakhomovAlexander/afactory/issues/255), which this page replaces:
-the run's raw artifact has expired and its diagnostic branch is deleted, so the numbers below
-exist only here.
+[issue #255](https://github.com/PakhomovAlexander/afactory/issues/255). The run's raw artifact has
+expired and its diagnostic branch is deleted, so this page keeps the report in the repository.
 
 Release-target profiling of Task startup on AF `0.12.0-rc.2` found substantial CPU time in repeated
 typed-artifact decoding/validation and canonical serialization. In one synthetic 5,605,230-byte
@@ -19,8 +18,8 @@ exact cause of that historical failure.
 
 - [Release profiling run
   38347191591](https://github.com/PakhomovAlexander/afactory/actions/runs/38347191591), 2026-10-13.
-- Raw profiling artifact `release-profile-1857` of that run: **expired**, so this page is the
-  remaining copy of the data. It included test logs, Cargo build JSON, verbose build output,
+- Raw profiling artifact `release-profile-1857` of that run: **expired**; this page does not
+  reproduce its contents. It included test logs, Cargo build JSON, verbose build output,
   host/toolchain metadata, instrumentation patch, checksums, and the failed perf attempt.
 - AF source base: `6ca82d7d5e3ab94b9f426b2c99b8f44b95f87d42`; diagnostic head:
   `fd6bc75b79b628114ddcb25a2ddc166c381b83c0` (its branch `diagnostic/release-profile-1857` is
