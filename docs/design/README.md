@@ -37,3 +37,8 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   cache key, one machine-wide budget evicted least recently used and enforced after every run,
   collection that reaches every Store, an af-owned scratch directory and `HOME` for every check, and removal of
   what Workers and gates leave in Claude and GitHub. Accepted 2026-10-07; package D1–D5 in flight.
+- [`plugins.md`](plugins.md) — every feature that is not kernel authority as a plugin: an
+  executable af finds by name, runs as a child with a versioned environment, pins by digest in
+  `.af/af.lock`, notifies after a run, and reads the kernel only through `af … --json` and a
+  read-only `af store` namespace. Proposed 2026-10-19; packages P0–P7 not started; the boundaries
+  are proposed as one ADR, and the Project and telemetry notes are re-planned under its §3.16.
