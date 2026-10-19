@@ -37,3 +37,9 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   cache key, one machine-wide budget evicted least recently used and enforced after every run,
   collection that reaches every Store, an af-owned scratch directory and `HOME` for every check, and removal of
   what Workers and gates leave in Claude and GitHub. Accepted 2026-10-07; package D1–D5 in flight.
+- [`project.md`](project.md) — one **Project** entity per repository (identified by the root
+  commits every Snapshot already carries), its **Workspaces** (one registered checkout per
+  workstream, adopting the `workstreams/` habit), kernel-measured **Surveys** of tree, history,
+  contributors, decisions and af activity recorded by a token-free **Surveyor** at onboarding and
+  after runs, and bounded **Project Briefs** that a pipeline carries to chosen Workers on a
+  declared port; all behind `af project`. Proposed 2026-10-19; packages PJ1–PJ5 not started.
