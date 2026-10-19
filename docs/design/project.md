@@ -244,9 +244,12 @@ The Surveyor runs in three ways, and in none of them does it call a Provider:
    (the default; `"manual"` turns it off).
    That is one bounded process that reads, writes one record and exits, the precedent being
    `af self refresh-check`; the kernel still runs no daemon and polls nothing (values §3, §8).
-   It takes the single-flight lock `$XDG_RUNTIME_DIR/af/project-<hex>.lock` and leaves silently
-   if another refresh holds it, and it compares the survey key again under that lock, so two parents racing record one
-   Survey and an unchanged key means no measurement.
+   It takes the single-flight lock `$XDG_RUNTIME_DIR/af/project-<hex>.lock`, waiting for it up
+   to `max_wall_ms` (a refresher that never gets it records that as its failure), and compares
+   the survey key again under the lock: it measures only when no complete Survey matches the
+   current key, so equal keys coalesce into one Survey and a key that changed while the holder
+   measured (a Task settling after the holder captured its watermark, PJ5) is measured by the
+   waiter in turn.
 
 Bounds come from `[survey]`: `max_wall_ms` (60,000), `max_commits`, `max_file_bytes`. A bound
 hit makes the sections after it `partial` or `unavailable`; the Survey is still recorded. Fixed
@@ -260,7 +263,11 @@ one to any positive integer and never raise it, and zero, a value above the ceil
 does not fit are refused when the policy loads, from the project layer and the environment form
 alike. Every git stream is read incrementally under the one
 deadline, never buffered whole; a list cut at its maximum records the count it saw and the
-reason `max_entries`; a Survey that cannot fit even so, or whose exact identity strings alone cannot fit, records
+reason `max_entries`, after ranking, so the entries kept are the same for the same input and
+the totals cover the whole population: contributors by commits, then lines added, then identity;
+hot paths by touching commits in 90 days, then path; tags by tagger time (annotated) or target
+committer time (lightweight), undated last, then name; directories, languages, terms and checks
+by name; decisions by number, then path; a Survey that cannot fit even so, or whose exact identity strings alone cannot fit, records
 `SurveyFailed@1` with the bytes it needed. A
 failure records `SurveyFailed@1` with its reason, `af project show` prints it, and the command
 that spawned the refresh keeps its own exit code: a Survey never fails a Task.
@@ -284,7 +291,10 @@ the Survey head (commit, and Tree Digest when the Survey has one; preview and ex
 sections, the sections dropped with their reasons, and `rendered_bytes`.
 
 Variants are project policy in `.af/af.toml`. Two are built in: `orient`, shown here as a
-project would write it, and `none`.
+project would write it, and `none`, which suppresses construction: no Brief artifact, no
+manifest entry, nothing on the port (so a port naming it must be optional), and a preview line
+`project: none (variant none)`, with or without a Survey; an explicit Task-file binding still
+takes precedence over it.
 
 ```toml
 [brief.orient]
@@ -464,7 +474,8 @@ max_bytes = 8192
 Patterns use the semantics of the matcher the `.af/af.toml` routes already use (`glob_matches`
 in `crates/af/src/project.rs`), which PJ2 re-implements for both by dynamic programming, so a
 match costs pattern length times text length and never backtracks (the recursive form takes
-billions of steps on `*a` thirty times against thirty `a`s, inside the string limits and outside
+billions of steps on `*a` thirty times followed by `b` against thirty `a`s, a failing match
+inside the string limits and outside
 every deadline); a pattern is at most 256 bytes and a list at most 64 patterns, refused at policy
 load beyond that, and the Surveyor checks its deadline between matches: `**` spans segments, `*` a run inside one, `?` one character, and
 every other character is literal, brackets included, so `*[bot]` matches `dependabot[bot]` and no
@@ -497,7 +508,8 @@ used at its cutoff, that the budget pass may reclaim oldest first through the sa
 deletion even below `keep_surveys`; protected are the newest complete Survey, any Survey a running
 refresh or Brief build holds under the Project Store lock, and the recent-use window ADR-0144
 grants every entry; the Project's log, `workspaces.toml` and operator files are never reclaimed.
-PJ4 wires the budget pass. Collection never breaks a Task: a plan pins a
+PJ2 ships the inventory, the byte accounting and the budget-driven tombstone and deletion with
+the first Survey writer; PJ4 adds only the detached refresh. Collection never breaks a Task: a plan pins a
 Brief in the Task Store, not the Survey in the Project Store.
 
 ## 4. Values check
@@ -550,7 +562,8 @@ Deliverables: `af/ProjectSurvey@1` with `identity`, `tree`, `history`, `contribu
 `decisions`, `vocabulary` and `checks`; the Surveyor operator with its bounds; `af onboard
 --apply` recording the first Survey; `af project survey|refresh|history`; the survey key and
 `--force`; `SurveyFailed@1` with its schema and replay and the outcome `af project refresh`
-prints; Survey collection under `[storage] keep_surveys` with the replay rules of §3.9. ADR: *Measure a Project into Surveys with a token-free Surveyor.*
+prints; Survey collection under `[storage] keep_surveys` with the replay rules of §3.9, and
+Surveys as reclaimable entries of the machine-budget pass. ADR: *Measure a Project into Surveys with a token-free Surveyor.*
 
 Acceptance: a fixture repository with known counts yields a byte-identical expected Survey at a
 fixed cutoff; a second run with an unchanged survey key records nothing, while a new tag, a
@@ -559,15 +572,19 @@ produce `partial` sections and a recorded Survey; an early deadline leaves the T
 with its reason, never a partial digest; a repository whose `repository_id` joins seven roots
 (286 bytes) keeps it exact; `max_paths = 0`, a value above its ceiling and an overflowing one
 are refused at policy load; one third of three commits is the share `3333`; the
-adversarial pattern (`*a` thirty times against thirty `a`s) matches within the bound; the status
+failing adversarial pattern (`*a` thirty times then `b`, against thirty `a`s) returns false within
+a stated work bound through routing and Survey policy alike, and its matching form is a separate
+correctness case; the status
 fixture (two dates on one line, a partial supersession, a missing date, no status line) yields the
 stated statuses and dates; no author email appears in a record under either identity policy, an email-only author name
 and a name carrying an email beside ordinary text included; the measurement-policy fixture (divergent author and committer dates, a merge, a
 rename, a binary change, the `max_commits` boundary) yields the stated totals; an oversized commit
 and a very large tree stay within the fixed maxima with recorded reasons; collection beyond
 `keep_surveys` appends tombstones, frees the bytes, replays `af project history` and recovers
-after an interruption between the tombstone and the deletion; the pull request states the
-measured wall time and record size on afactory.
+after an interruption between the tombstone and the deletion; budget pressure below
+`keep_surveys` reclaims the oldest Survey and never the newest complete one, a held one or the
+Project's files; a refresh and a collection at once leave one consistent log; the pull request
+states the measured wall time and record size on afactory.
 
 ### PJ3 — Project Brief
 
@@ -592,17 +609,16 @@ kernel's own `kernel/implementer` package adopts the port in a separate pull req
 ### PJ4 — Detached refresh and staleness
 
 Deliverables: the post-run spawn behind `[survey] refresh`; the runtime-directory lock; the
-`af project show` refresh line; `behind_commits` in preview and explain; Surveys as reclaimable
-entries of the machine-budget pass (§3.9). ADR: *Refresh Surveys after runs and keep them
-within the machine budget*, naming the PJ2 clauses it supersedes; PJ2's accepted ADR gains only
+`af project show` refresh line; `behind_commits` in preview and explain. ADR: *Refresh Surveys
+after runs*, naming the PJ2 clauses it supersedes; PJ2's accepted ADR gains only
 a status-line link (ADR-0113 clause 6).
 
 Acceptance: a Task run on a changed head is followed by exactly one new Survey; two concurrent
 runs produce one; a run on an unchanged survey key spawns no process (the parent compares the
 key; process creation is tested apart from recording); a Surveyor failure leaves the
-Task's exit code unchanged and is visible in `af project show`; budget pressure below
-`keep_surveys` reclaims the oldest Survey and never the newest complete one, a held one or the
-Project's files; a refresh and a collection at once leave one consistent log.
+Task's exit code unchanged and is visible in `af project show`; a Task settling after a running
+refresh captured its watermark is measured by the next refresher, which waited for the lock; a
+refresher that never gets the lock within `max_wall_ms` records a failure.
 
 ### PJ5 — Activity across Workspaces
 
