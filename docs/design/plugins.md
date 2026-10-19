@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 20 after review rounds 1 to 19 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 21 after review rounds 1 to 20 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -847,10 +847,11 @@ The transport's bounds are frozen here, enforced while reading rather than after
 (`drain_async` grows without a limit today, `run_supervised_duplex_inner` sends stderr
 through it and collects the reader's result only after the leader exits, and `validate_reply`
 checks `MAX_WORKER_BYTES` only afterwards), and they are enforced where ADR-0026 puts output
-collection, in `review-process`: P7 extends the leaf crate with a retention limit per stream,
-an overflow policy per stream (one policy here: the first excess byte on any stream cancels)
-and a cancellation the reader raises the moment a frame breaks the protocol, while group killing, draining and reaping stay there as they are; the adapter
-interprets frames and nothing more: a frame is at
+collection, in `review-process`: P1 extends the leaf crate, for the conformance harness of
+§3.15, with a retention limit per stream, an overflow policy per stream (one policy in both
+uses: the first excess byte on any stream cancels) and a cancellation the reader raises the
+moment a frame breaks the protocol, while group killing, draining and reaping stay there as
+they are, and P7 reuses it; the adapter interprets frames and nothing more: a frame is at
 most 2 MiB, the terminal frame's output bytes at most `MAX_WORKER_BYTES` (1 MiB) as any Worker
 reply, aggregate stdout at most 16 MiB, stderr at most 1 MiB, a hard limit like the others,
 and `identity`, `status` and `models` answer within 256 KiB and 15 seconds each.
@@ -927,8 +928,14 @@ read-only, except that for the plugin's `init` the absent `.af/plugins/<name>/` 
 alone is writable (§3.11); `AF_BIN` inside the container is a broker shim that sends each
 command line, framed, over a FIFO that exists only inside the container to a relay process in
 the container, which forwards it on the container's own stdout and reads the answer on its
-stdin: the harness drives the container runtime's attached stdin and stdout (bounded and
-supervised through `review-process`), runs the real `af` against the fixture Store outside, and
+stdin: the harness drives the container runtime's attached stdin and stdout, supervised
+through `review-process` with the stream limits P1 adds there (§3.14) and bounds of its own, a
+broker frame at most 64 KiB, a broker reply at most the CAS bound of 8 MiB plus its header,
+the container's aggregate stdout at most 64 MiB, its stderr at most 1 MiB, and the trace file,
+written to a mount the harness owns, at most 256 MiB, its size checked every second; the
+first excess byte on any of them cancels the check, which confirms the container's removal
+(§3.15 below) and fails with the channel named, and a truncated trace is never evidence. The
+harness runs the real `af` against the fixture Store outside, and
 answers with stdout and the exit code. A mounted FIFO would not do: on macOS the container is
 a separate Linux virtual machine and a FIFO's endpoints do not cross that boundary. The
 container is the provider's, as it is for an Attempt: P1 adds to `review-sandbox` a duplex
@@ -955,13 +962,21 @@ command, `task start --file`, `help <plugin>` and `onboard --refresh-lock` among
 rejected before anything spawns and recorded as a boundary violation, since the plugin's
 syscall trace cannot see what a host-side `af` reads or writes. Denial alone proves nothing, because a plugin can swallow the error and exit 0, so the
 harness also audits: inside the container the plugin runs under a file-syscall tracer
-(`strace -f -y -s 4096 -e trace=%file,fchdir,dup,dup2,dup3,fcntl,close,%process`, the
+(`strace -f -y -s 4096 -e trace=%file,fchdir,dup,dup2,dup3,fcntl,close,unshare,%process`, the
 container is Linux on every host, with the ptrace capability the harness requests for this
 check only), and the trace, not the plugin's output, is the record. The auditor resolves every
 access to an absolute path before classifying it: a descriptor-relative call through the path
 `-y` decodes for the descriptor, a relative path against the process's working directory,
-which the auditor tracks per PID from the container's initial directory through `chdir` and
-`fchdir` and which a child inherits at `clone`, `fork` and `vfork`; the result is normalized
+which the auditor models as the kernel does, as filesystem contexts rather than per-PID
+values: every task belongs to one context holding a directory, which starts as the
+container's initial directory; `clone` and `clone3` with `CLONE_FS` (every thread, since
+`pthread_create` passes it) join the child to the parent's context, any other `clone`, `fork`
+or `vfork` gives the child a copy, `unshare` with `CLONE_FS` splits off a copy, and `chdir` and
+`fchdir` update the context of the task that called them, which is every task sharing it; a
+successful `rename`, `renameat` or `renameat2` whose source is a prefix of a context's
+directory rewrites that prefix, since directory identity follows the rename as the kernel's
+does; and `chroot`, `pivot_root`, `mount`, `umount2` or a flag strace leaves undecoded makes the
+check `unresolved`. The result is normalized
 lexically, which is sound because the bundle carries no symlink (§3.4), the mounts start
 without one, and a successful `symlink`, `symlinkat`, `link` or `linkat` anywhere is an
 immediate violation in the trace whether or not the link survives (a link made, used and
@@ -1033,7 +1048,7 @@ refusal of `plugin pin` under a release that predates plugins); `lock.rs` (one t
 `DeclaredPorts`);
 `storage_sweep.rs` (the sweep record's next version with plugin kinds); `review-sandbox` (a duplex execution path with the provider's container lifecycle, for P1);
 `review-process` (a retention limit and an overflow policy per stream, a reader-raised
-cancellation, for P7). New code, by
+cancellation, for P1, reused by P7). New code, by
 package, is estimated at 3,500 lines including tests, most of it `plugins/` reusing
 `selfmgmt`'s install, receipt and verification code. After P4 a feature like `af backlog` is
 zero lines in this repository.
@@ -1135,7 +1150,8 @@ manifest-declared machine-only tables and the `AF_PLUGIN__<NAME>__<KEY>` parser;
 them, and the locks of §3.9, so that no plugin
 byte is outside the budget from the first install (`storage::Roots` enumerates explicit roots
 and discovers nothing, ADR-0144); the dispatch classification of §3.3; the duplex container execution path of §3.15 in
-`review-sandbox`; `fixtures/plugins/echo/` and the boundary harness. ADR: P0's, and the amendment to ADR-0144 for the kinds and the record
+`review-sandbox` and the stream limits and reader-raised cancellation of §3.14 in
+`review-process`; `fixtures/plugins/echo/` and the boundary harness. ADR: P0's, and the amendment to ADR-0144 for the kinds and the record
 version.
 
 The help-latency bound is measured, not asserted: P1 compares `af --help` on the pinned
@@ -1226,7 +1242,14 @@ numeric dirfd into a permitted directory and into a forbidden one, a relative op
 `fchdir` into each, a symlink created in the cache, used and unlinked before exit 0, a write
 attempted through such a link to the read-only export, and a denied outside write followed by
 exit 0: the permitted ones pass and every other is a recorded violation; a trace with a lost
-process is `unresolved` and fails);
+process is `unresolved` and fails; a working directory renamed under the process and then
+left through `..`, classified by the renamed path; a thread that changes the directory and
+the parent's relative open after it, classified by the shared context; an `unshare` child
+whose `chdir` leaves the parent's resolution alone; a `chroot` call, `unresolved`);
+`plugin_check_bounds_every_channel` (a plugin flooding each channel in turn, a broker frame
+over 64 KiB, a reply over its bound, container stdout over 64 MiB, stderr over 1 MiB and a
+trace over 256 MiB: each cancels the check with the channel named, the container's removal is
+confirmed, and no truncated trace is reported as evidence);
 `plugin_check_without_a_container_reports_not_run`;
 `plugin_check_binds_its_result_to_the_content_digest_and_target` (a native Darwin bundle is
 `not_run`, `--target` checks the Linux bundle and claims nothing for the other; two archives
@@ -1394,8 +1417,8 @@ Provider fixture of P4); the existing
 ### P7 — The runner seam
 
 Deliverables: `af.runner/1`, `af/RunnerRequest@1`, `af/RunnerResult@1`, `af/RunnerIdentity@1`;
-`AF_RUNNER_AUTH_DIR`; `review-process`'s retention limit and overflow policy per stream and its
-reader-raised cancellation (§3.14); the external adapter behind `WorkerModelAdapter`; the
+`AF_RUNNER_AUTH_DIR`; the external adapter behind `WorkerModelAdapter`, reusing P1's stream
+limits and reader-raised cancellation in `review-process` (§3.14); the
 Provider registry accepting a runner plugin's kind; `identity`, `status`, `models` and admission through the
 plugin; one external adapter as the proof. ADR: its own.
 
