@@ -5,8 +5,12 @@
 //! without commits registers nothing. Adopting a default Task Store changes none of its bytes.
 //! `--workspace` plans exactly what the explicit `--state` and `--bindings` plan.
 //! `af project workspace new|remove` create and retire Workspaces without a commit and without
-//! removing a Store, and delivery registers the worktree it made. No command writes inside a
-//! checkout, and the help answers in under 50 ms.
+//! removing a Store, and delivery registers the worktree it made. `workspace new` fills its
+//! worktree without a checkout, so a configured smudge filter never runs; it refuses a path inside
+//! the checkout, another Workspace or af's state with exit 2, and every refusal leaves worktrees,
+//! refs and directories as they were. A git that outlives its deadline fails the command and
+//! leaves no child. The first `af task plan --workspace <checkout>` finds the checkout it
+//! registers. No command writes inside a checkout, and the help answers in under 50 ms.
 //!
 //! Every test runs with its own `XDG_STATE_HOME`, so the Projects it registers are its own.
 
@@ -885,4 +889,394 @@ fn af_help_and_af_project_help_answer_in_under_50_ms() {
         );
     }
     assert!(!machine.projects().exists(), "help registers nothing");
+}
+
+/// What a refusal of `workspace new` must leave as it found: the worktrees, every ref, the
+/// Project Store's Workspace directories, and the checkout's files.
+#[derive(Debug, PartialEq, Eq)]
+struct RepositoryState {
+    worktrees: String,
+    refs: String,
+    directories: Vec<PathBuf>,
+    files: Vec<(PathBuf, Vec<u8>)>,
+}
+
+fn repository_state(machine: &Machine, repo: &Path) -> RepositoryState {
+    let directories = std::fs::read_dir(machine.projects())
+        .map(|stores| {
+            let mut found: Vec<PathBuf> = stores
+                .flat_map(|store| {
+                    std::fs::read_dir(store.unwrap().path().join("workspaces"))
+                        .into_iter()
+                        .flatten()
+                        .map(|entry| entry.unwrap().path())
+                })
+                .collect();
+            found.sort();
+            found
+        })
+        .unwrap_or_default();
+    RepositoryState {
+        worktrees: git(repo, &["worktree", "list", "--porcelain"]),
+        refs: git(repo, &["for-each-ref"]),
+        directories,
+        files: files(repo),
+    }
+}
+
+/// Every file below `root` by its path relative to `root`, with its bytes.
+fn relative_files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    files(root)
+        .into_iter()
+        .map(|(path, bytes)| (path.strip_prefix(root).unwrap().to_path_buf(), bytes))
+        .collect()
+}
+
+#[test]
+fn workspace_new_writes_the_commits_tree_without_running_a_checkout_filter() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    std::fs::write(repo.join(".gitattributes"), "*.txt filter=marker\n").unwrap();
+    std::fs::write(repo.join("data.txt"), "filtered on checkout\n").unwrap();
+    std::fs::write(repo.join("run.sh"), "#!/bin/sh\necho run\n").unwrap();
+    std::fs::set_permissions(repo.join("run.sh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink("README.md", repo.join("link")).unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "attributes"]);
+    // The filter is the checkout's own configuration: any checkout of `data.txt` runs it.
+    let marker = machine.root().join("smudged");
+    git(
+        &repo,
+        &[
+            "config",
+            "filter.marker.smudge",
+            &format!("touch '{}' && cat", marker.display()),
+        ],
+    );
+    let control = machine.root().join("control");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--detach",
+            control.to_str().unwrap(),
+        ],
+    );
+    assert!(
+        marker.is_file(),
+        "the fixture's filter runs on a git checkout"
+    );
+    git(&repo, &["worktree", "remove", control.to_str().unwrap()]);
+    std::fs::remove_file(&marker).unwrap();
+
+    machine.expect(&repo, &["project", "workspace", "new", "filtered"], 0);
+    let worktree = machine.root().join("fixture-wt-filtered");
+    assert!(
+        !marker.exists(),
+        "workspace new ran the checkout's smudge filter"
+    );
+    assert_eq!(relative_files(&worktree), relative_files(&repo));
+    let mode = std::fs::metadata(worktree.join("run.sh"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o111, 0o111, "the executable bit of the commit");
+    assert_eq!(
+        std::fs::read_link(worktree.join("link")).unwrap(),
+        Path::new("README.md")
+    );
+    assert_eq!(
+        git(&worktree, &["rev-parse", "HEAD^{tree}"]),
+        git(&repo, &["rev-parse", "HEAD^{tree}"])
+    );
+    assert_eq!(git(&worktree, &["status", "--porcelain"]), "");
+    assert!(!marker.exists());
+}
+
+#[test]
+fn workspace_new_refuses_a_path_inside_the_checkout_a_workspace_or_afs_state() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "workspace", "new", "research"], 0);
+    let research = machine.root().join("fixture-wt-research");
+    let inside_state = machine.state_home().join("af/worktree");
+    let before = repository_state(&machine, &repo);
+    let research_before = files(&research);
+    for (path, reason) in [
+        (".af/research", "inside the checkout"),
+        (".", "exactly the checkout"),
+        (
+            "../fixture-wt-research/nested",
+            "inside the Workspace `research`",
+        ),
+        (
+            inside_state.to_str().unwrap(),
+            "inside af's state directory",
+        ),
+    ] {
+        let output = machine.af(
+            &repo,
+            &["project", "workspace", "new", "spike", "--path", path],
+        );
+        let (stdout, stderr) = text(&output);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "--path {path}\n{stdout}\n{stderr}"
+        );
+        assert!(stderr.contains(reason), "--path {path}: {stderr}");
+        assert!(stderr.contains("nothing was created"), "{stderr}");
+        assert_eq!(repository_state(&machine, &repo), before, "--path {path}");
+        assert_eq!(files(&research), research_before, "--path {path}");
+    }
+    assert!(!repo.join(".af/research").exists());
+    assert!(!inside_state.exists());
+    let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+    assert_eq!(labels(&listed), ["fixture", "research"]);
+}
+
+#[test]
+fn a_refused_workspace_new_leaves_nothing_behind_and_the_same_command_then_succeeds() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "show"], 0);
+    // An orphan branch: a commit of the same tree without a parent, so its root is another.
+    let orphan = git(&repo, &["commit-tree", "HEAD^{tree}", "-m", "orphan"]);
+    git(&repo, &["update-ref", "refs/heads/orphan", &orphan]);
+    let store = machine
+        .projects()
+        .join(expected_project_id(&repo).trim_start_matches("sha256:"));
+    let before = repository_state(&machine, &repo);
+
+    let refused = machine.af(
+        &repo,
+        &["project", "workspace", "new", "spike", "--from", "orphan"],
+    );
+    let (_, stderr) = text(&refused);
+    assert_eq!(refused.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains(&orphan), "{stderr}");
+    assert!(stderr.contains("nothing was created"), "{stderr}");
+    assert_eq!(repository_state(&machine, &repo), before);
+    assert!(!store.join("workspaces/spike").exists());
+    assert!(!machine.root().join("fixture-wt-spike").exists());
+
+    // A failure after the first mutation undoes, newest first, what was made.
+    let file = machine.root().join("a-file");
+    std::fs::write(&file, "not a directory\n").unwrap();
+    let failed = machine.af(
+        &repo,
+        &[
+            "project",
+            "workspace",
+            "new",
+            "spike",
+            "--path",
+            file.join("worktree").to_str().unwrap(),
+        ],
+    );
+    let (_, stderr) = text(&failed);
+    assert_eq!(failed.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("deleted the branch refs/heads/af/spike"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("nothing was left behind"), "{stderr}");
+    assert_eq!(repository_state(&machine, &repo), before);
+    assert!(!store.join("workspaces/spike").exists());
+
+    let created = machine.expect(
+        &repo,
+        &["project", "workspace", "new", "spike", "--from", "HEAD"],
+        0,
+    );
+    assert!(
+        created.starts_with("created Workspace spike\n"),
+        "{created}"
+    );
+    let spike = machine.root().join("fixture-wt-spike");
+    assert_eq!(
+        git(&spike, &["rev-parse", "HEAD"]),
+        git(&repo, &["rev-parse", "HEAD"])
+    );
+    assert!(store.join("workspaces/spike/state").is_dir());
+}
+
+#[test]
+fn a_git_that_outlives_its_deadline_fails_the_command_and_leaves_no_child() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let bin = machine.root().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let pids = machine.root().join("pids");
+    let fake = bin.join("git");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nsleep 120 &\necho $$ $! >> '{}'\nwait\n",
+            pids.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let started = std::time::Instant::now();
+    let output = crate::common::af()
+        .current_dir(&repo)
+        .env("XDG_STATE_HOME", machine.state_home())
+        .env("AF_SELF_OFFLINE", "1")
+        .env("NO_COLOR", "1")
+        .env("PATH", path)
+        .env("AF_TEST_PROJECT_GIT_DEADLINE_MS", "500")
+        .args(["project", "show"])
+        .output()
+        .unwrap();
+    let elapsed = started.elapsed();
+    let (stdout, stderr) = text(&output);
+    assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
+    assert!(stderr.contains("deadline of 500ms"), "{stderr}");
+    // The fake git holds for two minutes; only the deadline ends the command sooner. The bound
+    // leaves room for a loaded machine's first launch of a freshly linked `af`.
+    assert!(
+        elapsed < std::time::Duration::from_secs(60),
+        "the command took {elapsed:?}"
+    );
+    let started: Vec<String> = std::fs::read_to_string(&pids)
+        .unwrap()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    assert!(!started.is_empty());
+    let alive = |pid: &str| {
+        Command::new("kill")
+            .args(["-0", pid])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while started.iter().any(|pid| alive(pid)) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    for pid in &started {
+        assert!(!alive(pid), "the fake git's process {pid} survived");
+    }
+    assert!(!machine.projects().exists(), "nothing was registered");
+}
+
+#[test]
+fn the_first_task_plan_with_the_checkouts_own_label_succeeds() {
+    let machine = Machine::new();
+    let (repo, _) = crate::task_gc::fixture(&machine.root());
+    assert!(!machine.projects().exists(), "no Project Store yet");
+    let planned = machine.json(
+        &repo,
+        &[
+            "task",
+            "plan",
+            "--workspace",
+            "repo",
+            "--file",
+            "gc-older.json",
+            "--json",
+        ],
+    );
+    assert!(planned["revision_id"].is_string(), "{planned}");
+    assert!(
+        default_store(&machine, &repo)
+            .join("events.sqlite")
+            .is_file(),
+        "`--workspace repo` is the checkout's default Task Store"
+    );
+    let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+    assert_eq!(labels(&listed), ["repo"]);
+}
+
+#[test]
+fn no_project_command_and_no_workspace_plan_writes_inside_the_checkout() {
+    let machine = Machine::new();
+    let (repo, _) = crate::task_gc::fixture(&machine.root());
+    let other = machine.root().join("repo-other");
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "other",
+            other.to_str().unwrap(),
+        ],
+    );
+    let listing = |root: &Path| {
+        let mut names: Vec<_> = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        (names, files(root))
+    };
+    let clean = |when: &str| {
+        assert_eq!(
+            git(&repo, &["status", "--porcelain", "--ignored"]),
+            "",
+            "after {when}"
+        );
+    };
+    clean("the fixture");
+    let before = listing(&repo);
+    for args in [
+        &["project", "show"][..],
+        &["project", "show", "--json"],
+        &["project", "workspaces"],
+        &["project", "workspaces", "--json"],
+        &["project", "workspace", "new", "research"],
+        &[
+            "project",
+            "workspace",
+            "add",
+            other.to_str().unwrap(),
+            "--label",
+            "other",
+        ],
+        &["project", "workspace", "remove", "other"],
+        &["project", "workspace", "new", "spike", "--json"],
+        &[
+            "project",
+            "workspace",
+            "remove",
+            "spike",
+            "--delete-worktree",
+        ],
+        &[
+            "task",
+            "plan",
+            "--workspace",
+            "repo",
+            "--file",
+            "gc-older.json",
+        ],
+        &[
+            "task",
+            "plan",
+            "--workspace",
+            "research",
+            "--file",
+            "gc-newer.json",
+        ],
+    ] {
+        machine.expect(&repo, args, 0);
+        clean(&args.join(" "));
+        assert_eq!(listing(&repo), before, "after af {}", args.join(" "));
+    }
+    assert!(!machine.root().join("repo-wt-spike").exists());
+    assert!(machine.root().join("repo-wt-research").is_dir());
 }

@@ -63,7 +63,9 @@ digits, `-` and `_`, starting with a letter or digit.
 
 **Registration is lazy and token-free.** `af onboard --apply`, `af task plan`, `af task start`,
 `af review run` and every `af project` command run inside a checkout register the Project if it is
-new and that checkout as a Workspace if it is new. Such a Workspace has origin `adopted`, is
+new and that checkout as a Workspace if it is new. `af task plan` and `af task start` register
+before they resolve `--workspace`, so the first `af task plan --workspace <checkout directory
+name>` in a checkout without a Project Store finds that checkout's Workspace. Such a Workspace has origin `adopted`, is
 labelled by the checkout's directory name (or that name, `-` and the first eight hex digits of
 its ID when the name is taken), and its Store is the default Task Store for that checkout, or the
 `--state` the command was given. Every default Task Store af created before is adopted this way,
@@ -121,18 +123,38 @@ af project workspaces --json | jq -r '.workspaces[] | "\(.label) \(.path)"'
 
 Makes a Workspace for one line of work, the way the owner made them by hand:
 
-- `git worktree add` at `<checkout>-wt-LABEL` beside the invoking checkout, on a new branch
-  `af/LABEL` from the invoking checkout's `HEAD`; `--path DIR`, `--branch NAME` and `--from REV`
-  say otherwise;
+- a worktree at `<checkout>-wt-LABEL` beside the invoking checkout, on a new branch `af/LABEL`
+  at the invoking checkout's `HEAD`; `--path DIR`, `--branch NAME` and `--from REV` say
+  otherwise;
 - the directory `$XDG_STATE_HOME/af/project/<hex>/workspaces/LABEL/` with an empty `state/` for
   the Workspace's Task Store, an empty `tasks/` for its Task files, and a `bindings.toml`
   template that holds only `schema = "af.task-bindings/1"`, an empty `[providers]` table and a
   comment;
 - the registration, with origin `created`.
 
-An existing path, branch, label or Workspace directory is refused before anything is made. The
-command makes no commit and no push, the same local-only boundary delivery keeps
-([ADR-0031](adr/0031-deliver-verified-tasks-to-new-local-worktrees.md)).
+The worktree is filled the way `af task deliver` fills one
+([ADR-0031](adr/0031-deliver-verified-tasks-to-new-local-worktrees.md)), never by a git
+checkout: the branch is created with `git update-ref`, the worktree with `git worktree add
+--no-checkout`, its index with `git read-tree HEAD`, and its files are written from a committed
+capture of the commit's tree. No checkout, filter, hook or other program the repository
+configures runs on the machine, so a `.gitattributes` filter whose smudge command the local
+configuration names never runs, and the worktree holds exactly the commit's tree. Every git
+process runs supervised, with a deadline that stops its whole process group, in delivery's
+isolated environment.
+
+Every check runs before anything is made, in this order: the label is free; the path is
+admissible and absent; the branch is valid and absent; `--from` names a commit whose root
+commits are the Project's own (`git rev-list --max-parents=0`), so a commit of an orphan branch
+or an unrelated history is refused; the Workspace directory is absent. A `--path` at or inside
+the invoking checkout (such as `.af/research`), inside another registered Workspace or worktree
+of the repository, or inside `$XDG_STATE_HOME/af` is a usage error, exit 2; the other refusals
+exit 1. A refusal leaves no branch, worktree or directory behind, and the same command succeeds
+once its cause is gone. When a step fails after an earlier one succeeded, what was made is
+undone newest first (the registration, the worktree, the directories git created above it, the
+branch, the Workspace directory), and the message says what was undone or, when an undo fails,
+exactly what remains.
+
+The command makes no commit and no push, the same local-only boundary delivery keeps.
 
 ```sh
 af project workspace new research
@@ -193,10 +215,12 @@ af task deliver TASK_ID --workspace research --branch af/TASK_ID --worktree ../T
 | `workspaces.toml` | beside the Project Store's log | any registration |
 | A `project` entry | `$XDG_STATE_HOME/af/stores.toml` | any registration |
 | `workspaces/LABEL/` with `state/`, `tasks/`, `bindings.toml` | in the Project Store | `workspace new` |
-| A worktree and a branch | beside the checkout, in the repository's git directory | `workspace new` |
+| A worktree and a branch | beside the checkout, never inside it; in the repository's git directory | `workspace new` |
 
 Nothing is ever written inside a checkout: `.af/` holds declarations only
 ([ADR-0032](adr/0032-generate-review-authority-with-af-onboard.md),
 [ADR-0115](adr/0115-declare-the-af-layout-and-keep-task-files-out-of-git.md)). No record holds a
 host path. No command commits, pushes, contacts a remote or removes a Store. `workspace remove
---delete-worktree` removes only a worktree git accepts as clean.
+--delete-worktree` removes only a worktree git accepts as clean. The integration tests assert
+that `git status --porcelain --ignored` stays empty and the checkout's files stay as they were
+after every `af project` command and `af task plan --workspace`.

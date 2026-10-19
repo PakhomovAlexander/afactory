@@ -305,6 +305,17 @@ fn project_help_and_the_workspace_flag_describe_the_commands() {
             "{workspace}"
         );
     }
+    let new = out(&af(&["project", "workspace", "new", "--help"]));
+    let new = new.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        "`git worktree add --no-checkout`",
+        "no checkout, filter or hook of the repository runs on this machine",
+        "Every check runs before anything is made",
+        "inside `$XDG_STATE_HOME/af` is a usage error (exit 2)",
+        "undone newest first",
+    ] {
+        assert!(new.contains(needle), "`{needle}` missing:\n{new}");
+    }
     let bare = af(&["project"]);
     assert_eq!(bare.status.code(), Some(2));
     assert!(err(&bare).contains("Usage: af project"), "{}", err(&bare));

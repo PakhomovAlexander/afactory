@@ -1140,8 +1140,12 @@ fn main() {
         std::process::exit(1);
     }
     let collects_after = collects_after_run(&command);
-    // Registered once the command ran, best effort (ADR-0151).
+    // Registered best effort (ADR-0151): `af task plan|start` before `--workspace` resolves,
+    // every other command once it ran.
     let registers = projects::lazy_target(&command);
+    if let Some(lazy) = registers.as_ref().filter(|lazy| lazy.first) {
+        projects::register_lazily(lazy);
+    }
     let delivered = projects::delivered_target(&command);
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
         cli::Command::Review(namespace) => ("af review", review_command(namespace)),
@@ -1286,7 +1290,7 @@ fn main() {
     if let Some(signal) = interrupt::received() {
         exit_interrupted(&argv, prefix, signal, outcome.err());
     }
-    if let Some(lazy) = &registers {
+    if let Some(lazy) = registers.as_ref().filter(|lazy| !lazy.first) {
         projects::register_lazily(lazy);
     }
     if let (Some((worktree, task_id)), Ok(0)) = (&delivered, &outcome) {

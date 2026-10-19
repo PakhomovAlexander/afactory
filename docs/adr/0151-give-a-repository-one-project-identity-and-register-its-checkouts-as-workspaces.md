@@ -74,21 +74,41 @@ directories.
    invoking checkout as a Workspace when it is new: origin `adopted`, labelled by the checkout's
    directory name (or that name, `-` and the first eight hex digits of the Workspace ID when it
    is taken), its Store the default Task Store for that checkout or the explicit `--state`.
-   Every existing default Task Store is adopted this way, unchanged. Outside `af project`,
-   registration is best effort: a failure prints one warning on stderr and never changes the
-   command's output or exit code. Nothing is written inside a checkout.
+   Every existing default Task Store is adopted this way, unchanged. `af task plan` and `af task
+   start` register before they resolve `--workspace`, so the first `--workspace <checkout
+   directory name>` in a checkout without a Project Store succeeds; the others register once the
+   command ran. Outside `af project`, registration is best effort: a failure prints one warning
+   on stderr and never changes the command's output or exit code. Nothing is written inside a
+   checkout.
 5. **`af project`.** `show` and `workspaces` print the projection (`--json`: `af/project@1`,
-   `af/project-workspaces@1`). `workspace new LABEL [--branch] [--path] [--from]` runs `git
-   worktree add` at `<checkout>-wt-LABEL` on branch `af/LABEL` from the invoking checkout's
-   `HEAD`, creates `workspaces/LABEL/` in the Project Store with an empty `state/`, an empty
-   `tasks/` and a `bindings.toml` template naming no account, and registers origin `created`; it
-   refuses an existing path, branch or label and makes no commit and no push. `workspace add
+   `af/project-workspaces@1`). `workspace new LABEL [--branch] [--path] [--from]` makes branch
+   `af/LABEL` at the invoking checkout's `HEAD` and a worktree of it at `<checkout>-wt-LABEL`,
+   creates `workspaces/LABEL/` in the Project Store with an empty `state/`, an empty `tasks/` and
+   a `bindings.toml` template naming no account, and registers origin `created`. It fills the
+   worktree the way delivery does (ADR-0031) and never by a git checkout: the branch by `git
+   update-ref --stdin`, the worktree by `git worktree add --no-checkout`, its index by `git
+   read-tree HEAD`, its files by `review_source_git::materialize` of the `--from` commit's
+   committed capture, so no checkout, filter, hook or other program the repository configures
+   runs on the host. Every check that can refuse runs before the first mutation: the label is
+   free; the path is admissible and absent; the branch is valid and absent; `--from` is a commit
+   whose root commits (`rev-list --max-parents=0`) equal the Project's `repository_id`; the
+   Workspace directory is absent. A `--path` at or beneath the invoking checkout's top level,
+   beneath a registered Workspace or worktree of the repository, or beneath `$XDG_STATE_HOME/af`
+   is a usage error (exit 2) with nothing created. A step that fails after an earlier one
+   succeeded undoes the earlier ones newest first (registration, worktree, the directories git
+   created above it, branch ref, Workspace directory) and reports what it undid, or exactly what
+   remains when an undo fails; so every refusal leaves nothing behind and the same command
+   succeeds once its cause is gone. It makes no commit and no push. `workspace add
    PATH` adopts an existing checkout of the same Project, refusing one of another Project with
    both IDs. `workspace remove LABEL` unregisters; it never removes a Store, and when the Store
    holds a Task that is not collected it says so and names `af task gc`; `--delete-worktree`
    removes the worktree only when `git worktree remove` accepts it clean. Exit codes are 0, 1
-   (with `af/error@1` under `--json` and the next action in the message) and 2 for usage. Git
-   runs without user or system configuration, hooks, transport or prompts, as delivery's does.
+   (with `af/error@1` under `--json` and the next action in the message) and 2 for usage. Every
+   git process of the Project modules runs through `review_process` with a deadline (30 s for
+   plumbing, capture's own for a committed capture) that stops its whole process group, in
+   delivery's isolated command: a cleared environment, a private `HOME`, no user or system
+   configuration, no hooks, transport or prompts. A git that outlives its deadline fails the
+   command with a message naming the deadline.
 6. **`--workspace LABEL`** on every `af task` subcommand that takes `--state` resolves `--state`
    to the Workspace's Store and, on `plan` and `start`, `--bindings` to its bindings file when
    that file exists and none was given. Beside `--state` it is a usage error. It changes paths
@@ -128,6 +148,16 @@ directories.
   repository without commits, adopts a default Store without changing a byte, compares a Task
   planned with `--workspace` with one planned with the explicit flags, creates and removes
   Workspaces (keeping a Store that holds an uncollected Task), registers a delivered worktree
-  with an unchanged receipt, and times `af --help` and `af project --help` under 50 ms.
+  with an unchanged receipt, and times `af --help` and `af project --help` under 50 ms. It also
+  proves that `workspace new` never runs a configured smudge filter and writes exactly the
+  commit's tree with a clean `git status`; refuses `--path .af/research`, the checkout itself,
+  a path inside another Workspace and one inside af's state with exit 2 and nothing created;
+  leaves worktrees, refs and Workspace directories unchanged when it refuses `--from` an orphan
+  branch or undoes a failed `worktree add`, after which the same label succeeds; fails within
+  the deadline, leaving no child, when a fake `git` sleeps; succeeds on the first `af task plan
+  --workspace <checkout directory name>`; and keeps `git status --porcelain --ignored` empty and
+  the checkout's files unchanged after every `af project` command and `af task plan
+  --workspace`. Unit tests undo every kind of step in reverse order and find no unsupervised
+  process start under `crates/af/src/projects`.
   `crates/review-core/tests/schema_parity/project.rs` pins the three events and two documents,
   and `crates/af/tests/it/cli_surface.rs` the help surface.

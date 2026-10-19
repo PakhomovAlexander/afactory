@@ -262,3 +262,181 @@ fn a_store_registers_once_and_unregisters_without_touching_paths_elsewhere() {
         assert!(!text.contains(&home.path().display().to_string()), "{text}");
     }
 }
+
+#[test]
+fn a_debug_fixture_can_only_lower_the_git_deadline() {
+    let production = std::time::Duration::from_secs(30);
+    assert_eq!(git::lowered(production, None), production);
+    assert_eq!(
+        git::lowered(production, Some("500")),
+        std::time::Duration::from_millis(500)
+    );
+    for ignored in ["0", "60000", "-1", "soon"] {
+        assert_eq!(
+            git::lowered(production, Some(ignored)),
+            production,
+            "{ignored}"
+        );
+    }
+}
+
+#[test]
+fn every_process_of_the_projects_modules_is_supervised() {
+    let sources = [
+        ("projects.rs", include_str!("../projects.rs")),
+        ("projects/commands.rs", include_str!("commands.rs")),
+        ("projects/file.rs", include_str!("file.rs")),
+        ("projects/git.rs", include_str!("git.rs")),
+        ("projects/tests.rs", include_str!("tests.rs")),
+    ];
+    // Spelled in pieces, so this test does not find itself.
+    let unsupervised = [
+        concat!(".out", "put()"),
+        concat!(".sta", "tus()"),
+        concat!(".spa", "wn()"),
+        concat!("Command::", "new"),
+    ];
+    for (name, source) in sources {
+        for needle in unsupervised {
+            assert!(!source.contains(needle), "{name} contains `{needle}`");
+        }
+    }
+    assert!(include_str!("git.rs").contains("run_supervised_with_policy"));
+}
+
+/// A repository with one commit, made through the supervised git alone.
+fn committed_repository(root: &Path) -> (Git, String) {
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = Git::open(&repo).unwrap();
+    git.require(["init", "-q", "-b", "main"], None).unwrap();
+    std::fs::write(repo.join("README.md"), "one\n").unwrap();
+    git.require(["add", "README.md"], None).unwrap();
+    git.require(
+        [
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "one",
+        ],
+        None,
+    )
+    .unwrap();
+    let commit = git.require(["rev-parse", "HEAD"], None).unwrap();
+    (git, commit)
+}
+
+#[test]
+fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
+    use commands::Made;
+    let root = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(root.path()).unwrap();
+    let (git, commit) = committed_repository(&root);
+    let directory = root.join("store/workspaces/spike");
+    std::fs::create_dir_all(directory.join("state")).unwrap();
+    let reference = "refs/heads/af/spike".to_string();
+    git.require(["update-ref", &reference, &commit], None)
+        .unwrap();
+    let worktree = root.join("deep/er/wt");
+    git.require(
+        [
+            "worktree",
+            "add",
+            "--no-checkout",
+            "--",
+            worktree.to_str().unwrap(),
+            "af/spike",
+        ],
+        None,
+    )
+    .unwrap();
+    let checkout = Checkout {
+        toplevel: root.join("repo"),
+        repository_id: ROOTS.into(),
+        project_id: project_id(ROOTS),
+    };
+    let mut store =
+        ProjectStore::open_unrecorded(&root.join("state"), &checkout.project_id).unwrap();
+    let log = store.ensure_project(&checkout).unwrap();
+    let id = workspace_id(&checkout.project_id, &worktree);
+    store
+        .register(&log, WorkspaceOriginV1::Created, paths(&id, "spike"))
+        .unwrap();
+
+    let report = commands::undo(
+        &git,
+        &mut store,
+        vec![
+            Made::Directory(directory.clone()),
+            Made::Branch {
+                reference: reference.clone(),
+                commit: commit.clone(),
+            },
+            Made::Ancestors {
+                from: root.join("deep"),
+                to: root.join("deep/er"),
+            },
+            Made::Worktree(worktree.clone()),
+            Made::Registration(id.clone()),
+        ],
+    );
+    assert_eq!(
+        report,
+        format!(
+            "undone, newest first: unregistered Workspace {id}, removed the worktree {}, removed \
+             the directory {}, deleted the branch {reference}, removed {}; nothing was left behind",
+            worktree.display(),
+            root.join("deep").display(),
+            directory.display()
+        )
+    );
+    assert!(!root.join("deep").exists());
+    assert!(!directory.exists());
+    assert!(store.log().unwrap().workspaces.is_empty());
+    let branch = git
+        .run(["rev-parse", "--verify", "--quiet", &reference], None)
+        .unwrap();
+    assert!(!branch.status.success());
+    let listed = git
+        .require(["worktree", "list", "--porcelain"], None)
+        .unwrap();
+    assert_eq!(listed.matches("worktree ").count(), 1, "{listed}");
+
+    // Directories git never created need no undo and are not reported.
+    assert_eq!(
+        commands::undo(
+            &git,
+            &mut store,
+            vec![Made::Ancestors {
+                from: root.join("absent"),
+                to: root.join("absent/below"),
+            }],
+        ),
+        "nothing was created"
+    );
+
+    // A branch that moved is not deleted, and the report says it remains.
+    git.require(["update-ref", &reference, &commit], None)
+        .unwrap();
+    let report = commands::undo(
+        &git,
+        &mut store,
+        vec![Made::Branch {
+            reference: reference.clone(),
+            commit: "1111111111111111111111111111111111111111".into(),
+        }],
+    );
+    assert!(
+        report.starts_with(&format!("left behind: the branch {reference} (")),
+        "{report}"
+    );
+    assert!(
+        git.run(["rev-parse", "--verify", "--quiet", &reference], None)
+            .unwrap()
+            .status
+            .success()
+    );
+}

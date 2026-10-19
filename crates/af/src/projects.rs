@@ -16,23 +16,23 @@
 
 pub(crate) mod commands;
 mod file;
+mod git;
 #[cfg(test)]
 mod tests;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use review_core::project::{
     ProjectRegisteredPayloadV1, WorkspaceOriginV1, WorkspaceRegisteredPayloadV1,
     WorkspaceRemovedPayloadV1,
 };
 use review_core::{EventType, RunEvent};
-use review_source_git::Repo;
 use review_store::{Cas, EventStore, NewEvent};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 pub(crate) use file::WorkspacePaths;
+pub(crate) use git::Git;
 
 /// The domain of the Project ID digest.
 const PROJECT_ID_DOMAIN: &[u8] = b"af/project-id@1\0";
@@ -99,32 +99,32 @@ pub(crate) enum Located {
     Checkout(Checkout),
 }
 
-/// Find the checkout `directory` belongs to, with read-only git plumbing.
+/// Find the checkout `directory` belongs to, with read-only git plumbing. A git that cannot
+/// answer within its deadline is an error, never "not a checkout".
 pub(crate) fn locate(directory: &Path) -> Result<Located, String> {
     let Ok(directory) = std::fs::canonicalize(directory) else {
         return Ok(Located::NotGit);
     };
-    let home = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let repo = Repo::open(&directory, home.path());
-    let Ok(toplevel) = repo.line(&["rev-parse", "--show-toplevel"]) else {
+    let git = Git::open(&directory)?;
+    let toplevel = git.run(["rev-parse", "--show-toplevel"], None)?;
+    if !toplevel.status.success() {
         return Ok(Located::NotGit);
-    };
+    }
+    let toplevel = String::from_utf8_lossy(&toplevel.stdout);
     let toplevel = std::fs::canonicalize(toplevel.trim_end_matches(['\n', '\r']))
         .map_err(|error| format!("resolving the checkout's top level: {error}"))?;
-    let repo = Repo::open(&toplevel, home.path());
-    if repo
-        .line(&["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
-        .is_err()
+    let git = git.at(&toplevel);
+    if !git
+        .run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], None)?
+        .status
+        .success()
     {
         return Ok(Located::NoCommit);
     }
-    let shallow = repo
-        .line(&["rev-parse", "--is-shallow-repository"])
-        .map_err(|error| error.to_string())?;
-    if shallow.trim() == "true" {
+    if git.require(["rev-parse", "--is-shallow-repository"], None)? == "true" {
         return Ok(Located::Shallow);
     }
-    let repository_id = repo.repository_id().map_err(|error| error.to_string())?;
+    let repository_id = git.roots("HEAD")?;
     Ok(Located::Checkout(Checkout {
         project_id: project_id(&repository_id),
         repository_id,
@@ -560,6 +560,10 @@ pub(crate) fn adopt(
 pub(crate) struct Lazy {
     pub(crate) repo: PathBuf,
     pub(crate) state: Option<PathBuf>,
+    /// Register before the command runs rather than after: `af task plan|start`, whose
+    /// `--workspace` resolves against the registered Workspaces, so the first `--workspace
+    /// <checkout>` in a checkout without a Project Store finds that checkout.
+    pub(crate) first: bool,
 }
 
 /// The lazy registration of `af onboard --apply`, `af task plan|start` and `af review run`:
@@ -711,28 +715,33 @@ pub(crate) fn resolve_task_workspace(
     Ok(command)
 }
 
-/// What a command registers once it ran, if anything.
+/// What a command registers, if anything, and whether before or after it runs.
 pub(crate) fn lazy_target(command: &crate::cli::Command) -> Option<Lazy> {
     use crate::cli::{Command as C, ReviewCommand as R, TaskCommand as T};
     match command {
+        // After `--apply`, so the Project records the `.af/af.toml` onboarding wrote.
         C::Onboard(args) if args.apply => Some(Lazy {
             repo: args.repo.clone(),
             state: None,
+            first: false,
         }),
         C::Task {
             command: T::Start { repo, state, .. } | T::Plan { repo, state, .. },
         } => Some(Lazy {
             repo: repo.clone(),
             state: state.clone(),
+            first: true,
         }),
         C::Review(namespace) => match &namespace.command {
             None => Some(Lazy {
                 repo: namespace.run.repo.clone(),
                 state: None,
+                first: false,
             }),
             Some(R::Run(args)) => Some(Lazy {
                 repo: args.repo.clone(),
                 state: None,
+                first: false,
             }),
             Some(_) => None,
         },
@@ -752,56 +761,5 @@ pub(crate) fn delivered_target(command: &crate::cli::Command) -> Option<(PathBuf
             .ok()
             .map(|worktree| (worktree, task_id.clone())),
         _ => None,
-    }
-}
-
-/// A git command for the mutations `af project workspace` makes (`worktree add`, `worktree
-/// remove`): no user or system configuration, no hooks, no transport, no prompt — the same
-/// boundary delivery keeps (ADR-0031).
-fn git(directory: &Path, home: &Path) -> Command {
-    let mut command = Command::new("git");
-    command.env_clear();
-    command
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("HOME", home)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_ATTR_NOSYSTEM", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        .env("TZ", "UTC")
-        .current_dir(directory)
-        .args([
-            "-c",
-            "core.hooksPath=/dev/null",
-            "-c",
-            "core.fsmonitor=false",
-            "-c",
-            "protocol.allow=never",
-            "-c",
-            "credential.helper=",
-        ]);
-    command
-}
-
-/// Run git in `directory`; its stdout, or its stderr as the error.
-fn run_git(directory: &Path, args: &[&std::ffi::OsStr]) -> Result<String, String> {
-    let home = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let output = git(directory, home.path())
-        .args(args)
-        .output()
-        .map_err(|error| format!("starting git: {error}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        let rendered: Vec<String> = args
-            .iter()
-            .map(|argument| argument.to_string_lossy().into_owned())
-            .collect();
-        Err(format!(
-            "git {}: {}",
-            rendered.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ))
     }
 }

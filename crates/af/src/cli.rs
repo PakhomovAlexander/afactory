@@ -1432,13 +1432,20 @@ Task-file directory. A path this machine's `workspaces.toml` does not know is sh
 pub(crate) enum WorkspaceCommand {
     /// Create a worktree, a branch and a Workspace directory, and register them
     #[command(
-        long_about = "Create a Workspace for one line of work: `git worktree add` of a new \
-branch (`af/LABEL` unless --branch) from this checkout's HEAD (unless --from) at \
-`<checkout>-wt-LABEL` beside this checkout (unless --path), and the directory \
+        long_about = "Create a Workspace for one line of work: a new branch (`af/LABEL` unless \
+--branch) at this checkout's HEAD (unless --from), a worktree of it at `<checkout>-wt-LABEL` \
+beside this checkout (unless --path), and the directory \
 `$XDG_STATE_HOME/af/project/<hex>/workspaces/LABEL/` holding an empty `state/` for its Task \
 Store, an empty `tasks/` for its Task files and a `bindings.toml` template that names no \
-account. The Workspace is registered with origin `created`.\n\nRefuses an existing path, \
-branch, label or Workspace directory. Never: commits, pushes, or contacts a remote.",
+account. The Workspace is registered with origin `created`.\n\nThe worktree is filled the way \
+`af task deliver` fills one: `git worktree add --no-checkout`, the index by `git read-tree`, and \
+the files of the commit's tree written from a committed capture, so no checkout, filter or hook \
+of the repository runs on this machine.\n\nEvery check runs before anything is made: a taken \
+label, an existing path, branch or Workspace directory, and a --from commit whose root commits \
+are not this Project's are refused (exit 1); a --path at or inside this checkout, inside another \
+Workspace or inside `$XDG_STATE_HOME/af` is a usage error (exit 2). When a later step fails, what \
+was made is undone newest first, and the message says what was undone and what remains. Never: \
+commits, pushes, or contacts a remote.",
         after_long_help = "Examples:\n  af project workspace new research\n  af project workspace new research --branch agent/research --from main\n  af project workspace new spike --path ../spike"
     )]
     New {
@@ -1448,10 +1455,11 @@ branch, label or Workspace directory. Never: commits, pushes, or contacts a remo
         /// The new branch [default: af/LABEL]
         #[arg(long, value_name = "NAME")]
         branch: Option<String>,
-        /// Where the worktree goes [default: <checkout>-wt-LABEL beside this checkout]
+        /// Where the worktree goes, outside this checkout, every Workspace and af's state
+        /// [default: <checkout>-wt-LABEL beside this checkout]
         #[arg(long, value_name = "DIR")]
         path: Option<PathBuf>,
-        /// The commit the branch starts at [default: this checkout's HEAD]
+        /// The commit the branch starts at, one of this Project [default: this checkout's HEAD]
         #[arg(long, value_name = "REV")]
         from: Option<String>,
         /// One `af/project-workspaces@1` document on stdout instead of text

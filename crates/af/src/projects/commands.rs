@@ -9,12 +9,13 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use review_core::project::WorkspaceOriginV1;
+use review_source_git::{Capture, Snapshot};
 use review_store::{Cas, EventStore};
 use serde_json::{Value, json};
 
 use super::{
-    Checkout, Located, Log, ProjectStore, Registered, UNSHALLOW, WorkspacePaths, adopt,
-    default_store, label_from_name, locate, register_in, require_checkout, run_git, workspace_id,
+    Checkout, Git, Located, Log, ProjectStore, Registered, UNSHALLOW, WorkspacePaths, adopt,
+    default_store, label_from_name, locate, register_in, require_checkout, workspace_id,
 };
 use crate::cli::{ProjectCommand, WorkspaceCommand};
 
@@ -251,8 +252,415 @@ fn bindings_template(label: &str) -> String {
     )
 }
 
-fn os(text: &str) -> &OsStr {
-    OsStr::new(text)
+/// Why `workspace new` made nothing: a usage error (exit 2) or a failure (exit 1).
+enum Refused {
+    Usage(String),
+    Failure(String),
+}
+
+/// What `workspace new` makes once every check has passed.
+struct Admitted {
+    directory: PathBuf,
+    worktree: PathBuf,
+    branch: String,
+    reference: String,
+    commit: String,
+}
+
+/// One thing `workspace new` made, recorded as it is made and undone in reverse order.
+pub(super) enum Made {
+    Directory(PathBuf),
+    Branch {
+        reference: String,
+        commit: String,
+    },
+    /// Directories git created above the worktree: `from` is the highest, `to` the worktree's
+    /// parent.
+    Ancestors {
+        from: PathBuf,
+        to: PathBuf,
+    },
+    Worktree(PathBuf),
+    Registration(String),
+}
+
+/// Every place a worktree of this Project already occupies, or af's own state: a new
+/// worktree at or beneath one of them is refused. The reason, when it is.
+fn inadmissible(
+    worktree: &Path,
+    checkout: &Checkout,
+    store: &ProjectStore,
+    git: &Git,
+) -> Result<Option<String>, String> {
+    if worktree.starts_with(&checkout.toplevel) {
+        return Ok(Some(format!(
+            "it is {} the checkout {} this command runs in, and af writes nothing inside a \
+             checkout",
+            if worktree == checkout.toplevel {
+                "exactly"
+            } else {
+                "inside"
+            },
+            checkout.toplevel.display()
+        )));
+    }
+    for entry in store.paths()? {
+        if worktree.starts_with(&entry.path) {
+            return Ok(Some(format!(
+                "it is inside the Workspace `{}` at {}",
+                entry.label,
+                entry.path.display()
+            )));
+        }
+    }
+    let listed = git.require(["worktree", "list", "--porcelain"], None)?;
+    for line in listed.lines() {
+        let Some(path) = line.strip_prefix("worktree ") else {
+            continue;
+        };
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+        if worktree.starts_with(&path) {
+            return Ok(Some(format!(
+                "it is inside the worktree {} of this repository",
+                path.display()
+            )));
+        }
+    }
+    let state = crate::resolve_filesystem_path(&crate::xdg_state_root()?.join("af"))?;
+    if worktree.starts_with(&state) {
+        return Ok(Some(format!(
+            "it is inside af's state directory {}",
+            state.display()
+        )));
+    }
+    Ok(None)
+}
+
+/// Every check that can refuse `workspace new`, in order, before anything is made: the label is
+/// free; the path is admissible and absent; the branch is valid and absent; `--from` is a commit
+/// of this Project; the Workspace directory is absent.
+fn admit(
+    checkout: &Checkout,
+    store: &ProjectStore,
+    git: &Git,
+    label: &str,
+    branch: Option<String>,
+    path: Option<PathBuf>,
+    from: Option<&str>,
+) -> Result<Admitted, Refused> {
+    use Refused::{Failure, Usage};
+    let log = store.log().map_err(Failure)?;
+    if let Some(holder) = log.by_label(label) {
+        return Err(Failure(format!(
+            "the label `{label}` is taken by Workspace {}; choose another label",
+            holder.workspace_id
+        )));
+    }
+    let explicit = path.is_some();
+    let worktree = match path {
+        Some(path) => crate::resolve_filesystem_path(&path).map_err(Usage)?,
+        None => {
+            let name = checkout
+                .toplevel
+                .file_name()
+                .ok_or_else(|| Failure("the checkout has no directory name".into()))?;
+            let parent = checkout.toplevel.parent().ok_or_else(|| {
+                Failure("the checkout has no parent directory; name one with --path".into())
+            })?;
+            parent.join(format!("{}-wt-{label}", name.to_string_lossy()))
+        }
+    };
+    if let Some(reason) = inadmissible(&worktree, checkout, store, git).map_err(Failure)? {
+        let message = format!(
+            "the worktree path {} is refused: {reason}; name a place outside it with --path",
+            worktree.display()
+        );
+        return Err(if explicit {
+            Usage(message)
+        } else {
+            Failure(message)
+        });
+    }
+    if std::fs::symlink_metadata(&worktree).is_ok() {
+        return Err(Failure(format!(
+            "{} already exists; name another place with --path",
+            worktree.display()
+        )));
+    }
+    let branch = branch.unwrap_or_else(|| format!("af/{label}"));
+    let formatted = git
+        .run(["check-ref-format", "--branch", &branch], None)
+        .map_err(Failure)?;
+    if !formatted.status.success() || String::from_utf8_lossy(&formatted.stdout).trim() != branch {
+        return Err(Failure(format!(
+            "`{branch}` is not a valid branch name; name another with --branch"
+        )));
+    }
+    let reference = format!("refs/heads/{branch}");
+    let existing = git
+        .run(["rev-parse", "--verify", "--quiet", &reference], None)
+        .map_err(Failure)?;
+    if existing.status.success() {
+        return Err(Failure(format!(
+            "branch `{branch}` already exists; name another with --branch"
+        )));
+    }
+    if existing.status.code() != Some(1) {
+        return Err(Failure(format!(
+            "reading the branch `{branch}`: {}",
+            String::from_utf8_lossy(&existing.stderr).trim()
+        )));
+    }
+    let from = from.unwrap_or("HEAD");
+    let resolved = git
+        .run(
+            [
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                &format!("{from}^{{commit}}"),
+            ],
+            None,
+        )
+        .map_err(Failure)?;
+    if !resolved.status.success() {
+        return Err(Failure(format!(
+            "`{from}` names no commit in this repository; name one with --from"
+        )));
+    }
+    let commit = String::from_utf8_lossy(&resolved.stdout).trim().to_string();
+    let roots = git.roots(&commit).map_err(Failure)?;
+    if roots != checkout.repository_id {
+        return Err(Failure(format!(
+            "`{from}` ({commit}) has the root commits {roots}, not this Project's {}, so a \
+             worktree of it would be a checkout of Project {}, not of {}; name a commit of this \
+             Project with --from",
+            checkout.repository_id,
+            super::project_id(&roots),
+            checkout.project_id
+        )));
+    }
+    let directory = store.workspace_directory(label);
+    if std::fs::symlink_metadata(&directory).is_ok() {
+        return Err(Failure(format!(
+            "{} already exists from an earlier Workspace `{label}`; choose another label, or move \
+             that directory away first",
+            directory.display()
+        )));
+    }
+    Ok(Admitted {
+        directory,
+        worktree,
+        branch,
+        reference,
+        commit,
+    })
+}
+
+/// The highest ancestor of `path` that does not exist yet, when its parent does not.
+fn first_absent_ancestor(path: &Path) -> Option<PathBuf> {
+    let mut highest = None;
+    let mut current = path.parent();
+    while let Some(directory) = current {
+        if std::fs::symlink_metadata(directory).is_ok() {
+            break;
+        }
+        highest = Some(directory.to_path_buf());
+        current = directory.parent();
+    }
+    highest
+}
+
+/// An empty directory for each submodule, as a checkout leaves an uninitialized one; never
+/// through a symbolic link.
+fn submodule_directories(worktree: &Path, snapshot: &Snapshot) -> Result<(), String> {
+    for submodule in &snapshot.submodules {
+        let relative = review_source_git::fs_path(&submodule.path);
+        let mut current = worktree.to_path_buf();
+        for component in relative.components() {
+            let std::path::Component::Normal(name) = component else {
+                return Err(format!(
+                    "the submodule path `{}` is not plain",
+                    submodule.path
+                ));
+            };
+            current.push(name);
+            match std::fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => {
+                    return Err(format!(
+                        "the submodule path `{}` crosses a file or a symbolic link",
+                        submodule.path
+                    ));
+                }
+                Err(_) => std::fs::create_dir(&current)
+                    .map_err(|error| format!("creating {}: {error}", current.display()))?,
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Make the Workspace directory, the branch and the worktree, and fill the worktree the way
+/// delivery does (ADR-0031): the branch by `update-ref`, the worktree without a checkout, its
+/// index by `read-tree`, its files from the CAS. No checkout, filter or hook runs.
+fn make(
+    git: &Git,
+    admitted: &Admitted,
+    label: &str,
+    snapshot: &Snapshot,
+    cas: &Cas,
+    made: &mut Vec<Made>,
+) -> Result<(), String> {
+    let directory = &admitted.directory;
+    let parent = directory.parent().unwrap_or(directory);
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("creating {}: {error}", parent.display()))?;
+    std::fs::create_dir(directory)
+        .map_err(|error| format!("creating {}: {error}", directory.display()))?;
+    made.push(Made::Directory(directory.clone()));
+    (|| -> std::io::Result<()> {
+        std::fs::create_dir(directory.join("state"))?;
+        std::fs::create_dir(directory.join("tasks"))?;
+        std::fs::write(directory.join("bindings.toml"), bindings_template(label))
+    })()
+    .map_err(|error| format!("creating {}: {error}", directory.display()))?;
+
+    let input = format!(
+        "start\ncreate {} {}\nprepare\ncommit\n",
+        admitted.reference, admitted.commit
+    );
+    git.require(["update-ref", "--stdin"], Some(input.into_bytes()))?;
+    made.push(Made::Branch {
+        reference: admitted.reference.clone(),
+        commit: admitted.commit.clone(),
+    });
+
+    let worktree = &admitted.worktree;
+    if let (Some(from), Some(to)) = (first_absent_ancestor(worktree), worktree.parent()) {
+        made.push(Made::Ancestors {
+            from,
+            to: to.to_path_buf(),
+        });
+    }
+    git.require(
+        [
+            OsStr::new("worktree"),
+            OsStr::new("add"),
+            OsStr::new("--no-checkout"),
+            OsStr::new("--"),
+            worktree.as_os_str(),
+            OsStr::new(&admitted.branch),
+        ],
+        None,
+    )?;
+    made.push(Made::Worktree(worktree.clone()));
+    crate::task::ensure_empty_linked_worktree(worktree)?;
+    // `--no-checkout` leaves the index empty: fill it from the commit through plumbing, without
+    // touching the still-empty worktree, then write the files from the CAS.
+    git.at(worktree).require(["read-tree", "HEAD"], None)?;
+    review_source_git::materialize(&snapshot.manifest, cas, worktree)
+        .map_err(|error| format!("writing the tree of {}: {error}", admitted.commit))?;
+    submodule_directories(worktree, snapshot)
+}
+
+/// Undo what `workspace new` made, newest first, and say what was undone and what, if an undo
+/// failed, remains.
+pub(super) fn undo(git: &Git, store: &mut ProjectStore, made: Vec<Made>) -> String {
+    let mut undone = Vec::new();
+    let mut remains = Vec::new();
+    for step in made.into_iter().rev() {
+        match step {
+            Made::Registration(id) => match store.unregister(&id) {
+                Ok(()) => undone.push(format!("unregistered Workspace {id}")),
+                Err(error) => remains.push(format!(
+                    "the registration of Workspace {id} ({error}; remove it with `af project \
+                     workspace remove`)"
+                )),
+            },
+            Made::Worktree(path) => {
+                let removed = git
+                    .require(
+                        [
+                            OsStr::new("worktree"),
+                            OsStr::new("remove"),
+                            OsStr::new("--force"),
+                            path.as_os_str(),
+                        ],
+                        None,
+                    )
+                    .or_else(|error| {
+                        std::fs::remove_dir_all(&path)
+                            .map_err(|removing| format!("{error}; {removing}"))?;
+                        git.require(["worktree", "prune"], None)
+                            .map(|_| String::new())
+                    });
+                match removed {
+                    Ok(_) => undone.push(format!("removed the worktree {}", path.display())),
+                    Err(error) => remains.push(format!(
+                        "the worktree {} ({error}; remove it with `git worktree remove --force`)",
+                        path.display()
+                    )),
+                }
+            }
+            Made::Ancestors { from, to } => {
+                let mut current = Some(to.as_path());
+                let mut removed = false;
+                let mut failed = None;
+                while let Some(directory) = current {
+                    match std::fs::remove_dir(directory) {
+                        Ok(()) => removed = true,
+                        // A directory git never created needs no undo.
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => {
+                            failed = Some(format!("{} ({error})", directory.display()));
+                            break;
+                        }
+                    }
+                    if directory == from {
+                        break;
+                    }
+                    current = directory.parent();
+                }
+                match failed {
+                    None if removed => {
+                        undone.push(format!("removed the directory {}", from.display()));
+                    }
+                    None => {}
+                    Some(failed) => remains.push(format!("the directory {failed}")),
+                }
+            }
+            Made::Branch { reference, commit } => {
+                match git.require(["update-ref", "-d", &reference, &commit], None) {
+                    Ok(_) => undone.push(format!("deleted the branch {reference}")),
+                    Err(error) => remains.push(format!(
+                        "the branch {reference} ({error}; delete it with `git update-ref -d \
+                         {reference}`)"
+                    )),
+                }
+            }
+            Made::Directory(directory) => match std::fs::remove_dir_all(&directory) {
+                Ok(()) => undone.push(format!("removed {}", directory.display())),
+                Err(error) => {
+                    remains.push(format!("the directory {} ({error})", directory.display()));
+                }
+            },
+        }
+    }
+    match (undone.is_empty(), remains.is_empty()) {
+        (true, true) => "nothing was created".into(),
+        (false, true) => format!(
+            "undone, newest first: {}; nothing was left behind",
+            undone.join(", ")
+        ),
+        (true, false) => format!("left behind: {}", remains.join("; ")),
+        (false, false) => format!(
+            "undone, newest first: {}; left behind: {}",
+            undone.join(", "),
+            remains.join("; ")
+        ),
+    }
 }
 
 fn new(
@@ -263,152 +671,93 @@ fn new(
     json_output: bool,
 ) -> Result<i32, String> {
     let (checkout, mut store) = open_here()?;
-    let log = store.log()?;
-    if let Some(holder) = log.by_label(label) {
-        return Err(format!(
-            "the label `{label}` is taken by Workspace {}; choose another label",
-            holder.workspace_id
-        ));
-    }
-    let directory = store.workspace_directory(label);
-    if std::fs::symlink_metadata(&directory).is_ok() {
-        return Err(format!(
-            "{} already exists from an earlier Workspace `{label}`; choose another label, or move \
-             that directory away first",
-            directory.display()
-        ));
-    }
-    let worktree = match path {
-        Some(path) => crate::resolve_filesystem_path(&path)?,
-        None => {
-            let name = checkout
-                .toplevel
-                .file_name()
-                .ok_or("the checkout has no directory name")?;
-            let parent = checkout
-                .toplevel
-                .parent()
-                .ok_or("the checkout has no parent directory; name one with --path")?;
-            parent.join(format!("{}-wt-{label}", name.to_string_lossy()))
+    let git = Git::open(&checkout.toplevel)?;
+    let admitted = match admit(&checkout, &store, &git, label, branch, path, from) {
+        Ok(admitted) => admitted,
+        Err(Refused::Usage(message)) => {
+            eprintln!(
+                "error: {message}; nothing was created\n  try: af project workspace new --help"
+            );
+            return Ok(2);
         }
+        Err(Refused::Failure(message)) => return Err(format!("{message}; nothing was created")),
     };
-    if std::fs::symlink_metadata(&worktree).is_ok() {
-        return Err(format!(
-            "{} already exists; name another place with --path",
-            worktree.display()
-        ));
-    }
-    let branch = branch.unwrap_or_else(|| format!("af/{label}"));
-    run_git(
-        &checkout.toplevel,
-        &[os("check-ref-format"), os("--branch"), os(&branch)],
-    )
-    .map_err(|_| format!("`{branch}` is not a valid branch name; name another with --branch"))?;
-    let reference = format!("refs/heads/{branch}");
-    if run_git(
-        &checkout.toplevel,
-        &[
-            os("rev-parse"),
-            os("--verify"),
-            os("--quiet"),
-            os(&reference),
-        ],
-    )
-    .is_ok()
-    {
-        return Err(format!(
-            "branch `{branch}` already exists; name another with --branch"
-        ));
-    }
-    let from = from.unwrap_or("HEAD");
-    let commit = format!("{from}^{{commit}}");
-    let start = run_git(
-        &checkout.toplevel,
-        &[os("rev-parse"), os("--verify"), os("--quiet"), os(&commit)],
-    )
-    .map_err(|_| format!("`{from}` names no commit in this repository; name one with --from"))?;
+    // The commit's tree, captured the way every committed Snapshot is, into a CAS that lives as
+    // long as this command: the files the worktree receives, read without a filter.
+    let scratch = tempfile::Builder::new()
+        .prefix("af-workspace-new-")
+        .tempdir()
+        .map_err(|error| format!("creating a scratch directory: {error}"))?;
+    let cas = Cas::open(scratch.path().join("cas")).map_err(|error| error.to_string())?;
+    let snapshot = Capture::new(&git.repo(), &cas)
+        .committed(&admitted.commit)
+        .map_err(|error| {
+            format!(
+                "capturing the tree of {}: {error}; nothing was created",
+                admitted.commit
+            )
+        })?;
 
-    // The Workspace directory first, so a refusal from git leaves nothing behind.
-    let state = directory.join("state");
-    let tasks = directory.join("tasks");
-    let bindings = directory.join("bindings.toml");
-    let created = (|| -> std::io::Result<()> {
-        std::fs::create_dir_all(directory.parent().unwrap_or(&directory))?;
-        std::fs::create_dir(&directory)?;
-        std::fs::create_dir(&state)?;
-        std::fs::create_dir(&tasks)?;
-        std::fs::write(&bindings, bindings_template(label))
-    })();
-    if let Err(error) = created {
-        let _ = std::fs::remove_dir_all(&directory);
-        return Err(format!("creating {}: {error}", directory.display()));
-    }
-    if let Err(error) = run_git(
-        &checkout.toplevel,
-        &[
-            os("worktree"),
-            os("add"),
-            os("-b"),
-            os(&branch),
-            worktree.as_os_str(),
-            os(&start),
-        ],
-    ) {
-        let _ = std::fs::remove_dir_all(&directory);
-        return Err(format!("{error}; nothing was created"));
-    }
-    let created = match locate(&worktree)? {
-        Located::Checkout(created) if created.project_id == checkout.project_id => created,
-        Located::Checkout(created) => {
-            return Err(format!(
-                "the worktree {} was created on branch `{branch}`, but `{from}` belongs to \
-                 Project {}, not {}, so it was not registered; remove it with `git worktree \
-                 remove`",
-                worktree.display(),
-                created.project_id,
-                checkout.project_id
-            ));
+    let mut made = Vec::new();
+    let outcome = make(&git, &admitted, label, &snapshot, &cas, &mut made).and_then(|()| {
+        let created = match locate(&admitted.worktree)? {
+            Located::Checkout(created) if created.project_id == checkout.project_id => created,
+            _ => {
+                return Err(format!(
+                    "git does not see a checkout of this Project at {}",
+                    admitted.worktree.display()
+                ));
+            }
+        };
+        let id = workspace_id(&checkout.project_id, &created.toplevel);
+        let paths = WorkspacePaths {
+            id: id.clone(),
+            label: label.to_string(),
+            path: created.toplevel.clone(),
+            state: admitted.directory.join("state"),
+            bindings: Some(admitted.directory.join("bindings.toml")),
+            tasks: Some(admitted.directory.join("tasks")),
+        };
+        let registered = register_in(
+            &mut store,
+            &checkout,
+            WorkspaceOriginV1::Created,
+            label,
+            true,
+            paths,
+        );
+        if registered.is_err()
+            && store
+                .log()
+                .is_ok_and(|log| log.workspaces.contains_key(&id))
+        {
+            made.push(Made::Registration(id));
         }
-        _ => {
-            return Err(format!(
-                "the worktree {} was created, but git does not see a checkout there",
-                worktree.display()
-            ));
-        }
+        registered.map(|_| created)
+    });
+    let created = match outcome {
+        Ok(created) => created,
+        Err(error) => return Err(format!("{error}; {}", undo(&git, &mut store, made))),
     };
-    let paths = WorkspacePaths {
-        id: workspace_id(&checkout.project_id, &created.toplevel),
-        label: label.to_string(),
-        path: created.toplevel.clone(),
-        state: state.clone(),
-        bindings: Some(bindings.clone()),
-        tasks: Some(tasks.clone()),
-    };
-    register_in(
-        &mut store,
-        &checkout,
-        WorkspaceOriginV1::Created,
-        label,
-        true,
-        paths,
-    )?;
     if json_output {
         let log = store.log()?;
         print_json(&workspaces_document(&store, &log, &store.paths()?))?;
         return Ok(0);
     }
-    let short = &start[..start.len().min(12)];
+    let short = &admitted.commit[..admitted.commit.len().min(12)];
+    let directory = &admitted.directory;
     println!("created Workspace {label}");
     println!(
-        "  path      {} (branch {branch} at {short})",
-        created.toplevel.display()
+        "  path      {} (branch {} at {short})",
+        created.toplevel.display(),
+        admitted.branch
     );
-    println!("  store     {}", state.display());
-    println!("  bindings  {}", bindings.display());
-    println!("  tasks     {}", tasks.display());
+    println!("  store     {}", directory.join("state").display());
+    println!("  bindings  {}", directory.join("bindings.toml").display());
+    println!("  tasks     {}", directory.join("tasks").display());
     println!(
         "Plan a Task in it from the worktree: af task plan --workspace {label} --file {}",
-        tasks.join("TASK.json").display()
+        directory.join("tasks").join("TASK.json").display()
     );
     Ok(0)
 }
@@ -597,16 +946,21 @@ fn remove(label: &str, delete_worktree: bool, json_output: bool) -> Result<i32, 
                  another checkout of the Project"
             ));
         }
-        run_git(
-            &checkout.toplevel,
-            &[os("worktree"), os("remove"), path.as_os_str()],
-        )
-        .map_err(|error| {
-            format!(
-                "{error}; nothing was changed: commit or discard the worktree's changes, or \
-                 remove the Workspace without --delete-worktree"
+        Git::open(&checkout.toplevel)?
+            .require(
+                [
+                    OsStr::new("worktree"),
+                    OsStr::new("remove"),
+                    path.as_os_str(),
+                ],
+                None,
             )
-        })?;
+            .map_err(|error| {
+                format!(
+                    "{error}; nothing was changed: commit or discard the worktree's changes, or \
+                 remove the Workspace without --delete-worktree"
+                )
+            })?;
         deleted = Some(path);
     }
     store.unregister(&workspace.workspace_id)?;
