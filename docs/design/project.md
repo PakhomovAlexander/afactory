@@ -180,14 +180,14 @@ every other kernel record, with these sections. Every section carries `completen
 
 | Section | Holds | Source | Bound or policy |
 |---|---|---|---|
-| `identity` | Project ID, `repository_id`, `[project] name` and `min_af`, the af release `.af/af.lock` pins, head commit, Tree Digest, cutoff, policy digest, Surveyor version | `.af/af.toml`, `.af/af.lock`, git | — |
+| `identity` | Project ID, `repository_id`, `[project] name` and `min_af`, the af release `.af/af.lock` pins, head commit, Tree Digest, cutoff, policy digest, Surveyor version, git version | `.af/af.toml`, `.af/af.lock`, git | the Tree Digest is the kernel's capture digest of the whole head tree, independent of `exclude` and of every maximum: absent with reason `deadline` when the capture did not finish, never the digest of a part |
 | `tree` | files and bytes in total; per top-level directory files, lines and bytes; per language files and lines; the `tests` split | `git ls-tree -l`, blob reads | lines only for text blobs at or under `max_file_bytes` (1 MiB); `[survey] exclude` globs; `[survey] tests` globs; `[survey.languages]` extends the built-in extension map |
 | `history` | commits and merges in total and in the last 30, 90 and 365 days; first and last commit time; churn (commits, lines added, removed) per top-level directory over 90 days; hot paths; tags in total and the newest five matching `release_tags`; local branch count | `git log --numstat`, `rev-list`, `tag` | `max_commits` (100,000; beyond it `partial`, oldest commit reached recorded); `hot_paths` (20) |
-| `contributors` | per identity: commits, lines added and removed, first and last time, active in 90 days; the top identity's share; human and agent-assisted commit counts and shares | `git log` | `[survey] identity = "name"` (default) or `"email_hash"`: an email is hashed or absent, never stored; `agent_authors` (`*[bot]`) and `agent_trailers` (`Co-Authored-By` matching `*Claude*`, `*Codex*`, `*GPT*`): a commit is agent-assisted when its author or any `Co-Authored-By` name matches, otherwise human; each commit counts once in that partition and its author keeps the per-identity totals; an empty window makes every share `0` |
+| `contributors` | per identity: commits, lines added and removed, first and last time, active in 90 days; the top identity's share; human and agent-assisted commit counts and shares | `git log` | `[survey] identity = "name"` (default) or `"email_hash"`: an email is hashed or absent, never stored, and an author name that is itself an email address (an `@` between non-empty parts, no whitespace) is replaced under both policies by `h:` and the first 16 hex digits of its hash; `agent_authors` (`*[bot]`) and `agent_trailers` (`Co-Authored-By` matching `*Claude*`, `*Codex*`, `*GPT*`): a commit is agent-assisted when its author or any `Co-Authored-By` name matches, otherwise human; each commit counts once in that partition and its author keeps the per-identity totals; an empty window makes every share `0` |
 | `decisions` | per decision record: number, title, status, date; counts by status | the `decisions` pattern, default `docs/adr/*.md`, then the name rule (four ASCII digits and a dash): title from the first H1, status and date from the first line that names one | `max_entries`; a Brief variant picks the newest N (§3.5) |
 | `vocabulary` | the defined term names and their count | the `vocabulary` file, default `CONTEXT.md`: bold-colon headings | names only; definitions stay in the tree |
 | `checks` | declared check names and programs; toolchain declarations present; CI workflow file count | `.af/code-policy.toml`, review pipelines' `[[checks]]`, a fixed file list, `.github/workflows/` | names and programs only, no arguments |
-| `activity` (PJ5) | per Workspace: Tasks by outcome, Attempts, chargeable tokens, active time; Campaigns, open and fixed Findings by severity; delivered Tasks; Developer Plan Decisions, Resolutions and Demand waivers; the last 30 days | every registered Store, read-only, through one aggregation projection PJ5 adds that joins each Store's validated Task accounting with its Campaign Ledger's current Resolutions and Demand waivers (`af task show --json` alone carries neither); Stores are deduplicated by their recorded identity, a Task counts for this Project only when its recorded source `repository_id` matches, Task IDs are qualified by Store, and a Task without retained source evidence counts as `unknown` | a Store this release cannot read makes its Workspace `unavailable` with the replay error (ADR-0145); Provider IDs and host paths never enter the section |
+| `activity` (PJ5) | per Workspace: Tasks by outcome, Attempts, chargeable tokens, active time; Campaigns, open and fixed Findings by severity; delivered Tasks; Developer Plan Decisions, Resolutions and Demand waivers; the last 30 days | every Store of the discovery set, read-only: the Workspaces' Task Stores, the default review roots (`$XDG_STATE_HOME/af/review/local` and `review/campaigns`, which the registry never lists) and every explicit Store and review-root entry of the registry, deduplicated by canonical path; work whose Store belongs to no Workspace forms the `unassigned` group; through one aggregation projection PJ5 adds that joins each Store's validated Task accounting with its Campaign Ledger's current Resolutions and Demand waivers (`af task show --json` alone carries neither); Stores are deduplicated by their recorded identity, a Task counts for this Project only when its recorded source `repository_id` matches, Task IDs are qualified by Store, and a Task without retained source evidence counts as `unknown` | a Store this release cannot read makes its Workspace `unavailable` with the replay error (ADR-0145); Provider IDs and host paths never enter the section |
 
 Lines are newline counts: deterministic, no tokenizer. A hot path names the path the commits
 touched; one absent from the head tree is marked `removed` (on afactory today three of the ten
@@ -197,10 +197,13 @@ hottest paths of the last 90 days no longer exist). The Survey records `previous
 The newest Survey is reused, and nothing recorded, when its *survey key* equals the current one:
 the head commit, the digest of `git for-each-ref refs/heads refs/tags` (names and targets), the
 policy digest, the Surveyor version and, for `activity`, the activity watermark PJ5 defines: for every
-registered Store its opaque Store identity (persisted in the Store by PJ5, never a path), the
-sorted set of its run prefixes with each prefix's last sequence, and the digest of its sidecars
-(`attempt_wall`), plus the Workspace membership list; an alias of a registered Store counts once,
-a copy is another Store. A new commit with the same tree, a new tag or branch, a policy change, a newer af or
+Store of the discovery set its instance ID, the sorted set of its run prefixes with each
+prefix's last sequence, and the digest of its sidecars (`attempt_wall`), plus the Workspace
+membership list. The instance ID is opaque, assigned by the Project Store in its machine-local
+`stores` table the first time it meets a Store's canonical path (symbolic links resolved), and
+recorded in the Survey in place of the path; the Task Store itself is never written. An alias of
+a Store resolves to the same canonical path and counts once; a copy or a move is a new path and
+so a new instance, whose Tasks count again until the operator removes it from the set. A new commit with the same tree, a new tag or branch, a policy change, a newer af or
 newly recorded work therefore records a new Survey; an unchanged repository does not, however
 often runs end. A newest Survey that is `partial` is measured again on the next refresh. The 30,
 90 and 365-day windows are relative to the Survey's own `cutoff`, so a reader knows the as-of
@@ -242,10 +245,13 @@ Bounds come from `[survey]`: `max_wall_ms` (60,000), `max_commits`, `max_file_by
 hit makes the sections after it `partial` or `unavailable`; the Survey is still recorded. Fixed
 maxima bound everything else: `max_paths` (200,000) tree entries, `max_entries` (1,000) items in
 any list of a section (directories, languages, hot paths, tags, decisions, terms, contributors),
-256 bytes for any string (a longer one is cut at a character boundary and marked), and
+256 bytes for any display string (a contributor name, a title, a term, a language or a tag
+label; a longer one is cut at a character boundary and marked), while identity strings (every
+field of `identity`, commit IDs, digests, ref names and paths) are recorded exactly, and
 `max_survey_bytes` (1 MiB) for the record. Every git stream is read incrementally under the one
 deadline, never buffered whole; a list cut at its maximum records the count it saw and the
-reason `max_entries`; a Survey that cannot fit even so records `SurveyFailed@1`. A
+reason `max_entries`; a Survey that cannot fit even so, or whose exact identity strings alone cannot fit, records
+`SurveyFailed@1` with the bytes it needed. A
 failure records `SurveyFailed@1` with its reason, `af project show` prints it, and the command
 that spawned the refresh keeps its own exit code: a Survey never fails a Task.
 
@@ -263,7 +269,8 @@ later feed a Brief section without changing this rule.
 ### 3.5 Project Briefs
 
 `af/ProjectBrief@1` holds the Survey ID and Project ID it was rendered from, the variant name,
-the Survey head (commit and Tree Digest), `behind_commits` when it can be computed, the rendered
+the Survey head (commit, and Tree Digest when the Survey has one; preview and explain say
+`tree digest unavailable` otherwise), `behind_commits` when it can be computed, the rendered
 sections, the sections dropped with their reasons, and `rendered_bytes`.
 
 Variants are project policy in `.af/af.toml`. Two are built in: `orient`, shown here as a
@@ -287,8 +294,11 @@ A pipeline that wants a Brief declares the root port and wires it only where it 
 artifact_type = "af/ProjectBrief@1"
 cardinality = "one"
 optional = true
+covers = []
 root_default = "project_brief"
 brief = "orient"
+[contract.inputs.project.affinity]
+kind = "unbound"
 
 [[nodes]]
 id = "implement"
@@ -299,7 +309,10 @@ port = "project"
 ```
 
 The Worker package admits the port in `[signature.contract.inputs.project]` and its
-`input.schema.json`. A node that does not wire the port sees nothing, so the pipeline, reviewed
+`input.schema.json`, unbound and covering nothing like the root port: a Brief describes the
+Survey's head, which may be older than or divergent from the Task's source Snapshot, so its
+envelope and the Worker's `ArtifactInput` carry no subject Snapshot ID and the Survey head stays
+provenance in the payload; the Snapshot checks of every other port are untouched. A node that does not wire the port sees nothing, so the pipeline, reviewed
 and pinned in the lock like every other Worker input, decides which Workers see the project.
 That is the "not for all of them, configurable" requirement, and it uses no new mechanism.
 
@@ -453,7 +466,13 @@ newest Survey only while it is uncollected; `previous_survey_id` is a name, neve
 edge, so a collected predecessor keeps nothing alive and a chain that reaches a collected Survey
 ends at its tombstone. The tombstone is appended before the bytes go, so an interruption between
 the two leaves a record the next sweep finishes. Collection runs in the Storage Budget sweep and
-in `af project refresh` after a Survey is recorded. Collection never breaks a Task: a plan pins a
+in `af project refresh` after a Survey is recorded. Under the machine budget (ADR-0144 clause 4)
+every Survey is besides an inventoried entry of kind `survey`, sized by its CAS bytes and last
+used at its cutoff, that the budget pass may reclaim oldest first through the same tombstone and
+deletion even below `keep_surveys`; protected are the newest complete Survey, any Survey a running
+refresh or Brief build holds under the Project Store lock, and the recent-use window ADR-0144
+grants every entry; the Project's log, `workspaces.toml` and operator files are never reclaimed.
+PJ4 wires the budget pass. Collection never breaks a Task: a plan pins a
 Brief in the Task Store, not the Survey in the Project Store.
 
 ## 4. Values check
@@ -486,9 +505,10 @@ parity tests, a changelog note under `changelog.d/` and the ADR named.
 ### PJ1 — Project and Workspace
 
 Deliverables: the Project ID derivation; the Project Store and its registry entry;
-`workspaces.toml`; lazy registration from `onboard`, `task plan|start`, `review run`;
-`af project show|workspaces|workspace new|add|remove`; `--workspace` on the Task and review
-commands; delivered worktrees registered; the `ELSEWHERE` paragraph of `review_config::layout`
+`workspaces.toml`; lazy registration from `onboard`, `task plan|start` and `review run`
+(registration only); `af project show|workspaces|workspace new|add|remove`; `--workspace` on
+every `af task` subcommand that takes `--state` and on no review command; delivered worktrees
+registered; the `ELSEWHERE` paragraph of `review_config::layout`
 and `docs/task-execution/task-file.md` pointing Task files at the Workspace directory.
 ADR: *Give a repository one Project identity and register its checkouts as Workspaces.*
 
@@ -503,13 +523,16 @@ layout test still passes; `af --help` and `af project --help` stay under 50 ms.
 Deliverables: `af/ProjectSurvey@1` with `identity`, `tree`, `history`, `contributors`,
 `decisions`, `vocabulary` and `checks`; the Surveyor operator with its bounds; `af onboard
 --apply` recording the first Survey; `af project survey|refresh|history`; the survey key and
-`--force`; Survey collection under `[storage] keep_surveys` with the replay rules of §3.9. ADR: *Measure a Project into Surveys with a token-free Surveyor.*
+`--force`; `SurveyFailed@1` with its schema and replay and the outcome `af project refresh`
+prints; Survey collection under `[storage] keep_surveys` with the replay rules of §3.9. ADR: *Measure a Project into Surveys with a token-free Surveyor.*
 
 Acceptance: a fixture repository with known counts yields a byte-identical expected Survey at a
 fixed cutoff; a second run with an unchanged survey key records nothing, while a new tag, a
 policy change, a partial newest Survey or `--force` records one; `max_commits` and `max_wall_ms`
-produce `partial` sections and a recorded Survey; emails never appear in a record under either
-identity policy; the measurement-policy fixture (divergent author and committer dates, a merge, a
+produce `partial` sections and a recorded Survey; an early deadline leaves the Tree Digest absent
+with its reason, never a partial digest; a repository whose `repository_id` joins seven roots
+(286 bytes) keeps it exact; emails never appear in a record under either identity policy, an
+email in the author-name field included; the measurement-policy fixture (divergent author and committer dates, a merge, a
 rename, a binary change, the `max_commits` boundary) yields the stated totals; an oversized commit
 and a very large tree stay within the fixed maxima with recorded reasons; collection beyond
 `keep_surveys` appends tombstones, frees the bytes, replays `af project history` and recovers
@@ -534,26 +557,31 @@ kernel's own `kernel/implementer` package adopts the port in a separate pull req
 
 ### PJ4 — Detached refresh and staleness
 
-Deliverables: the post-run spawn behind `[survey] refresh`; the runtime-directory lock;
-`SurveyFailed@1`; the `af project show` refresh line; `behind_commits` in preview and explain.
-No new ADR: this amends PJ2's.
+Deliverables: the post-run spawn behind `[survey] refresh`; the runtime-directory lock; the
+`af project show` refresh line; `behind_commits` in preview and explain; Surveys as reclaimable
+entries of the machine-budget pass (§3.9). No new ADR: this amends PJ2's.
 
 Acceptance: a Task run on a changed head is followed by exactly one new Survey; two concurrent
-runs produce one; a run on an unchanged survey key spawns nothing; a Surveyor failure leaves the Task's
-exit code unchanged and is visible in `af project show`.
+runs produce one; a run on an unchanged survey key spawns nothing; a Surveyor failure leaves the
+Task's exit code unchanged and is visible in `af project show`; budget pressure below
+`keep_surveys` reclaims the oldest Survey and never the newest complete one, a held one or the
+Project's files; a refresh and a collection at once leave one consistent log.
 
 ### PJ5 — Activity across Workspaces
 
 Deliverables: the `activity` section from every registered Store through the aggregation
-projection of §3.3 (validated Task accounting joined with Campaign Ledger views), Store identity, the activity watermark, Store
-deduplication and Project attribution; `af project tasks`; Tasks and spend per Workspace in `af project workspaces`;
+projection of §3.3 (validated Task accounting joined with Campaign Ledger views), the discovery
+set with the default review roots and the `unassigned` group, Store instance IDs, the activity
+watermark, Store deduplication and Project attribution; `af project tasks`; Tasks and spend per Workspace in `af project workspaces`;
 Developer Plan Decisions, Resolutions and waivers counted as decisions; the Provider-ID and path
 exclusion. ADR: *Fold every Workspace's recorded work into the Project's Survey.*
 
 Acceptance: a fixture with two Workspaces and a Store this release cannot read yields exact
 totals for the two and `unavailable` with the replay error for the third; no Provider ID, host
 path or email appears in the section; a shared Store, a mixed-Project Store and a duplicate Task ID across
-two Stores count each Task once and only for its own Project; a Resolution and a waiver recorded
+two Stores count each Task once and only for its own Project; a default named and an unnamed
+review Campaign and an explicit Store are all discovered, an alias once and a copy as a second
+instance; a Resolution and a waiver recorded
 after a Task finished change the next `activity` without changing Task spend.
 
 ## 6. Not in v1
