@@ -1556,15 +1556,15 @@ a checkout already registered is refused, naming its label.",
     #[command(
         long_about = "Unregister a Workspace. Its Task Store is never removed: when it still \
 holds a Task that is not collected, the command says so and names `af task gc`. \
---delete-worktree also removes the checkout, only when `git worktree remove` accepts it as a \
-clean linked worktree; the branch stays.",
+--delete-worktree also removes the checkout, only a linked worktree whose files equal its HEAD \
+commit, compared without running any filter or hook of the repository; the branch stays.",
         after_long_help = "Examples:\n  af project workspace remove research\n  af project workspace remove research --delete-worktree"
     )]
     Remove {
         /// The Workspace's label
         #[arg(value_parser = workspace_label)]
         label: String,
-        /// Also remove the worktree, when git accepts it as clean
+        /// Also remove the worktree, when its files equal its commit
         #[arg(long)]
         delete_worktree: bool,
         /// One `af/project-workspaces@1` document on stdout instead of text

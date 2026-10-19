@@ -50,7 +50,10 @@ and a rename, as it writes `stores.toml`.
 
 The Store registry (`$XDG_STATE_HOME/af/stores.toml`) records every Project Store with the kind
 `project`, so `af storage` counts it as a `project_store` entry
-([schema](../schemas/storage-v2.json)). A Project Store is never evicted: it indexes the
+([schema](../schemas/storage-v2.json)). A registry that can hold that kind is `version = 2`; a
+version-1 file an earlier release wrote is refused with the way out: delete
+`$XDG_STATE_HOME/af/stores.toml`. Stores register again as commands use them, and the Stores
+under af's default roots were never in it. A Project Store is never evicted: it indexes the
 Project's Workspaces. The Task Stores of its Workspaces are counted, and their finished Tasks
 collected, like every other Task Store.
 
@@ -63,16 +66,30 @@ workspace_id = "w-" + hex(SHA-256("af/workspace-id@1\0" + project_id + "\0" + ca
 ```
 
 Its label is unique within the Project and follows the safe-name rule of Task IDs: ASCII letters,
-digits, `-` and `_`, starting with a letter or digit.
+digits, `-` and `_`, starting with a letter or digit, at most 128 bytes. A label you give
+(`--label`, `workspace new LABEL`) must already follow it and is never rewritten.
+
+An automatic label is made from the checkout's directory name by one rule:
+
+- every byte outside ASCII letters, digits, `-` and `_` becomes `-` (a two-byte `é` becomes
+  `--`);
+- leading `-` and `_` are stripped;
+- the result is cut to 119 bytes, leaving room for `-` and eight hex digits of the collision
+  suffix within the 128-byte limit;
+- an empty result is `checkout`.
+
+So `repo.v2` is `repo-v2`, `my repo` is `my-repo`, `café` is `caf--` and `.hidden` is `hidden`.
+When the label is already registered, explicitly or automatically, it gains `-` and the first
+eight hex digits of the Workspace ID (`fixture-fedcba98`); when that is taken too, the command
+fails and asks for `--label`.
 
 **Registration is lazy and token-free.** `af onboard --apply`, `af task plan`, `af task start`,
 `af review run` and every `af project` command run inside a checkout register the Project if it is
 new and that checkout as a Workspace if it is new. `af task plan` and `af task start` register
 before they resolve `--workspace`, so the first `af task plan --workspace <checkout directory
-name>` in a checkout without a Project Store finds that checkout's Workspace. Such a Workspace has origin `adopted`, is
-labelled by the checkout's directory name (or that name, `-` and the first eight hex digits of
-its ID when the name is taken), and its Store is the default Task Store for that checkout, or the
-`--state` the command was given. Every default Task Store af created before is adopted this way,
+name>` in a checkout without a Project Store finds that checkout's Workspace. Such a Workspace has origin `adopted`, the
+automatic label of the checkout's directory name, and the default Task Store for that checkout
+as its Store, or the `--state` the command was given. Every default Task Store af created before is adopted this way,
 and not a byte of it changes. Outside `af project`, registration is best effort: a failure prints
 one warning on stderr and never changes the command's output or exit code.
 
@@ -158,13 +175,24 @@ undone newest first (the registration, the worktree, the directories git created
 branch, the Workspace directory), and the message says what was undone or, when an undo fails,
 exactly what remains. The worktree counts as made from the moment `git worktree add` starts: an
 add that fails or reaches its deadline after creating the worktree's directory, its `.git` file
-or its entry under the repository's `worktrees/` is undone like every other step, by `git
-worktree remove --force --force` or, when git cannot remove it, by removing the directory and
-pruning the entry. Git creates that entry, locked, before the path, and neither lists nor prunes
-it until it names the path, so the command notes the entries under `worktrees/` before the add,
-and the undo deletes each new one named after the worktree's directory (alone or followed by
-digits) whose `gitdir` is missing or names that worktree, prunes, and reports it as `removed the
-administrative entry worktrees/<name>`. Entries of other worktrees are left alone.
+or its entry under the repository's `worktrees/` is undone like every other step. The command
+notes the entries under `worktrees/` before the add; the undo deletes the worktree's directory
+and each new entry whose `gitdir` names that worktree's `.git`, directly, and reports it as
+`removed the administrative entry worktrees/<name>`. Only such an entry is provably this add's.
+Git creates an entry, locked, before it writes its `gitdir`, and a concurrent `git worktree add`
+of another path with the same directory name creates one too, so a new locked entry named after
+the worktree's directory without a `gitdir` is left where it is and reported as left behind:
+
+```text
+left behind: /src/fixture/.git/worktrees/fixture-wt-spike: a locked entry without a gitdir,
+created during this add and possibly another add's; remove it once no add is running by
+deleting that directory, since `git worktree prune` keeps a locked entry
+```
+
+A new entry of that name whose `gitdir` names another path is reported and left alone too, and
+the report never says nothing was left behind while such an entry exists. The undo never runs
+`git worktree prune`, which would also remove stale entries of other worktrees, beyond what this
+command made. Entries of other worktrees are left alone.
 
 The command makes no commit and no push, the same local-only boundary delivery keeps.
 
@@ -194,8 +222,15 @@ Workspace is refused with its label.
 
 Unregisters the Workspace. Its Task Store is never removed. When the Store still holds a Task that
 is not collected, the command lists those Tasks and names `af task gc`, which collects finished
-ones. `--delete-worktree` also removes the checkout, but only when `git worktree remove` accepts
-it as a clean linked worktree; otherwise nothing changes. The branch stays either way.
+ones. `--delete-worktree` also removes the checkout, but only a linked worktree of the
+repository that is not locked, and only when it is clean: its files must equal its `HEAD`
+commit's tree in content and mode, and it may hold no other file, ignored or not, besides git's
+own `.git`. The comparison reads the commit through the same committed capture `workspace new`
+fills a worktree from, against the files on disk, so no filter, hook, diff driver or other
+program the repository configures runs; it never calls `git worktree remove`, whose cleanliness
+check runs the repository's clean filters. A clean worktree is removed by deleting its directory
+and its own entry under the repository's `worktrees/`, nothing else. A dirty one is refused with
+the first differing path, and nothing changes. The branch stays either way.
 
 ```sh
 af project workspace remove research
@@ -413,6 +448,6 @@ Nothing is ever written inside a checkout: `.af/` holds declarations only
 ([ADR-0032](adr/0032-generate-review-authority-with-af-onboard.md),
 [ADR-0115](adr/0115-declare-the-af-layout-and-keep-task-files-out-of-git.md)). No record holds a
 host path. No command commits, pushes, contacts a remote or removes a Store. `workspace remove
---delete-worktree` removes only a worktree git accepts as clean. The integration tests assert
+--delete-worktree` removes only a worktree whose files equal its commit. The integration tests assert
 that `git status --porcelain --ignored` stays empty and the checkout's files stay as they were
 after every `af project` command and `af task plan --workspace`.

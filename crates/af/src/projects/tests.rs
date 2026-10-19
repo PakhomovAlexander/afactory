@@ -53,19 +53,97 @@ fn the_store_is_named_by_the_hex_of_the_project_id() {
     );
 }
 
+/// The automatic label of `name`, checked against the safe-name rule and its 128-byte limit.
+fn automatic(name: &str) -> String {
+    let label = label_from_name(OsStr::new(name));
+    assert!(label.len() <= 128, "{name}: {label}");
+    assert!(
+        review_core::project::is_workspace_label(&label),
+        "{name}: {label}"
+    );
+    label
+}
+
 #[test]
 fn labels_from_directory_names_are_safe_names() {
-    assert_eq!(label_from_name("afactory"), "afactory");
-    assert_eq!(label_from_name("my.repo"), "my-repo");
-    assert_eq!(label_from_name("_hidden"), "hidden");
-    assert_eq!(label_from_name("..."), "checkout");
-    assert_eq!(label_from_name(&"a".repeat(300)).len(), 119);
-    for name in ["afactory", "my.repo", "_hidden", "...", "ünïcode dir"] {
-        assert!(
-            review_core::project::is_workspace_label(&label_from_name(name)),
-            "{name}"
-        );
-    }
+    assert_eq!(automatic("afactory"), "afactory");
+    assert_eq!(automatic("_hidden"), "hidden");
+    assert_eq!(automatic("..."), "checkout");
+    assert_eq!(automatic(""), "checkout");
+}
+
+#[test]
+fn an_automatic_label_maps_a_dot_to_a_dash() {
+    assert_eq!(automatic("repo.v2"), "repo-v2");
+}
+
+#[test]
+fn an_automatic_label_maps_each_space_to_a_dash() {
+    assert_eq!(automatic("my repo  copy"), "my-repo--copy");
+}
+
+#[test]
+fn an_automatic_label_maps_every_byte_of_a_unicode_character_to_a_dash() {
+    // `é` is two bytes, `日本` six: each byte becomes `-`.
+    assert_eq!(automatic("café"), "caf--");
+    assert_eq!(automatic("日本-repo"), "repo");
+    assert_eq!(automatic("ünïcode"), "n--code");
+}
+
+#[test]
+fn an_automatic_label_strips_leading_punctuation() {
+    assert_eq!(automatic(".._-hidden.repo"), "hidden-repo");
+    assert_eq!(automatic("-_x"), "x");
+}
+
+#[test]
+fn an_automatic_label_of_a_200_byte_name_is_cut_to_119_bytes() {
+    let name = "ab.".repeat(66) + "ab";
+    assert_eq!(name.len(), 200);
+    let label = automatic(&name);
+    assert_eq!(label.len(), 119);
+    assert_eq!(label, "ab-".repeat(66)[..119]);
+    // Its collision suffix still fits within 128 bytes.
+    let log = Log::fold(&[event(
+        0,
+        EventType::WorkspaceRegisteredV1,
+        registered("w-0123456789abcdef", &label, "adopted"),
+    )])
+    .unwrap();
+    let suffixed = free_label(&log, &label, "w-fedcba9876543210").unwrap();
+    assert_eq!(suffixed, format!("{label}-fedcba98"));
+    assert_eq!(suffixed.len(), 128);
+    assert!(review_core::project::is_workspace_label(&suffixed));
+}
+
+#[test]
+fn an_automatic_label_that_collides_with_an_explicit_one_gains_the_id_prefix() {
+    // `fixture` was given with --label to another checkout's `workspace add`.
+    let log = Log::fold(&[event(
+        0,
+        EventType::WorkspaceRegisteredV1,
+        registered("w-0123456789abcdef", "fixture", "adopted"),
+    )])
+    .unwrap();
+    let label = free_label(&log, &automatic("fixture"), "w-fedcba9876543210").unwrap();
+    assert_eq!(label, "fixture-fedcba98");
+    assert!(label.len() <= 128 && review_core::project::is_workspace_label(&label));
+    // Both taken: an error naming --label.
+    let both = Log::fold(&[
+        event(
+            0,
+            EventType::WorkspaceRegisteredV1,
+            registered("w-0123456789abcdef", "fixture", "adopted"),
+        ),
+        event(
+            1,
+            EventType::WorkspaceRegisteredV1,
+            registered("w-1111111111111111", "fixture-fedcba98", "created"),
+        ),
+    ])
+    .unwrap();
+    let error = free_label(&both, "fixture", "w-fedcba9876543210").unwrap_err();
+    assert!(error.contains("--label"), "{error}");
 }
 
 fn event(sequence: u64, event_type: EventType, payload: serde_json::Value) -> RunEvent {
@@ -495,9 +573,10 @@ fn an_administrative_entry_belongs_to_the_add_whose_basename_and_gitdir_it_bears
     let path = Path::new("/work/fixture-wt-spike");
     let own = "/work/fixture-wt-spike/.git\n";
     for (name, gitdir, owned) in [
-        ("fixture-wt-spike", None, true),
+        // Without a `gitdir` an entry may be another add's of the same basename: never this one's.
+        ("fixture-wt-spike", None, false),
         ("fixture-wt-spike", Some(own), true),
-        ("fixture-wt-spike1", None, true),
+        ("fixture-wt-spike1", None, false),
         ("fixture-wt-spike27", Some(own), true),
         ("fixture-wt-spike-2", None, false),
         ("fixture-wt-spikes", None, false),
@@ -532,7 +611,7 @@ fn an_administrative_entry_of_a_non_utf8_path_belongs_to_its_add() {
     let own = b"/work/fixture-wt-\xffspike/.git".to_vec();
     let own_newline = [own.as_slice(), b"\n"].concat();
     for (gitdir, owned) in [
-        (None, true),
+        (None, false),
         (Some(own.as_slice()), true),
         (Some(own_newline.as_slice()), true),
         (Some(b"/work/fixture-wt-\xfeother/.git\n".as_slice()), false),
@@ -546,7 +625,7 @@ fn an_administrative_entry_of_a_non_utf8_path_belongs_to_its_add() {
 }
 
 #[test]
-fn undo_deletes_a_locked_entry_git_neither_lists_nor_prunes_and_only_one_of_this_add() {
+fn undo_deletes_only_an_entry_whose_gitdir_names_the_path_and_reports_a_locked_one_without() {
     use commands::Made;
     let root = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(root.path()).unwrap();
@@ -554,15 +633,31 @@ fn undo_deletes_a_locked_entry_git_neither_lists_nor_prunes_and_only_one_of_this
     let mut store = ProjectStore::open_unrecorded(&root.join("state"), &project_id(ROOTS)).unwrap();
     let administrative = root.join("repo/.git/worktrees");
     let worktree = root.join("wt");
-    // Older than the add, and new but of another add: neither is touched nor reported.
-    for name in ["wt", "other"] {
+    let lock = |name: &str| {
         std::fs::create_dir_all(administrative.join(name)).unwrap();
         std::fs::write(administrative.join(name).join("locked"), "initializing\n").unwrap();
+    };
+    // Older than the add, and new but of another basename: neither is touched nor reported.
+    for name in ["wt", "other"] {
+        lock(name);
     }
-    let before = BTreeSet::from([OsStr::new("wt").to_os_string()]);
-    // What a stopped add leaves: a locked entry with neither a path nor a `gitdir`.
-    std::fs::create_dir_all(administrative.join("wt1")).unwrap();
-    std::fs::write(administrative.join("wt1/locked"), "initializing\n").unwrap();
+    // A stale entry of another worktree, unlocked and without a `gitdir`, which `git worktree
+    // prune` would remove: the undo never prunes, so it stays.
+    std::fs::create_dir_all(administrative.join("stale")).unwrap();
+    let before = BTreeSet::from([
+        OsStr::new("wt").to_os_string(),
+        OsStr::new("stale").to_os_string(),
+    ]);
+    // What a stopped add leaves, or a concurrent add of another path with the same basename: a
+    // locked entry with neither a path nor a `gitdir`. Git neither lists nor prunes it.
+    lock("wt1");
+    // This add's own entry, its `gitdir` naming `<path>/.git`.
+    lock("wt2");
+    std::fs::write(
+        administrative.join("wt2/gitdir"),
+        format!("{}\n", worktree.join(".git").display()),
+    )
+    .unwrap();
     assert!(
         !git.require(["worktree", "list", "--porcelain"], None)
             .unwrap()
@@ -579,10 +674,18 @@ fn undo_deletes_a_locked_entry_git_neither_lists_nor_prunes_and_only_one_of_this
     );
     assert_eq!(
         report,
-        "undone, newest first: removed the administrative entry worktrees/wt1; nothing was left \
-         behind"
+        format!(
+            "undone, newest first: removed the administrative entry worktrees/wt2; left behind: \
+             {}: a locked entry without a gitdir, created during this add and possibly another \
+             add's; remove it once no add is running by deleting that directory, since `git \
+             worktree prune` keeps a locked entry",
+            administrative.join("wt1").display()
+        )
     );
-    assert!(!administrative.join("wt1").exists());
+    assert!(!report.contains("nothing was left behind"), "{report}");
+    assert!(!administrative.join("wt2").exists());
+    assert!(administrative.join("wt1/locked").is_file());
     assert!(administrative.join("wt/locked").is_file());
     assert!(administrative.join("other/locked").is_file());
+    assert!(administrative.join("stale").is_dir(), "the undo pruned");
 }
