@@ -184,7 +184,7 @@ for one third, `0` for an empty population), with these sections. Every section 
 | Section | Holds | Source | Bound or policy |
 |---|---|---|---|
 | `identity` | Project ID, `repository_id`, `[project] name` and `min_af`, the af release `.af/af.lock` pins, head commit, Tree Digest, cutoff, policy digest, Surveyor version, git version | `.af/af.toml`, `.af/af.lock`, git | the Tree Digest is the kernel's capture digest of the whole head tree, independent of `exclude` and of every maximum: absent with reason `deadline` when the capture did not finish, never the digest of a part |
-| `tree` | files and bytes in total; per top-level directory files, lines and bytes; per language files and lines; the `tests` split | `git ls-tree -l`, blob reads | lines only for text blobs at or under `max_file_bytes` (1 MiB); `[survey] exclude` globs; `[survey] tests` globs; `[survey.languages]` extends the built-in extension map |
+| `tree` | files and bytes in total; per top-level directory files, lines and bytes; per language files and lines; the `tests` split | `git ls-tree -l`, blob reads | lines only for text blobs: regular or executable blobs at or under `max_file_bytes` (1 MiB) whose first 8 KiB hold no NUL, UTF-8 validity irrelevant (the rule ADR-0133's citations use); symlinks and gitlinks contribute no lines; a declaration (a decision, the vocabulary file, a check file) is parsed only when it is such a text blob and valid UTF-8, else unreadable; `[survey] exclude` globs; `[survey] tests` globs; `[survey.languages]` extends the built-in extension map |
 | `history` | commits and merges in total and in the last 30, 90 and 365 days; first and last commit time; churn (commits, lines added, removed) per top-level directory over 90 days; hot paths; tags in total and the newest five matching `release_tags`; local branch count | `git log --numstat`, `rev-list`, `tag` | `max_commits` (100,000; beyond it `partial`, oldest commit reached recorded); `hot_paths` (20) |
 | `contributors` | per identity: commits, lines added and removed, first and last time, active in 90 days; the top identity's share; human and agent-assisted commit counts and shares | `git log` | `[survey] identity = "name"` (default) or `"email_hash"`: an email is hashed or absent, never stored, and an author name any whitespace-separated token of which is an email address (an `@` between non-empty parts) is replaced whole, before any truncation and under both policies, by `h:` and the first 16 hex digits of its hash; `agent_authors` (`*[bot]`) and `agent_trailers` (`Co-Authored-By` matching `*Claude*`, `*Codex*`, `*GPT*`): a commit is agent-assisted when its author or any `Co-Authored-By` name matches, otherwise human; each commit counts once in that partition and its author keeps the per-identity totals; an empty window makes every share `0` |
 | `decisions` | per decision record: number, title, status, date; counts by status | the `decisions` pattern, default `docs/adr/*.md`, then the name rule (four ASCII digits and a dash): title from the first H1; status and date from the first line that starts with `**Status:**` or `Status:`: the status is the first of `proposed`, `accepted`, `superseded`, `deprecated`, `rejected` on that line (`accepted; superseded in part by` is `accepted`; `amended` becomes a flag when the line says so), the date the first `YYYY-MM-DD` on it, each `unknown` when absent or malformed | `max_entries`; a Brief variant picks the newest N (§3.5) |
@@ -197,7 +197,9 @@ touched; one absent from the head tree is marked `removed` (on afactory today th
 hottest paths of the last 90 days no longer exist). The Survey records `previous_survey_id`, so
 `af project history` walks the chain. Identity is the record's artifact ID.
 
-The newest Survey is reused, and nothing recorded, when its *survey key* equals the current one:
+The newest uncollected Survey is reused, and nothing recorded, exactly when it is `complete`,
+its *survey key* equals the current one and no `--force` asks; this one predicate serves `af
+project refresh`, the parent's preflight and the refresher's recheck under the lock. The key is:
 the head commit, the digest of `git for-each-ref refs/heads refs/tags` (names and targets), the
 policy digest, the Surveyor version and, for `activity`, the activity watermark PJ5 defines: for every
 Store of the discovery set its instance ID and the digest of what one read transaction captured
@@ -246,8 +248,9 @@ The Surveyor runs in three ways, and in none of them does it call a Provider:
    `af self refresh-check`; the kernel still runs no daemon and polls nothing (values §3, §8).
    It takes the single-flight lock `$XDG_RUNTIME_DIR/af/project-<hex>.lock`, waiting for it up
    to `max_wall_ms` (a refresher that never gets it records that as its failure), and compares
-   the survey key again under the lock: it measures only when no complete Survey matches the
-   current key, so equal keys coalesce into one Survey and a key that changed while the holder
+   the survey key again under the lock: it measures unless the newest uncollected Survey is
+   complete and its key equals the current one (the one reuse predicate of §3.3, `--force`
+   absent), so equal keys coalesce into one Survey and a key that changed while the holder
    measured (a Task settling after the holder captured its watermark, PJ5) is measured by the
    waiter in turn.
 
@@ -360,8 +363,12 @@ Staleness is reported, not refused, in v1, and it is the consuming Task's, not t
 compiled plan records a staleness receipt keyed by the Brief's artifact ID and the Task's source
 commit, with `behind_commits` the number of commits from the Survey head to the source commit
 when the former is an ancestor of the latter, and `unknown` otherwise or without a committed
-revision, computed alike for a constructed and an explicitly bound Brief without rewriting the
-bound artifact; `af task plan` and `af task explain` print it beside the port.
+revision, derived solely from an ancestry observation the initial capture records beside the
+pinned Survey (whether the Survey head, and the head of each explicitly bound Brief, is an
+ancestor of the source commit, with the commit count, or a typed `unknown` reason: no checkout,
+missing objects, deadline), so a generated pipeline that introduces the port later needs no live
+git; computed alike for a constructed and an explicitly bound Brief without rewriting the bound
+artifact; `af task plan` and `af task explain` print it beside the port.
 
 What the Worker sees is one more entry in its context manifest — name `project`, required by
 `port:project`, the artifact ID and type, bytes and estimated tokens — and `af project brief
@@ -412,7 +419,7 @@ A rendered `orient` for afactory at bf027de6, abridged:
 | `af project survey [--id ID] [--section NAME…] [--json]` | The newest Survey, or the one named; text renders one table per section. `--json` is the `af/ProjectSurvey@1` record. |
 | `af project refresh [--json]` | Run the Surveyor now and wait. `--detached` is the internal form the post-run spawn uses. |
 | `af project history [--json]` | The Survey chain: ID, head, cutoff, completeness, bytes. |
-| `af project brief [--variant NAME] [--survey ID] [--json]` | The exact bytes the `project` port would carry, token-free; `--json` adds the manifest entry. |
+| `af project brief [--variant NAME] [--survey ID] [--json]` | The exact bytes the `project` port would carry, token-free; `--json` prints `af/project-brief-preview@1`: the Brief's artifact ID, the Brief payload unchanged and the manifest entry, or the `none` outcome with its reason (variant `none`, no Survey). |
 | `af project workspaces [--json]` | Every Workspace: label, origin, path, Store, Tasks and spend (once PJ5 lands). |
 | `af project workspace new\|add\|remove` | §3.2. |
 | `af project tasks [--workspace LABEL] [--json]` (PJ5) | Every Task across the Project's Workspaces, with outcome and spend: `af task list` over the whole Project. |
@@ -567,7 +574,8 @@ Surveys as reclaimable entries of the machine-budget pass. ADR: *Measure a Proje
 
 Acceptance: a fixture repository with known counts yields a byte-identical expected Survey at a
 fixed cutoff; a second run with an unchanged survey key records nothing, while a new tag, a
-policy change, a partial newest Survey or `--force` records one; `max_commits` and `max_wall_ms`
+policy change, a partial newest Survey or `--force` records one, and an older complete Survey
+behind a partial newest one or behind another head's Survey prevents nothing; `max_commits` and `max_wall_ms`
 produce `partial` sections and a recorded Survey; an early deadline leaves the Tree Digest absent
 with its reason, never a partial digest; a repository whose `repository_id` joins seven roots
 (286 bytes) keeps it exact; `max_paths = 0`, a value above its ceiling and an overflowing one
@@ -579,7 +587,9 @@ fixture (two dates on one line, a partial supersession, a missing date, no statu
 stated statuses and dates; no author email appears in a record under either identity policy, an email-only author name
 and a name carrying an email beside ordinary text included; the measurement-policy fixture (divergent author and committer dates, a merge, a
 rename, a binary change, the `max_commits` boundary) yields the stated totals; an oversized commit
-and a very large tree stay within the fixed maxima with recorded reasons; collection beyond
+and a very large tree stay within the fixed maxima with recorded reasons; invalid UTF-8 counts
+lines, a NUL before the 8 KiB boundary makes a blob binary and one after it does not, and
+symlinks and gitlinks have no lines; collection beyond
 `keep_surveys` appends tombstones, frees the bytes, replays `af project history` and recovers
 after an interruption between the tombstone and the deletion; budget pressure below
 `keep_surveys` reclaims the oldest Survey and never the newest complete one, a held one or the
@@ -598,7 +608,9 @@ Acceptance: a Task file binding the port to a recorded Brief output suppresses c
 the exact-artifact form is refused; one Brief bound into two Tasks at different source commits
 gets two staleness receipts; a generated pipeline that introduces the port after capture builds
 its Brief from the pinned Survey, a refresh or a removed Project Store in between changing
-nothing; a pipeline wiring the port to one of two Workers delivers the Brief to that Worker's
+nothing, and a handoff after the original checkout is gone still reports the captured
+staleness; `af project brief --json` prints the preview document byte-equal in its payload to
+the text form; a pipeline wiring the port to one of two Workers delivers the Brief to that Worker's
 manifest and not the other's; replay after a refresh renders the pinned Brief, not the newer
 Survey; a variant over `max_bytes` drops the last section and records the reason; without a
 Survey the plan previews the empty port and runs; a `max_bytes` below 1,024 is refused at policy
@@ -616,8 +628,8 @@ a status-line link (ADR-0113 clause 6).
 Acceptance: a Task run on a changed head is followed by exactly one new Survey; two concurrent
 runs produce one; a run on an unchanged survey key spawns no process (the parent compares the
 key; process creation is tested apart from recording); a Surveyor failure leaves the
-Task's exit code unchanged and is visible in `af project show`; a Task settling after a running
-refresh captured its watermark is measured by the next refresher, which waited for the lock; a
+Task's exit code unchanged and is visible in `af project show`; a second refresher that waited for the
+lock measures again when the key changed meanwhile (a commit during the holder's measurement); a
 refresher that never gets the lock within `max_wall_ms` records a failure.
 
 ### PJ5 — Activity across Workspaces
@@ -637,7 +649,8 @@ review Campaign and an explicit Store are all discovered, an alias once and a co
 instance; a default Task Store whose checkout is gone and which no Workspace names is discovered
 and counted under `unassigned`; a Store two Workspaces name forms one `shared` group counted once; a Task completed 31
 days before the cutoff contributes nothing and an unfinished one only its settled Attempts; a
-Store replaced at its path with different events under equal counts changes the key; a Resolution and a waiver recorded
+Store replaced at its path with different events under equal counts changes the key; a Task
+settling after a running refresh captured its watermark is measured by the next refresher; a Resolution and a waiver recorded
 after a Task finished change the next `activity` without changing Task spend.
 
 ## 6. Not in v1
