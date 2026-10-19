@@ -135,6 +135,17 @@ bounds everything af keeps, how many keys included.
 default roots (`--state`, `--state-root`), recorded best effort so the Storage Budget's sweep
 reaches it, and dropped once its path holds no Store.
 
+**Telemetry**:
+What af records about its own work — spans, events and, at the `content` level, redacted
+content blobs — in per-process segments under the state root's `telemetry/`, never in a Store.
+The kernel's execution authority never reads it and nothing it captures is a Worker input; its
+level is the machine-only `[telemetry] level` (`off`, `metrics`, `spans`, `content`). A
+**Telemetry Run** is the work one kernel run id covers inside one Store, its trace namespaced by
+the Store directory; an **execution** is one process's part of it, identified by its segment
+([ADR-0151](docs/adr/0151-record-telemetry-in-its-own-store-and-never-let-it-steer.md)).
+_Avoid_: "logs" or "the Ledger" — Telemetry is evidence of nothing, and a run id alone does not
+name a Telemetry Run.
+
 **Check runtime**:
 The directory `af-check-<pid>-<random>` af creates for one check and removes after it, holding
 the check's `HOME`, `TMPDIR`, `AF_CHECK_SCRATCH` and `XDG_CACHE_HOME`. Every check gets one —

@@ -20,6 +20,11 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
         "The disk af keeps between runs, and the [storage] table",
         STORAGE,
     ),
+    (
+        "telemetry",
+        "What af records about its own work, the four levels, and the [telemetry] table",
+        TELEMETRY,
+    ),
 ];
 
 pub(crate) fn find(name: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
@@ -64,8 +69,9 @@ name them.
   [defaults]  pipeline = \"review\"
 
 The user file is `~/.config/af/config.toml` (XDG on macOS too). It holds what belongs to the
-person and the machine, never to the project: the `[self]` update policy and the `[storage]`
-budget (see `af help storage`). Provider logins and
+person and the machine, never to the project: the `[self]` update policy, the `[storage]`
+budget (see `af help storage`) and the `[telemetry]` level (see `af help telemetry`). Provider
+logins and
 cache policy stay in `providers.toml` and `caches.toml` beside it.
 
 `af config show` prints the effective configuration; `--origin` names the file and line each
@@ -84,15 +90,16 @@ Lowest to highest. Tables deep-merge, scalars last-wins, arrays replace.
   environment AF_<TABLE>__<KEY>, e.g. AF_SELF__AUTO_UPDATE=never
 
 A directory layer's `.af/af.toml` merges into `af config show` for every checkout beneath it.
-`[self]` and `[storage]` are machine-only: a directory, project or local layer that carries one
-is reported and ignored.
+`[self]`, `[storage]` and `[telemetry]` are machine-only: a directory, project or local layer
+that carries one is reported and ignored.
 
 Branch-specific configuration needs no layer: `.af/` is versioned, so the project layer on a
 branch is whatever that branch commits. Each git worktree has its own `.af/` copy and its own
 `af.local.toml`.";
 
 const ENVIRONMENT: &str = "\
-  AF_<TABLE>__<KEY>       override one configuration value (highest layer)
+  AF_<TABLE>__<KEY>       override one configuration value (highest layer), e.g.
+                          AF_TELEMETRY__LEVEL=content for one run
   AF_VERSION              run this installed version regardless of the project's pin
   AF_SELF_OFFLINE=1       never contact a release source: no pin installs, no update checks
   AF_RELEASE_SOURCE       a local directory of releases (<tag>/<asset>) instead of GitHub
@@ -176,6 +183,70 @@ it: write scratch files there, never to /tmp. A Store made with --state is recor
 $XDG_STATE_HOME/af/stores.toml so collection reaches it. A Task whose gate leftovers are not
 cleaned up yet is never collected. The sweep that ends `af task run` is recorded on that Task:
 `af task show` prints its `storage sweep:` line.";
+
+const TELEMETRY: &str = "\
+Telemetry records what af does while it works, in its own store, never in a Task or Campaign
+Store (ADR-0151). The kernel's execution authority never reads it: identity, replay, the Ledger,
+budgets, admission and every Worker input are the same whether it is on, off or deleted, and
+nothing it captures reaches a prompt. Nothing leaves the machine unless `sink = \"otlp\"` is set.
+
+Levels
+  off       nothing: no directory, no subscriber
+  metrics   command, run, gate, check, node, Attempt, harness and sweep spans with identity and
+            numeric attributes; failures; resource use
+  spans     every span and event, the configuration record, the Store commit mirror and Finding
+            summaries; sizes and digests of content, never the content (the default)
+  content   spans plus content blobs: Worker inputs, assistant text, reasoning, tool arguments
+            and results, check output (perturbing: not bounded by the overhead gate)
+
+Credential-looking material is withheld at every level, before any bound cuts it: a line that
+looks like a credential becomes `[line withheld: looks like credential material]`, a JSON member
+named like a secret keeps its key and loses its value (`[withheld]`), a line or document too
+long to judge whole is withheld whole. Identities and counters af produced are typed fields and
+stay intact. A telemetry-only failure (an unwritable directory, a full segment) is one problem
+and the run continues.
+
+  af telemetry status           level, directory, bytes, segments, runs, index, problems
+  af telemetry reindex          recover crashed writers' segments and rebuild the index
+
+The [telemetry] table, machine layers only (built-in, system, user, AF_TELEMETRY__<KEY>); a
+repository's .af/af.toml cannot set it, and a value outside its bound refuses the load naming
+the key:
+
+  [telemetry]
+  level = \"spans\"                      off | metrics | spans | content
+  dir = \"\"                             default $XDG_STATE_HOME/af/telemetry; an absolute path
+                                       that neither contains nor lies inside a Store, a cache
+                                       or another telemetry directory
+  max_bytes = \"4GiB\"                   256MiB to [storage] max_bytes; counted in the budget
+  flush_bytes = \"64KiB\"                4KiB to 16MiB: the buffer written in one write
+  flush_latency_ms = 1000              50 to 10000: the longest a record waits while a run is open
+  observer_queue_bytes = \"4MiB\"        256KiB to 64MiB: the stream queue; full, it drops chunks
+  segment_max_bytes = \"256MiB\"         16MiB to 4GiB: one process's segment, every record kind,
+                                       the last 64 KiB kept for its seal
+  content_max_blob_bytes = \"16MiB\"     64KiB to 256MiB: larger content keeps head and tail
+  content_attempt_max_bytes = \"512MiB\" 16MiB to 8GiB: content one Attempt may keep
+  content_process_max_bytes = \"64MiB\"  4MiB to 1GiB: content outside any Attempt
+  content_native_body_max_chars = 1048576   4096 to 8388608
+  content_reasoning = true             keep thinking blocks and reasoning summaries at content
+  content_tool_io = true               keep tool arguments and results at content
+  content_model_bodies = true          keep raw API bodies at content
+  content_index = true                 maintain the full-text index over text blobs
+  harness_native = false               receive the harness's own telemetry on loopback
+  sink = \"none\"                        none | otlp: push after each run
+  sink_endpoint = \"\"                   an http:// or https:// URL; required with otlp only
+  sink_headers_file = \"\"               one `Name: value` per line, read at push time
+  sink_timeout_ms = 5000               100 to 60000
+
+Layout
+  $XDG_STATE_HOME/af/telemetry/v1/segments/   one JSONL segment per process: live under its
+                                              writer's lock, sealed and compressed at exit
+  $XDG_STATE_HOME/af/telemetry/v1/blobs/      content-addressed, compressed, shared
+  $XDG_STATE_HOME/af/telemetry/v1/index.sqlite   rebuildable; `af telemetry reindex`
+  $XDG_STATE_HOME/af/telemetry-dirs.v1.json   every telemetry directory ever written here
+
+There is no telemetry keep_days: collection by age is [storage] keep_days under [storage]
+auto_gc or an applied prune. See docs/telemetry.md.";
 
 const SELF_TOPIC: &str = "\
 Layout

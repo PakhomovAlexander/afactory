@@ -25,6 +25,7 @@ review-runner-codex = { path = "../review-runner-codex" }
 review-source-git = { path = "../review-source-git" }
 review-source-task = { path = "../review-source-task" }
 review-store = { path = "../review-store" }
+review-telemetry = { path = "../review-telemetry" }
 review-sandbox = { path = "../review-sandbox" }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 # `termios` drives the `af` browser's raw-mode terminal session (ADR-0119).

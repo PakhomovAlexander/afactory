@@ -1,0 +1,452 @@
+//! Blobs: identity of the retained bytes, the publication protocol against a paused sweep, a
+//! concurrent reader and a crash at each step, occurrences that survive deduplication, and a
+//! missing file reported, never fatal (design §6).
+
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
+
+use review_telemetry::blob::collect::collect;
+use review_telemetry::blob::reader::{self as blob_reader, Content};
+use review_telemetry::blob::{self, Media};
+use review_telemetry::index::{self, Index};
+use review_telemetry::layout::Layout;
+use review_telemetry::level::Level;
+use review_telemetry::record::{Attrs, BlobState, Record, SealExit, SpanKind};
+use review_telemetry::redact::Redactor;
+use review_telemetry::segment::reader;
+use review_telemetry::segment::writer::{HookAction, PublishStep, Writer};
+
+use crate::{options, sealed_records, writer};
+
+const HOUR: Duration = Duration::from_secs(3600);
+
+#[test]
+fn telemetry_blob_identity_is_retained_bytes() {
+    let source: String = (0..300)
+        .map(|n| format!("line {n:03} of output\n"))
+        .collect();
+    let small = blob::prepare(source.as_bytes(), Media::Text, 1024, &Redactor::new());
+    let large = blob::prepare(source.as_bytes(), Media::Text, 64 * 1024, &Redactor::new());
+    // Another bound: other retained bytes, another identity; the source relates them.
+    assert_ne!(small.digest, large.digest);
+    assert_eq!(small.source_digest, large.source_digest);
+    assert_eq!(small.original_bytes, large.original_bytes);
+    assert!(small.truncated && !large.truncated);
+    assert_eq!(
+        small.digest,
+        review_telemetry::trace::sha256_digest(&small.retained)
+    );
+    // Other redaction rules (here: a home prefix replaced) retain other bytes, so another
+    // identity, never a wrong reuse.
+    let with_home = format!("/home/fixture/work\n{source}");
+    let plain = blob::prepare(
+        with_home.as_bytes(),
+        Media::Text,
+        64 * 1024,
+        &Redactor::new(),
+    );
+    let homed = blob::prepare(
+        with_home.as_bytes(),
+        Media::Text,
+        64 * 1024,
+        &Redactor::new().with_home("/home/fixture"),
+    );
+    assert_ne!(plain.digest, homed.digest);
+    assert_eq!(plain.source_digest, homed.source_digest);
+    // The same source, bound and rules: the same object, its file reused after a size check.
+    let again = blob::prepare(source.as_bytes(), Media::Text, 1024, &Redactor::new());
+    assert_eq!(again, small);
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+    let first = blob::stage(&layout, &small).unwrap();
+    blob::place(&first).unwrap();
+    let second = blob::stage(&layout, &again).unwrap();
+    blob::place(&second).unwrap();
+    assert!(!second.temp.exists());
+    assert_eq!(
+        blob_reader::read(&layout, &small.digest),
+        Content::Bytes(small.retained.clone())
+    );
+}
+
+fn published_events(layout: &Layout, segment_id: &str) -> Vec<Record> {
+    reader::read_live(&layout.live_segment(segment_id))
+        .unwrap()
+        .records
+}
+
+#[test]
+fn telemetry_blob_publication_survives_paused_sweep() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+
+    // A publisher paused between the rename and the reference flush keeps the blob: the sweep
+    // cannot take gc.lock while the publisher holds it shared.
+    let (reached_tx, reached_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel::<()>();
+    let resume_rx = Arc::new(Mutex::new(resume_rx));
+    let mut paused = options(temp.path(), Level::Content);
+    let reached = Mutex::new(reached_tx);
+    paused.publish_hook = Some(Arc::new(move |step| {
+        if step == PublishStep::Renamed {
+            reached.lock().unwrap().send(()).unwrap();
+            resume_rx.lock().unwrap().recv().unwrap();
+        }
+        HookAction::Continue
+    }));
+    let publisher = Writer::new(paused).unwrap();
+    let span = publisher
+        .span_start(None, None, "af.attempt", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    publisher.flush();
+    let segment_id = publisher.segment_id().unwrap();
+    let thread_publisher = publisher.clone();
+    let thread_span = span.clone();
+    let publishing = std::thread::spawn(move || {
+        thread_publisher.event_with_content(
+            &thread_span,
+            "gen_ai.content.input",
+            Attrs::new(),
+            b"the composed input\n",
+            Media::Text,
+        )
+    });
+    reached_rx.recv().unwrap();
+    let prepared = blob::prepare(
+        b"the composed input\n",
+        Media::Text,
+        options(temp.path(), Level::Content).content_max_blob_bytes,
+        &Redactor::new(),
+    );
+    let file = layout.blob(&prepared.digest);
+    assert!(file.is_file(), "renamed into place before any reference");
+    assert!(
+        !published_events(&layout, &segment_id)
+            .iter()
+            .any(|record| matches!(record, Record::BlobRef(_)))
+    );
+    let swept = collect(&layout, Duration::ZERO, SystemTime::now()).unwrap();
+    assert!(swept.skipped.is_some(), "{swept:?}");
+    assert!(file.is_file());
+    resume_tx.send(()).unwrap();
+    assert!(publishing.join().unwrap().is_some());
+    // Now the flushed reference is a root, even to a sweep that ignores age.
+    let swept = collect(&layout, Duration::ZERO, SystemTime::now()).unwrap();
+    assert_eq!(swept.skipped, None);
+    assert!(swept.removed_blobs.is_empty(), "{swept:?}");
+    assert!(file.is_file());
+
+    // A reader that reads a reference the moment it is flushed, while another thread
+    // publishes, finds the file.
+    let concurrent = writer(temp.path(), Level::Content);
+    let concurrent_span = concurrent
+        .span_start(None, None, "af.attempt", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    concurrent.flush();
+    let concurrent_id = concurrent.segment_id().unwrap();
+    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader_layout = layout.clone();
+    let reader_done = done.clone();
+    let reader_id = concurrent_id.clone();
+    let reading = std::thread::spawn(move || {
+        let mut checked = std::collections::BTreeSet::new();
+        loop {
+            let finished = reader_done.load(std::sync::atomic::Ordering::SeqCst);
+            for record in published_events(&reader_layout, &reader_id) {
+                if let Record::BlobRef(occurrence) = record
+                    && checked.insert(occurrence.occurrence_id.clone())
+                {
+                    assert!(
+                        matches!(
+                            blob_reader::content(&reader_layout, &occurrence),
+                            Content::Bytes(_)
+                        ),
+                        "{occurrence:?}"
+                    );
+                }
+            }
+            if finished {
+                return checked.len();
+            }
+        }
+    });
+    for index in 0..40 {
+        concurrent.event_with_content(
+            &concurrent_span,
+            "gen_ai.content.output",
+            Attrs::new(),
+            format!("output {index}\n").as_bytes(),
+            Media::Text,
+        );
+    }
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(reading.join().unwrap(), 40);
+    concurrent.finish(SealExit::Ok).unwrap();
+    publisher.finish(SealExit::Ok).unwrap();
+
+    // A publisher crashed at each step, then a sweep and a reindex.
+    for step in [
+        PublishStep::Staged,
+        PublishStep::Locked,
+        PublishStep::Renamed,
+        PublishStep::Flushed,
+    ] {
+        let mut crashing = options(temp.path(), Level::Content);
+        crashing.publish_hook = Some(Arc::new(move |at| {
+            if at == step {
+                HookAction::Crash
+            } else {
+                HookAction::Continue
+            }
+        }));
+        let crashed = Writer::new(crashing).unwrap();
+        let span = crashed
+            .span_start(None, None, "af.attempt", SpanKind::Internal, Attrs::new())
+            .unwrap();
+        crashed.flush();
+        let content = format!("crashed at {step:?}\n");
+        assert_eq!(
+            crashed.event_with_content(
+                &span,
+                "gen_ai.content.input",
+                Attrs::new(),
+                content.as_bytes(),
+                Media::Text
+            ),
+            None
+        );
+        let digest =
+            blob::prepare(content.as_bytes(), Media::Text, 16 << 20, &Redactor::new()).digest;
+        // Within the hour nothing unreferenced goes; past it, orphans and temporaries do.
+        collect(&layout, HOUR, SystemTime::now()).unwrap();
+        let referenced = step == PublishStep::Flushed;
+        let placed = matches!(step, PublishStep::Renamed | PublishStep::Flushed);
+        assert_eq!(layout.blob(&digest).is_file(), placed, "{step:?}");
+        let swept = collect(&layout, Duration::ZERO, SystemTime::now() + HOUR).unwrap();
+        assert_eq!(
+            layout.blob(&digest).is_file(),
+            referenced,
+            "{step:?}: {swept:?}"
+        );
+        assert!(
+            reader::list(&layout).unwrap().temporary.is_empty(),
+            "{step:?}"
+        );
+        let leftovers: Vec<_> = walk(&layout.blobs())
+            .into_iter()
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with(".tmp-")
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "{step:?}: {leftovers:?}");
+        index::replace(&layout).unwrap();
+        let index = Index::open(&layout).unwrap();
+        assert!(index.missing_blobs().unwrap().is_empty(), "{step:?}");
+    }
+}
+
+fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut all = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.filter_map(Result::ok) {
+            if entry.path().is_dir() {
+                all.extend(walk(&entry.path()));
+            } else {
+                all.push(entry.path());
+            }
+        }
+    }
+    all
+}
+
+#[test]
+fn telemetry_blob_occurrences_survive_dedup() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+    let sources = [
+        b"token=first-secret\nthe same output\n".as_slice(),
+        b"token=other-secret\nthe same output\n".as_slice(),
+    ];
+    let mut sealed = Vec::new();
+    for _segment in 0..2 {
+        let writer = writer(temp.path(), Level::Content);
+        let span = writer
+            .span_start(None, None, "af.attempt", SpanKind::Internal, Attrs::new())
+            .unwrap();
+        for source in sources {
+            writer.event_with_content(
+                &span,
+                "gen_ai.content.output",
+                Attrs::new(),
+                source,
+                Media::Text,
+            );
+        }
+        sealed.push(writer.finish(SealExit::Ok).unwrap().unwrap());
+    }
+    let records = sealed_records(&sealed[0].path);
+    let objects: Vec<_> = records
+        .iter()
+        .filter(|record| matches!(record, Record::Blob(_)))
+        .collect();
+    let occurrences: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::BlobRef(occurrence) => Some(occurrence.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(objects.len(), 1, "one object per digest per segment");
+    assert_eq!(occurrences.len(), 2);
+    assert_eq!(occurrences[0].digest, occurrences[1].digest);
+    assert_ne!(occurrences[0].source_digest, occurrences[1].source_digest);
+    assert!(occurrences.iter().all(|o| o.state == BlobState::Stored));
+    // Each event names its own occurrence.
+    let named: Vec<String> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::Event(event) => event.blob.clone(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        named,
+        occurrences
+            .iter()
+            .map(|o| o.occurrence_id.clone())
+            .collect::<Vec<_>>()
+    );
+    index::replace(&layout).unwrap();
+    let index = Index::open(&layout).unwrap();
+    assert_eq!(index.count("SELECT count(*) FROM blobs").unwrap(), 1);
+    assert_eq!(index.count("SELECT count(*) FROM blob_refs").unwrap(), 4);
+    assert_eq!(
+        index
+            .count("SELECT count(DISTINCT source_digest) FROM blob_refs")
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn telemetry_missing_blob_is_reported() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+    let writer = writer(temp.path(), Level::Content);
+    let span = writer
+        .span_start(None, None, "af.attempt", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event_with_content(
+        &span,
+        "gen_ai.content.input",
+        Attrs::new(),
+        b"kept\n",
+        Media::Text,
+    );
+    writer.event_with_content(
+        &span,
+        "gen_ai.content.output",
+        Attrs::new(),
+        b"deleted\n",
+        Media::Text,
+    );
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let occurrences: Vec<_> = sealed_records(&sealed.path)
+        .into_iter()
+        .filter_map(|record| match record {
+            Record::BlobRef(occurrence) => Some(occurrence),
+            _ => None,
+        })
+        .collect();
+    let gone = occurrences[1].clone();
+    std::fs::remove_file(layout.blob(gone.digest.as_deref().unwrap())).unwrap();
+
+    let (status, _) = review_telemetry::status::status(&review_telemetry::status::StatusInput {
+        root: temp.path().to_path_buf(),
+        level: Level::Content,
+        max_bytes: 4 << 30,
+        registry: None,
+        accounted: Vec::new(),
+    })
+    .unwrap();
+    assert_eq!(status.missing_blobs, 1);
+    let index = Index::open(&layout).unwrap();
+    assert_eq!(
+        index.missing_blobs().unwrap(),
+        [(gone.occurrence_id.clone(), gone.digest.clone().unwrap())]
+    );
+    let occurrence = index.occurrence(&gone.occurrence_id).unwrap().unwrap();
+    assert_eq!(
+        blob_reader::content(&layout, &occurrence),
+        Content::Unavailable(blob_reader::MISSING.into())
+    );
+    assert_eq!(blob_reader::MISSING, "content unavailable: missing blob");
+    assert!(matches!(
+        blob_reader::content(&layout, &occurrences[0]),
+        Content::Bytes(_)
+    ));
+    // Every query still answers.
+    assert_eq!(index.dump().unwrap()["blob_refs"].len(), 2);
+}
+
+/// When the sweep holds `gc.lock` the publisher never waits: the blob is dropped and counted,
+/// its occurrence says `dropped`, and no file and no object record is left.
+#[test]
+fn a_blob_is_dropped_while_a_sweep_holds_the_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+    let writer = writer(temp.path(), Level::Content);
+    let span = writer
+        .span_start(None, None, "af.attempt", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    let sweep = review_telemetry::layout::exclusive_within(&layout.gc_lock(), HOUR)
+        .unwrap()
+        .unwrap();
+    let started = std::time::Instant::now();
+    assert!(
+        writer
+            .event_with_content(
+                &span,
+                "gen_ai.content.input",
+                Attrs::new(),
+                b"held\n",
+                Media::Text
+            )
+            .is_some()
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the publisher waited"
+    );
+    drop(sweep);
+    assert_eq!(writer.dropped(), 1);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let records = sealed_records(&sealed.path);
+    assert!(
+        !records
+            .iter()
+            .any(|record| matches!(record, Record::Blob(_)))
+    );
+    let occurrence = records
+        .iter()
+        .find_map(|record| match record {
+            Record::BlobRef(occurrence) => Some(occurrence.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(occurrence.state, BlobState::Dropped);
+    assert_eq!(
+        blob_reader::content(&layout, &occurrence),
+        Content::Unavailable(blob_reader::DROPPED.into())
+    );
+    let Some(Record::Seal(seal)) = records.last() else {
+        panic!("no seal");
+    };
+    assert_eq!(seal.dropped, 1);
+    assert!(walk(&layout.blobs()).is_empty(), "no file left behind");
+    assert_eq!(std::fs::read_to_string(&sealed.refs).unwrap(), "");
+}

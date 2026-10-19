@@ -1,0 +1,276 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-status:1",
+  "title": "af/telemetry-status@1",
+  "description": "`af telemetry status --json` (ADR-0151): the configured level, the telemetry directory read, its allocated bytes in total and per entry against `[telemetry] max_bytes`, its segments by state (`live`: a writer holds the lock; `unsealed`: nobody does, recoverable; `sealed`; `corrupt`: interior corruption, never read), the runs and withheld Attempts the index knows, stored occurrences whose blob file is missing, the index's state after this command ingested every new segment byte, the distinct problems recorded, what could not be read (another version's directory such as `v0/`, a segment of another shape), and every telemetry directory registered on this machine. Telemetry ids carry no authority; nothing here is evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "level",
+    "perturbing",
+    "directory",
+    "exists",
+    "bytes",
+    "segments",
+    "runs",
+    "withheld_attempts",
+    "missing_blobs",
+    "index",
+    "problems",
+    "unreadable",
+    "registered"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/telemetry-status@1"
+    },
+    "level": {
+      "enum": [
+        "off",
+        "metrics",
+        "spans",
+        "content"
+      ]
+    },
+    "perturbing": {
+      "type": "boolean",
+      "description": "`content`: blobs are kept and the overhead gate does not bound the level."
+    },
+    "directory": {
+      "type": "string",
+      "minLength": 1
+    },
+    "exists": {
+      "type": "boolean"
+    },
+    "bytes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "max_bytes",
+        "entries"
+      ],
+      "properties": {
+        "total": {
+          "$ref": "#/$defs/count"
+        },
+        "max_bytes": {
+          "$ref": "#/$defs/count"
+        },
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "name",
+              "bytes"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "segment",
+                  "blobs",
+                  "index",
+                  "temporary",
+                  "locks"
+                ]
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "state": {
+                "enum": [
+                  "live",
+                  "unsealed",
+                  "sealed",
+                  "corrupt"
+                ]
+              },
+              "bytes": {
+                "$ref": "#/$defs/count"
+              }
+            }
+          }
+        }
+      }
+    },
+    "segments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "live",
+        "unsealed",
+        "sealed",
+        "corrupt"
+      ],
+      "properties": {
+        "live": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unsealed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sealed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "corrupt": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "runs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "withheld_attempts": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "missing_blobs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "index": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "ingested_segments",
+        "ingested_records",
+        "ingested_bytes"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "fresh",
+            "direct",
+            "absent"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ingested_segments": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ingested_records": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ingested_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "problems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "what",
+          "reason",
+          "segments"
+        ],
+        "properties": {
+          "what": {
+            "enum": [
+              "write",
+              "blob",
+              "receiver",
+              "budget",
+              "redaction",
+              "sink",
+              "observer"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "segments": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "unreadable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "registered": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "exists",
+          "current",
+          "first_use_unix_ms",
+          "last_use_unix_ms"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "exists": {
+            "type": "boolean"
+          },
+          "current": {
+            "type": "boolean"
+          },
+          "first_use_unix_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_use_unix_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "overlapping": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Why this registered directory overlaps another telemetry root or a directory the storage inventory accounts on its own, rechecked by this command."
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

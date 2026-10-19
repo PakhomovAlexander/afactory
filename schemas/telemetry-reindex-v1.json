@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-reindex:1",
+  "title": "af/telemetry-reindex@1",
+  "description": "`af telemetry reindex --json` (ADR-0151): every unsealed segment whose lock could be taken was recovered (sealed with `exit = recovered`, or renamed corrupt on interior corruption); the index was replaced under `index.lock` and rebuilt from every segment, and every blob file's digest verified. Counts are rows of the rebuilt index; `records` the segment records it read.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "directory",
+    "recovered",
+    "corrupt",
+    "segments",
+    "records",
+    "spans",
+    "events",
+    "blobs",
+    "blob_refs",
+    "missing_blobs",
+    "corrupt_blobs",
+    "unreadable"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/telemetry-reindex@1"
+    },
+    "directory": {
+      "type": "string",
+      "minLength": 1
+    },
+    "recovered": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "segment_id",
+          "discarded_bytes",
+          "unended_spans"
+        ],
+        "properties": {
+          "segment_id": {
+            "$ref": "#/$defs/segment_id"
+          },
+          "discarded_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unended_spans": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "corrupt": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/segment_id"
+      }
+    },
+    "segments": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "records": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "spans": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "events": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "blobs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "blob_refs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "missing_blobs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "corrupt_blobs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/digest"
+      }
+    },
+    "unreadable": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "segment_id": {
+      "type": "string",
+      "pattern": "^[0-9]+-[0-9]+-[0-9a-f]+$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

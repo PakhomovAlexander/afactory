@@ -1,0 +1,1232 @@
+//! The segment writer (design §6).
+//!
+//! One live segment per process under `v1/segments/<started_unix_ms>-<pid>-<nonce>.jsonl`,
+//! opened lazily at the first record and never before, under an exclusive `flock` for the
+//! writer's lifetime. Records are encoded into a buffer of `flush_bytes` guarded by a mutex and
+//! appended with one `write(2)` of whole lines when the buffer is full, when a span of depth at
+//! most 2 ends, and at exit.
+//!
+//! **One owner.** The open file, every write, the manifest, the seal, the compression and the
+//! rename are the consumer's work ([`Writer::consume`] and the sealing below) and no other
+//! code's. Appending threads only encode into the buffer and signal [`Shared::wake`]; until the
+//! consumer thread exists (package P2), the appending thread runs the same consumer code after
+//! each append, under the consumer's own mutex, so there is never a second owner.
+//!
+//! **Segment limit.** `segment_max_bytes` bounds the file across every record kind. The last
+//! [`TERMINAL_RESERVE_BYTES`] are kept for terminal records (`problem`, `seal`): past the rest no
+//! record of any kind is accepted, bounded in-memory counters are kept, one `problem` is
+//! recorded, and at exit the seal is written from the reserve with the `dropped` count.
+//!
+//! **Publication.** Content becomes a blob in this order: the blob is written to a temporary
+//! file; `gc.lock` is taken shared without waiting; the file is renamed into place; the `blob`
+//! object (once per digest per segment), the `blob_ref` occurrence and the owning record are
+//! appended and the buffer flushed; the lock is released. When the lock is not free (a sweep
+//! holds it) the blob is dropped and counted, and the occurrence says `state = dropped`.
+
+use std::collections::{BTreeSet, VecDeque};
+use std::fs::{File, OpenOptions};
+use std::io::{Read as _, Write as _};
+use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+
+use nix::fcntl::FlockArg;
+use serde_json::Value;
+
+use super::{Clock, TERMINAL_RESERVE_BYTES, new_segment_id};
+use crate::blob::{self, Media, Prepared};
+use crate::dirs::{self, Accounted};
+use crate::layout::{self, Held, Layout};
+use crate::level::{Level, Settings};
+use crate::record::{
+    self, Attributes, Attrs, BlobObject, BlobRef, BlobState, ConfigPart, ConfigRow, Counters,
+    Demand, Event, Finding, Host, MAX_KEY_BYTES, MAX_STRING_BYTES, Node, OCCURRENCE_PREFIX,
+    Problem, ProblemWhat, RECORD_MAX_BYTES, Record, Seal, SealExit, SegmentHeader, SpanEnd,
+    SpanKind, SpanStart, SpanStatus, schema,
+};
+use crate::redact::Redactor;
+use crate::trace;
+
+/// A step of the blob publication protocol, offered to a [`PublishHook`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishStep {
+    /// The blob is in its temporary file.
+    Staged,
+    /// `gc.lock` is held shared.
+    Locked,
+    /// The blob file is in place, no reference to it written yet.
+    Renamed,
+    /// The references are flushed; the lock is not yet released.
+    Flushed,
+}
+
+/// What a [`PublishHook`] tells the writer to do after a step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookAction {
+    Continue,
+    /// Stop as a killed process would: nothing more is written, the lock on the segment ends,
+    /// and the segment is left unsealed for a reader to recover.
+    Crash,
+}
+
+/// Observes, pauses or crashes the publication protocol at each step; fixtures use it to prove
+/// the protocol's order. A hook that blocks pauses the publisher.
+pub type PublishHook = Arc<dyn Fn(PublishStep) -> HookAction + Send + Sync>;
+
+/// Registration of the telemetry directory before the first write (design §6).
+#[derive(Debug, Clone)]
+pub struct Registration {
+    /// `$XDG_STATE_HOME/af/telemetry-dirs.v1.json`.
+    pub registry: PathBuf,
+    /// Every directory the storage inventory accounts on its own.
+    pub accounted: Vec<Accounted>,
+}
+
+/// What a writer is configured with.
+#[derive(Clone)]
+pub struct WriterOptions {
+    pub layout: Layout,
+    pub level: Level,
+    pub flush_bytes: u64,
+    pub segment_max_bytes: u64,
+    pub content_max_blob_bytes: u64,
+    pub af_version: String,
+    pub af_commit: String,
+    pub argv: Vec<String>,
+    pub cwd: PathBuf,
+    pub redactor: Redactor,
+    pub registration: Option<Registration>,
+    pub publish_hook: Option<PublishHook>,
+}
+
+impl WriterOptions {
+    /// Options with the `[telemetry]` defaults for `level` in `root`, this process's argv and
+    /// working directory, no registration and no hook.
+    pub fn new(root: impl Into<PathBuf>, level: Level) -> Self {
+        let defaults = Settings::default();
+        Self {
+            layout: Layout::new(root),
+            level,
+            flush_bytes: defaults.flush_bytes,
+            segment_max_bytes: defaults.segment_max_bytes,
+            content_max_blob_bytes: defaults.content_max_blob_bytes,
+            af_version: env!("CARGO_PKG_VERSION").to_string(),
+            af_commit: "unknown".to_string(),
+            argv: std::env::args().collect(),
+            cwd: std::env::current_dir().unwrap_or_default(),
+            redactor: Redactor::for_this_process(),
+            registration: None,
+            publish_hook: None,
+        }
+    }
+
+    /// The bounds of `settings`.
+    pub fn with_settings(mut self, settings: &Settings) -> Self {
+        self.level = settings.level;
+        self.flush_bytes = settings.flush_bytes;
+        self.segment_max_bytes = settings.segment_max_bytes;
+        self.content_max_blob_bytes = settings.content_max_blob_bytes;
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    /// Nothing opened yet: no file, no directory.
+    Unopened,
+    Open,
+    /// The seal is appended; no other record is accepted.
+    Sealing,
+    Sealed,
+    /// A telemetry-only failure: nothing more is written, the run continues.
+    Failed,
+    /// Stopped as a killed process would be.
+    Crashed,
+}
+
+/// The buffer and the in-memory counters, guarded by one mutex. Appending threads hold it only
+/// to encode.
+struct Pending {
+    state: State,
+    segment_id: String,
+    next_seq: u64,
+    /// Full buffers waiting for the consumer, oldest first.
+    ready: VecDeque<Vec<u8>>,
+    buffer: Vec<u8>,
+    flush_requested: bool,
+    /// Bytes of every record accepted, written or buffered.
+    accepted_bytes: u64,
+    exhausted: bool,
+    spans: u64,
+    events: u64,
+    blobs: u64,
+    dropped: u64,
+    dropped_chunks: u64,
+    problems: BTreeSet<(ProblemWhat, String)>,
+    /// Problems that could not reach the segment (it never opened, or writes failed).
+    unwritten: Vec<(ProblemWhat, String)>,
+    blobs_in_segment: BTreeSet<String>,
+    referenced: BTreeSet<String>,
+}
+
+/// The consumer's own state: the open file and its lock.
+struct Consumer {
+    file: Option<Held>,
+    path: Option<PathBuf>,
+}
+
+/// Shared between every handle of one writer.
+pub struct Shared {
+    options: WriterOptions,
+    clock: Clock,
+    pending: Mutex<Pending>,
+    /// Signalled on every append; the consumer thread of P2 waits on it.
+    pub wake: Condvar,
+    consumer: Mutex<Consumer>,
+}
+
+/// A sealed segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sealed {
+    pub segment_id: String,
+    pub path: PathBuf,
+    pub refs: PathBuf,
+}
+
+/// One process's segment writer. Cloning shares it.
+#[derive(Clone)]
+pub struct Writer {
+    shared: Arc<Shared>,
+}
+
+/// Records encoded under the pending lock, accepted or refused together.
+pub struct Batch<'a> {
+    segment_id: &'a str,
+    base: u64,
+    lines: Vec<(Vec<u8>, &'static str)>,
+    known: &'a BTreeSet<String>,
+    counts: SealCounts,
+}
+
+/// The in-memory counters a seal carries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SealCounts {
+    pub spans: u64,
+    pub events: u64,
+    pub blobs: u64,
+    pub dropped: u64,
+    pub dropped_chunks: u64,
+}
+
+impl Batch<'_> {
+    /// The segment id records are built in.
+    pub fn segment_id(&self) -> &str {
+        self.segment_id
+    }
+
+    /// Whether this segment already holds the `blob` object of `digest`.
+    pub fn knows_blob(&self, digest: &str) -> bool {
+        self.known.contains(digest)
+    }
+
+    /// The `seq` the next pushed record takes.
+    pub fn seq(&self) -> u64 {
+        self.base + self.lines.len() as u64
+    }
+
+    /// Encode `record` under the bound with the next `seq`; `None` when it cannot fit.
+    pub fn push(&mut self, mut record: Record, counters: Counters) -> Option<u64> {
+        let seq = self.seq();
+        record.set_seq(seq);
+        let kind = record.kind();
+        let line = record::encode(&mut record, counters)?;
+        self.lines.push((line, kind));
+        Some(seq)
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn ns(value: u128) -> String {
+    value.to_string()
+}
+
+/// The host facts read once per segment; a fact the platform does not deliver is absent.
+fn host_facts(near: &std::path::Path) -> Host {
+    let cpus = std::thread::available_parallelism()
+        .map(|cpus| u32::try_from(cpus.get()).unwrap_or(u32::MAX))
+        .unwrap_or(1);
+    let existing = near.ancestors().find(|path| path.exists());
+    let free_bytes = existing
+        .and_then(|path| nix::sys::statvfs::statvfs(path).ok())
+        .map(free_of);
+    Host {
+        os: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        cpus,
+        memory_bytes: memory_bytes(),
+        load1: load1(),
+        free_bytes,
+    }
+}
+
+/// The available bytes a `statvfs` reports; its field types differ per platform.
+#[allow(clippy::useless_conversion)]
+fn free_of(stat: nix::sys::statvfs::Statvfs) -> u64 {
+    u64::from(stat.blocks_available()).saturating_mul(u64::from(stat.fragment_size()))
+}
+
+#[cfg(target_os = "linux")]
+fn memory_bytes() -> Option<u64> {
+    use nix::unistd::{SysconfVar, sysconf};
+    let pages = sysconf(SysconfVar::_PHYS_PAGES).ok().flatten()?;
+    let size = sysconf(SysconfVar::PAGE_SIZE).ok().flatten()?;
+    u64::try_from(pages)
+        .ok()?
+        .checked_mul(u64::try_from(size).ok()?)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn memory_bytes() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn load1() -> Option<f64> {
+    std::fs::read_to_string("/proc/loadavg")
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn load1() -> Option<f64> {
+    None
+}
+
+/// Attributes bounded, with the values that became pending blobs: `named[i]` is the key whose
+/// value `contents[i]` holds.
+struct Bounded {
+    attributes: Attributes,
+    counters: Counters,
+    contents: Vec<Prepared>,
+    named: Vec<String>,
+}
+
+/// Name each pending blob's occurrence in the attribute that held its value; an attribute
+/// whose content found no occurrence is cut to the marker.
+fn fill(attributes: &mut Attributes, named: &[String], occurrences: &[String]) {
+    for (index, key) in named.iter().enumerate() {
+        if let Some(value) = attributes.get_mut(key) {
+            *value = Value::String(match occurrences.get(index) {
+                Some(occurrence) => format!("{OCCURRENCE_PREFIX}{occurrence}"),
+                None => record::ELLIPSIS.to_string(),
+            });
+        }
+    }
+}
+
+/// One content waiting for publication, and how far it got.
+struct Content {
+    prepared: Prepared,
+    staged: Option<blob::Staged>,
+    stored: bool,
+}
+
+impl Writer {
+    /// A writer for `options`; `None` at `off`, where nothing is ever touched.
+    pub fn new(options: WriterOptions) -> Option<Self> {
+        if !options.level.records() {
+            return None;
+        }
+        Some(Self {
+            shared: Arc::new(Shared {
+                clock: Clock::start(),
+                pending: Mutex::new(Pending {
+                    state: State::Unopened,
+                    segment_id: String::new(),
+                    next_seq: 1,
+                    ready: VecDeque::new(),
+                    buffer: Vec::new(),
+                    flush_requested: false,
+                    accepted_bytes: 0,
+                    exhausted: false,
+                    spans: 0,
+                    events: 0,
+                    blobs: 0,
+                    dropped: 0,
+                    dropped_chunks: 0,
+                    problems: BTreeSet::new(),
+                    unwritten: Vec::new(),
+                    blobs_in_segment: BTreeSet::new(),
+                    referenced: BTreeSet::new(),
+                }),
+                wake: Condvar::new(),
+                consumer: Mutex::new(Consumer {
+                    file: None,
+                    path: None,
+                }),
+                options,
+            }),
+        })
+    }
+
+    pub fn level(&self) -> Level {
+        self.shared.options.level
+    }
+
+    pub fn layout(&self) -> &Layout {
+        &self.shared.options.layout
+    }
+
+    /// Unix nanoseconds now on the writer's clock.
+    pub fn now_unix_ns(&self) -> u128 {
+        self.shared.clock.now_unix_ns()
+    }
+
+    /// The segment id, once the segment is open.
+    pub fn segment_id(&self) -> Option<String> {
+        let pending = lock(&self.shared.pending);
+        (pending.state != State::Unopened).then(|| pending.segment_id.clone())
+    }
+
+    /// The live segment's path, once it is open.
+    pub fn path(&self) -> Option<PathBuf> {
+        self.segment_id()
+            .map(|id| self.shared.options.layout.live_segment(&id))
+    }
+
+    /// Every distinct problem this writer met, recorded in the segment or not.
+    pub fn problems(&self) -> Vec<(ProblemWhat, String)> {
+        let pending = lock(&self.shared.pending);
+        let mut all: Vec<(ProblemWhat, String)> = pending.problems.iter().cloned().collect();
+        for problem in &pending.unwritten {
+            if !all.contains(problem) {
+                all.push(problem.clone());
+            }
+        }
+        all
+    }
+
+    /// Records and blobs not kept so far.
+    pub fn dropped(&self) -> u64 {
+        lock(&self.shared.pending).dropped
+    }
+
+    /// Whether telemetry stopped after a telemetry-only failure.
+    pub fn failed(&self) -> bool {
+        matches!(
+            lock(&self.shared.pending).state,
+            State::Failed | State::Crashed
+        )
+    }
+
+    fn header(&self, segment_id: &str) -> Record {
+        let options = &self.shared.options;
+        let redactor = &options.redactor;
+        let (argv, _) = record::bound_attributes(
+            Attrs::new().texts("argv", options.argv.clone()),
+            redactor,
+            &mut |_, _| None,
+        );
+        let argv = match argv.get("argv") {
+            Some(Value::Array(values)) => values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        };
+        let cwd = record::cut(
+            &redactor.replace(&options.cwd.to_string_lossy()),
+            MAX_STRING_BYTES,
+        );
+        Record::Segment(SegmentHeader {
+            seq: 1,
+            schema: schema::SEGMENT.into(),
+            segment_id: segment_id.to_string(),
+            af_version: record::cut(&options.af_version, 128),
+            af_commit: record::cut(&options.af_commit, 128),
+            pid: std::process::id(),
+            parent_pid: std::os::unix::process::parent_id(),
+            argv,
+            cwd,
+            host: host_facts(options.layout.root()),
+            started_unix_ns: ns(self.shared.clock.now_unix_ns()),
+            mono_origin_unix_ns: ns(self.shared.clock.origin_unix_ns()),
+            level: options.level,
+        })
+    }
+
+    /// Open the segment in memory at the first record: choose its id and buffer its header,
+    /// which the consumer writes at once.
+    fn ensure_open(&self, pending: &mut Pending) -> bool {
+        match pending.state {
+            State::Open => true,
+            State::Unopened => {
+                let segment_id = new_segment_id(self.shared.clock.now_unix_ns());
+                let mut header = self.header(&segment_id);
+                let Some(line) = record::encode(&mut header, Counters::default()) else {
+                    pending.state = State::Failed;
+                    pending
+                        .unwritten
+                        .push((ProblemWhat::Write, "the segment header does not fit".into()));
+                    return false;
+                };
+                pending.segment_id = segment_id;
+                pending.next_seq = 2;
+                pending.accepted_bytes = line.len() as u64 + 1;
+                pending.buffer.extend_from_slice(&line);
+                pending.buffer.push(b'\n');
+                pending.flush_requested = true;
+                pending.state = State::Open;
+                true
+            }
+            State::Sealing | State::Sealed | State::Failed | State::Crashed => false,
+        }
+    }
+
+    /// Encode a batch under the pending lock and accept or refuse it whole against the segment
+    /// limit. `terminal` batches (a problem, the seal) may use the reserve.
+    fn commit<T>(
+        &self,
+        terminal: bool,
+        build: impl FnOnce(&mut Batch<'_>) -> Option<T>,
+    ) -> Option<T> {
+        let mut guard = lock(&self.shared.pending);
+        let pending = &mut *guard;
+        if !self.ensure_open(pending) {
+            if pending.state != State::Unopened {
+                pending.dropped += 1;
+            }
+            return None;
+        }
+        let segment_id = pending.segment_id.clone();
+        let (value, lines) = {
+            let mut batch = Batch {
+                segment_id: &segment_id,
+                base: pending.next_seq,
+                lines: Vec::new(),
+                known: &pending.blobs_in_segment,
+                counts: SealCounts {
+                    spans: pending.spans,
+                    events: pending.events,
+                    blobs: pending.blobs,
+                    dropped: pending.dropped,
+                    dropped_chunks: pending.dropped_chunks,
+                },
+            };
+            let value = build(&mut batch);
+            (value, batch.lines)
+        };
+        let Some(value) = value else {
+            pending.dropped += 1;
+            return None;
+        };
+        let bytes: u64 = lines.iter().map(|(line, _)| line.len() as u64 + 1).sum();
+        let limit = self.shared.options.segment_max_bytes;
+        let budget = limit.saturating_sub(TERMINAL_RESERVE_BYTES);
+        let fits = if terminal {
+            // Room for the seal is kept until the seal itself is written.
+            let sealing = lines.iter().any(|(_, kind)| *kind == "seal");
+            let room = if sealing {
+                limit
+            } else {
+                limit.saturating_sub(4096)
+            };
+            pending.accepted_bytes + bytes <= room
+        } else {
+            !pending.exhausted && pending.accepted_bytes + bytes <= budget
+        };
+        if !fits {
+            pending.dropped += lines.len().max(1) as u64;
+            if !terminal && !pending.exhausted {
+                pending.exhausted = true;
+                drop(guard);
+                self.problem(
+                    ProblemWhat::Budget,
+                    "segment_max_bytes reached: further records are dropped and counted",
+                );
+            }
+            return None;
+        }
+        let flush_bytes = usize::try_from(self.shared.options.flush_bytes).unwrap_or(usize::MAX);
+        for (line, kind) in lines {
+            match kind {
+                "span_start" => pending.spans += 1,
+                "event" => pending.events += 1,
+                "blob" => pending.blobs += 1,
+                _ => {}
+            }
+            if !pending.buffer.is_empty() && pending.buffer.len() + line.len() + 1 > flush_bytes {
+                let full = std::mem::take(&mut pending.buffer);
+                pending.ready.push_back(full);
+            }
+            pending.buffer.extend_from_slice(&line);
+            pending.buffer.push(b'\n');
+            pending.accepted_bytes += line.len() as u64 + 1;
+            pending.next_seq += 1;
+            if kind == "seal" {
+                // Nothing is accepted after the seal, in the same critical section.
+                pending.state = State::Sealing;
+                pending.flush_requested = true;
+            }
+        }
+        drop(guard);
+        self.shared.wake.notify_all();
+        Some(value)
+    }
+
+    /// The consumer's work: write every full buffer, and the current buffer when `force` or a
+    /// flush point asked for it, each with one write of whole lines. Opens the file (and
+    /// registers the directory) at its first write.
+    pub fn consume(&self, force: bool) {
+        let mut consumer = lock(&self.shared.consumer);
+        let (chunks, segment_id) = {
+            let mut pending = lock(&self.shared.pending);
+            if matches!(pending.state, State::Failed | State::Crashed) {
+                return;
+            }
+            let mut chunks: Vec<Vec<u8>> = pending.ready.drain(..).collect();
+            if (force || pending.flush_requested) && !pending.buffer.is_empty() {
+                chunks.push(std::mem::take(&mut pending.buffer));
+            }
+            pending.flush_requested = false;
+            (chunks, pending.segment_id.clone())
+        };
+        if chunks.is_empty() {
+            return;
+        }
+        if consumer.file.is_none()
+            && let Err(reason) = self.open_file(&mut consumer, &segment_id)
+        {
+            self.fail(ProblemWhat::Write, reason);
+            return;
+        }
+        let file = consumer.file.as_mut().expect("opened above");
+        for chunk in chunks {
+            if let Err(error) = file.write_all(&chunk) {
+                drop(consumer);
+                self.fail(
+                    ProblemWhat::Write,
+                    format!("writing the telemetry segment: {error}"),
+                );
+                return;
+            }
+        }
+    }
+
+    fn open_file(&self, consumer: &mut Consumer, segment_id: &str) -> Result<(), String> {
+        let options = &self.shared.options;
+        if let Some(registration) = &options.registration {
+            dirs::register(
+                &registration.registry,
+                options.layout.root(),
+                &registration.accounted,
+            )?;
+        }
+        let path = options.layout.live_segment(segment_id);
+        std::fs::create_dir_all(options.layout.segments()).map_err(|error| {
+            format!("creating {}: {error}", options.layout.segments().display())
+        })?;
+        let file = OpenOptions::new()
+            .append(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| format!("creating {}: {error}", path.display()))?;
+        let held = layout::try_lock(file, FlockArg::LockExclusiveNonblock)
+            .map_err(|_| format!("locking {}", path.display()))?;
+        consumer.file = Some(held);
+        consumer.path = Some(path);
+        Ok(())
+    }
+
+    fn fail(&self, what: ProblemWhat, reason: String) {
+        let mut pending = lock(&self.shared.pending);
+        pending.state = State::Failed;
+        pending.unwritten.push((what, reason));
+    }
+
+    /// Write everything buffered now.
+    pub fn flush(&self) {
+        self.consume(true);
+    }
+
+    /// Stop as a killed process would: nothing buffered is written, the lock on the segment
+    /// ends, the file stays `.jsonl` for a reader to recover.
+    pub fn abandon(&self) {
+        let mut consumer = lock(&self.shared.consumer);
+        lock(&self.shared.pending).state = State::Crashed;
+        consumer.file = None;
+    }
+
+    /// Bound `attrs`; at `content`, a string over its bound becomes a pending blob whose
+    /// occurrence id the attribute will name.
+    fn bound(&self, attrs: Attrs) -> Bounded {
+        let options = &self.shared.options;
+        let mut contents = Vec::new();
+        let mut named = Vec::new();
+        let keep = options.level.keeps_content();
+        let (attributes, counters) =
+            record::bound_attributes(attrs, &options.redactor, &mut |key, value| {
+                if !keep {
+                    return None;
+                }
+                // Already judged whole and replaced: the blob keeps exactly this value.
+                contents.push(blob::prepare(
+                    value.as_bytes(),
+                    Media::Text,
+                    options.content_max_blob_bytes,
+                    &Redactor::new(),
+                ));
+                named.push(key.to_string());
+                Some(String::new())
+            });
+        Bounded {
+            attributes,
+            counters,
+            contents,
+            named,
+        }
+    }
+
+    fn hook(&self, step: PublishStep) -> bool {
+        match &self.shared.options.publish_hook {
+            Some(hook) => {
+                if hook(step) == HookAction::Crash {
+                    self.abandon();
+                    false
+                } else {
+                    true
+                }
+            }
+            None => true,
+        }
+    }
+
+    /// Publish `contents` and append the owning record `build` makes, in the protocol's order.
+    /// `build` gets the batch and the occurrence ids of the contents; the owner takes the `seq`
+    /// right after the occurrences. `span` is the span the contents belong to, or `None` for
+    /// the span the owner itself starts.
+    fn publish<T>(
+        &self,
+        contents: Vec<Prepared>,
+        span: Option<&str>,
+        flush: bool,
+        build: impl FnOnce(&mut Batch<'_>, &[String]) -> Option<T>,
+    ) -> Option<T> {
+        if contents.is_empty() {
+            let value = self.commit(false, |batch| build(batch, &[]));
+            self.consume(flush);
+            return value;
+        }
+        // The directory is registered and the segment open before any blob file is written.
+        {
+            let mut pending = lock(&self.shared.pending);
+            if !self.ensure_open(&mut pending) {
+                return None;
+            }
+        }
+        self.consume(true);
+        if self.failed() {
+            return None;
+        }
+        let layout = self.shared.options.layout.clone();
+        let mut contents: Vec<Content> = contents
+            .into_iter()
+            .map(|prepared| Content {
+                prepared,
+                staged: None,
+                stored: false,
+            })
+            .collect();
+        for content in &mut contents {
+            match blob::stage(&layout, &content.prepared) {
+                Ok(staged) => content.staged = Some(staged),
+                Err(error) => self.problem(
+                    ProblemWhat::Blob,
+                    &format!("staging a blob: {}", error.kind()),
+                ),
+            }
+        }
+        if !self.hook(PublishStep::Staged) {
+            return None;
+        }
+        let gc = if contents.iter().any(|content| content.staged.is_some()) {
+            layout::shared_now(&layout.gc_lock()).ok().flatten()
+        } else {
+            None
+        };
+        if gc.is_some() && !self.hook(PublishStep::Locked) {
+            return None;
+        }
+        for content in &mut contents {
+            let Some(staged) = content.staged.take() else {
+                continue;
+            };
+            if gc.is_some() && blob::place(&staged).is_ok() {
+                content.stored = true;
+            } else {
+                let _ = std::fs::remove_file(&staged.temp);
+            }
+        }
+        if gc.is_some() && !self.hook(PublishStep::Renamed) {
+            return None;
+        }
+        let value = self.commit(false, |batch| {
+            let mut new_objects = BTreeSet::new();
+            for content in &contents {
+                if content.stored && !batch.knows_blob(&content.prepared.digest) {
+                    new_objects.insert(content.prepared.digest.clone());
+                }
+            }
+            let owner_seq = batch.seq() + new_objects.len() as u64 + contents.len() as u64;
+            let span_id = match span {
+                Some(span) => span.to_string(),
+                None => trace::span_id(batch.segment_id(), owner_seq),
+            };
+            let mut occurrences = Vec::new();
+            for content in &contents {
+                let prepared = &content.prepared;
+                if new_objects.remove(&prepared.digest) {
+                    batch.push(
+                        Record::Blob(BlobObject {
+                            seq: 0,
+                            schema: schema::BLOB.into(),
+                            digest: prepared.digest.clone(),
+                            bytes: prepared.retained.len() as u64,
+                            stored_bytes: prepared.compressed.len() as u64,
+                            media_type: prepared.media_type.into(),
+                            redaction: crate::redact::REDACTION_VERSION.into(),
+                        }),
+                        Counters::default(),
+                    )?;
+                }
+                let occurrence = trace::occurrence_id(batch.segment_id(), batch.seq());
+                batch.push(
+                    Record::BlobRef(BlobRef {
+                        seq: 0,
+                        schema: schema::BLOB_REF.into(),
+                        occurrence_id: occurrence.clone(),
+                        digest: Some(prepared.digest.clone()),
+                        span_id: span_id.clone(),
+                        event_seq: owner_seq,
+                        source_digest: prepared.source_digest.clone(),
+                        original_bytes: prepared.original_bytes,
+                        truncated: prepared.truncated,
+                        state: if content.stored {
+                            BlobState::Stored
+                        } else {
+                            BlobState::Dropped
+                        },
+                    }),
+                    Counters::default(),
+                )?;
+                occurrences.push(occurrence);
+            }
+            if batch.seq() != owner_seq {
+                return None;
+            }
+            build(batch, &occurrences)
+        });
+        {
+            let mut pending = lock(&self.shared.pending);
+            for content in &contents {
+                if value.is_some() && content.stored {
+                    pending
+                        .blobs_in_segment
+                        .insert(content.prepared.digest.clone());
+                    pending.referenced.insert(content.prepared.digest.clone());
+                } else if value.is_some() {
+                    // Dropped because the sweep held gc.lock or the file could not be placed.
+                    pending.dropped += 1;
+                }
+            }
+        }
+        self.consume(true);
+        if gc.is_some() && !self.hook(PublishStep::Flushed) {
+            return None;
+        }
+        drop(gc);
+        value
+    }
+
+    /// Start a span; returns its `span_id`. `trace_id` is the run's trace, when known.
+    pub fn span_start(
+        &self,
+        trace_id: Option<&str>,
+        parent_span_id: Option<&str>,
+        name: &str,
+        kind: SpanKind,
+        attrs: Attrs,
+    ) -> Option<String> {
+        let Bounded {
+            mut attributes,
+            counters,
+            contents,
+            named,
+        } = self.bound(attrs);
+        let start = ns(self.now_unix_ns());
+        let name = record::cut(name, MAX_KEY_BYTES);
+        self.publish(contents, None, false, |batch, occurrences| {
+            fill(&mut attributes, &named, occurrences);
+            let span_id = trace::span_id(batch.segment_id(), batch.seq());
+            batch.push(
+                Record::SpanStart(SpanStart {
+                    seq: 0,
+                    schema: schema::SPAN.into(),
+                    trace_id: trace_id.map(str::to_string),
+                    span_id: span_id.clone(),
+                    parent_span_id: parent_span_id.map(str::to_string),
+                    name,
+                    kind,
+                    start_unix_ns: start,
+                    attributes,
+                }),
+                counters,
+            )?;
+            Some(span_id)
+        })
+    }
+
+    /// End a span with the attributes known only at its end. A span of `depth` at most 2 (the
+    /// root is depth 0) is a flush point.
+    pub fn span_end(&self, span_id: &str, status: SpanStatus, attrs: Attrs, depth: usize) {
+        let Bounded {
+            mut attributes,
+            counters,
+            contents,
+            named,
+        } = self.bound(attrs);
+        let end = ns(self.now_unix_ns());
+        self.publish(contents, Some(span_id), depth <= 2, |batch, occurrences| {
+            fill(&mut attributes, &named, occurrences);
+            batch.push(
+                Record::SpanEnd(SpanEnd {
+                    seq: 0,
+                    schema: schema::SPAN.into(),
+                    span_id: span_id.to_string(),
+                    end_unix_ns: Some(end),
+                    status,
+                    attributes,
+                }),
+                counters,
+            )
+        });
+    }
+
+    /// An event on a span; returns its `seq`.
+    pub fn event(&self, span_id: &str, name: &str, attrs: Attrs) -> Option<u64> {
+        self.event_with(span_id, name, attrs, None)
+    }
+
+    /// An event naming content: at `content` the content becomes a blob occurrence the event
+    /// names; at every other level the event is recorded without it. Returns the event's `seq`.
+    pub fn event_with_content(
+        &self,
+        span_id: &str,
+        name: &str,
+        attrs: Attrs,
+        content: &[u8],
+        media: Media,
+    ) -> Option<u64> {
+        self.event_with(span_id, name, attrs, Some((content, media)))
+    }
+
+    fn event_with(
+        &self,
+        span_id: &str,
+        name: &str,
+        attrs: Attrs,
+        content: Option<(&[u8], Media)>,
+    ) -> Option<u64> {
+        let options = &self.shared.options;
+        let Bounded {
+            mut attributes,
+            counters,
+            mut contents,
+            named,
+        } = self.bound(attrs);
+        let mut media_type = None;
+        if let Some((bytes, media)) = content
+            && options.level.keeps_content()
+        {
+            let prepared = blob::prepare(
+                bytes,
+                media,
+                options.content_max_blob_bytes,
+                &options.redactor,
+            );
+            media_type = Some(prepared.media_type.to_string());
+            // The event's own content is the first occurrence.
+            contents.insert(0, prepared);
+        }
+        let own = media_type.is_some();
+        let time = ns(self.now_unix_ns());
+        let name = record::cut(name, MAX_KEY_BYTES);
+        self.publish(contents, Some(span_id), false, |batch, occurrences| {
+            // The attributes' contents follow the event's own.
+            let attribute_occurrences = if own { &occurrences[1..] } else { occurrences };
+            fill(&mut attributes, &named, attribute_occurrences);
+            batch.push(
+                Record::Event(Event {
+                    seq: 0,
+                    schema: schema::EVENT.into(),
+                    span_id: span_id.to_string(),
+                    time_unix_ns: time,
+                    name,
+                    attributes,
+                    blob: if own {
+                        occurrences.first().cloned()
+                    } else {
+                        None
+                    },
+                    blob_media_type: media_type,
+                }),
+                counters,
+            )
+        })
+    }
+
+    /// A telemetry-only problem: recorded once per distinct `what` and `reason`, from the
+    /// terminal reserve.
+    pub fn problem(&self, what: ProblemWhat, reason: &str) {
+        let (reason, _) = self.shared.options.redactor.value(reason);
+        let reason = record::cut(&reason, MAX_STRING_BYTES);
+        {
+            let mut pending = lock(&self.shared.pending);
+            if !pending.problems.insert((what, reason.clone())) {
+                return;
+            }
+        }
+        let time = ns(self.now_unix_ns());
+        let written = self.commit(true, |batch| {
+            batch.push(
+                Record::Problem(Problem {
+                    seq: 0,
+                    schema: schema::PROBLEM.into(),
+                    time_unix_ns: time,
+                    what,
+                    reason: reason.clone(),
+                }),
+                Counters::default(),
+            )
+        });
+        if written.is_none() {
+            lock(&self.shared.pending).unwritten.push((what, reason));
+        }
+    }
+
+    /// An execution's configuration snapshot, split into as many `config` parts as the record
+    /// bound needs, in the rows' order. Values are untrusted text, judged whole and bounded.
+    pub fn config(&self, execution_id: &str, rows: Vec<ConfigRow>) -> Option<u32> {
+        let redactor = &self.shared.options.redactor;
+        let rows: Vec<ConfigRow> = rows
+            .into_iter()
+            .map(|row| ConfigRow {
+                key: record::cut(&row.key, MAX_KEY_BYTES),
+                value: record::cut(&redactor.value(&row.value).0, MAX_STRING_BYTES),
+                layer: record::cut(&row.layer, MAX_KEY_BYTES),
+                origin: row
+                    .origin
+                    .map(|origin| record::cut(&redactor.replace(&origin), MAX_STRING_BYTES)),
+            })
+            .collect();
+        // Pack rows into parts that fit with room for the part's own fields.
+        let room = RECORD_MAX_BYTES - 512;
+        let mut parts: Vec<Vec<ConfigRow>> = vec![Vec::new()];
+        let mut size = 0;
+        for row in rows {
+            let bytes = serde_json::to_vec(&row).expect("a row serializes").len() + 1;
+            let current = parts.last_mut().expect("one part at least");
+            if !current.is_empty() && size + bytes > room {
+                parts.push(Vec::new());
+                size = 0;
+            }
+            parts.last_mut().expect("pushed").push(row);
+            size += bytes;
+        }
+        let count = u32::try_from(parts.len()).unwrap_or(u32::MAX);
+        let execution_id = execution_id.to_string();
+        self.commit(false, |batch| {
+            for (index, rows) in parts.into_iter().enumerate() {
+                let part = u32::try_from(index).unwrap_or(u32::MAX) + 1;
+                batch.push(
+                    Record::Config(ConfigPart {
+                        seq: 0,
+                        schema: schema::CONFIG.into(),
+                        execution_id: execution_id.clone(),
+                        part,
+                        parts: count,
+                        complete: part == count,
+                        rows,
+                    }),
+                    Counters::default(),
+                )?;
+            }
+            Some(count)
+        })
+    }
+
+    /// One plan node of an execution. At most 64 `depends_on` ids are kept.
+    pub fn node(&self, mut node: Node) -> Option<u64> {
+        node.depends_on.truncate(64);
+        for id in &mut node.depends_on {
+            *id = record::cut(id, MAX_KEY_BYTES);
+        }
+        node.schema = schema::NODE.into();
+        self.commit(false, |batch| {
+            batch.push(Record::Node(node), Counters::default())
+        })
+    }
+
+    /// The bounded summary of a Finding; its free text (title, file) is judged and bounded.
+    pub fn finding(&self, mut finding: Finding) -> Option<u64> {
+        let redactor = &self.shared.options.redactor;
+        finding.schema = schema::FINDING.into();
+        finding.title = record::cut(&redactor.value(&finding.title).0, MAX_STRING_BYTES);
+        finding.file = finding
+            .file
+            .map(|file| record::cut(&redactor.value(&file).0, MAX_STRING_BYTES));
+        self.commit(false, |batch| {
+            batch.push(Record::Finding(finding), Counters::default())
+        })
+    }
+
+    /// The bounded summary of a Demand, keyed by its id.
+    pub fn demand(&self, mut demand: Demand) -> Option<u64> {
+        demand.schema = schema::DEMAND.into();
+        self.commit(false, |batch| {
+            batch.push(Record::Demand(demand), Counters::default())
+        })
+    }
+
+    /// Count chunks a stream observer dropped (P6); kept in memory and written in the seal.
+    pub fn count_dropped_chunks(&self, chunks: u64) {
+        lock(&self.shared.pending).dropped_chunks += chunks;
+    }
+
+    /// Seal the segment at exit: append the seal from the reserve, write the buffer, the `.refs`
+    /// manifest, compress and rename. `Ok(None)` when nothing was ever opened.
+    pub fn finish(&self, exit: SealExit) -> Result<Option<Sealed>, String> {
+        let ended = ns(self.now_unix_ns());
+        {
+            let state = lock(&self.shared.pending).state;
+            match state {
+                State::Unopened => return Ok(None),
+                State::Open => {}
+                State::Failed | State::Crashed | State::Sealing | State::Sealed => {
+                    return Err("the segment is not open".into());
+                }
+            }
+        }
+        let sealed = self.commit(true, |batch| {
+            let refs = format!("{}{}", batch.segment_id(), layout::REFS);
+            let counts = batch.counts;
+            batch.push(
+                Record::Seal(Seal {
+                    seq: 0,
+                    schema: schema::SEAL.into(),
+                    ended_unix_ns: ended.clone(),
+                    exit,
+                    spans: counts.spans,
+                    events: counts.events,
+                    blobs: counts.blobs,
+                    dropped: counts.dropped,
+                    dropped_chunks: counts.dropped_chunks,
+                    discarded_bytes: 0,
+                    refs,
+                }),
+                Counters::default(),
+            )
+        });
+        // A seal that could not be appended leaves the segment for a reader to recover.
+        if sealed.is_none() {
+            return Err("the seal did not fit the segment".into());
+        }
+        self.consume(true);
+        let mut consumer = lock(&self.shared.consumer);
+        let (segment_id, referenced) = {
+            let pending = lock(&self.shared.pending);
+            if pending.state != State::Sealing {
+                return Err("writing the segment failed before the seal".into());
+            }
+            (pending.segment_id.clone(), pending.referenced.clone())
+        };
+        let layout = &self.shared.options.layout;
+        let result = seal_file(&mut consumer, layout, &segment_id, &referenced);
+        let mut pending = lock(&self.shared.pending);
+        match result {
+            Ok(sealed) => {
+                pending.state = State::Sealed;
+                Ok(Some(sealed))
+            }
+            Err(error) => {
+                pending.state = State::Failed;
+                pending.unwritten.push((ProblemWhat::Write, error.clone()));
+                Err(error)
+            }
+        }
+    }
+}
+
+/// Write `contents` to a temporary file beside `path` and rename it into place.
+pub(crate) fn write_atomically(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().expect("a file has a directory");
+    let temp = parent.join(layout::temp_name("write"));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    std::fs::rename(&temp, path)
+}
+
+/// The sorted digests, one per line.
+pub(crate) fn manifest(referenced: &BTreeSet<String>) -> Vec<u8> {
+    let mut text = String::new();
+    for digest in referenced {
+        text.push_str(digest);
+        text.push('\n');
+    }
+    text.into_bytes()
+}
+
+/// Write the manifest, compress the segment to `.jsonl.gz` and remove the `.jsonl`, under the
+/// writer's lock, which ends when the file closes.
+fn seal_file(
+    consumer: &mut Consumer,
+    layout: &Layout,
+    segment_id: &str,
+    referenced: &BTreeSet<String>,
+) -> Result<Sealed, String> {
+    let held = consumer
+        .file
+        .as_mut()
+        .ok_or("the segment was never written")?;
+    held.sync_all()
+        .map_err(|error| format!("syncing the segment: {error}"))?;
+    let refs = layout.refs(segment_id);
+    write_atomically(&refs, &manifest(referenced))
+        .map_err(|error| format!("writing {}: {error}", refs.display()))?;
+    let live = layout.live_segment(segment_id);
+    let mut bytes = Vec::new();
+    File::open(&live)
+        .and_then(|mut file| file.read_to_end(&mut bytes))
+        .map_err(|error| format!("reading {}: {error}", live.display()))?;
+    let sealed = layout.sealed_segment(segment_id);
+    write_atomically(&sealed, &blob::compress(&bytes))
+        .map_err(|error| format!("writing {}: {error}", sealed.display()))?;
+    std::fs::remove_file(&live).map_err(|error| format!("removing {}: {error}", live.display()))?;
+    consumer.file = None;
+    Ok(Sealed {
+        segment_id: segment_id.to_string(),
+        path: sealed,
+        refs,
+    })
+}

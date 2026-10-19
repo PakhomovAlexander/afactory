@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:telemetry-dirs:1",
+  "title": "af/TelemetryDirs@1",
+  "description": "`$XDG_STATE_HOME/af/telemetry-dirs.v1.json` (ADR-0151 clause 8): every telemetry directory a process wrote on this machine, by canonical absolute path, deduplicated, so the storage inventory reaches each one whatever the current level or `dir`. A directory is registered before its first write; one that overlaps another telemetry root or a directory the inventory accounts on its own is refused and never listed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "dirs"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/TelemetryDirs@1"
+    },
+    "dirs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "first_use_unix_ms",
+          "last_use_unix_ms"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "first_use_unix_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_use_unix_ms": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}
