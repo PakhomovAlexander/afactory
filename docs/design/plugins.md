@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 12 after review rounds 1 to 11 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 13 after review rounds 1 to 12 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -228,14 +228,17 @@ cleared (§3.8):
 | `AF_VERSION` | the running release |
 | `AF_REPO` | the git toplevel the command was run in, absent outside a repository |
 | `AF_DISPATCHED_FROM` | set as the browser's hand-off sets it, so the plugin's own `af` calls run this binary and never dispatch again |
-| `AF_PLUGIN_BACKGROUND` | only for a background invocation: `hook:<name>` for a hook, `pane` for a pane load; inherited by every child and never cleared, and while it is set the kernel starts no Worker (§3.8) |
+| `AF_PLUGIN_BACKGROUND` | only for a background invocation: `hook:<name>` for a hook, `pane` for a pane load; inherited by every child and never cleared, and while it is set the kernel runs only its read-only table (§3.8, §3.12) |
 
 The plugin reads its configuration with `"$AF_BIN" config show --json`, adding
 `--repo "$AF_REPO"` only when `AF_REPO` is set, and takes `plugin.<name>`; origins come with
 `--origin`. The kernel passes no configuration itself, so a plugin's keys are its own and
 `af config show` prints them like every other table. The manifest that governs a plugin's
 table (`machine_only`, §3.10) is the one in the bundle the selection rule of §3.13 picks for
-the repository in question, the pin first, then `AF_PLUGIN_VERSION_<NAME>`, then `current`;
+the repository in question, by the one resolver every use shares, commands, `config show`,
+hooks and panes: `AF_PLUGIN_VERSION_<NAME>` first, as `AF_VERSION` precedes the project pin in
+`maybe_dispatch`, then the pin, then `current`, then the `PATH` development fallback where it
+is enabled;
 `config show` applies the same selection for the repository it is run for, reads that manifest
 with the bounded read, and fails closed, treating the table as machine-only, when it cannot be
 read, so one invocation never sees values another version's manifest would have filtered.
@@ -261,8 +264,14 @@ skip it; help never fails for a plugin's sake. `af --help` keeps its 50 ms bound
 3) with twenty plugins installed, and P1 measures it against the baseline before it ships (§5).
 `PATH` is never scanned for help.
 
-Dispatch is unchanged: `af <plugin>` inside a pinned project first execs the release the lock
-pins, which then runs the plugin (ADR-0044). The machine-management commands `af plugin
+Dispatch gains one classification rule, because an external command owns its argument tail:
+today `exempt_from_dispatch` scans the whole argv for `--help`, `-h`, `--version` and `-V`,
+and `repo_from_argv` scans it for `--repo`, so `af echo --help` would skip the project's pin
+and a plugin-owned `--repo` would select another repository's release and hand that binary on
+through `AF_BIN`. Once the external command name is reached the remaining words are opaque to
+the browser; only kernel-owned selectors, `--repo` before the plugin name and `AF_VERSION`,
+choose the repository and the release. With that, `af <plugin>` inside a pinned project first
+execs the release the lock pins, which then runs the plugin (ADR-0044). The machine-management commands `af plugin
 install|remove|list|show|check|hook-run` are exempt, like the binary-management `self`
 commands (ADR-0105); `af plugin pin` writes repository authority and dispatches like
 `onboard`, so the lock is written by the release the project pins. When that release predates
@@ -496,18 +505,26 @@ and a resumed run never lists a Round twice. An interrupted command runs no hook
 exits as ADR-0129 requires, and the plugin sees the run next time through `af store runs`. No
 command hands its document to the hook site.
 
-A hook never runs Task work, and never creates or plans a Task. While `AF_PLUGIN_BACKGROUND`
-is set, the kernel refuses with the reason every command that starts a Worker (`runs_task_work`'s
-list: `task run`, `task start --execute`, `review run`, bare `af review` and `provider doctor`,
-whose admission Attempts are paid Workers too, ADR-0129; extended by `self optimize --execute`)
-and every command that creates or plans a Task (`task start` in any form, `task plan`, `review
-plan --file`, `self optimize`), at the shared entry point `task_execution::start` before source
-capture as well as in the classification, so no command route bypasses it. The reason is one:
-a hook is killed at its wall with its process group, while everything the kernel supervises
-through `review-process` lives in a group of its own, Workers and the Git capture `start_kind`
-runs first among them; killing a nested `af` would leave them running without the kernel that
-settles or reaps them. The admission of planning from a background invocation waits for a
-nested cancellation that can stop and reap those children. `AF_PLUGIN_BACKGROUND` is inherited by
+A hook runs only what a pane may run. While `AF_PLUGIN_BACKGROUND` is set, the kernel runs
+only the commands of its declared read-only table (§3.12) and the dispatch of another plugin
+(`af <plugin>`, which inherits the marker and is bound by the same rule), and refuses every
+other command with the reason before any Store is opened for writing, any source is captured
+or any subprocess is created. That covers what starts a Worker (`runs_task_work`'s list: `task
+run`, `task start --execute`, `review run`, bare `af review` and `provider doctor`, whose
+admission Attempts are paid Workers too, ADR-0129; `self optimize --execute`), what creates or
+plans a Task (`task start` in any form, `task plan`, `review plan --file`, `self optimize`),
+and the routes that do neither yet write or supervise: `task refresh`, which opens the Store
+writable, captures fresh issue data and persists a replacement plan without passing through
+`task_execution::start`; `catalog sync`, whose transport runs Git in a group of its own;
+`onboard`, `plugin install|remove|pin` and `storage prune --apply`. An allowlist is one
+declaration, so the next command the kernel grows is refused in the background until it is
+admitted deliberately; `task_execution::start` and `refresh` refuse under the marker as well,
+so no route bypasses the classification. The reason is one: a hook is killed at its wall with
+its process group, while everything the kernel supervises through `review-process` lives in a
+group of its own, Workers, the Git capture `start_kind` runs first and the catalog transport
+among them; killing a nested `af` would leave them running without the kernel that settles or
+reaps them. Admitting more from a background invocation waits for a nested cancellation that
+can stop and reap those children. `AF_PLUGIN_BACKGROUND` is inherited by
 every process a hook starts, a plugin called through `$AF_BIN` included, and the kernel never
 clears it, so a hook cannot launder Task work through a second plugin. A plugin that starts Tasks does so from a
 foreground command of its own that owns, waits for and cancels them (§3.17, `af backlog`).
@@ -642,8 +659,8 @@ bar gets one folder `plugins/` with a child per such plugin; one generic rendere
 plugin pane, loads it on a thread like the other panes, reloads on `R`, and shows nothing a
 document does not carry; a superseded load is cancelled and its process reaped on reload, on
 closing the pane and on quit, and a malformed, oversized or timed-out document is one error
-row. A pane load runs with `AF_PLUGIN_BACKGROUND=pane`, and in that mode the kernel runs only
-the commands of its declared read-only table (`READ_ONLY_COMMANDS` in `main.rs`, beside
+row. A pane load runs with `AF_PLUGIN_BACKGROUND=pane`, and under that marker, as under a hook's
+(§3.8), the kernel runs only the commands of its declared read-only table (`READ_ONLY_COMMANDS` in `main.rs`, beside
 `runs_task_work`: `config show`, `task list|show|report|explain`, `review
 report|ledger|show|campaigns`, `store *`, `storage` without `prune --apply`, `plugin
 list|show`, `help` when it resolves to a kernel topic or a kernel command, `--version`), each
@@ -660,8 +677,8 @@ none at all; where a reader opens one writable today (`review show` through
 before the table is declared; every other command, `task plan` and `task start --file` without `--execute`
 among them, is refused before any Store is opened for writing. So a load that is killed on
 timeout, reload or close can orphan no Worker, and loading a pane writes no Store (ADR-0119).
-The same table is the conformance broker's reader allowlist (§3.15) and the reader surface
-`af help plugins` prints (§3.16): one declaration, three uses. An action prefills the `:` line and never submits it: the operator reads the line and
+The same table bounds a hook (§3.8), is the conformance broker's reader allowlist (§3.15)
+and is the reader surface `af help plugins` prints (§3.16): one declaration, four uses. An action prefills the `:` line and never submits it: the operator reads the line and
 presses Enter or `Esc`, exactly as the Tasks pane's `r` and `D` work (ADR-0123, Prefills). A
 document whose action carries `--confirm` is refused as malformed, so a plugin cannot reduce
 delivery's typed Task-ID confirmation to a keypress. The plugin's pane is a projection of its
@@ -681,8 +698,9 @@ release source. The rest follows the rules a pin of af itself follows: a pin wit
 for this target is never installed on demand,
 `AF_SELF_OFFLINE=1` or `[self] install_pins = false` refuses with the command to run, an
 installed copy must carry the digest in its receipt, and a `dev` or `PATH` plugin never
-satisfies a pin. `AF_PLUGIN_VERSION_<NAME>` overrides for one invocation. The pinned version is
-what a plugin's hooks run as well. A Task's replay does not depend on any of this (clause 5);
+satisfies a pin. `AF_PLUGIN_VERSION_<NAME>` overrides for one invocation and precedes the pin, as `AF_VERSION`
+precedes af's own (§3.3, one resolver). The pinned version is what a plugin's hooks and panes
+run as well. A Task's replay does not depend on any of this (clause 5);
 pins exist so that a team runs the same plugin, which is what sharability asks.
 
 ### 3.14 The runner seam
@@ -694,9 +712,13 @@ resolves to exactly one installed plugin: the native kinds (`claude`, `codex`) a
 second plugin declaring a kind another installed plugin declares is refused at install, and a
 `PATH` plugin never supplies a runner. The runner is captured authority, not a lookup: at plan
 time the kernel records the selected runner's plugin name, version, protocol, target and
-content digest (§3.15, the digest of the bytes that run) in the Task's execution binding beside the Provider binding (ADR-0046), verifies
-the installed bundle's receipt against that record before every invocation, refuses the
-Attempt when `current` has moved to other bytes, and refuses substitution on resume; a plan
+content digest (§3.15, the digest of the bytes that run) in the Task's execution binding beside the Provider binding (ADR-0046), recomputes the content digest of the selected version directory (§3.15) and compares it with
+that record before the binding is written and before every private invocation, so an
+executable or support file edited in place, a changed mode or a symlink that appeared after
+install refuses the Attempt whatever `current` and `receipt.toml` say; runs the verified bundle
+while holding the plugin's shared lock (§3.9), which `af plugin remove` and a reinstall of the
+same version take exclusively before touching the directory; and refuses substitution on
+resume; a plan
 approved under one runner never runs under another, and replay validates the record without
 the executable. It is
 the exception §3.1 clause 2 names: the kernel hands it one Attempt's materialized sandbox and
@@ -739,8 +761,13 @@ malformed terminal frame settles from that accumulator, which is what the adapte
 its one `ModelWorkerReturn`.
 
 The transport's bounds are frozen here, enforced while reading rather than after collection
-(`drain_async` grows without a limit today and `validate_reply` checks `MAX_WORKER_BYTES` only
-afterwards, so the external adapter reads through a bounded drain of its own): a frame is at
+(`drain_async` grows without a limit today, `run_supervised_duplex_inner` sends stderr
+through it and collects the reader's result only after the leader exits, and `validate_reply`
+checks `MAX_WORKER_BYTES` only afterwards), and they are enforced where ADR-0026 puts output
+collection, in `review-process`: P7 extends the leaf crate with a retention limit per stream,
+an overflow policy per stream and a cancellation the reader raises the moment a frame breaks
+the protocol, while group killing, draining and reaping stay there as they are; the adapter
+interprets frames and nothing more: a frame is at
 most 2 MiB, the terminal frame's output bytes at most `MAX_WORKER_BYTES` (1 MiB) as any Worker
 reply, aggregate stdout at most 16 MiB, stderr retained up to 1 MiB with the overflow counted
 and dropped, and `identity`, `status` and `models` answer within 256 KiB and 15 seconds each.
@@ -866,7 +893,7 @@ The whole kernel surface toward plugins, which `af help plugins` renders:
 |---|---|---|
 | kernel to plugin | the invocation environment of §3.3 | protocol `1` |
 | kernel to plugin | the hook document of §3.8 | `af/plugin-hook@1` |
-| kernel declares | the read-only command table of §3.12: pane mode, the conformance broker and the printed reader surface | one table in `main.rs` |
+| kernel declares | the read-only command table of §3.12: pane mode, hook mode, the conformance broker and the printed reader surface | one table in `main.rs` |
 | kernel reads | the manifest of §3.4 | `af.plugin/1` |
 | kernel keeps | the origin of §3.5, the receipts, `hooks.log` | `af.plugin-origin/1`, `receipt.toml`, one line per failure |
 | plugin reads | every `--json` document the CLI prints | each its own `kind@version` |
@@ -882,10 +909,13 @@ the `plugin` and `store` namespaces); `main.rs` (one arm each for the two namesp
 to `plugins::after_command`); `topics.rs` (one topic, rendered from the surface table);
 `layout.rs` (one entry); `config.rs` (the `[plugin.*]` passthrough and manifest-declared
 machine-only names); `project.rs` (one opaque field, one table); `storage.rs` (three kinds);
-`selfmgmt.rs` (the machine-management `plugin` commands in `exempt_from_dispatch`, and the
-pre-exec refusal of `plugin pin` under a release that predates plugins); `lock.rs` (one table);
+`selfmgmt.rs` (the machine-management `plugin` commands in `exempt_from_dispatch`, the stop
+at the external command name in `exempt_from_dispatch` and `repo_from_argv`, and the pre-exec
+refusal of `plugin pin` under a release that predates plugins); `lock.rs` (one table);
 `tui/mod.rs` (one folder, one pane); the Task-file adapter (one binding form, `af.task-file/2`);
-`storage_sweep.rs` (the sweep record's next version with plugin kinds). New code, by
+`storage_sweep.rs` (the sweep record's next version with plugin kinds); `review-process` (a
+retention limit and an overflow policy per stream, a reader-raised cancellation, for P7). New
+code, by
 package, is estimated at 3,500 lines including tests, most of it `plugins/` reusing
 `selfmgmt`'s install, receipt and verification code. After P4 a feature like `af backlog` is
 zero lines in this repository.
@@ -982,8 +1012,12 @@ resolution, invoke with the inherited environment and overlay); clap's `external
 `origin.toml`; the `Plugins:` section of `af --help`; `af help <plugin>`; `af help plugins`
 rendered from the surface table; `[plugin.*]` passthrough, the machine-only `enabled` key,
 manifest-declared machine-only tables and the `AF_PLUGIN__<NAME>__<KEY>` parser; the `plugins/`
-`LAYOUT` entry; `ProjectFile`'s field and `[plugins] required`; `fixtures/plugins/echo/` and the
-boundary harness. ADR: P0's.
+`LAYOUT` entry; `ProjectFile`'s field and `[plugins] required`; the three storage kinds of
+§3.9 with the sweep record's next version naming them and the lock of §3.9, so that no plugin
+byte is outside the budget from the first install (`storage::Roots` enumerates explicit roots
+and discovers nothing, ADR-0144); the dispatch classification of §3.3; `fixtures/plugins/echo/`
+and the boundary harness. ADR: P0's, and the amendment to ADR-0144 for the kinds and the record
+version.
 
 The help-latency bound is measured, not asserted: P1 compares `af --help` on the pinned
 baseline with the implementation on a release build with twenty representative manifests
@@ -1020,8 +1054,15 @@ not name, a write under a neighbouring `.af/` path);
 plugin's executable starts, proven by a fixture plugin whose help writes a file that never
 appears, through the broker and in pane mode);
 `config_filtering_uses_the_selected_bundles_manifest` (two installed versions whose
-`machine_only` differ: the pinned one governs under a pin, the override under
-`AF_PLUGIN_VERSION_<NAME>`, `current` otherwise; an unreadable manifest fails closed);
+`machine_only` differ: `current` governs, and an unreadable manifest fails closed; the pinned
+and override variants are P5's); `plugin_arguments_never_steer_dispatch` (a cross-release
+fixture under a pinned release that predates plugins: `af echo --help`, `af echo -V` and
+`af echo --repo /elsewhere` each dispatch to the pinned release and hand the words to the
+plugin untouched, while `af --repo /B echo` selects B);
+`plugin_cache_is_evicted_whole_and_state_never_by_the_kernel`;
+`an_aged_running_plugin_is_not_evicted_by_a_concurrent_sweep`;
+`plugin_bytes_are_counted_from_the_first_install` (`af storage` lists the three kinds for a
+freshly installed plugin, and the sweep record's next version names them);
 `read_only_table_matches_the_code` (every command in the table opens no Store for writing;
 `review plan --file` and `storage prune --apply` are outside it, and a refused `review plan
 --file` under `pane` creates no Task and no CAS object; `review show` reads through
@@ -1096,9 +1137,8 @@ Worker's output, then retry feedback, each tipping the bound).
 
 Deliverables: `plugins::after_command` and its one call site; the five hooks and
 `af/plugin-hook@1`; `af plugin hook-run`, the detached supervisor; both modes with their wall
-bounds; `hooks.log`; the liveness lock; the three storage kinds, the sweep record's next version
-naming them, and the `storage.sweep` hook. ADR: an amendment to ADR-0144 for the kinds and the
-record version.
+bounds; `hooks.log`; the `storage.sweep` hook over P1's kinds; the background allowlist of §3.8 as the
+table's second use. ADR: none new; P1's amendment to ADR-0144 gains the hook.
 
 Acceptance: `hook_runs_after_the_result_and_changes_no_output` (stdout, `--json` document and
 exit code byte-identical with and without a failing hook); `interrupted_command_runs_no_hook`;
@@ -1111,6 +1151,10 @@ them, refused before any Attempt starts, and at `task_execution::start` itself);
 `task_creation_is_refused_inside_a_hook_before_capture` (`task start --file` without
 `--execute`, `task plan` and `review plan --file` refused before source capture; a hanging-Git
 fixture under a hook timeout leaves no nested process alive);
+`hooks_run_only_the_read_only_table` (a command-only Task's `task refresh` under a hook,
+refused before the Store opens writable and the plan unchanged; `catalog sync` with a hanging
+Git transport, refused before the subprocess exists, a hook timeout leaving nothing alive; a
+hook calling a second plugin that calls `task refresh`, refused);
 `a_hook_calling_a_second_plugin_cannot_start_task_work` (the marker survives `$AF_BIN`);
 `hook_run_receives_the_exact_document_on_a_pipe` (byte-identical transfer, malformed input, a
 supervisor that never reads); `hook_target_names_what_the_invocation_recorded` (a Task, a
@@ -1127,8 +1171,6 @@ refused at their entry points, and a hook timeout leaves no Provider process ali
 reads stdin, one that forks a grandchild, one that exits 3; the failure line in `hooks.log`);
 `disabled_plugin_runs_nothing`; `hook_leaves_the_event_log_byte_identical` (the log with hooks
 on and off differs only by the sweep observation, when one is recorded);
-`plugin_cache_is_evicted_whole_and_state_never_by_the_kernel`;
-`an_aged_running_plugin_is_not_evicted_by_a_concurrent_sweep`;
 `storage_sweep_hook_receives_target_bytes_and_cannot_block_the_sweep`.
 
 ### P5 — Pins and release sources
@@ -1146,7 +1188,9 @@ the recorded origin); `pin_without_an_origin_refuses_with_the_install_command`;
 (a cross-release fixture: the lock written by the pinned release, and the pre-exec refusal
 whose printed `af onboard --refresh-lock --af <release>` parses and advances the pin);
 `hook_context_uses_the_projects_pin` (from repository A with `--repo B`, B's pinned bundle
-runs); `background_resolution_never_invokes_the_release_source` (a pinned, uninstalled plugin:
+runs); `override_precedes_the_pin_for_every_use` (a pin and `AF_PLUGIN_VERSION_<NAME>` both
+present, their manifests differing in `machine_only`: the override's bundle runs and governs
+`config show`, a hook and a pane alike); `background_resolution_never_invokes_the_release_source` (a pinned, uninstalled plugin:
 the hook fails with the install command in `hooks.log`, and a release source that would fail if
 touched is never touched).
 
@@ -1172,8 +1216,9 @@ Provider fixture of P4); the existing
 ### P7 — The runner seam
 
 Deliverables: `af.runner/1`, `af/RunnerRequest@1`, `af/RunnerResult@1`, `af/RunnerIdentity@1`;
-`AF_RUNNER_AUTH_DIR`; the external adapter behind `WorkerModelAdapter`; the Provider registry
-accepting a runner plugin's kind; `identity`, `status`, `models` and admission through the
+`AF_RUNNER_AUTH_DIR`; `review-process`'s retention limit and overflow policy per stream and its
+reader-raised cancellation (§3.14); the external adapter behind `WorkerModelAdapter`; the
+Provider registry accepting a runner plugin's kind; `identity`, `status`, `models` and admission through the
 plugin; one external adapter as the proof. ADR: its own.
 
 Acceptance: `two_providers_of_one_runner_kind_use_their_own_auth_directories`;
@@ -1191,11 +1236,15 @@ by `true` that stays incomplete);
 `runner_verbs_are_refused_on_the_public_seam` (`af <runner> identity --json` executes nothing
 and prints no identity; `af provider status` shows the sanitized projection);
 `runner_transport_bounds_are_enforced_while_reading` (an oversized unterminated frame, a
-stderr flood, a stalled `status`: each killed and reaped at its bound, output refused, earlier
-usage floors kept);
+stderr flood, a stalled `status`: each killed and reaped at its bound by `review-process` the
+moment the reader refuses, not after the leader exits, output refused, earlier usage floors
+kept; the native adapters' collection byte-identical);
 `runner_binding_is_captured_verified_and_never_substituted` (a second plugin declaring the
-kind is refused at install; `current` moved to other bytes refuses the Attempt; resume under a
-changed bundle is refused; replay validates the record with the plugin removed);
+kind is refused at install; `current` moved to other bytes refuses the Attempt; the
+executable, then a support file, edited in place with `current` and `receipt.toml` untouched
+refuses the Attempt, as do a mode change and a symlink that appeared after install; a
+`remove` racing an invocation waits on the lock of §3.9; resume under a changed bundle is
+refused; replay validates the record with the plugin removed);
 `external_runner_is_trusted_unsafe_and_cannot_auto_apply`;
 `native_adapters_are_byte_identical_with_the_seam_present`; the Task fixture run through the
 external adapter with a command-backed fake model.
