@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 23 after review rounds 1 to 22 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 24 after review rounds 1 to 23 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -816,10 +816,15 @@ time the kernel records the selected runner's plugin name, version, protocol, ta
 content digest (§3.15, the digest of the bytes that run) in the Task's execution binding beside the Provider binding (ADR-0046), recomputes the content digest of the selected version directory (§3.15) and compares it with
 that record before the binding is written and before every private invocation, so an
 executable or support file edited in place, a changed mode or a symlink that appeared after
-install refuses the Attempt whatever `current` and `receipt.toml` say; runs the verified bundle
-while holding the plugin's shared lock (§3.9), which `af plugin remove` and a reinstall of the
-same version take exclusively before touching the directory; and refuses substitution on
-resume; a plan
+install refuses the Attempt whatever `current` and `receipt.toml` say; runs the runner from a
+kernel-managed materialization of the verified bytes and never from the directory it
+verified: the kernel copies the bundle, support files included, into a private directory
+beside the Attempt's sandbox as it materializes a Worker package, hashes the copy, refuses
+when that digest differs from the record, and execs the copy, so that an editor or a build
+writing a `--link` directory between the check and the load changes nothing the Attempt runs
+(`resolve_package` consumes the files it hashed for the same reason); holds the plugin's
+shared lock (§3.9) while copying, which `af plugin remove` and a reinstall of the same
+version take exclusively before touching the directory; and refuses substitution on resume; a plan
 approved under one runner never runs under another, and replay validates the record without
 the executable. It is
 the exception §3.1 clause 2 names: the kernel hands it one Attempt's materialized sandbox and
@@ -986,7 +991,7 @@ rejected before anything spawns and recorded as a boundary violation, since the 
 syscall trace cannot see what a host-side `af` reads or writes. Denial alone proves nothing, because a plugin can swallow the error and exit 0, so the
 harness also audits: inside the container the plugin runs under a file-syscall tracer
 (`strace -f -y -s 4096 -o <the relay's trace pipe> -e
-trace=%file,fchdir,dup,dup2,dup3,fcntl,close,fchmod,fchown,fsetxattr,fremovexattr,ftruncate,fallocate,ioctl,unshare,%process`,
+trace=%file,fchdir,dup,dup2,dup3,fcntl,close,fchmod,fchown,fsetxattr,fremovexattr,ftruncate,fallocate,ioctl,unshare,io_uring_setup,io_uring_enter,io_uring_register,%process`,
 the
 container is Linux on every host, with the ptrace capability the harness requests for this
 check only), and the trace, not the plugin's output, is the record. The auditor resolves every
@@ -1000,8 +1005,12 @@ or `vfork` gives the child a copy, `unshare` with `CLONE_FS` splits off a copy, 
 `fchdir` update the context of the task that called them, which is every task sharing it; a
 successful `rename`, `renameat` or `renameat2` whose source is a prefix of a context's
 directory rewrites that prefix, since directory identity follows the rename as the kernel's
-does; and `chroot`, `pivot_root`, `mount`, `umount2` or a flag strace leaves undecoded makes the
-check `unresolved`. The result is normalized
+does, and `renameat2` with `RENAME_EXCHANGE` exchanges both prefixes at once in every context,
+each judged against its pre-operation location; and `chroot`, `pivot_root`, `mount`,
+`umount2`, any `io_uring_setup`, `io_uring_enter` or `io_uring_register` (an opaque
+file-access mechanism whose operations, `IORING_OP_OPENAT` among them, never pass through a
+traced pathname call, so a container provider that permits it cannot be audited in v1), or a
+flag strace leaves undecoded makes the check `unresolved`. The result is normalized
 lexically, which is sound because the bundle carries no symlink (§3.4), the mounts start
 without one, and a successful `symlink`, `symlinkat`, `link` or `linkat` anywhere is an
 immediate violation in the trace whether or not the link survives (a link made, used and
@@ -1288,10 +1297,13 @@ numeric dirfd into a permitted directory and into a forbidden one, a relative op
 attempted through such a link to the read-only export, a denied outside write followed by
 exit 0, an export opened read-only and then `fchmod`ed and `fsetxattr`ed with the failures
 swallowed and exit 0, and one forbidden target reached directly and through
-`/proc/self/root` with its error swallowed: the permitted ones pass and every other is a
-recorded violation; a trace with a lost
+`/proc/self/root` with its error swallowed, and a forbidden open submitted through `io_uring`
+with the result ignored and exit 0, `unresolved` and never passing: the permitted ones pass
+and every other is a recorded violation or `unresolved`; a trace with a lost
 process is `unresolved` and fails; a working directory renamed under the process and then
-left through `..`, classified by the renamed path; a thread that changes the directory and
+left through `..`, classified by the renamed path; an exchange of unequal depth (`/tmp/y`
+with `/tmp/d/x` while inside `/tmp/d/x`) followed by a relative open of `../../sentinel`,
+recorded as a violation although it returns `ENOENT`; a thread that changes the directory and
 the parent's relative open after it, classified by the shared context; an `unshare` child
 whose `chdir` leaves the parent's resolution alone; a `chroot` call, `unresolved`);
 `plugin_check_bounds_every_channel` (a plugin flooding each channel in turn, a broker frame
@@ -1496,8 +1508,10 @@ kept; the native adapters' collection byte-identical);
 kind is refused at install; `current` moved to other bytes refuses the Attempt; the
 executable, then a support file, edited in place with `current` and `receipt.toml` untouched
 refuses the Attempt, as do a mode change and a symlink that appeared after install; a
-`remove` racing an invocation waits on the lock of §3.9; resume under a changed bundle is
-refused; replay validates the record with the plugin removed);
+`remove` racing an invocation waits on the lock of §3.9; a linked support file changed
+between verification and load, synchronized by a fixture hook, cannot execute under the old
+binding, the materialized copy's digest being the record's or the Attempt refused; resume
+under a changed bundle is refused; replay validates the record with the plugin removed);
 `external_runner_is_trusted_unsafe_and_cannot_auto_apply`;
 `native_adapters_are_byte_identical_with_the_seam_present`; the Task fixture run through the
 external adapter with a command-backed fake model.
