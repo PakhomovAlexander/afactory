@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 16 after review rounds 1 to 15 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 17 after review rounds 1 to 16 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -456,9 +456,14 @@ else (`ArtifactEnvelope::validate`); an array or a scalar at the top level is re
 publication, and arrays live inside the object. A list-of-files form is deferred (§6).
 
 The limits are the ones the kernel already enforces, and never by truncation: the serialized
-envelope must fit the CAS bound (8 MiB, `MAX_ARTIFACT_ENVELOPE_BYTES`), and the complete
-rendered request of every Worker that wires the port, this input included, must fit the Worker
-request bound (1 MiB, `MAX_WORKER_BYTES`). Planning checks what it can see, the captured file
+envelope must fit the CAS bound (8 MiB, `MAX_ARTIFACT_ENVELOPE_BYTES`); every file-bound
+artifact a Worker consumes must itself fit 1 MiB serialized, envelope included, because the
+renderer reads each wired artifact through `Cas::get_bounded(id, MAX_WORKER_BYTES)` before it
+renders (`worker_value`, which then drops the producer and content-ID metadata, so an envelope
+can exceed the bound while its rendered value fits), and planning makes that check before
+publication rather than leaving the renderer to fail it; and the complete rendered request of
+every Worker that wires the port, this input included, must fit the Worker request bound
+(1 MiB, `MAX_WORKER_BYTES`). Planning checks what it can see, the captured file
 with its envelope and the statically known components of each wiring Worker's request, and
 refuses with the bound named before anything is published. The complete request can only be
 checked when its other inputs exist, an earlier Worker's output or retry feedback among them,
@@ -615,9 +620,10 @@ Nothing in use is evicted (ADR-0144). Every plugin process the kernel starts, a 
 supervisor, a pane load or a runner adapter, holds a shared lock on
 `<runtime root>/af/plugins/<name>.lock` for its whole lifetime, where the runtime root comes
 from one resolver in `config.rs` beside the XDG resolvers, shared by invocation, install,
-remove and the sweep: `$XDG_RUNTIME_DIR` when it is set, absolute, owned by the user and mode
-`0700`, else `$XDG_STATE_HOME/af/runtime/`, created `0700` and verified the same way; a root
-that cannot be established refuses the operation with the reason rather than running unlocked; the hook supervisor holds it
+remove and the sweep: `$XDG_RUNTIME_DIR` when it is set, which must then be absolute, owned
+by the user and mode `0700`, or the operation is refused with the reason; the fallback
+`$XDG_STATE_HOME/af/runtime/`, created `0700` and verified the same way, only when the
+variable is unset; a root that cannot be established refuses rather than running unlocked; the hook supervisor holds it
 while the plugin's process group lives. The sweep takes the exclusive lock without blocking
 before it evicts any entry of that plugin, skips the plugin and says so when it cannot, and
 re-reads the entry's identity and protection under the lock before removing it, as
@@ -885,7 +891,13 @@ the container, which forwards it on the container's own stdout and reads the ans
 stdin: the harness drives the container runtime's attached stdin and stdout (bounded and
 supervised through `review-process`), runs the real `af` against the fixture Store outside, and
 answers with stdout and the exit code. A mounted FIFO would not do: on macOS the container is
-a separate Linux virtual machine and a FIFO's endpoints do not cross that boundary. The harness lives only for the check, records every brokered call, and executes none without
+a separate Linux virtual machine and a FIFO's endpoints do not cross that boundary. The
+container is the provider's, as it is for an Attempt: P1 adds to `review-sandbox` a duplex
+execution path beside the collecting one, keeping the provider's named-container ownership,
+its bounded forced removal on timeout and cancellation (`remove_container`) and its cleanup
+confirmation, so that stopping the attached client never leaves the daemon-owned container
+writing its mounts; when removal is not confirmed the check is refused with the reason and the
+fixture directories are preserved for inspection rather than removed under a live container. The harness lives only for the check, records every brokered call, and executes none without
 checking it first against a typed allowlist: the kernel's declared read-only table (§3.12,
 `task report` and `task explain` among its entries, `help` only for kernel topics and
 commands) with its flags, each only against the fixture's own Store and repository, and
@@ -968,9 +980,9 @@ at the external command name in `exempt_from_dispatch` and `repo_from_argv`, and
 refusal of `plugin pin` under a release that predates plugins); `lock.rs` (one table);
 `tui/mod.rs` (one folder, one pane); the Task-file adapter (one binding form, `af.task-file/2`, and the affinity kept in
 `DeclaredPorts`);
-`storage_sweep.rs` (the sweep record's next version with plugin kinds); `review-process` (a
-retention limit and an overflow policy per stream, a reader-raised cancellation, for P7). New
-code, by
+`storage_sweep.rs` (the sweep record's next version with plugin kinds); `review-sandbox` (a duplex execution path with the provider's container lifecycle, for P1);
+`review-process` (a retention limit and an overflow policy per stream, a reader-raised
+cancellation, for P7). New code, by
 package, is estimated at 3,500 lines including tests, most of it `plugins/` reusing
 `selfmgmt`'s install, receipt and verification code. After P4 a feature like `af backlog` is
 zero lines in this repository.
@@ -1070,8 +1082,8 @@ manifest-declared machine-only tables and the `AF_PLUGIN__<NAME>__<KEY>` parser;
 `LAYOUT` entry; `ProjectFile`'s field and `[plugins] required`; the three storage kinds of
 §3.9 with the sweep record's next version naming them and the lock of §3.9, so that no plugin
 byte is outside the budget from the first install (`storage::Roots` enumerates explicit roots
-and discovers nothing, ADR-0144); the dispatch classification of §3.3; `fixtures/plugins/echo/`
-and the boundary harness. ADR: P0's, and the amendment to ADR-0144 for the kinds and the record
+and discovers nothing, ADR-0144); the dispatch classification of §3.3; the duplex container execution path of §3.15 in
+`review-sandbox`; `fixtures/plugins/echo/` and the boundary harness. ADR: P0's, and the amendment to ADR-0144 for the kinds and the record
 version.
 
 The help-latency bound is measured, not asserted: P1 compares `af --help` on the pinned
@@ -1095,8 +1107,9 @@ neither an installed manifest nor `PATH` can shadow a help topic); `manifest_pro
 `bin_escaping_the_bundle_or_a_symlink_is_refused_at_install` (and `bin = "receipt.toml"`, at
 install, `--link`, `check` and invocation);
 `plugin_lock_root_is_one_resolver` (`XDG_RUNTIME_DIR` unset: a concurrent invocation and
-sweep share the fallback's one lock; relative, or a root not owned by the user: the
-invocation, the install and the sweep each refuse with the reason);
+sweep share the fallback's one lock; set but relative, not owned by the user, or not mode
+`0700`: the invocation, the install and the sweep each refuse with the reason through the one
+resolver, and the fallback is never used);
 `plugin_table_merges_with_origins_and_machine_only_is_honoured`;
 `existing_machine_only_tables_are_preserved` (`[self]` and `[storage]` stay machine-only with
 plugins installed, beside plugin-declared filtering; the `[telemetry]` variant, the table with
@@ -1151,7 +1164,11 @@ archive's pin digest);
 with different bytes and identical files share one content digest, the fixed expected-digest
 fixtures of §3.15 hold, and the receipt records both digests); `broker_round_trip_from_a_macos_host_into_the_linux_container` (a brokered
 `config show` answered through the relay's stdio; a provider that cannot attach stdio reports
-`not_run` and fails `--require-boundary`).
+`not_run` and fails `--require-boundary`);
+`plugin_check_timeout_and_cancel_remove_the_container_before_the_fixture` (a plugin that
+sleeps past the wall, and a cancelled check: the container and its descendants are gone,
+confirmed, before any fixture directory is removed; a provider whose removal cannot be
+confirmed refuses the check and keeps the directories).
 
 ### P2 — `af store`
 
@@ -1207,7 +1224,9 @@ admits, naming the other refuses by name);
 `PortAffinityV1`); `file_with_an_array_or_scalar_top_level_is_refused_before_publication`;
 `plugin_check_broker_rejects_task_creation` (a brokered `task start --file`, with and without
 `--execute`, whose Task file binds an outside sentinel file: rejected before any host read, the
-sentinel unread); `file_binding_requires_an_absolute_path_and_a_regular_file` (a relative path, an oversized
+sentinel unread); `file_bound_envelope_over_the_renderer_bound_is_refused_at_planning` (an envelope over 1 MiB
+serialized whose rendered value fits: refused with the bound named, nothing published);
+`file_binding_requires_an_absolute_path_and_a_regular_file` (a relative path, an oversized
 file at the 8 MiB raw ceiling, a FIFO and a symlink to a FIFO, none of which blocks planning);
 `file_bound_envelope_over_8mib_is_refused_before_publication` (payload plus envelope overhead
 at the bound); `file_bound_static_request_over_1mib_is_refused_at_plan_time`;
