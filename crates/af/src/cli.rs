@@ -166,11 +166,12 @@ local branch and worktree, after confirming the Task ID.",
         #[command(subcommand)]
         command: TaskCommand,
     },
-    /// Show this repository's Project and manage its Workspaces
+    /// Show this repository's Project, measure it into Surveys, and manage its Workspaces
     #[command(
         subcommand_required = true,
         arg_required_else_help = true,
-        long_about = "Show this repository's Project and manage its Workspaces.\n\n\
+        long_about = "Show this repository's Project, measure it into Surveys, and manage its \
+Workspaces.\n\n\
 A Project is the identity of one repository across every clone and worktree: `sha256:` + \
 hex(SHA-256(`af/project-id@1\\0` + repository_id)), where repository_id is the sorted root \
 commits every Snapshot origin already carries; never a path or a remote URL. Its Project Store \
@@ -184,11 +185,17 @@ clone is refused until `git fetch --unshallow`; a repository without commits has
 `af task deliver` registers the worktree it creates (origin `delivered`, labelled by the Task \
 ID). `--workspace LABEL` on the `af task` commands that take `--state` selects a Workspace's \
 Store, and on `plan` and `start` its bindings file.\n\n\
+A Survey (`af/ProjectSurvey@1`) is one kernel-measured description of the Project at its head: \
+identity, tree, history, contributors, decisions, vocabulary and checks, every number decimal \
+text, bounded by the `[survey]` table of `.af/af.toml`. The token-free Surveyor records one at \
+`af onboard --apply` and on `af project refresh`, in the Project Store, and never twice for the \
+same head, policy and Surveyor version. It calls no Provider, runs no hook or project code, and \
+never stores an email.\n\n\
 Never: writes inside a checkout, commits, pushes, or removes a Store. Results go to stdout \
-(`--json` prints `af/project@1` or `af/project-workspaces@1`); warnings go to stderr. Exit \
-codes: 0 success, 1 failure (the message names the next action; `af/error@1` under --json), 2 \
-usage error.",
-        after_long_help = "Examples:\n  af project show\n  af project workspaces --json\n  af project workspace new research --branch agent/research\n  af project workspace add ../afactory-wt-research --label research --state \"$W/state\"\n  af project workspace remove research\n  af project workspace remove research --delete-worktree\n  af task plan --workspace research --file ticket.json"
+(`--json` prints `af/project@1`, `af/project-workspaces@1`, `af/ProjectSurvey@1` or \
+`af/project-history@1`); warnings go to stderr. Exit codes: 0 success, 1 failure (the message \
+names the next action; `af/error@1` under --json), 2 usage error.",
+        after_long_help = "Examples:\n  af project show\n  af project refresh\n  af project survey --json | jq .tree.files\n  af project history\n  af project workspaces --json\n  af project workspace new research --branch agent/research\n  af project workspace add ../afactory-wt-research --label research --state \"$W/state\"\n  af project workspace remove research\n  af project workspace remove research --delete-worktree\n  af task plan --workspace research --file ticket.json"
     )]
     Project {
         #[command(subcommand)]
@@ -1394,13 +1401,15 @@ and model; no Provider label, path, credential, prompt or Worker output is print
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum ProjectCommand {
-    /// Show the Project: identity, name, Store and every Workspace
+    /// Show the Project: identity, name, Store, every Workspace and the newest Survey
     #[command(
         long_about = "Show the Project of the checkout af runs in: its ID, repository_id, the \
 `[project] name` and `min_af` its `.af/af.toml` declared when it was registered, the Project \
 Store, and every Workspace with its label, origin, checkout, Task Store, bindings file, Task-file \
-directory and registration time.\n\nRegisters the Project and this checkout first when they \
-are new. Reads nothing else and writes nothing inside the checkout.",
+directory and registration time. The text also shows the newest Survey's summary, or the reason \
+of the newest SurveyFailed@1 when no Survey was recorded since; `af/project@1` is unchanged.\n\n\
+Registers the Project and this checkout first when they are new. Reads nothing else and writes \
+nothing inside the checkout.",
         after_long_help = "Examples:\n  af project show\n  af project show --json | jq .project_id"
     )]
     Show {
@@ -1417,6 +1426,53 @@ Task-file directory. A path this machine's `workspaces.toml` does not know is sh
     )]
     Workspaces {
         /// One `af/project-workspaces@1` document on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show the newest Survey of the Project
+    #[command(
+        long_about = "Show the newest Survey of this checkout's Project: one kernel-measured \
+description of the head (`af/ProjectSurvey@1`) with the sections identity, tree, history, \
+contributors, decisions, vocabulary and checks, each complete, partial or unavailable with the \
+bound it reached. Text is one line per section; --json prints the record's canonical bytes, \
+every number decimal text.\n\nRecords nothing. Fails (exit 1) when the Project has no Survey \
+yet; `af project refresh` records one.",
+        after_long_help = "Examples:\n  af project survey\n  af project survey --json | jq '.history.hot_paths[].path'"
+    )]
+    Survey {
+        /// The `af/ProjectSurvey@1` record on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Measure the head into a new Survey now, unless it is unchanged
+    #[command(
+        long_about = "Run the Surveyor now and wait: measure this checkout's head into a Survey \
+and record it in the Project Store, then print its summary. A head whose commit, policy digest \
+and Surveyor version equal the newest Survey's is not surveyed again: the command prints \
+`unchanged` with that Survey's summary and records nothing.\n\nThe Surveyor reads the \
+repository only through supervised git plumbing (ls-tree, cat-file, log, rev-list, tag, \
+for-each-ref) under one deadline, `[survey] max_wall_ms`; a section it cannot finish is partial \
+or unavailable and the Survey is still recorded. It calls no Provider, runs no hook or project \
+code and writes nothing inside the checkout. Contributors are named by author name or, under \
+`[survey] identity = \"email_hash\"`, by the first 16 hex digits of SHA-256 of the lowercased, \
+trimmed email; an email is never stored. A Survey that cannot be taken records SurveyFailed@1, \
+which `af project show` prints, and exits 1.",
+        after_long_help = "Examples:\n  af project refresh\n  af project refresh --json | jq .completeness\n  AF_SURVEY__MAX_COMMITS=1000 af project refresh"
+    )]
+    Refresh {
+        /// The recorded (or unchanged) `af/ProjectSurvey@1` record on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the Project's Surveys, newest first
+    #[command(
+        long_about = "List the Survey chain of this checkout's Project, newest first: each \
+Survey's ID, when it was recorded, its head, its cutoff and its completeness. --json prints \
+`af/project-history@1`. Records nothing.",
+        after_long_help = "Examples:\n  af project history\n  af project history --json | jq -r '.surveys[0].survey_id'"
+    )]
+    History {
+        /// One `af/project-history@1` document on stdout instead of text
         #[arg(long)]
         json: bool,
     },

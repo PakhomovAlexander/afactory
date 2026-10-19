@@ -1,9 +1,11 @@
 # Projects and Workspaces
 
-What `af project` knows about the repository it runs in, where it keeps that, and how a checkout
-for one line of work becomes a **Workspace** with its own Task Store, Task files and bindings.
-The terms are defined in [`../CONTEXT.md`](../CONTEXT.md); the decision is
-[ADR-0151](adr/0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md).
+What `af project` knows about the repository it runs in, where it keeps that, how a checkout
+for one line of work becomes a **Workspace** with its own Task Store, Task files and bindings,
+and how the Surveyor measures the Project into **Surveys**. The terms are defined in
+[`../CONTEXT.md`](../CONTEXT.md); the decisions are
+[ADR-0151](adr/0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+and [ADR-0152](adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md).
 
 ## Identity
 
@@ -31,13 +33,15 @@ that file parses; they label the Project and are not part of its identity.
 
 Each Project owns one Project Store at `$XDG_STATE_HOME/af/project/<hex>/`, where `<hex>` is the
 digest of the Project ID. It is a Store like the others: a `cas/` and an event log. The log holds
-three events, each canonical JSON with numbers as decimal strings:
+these events, each canonical JSON with numbers as decimal strings:
 
 | Event | Holds |
 |---|---|
 | `ProjectRegistered@1` | the Project ID, `repository_id`, and the `[project] name` and `min_af` when `.af/af.toml` parsed ([schema](../schemas/project-registered-v1.json)) |
 | `WorkspaceRegistered@1` | the Workspace ID, its label and its origin: `adopted`, `created` or `delivered` ([schema](../schemas/project-workspace-registered-v1.json)) |
 | `WorkspaceRemoved@1` | the Workspace ID ([schema](../schemas/project-workspace-removed-v1.json)) |
+| `SurveyRecorded@1` | the Survey's ID in the CAS, its head, cutoff, completeness, policy digest and Surveyor version, and the Survey before it ([schema](../schemas/project-survey-recorded-v1.json)) |
+| `SurveyFailed@1` | the head and af's one-line reason why no Survey was recorded ([schema](../schemas/project-survey-failed-v1.json)) |
 
 No event ever holds a path. Beside the log, outside every record, `workspaces.toml` holds this
 machine's paths of each Workspace: its checkout, its Task Store, and, when it has them, its
@@ -215,6 +219,184 @@ af task run TASK_ID --workspace research --confirm-plan PLAN_ID
 af task deliver TASK_ID --workspace research --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID
 ```
 
+## Surveys
+
+A **Survey** is one kernel-measured description of the Project at its head, the record
+`af/ProjectSurvey@1` ([schema](../schemas/project-survey-v1.json)) in the Project Store's CAS. The
+**Surveyor** records one at `af onboard --apply` and on `af project refresh`, synchronously, and
+spends no token: the kernel counts, and a model never writes a number
+([ADR-0132](adr/0132-measure-and-compare-source-candidates-in-the-kernel.md)). It reads the head
+only through supervised git plumbing (`ls-tree`, `cat-file --batch`, `rev-list`, `log`, `tag`,
+`for-each-ref`, and the committed capture for the Tree Digest), runs no checkout, hook, filter,
+textconv or project code, calls no Provider, takes no writer lease on a Task Store and writes
+nothing inside the checkout.
+
+The record is canonical JSON: every map sorted by key, every list in the order stated below, and
+every number a decimal string of an integer (counts, bytes, lines, Unix seconds, and shares in
+basis points rounded down). It is byte-identical for the same head, policy, cutoff and Surveyor
+version. `cutoff_unix_s`, the clock when the Survey started, is the only field that depends on
+when it was taken.
+
+| Section | Holds |
+|---|---|
+| `identity` | the Project ID and `repository_id`; the head's `[project] name`, `min_af` and `.af/af.lock` af pin; the head commit and its Tree Digest; `cutoff_unix_s`, `policy_digest` and `surveyor_version` |
+| `tree` | files, bytes and lines in total; files, lines and bytes per top-level directory (root-level entries under `.`); files and lines per language; the `tests` split; `files_without_lines` |
+| `history` | reachable commits; the commits reached and their merges, in total and in the last 30, 90 and 365 days; first and last committer time; churn (commits, lines added and removed) per top-level directory over 90 days; the `hot_paths` paths with the most commits in 90 days, most first and ties by path, each `removed` when the head no longer holds it; the tag count and the newest five tags matching `release_tags`; the local branch count |
+| `contributors` | per identity: commits, lines added and removed, first and last committer time, `active_90d`; the identities active in 90 days; human and agent commits and their shares; the top identity's share |
+| `decisions` | per record the `decisions` glob matches: number (the file name's leading digits), path, title (the first H1), status and date (from the first other line naming `accepted`, `proposed`, `superseded`, `deprecated` or `rejected`, and the first ISO date on it); counts by status, `unknown` for none; the newest 12 by number |
+| `vocabulary` | the term names of the `vocabulary` file's `**Term**:` headings, in file order, and their count; never a definition |
+| `checks` | the names and programs of `.af/code-policy.toml`'s checks and of the `[[checks]]` of the review pipelines in `.af/pipelines/`, never an argument; the toolchain declarations at the root (`rust-toolchain.toml`, `.nvmrc`, `.python-version`, `.tool-versions`, `go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml`); the count of `.github/workflows/*.yml` and `*.yaml` |
+
+A line is a newline of a text blob, one with no NUL in its first 8 KiB, at or under
+`max_file_bytes`. A larger or binary blob, a symlink and a submodule entry count as a file and
+its bytes only; symlinks and submodules are of language `other`. Each section carries
+`completeness`: `complete`, `partial` with what it reached, or `unavailable`, and the bound it
+reached as `reason` when it is not complete. `max_commits` makes `history` and `contributors`
+partial and records the oldest commit reached. `max_wall_ms` is one deadline for the whole
+Survey: the section it stops is partial or unavailable and every section after it unavailable,
+and the Survey is still recorded. The record's own `completeness` is `unavailable` only when
+every section is, otherwise `partial` when any section is not complete.
+
+### The `[survey]` policy
+
+The `[survey]` table of `.af/af.toml` deep-merges like every other table, so the directory layer
+can set it once for every checkout beneath it, and `AF_SURVEY__<KEY>` overrides one key
+(`af help environment`). Every key is typed and an unknown key is refused.
+
+```toml
+[survey]
+max_wall_ms = 60000        # one deadline for the whole Survey
+max_commits = 100000       # history walked newest first, at most this many commits
+max_file_bytes = 1048576   # larger blobs count files and bytes, not lines
+exclude = []               # path globs never counted, e.g. ["vendor/**"]
+tests = ["**/tests/**", "**/*_test.*", "**/test_*", "**/fixtures/**"]
+decisions = "docs/adr/[0-9][0-9][0-9][0-9]-*.md"
+vocabulary = "CONTEXT.md"
+release_tags = "v*"
+identity = "name"          # or "email_hash"
+agent_authors = ["*[bot]"]
+agent_trailers = ["*Claude*", "*Codex*", "*GPT*"]
+hot_paths = 20
+
+[survey.languages]         # extends the built-in map below; never replaces it
+"*.pest" = "pest"
+```
+
+`exclude`, `tests` and `decisions` are path globs, anchored at the repository root and matched
+by segment: `**` spans any number of segments, `*` any run within one, `?` one character and
+`[...]` one character of a class (`[0-9]`, `[!.]`). `exclude` removes entries before anything is
+counted, in every section and in the numstat of `history` and `contributors`.
+`agent_authors`, `agent_trailers` and `release_tags` are name globs over a whole text with `*`
+and `?` only, so `*[bot]` matches a name ending in `[bot]`. `policy_digest` is `sha256:` +
+hex(SHA-256 of the canonical JSON of the effective policy); a changed policy surveys the same
+head again.
+
+A file's language is its exact name's entry, else its longest extension's, in
+`[survey.languages]` first and then in the built-in map, else `other`:
+
+| Language | Files |
+|---|---|
+| `c` | `*.c`, `*.h` |
+| `cpp` | `*.cc`, `*.cpp`, `*.cxx`, `*.hpp` |
+| `csharp` | `*.cs` |
+| `css` | `*.css`, `*.scss` |
+| `docker` | `Dockerfile` |
+| `go` | `*.go` |
+| `html` | `*.htm`, `*.html` |
+| `java` | `*.java` |
+| `javascript` | `*.cjs`, `*.js`, `*.jsx`, `*.mjs` |
+| `json` | `*.json` |
+| `kotlin` | `*.kt` |
+| `lua` | `*.lua` |
+| `make` | `Makefile`, `*.mk` |
+| `markdown` | `*.md` |
+| `nix` | `*.nix` |
+| `php` | `*.php` |
+| `protobuf` | `*.proto` |
+| `python` | `*.py` |
+| `ruby` | `*.rb` |
+| `rust` | `*.rs` |
+| `shell` | `*.bash`, `*.sh`, `*.zsh` |
+| `sql` | `*.sql` |
+| `svg` | `*.svg` |
+| `swift` | `*.swift` |
+| `text` | `*.txt` |
+| `toml` | `*.toml` |
+| `typescript` | `*.ts`, `*.tsx` |
+| `yaml` | `*.yaml`, `*.yml` |
+
+### Contributors and email
+
+Under `identity = "name"`, the default, a contributor is the author name, and the Surveyor never
+asks git for an email. A name that is blank, longer than 512 bytes or holds `@` is recorded by
+the hash rule below applied to the name, so an address written as a name never enters a record.
+Under `identity = "email_hash"` a contributor is
+
+```text
+identity = hex(SHA-256(lowercase(trim(author email))))[..16]
+```
+
+and the email is dropped as soon as it is hashed. Under either policy no email appears in a
+record, an event, a document, a text output or an error message. A commit is an agent's when its
+author name matches an `agent_authors` glob or a `Co-Authored-By:` trailer value matches an
+`agent_trailers` glob; the trailer is matched and never kept.
+
+### `af project refresh`
+
+Records a Survey of the head now and prints `recorded` and its summary; `--json` prints the
+record. A head whose commit, policy digest and Surveyor version equal the newest Survey's is not
+surveyed again: nothing beyond `rev-parse HEAD`, the policy and the log is read, the command
+prints `unchanged` with the newest Survey's summary, and nothing is recorded. A new commit with
+the same tree is surveyed, because it changes `history`. A Survey that cannot be taken, for a
+`[survey]` key that does not load or a git that fails, records `SurveyFailed@1` and exits 1.
+
+On this repository's tree, committed once (the measurement of
+[ADR-0152](adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md)):
+
+```sh
+$ af project refresh
+recorded
+Survey sha256:9cc87b20813a8b277017bb8baf5294c4b7be57dc77c6044d90818e12bccf92ce
+  head          ac9e57b8bd9fb51e3743dfc7f5879643038888cb
+  cutoff        2026-10-19T20:59:06Z
+  completeness  complete
+  identity      afactory, tree sha256:9a7f085e974ffcc336e1f6281527cca122f8798e3bfd5da50ffb142d3c01e750
+  tree          1414 files, 383808 lines, 15224411 bytes, 502 test files
+  history       1 commits (0 merges), 1 in 30 days, 1 in 90 days
+  contributors  1 identities, 1 active in 90 days, agent commits 0 bp
+  decisions     141 (accepted 140, superseded 1)
+  vocabulary    73 terms in CONTEXT.md
+  checks        9 declared, 2 toolchain files, 4 CI workflows
+```
+
+### `af project survey` and `af project history`
+
+`af project survey` prints the newest Survey's summary, and `--json` its record's canonical bytes;
+it exits 1, naming `af project refresh`, when the Project has none. `af project history` lists the
+Survey chain newest first, each Survey's ID, recording time, head, cutoff and completeness;
+`--json` prints `af/project-history@1` ([schema](../schemas/project-history-v1.json)). Each
+Survey names the one before it as `previous_survey_id`.
+
+```sh
+af project survey --json | jq '.history.hot_paths[] | select(.removed) | .path'
+af project history --json | jq -r '.surveys[].survey_id'
+```
+
+`af project show` prints the newest Survey's summary below the Workspaces, or the reason of the
+newest `SurveyFailed@1` when no Survey was recorded after it. Its `--json` document,
+`af/project@1`, is unchanged.
+
+### At onboarding
+
+`af onboard --apply`, once it registered the Project and the Workspace, records the first Survey
+and prints one line, `af onboard: recorded Survey … of … (complete)`, on stdout, or on stderr
+under `--json`. A Survey that fails prints one line on stderr; onboarding's output and exit code
+are its own. `af onboard` without `--apply` records nothing, and a second `af onboard --apply` on
+the same head records nothing.
+
+Surveys stay in the Project Store; collecting old ones behind a tombstone comes with the detached
+after-run refresh in a later package.
+
 ## What is written where
 
 | Written | Where | By |
@@ -224,6 +406,8 @@ af task deliver TASK_ID --workspace research --branch af/TASK_ID --worktree ../T
 | A `project` entry | `$XDG_STATE_HOME/af/stores.toml` | any registration |
 | `workspaces/LABEL/` with `state/`, `tasks/`, `bindings.toml` | in the Project Store | `workspace new` |
 | A worktree and a branch | beside the checkout, never inside it; in the repository's git directory | `workspace new` |
+| A Survey and `SurveyRecorded@1`, or `SurveyFailed@1` | in the Project Store's `cas/` and log | `af project refresh`, `af onboard --apply` |
+| The committed capture of the head, for its Tree Digest | a scratch directory under `$TMPDIR`, removed when the Survey ends | `af project refresh`, `af onboard --apply` |
 
 Nothing is ever written inside a checkout: `.af/` holds declarations only
 ([ADR-0032](adr/0032-generate-review-authority-with-af-onboard.md),

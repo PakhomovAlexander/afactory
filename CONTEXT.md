@@ -151,6 +151,23 @@ _Avoid_: **Warm Workspace**, a per-node template root inside one Campaign that i
 checkout; and "workstream" as a second entity — the Workspace's label *is* the workstream's
 name, and the owner's `workstreams/<name>/` directories are Workspaces made by hand.
 
+**Survey**:
+One immutable, kernel-measured description of a Project at one exact head, `af/ProjectSurvey@1`
+in its Project Store: identity, tree, history, contributors, decisions, vocabulary and checks,
+every number decimal text, each section bounded by the `[survey]` policy and marked complete,
+partial or unavailable with the bound it reached. A model never writes one, it never holds an
+email, and a head already surveyed under the same policy and Surveyor version is not recorded
+twice.
+_Avoid_: **Measurement**, one declared command run against one Snapshot; **History Capture**,
+the optimizer's economics observations; **Report**, one reviewer's claim; and the README.
+
+**Surveyor**:
+The kernel-installed, token-free operator that records Surveys: synchronously at
+`af onboard --apply` and on `af project refresh`, reading the head only through supervised git
+plumbing under one `max_wall_ms` deadline, and never when the head is unchanged.
+_Avoid_: a daemon — it is one call that reads, writes one record and returns; and a Worker — it
+has no Provider, no Attempt and no budget.
+
 **Check runtime**:
 The directory `af-check-<pid>-<random>` af creates for one check and removes after it, holding
 the check's `HOME`, `TMPDIR`, `AF_CHECK_SCRATCH` and `XDG_CACHE_HOME`. Every check gets one —

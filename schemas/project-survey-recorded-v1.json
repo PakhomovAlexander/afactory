@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-survey-recorded:1",
+  "title": "SurveyRecorded@1",
+  "description": "A Project Store event (ADR-0152): the Survey `survey_id` is in the Store's CAS. A head, policy digest and Surveyor version equal to the newest one's is not surveyed again.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "survey_id",
+    "head",
+    "cutoff_unix_s",
+    "completeness",
+    "policy_digest",
+    "surveyor_version",
+    "recorded_unix_ms"
+  ],
+  "properties": {
+    "survey_id": {
+      "description": "The CAS digest of the record's canonical bytes.",
+      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+    },
+    "head": {
+      "$ref": "urn:af:schema:project-survey:1#/$defs/commit"
+    },
+    "cutoff_unix_s": {
+      "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+    },
+    "completeness": {
+      "$ref": "urn:af:schema:project-survey:1#/$defs/completeness"
+    },
+    "policy_digest": {
+      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+    },
+    "surveyor_version": {
+      "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+    },
+    "previous_survey_id": {
+      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+    },
+    "recorded_unix_ms": {
+      "$ref": "urn:af:schema:project-registered:1#/$defs/unix_ms"
+    }
+  }
+}

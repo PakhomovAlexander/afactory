@@ -75,7 +75,9 @@
         "WorkspaceRebased@1",
         "ProjectRegistered@1",
         "WorkspaceRegistered@1",
-        "WorkspaceRemoved@1"
+        "WorkspaceRemoved@1",
+        "SurveyRecorded@1",
+        "SurveyFailed@1"
       ]
     },
     "occurred_at": {
@@ -549,6 +551,44 @@
         "properties": {
           "payload": {
             "$ref": "urn:af:schema:project-workspace-removed:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "SurveyRecorded@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-survey-recorded:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "SurveyFailed@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-survey-failed:1"
           }
         }
       }

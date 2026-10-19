@@ -351,6 +351,59 @@ fn project_help_and_the_workspace_flag_describe_the_commands() {
     }
 }
 
+/// The Surveyor's commands (ADR-0152) are listed under `af project` with their documents, the
+/// skip rule, the bound and the email rule, and each has its own manual page.
+#[test]
+fn project_survey_refresh_and_history_describe_the_surveyor() {
+    let project = out(&af(&["project", "--help"]));
+    for command in ["survey", "refresh", "history"] {
+        assert!(
+            project
+                .lines()
+                .any(|line| line.trim_start().starts_with(&format!("{command} "))),
+            "{project}"
+        );
+    }
+    let project = project.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        "af/ProjectSurvey@1",
+        "af/project-history@1",
+        "`af onboard --apply` and on `af project refresh`",
+        "never stores an email",
+        "af project refresh",
+    ] {
+        assert!(project.contains(needle), "`{needle}` missing:\n{project}");
+    }
+    let refresh = out(&af(&["project", "refresh", "--help"]));
+    let refresh = refresh.split_whitespace().collect::<Vec<_>>().join(" ");
+    for needle in [
+        "prints `unchanged`",
+        "`[survey] max_wall_ms`",
+        "calls no Provider, runs no hook or project code and writes nothing inside the checkout",
+        "first 16 hex digits of SHA-256 of the lowercased, trimmed email",
+        "SurveyFailed@1",
+        "AF_SURVEY__MAX_COMMITS=1000 af project refresh",
+    ] {
+        assert!(refresh.contains(needle), "`{needle}` missing:\n{refresh}");
+    }
+    let survey = out(&af(&["project", "survey", "--help"]));
+    assert!(survey.contains("--json"), "{survey}");
+    assert!(survey.contains("af project refresh"), "{survey}");
+    let history = out(&af(&["project", "history", "--help"]));
+    assert!(history.contains("af/project-history@1"), "{history}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let man = af(&["self", "man", dir.path().to_str().unwrap()]);
+    assert!(man.status.success(), "{}", err(&man));
+    for page in [
+        "af-project-survey.1",
+        "af-project-refresh.1",
+        "af-project-history.1",
+    ] {
+        assert!(dir.path().join(page).is_file(), "{page} missing");
+    }
+}
+
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();

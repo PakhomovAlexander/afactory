@@ -273,3 +273,5 @@ future readers need.
   carries](0150-name-the-path-a-status-line-error-carries.md)
 - [0151 — Give a repository one Project identity and register its checkouts as
   Workspaces](0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
+- [0152 — Measure a Project into Surveys with a token-free
+  Surveyor](0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md)
