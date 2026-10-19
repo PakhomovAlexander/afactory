@@ -98,7 +98,12 @@ directories.
    succeeded undoes the earlier ones newest first (registration, worktree, the directories git
    created above it, branch ref, Workspace directory) and reports what it undid, or exactly what
    remains when an undo fails; so every refusal leaves nothing behind and the same command
-   succeeds once its cause is gone. It makes no commit and no push. `workspace add
+   succeeds once its cause is gone. The worktree is recorded as made before `git worktree add`
+   runs, so an add that fails or reaches its deadline after creating the worktree's directory,
+   its `.git` file or its entry under `<gitdir>/worktrees/` is undone too: by `git worktree
+   remove --force --force` when git can remove it, otherwise by removing the directory if it
+   exists, unlocking the entry a stopped add leaves locked, and `git worktree prune`. A step of
+   which nothing exists is not reported. It makes no commit and no push. `workspace add
    PATH` adopts an existing checkout of the same Project, refusing one of another Project with
    both IDs. `workspace remove LABEL` unregisters; it never removes a Store, and when the Store
    holds a Task that is not collected it says so and names `af task gc`; `--delete-worktree`
@@ -153,11 +158,13 @@ directories.
   commit's tree with a clean `git status`; refuses `--path .af/research`, the checkout itself,
   a path inside another Workspace and one inside af's state with exit 2 and nothing created;
   leaves worktrees, refs and Workspace directories unchanged when it refuses `--from` an orphan
-  branch or undoes a failed `worktree add`, after which the same label succeeds; fails within
-  the deadline, leaving no child, when a fake `git` sleeps; succeeds on the first `af task plan
-  --workspace <checkout directory name>`; and keeps `git status --porcelain --ignored` empty and
-  the checkout's files unchanged after every `af project` command and `af task plan
-  --workspace`. Unit tests undo every kind of step in reverse order and find no unsupervised
+  branch or undoes a `worktree add` that failed or reached its deadline after creating the
+  worktree's directory, `.git` file and administrative entry, after which the same label
+  succeeds; fails within the deadline, leaving no child, when a fake `git` sleeps; succeeds on
+  the first `af task plan --workspace <checkout directory name>`; and keeps `git status
+  --porcelain --ignored` empty and the checkout's files unchanged after every `af project`
+  command and `af task plan --workspace`. Unit tests undo every kind of step in reverse order,
+  including a partial worktree whose entry a stopped add left locked, and find no unsupervised
   process start under `crates/af/src/projects`.
   `crates/review-core/tests/schema_parity/project.rs` pins the three events and two documents,
   and `crates/af/tests/it/cli_surface.rs` the help surface.

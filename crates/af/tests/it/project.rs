@@ -1104,6 +1104,112 @@ fn a_refused_workspace_new_leaves_nothing_behind_and_the_same_command_then_succe
     assert!(store.join("workspaces/spike/state").is_dir());
 }
 
+/// A fake `git` that passes every command to the real one except `worktree add`, which first
+/// makes what git makes before it checks anything out (the worktree directory, its `gitdir:`
+/// `.git` file and a locked entry under `<gitdir>/worktrees/`) and then runs `then`.
+fn partial_worktree_git(bin: &Path, repo: &Path, then: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    // Baked in by its absolute path: af's isolated git inherits only `PATH`, which names the fake.
+    let real = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let real = String::from_utf8(real.stdout).unwrap().trim().to_string();
+    assert!(Path::new(&real).is_absolute(), "git is {real:?}");
+    let admin = repo.join(".git/worktrees");
+    std::fs::create_dir_all(bin).unwrap();
+    let fake = bin.join("git");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\nprevious=\nadding=\ntarget=\nfor argument in \
+             \"$@\"; do\n  if [ \"$adding\" = after ]; then target=$argument; break; fi\n  [ \
+             \"$previous\" = worktree ] && [ \"$argument\" = add ] && adding=yes\n  [ \"$adding\" \
+             = yes ] && [ \"$argument\" = -- ] && adding=after\n  previous=$argument\ndone\nif [ \
+             -n \"$target\" ]; then\n  entry='{admin}'/$(basename \"$target\")\n  mkdir -p \
+             \"$target\" \"$entry\"\n  echo initializing > \"$entry/locked\"\n  echo \
+             \"$target/.git\" > \"$entry/gitdir\"\n  echo \"gitdir: $entry\" > \
+             \"$target/.git\"\n  {then}\nfi\nexec '{real}' \"$@\"\n",
+            admin = admin.display(),
+            real = real,
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The first exec of a script just written can take as long as the deadline (macOS scans it).
+    assert!(Command::new(&fake).arg("warm").status().unwrap().success());
+    fake
+}
+
+#[test]
+fn a_worktree_add_that_fails_or_is_stopped_midway_is_undone_and_the_same_command_then_succeeds() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "show"], 0);
+    let store = machine
+        .projects()
+        .join(expected_project_id(&repo).trim_start_matches("sha256:"));
+    let worktree = machine.root().join("fixture-wt-spike");
+    let before = repository_state(&machine, &repo);
+    for (case, then) in [("fails", "exit 128"), ("is stopped", "sleep 120")] {
+        let bin = machine
+            .root()
+            .join(format!("bin-{}", case.replace(' ', "-")));
+        partial_worktree_git(&bin, &repo, then);
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let output = crate::common::af()
+            .current_dir(&repo)
+            .env("XDG_STATE_HOME", machine.state_home())
+            .env("AF_SELF_OFFLINE", "1")
+            .env("NO_COLOR", "1")
+            .env("PATH", path)
+            .env("AF_TEST_PROJECT_GIT_DEADLINE_MS", "3000")
+            .args(["project", "workspace", "new", "spike"])
+            .output()
+            .unwrap();
+        let (stdout, stderr) = text(&output);
+        assert_eq!(output.status.code(), Some(1), "{case}\n{stdout}\n{stderr}");
+        assert!(
+            stderr.contains(&format!("removed the worktree {}", worktree.display())),
+            "{case}: {stderr}"
+        );
+        assert!(
+            stderr.contains("deleted the branch refs/heads/af/spike"),
+            "{case}: {stderr}"
+        );
+        assert!(
+            stderr.contains("nothing was left behind"),
+            "{case}: {stderr}"
+        );
+        if case == "is stopped" {
+            assert!(stderr.contains("deadline of 3s"), "{case}: {stderr}");
+        }
+        assert_eq!(repository_state(&machine, &repo), before, "{case}");
+        let entries = std::fs::read_dir(repo.join(".git/worktrees"))
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        assert_eq!(entries, 0, "{case}: an administrative entry survived");
+        assert!(!worktree.exists(), "{case}");
+        assert!(!store.join("workspaces/spike").exists(), "{case}");
+    }
+
+    let created = machine.expect(&repo, &["project", "workspace", "new", "spike"], 0);
+    assert!(
+        created.starts_with("created Workspace spike\n"),
+        "{created}"
+    );
+    assert_eq!(
+        git(&worktree, &["rev-parse", "HEAD"]),
+        git(&repo, &["rev-parse", "HEAD"])
+    );
+    assert_eq!(git(&worktree, &["status", "--porcelain"]), "");
+    assert!(store.join("workspaces/spike/state").is_dir());
+}
+
 #[test]
 fn a_git_that_outlives_its_deadline_fails_the_command_and_leaves_no_child() {
     use std::os::unix::fs::PermissionsExt;

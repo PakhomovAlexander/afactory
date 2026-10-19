@@ -152,7 +152,11 @@ exit 1. A refusal leaves no branch, worktree or directory behind, and the same c
 once its cause is gone. When a step fails after an earlier one succeeded, what was made is
 undone newest first (the registration, the worktree, the directories git created above it, the
 branch, the Workspace directory), and the message says what was undone or, when an undo fails,
-exactly what remains.
+exactly what remains. The worktree counts as made from the moment `git worktree add` starts: an
+add that fails or reaches its deadline after creating the worktree's directory, its `.git` file
+or its entry under the repository's `worktrees/` is undone like every other step, by `git
+worktree remove --force --force` or, when git cannot remove it, by removing the directory and
+pruning the entry.
 
 The command makes no commit and no push, the same local-only boundary delivery keeps.
 

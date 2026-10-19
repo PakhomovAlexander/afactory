@@ -544,6 +544,8 @@ fn make(
             to: to.to_path_buf(),
         });
     }
+    // Recorded before git runs: an add that fails or is stopped can leave a partial worktree.
+    made.push(Made::Worktree(worktree.clone()));
     git.require(
         [
             OsStr::new("worktree"),
@@ -555,7 +557,6 @@ fn make(
         ],
         None,
     )?;
-    made.push(Made::Worktree(worktree.clone()));
     crate::task::ensure_empty_linked_worktree(worktree)?;
     // `--no-checkout` leaves the index empty: fill it from the commit through plumbing, without
     // touching the still-empty worktree, then write the files from the CAS.
@@ -563,6 +564,57 @@ fn make(
     review_source_git::materialize(&snapshot.manifest, cas, worktree)
         .map_err(|error| format!("writing the tree of {}: {error}", admitted.commit))?;
     submodule_directories(worktree, snapshot)
+}
+
+/// Whether git lists a worktree, whole or partial, at `path`.
+fn lists_worktree(git: &Git, path: &Path) -> Result<bool, String> {
+    let listed = git.require(["worktree", "list", "--porcelain"], None)?;
+    Ok(listed
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .any(|listed| {
+            let listed = Path::new(listed);
+            listed == path || std::fs::canonicalize(listed).is_ok_and(|real| real == path)
+        }))
+}
+
+/// Remove whatever exists of the worktree `workspace new` was adding at `path`: through git when
+/// git can remove it as a worktree; otherwise its directory, tolerating its absence, then the
+/// lock a stopped `worktree add` leaves on its administrative entry, then every entry whose
+/// worktree is gone. Whether anything of it existed; the error says what remains.
+fn remove_worktree(git: &Git, path: &Path) -> Result<bool, String> {
+    if std::fs::symlink_metadata(path).is_err() && !lists_worktree(git, path)? {
+        return Ok(false);
+    }
+    let remove = [
+        OsStr::new("worktree"),
+        OsStr::new("remove"),
+        OsStr::new("--force"),
+        OsStr::new("--force"),
+        path.as_os_str(),
+    ];
+    if git.run(remove, None)?.status.success() {
+        return Ok(true);
+    }
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("removing its directory: {error}")),
+    }
+    // `git worktree prune` keeps a locked entry; unlocking one git does not know changes nothing.
+    git.run(
+        [
+            OsStr::new("worktree"),
+            OsStr::new("unlock"),
+            path.as_os_str(),
+        ],
+        None,
+    )?;
+    git.require(["worktree", "prune"], None)?;
+    if lists_worktree(git, path)? {
+        return Err("git still lists its administrative entry after `git worktree prune`".into());
+    }
+    Ok(true)
 }
 
 /// Undo what `workspace new` made, newest first, and say what was undone and what, if an undo
@@ -579,31 +631,16 @@ pub(super) fn undo(git: &Git, store: &mut ProjectStore, made: Vec<Made>) -> Stri
                      workspace remove`)"
                 )),
             },
-            Made::Worktree(path) => {
-                let removed = git
-                    .require(
-                        [
-                            OsStr::new("worktree"),
-                            OsStr::new("remove"),
-                            OsStr::new("--force"),
-                            path.as_os_str(),
-                        ],
-                        None,
-                    )
-                    .or_else(|error| {
-                        std::fs::remove_dir_all(&path)
-                            .map_err(|removing| format!("{error}; {removing}"))?;
-                        git.require(["worktree", "prune"], None)
-                            .map(|_| String::new())
-                    });
-                match removed {
-                    Ok(_) => undone.push(format!("removed the worktree {}", path.display())),
-                    Err(error) => remains.push(format!(
-                        "the worktree {} ({error}; remove it with `git worktree remove --force`)",
-                        path.display()
-                    )),
-                }
-            }
+            Made::Worktree(path) => match remove_worktree(git, &path) {
+                Ok(true) => undone.push(format!("removed the worktree {}", path.display())),
+                // Git made nothing of it: nothing to undo or report.
+                Ok(false) => {}
+                Err(error) => remains.push(format!(
+                    "the worktree {} ({error}; remove it with `git worktree remove --force \
+                     --force`, or remove the directory and run `git worktree prune`)",
+                    path.display()
+                )),
+            },
             Made::Ancestors { from, to } => {
                 let mut current = Some(to.as_path());
                 let mut removed = false;

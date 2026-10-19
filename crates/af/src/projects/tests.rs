@@ -418,6 +418,41 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
         "nothing was created"
     );
 
+    // A worktree git never began is not reported either; a partial one, its administrative entry
+    // still locked the way a stopped `worktree add` leaves it, is removed with that entry.
+    assert_eq!(
+        commands::undo(&git, &mut store, vec![Made::Worktree(root.join("never"))]),
+        "nothing was created"
+    );
+    let partial = root.join("partial");
+    let entry = root.join("repo/.git/worktrees/partial");
+    std::fs::create_dir_all(&partial).unwrap();
+    std::fs::create_dir_all(&entry).unwrap();
+    std::fs::write(
+        partial.join(".git"),
+        format!("gitdir: {}\n", entry.display()),
+    )
+    .unwrap();
+    std::fs::write(
+        entry.join("gitdir"),
+        format!("{}\n", partial.join(".git").display()),
+    )
+    .unwrap();
+    std::fs::write(entry.join("locked"), "initializing\n").unwrap();
+    assert_eq!(
+        commands::undo(&git, &mut store, vec![Made::Worktree(partial.clone())]),
+        format!(
+            "undone, newest first: removed the worktree {}; nothing was left behind",
+            partial.display()
+        )
+    );
+    assert!(!partial.exists());
+    assert!(!entry.exists());
+    let listed = git
+        .require(["worktree", "list", "--porcelain"], None)
+        .unwrap();
+    assert_eq!(listed.matches("worktree ").count(), 1, "{listed}");
+
     // A branch that moved is not deleted, and the report says it remains.
     git.require(["update-ref", &reference, &commit], None)
         .unwrap();
