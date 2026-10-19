@@ -12,19 +12,23 @@
 //! `stores.toml`. Registration is lazy, token-free and best effort: a command that registers
 //! never changes its own result because of it, and nothing is ever written inside a checkout.
 //!
+//! The Project Store also holds the Project's Surveys (ADR-0152): the Surveyor in [`survey`]
+//! records each in the CAS and `SurveyRecorded@1` or `SurveyFailed@1` in the log.
+//!
 //! `crate::project` is something else: the parser of the `.af/af.toml` declaration.
 
 pub(crate) mod commands;
 mod file;
 mod git;
+pub(crate) mod survey;
 #[cfg(test)]
 mod tests;
 
 use std::path::{Path, PathBuf};
 
 use review_core::project::{
-    ProjectRegisteredPayloadV1, WorkspaceOriginV1, WorkspaceRegisteredPayloadV1,
-    WorkspaceRemovedPayloadV1,
+    ProjectRegisteredPayloadV1, SurveyFailedPayloadV1, SurveyRecordedPayloadV1, WorkspaceOriginV1,
+    WorkspaceRegisteredPayloadV1, WorkspaceRemovedPayloadV1,
 };
 use review_core::{EventType, RunEvent};
 use review_store::{Cas, EventStore, NewEvent};
@@ -187,6 +191,8 @@ pub(crate) struct Log {
     pub(crate) project: Option<ProjectRegisteredPayloadV1>,
     /// Registered Workspaces by ID.
     pub(crate) workspaces: std::collections::BTreeMap<String, Registered>,
+    /// Every Survey recorded and every Survey that failed, in log order.
+    pub(crate) surveys: Vec<survey::Outcome>,
 }
 
 impl Log {
@@ -224,6 +230,18 @@ impl Log {
                         serde_json::from_value(event.payload.clone())
                             .map_err(|error| format!("WorkspaceRemoved@1: {error}"))?;
                     log.workspaces.remove(&payload.workspace_id);
+                }
+                EventType::SurveyRecordedV1 => {
+                    let payload: SurveyRecordedPayloadV1 =
+                        serde_json::from_value(event.payload.clone())
+                            .map_err(|error| format!("SurveyRecorded@1: {error}"))?;
+                    log.surveys.push(survey::Outcome::Recorded(payload));
+                }
+                EventType::SurveyFailedV1 => {
+                    let payload: SurveyFailedPayloadV1 =
+                        serde_json::from_value(event.payload.clone())
+                            .map_err(|error| format!("SurveyFailed@1: {error}"))?;
+                    log.surveys.push(survey::Outcome::Failed(payload));
                 }
                 other => {
                     return Err(format!("a Project Store does not hold {other} events"));
@@ -304,6 +322,18 @@ impl ProjectStore {
             ));
         }
         Ok(log)
+    }
+
+    /// Append `event`, stamped now: the Surveyor's events, which may reference the CAS.
+    fn append_new(&mut self, event: NewEvent) -> Result<(), String> {
+        let event_type = event.event_type;
+        let event = event.at(review_core::task::collection::collected_time(
+            crate::storage::now_unix_ms(),
+        ));
+        self.events
+            .append(RUN_ID, &self.cas, event)
+            .map(|_| ())
+            .map_err(|error| format!("recording {event_type}: {error}"))
     }
 
     fn append(&mut self, event_type: EventType, payload: serde_json::Value) -> Result<(), String> {

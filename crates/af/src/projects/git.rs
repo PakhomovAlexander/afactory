@@ -85,22 +85,44 @@ impl Git {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        self.run_within(args, input, deadline(PLUMBING_DEADLINE))
+            .map_err(|stopped| stopped.message)
+    }
+
+    /// [`Git::run`] under `limit` instead of the plumbing deadline: the Surveyor gives each
+    /// command what remains of its one `max_wall_ms` (ADR-0152). A git stopped at `limit` is
+    /// told apart from every other failure.
+    pub(crate) fn run_within<I, S>(
+        &self,
+        args: I,
+        input: Option<Vec<u8>>,
+        limit: Duration,
+    ) -> Result<SupervisedOutput, Stopped>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
         let args: Vec<OsString> = args
             .into_iter()
             .map(|argument| argument.as_ref().to_os_string())
             .collect();
         let mut command = crate::task::isolated_git(&self.directory, self.home.path());
         command.args(&args);
-        let limit = deadline(PLUMBING_DEADLINE);
         run_supervised_with_policy(&mut command, input, limit, ExitPolicy::KillProcessGroup)
             .map_err(|error| match error {
-                SupervisedError::TimedOut { .. } => format!(
-                    "git {} did not finish within its deadline of {limit:?}; it was stopped with \
-                     its process group, so nothing of it still runs; run the command again once \
-                     git answers",
-                    rendered(&args)
-                ),
-                error => format!("git {}: {error}", rendered(&args)),
+                SupervisedError::TimedOut { .. } => Stopped {
+                    deadline: true,
+                    message: format!(
+                        "git {} did not finish within its deadline of {limit:?}; it was stopped \
+                         with its process group, so nothing of it still runs; run the command \
+                         again once git answers",
+                        rendered(&args)
+                    ),
+                },
+                error => Stopped {
+                    deadline: false,
+                    message: format!("git {}: {error}", rendered(&args)),
+                },
             })
     }
 
@@ -160,8 +182,21 @@ impl Git {
 
     /// The read-only capture boundary of `review_source_git`, under the capture deadline.
     pub(crate) fn repo(&self) -> Repo {
-        Repo::open(&self.directory, self.home.path()).with_timeout(deadline(CAPTURE_DEADLINE))
+        self.repo_within(deadline(CAPTURE_DEADLINE))
     }
+
+    /// The capture boundary under `limit`, for a capture inside the Surveyor's deadline.
+    pub(crate) fn repo_within(&self, limit: Duration) -> Repo {
+        Repo::open(&self.directory, self.home.path()).with_timeout(limit)
+    }
+}
+
+/// Why a git started under [`Git::run_within`] gave no output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Stopped {
+    /// It reached its deadline and was stopped with its process group.
+    pub(crate) deadline: bool,
+    pub(crate) message: String,
 }
 
 fn rendered(args: &[OsString]) -> String {

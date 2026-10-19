@@ -24,6 +24,11 @@ pub struct ProjectFile {
     /// matches one of its patterns.
     #[serde(default)]
     routes: Vec<Route>,
+    /// What the Surveyor measures by (ADR-0152). Admitted here so the full-file parse refuses
+    /// an unknown key; the Surveyor reads the merged ladder through `Policy::load`.
+    #[serde(default)]
+    #[allow(dead_code)]
+    survey: Option<crate::projects::survey::policy::SurveyTable>,
 }
 
 #[derive(Debug, Default, Deserialize)]

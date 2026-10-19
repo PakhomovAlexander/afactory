@@ -102,10 +102,14 @@ pub enum EventType {
     WorkspaceRegisteredV1,
     #[serde(rename = "WorkspaceRemoved@1")]
     WorkspaceRemovedV1,
+    #[serde(rename = "SurveyRecorded@1")]
+    SurveyRecordedV1,
+    #[serde(rename = "SurveyFailed@1")]
+    SurveyFailedV1,
 }
 
 impl EventType {
-    pub const ALL: [Self; 45] = [
+    pub const ALL: [Self; 47] = [
         Self::TaskTransitionV5,
         Self::TaskReviewResultSelectedV1,
         Self::CheckCompletedV1,
@@ -151,6 +155,8 @@ impl EventType {
         Self::ProjectRegisteredV1,
         Self::WorkspaceRegisteredV1,
         Self::WorkspaceRemovedV1,
+        Self::SurveyRecordedV1,
+        Self::SurveyFailedV1,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -200,6 +206,8 @@ impl EventType {
             Self::ProjectRegisteredV1 => "ProjectRegistered@1",
             Self::WorkspaceRegisteredV1 => "WorkspaceRegistered@1",
             Self::WorkspaceRemovedV1 => "WorkspaceRemoved@1",
+            Self::SurveyRecordedV1 => "SurveyRecorded@1",
+            Self::SurveyFailedV1 => "SurveyFailed@1",
         }
     }
 
@@ -255,6 +263,8 @@ impl EventType {
             Self::ProjectRegisteredV1 => ("ProjectRegistered", 1),
             Self::WorkspaceRegisteredV1 => ("WorkspaceRegistered", 1),
             Self::WorkspaceRemovedV1 => ("WorkspaceRemoved", 1),
+            Self::SurveyRecordedV1 => ("SurveyRecorded", 1),
+            Self::SurveyFailedV1 => ("SurveyFailed", 1),
         }
     }
 }
@@ -346,6 +356,8 @@ impl std::str::FromStr for EventType {
             "ProjectRegistered@1" => Ok(Self::ProjectRegisteredV1),
             "WorkspaceRegistered@1" => Ok(Self::WorkspaceRegisteredV1),
             "WorkspaceRemoved@1" => Ok(Self::WorkspaceRemovedV1),
+            "SurveyRecorded@1" => Ok(Self::SurveyRecordedV1),
+            "SurveyFailed@1" => Ok(Self::SurveyFailedV1),
             other => Err(UnknownEventType(other.to_string())),
         }
     }
@@ -891,6 +903,16 @@ pub fn validate_event_payload(
         EventType::WorkspaceRemovedV1 => {
             serde_json::from_value::<crate::WorkspaceRemovedPayloadV1>(payload.clone())
                 .map_err(|error| format!("WorkspaceRemoved@1: {error}"))?
+                .validate()
+        }
+        EventType::SurveyRecordedV1 => {
+            serde_json::from_value::<crate::SurveyRecordedPayloadV1>(payload.clone())
+                .map_err(|error| format!("SurveyRecorded@1: {error}"))?
+                .validate()
+        }
+        EventType::SurveyFailedV1 => {
+            serde_json::from_value::<crate::SurveyFailedPayloadV1>(payload.clone())
+                .map_err(|error| format!("SurveyFailed@1: {error}"))?
                 .validate()
         }
     }

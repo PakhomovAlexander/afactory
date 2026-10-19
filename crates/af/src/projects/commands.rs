@@ -24,6 +24,9 @@ pub(crate) fn run(command: ProjectCommand) -> Result<i32, String> {
     match command {
         ProjectCommand::Show { json } => show(json),
         ProjectCommand::Workspaces { json } => workspaces(json),
+        ProjectCommand::Survey { json } => survey(json),
+        ProjectCommand::Refresh { json } => refresh(json),
+        ProjectCommand::History { json } => history(json),
         ProjectCommand::Workspace { command } => match command {
             WorkspaceCommand::New {
                 label,
@@ -228,6 +231,113 @@ fn show(json_output: bool) -> Result<i32, String> {
     );
     println!();
     print_workspaces(&log, &paths, &checkout.toplevel);
+    let newest = super::survey::newest(&store, &log)?;
+    match (log.failure_since_newest_survey(), newest) {
+        (Some(failed), _) => {
+            println!();
+            println!(
+                "Survey failed at {} ({}): {}",
+                &failed.head[..failed.head.len().min(12)],
+                time(failed.recorded_unix_ms.get()),
+                failed.reason
+            );
+        }
+        (None, Some(recorded)) => {
+            println!();
+            for line in super::survey::summary(&recorded) {
+                println!("{line}");
+            }
+        }
+        (None, None) => {
+            println!();
+            println!("No Survey yet; `af project refresh` records one");
+        }
+    }
+    Ok(0)
+}
+
+/// The record's canonical bytes, one line.
+fn print_record(recorded: &super::survey::Recorded) -> Result<(), String> {
+    println!(
+        "{}",
+        std::str::from_utf8(&recorded.bytes).map_err(|error| error.to_string())?
+    );
+    Ok(())
+}
+
+fn survey(json_output: bool) -> Result<i32, String> {
+    let (_, store) = open_here()?;
+    let log = store.log()?;
+    let recorded = super::survey::newest(&store, &log)?
+        .ok_or("this Project has no Survey yet; run `af project refresh` to record one")?;
+    if json_output {
+        print_record(&recorded)?;
+    } else {
+        for line in super::survey::summary(&recorded) {
+            println!("{line}");
+        }
+    }
+    Ok(0)
+}
+
+fn refresh(json_output: bool) -> Result<i32, String> {
+    let (checkout, store) = open_here()?;
+    // Released while the head is measured; the Surveyor opens the Store again to record.
+    drop(store);
+    let (word, recorded) = match super::survey::refresh(&checkout)? {
+        super::survey::Refreshed::Recorded(recorded) => ("recorded", recorded),
+        super::survey::Refreshed::Unchanged(recorded) => ("unchanged", recorded),
+    };
+    if json_output {
+        if word == "unchanged" {
+            eprintln!("unchanged: the head, policy and Surveyor equal the newest Survey's");
+        }
+        print_record(&recorded)?;
+    } else {
+        println!("{word}");
+        for line in super::survey::summary(&recorded) {
+            println!("{line}");
+        }
+    }
+    Ok(0)
+}
+
+fn history(json_output: bool) -> Result<i32, String> {
+    let (_, store) = open_here()?;
+    let log = store.log()?;
+    let chain = log.chain();
+    if json_output {
+        print_json(&json!({
+            "schema": "af/project-history@1",
+            "project_id": store.project_id,
+            "surveys": chain
+                .iter()
+                .map(|recorded| json!({
+                    "survey_id": recorded.survey_id,
+                    "recorded_unix_ms": recorded.recorded_unix_ms.get().to_string(),
+                    "head": recorded.head,
+                    "cutoff_unix_s": recorded.cutoff_unix_s.get().to_string(),
+                    "completeness": recorded.completeness.as_str(),
+                }))
+                .collect::<Vec<_>>(),
+        }))?;
+        return Ok(0);
+    }
+    println!(
+        "{} Survey{}",
+        chain.len(),
+        if chain.len() == 1 { "" } else { "s" }
+    );
+    for recorded in chain {
+        println!(
+            "{}  {}  head {}  cutoff {}  {}",
+            recorded.survey_id,
+            time(recorded.recorded_unix_ms.get()),
+            &recorded.head[..recorded.head.len().min(12)],
+            time(recorded.cutoff_unix_s.get().saturating_mul(1000)),
+            recorded.completeness.as_str()
+        );
+    }
     Ok(0)
 }
 

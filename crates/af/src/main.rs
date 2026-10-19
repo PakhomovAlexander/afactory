@@ -1147,6 +1147,11 @@ fn main() {
         projects::register_lazily(lazy);
     }
     let delivered = projects::delivered_target(&command);
+    // `af onboard --apply` records the first Survey once it registered (ADR-0152).
+    let surveyed = match &command {
+        cli::Command::Onboard(args) if args.apply => Some((args.repo.clone(), args.json)),
+        _ => None,
+    };
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
         cli::Command::Review(namespace) => ("af review", review_command(namespace)),
         cli::Command::Provider { command } => ("af provider", provider_command(command)),
@@ -1292,6 +1297,9 @@ fn main() {
     }
     if let Some(lazy) = registers.as_ref().filter(|lazy| !lazy.first) {
         projects::register_lazily(lazy);
+    }
+    if let Some((repo, json)) = &surveyed {
+        projects::survey::after_onboard(repo, *json);
     }
     if let (Some((worktree, task_id)), Ok(0)) = (&delivered, &outcome) {
         projects::register_delivered(worktree, task_id);

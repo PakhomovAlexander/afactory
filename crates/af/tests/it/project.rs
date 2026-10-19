@@ -10,7 +10,8 @@
 //! the checkout, another Workspace or af's state with exit 2, and every refusal leaves worktrees,
 //! refs and directories as they were. A git that outlives its deadline fails the command and
 //! leaves no child. The first `af task plan --workspace <checkout>` finds the checkout it
-//! registers. No command writes inside a checkout, and the help answers in under 50 ms.
+//! registers. No command writes inside a checkout, the Surveyor's (ADR-0152) included, and the
+//! help answers in under 50 ms.
 //!
 //! Every test runs with its own `XDG_STATE_HOME`, so the Projects it registers are its own.
 
@@ -1442,6 +1443,13 @@ fn no_project_command_and_no_workspace_plan_writes_inside_the_checkout() {
         &["project", "show", "--json"],
         &["project", "workspaces"],
         &["project", "workspaces", "--json"],
+        // The Surveyor (ADR-0152): a Survey, an unchanged second one, and every view of them.
+        &["project", "refresh"],
+        &["project", "refresh", "--json"],
+        &["project", "survey"],
+        &["project", "survey", "--json"],
+        &["project", "history"],
+        &["project", "history", "--json"],
         &["project", "workspace", "new", "research"],
         &[
             "project",

@@ -56,7 +56,8 @@ Everything a human writes is TOML; everything af writes goes to the Store, excep
 The project file is `.af/af.toml` at the git toplevel. `version`, `[project]` `name` and
 `min_af`, and `[defaults]` `pipeline` are required: they name the project, the minimum `af`
 release it needs and its default review pipeline. Optional `[[routes]]` pick a pipeline by the
-changed paths. Worker packages live under `.af/workers/`, pinned in `.af/af.lock`; pipelines
+changed paths, and an optional `[survey]` table bounds what the Surveyor measures into a Survey
+(`af project refresh --help`). Worker packages live under `.af/workers/`, pinned in `.af/af.lock`; pipelines
 name them.
 
   version = 1

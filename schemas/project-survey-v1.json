@@ -1,0 +1,931 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-survey:1",
+  "title": "af/ProjectSurvey@1",
+  "description": "One kernel-measured description of a Project at one head (ADR-0152), recorded in the Project Store's CAS. Canonical JSON, every number decimal text, every map sorted by key; byte-identical for the same head, policy, cutoff and Surveyor version. No host path, Provider ID or email.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "completeness",
+    "identity",
+    "tree",
+    "history",
+    "contributors",
+    "decisions",
+    "vocabulary",
+    "checks"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/ProjectSurvey@1"
+    },
+    "completeness": {
+      "description": "The sections folded: unavailable only when every section is, partial when any is not complete.",
+      "$ref": "#/$defs/completeness"
+    },
+    "previous_survey_id": {
+      "description": "The Survey before this one in the same Project Store.",
+      "$ref": "#/$defs/digest"
+    },
+    "identity": {
+      "description": "Which Project and head, under which policy and rules.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completeness"
+      ],
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "project_id": {
+          "$ref": "urn:af:schema:project-registered:1#/$defs/project_id"
+        },
+        "repository_id": {
+          "$ref": "urn:af:schema:project-registered:1#/$defs/repository_id"
+        },
+        "name": {
+          "description": "`[project] name` of the head's `.af/af.toml`.",
+          "$ref": "urn:af:schema:project-registered:1#/$defs/name"
+        },
+        "min_af": {
+          "$ref": "urn:af:schema:project-registered:1#/$defs/min_af"
+        },
+        "af_pin": {
+          "description": "The af release the head's `.af/af.lock` pins.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9A-Za-z.+-]{1,64}$"
+            },
+            "digests": {
+              "type": "object",
+              "propertyNames": {
+                "pattern": "^[0-9A-Za-z._-]{1,64}$"
+              },
+              "additionalProperties": {
+                "$ref": "#/$defs/digest"
+              }
+            }
+          }
+        },
+        "head": {
+          "$ref": "#/$defs/commit"
+        },
+        "tree_digest": {
+          "description": "The Tree Digest of the head tree, from its committed capture.",
+          "$ref": "#/$defs/digest"
+        },
+        "cutoff_unix_s": {
+          "description": "The clock when the Survey started, in Unix seconds.",
+          "$ref": "#/$defs/decimal"
+        },
+        "policy_digest": {
+          "description": "`sha256:` + hex(SHA-256 of the canonical JSON of the effective [survey] policy).",
+          "$ref": "#/$defs/digest"
+        },
+        "surveyor_version": {
+          "description": "The Surveyor's measurement rules; bumped whenever one changes.",
+          "$ref": "#/$defs/decimal"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/section_shape"
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 2
+          },
+          "else": {
+            "required": [
+              "project_id",
+              "repository_id",
+              "head",
+              "cutoff_unix_s",
+              "policy_digest",
+              "surveyor_version"
+            ]
+          }
+        }
+      ]
+    },
+    "tree": {
+      "description": "The head tree after `[survey] exclude`: files, bytes and lines.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completeness"
+      ],
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "files": {
+          "$ref": "#/$defs/decimal"
+        },
+        "bytes": {
+          "$ref": "#/$defs/decimal"
+        },
+        "lines": {
+          "description": "Newline counts of text blobs at or under max_file_bytes.",
+          "$ref": "#/$defs/decimal"
+        },
+        "files_without_lines": {
+          "description": "Binary, over max_file_bytes, symlinks, submodules, or not read before the deadline.",
+          "$ref": "#/$defs/decimal"
+        },
+        "directories": {
+          "description": "By top-level directory; root-level files under `.`.",
+          "type": "object",
+          "propertyNames": {
+            "description": "`.` for root-level files, otherwise one top-level directory name.",
+            "type": "string",
+            "pattern": "^(\\.|[^/]+)$",
+            "not": {
+              "enum": [
+                "..",
+                ""
+              ]
+            }
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "files",
+              "lines",
+              "bytes"
+            ],
+            "properties": {
+              "files": {
+                "$ref": "#/$defs/decimal"
+              },
+              "lines": {
+                "$ref": "#/$defs/decimal"
+              },
+              "bytes": {
+                "$ref": "#/$defs/decimal"
+              }
+            }
+          }
+        },
+        "languages": {
+          "description": "By language; `other` for anything the map does not name.",
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/language"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "files",
+              "lines"
+            ],
+            "properties": {
+              "files": {
+                "$ref": "#/$defs/decimal"
+              },
+              "lines": {
+                "$ref": "#/$defs/decimal"
+              }
+            }
+          }
+        },
+        "tests": {
+          "description": "Files and lines the `[survey] tests` globs match, and the rest.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "files",
+            "lines",
+            "other_files",
+            "other_lines"
+          ],
+          "properties": {
+            "files": {
+              "$ref": "#/$defs/decimal"
+            },
+            "lines": {
+              "$ref": "#/$defs/decimal"
+            },
+            "other_files": {
+              "$ref": "#/$defs/decimal"
+            },
+            "other_lines": {
+              "$ref": "#/$defs/decimal"
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/section_shape"
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 2
+          },
+          "else": {
+            "required": [
+              "files",
+              "bytes",
+              "lines",
+              "files_without_lines",
+              "directories",
+              "languages",
+              "tests"
+            ]
+          }
+        }
+      ]
+    },
+    "history": {
+      "description": "The commits reachable from the head, newest first up to max_commits.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completeness"
+      ],
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "reachable_commits": {
+          "$ref": "#/$defs/decimal"
+        },
+        "commits": {
+          "description": "The commits reached.",
+          "$ref": "#/$defs/decimal"
+        },
+        "merges": {
+          "$ref": "#/$defs/decimal"
+        },
+        "windows": {
+          "description": "Commits whose committer time is at or after the cutoff minus the window.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "30d",
+            "90d",
+            "365d"
+          ],
+          "properties": {
+            "30d": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "commits",
+                "merges"
+              ],
+              "properties": {
+                "commits": {
+                  "$ref": "#/$defs/decimal"
+                },
+                "merges": {
+                  "$ref": "#/$defs/decimal"
+                }
+              }
+            },
+            "90d": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "commits",
+                "merges"
+              ],
+              "properties": {
+                "commits": {
+                  "$ref": "#/$defs/decimal"
+                },
+                "merges": {
+                  "$ref": "#/$defs/decimal"
+                }
+              }
+            },
+            "365d": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "commits",
+                "merges"
+              ],
+              "properties": {
+                "commits": {
+                  "$ref": "#/$defs/decimal"
+                },
+                "merges": {
+                  "$ref": "#/$defs/decimal"
+                }
+              }
+            }
+          }
+        },
+        "first_commit_unix_s": {
+          "$ref": "#/$defs/decimal"
+        },
+        "last_commit_unix_s": {
+          "$ref": "#/$defs/decimal"
+        },
+        "oldest_reached": {
+          "description": "The oldest commit reached, when max_commits stopped the walk.",
+          "$ref": "#/$defs/commit"
+        },
+        "churn_90d": {
+          "description": "By top-level directory, over 90 days.",
+          "type": "object",
+          "propertyNames": {
+            "description": "`.` for root-level files, otherwise one top-level directory name.",
+            "type": "string",
+            "pattern": "^(\\.|[^/]+)$",
+            "not": {
+              "enum": [
+                "..",
+                ""
+              ]
+            }
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "commits",
+              "added",
+              "removed"
+            ],
+            "properties": {
+              "commits": {
+                "$ref": "#/$defs/decimal"
+              },
+              "added": {
+                "$ref": "#/$defs/decimal"
+              },
+              "removed": {
+                "$ref": "#/$defs/decimal"
+              }
+            }
+          }
+        },
+        "hot_paths": {
+          "description": "The paths with the most commits in 90 days, most first, ties by path; `removed` when the head tree no longer holds one.",
+          "type": "array",
+          "maxItems": 1000,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "commits"
+            ],
+            "properties": {
+              "path": {
+                "$ref": "#/$defs/repo_path"
+              },
+              "commits": {
+                "$ref": "#/$defs/decimal"
+              },
+              "removed": {
+                "const": true
+              }
+            }
+          }
+        },
+        "tags": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "count",
+            "release"
+          ],
+          "properties": {
+            "count": {
+              "$ref": "#/$defs/decimal"
+            },
+            "release": {
+              "description": "The newest tags matching release_tags, by creator date.",
+              "type": "array",
+              "maxItems": 5,
+              "items": {
+                "$ref": "#/$defs/text"
+              }
+            }
+          }
+        },
+        "local_branches": {
+          "$ref": "#/$defs/decimal"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/section_shape"
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 2
+          },
+          "else": {
+            "required": [
+              "reachable_commits",
+              "commits",
+              "merges",
+              "windows",
+              "first_commit_unix_s",
+              "last_commit_unix_s",
+              "churn_90d",
+              "hot_paths"
+            ]
+          }
+        }
+      ]
+    },
+    "contributors": {
+      "description": "Who authored the commits reached, and how many were agents'. Never an email.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completeness"
+      ],
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "identity": {
+          "enum": [
+            "name",
+            "email_hash"
+          ]
+        },
+        "identities": {
+          "$ref": "#/$defs/decimal"
+        },
+        "active_90d": {
+          "$ref": "#/$defs/decimal"
+        },
+        "human_commits": {
+          "$ref": "#/$defs/decimal"
+        },
+        "agent_commits": {
+          "$ref": "#/$defs/decimal"
+        },
+        "human_share_bp": {
+          "$ref": "#/$defs/basis_points"
+        },
+        "agent_share_bp": {
+          "$ref": "#/$defs/basis_points"
+        },
+        "top_share_bp": {
+          "$ref": "#/$defs/basis_points"
+        },
+        "by_identity": {
+          "description": "By author name without `@`, or by the first 16 hex digits of SHA-256 of the lowercased, trimmed email.",
+          "type": "object",
+          "propertyNames": {
+            "maxLength": 512,
+            "pattern": "^[^@\\x00-\\x1f\\x7f-\\x9f]+$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "commits",
+              "added",
+              "removed",
+              "first_unix_s",
+              "last_unix_s",
+              "active_90d"
+            ],
+            "properties": {
+              "commits": {
+                "$ref": "#/$defs/decimal"
+              },
+              "added": {
+                "$ref": "#/$defs/decimal"
+              },
+              "removed": {
+                "$ref": "#/$defs/decimal"
+              },
+              "first_unix_s": {
+                "$ref": "#/$defs/decimal"
+              },
+              "last_unix_s": {
+                "$ref": "#/$defs/decimal"
+              },
+              "active_90d": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/section_shape"
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 2
+          },
+          "else": {
+            "required": [
+              "identity",
+              "identities",
+              "active_90d",
+              "human_commits",
+              "agent_commits",
+              "human_share_bp",
+              "agent_share_bp",
+              "top_share_bp",
+              "by_identity"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "identity": {
+                "const": "email_hash"
+              }
+            },
+            "required": [
+              "identity"
+            ]
+          },
+          "then": {
+            "properties": {
+              "by_identity": {
+                "propertyNames": {
+                  "pattern": "^[0-9a-f]{16}$"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "decisions": {
+      "description": "The decision records the `decisions` glob matches.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completeness"
+      ],
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "count": {
+          "$ref": "#/$defs/decimal"
+        },
+        "by_status": {
+          "description": "Counts by status; `unknown` for a record that names none.",
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "accepted",
+              "proposed",
+              "superseded",
+              "deprecated",
+              "rejected",
+              "unknown"
+            ]
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/decimal"
+          }
+        },
+        "newest": {
+          "description": "The newest 12 by number, highest first, ties by path.",
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "number",
+              "path"
+            ],
+            "properties": {
+              "number": {
+                "type": "string",
+                "pattern": "^[0-9]{1,20}$"
+              },
+              "path": {
+                "$ref": "#/$defs/repo_path"
+              },
+              "title": {
+                "$ref": "#/$defs/text"
+              },
+              "status": {
+                "enum": [
+                  "accepted",
+                  "proposed",
+                  "superseded",
+                  "deprecated",
+                  "rejected"
+                ]
+              },
+              "date": {
+                "type": "string",
+                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/section_shape"
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 2
+          },
+          "else": {
+            "required": [
+              "count",
+              "by_status",
+              "newest"
+            ]
+          }
+        }
+      ]
+    },
+    "vocabulary": {
+      "description": "The term names of the vocabulary file's bold-colon headings, never a definition.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completeness"
+      ],
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "file": {
+          "$ref": "#/$defs/repo_path"
+        },
+        "present": {
+          "type": "boolean"
+        },
+        "count": {
+          "$ref": "#/$defs/decimal"
+        },
+        "terms": {
+          "description": "In file order, each once.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/section_shape"
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 2
+          },
+          "else": {
+            "required": [
+              "file",
+              "present",
+              "count",
+              "terms"
+            ]
+          }
+        }
+      ]
+    },
+    "checks": {
+      "description": "Declared checks, toolchain declarations and CI workflow files.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completeness"
+      ],
+      "properties": {
+        "completeness": {
+          "$ref": "#/$defs/completeness"
+        },
+        "reason": {
+          "$ref": "#/$defs/reason"
+        },
+        "declared": {
+          "description": "Names and programs only, never arguments; by source, name and program.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "name",
+              "program"
+            ],
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/repo_path"
+              },
+              "name": {
+                "$ref": "#/$defs/text"
+              },
+              "program": {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/text"
+                  },
+                  {
+                    "pattern": "^[^/]"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "toolchain": {
+          "description": "The toolchain declarations present at the root, sorted.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/repo_path"
+          }
+        },
+        "ci_workflows": {
+          "description": "`.github/workflows/*.yml` and `*.yaml` files.",
+          "$ref": "#/$defs/decimal"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/section_shape"
+        },
+        {
+          "if": {
+            "properties": {
+              "completeness": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "maxProperties": 2
+          },
+          "else": {
+            "required": [
+              "declared",
+              "toolchain",
+              "ci_workflows"
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "decimal": {
+      "description": "A non-negative integer as canonical decimal text: every number of a Survey is one.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$"
+    },
+    "basis_points": {
+      "description": "A share in basis points, rounded down.",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,3}|10000)$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "commit": {
+      "description": "A commit ID: SHA-1 or SHA-256, lowercase hex.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "completeness": {
+      "enum": [
+        "complete",
+        "partial",
+        "unavailable"
+      ]
+    },
+    "reason": {
+      "description": "The bound a section reached.",
+      "enum": [
+        "max_wall_ms",
+        "max_commits"
+      ]
+    },
+    "section_shape": {
+      "description": "A complete section carries no reason; a partial or unavailable one names the bound it reached.",
+      "if": {
+        "properties": {
+          "completeness": {
+            "const": "complete"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "reason"
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "reason"
+        ]
+      }
+    },
+    "repo_path": {
+      "description": "A repository-relative path in its one encoded spelling, never a host path.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/\\s](.*[^\\s])?$"
+    },
+    "text": {
+      "description": "Text copied from the tree: non-blank, at most 512 bytes, no control character.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "allOf": [
+        {
+          "pattern": "\\S"
+        },
+        {
+          "pattern": "^[^\\x00-\\x1f\\x7f-\\x9f]*$"
+        }
+      ]
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-z0-9+#._-]{1,64}$"
+    }
+  }
+}

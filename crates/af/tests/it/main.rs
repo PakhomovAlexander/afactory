@@ -24,6 +24,7 @@ mod lock_af_version;
 mod onboard;
 mod onboarding_quickstart;
 mod project;
+mod project_survey;
 mod provider_auth_handoff;
 mod provider_cli_health;
 mod provider_models;

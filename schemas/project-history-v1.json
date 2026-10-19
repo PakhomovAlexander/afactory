@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-history:1",
+  "title": "af/project-history@1",
+  "description": "`af project history --json` (ADR-0152): the Survey chain of the invoking checkout's Project, newest first.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "project_id",
+    "surveys"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/project-history@1"
+    },
+    "project_id": {
+      "$ref": "urn:af:schema:project-registered:1#/$defs/project_id"
+    },
+    "surveys": {
+      "description": "Newest first.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "survey_id",
+          "recorded_unix_ms",
+          "head",
+          "cutoff_unix_s",
+          "completeness"
+        ],
+        "properties": {
+          "survey_id": {
+            "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+          },
+          "recorded_unix_ms": {
+            "$ref": "urn:af:schema:project-registered:1#/$defs/unix_ms"
+          },
+          "head": {
+            "$ref": "urn:af:schema:project-survey:1#/$defs/commit"
+          },
+          "cutoff_unix_s": {
+            "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+          },
+          "completeness": {
+            "$ref": "urn:af:schema:project-survey:1#/$defs/completeness"
+          }
+        }
+      }
+    }
+  }
+}
