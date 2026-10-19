@@ -5,7 +5,9 @@
 //! without commits registers nothing. Adopting a default Task Store changes none of its bytes.
 //! `--workspace` plans exactly what the explicit `--state` and `--bindings` plan.
 //! `af project workspace new|remove` create and retire Workspaces without a commit and without
-//! removing a Store, and delivery registers the worktree it made. `workspace new` fills its
+//! removing a Store, and delivery registers the worktree it made. `--delete-worktree` compares a
+//! worktree with its commit through the committed capture, so a clean filter never runs, and an
+//! undone `workspace new` deletes only the administrative entries whose `gitdir` names its path. `workspace new` fills its
 //! worktree without a checkout, so a configured smudge filter never runs; it refuses a path inside
 //! the checkout, another Workspace or af's state with exit 2, and every refusal leaves worktrees,
 //! refs and directories as they were. A git that outlives its deadline fails the command and
@@ -698,6 +700,7 @@ fn workspace_remove_keeps_a_store_with_an_uncollected_task_and_names_task_gc() {
     let (_, stderr) = text(&dirty);
     assert_eq!(dirty.status.code(), Some(1), "{stderr}");
     assert!(stderr.contains("nothing was changed"), "{stderr}");
+    assert!(stderr.contains("at `scratch.txt`"), "{stderr}");
     assert!(spike.join("scratch.txt").is_file());
     let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
     assert!(labels(&listed).contains(&"spike".to_string()));
@@ -997,6 +1000,130 @@ fn workspace_new_writes_the_commits_tree_without_running_a_checkout_filter() {
 }
 
 #[test]
+fn workspace_remove_delete_worktree_compares_through_the_capture_and_runs_no_clean_filter() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    std::fs::write(repo.join(".gitattributes"), "*.txt filter=marker\n").unwrap();
+    std::fs::write(repo.join("data.txt"), "cleaned on hashing\n").unwrap();
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-qm", "attributes"]);
+    // The filter is the checkout's own configuration: git runs it whenever it hashes `data.txt`
+    // from the worktree, as `git worktree remove` does to decide whether a worktree is clean.
+    let marker = machine.root().join("cleaned");
+    git(
+        &repo,
+        &[
+            "config",
+            "filter.marker.clean",
+            &format!("touch '{}' && cat", marker.display()),
+        ],
+    );
+    git(&repo, &["hash-object", "--path", "data.txt", "data.txt"]);
+    assert!(
+        marker.is_file(),
+        "the fixture's clean filter runs on hashing"
+    );
+    std::fs::remove_file(&marker).unwrap();
+    let entries = || {
+        let mut names: Vec<String> = std::fs::read_dir(repo.join(".git/worktrees"))
+            .map(|entries| {
+                entries
+                    .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    };
+
+    machine.expect(&repo, &["project", "workspace", "new", "clean"], 0);
+    machine.expect(&repo, &["project", "workspace", "new", "dirty"], 0);
+    let clean = machine.root().join("fixture-wt-clean");
+    let dirty = machine.root().join("fixture-wt-dirty");
+    assert_eq!(entries(), ["fixture-wt-clean", "fixture-wt-dirty"]);
+
+    // A clean worktree goes with its own administrative entry, and nothing else.
+    let removed = machine.expect(
+        &repo,
+        &[
+            "project",
+            "workspace",
+            "remove",
+            "clean",
+            "--delete-worktree",
+        ],
+        0,
+    );
+    assert!(
+        removed.contains(&format!("removed the worktree {}", clean.display())),
+        "{removed}"
+    );
+    assert!(!clean.exists());
+    assert_eq!(entries(), ["fixture-wt-dirty"]);
+    assert!(
+        !git(&repo, &["worktree", "list", "--porcelain"]).contains("fixture-wt-clean"),
+        "git still lists the removed worktree"
+    );
+    git(&repo, &["rev-parse", "--verify", "refs/heads/af/clean"]);
+    assert!(!marker.exists(), "--delete-worktree ran the clean filter");
+
+    // A changed tracked file, a changed mode and an untracked file each make a worktree dirty:
+    // refused with the first differing path, and nothing changes.
+    let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+    for (change, path) in [
+        ("content", "data.txt"),
+        ("mode", "README.md"),
+        ("untracked", "new.txt"),
+    ] {
+        let mode = |mode: u32| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                dirty.join("README.md"),
+                std::fs::Permissions::from_mode(mode),
+            )
+            .unwrap();
+        };
+        match change {
+            "content" => std::fs::write(dirty.join("data.txt"), "changed\n").unwrap(),
+            "mode" => mode(0o755),
+            _ => std::fs::write(dirty.join("new.txt"), "untracked\n").unwrap(),
+        }
+        let before = files(&dirty);
+        let refused = machine.af(
+            &repo,
+            &[
+                "project",
+                "workspace",
+                "remove",
+                "dirty",
+                "--delete-worktree",
+            ],
+        );
+        let (_, stderr) = text(&refused);
+        assert_eq!(refused.status.code(), Some(1), "{change}: {stderr}");
+        assert!(
+            stderr.contains(&format!("at `{path}`")),
+            "{change}: {stderr}"
+        );
+        assert!(stderr.contains("nothing was changed"), "{change}: {stderr}");
+        assert_eq!(files(&dirty), before, "{change}");
+        assert_eq!(entries(), ["fixture-wt-dirty"], "{change}");
+        assert_eq!(
+            machine.json(&repo, &["project", "workspaces", "--json"]),
+            listed,
+            "{change}"
+        );
+        assert!(
+            !marker.exists(),
+            "{change}: the refusal ran the clean filter"
+        );
+        // Undo this change by hand, never through git, so the next case changes one thing only.
+        std::fs::write(dirty.join("data.txt"), "cleaned on hashing\n").unwrap();
+        mode(0o644);
+    }
+}
+
+#[test]
 fn workspace_new_refuses_a_path_inside_the_checkout_a_workspace_or_afs_state() {
     let machine = Machine::new();
     let repo = repository(&machine.root());
@@ -1221,88 +1348,223 @@ fn a_worktree_add_that_fails_or_is_stopped_midway_is_undone_and_the_same_command
     assert!(store.join("workspaces/spike/state").is_dir());
 }
 
+/// Run `af project workspace new LABEL` in `repo` with the fake git of `bin` first on `PATH`.
+fn new_with_fake_git(machine: &Machine, repo: &Path, bin: &Path, label: &str) -> Output {
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    crate::common::af()
+        .current_dir(repo)
+        .env("XDG_STATE_HOME", machine.state_home())
+        .env("AF_SELF_OFFLINE", "1")
+        .env("NO_COLOR", "1")
+        .env("PATH", path)
+        .env("AF_TEST_PROJECT_GIT_DEADLINE_MS", "3000")
+        .args(["project", "workspace", "new", label])
+        .output()
+        .unwrap()
+}
+
+/// The names under `<repo>/.git/worktrees`, sorted.
+fn administrative_entries(repo: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(repo.join(".git/worktrees"))
+        .map(|entries| {
+            entries
+                .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// What the undo says of a locked entry without a `gitdir` that it leaves where it is.
+fn locked_left_behind(repo: &Path, name: &str) -> String {
+    format!(
+        "{}: a locked entry without a gitdir, created during this add and possibly another add's",
+        repo.join(".git/worktrees").join(name).display()
+    )
+}
+
 #[test]
-fn a_worktree_add_stopped_before_it_made_the_path_leaves_no_administrative_entry() {
+fn a_worktree_add_stopped_before_it_made_the_path_deletes_only_an_entry_naming_the_path() {
     let machine = Machine::new();
     let repo = repository(&machine.root());
     machine.expect(&repo, &["project", "show"], 0);
     let store = machine
         .projects()
         .join(expected_project_id(&repo).trim_start_matches("sha256:"));
-    let worktree = machine.root().join("fixture-wt-spike");
     let before = repository_state(&machine, &repo);
     let listed = git(&repo, &["worktree", "list", "--porcelain"]);
     // What git makes first: the entry, locked while it initializes, then its `gitdir` and `HEAD`;
-    // the path comes later. Git neither lists nor prunes the locked entry without a `gitdir`.
+    // the path comes later. Git neither lists nor prunes the locked entry without a `gitdir`, and
+    // a concurrent add of another path with the same basename makes one too, so only an entry
+    // whose `gitdir` names the path is this add's to delete.
     let locked = "mkdir -p \"$entry\"\n  echo initializing > \"$entry/locked\"";
     let with_gitdir = format!(
         "{locked}\n  echo \"$target/.git\" > \"$entry/gitdir\"\n  echo \
-         'ref: refs/heads/af/spike' > \"$entry/HEAD\""
+         'ref: refs/heads/main' > \"$entry/HEAD\""
     );
+    let mut left = Vec::new();
+    // One label per case, so an entry a case leaves behind does not meet the next case's add.
     for (case, creates, then) in [
         ("locked", locked, "exit 128"),
         ("with-gitdir", with_gitdir.as_str(), "exit 128"),
         ("stopped", locked, "sleep 120"),
     ] {
+        let label = format!("spike-{case}");
+        let name = format!("fixture-wt-{label}");
         let bin = machine.root().join(format!("bin-{case}"));
         worktree_add_git(&bin, &repo, creates, then);
-        let path = format!(
-            "{}:{}",
-            bin.display(),
-            std::env::var("PATH").unwrap_or_default()
-        );
-        let output = crate::common::af()
-            .current_dir(&repo)
-            .env("XDG_STATE_HOME", machine.state_home())
-            .env("AF_SELF_OFFLINE", "1")
-            .env("NO_COLOR", "1")
-            .env("PATH", path)
-            .env("AF_TEST_PROJECT_GIT_DEADLINE_MS", "3000")
-            .args(["project", "workspace", "new", "spike"])
-            .output()
-            .unwrap();
+        let output = new_with_fake_git(&machine, &repo, &bin, &label);
         let (stdout, stderr) = text(&output);
         assert_eq!(output.status.code(), Some(1), "{case}\n{stdout}\n{stderr}");
         assert!(
-            stderr.contains("removed the administrative entry worktrees/fixture-wt-spike"),
+            stderr.contains(&format!("deleted the branch refs/heads/af/{label}")),
             "{case}: {stderr}"
         );
-        assert!(
-            stderr.contains("deleted the branch refs/heads/af/spike"),
-            "{case}: {stderr}"
-        );
-        assert!(
-            stderr.contains("nothing was left behind"),
-            "{case}: {stderr}"
-        );
+        if case == "with-gitdir" {
+            assert!(
+                stderr.contains(&format!(
+                    "removed the administrative entry worktrees/{name}"
+                )),
+                "{case}: {stderr}"
+            );
+            assert!(
+                stderr.contains("nothing was left behind"),
+                "{case}: {stderr}"
+            );
+        } else {
+            assert!(
+                stderr.contains(&format!(
+                    "left behind: {}",
+                    locked_left_behind(&repo, &name)
+                )),
+                "{case}: {stderr}"
+            );
+            assert!(
+                !stderr.contains("removed the administrative entry"),
+                "{case}: {stderr}"
+            );
+            assert!(
+                !stderr.contains("nothing was left behind"),
+                "{case}: {stderr}"
+            );
+            left.push(name.clone());
+        }
         if case == "stopped" {
             assert!(stderr.contains("deadline of 3s"), "{case}: {stderr}");
         }
-        let entries = std::fs::read_dir(repo.join(".git/worktrees"))
-            .map(|entries| entries.count())
-            .unwrap_or(0);
-        assert_eq!(entries, 0, "{case}: an administrative entry survived");
+        assert_eq!(administrative_entries(&repo), left, "{case}");
         assert_eq!(
             git(&repo, &["worktree", "list", "--porcelain"]),
             listed,
             "{case}"
         );
         assert_eq!(repository_state(&machine, &repo), before, "{case}");
-        assert!(!worktree.exists(), "{case}");
-        assert!(!store.join("workspaces/spike").exists(), "{case}");
+        assert!(!machine.root().join(&name).exists(), "{case}");
+        assert!(!store.join("workspaces").join(&label).exists(), "{case}");
     }
 
+    // The operator prunes once no add runs; the same commands then succeed with the real git.
+    git(&repo, &["worktree", "prune"]);
+    for case in ["locked", "with-gitdir", "stopped"] {
+        let label = format!("spike-{case}");
+        let created = machine.expect(&repo, &["project", "workspace", "new", &label], 0);
+        assert!(
+            created.starts_with(&format!("created Workspace {label}\n")),
+            "{created}"
+        );
+        let worktree = machine.root().join(format!("fixture-wt-{label}"));
+        assert_eq!(
+            git(&worktree, &["rev-parse", "HEAD"]),
+            git(&repo, &["rev-parse", "HEAD"])
+        );
+        assert_eq!(git(&worktree, &["status", "--porcelain"]), "");
+        assert!(store.join("workspaces").join(&label).join("state").is_dir());
+    }
+}
+
+#[test]
+fn an_undo_leaves_and_reports_entries_another_add_may_own() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "show"], 0);
+    let store = machine
+        .projects()
+        .join(expected_project_id(&repo).trim_start_matches("sha256:"));
+    let before = repository_state(&machine, &repo);
+    // A concurrent add of another path with the same basename: `<basename>`, locked, its `gitdir`
+    // naming the other path, and `<basename>1`, locked, without a `gitdir` yet.
+    let other = machine.root().join("elsewhere/fixture-wt-spike/.git");
+    let bin = machine.root().join("bin");
+    worktree_add_git(
+        &bin,
+        &repo,
+        &format!(
+            "mkdir -p \"$entry\" \"${{entry}}1\"\n  echo initializing > \"$entry/locked\"\n  \
+             echo '{}' > \"$entry/gitdir\"\n  echo 'ref: refs/heads/main' > \"$entry/HEAD\"\n  \
+             echo initializing > \"${{entry}}1/locked\"",
+            other.display()
+        ),
+        "exit 128",
+    );
+    let output = new_with_fake_git(&machine, &repo, &bin, "spike");
+    let (stdout, stderr) = text(&output);
+    assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains("deleted the branch refs/heads/af/spike"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "{}: an entry created during this add whose gitdir names {}, another add's",
+            repo.join(".git/worktrees/fixture-wt-spike").display(),
+            other.display()
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&locked_left_behind(&repo, "fixture-wt-spike1")),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("nothing was left behind"), "{stderr}");
+    assert!(
+        !stderr.contains("removed the administrative entry"),
+        "{stderr}"
+    );
+    assert_eq!(
+        administrative_entries(&repo),
+        ["fixture-wt-spike", "fixture-wt-spike1"]
+    );
+    for name in ["fixture-wt-spike", "fixture-wt-spike1"] {
+        assert!(
+            repo.join(".git/worktrees")
+                .join(name)
+                .join("locked")
+                .is_file(),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(repo.join(".git/worktrees/fixture-wt-spike/gitdir")).unwrap(),
+        format!("{}\n", other.display())
+    );
+    assert_eq!(repository_state(&machine, &repo).refs, before.refs);
+    assert!(!machine.root().join("fixture-wt-spike").exists());
+    assert!(!store.join("workspaces/spike").exists());
+
+    // The operator prunes once no add runs; the same command then succeeds with the real git.
+    git(&repo, &["worktree", "prune"]);
     let created = machine.expect(&repo, &["project", "workspace", "new", "spike"], 0);
     assert!(
         created.starts_with("created Workspace spike\n"),
         "{created}"
     );
-    assert_eq!(
-        git(&worktree, &["rev-parse", "HEAD"]),
-        git(&repo, &["rev-parse", "HEAD"])
-    );
+    let worktree = machine.root().join("fixture-wt-spike");
     assert_eq!(git(&worktree, &["status", "--porcelain"]), "");
-    assert!(store.join("workspaces/spike/state").is_dir());
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # ADR-0151: Give a repository one Project identity and register its checkouts as Workspaces
 
-**Status:** accepted (2026-10-19). Package PJ1 of the
+**Status:** accepted (2026-10-19); clauses 4, 5 and 8 amended (2026-10-20) by PJ1b. Package PJ1 of the
 [Project design note](../design/project.md). Builds on
 [ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md) (delivery makes only a local
 branch and worktree), [ADR-0032](0032-generate-review-authority-with-af-onboard.md),
@@ -71,9 +71,17 @@ directories.
    projection `af/project@1` is a function of the log and that file.
 4. **Lazy, token-free registration.** `af onboard --apply`, `af task plan`, `af task start`,
    `af review run` and every `af project` command register the Project when it is new and the
-   invoking checkout as a Workspace when it is new: origin `adopted`, labelled by the checkout's
-   directory name (or that name, `-` and the first eight hex digits of the Workspace ID when it
-   is taken), its Store the default Task Store for that checkout or the explicit `--state`.
+   invoking checkout as a Workspace when it is new: origin `adopted`, its Store the default Task
+   Store for that checkout or the explicit `--state`, and an automatic label made from the
+   checkout's directory name by one deterministic rule: every byte outside ASCII letters, digits,
+   `-` and `_` becomes `-`; leading `-` and `_` are stripped; the result is cut to 119 bytes,
+   leaving room for `-` and eight hex digits of the collision suffix within the 128-byte
+   safe-name limit; an empty result is `checkout`. So `repo.v2` is `repo-v2`, `café` is `caf--`
+   and `.hidden` is `hidden`. An automatic label that collides with any registered label,
+   explicit or automatic, gains `-` and the first eight hex digits of the Workspace ID (a longer
+   one, such as a delivered Task ID, is first cut to 119 bytes); when that is taken too,
+   registration fails with a message naming `--label`. A label the operator gives (`--label`,
+   `workspace new LABEL`) keeps strict validation and is never rewritten.
    Every existing default Task Store is adopted this way, unchanged. `af task plan` and `af task
    start` register before they resolve `--workspace`, so the first `--workspace <checkout
    directory name>` in a checkout without a Project Store succeeds; the others register once the
@@ -97,24 +105,41 @@ directories.
    is a usage error (exit 2) with nothing created. A step that fails after an earlier one
    succeeded undoes the earlier ones newest first (registration, worktree, the directories git
    created above it, branch ref, Workspace directory) and reports what it undid, or exactly what
-   remains when an undo fails; so every refusal leaves nothing behind and the same command
-   succeeds once its cause is gone. The worktree is recorded as made before `git worktree add`
-   runs, so an add that fails or reaches its deadline after creating the worktree's directory,
-   its `.git` file or its entry under `<gitdir>/worktrees/` is undone too: by `git worktree
-   remove --force --force` when git can remove it, otherwise by removing the directory if it
-   exists, unlocking the entry a stopped add leaves locked, and `git worktree prune`. Git
-   creates the entry, locked, before the path and its `gitdir` file, and neither lists nor
-   prunes such an entry, so the intent also records the names under `<common
-   dir>/worktrees/` before the add; the undo deletes every entry that is new since then and
-   belongs to this add (named by the path's basename, alone or followed by digits, with no
-   `gitdir` or one naming `<path>/.git`), prunes, and reports each as `removed the
-   administrative entry worktrees/<name>`, or as remaining while git still lists the path or
-   such an entry survives. An entry of another add is left alone. A step of which nothing
-   exists is not reported. It makes no commit and no push. `workspace add
-   PATH` adopts an existing checkout of the same Project, refusing one of another Project with
-   both IDs. `workspace remove LABEL` unregisters; it never removes a Store, and when the Store
-   holds a Task that is not collected it says so and names `af task gc`; `--delete-worktree`
-   removes the worktree only when `git worktree remove` accepts it clean. Exit codes are 0, 1
+   remains when an undo fails; so every refusal leaves nothing of its own behind and the same
+   command succeeds once its cause is gone. The worktree is recorded as made before `git
+   worktree add` runs, with the names under `<common dir>/worktrees/` noted then, so an add that
+   fails or reaches its deadline after creating the worktree's directory, its `.git` file or its
+   administrative entry is undone too. The undo deletes the worktree's directory when it exists
+   and only the new administrative entries positively attributable to this add: an entry is this
+   add's only when its `gitdir` names `<path>/.git`. Each is deleted directly and reported as
+   `removed the administrative entry worktrees/<name>`, or as remaining while git still lists
+   the path or such an entry survives. Git creates an entry, locked, before it writes the entry's
+   `gitdir`, and a concurrent `git worktree add` of another path with the same basename creates
+   one too, so a new locked entry named after the path (its basename, alone or followed by
+   digits) without a `gitdir` is never deleted: the undo reports it as left behind
+   (`<common dir>/worktrees/<name>: a locked entry without a gitdir, created during this add and
+   possibly another add's`, and how to remove it once no add is running), as it reports a new
+   entry of that name whose `gitdir` names another path, and never says nothing was left behind
+   while such an entry exists. `git worktree prune` never runs during an undo: it would also
+   remove stale entries of other worktrees, beyond this add's ownership (ADR-0031). Since prune
+   keeps a locked entry, the report tells the operator to delete such a directory once no add is
+   running; an unlocked one without a `gitdir` prune does remove. The final `git worktree list
+   --porcelain` check stays: the path must no longer be listed. A step of which nothing exists
+   is not reported. It makes no commit and no push. `workspace add PATH` adopts an existing
+   checkout of the same Project, refusing one of another Project with both IDs. `workspace
+   remove LABEL` unregisters; it never removes a Store, and when the Store holds a Task that is
+   not collected it says so and names `af task gc`. `--delete-worktree` never runs `git worktree
+   remove`, whose cleanliness check hashes the worktree's files through the repository's clean
+   filters (ADR-0001). It removes only a linked worktree that is not locked and whose `.git`
+   file names an entry under `<common dir>/worktrees/` whose `gitdir` names the worktree. The
+   worktree is clean when its files equal its `HEAD` commit's tree in content and mode, compared
+   through the committed capture `workspace new` materializes from (`review_source_git`)
+   against the files on disk, any file the tree lacks, ignored or not, other than git's own
+   `.git` making it dirty; no filter, hook, diff driver or other program the repository
+   configures runs, and every git call runs under the supervision below. A clean worktree is
+   removed by deleting its directory and then that worktree's own administrative entry, nothing
+   else; its branch is kept. A dirty one is refused with the first differing path, and nothing
+   changes. Exit codes are 0, 1
    (with `af/error@1` under `--json` and the next action in the message) and 2 for usage. Every
    git process of the Project modules runs through `review_process` with a deadline (30 s for
    plumbing, capture's own for a committed capture) that stops its whole process group, in
@@ -134,9 +159,12 @@ directories.
    its Workspaces are counted and collected as Task Stores. A Project Store another release wrote
    is an unreadable Store, kept while it holds Workspace directories. Because the `af/storage`
    document gains a kind, it becomes `af/storage@2` (`schemas/storage-v2.json`), and version 1 is
-   neither written nor read (ADR-0145). `stores.toml` keeps its version: its entries are machine
-   paths with a kind, every file an earlier release wrote still reads, and an earlier release
-   fails closed on the new kind, reporting the registry unreadable, as ADR-0145 permits.
+   neither written nor read (ADR-0145). For the same reason the Store registry `stores.toml`,
+   whose kind set now includes `project`, is `version = 2`: the reader accepts exactly 2 and the
+   writer writes 2. A version-1 file is refused with one message naming the recovery: delete
+   `$XDG_STATE_HOME/af/stores.toml`; Stores register again as commands use them, and Stores
+   under the default roots were never in it. Until then, recording a Store warns once on stderr
+   and `af storage` reports the registry unreadable.
 9. **Words.** `CONTEXT.md` defines **Project** and **Workspace** as the design note words them.
    The `.af/` layout's "elsewhere" paragraph and the Task-file walkthrough point Task files at a
    Workspace's `tasks/` directory; the plan-time advisory of ADR-0115 keeps its example.
@@ -166,13 +194,22 @@ directories.
   a path inside another Workspace and one inside af's state with exit 2 and nothing created;
   leaves worktrees, refs and Workspace directories unchanged when it refuses `--from` an orphan
   branch or undoes a `worktree add` that failed or reached its deadline after creating the
-  worktree's directory, `.git` file and administrative entry, or only a locked entry, with or
-  without its `gitdir` and `HEAD`, after which the same label succeeds; fails within the deadline, leaving no child, when a fake `git` sleeps; succeeds on
-  the first `af task plan --workspace <checkout directory name>`; and keeps `git status
-  --porcelain --ignored` empty and the checkout's files unchanged after every `af project`
-  command and `af task plan --workspace`. Unit tests undo every kind of step in reverse order,
-  including a partial worktree whose entry a stopped add left locked and a locked entry git
-  does not list, test which administrative entries belong to an add, and find no unsupervised
-  process start under `crates/af/src/projects`.
+  worktree's directory, `.git` file and administrative entry, or only an entry with its `gitdir`
+  and `HEAD`, after which the same label succeeds; reports, and leaves, a locked entry without a
+  `gitdir`, and both entries of a concurrent add of the same basename (one whose `gitdir` names
+  another path, one without a `gitdir`), after which the operator's `git worktree prune` and the
+  same label succeed; removes a clean worktree and its administrative entry with
+  `--delete-worktree` and refuses a changed, re-moded or untracked file untouched, while a clean
+  filter the repository configures never runs; fails within the deadline, leaving no child,
+  when a fake `git` sleeps; succeeds on the first `af task plan --workspace <checkout directory
+  name>`; and keeps `git status --porcelain --ignored` empty and the checkout's files unchanged
+  after every `af project` command and `af task plan --workspace`. Unit tests undo every kind of
+  step in reverse order, including a partial worktree whose entry a stopped add left locked,
+  delete only the entry whose `gitdir` names the path, report a locked entry without one and
+  never prune; test which administrative entries belong to an add; give the stated automatic
+  label for `repo.v2`, a name with spaces, a Unicode name, a leading-punctuation name, a 200-byte
+  name and a collision with an explicit label, none over 128 bytes; refuse a version-1
+  `stores.toml` with its recovery and write version 2, keeping every entry and kind; and find no
+  unsupervised process start under `crates/af/src/projects`.
   `crates/review-core/tests/schema_parity/project.rs` pins the three events and two documents,
   and `crates/af/tests/it/cli_surface.rs` the help surface.

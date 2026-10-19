@@ -20,6 +20,7 @@ mod git;
 #[cfg(test)]
 mod tests;
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use review_core::project::{
@@ -432,14 +433,20 @@ impl Registration {
     }
 }
 
-/// A label for `preferred` that no other Workspace holds: `preferred` itself, or `preferred`
-/// and the first eight hex digits of the Workspace ID.
+/// The longest automatic label before its collision suffix: `-` and eight hex digits then fit
+/// within the 128-byte safe-name limit.
+const AUTOMATIC_LABEL_BYTES: usize = 119;
+
+/// A label for `preferred` that no other Workspace holds, explicit or automatic: `preferred`
+/// itself, or `preferred` cut to 119 bytes, `-` and the first eight hex digits of the Workspace
+/// ID. Both taken is an error naming `--label`.
 pub(crate) fn free_label(log: &Log, preferred: &str, workspace_id: &str) -> Result<String, String> {
     if log.by_label(preferred).is_none() {
         return Ok(preferred.to_string());
     }
     let suffix = &workspace_id.trim_start_matches("w-")[..8];
-    let label = format!("{preferred}-{suffix}");
+    let stem = preferred.get(..AUTOMATIC_LABEL_BYTES).unwrap_or(preferred);
+    let label = format!("{stem}-{suffix}");
     if log.by_label(&label).is_none() {
         Ok(label)
     } else {
@@ -449,28 +456,27 @@ pub(crate) fn free_label(log: &Log, preferred: &str, workspace_id: &str) -> Resu
     }
 }
 
-/// A safe label from a directory name: every other byte becomes `-`, and it starts with a
-/// letter or digit.
-pub(crate) fn label_from_name(name: &str) -> String {
+/// The automatic label of a directory name (ADR-0151 clause 4): every byte outside ASCII
+/// letters, digits, `-` and `_` becomes `-`; leading `-` and `_` are stripped; the result is cut
+/// to 119 bytes; an empty result is `checkout`.
+pub(crate) fn label_from_name(name: &OsStr) -> String {
     let mapped: String = name
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
-                character
+        .as_encoded_bytes()
+        .iter()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_') {
+                char::from(*byte)
             } else {
                 '-'
             }
         })
         .collect();
-    let trimmed: String = mapped
-        .trim_start_matches(['-', '_'])
-        .chars()
-        .take(119)
-        .collect();
-    if trimmed.is_empty() {
+    let trimmed = mapped.trim_start_matches(['-', '_']);
+    let cut = &trimmed[..trimmed.len().min(AUTOMATIC_LABEL_BYTES)];
+    if cut.is_empty() {
         "checkout".into()
     } else {
-        trimmed
+        cut.to_string()
     }
 }
 
@@ -537,12 +543,7 @@ pub(crate) fn adopt(
         }
         None => default_store(&checkout.toplevel)?,
     };
-    let name = checkout
-        .toplevel
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let label = label_from_name(&name);
+    let label = label_from_name(checkout.toplevel.file_name().unwrap_or_default());
     let paths = WorkspacePaths {
         id: workspace_id(&checkout.project_id, &checkout.toplevel),
         label: label.clone(),

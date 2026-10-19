@@ -329,7 +329,7 @@ fn a_registered_store_that_is_gone_is_dropped_and_one_that_is_there_is_visited()
     std::fs::create_dir_all(&elsewhere).unwrap();
     std::fs::rename(&present, &moved).unwrap();
     let now = now_unix_ms();
-    let mut text = "version = 1\n".to_string();
+    let mut text = "version = 2\n".to_string();
     for path in [&moved, &gone] {
         text.push_str(&format!(
             "\n[[store]]\npath = \"{}\"\nkind = \"task\"\nfirst_use_unix_ms = {now}\nlast_use_unix_ms = {now}\n",
@@ -372,7 +372,7 @@ fn the_refusal_names_the_free_bytes_the_floor_af_storage_and_the_knob() {
 /// A registered Store as the registry names it: `kind = "task"` at `path`.
 fn register(layout: &Layout, paths: &[&Path]) {
     let now = now_unix_ms();
-    let mut text = "version = 1\n".to_string();
+    let mut text = "version = 2\n".to_string();
     for path in paths {
         text.push_str(&format!(
             "\n[[store]]\npath = \"{}\"\nkind = \"task\"\nfirst_use_unix_ms = {now}\nlast_use_unix_ms = {now}\n",
