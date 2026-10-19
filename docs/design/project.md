@@ -240,10 +240,13 @@ The Surveyor runs in three ways, and in none of them does it call a Provider:
    records nothing.
 2. **On demand.** `af project refresh` records a Survey now and waits; `--json` prints it.
 3. **After a run.** When `af task run`, `af task start --execute`, `af task deliver` or
-   `af review run` ends, after the Storage Budget sweep, af computes the survey key (the parent's bounded reads: `rev-parse`,
-   `for-each-ref`, the policy and the log) and spawns `af project refresh --detached` only when
-   the key changed or the newest Survey is not complete, when `[survey] refresh = "after-run"`
-   (the default; `"manual"` turns it off).
+   `af review run` ends, after the Storage Budget sweep, af compares the survey key in a preflight of its own, bounded by a
+   total of 200 ms over every read it needs (`rev-parse`, `for-each-ref`, the policy, the log
+   and, after PJ5, the discovery set and its watermarks), and spawns `af project refresh
+   --detached` when the comparison found the key changed or the newest Survey not complete, or
+   did not complete within its budget (an incomplete comparison is never a hit: the command's
+   own result stands and the refresher makes the complete comparison), when `[survey] refresh =
+   "after-run"` (the default; `"manual"` turns it off).
    That is one bounded process that reads, writes one record and exits, the precedent being
    `af self refresh-check`; the kernel still runs no daemon and polls nothing (values §3, §8).
    It takes the single-flight lock `$XDG_RUNTIME_DIR/af/project-<hex>.lock`, waiting for it up
@@ -345,9 +348,13 @@ and pinned in the lock like every other Worker input, decides which Workers see 
 That is the "not for all of them, configurable" requirement, and it uses no new mechanism.
 
 The Task's initial capture pins the newest complete Survey of the Project whose `repository_id`
-equals the captured source's, copying the record into the Task Store's CAS (or recording that
-there is none), with the effective `[brief]` policy as part of the captured policy, before any
-pipeline is selected. Resolution is then a pure function of that pinned data wherever
+equals the captured source's as a separately typed, immutable record of Brief-rendering inputs
+in the Task Store's CAS (`af/ProjectSurveyPin@1`: the Survey's sections and identity, with the
+Survey ID as provenance and no `previous_survey_id` or other digest link, so ADR-0135's collector
+reaches nothing beyond it and collecting earlier Tasks releases their pins while a later Task
+stays replayable), or records that there is none, with the effective `[brief]` policy as part of
+the captured policy, before any pipeline is selected; full Survey records live only in the
+Project Store. Resolution is then a pure function of that pinned data wherever
 `empty_review_history` is filled today (`normalize_root_inputs`: the Task-file adapter, proposal
 validation and a generated pipeline's handoff): render the variant; drop whole sections, last-declared first, until the
 Brief's exact serialized bytes, metadata and drop reasons included, fit `max_bytes`, recording
@@ -492,8 +499,10 @@ match costs pattern length times text length and never backtracks (the recursive
 billions of steps on `*a` thirty times followed by `b` against thirty `a`s, a failing match
 inside the string limits and outside
 every deadline); a pattern is at most 256 bytes and a list at most 64 patterns, refused at policy
-load beyond that, and the Surveyor checks its deadline between matches: `**` spans segments, `*` a run inside one, `?` one character, and
-every other character is literal, brackets included, so `*[bot]` matches `dependabot[bot]` and no
+load beyond that, and the Surveyor checks its deadline between matches: `**` spans segments, `*` a run inside one, `?` exactly one byte of the canonical
+encoded spelling (as the byte-slice matcher does today: `caf?.rs` rejects `café.rs` and
+`caf??.rs` accepts it, and the rewrite keeps that, with Unicode and percent-encoded parity
+cases), and every other byte is literal, brackets included, so `*[bot]` matches `dependabot[bot]` and no
 name that merely ends in `t`. There are no character ranges; the decision files are selected by
 `decisions` and then by the four-digits-and-a-dash name rule.
 
@@ -621,7 +630,9 @@ gets two staleness receipts; a generated pipeline that introduces the port after
 its Brief from the pinned Survey, a refresh or a removed Project Store in between changing
 nothing, and a handoff after the original checkout is gone still reports the captured
 staleness; `af project brief --json` prints the preview document byte-equal in its payload to
-the text form; a variant with `max_bytes` 262,145 is refused at policy load, and a node whose
+the text form; collecting earlier Tasks
+releases their pinned Survey data while a later Task remains replayable; a variant with
+`max_bytes` 262,145 is refused at policy load, and a node whose
 known inputs plus the Brief exceed the renderer cap is refused at plan time; a pipeline wiring the port to one of two Workers delivers the Brief to that Worker's
 manifest and not the other's; replay after a refresh renders the pinned Brief, not the newer
 Survey; a variant over `max_bytes` drops the last section and records the reason; without a
@@ -638,8 +649,9 @@ after runs*, naming the PJ2 clauses it supersedes; PJ2's accepted ADR gains only
 a status-line link (ADR-0113 clause 6).
 
 Acceptance: a Task run on a changed head is followed by exactly one new Survey; two concurrent
-runs produce one; a run on an unchanged survey key spawns no process (the parent compares the
-key; process creation is tested apart from recording); a Surveyor failure leaves the
+runs produce one; a run on an unchanged survey key whose preflight comparison completed spawns no process, and
+one whose preflight ran out of its 200 ms spawns the refresher (process creation is tested apart
+from recording, the timeout included); a Surveyor failure leaves the
 Task's exit code unchanged and is visible in `af project show`; a second refresher that waited for the
 lock measures again when the key changed meanwhile (a commit during the holder's measurement); a
 refresher that never gets the lock within `max_wall_ms` records a failure.
