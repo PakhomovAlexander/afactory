@@ -68,6 +68,13 @@ _Avoid_: **Document** for it — a Document Task carries no Snapshot identity an
 cannot read the repository. And **Report** — a Report is one reviewer's immutable claim in a
 Campaign; a Report Task's output is a Document.
 
+**Human presentation**:
+The readable Markdown `af task output --format human-markdown` derives from a Document's exact
+draft and sources at export time, with the Task's acceptance and the matching independent review
+in plain words. It is never recorded or reviewed; the Document's canonical text stays the
+accepted bytes ([ADR-0151](docs/adr/0151-export-a-human-presentation-of-a-report-beside-its-canonical-markdown.md)).
+_Avoid_: calling it the report or the Document, or calling it verified.
+
 **Measurement**:
 The kernel's own record of one declared command run a declared number of times against one exact
 Snapshot: every repetition's elapsed time, exit status, output digests and the metrics the

@@ -239,7 +239,7 @@ impl ReportDraft {
             Self::V2(draft) => draft.validate(),
         }
     }
-    fn first_version(&self) -> DocumentDraftV1 {
+    pub(crate) fn first_version(&self) -> DocumentDraftV1 {
         match self {
             Self::V1(draft) => draft.clone(),
             Self::V2(draft) => draft.as_first_version(),
@@ -251,7 +251,7 @@ impl ReportDraft {
             Self::V2(draft) => &draft.title,
         }
     }
-    fn repository_citations(&self) -> BTreeSet<RepositoryCitationV1> {
+    pub(crate) fn repository_citations(&self) -> BTreeSet<RepositoryCitationV1> {
         match self {
             Self::V1(_) => BTreeSet::new(),
             Self::V2(draft) => draft.repository_citations.clone(),
@@ -375,7 +375,7 @@ fn read<T: serde::de::DeserializeOwned>(
     }
     serde_json::from_value(value.payload).map_err(|e| e.to_string())
 }
-fn read_draft(cas: &Cas, id: &str, snapshot: &str) -> Result<ReportDraft, String> {
+pub(crate) fn read_draft(cas: &Cas, id: &str, snapshot: &str) -> Result<ReportDraft, String> {
     let value = envelope(cas, id)?;
     if value.subject_snapshot_id.as_deref() != Some(snapshot) {
         return Err("Report draft was written against another source Snapshot".into());
