@@ -76,7 +76,8 @@ name, and the owner's `workstreams/<name>/` directories are Workspaces made by h
 One immutable, kernel-measured description of a Project at one exact head: tree, languages,
 history, contributors, decisions, vocabulary, checks and af activity, each section bounded by
 declared policy and marked complete, partial or unavailable with its reason. A model never
-writes one, and a Survey of an unchanged head is never recorded twice.
+writes one, and a complete Survey is reused while its survey key (§3.3) is unchanged and no
+`--force` asks for another.
 _Avoid_: **Measurement**, one declared command run against one Snapshot; **History Capture**,
 the optimizer's economics observations; **Report**, one reviewer's claim; and the README.
 
@@ -156,11 +157,15 @@ no push: the same local-only boundary delivery keeps (ADR-0031). `workspace add 
 existing checkout with its default Store, or the `--state`, `--bindings` and `--tasks` paths
 given, which is how each of the owner's `workstreams/<name>/` directories becomes a Workspace
 without moving a byte. `workspace remove` never deletes a Store that still holds an uncollected
-Task; it names `af task gc`.
+Task; it names `af task gc`. `--delete-worktree` compares the worktree with its commit through
+the kernel's committed capture and refuses a difference; it never calls `git worktree remove`,
+whose cleanliness check runs the repository's clean filters (ADR-0001), and it deletes the
+directory and the worktree's own administrative entry itself.
 
-`--workspace LABEL` on `af task plan|start|run|show|list|explain|deliver|report` and
-`af review run` resolves `--state`, `--bindings` and a relative `--file` against the Workspace;
-an explicit `--state` still wins and is recorded as it is today. The worktree `af task deliver`
+`--workspace LABEL` on every `af task` subcommand that takes `--state` resolves `--state` (and,
+for `plan` and `start`, an absent `--bindings`) against the Workspace; `--workspace` together with
+`--state` is a usage error, exit 2, as ADR-0151 clause 6 decides. `af review run --workspace` and
+a relative `--file` resolved against the Workspace are a separate later decision. The worktree `af task deliver`
 creates is registered as a Workspace of origin `delivered`, labelled by the Task ID, after
 delivery succeeds and best effort, so `af project workspaces` lists it and
 `af project workspace remove --delete-worktree` can retire it. Delivery's own contract is
@@ -178,8 +183,8 @@ every other kernel record, with these sections. Every section carries `completen
 | `identity` | Project ID, `repository_id`, `[project] name` and `min_af`, the af release `.af/af.lock` pins, head commit, Tree Digest, cutoff, policy digest, Surveyor version | `.af/af.toml`, `.af/af.lock`, git | — |
 | `tree` | files and bytes in total; per top-level directory files, lines and bytes; per language files and lines; the `tests` split | `git ls-tree -l`, blob reads | lines only for text blobs at or under `max_file_bytes` (1 MiB); `[survey] exclude` globs; `[survey] tests` globs; `[survey.languages]` extends the built-in extension map |
 | `history` | commits and merges in total and in the last 30, 90 and 365 days; first and last commit time; churn (commits, lines added, removed) per top-level directory over 90 days; hot paths; tags in total and the newest five matching `release_tags`; local branch count | `git log --numstat`, `rev-list`, `tag` | `max_commits` (100,000; beyond it `partial`, oldest commit reached recorded); `hot_paths` (20) |
-| `contributors` | per identity: commits, lines added and removed, first and last time, active in 90 days; the top identity's share; human and agent commit shares | `git log` | `[survey] identity = "name"` (default) or `"email_hash"`: an email is hashed or absent, never stored; `agent_authors` (`*[bot]`) and `agent_trailers` (`Co-Authored-By` matching `*Claude*`, `*Codex*`, `*GPT*`) |
-| `decisions` | per decision record: number, title, status, date; counts by status; the newest N | the `decisions` glob, default `docs/adr/[0-9][0-9][0-9][0-9]-*.md`: title from the first H1, status and date from the first line that names one | `decisions` (12) |
+| `contributors` | per identity: commits, lines added and removed, first and last time, active in 90 days; the top identity's share; human and agent-assisted commit counts and shares | `git log` | `[survey] identity = "name"` (default) or `"email_hash"`: an email is hashed or absent, never stored; `agent_authors` (`*[bot]`) and `agent_trailers` (`Co-Authored-By` matching `*Claude*`, `*Codex*`, `*GPT*`): a commit is agent-assisted when its author or any `Co-Authored-By` name matches, otherwise human; each commit counts once in that partition and its author keeps the per-identity totals; an empty window makes every share `0` |
+| `decisions` | per decision record: number, title, status, date; counts by status | the `decisions` pattern, default `docs/adr/*.md`, then the name rule (four ASCII digits and a dash): title from the first H1, status and date from the first line that names one | `max_entries`; a Brief variant picks the newest N (§3.5) |
 | `vocabulary` | the defined term names and their count | the `vocabulary` file, default `CONTEXT.md`: bold-colon headings | names only; definitions stay in the tree |
 | `checks` | declared check names and programs; toolchain declarations present; CI workflow file count | `.af/code-policy.toml`, review pipelines' `[[checks]]`, a fixed file list, `.github/workflows/` | names and programs only, no arguments |
 | `activity` (PJ5) | per Workspace: Tasks by outcome, Attempts, chargeable tokens, active time; Campaigns, open and fixed Findings by severity; delivered Tasks; Developer Plan Decisions, Resolutions and Demand waivers; the last 30 days | every registered Store, read-only, through one aggregation projection PJ5 adds that joins each Store's validated Task accounting with its Campaign Ledger's current Resolutions and Demand waivers (`af task show --json` alone carries neither); Stores are deduplicated by their recorded identity, a Task counts for this Project only when its recorded source `repository_id` matches, Task IDs are qualified by Store, and a Task without retained source evidence counts as `unknown` | a Store this release cannot read makes its Workspace `unavailable` with the replay error (ADR-0145); Provider IDs and host paths never enter the section |
@@ -191,8 +196,11 @@ hottest paths of the last 90 days no longer exist). The Survey records `previous
 
 The newest Survey is reused, and nothing recorded, when its *survey key* equals the current one:
 the head commit, the digest of `git for-each-ref refs/heads refs/tags` (names and targets), the
-policy digest, the Surveyor version and, for `activity`, the sequence number of every registered
-Store (PJ5). A new commit with the same tree, a new tag or branch, a policy change, a newer af or
+policy digest, the Surveyor version and, for `activity`, the activity watermark PJ5 defines: for every
+registered Store its opaque Store identity (persisted in the Store by PJ5, never a path), the
+sorted set of its run prefixes with each prefix's last sequence, and the digest of its sidecars
+(`attempt_wall`), plus the Workspace membership list; an alias of a registered Store counts once,
+a copy is another Store. A new commit with the same tree, a new tag or branch, a policy change, a newer af or
 newly recorded work therefore records a new Survey; an unchanged repository does not, however
 often runs end. A newest Survey that is `partial` is measured again on the next refresh. The 30,
 90 and 365-day windows are relative to the Survey's own `cutoff`, so a reader knows the as-of
@@ -218,8 +226,8 @@ The Surveyor runs in three ways, and in none of them does it call a Provider:
 
 1. **At onboarding.** `af onboard --apply` registers the Project and the Workspace and records
    the first Survey synchronously, printing its summary. This is the "collected on project
-   onboard automatically" requirement; a second `af onboard` on an unchanged head records
-   nothing.
+   onboard automatically" requirement; a second `af onboard --apply` with an unchanged survey key
+   records nothing.
 2. **On demand.** `af project refresh` records a Survey now and waits; `--json` prints it.
 3. **After a run.** When `af task run`, `af task start --execute`, `af task deliver` or
    `af review run` ends, after the Storage Budget sweep, af spawns `af project refresh
@@ -436,10 +444,17 @@ and the other environment forms follow `af help environment`.
 The Project Store is never evicted whole: it indexes the Project's Workspaces, and the Workspace
 directories beneath it hold Task Stores and operator files (`tasks/`, `bindings.toml`) that the
 Storage Budget inventories one by one under ADR-0144's own rules, as PJ1 implements in
-`crates/af/src/storage.rs`. What the budget collects from a Project is Surveys: Surveys beyond `keep_surveys` are collected oldest first behind a
-`SurveyCollected@1` tombstone that keeps the head, cutoff and totals, so `af project history`
-still answers. Collection never breaks a Task: a plan pins a Brief in the Task Store, not the
-Survey in the Project Store.
+`crates/af/src/storage.rs`. What the budget collects from a Project is Surveys, and PJ2 defines how: Surveys beyond
+`keep_surveys` are collected oldest first. Collection appends `SurveyCollected@1` (the collected
+Survey's ID, head, cutoff, completeness and the totals of `tree` and `history`) and then deletes
+the record from the CAS; replay treats a `SurveyRecorded@1` whose Survey a tombstone names as
+collected, so `af project history` answers from the tombstone and `af project survey` reports the
+newest Survey only while it is uncollected; `previous_survey_id` is a name, never a reachability
+edge, so a collected predecessor keeps nothing alive and a chain that reaches a collected Survey
+ends at its tombstone. The tombstone is appended before the bytes go, so an interruption between
+the two leaves a record the next sweep finishes. Collection runs in the Storage Budget sweep and
+in `af project refresh` after a Survey is recorded. Collection never breaks a Task: a plan pins a
+Brief in the Task Store, not the Survey in the Project Store.
 
 ## 4. Values check
 
@@ -452,7 +467,7 @@ Survey in the Project Store.
   `contributors` and `activity` are excluded from `orient`; a node that does not wire the port
   sees nothing.
 - **Performance.** Target under 3 s for a full Survey of afactory, measured and recorded in PJ2;
-  an unchanged head costs one `rev-parse`; `af project show` reads one projection.
+  an unchanged survey key costs one `rev-parse` and one `for-each-ref`; `af project show` reads one projection.
 - **Simple and clear.** Three new records with one home each; Workspace merges the
   `workstreams/` habit rather than adding beside it; the Project ID reuses the kernel's existing
   repository identity and the optimizer's existing digest shape; no `af project init`.
@@ -487,16 +502,19 @@ layout test still passes; `af --help` and `af project --help` stay under 50 ms.
 
 Deliverables: `af/ProjectSurvey@1` with `identity`, `tree`, `history`, `contributors`,
 `decisions`, `vocabulary` and `checks`; the Surveyor operator with its bounds; `af onboard
---apply` recording the first Survey; `af project survey|refresh|history`; the skip-unchanged
-rule. ADR: *Measure a Project into Surveys with a token-free Surveyor.*
+--apply` recording the first Survey; `af project survey|refresh|history`; the survey key and
+`--force`; Survey collection under `[storage] keep_surveys` with the replay rules of §3.9. ADR: *Measure a Project into Surveys with a token-free Surveyor.*
 
 Acceptance: a fixture repository with known counts yields a byte-identical expected Survey at a
-fixed cutoff; a second run on the same head records nothing; `max_commits` and `max_wall_ms`
+fixed cutoff; a second run with an unchanged survey key records nothing, while a new tag, a
+policy change, a partial newest Survey or `--force` records one; `max_commits` and `max_wall_ms`
 produce `partial` sections and a recorded Survey; emails never appear in a record under either
 identity policy; the measurement-policy fixture (divergent author and committer dates, a merge, a
 rename, a binary change, the `max_commits` boundary) yields the stated totals; an oversized commit
-and a very large tree stay within the fixed maxima with recorded reasons; the pull request states
-the measured wall time and record size on afactory.
+and a very large tree stay within the fixed maxima with recorded reasons; collection beyond
+`keep_surveys` appends tombstones, frees the bytes, replays `af project history` and recovers
+after an interruption between the tombstone and the deletion; the pull request states the
+measured wall time and record size on afactory.
 
 ### PJ3 — Project Brief
 
@@ -527,7 +545,7 @@ exit code unchanged and is visible in `af project show`.
 ### PJ5 — Activity across Workspaces
 
 Deliverables: the `activity` section from every registered Store through the aggregation
-projection of §3.3 (validated Task accounting joined with Campaign Ledger views), Store
+projection of §3.3 (validated Task accounting joined with Campaign Ledger views), Store identity, the activity watermark, Store
 deduplication and Project attribution; `af project tasks`; Tasks and spend per Workspace in `af project workspaces`;
 Developer Plan Decisions, Resolutions and waivers counted as decisions; the Provider-ID and path
 exclusion. ADR: *Fold every Workspace's recorded work into the Project's Survey.*
