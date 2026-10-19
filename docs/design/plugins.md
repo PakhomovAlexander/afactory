@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 8 after review rounds 1 to 7 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 9 after review rounds 1 to 8 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -309,7 +309,7 @@ $XDG_CACHE_HOME/af/plugins/<name>/                          cache (§3.9)
 
 | Command | Does |
 |---|---|
-| `af plugin install SOURCE [--version V] [--key FILE]` | installs from a release (`owner/repo`, GitHub through `gh` as `af self` does), a local archive, or a directory; verifies and records a receipt; writes `origin.toml` (`af.plugin-origin/1`: the source and the key) on a first install, and refuses a later install from another source unless `--origin` replaces it; makes it current |
+| `af plugin install SOURCE [--version V] [--key FILE]` | installs from a release source: `owner/repo` (GitHub through `gh`, as `af self` does), a local archive, or a release-source directory in `DirSource`'s layout (the versioned per-target archives beside their `SHA256SUMS`, never an unpacked bundle, which is what `--link` is for); verifies the archive the same way whatever the source, so the receipt's digest is the digest a pin names; writes `origin.toml` (`af.plugin-origin/1`: the source and the key) on a first install, and refuses a later install from another source unless `--origin` replaces it; makes it current |
 | `af plugin install --link DIR` | a development install: `current` links the directory, no receipt, reported `dev` |
 | `af plugin remove NAME [--purge]` | removes every installed version; `--purge` also removes state and cache; refuses a version a project seen on this machine pins unless `--force` |
 | `af plugin list [--json]` | installed plugins with version, source and receipt; `dev` plugins on `PATH`; what the project requires and pins |
@@ -346,9 +346,10 @@ interprets nothing:
 |---|---|---|
 | `af store list` | every Store this machine knows: the default Task and review roots, every Campaign, every registry entry; kind, path, bytes | `af/store-list@1` |
 | `af store runs --state DIR` | the run IDs in a Store with event counts, first and last sequence, and whether the log holds a type this release does not know | `af/store-runs@1` |
-| `af store events --state DIR --run ID [--from SEQ] [--type T]` | the event rows in sequence order, one line each: `sequence`, `type` as the raw string the row carries, `payload` as the raw JSON value the row carries, `known` (whether this release's `EventType` names the type); nothing is decoded into a `RunEvent` | `af/store-event@1`, JSONL |
+| `af store events --state DIR --run ID [--from SEQ] [--type T]` | the event rows in sequence order, one line each with every persisted column of the `events` table: `run_id`, `sequence`, `event_id`, `type` (the raw string), `occurred_at`, `node_id`, `attempt_id`, `causation_id`, `correlation_id` (each `null` where the column is), `artifact_refs` and `payload` (the raw JSON values), plus the derived `known` (whether this release's `EventType` names the type); nothing is decoded into a `RunEvent` | `af/store-event@1`, JSONL |
 | `af store attempts --state DIR --run ID` | the `attempt_wall` sidecar rows: Attempt, node, round, epoch, start, elapsed, usage | `af/store-attempts@1` |
 | `af store artifact --state DIR ID [--payload]` | one artifact by ID, its envelope and payload verified on read, as the CAS reads it | the artifact's own type |
+| `af store artifact --state DIR ID --raw` | the digest-verified bytes of one content object that has no envelope (a rendered Worker request, a captured stdout or stderr, anything stored with `Cas::put`), streamed to stdout in bounded buffers, exactly as `Cas::get` verifies them; a corrupted object is refused, and `--raw` conflicts with `--payload` | bytes |
 
 These five commands are the whole generic read API, and they are the reason no later feature
 needs a `--json` document added for its own sake: a plugin that needs a fact the projections do
@@ -511,6 +512,11 @@ resolves it; a command run from repository A with `--repo /B` is B's) decides `A
 effective configuration (`enabled`, `[plugin.<name>]`), the pin of §3.13 and therefore the
 bundle that runs; the kernel resolves all of that once, before it spawns anything, and
 `hook-run` receives the result as arguments, never re-deriving it from a working directory.
+A background invocation, a hook or a pane load, uses only a bundle that is already installed
+and verified: it never installs on demand, because the release sources have no deadline of
+their own (`GhSource`, `require_gh`) and nothing may wait in front of `hook_wall_ms`. A pinned
+version that is not installed is the hook's failure line, or the pane's error row, naming
+`af plugin install`; on-demand installation belongs to foreground plugin commands only.
 
 Hooks run after the command's result is written and flushed, after the post-command Storage
 Budget sweep, and before the update check's detached child, in plugin-name order. In both
@@ -628,8 +634,13 @@ row. A pane load runs with `AF_PLUGIN_BACKGROUND=pane`, and in that mode the ker
 the commands of its declared read-only table (`READ_ONLY_COMMANDS` in `main.rs`, beside
 `runs_task_work`: `config show`, `task list|show|report|explain`, `review
 plan|report|ledger|show|campaigns`, `store *`, `storage` without `prune --apply`, `provider
-status|models`, `plugin list|show`, `help`, `--version`), each of which opens a Store read-only
-or none at all; every other command, `task plan` and `task start --file` without `--execute`
+status|models`, `plugin list|show`, `help`, `--version`), each entry a predicate over the
+parsed command and its flags, not a name: `review plan --file` is outside the table because it
+starts a review Task through `start_review` and persists it even when it only plans, and
+`storage prune --apply` is outside for the same reason. Every entry opens a Store read-only or
+none at all; where a reader opens one writable today (`review show` through
+`open_campaign_store`), P1 moves it to `open_campaign_store_read_only` and `Cas::open_existing`
+before the table is declared; every other command, `task plan` and `task start --file` without `--execute`
 among them, is refused before any Store is opened for writing. So a load that is killed on
 timeout, reload or close can orphan no Worker, and loading a pane writes no Store (ADR-0119).
 The same table is the conformance broker's reader allowlist (§3.15) and the reader surface
@@ -645,8 +656,8 @@ or paint outside its rows.
 `.af/af.lock` gains `[plugins.<name>]` with `version` and `[plugins.<name>.digests]` per target,
 written by `af plugin pin` and by `af onboard --refresh-lock` for every plugin the project
 requires. Inside such a project `af <name>` runs the pinned version, installing it on demand
-from the source this machine's `origin.toml` for that plugin names, when the archive matches
-the lock's digest for this target. A plugin never installed on this machine has no origin, and
+(for a foreground command only, §3.8) from the source this machine's `origin.toml` for that
+plugin names, when the archive matches the lock's digest for this target. A plugin never installed on this machine has no origin, and
 the pin is then refused with `af plugin install SOURCE` as the next action: a repository pin
 locates nothing and authorizes no source, exactly as `af self` fetches only from its configured
 release source. The rest follows the rules a pin of af itself follows: a pin without a digest
@@ -755,6 +766,12 @@ checking it first against a typed allowlist: the kernel's declared read-only tab
 invocation but never a pane load, the one write form a plugin owns, `task start --file`
 without `--execute`, each only against the fixture's own Store and repository; the brokered `af` runs with the fixture's `HOME` and XDG tree, and a selector that
 escapes it (`--repo`, `--state`, `--file` outside the fixture) is rejected before execution.
+A brokered `task start --file` is executed only after staging: the harness reads the Task
+file, resolves every `inputs.<port>.file` it names beneath the fixture roots without following
+a symlink out of them, copies the admitted bytes into a host-private immutable staging
+directory, rewrites the Task file to name the staged copies, and runs the staged request; a
+reference outside the roots, or a symlink that leaves them, is rejected before capture and
+recorded, since the container's trace sees no host-side read.
 Any other command, `onboard --refresh-lock` among them, is rejected and recorded as a boundary
 violation, since the plugin's syscall trace cannot see what a host-side `af` writes. Denial alone proves nothing, because a plugin can swallow the error and exit 0, so the
 harness also audits: inside the container the plugin runs under a file-syscall tracer
@@ -948,7 +965,16 @@ not name, a write under a neighbouring `.af/` path);
 `task explain` pass; `onboard --refresh-lock`, `task plan`, and an escaping `--repo` through
 `AF_BIN` are recorded as violations; `task start --file` passes for a command and is refused for
 a pane load);
-`read_only_table_matches_the_code` (every command in the table opens no Store for writing);
+`read_only_table_matches_the_code` (every command in the table opens no Store for writing;
+`review plan --file` and `storage prune --apply` are outside it, and a refused `review plan
+--file` under `pane` creates no Task and no CAS object; `review show` reads through
+`open_campaign_store_read_only`);
+`plugin_check_broker_stages_task_files_and_rejects_outside_inputs` (a permitted Task file
+binding a JSON file outside the fixture roots, and a symlink variant, both rejected before
+capture);
+`directory_install_is_a_release_source_directory` (an unpacked bundle is refused with
+`--link` named; a `DirSource` directory installs with a receipt whose digest equals the
+archive's pin digest);
 `plugin_check_boundary_records_a_direct_store_open_and_an_outside_write`;
 `plugin_check_without_a_container_reports_not_run`;
 `plugin_check_binds_its_result_to_the_bundle_digest_and_target` (a native Darwin bundle is
@@ -960,10 +986,14 @@ Deliverables: `list`, `runs`, `events`, `attempts`, `artifact` with their docume
 `af/store-event@1` among them. ADR: the clause of P0's ADR that narrows ADR-0145 for `af store`
 alone (§3.6).
 
-Acceptance: `store_events_prints_every_row_in_sequence_with_payloads_verbatim` (compared to the
-SQLite rows); `store_events_marks_an_unknown_type_known_false_and_decodes_nothing`;
+Acceptance: `store_events_prints_every_row_in_sequence_with_every_column_verbatim` (compared to the
+SQLite rows; two events with identical payloads that differ only in `occurred_at` and
+`causation_id` stay distinguishable; null columns print as `null`); `store_events_marks_an_unknown_type_known_false_and_decodes_nothing`;
 `run_event_v1_validation_is_unchanged`;
 `store_artifact_verifies_envelope_and_payload_identity` (a corrupted object is refused);
+`store_artifact_raw_streams_verified_bytes` (a recorded rendered request and a non-JSON
+stderr object read back byte-identical; a corrupted object refused; `--raw` with `--payload`
+refused);
 `store_list_names_every_store_the_sweep_would_visit`; `store_reads_never_take_a_writer_lease`
 (a running Task's Store stays writable); `store_read_latency_under_200ms_on_10k_events`;
 `export_reader_writes_nothing_after_a_crash` (a fixture export with an abandoned segment: the
@@ -1022,7 +1052,9 @@ supervisor that never reads); `hook_target_names_what_the_invocation_recorded` (
 Campaign, a `review run --file` Task, and the `none` variant for a malformed Task file, an
 unknown Task ID and an unopenable Store); `hook_context_is_the_commands_repository` (from
 repository A and from outside Git with `--repo B`, B's configuration, pin and bundle are used
-and `AF_REPO` is B);
+and `AF_REPO` is B); `background_resolution_never_invokes_the_release_source` (a pinned,
+uninstalled plugin: the hook fails with the install command in `hooks.log`, the pane shows the
+error row, and a release source that would fail if touched is never touched);
 `storage_sweep_hook_never_runs_at_the_free_disk_floor_or_before_a_warm_key`;
 `hooks_run_in_name_order_and_a_sync_hook_is_killed_at_its_wall`;
 `detached_hook_receives_the_document_is_killed_at_its_wall_and_is_reaped` (a plugin that never
