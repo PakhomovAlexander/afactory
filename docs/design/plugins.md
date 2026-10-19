@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 2 after review round 1 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 3 after review rounds 1 and 2 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -129,9 +129,12 @@ The clauses proposed for the ADR. Each is pinned by a test named in §5.
    registry. A plugin is found only in af's own plugin directory or on `PATH`, and no
    configuration key, in any layer, ever names an executable. The trust gate ADR-0044 declared
    for executable-bearing keys stays unneeded: the ladder carries none.
-2. **A plugin reads the kernel only through `af`.** Its reader is the command line's versioned
-   `--json` documents and the `af store` read commands of §3.6. It never opens `events.sqlite`,
-   the `attempt_wall` sidecar, the CAS, a Warm Workspace or a Worker sandbox. The runner adapter
+2. **A plugin reads the kernel only through `af` and its declared exports.** Its reader is the
+   command line's versioned `--json` documents, the `af store` read commands of §3.6, and the
+   kernel exports of §3.6: directories the kernel writes in a versioned, documented format for
+   readers and never reads back for any decision, listed one by one in the surface table. It
+   never opens `events.sqlite`, the `attempt_wall` sidecar, the CAS, a Warm Workspace or a
+   Worker sandbox. The runner adapter
    of §3.14 is the one exception: it receives exactly one Attempt's sandbox and exact inputs from
    the kernel, under the access class, admission, cancellation and accounting rules the native
    adapters run under, and nothing else.
@@ -203,9 +206,11 @@ and stderr inherited, in the caller's working directory, and exits with the plug
 `cli.rs` changes for any later plugin.
 
 A plugin inherits the operator's environment, so `HOME`, the XDG variables, `PATH` and every
-`AF_*` override reach it and the `af` children it runs. The invocation protocol is the overlay
-the kernel adds, after removing any `AF_PLUGIN_*` and `AF_PLUGIN_HOOK` left by an enclosing
-invocation:
+`AF_*` override, the `AF_PLUGIN__<NAME>__<KEY>` overrides of §3.10 included, reach it and the
+`af` children it runs. The invocation protocol is the overlay the kernel adds, after removing
+exactly the six invocation-owned variables (`AF_PLUGIN_PROTOCOL`, `AF_PLUGIN_NAME`,
+`AF_PLUGIN_DIR`, `AF_PLUGIN_STATE`, `AF_PLUGIN_CACHE`, `AF_PLUGIN_HOOK`) an enclosing
+invocation may have left; nothing else is removed:
 
 | Variable | Holds |
 |---|---|
@@ -332,6 +337,17 @@ to *read* another release's state; printing a row's raw bytes with `known = fals
 narrowing of that refusal the P0 ADR states explicitly as its amendment of ADR-0145, and it is
 the only one: replay, projection and every command other than `af store` refuse as today.
 
+**Kernel exports.** Some kernel output is too large or too frequent for a document per call:
+the telemetry note's segments and blobs under `$XDG_STATE_HOME/af/telemetry/v1/` are the
+first. An export is a directory the kernel writes in a versioned, self-describing format
+(`af/TelemetrySegment@1`, `af/TelemetrySpan@1`, `af/TelemetryBlob@1` and the other records that
+note versions), documented as a contract, listed by root and format in the surface table, and
+never read back by the kernel for any decision (the telemetry note's own rule). A plugin reads
+an export directly, read-only, honouring the format's own locking and recovery rules (a sealed
+`.jsonl.gz` segment is immutable; a live `.jsonl` segment is the writer's), and validating every
+record it reads by its `kind@version`; the conformance plugin reads a fixture export. The
+SQLite Store, the sidecar and the CAS are not exports and never become one.
+
 ### 3.7 Writing into the kernel
 
 **Task files.** A plugin starts work exactly as a person does: it writes an `af.task-file/2`
@@ -361,7 +377,21 @@ nothing a plugin writes can be presented to a Worker as something the kernel obs
 (ADR-0132); Measurements and comparisons stay bindable only as recorded outputs (ADR-0134).
 `source`, `history`, `sources`, `requirements`, `base` and `continuation` are refused by name.
 
-At plan time the Task-file adapter reads the file (at most 16 MiB, the package bound), requires
+A v1 file binding is exactly one artifact: cardinality `one`, admitted only on a root port
+whose declared cardinality is `one` and whose `snapshot_affinity` is `unbound` or `any`. A
+`many` port, a `same_subject` port, and a port already bound by another form are refused by
+name before capture (ADR-0134 forbids implicit cardinality conversion, and a file carries no
+Subject Snapshot); a JSON array in the file is one payload, never several artifacts; a
+list-of-files form is deferred (§6).
+
+The limits are the ones the kernel already enforces, applied before execution and never by
+truncation: the serialized envelope must fit the CAS bound (8 MiB,
+`MAX_ARTIFACT_ENVELOPE_BYTES`), and the complete rendered request of every Worker that wires the
+port, this input included, must fit the Worker request bound (1 MiB, `MAX_WORKER_BYTES`). A
+binding that breaks either is refused at plan time with the bound named, so a payload that
+could be published but never delivered is refused before anything is published.
+
+At plan time the Task-file adapter reads the file, requires
 canonical JSON, requires `type` to equal the port's declared `artifact_type`, validates the
 payload against the schema the selected Worker package carries for that port when it carries
 one, publishes it into the Task Store's CAS with the producer `kernel_operation` and the
@@ -389,26 +419,40 @@ Worker.
 | `onboard.applied` | `af onboard --apply` wrote `.af/` | `repo` |
 | `storage.sweep` | the sweep over the budget, after the kernel evicted what it owns | `target_bytes` |
 
-A hook names an invocation that returned, not a state the Task or Round reached: a run that
-failed closes no Round, a `--heavy` run may close several, and the plugin reads the state with
-`"$AF_BIN" task show ID --state DIR --json` or its review counterpart. An interrupted command
-runs no hook: the kernel exits as ADR-0129 requires, and the plugin sees the run next time
-through `af store runs`. No command hands its document to the hook site.
+A hook names an invocation that returned, not a state the Task or Round reached; the plugin
+reads the state with `"$AF_BIN" task show ID --state DIR --json` or its review counterpart.
+`rounds_closed` is derived from the Round-closure events this invocation appended to the
+Store, whatever its exit code: an ordinary Campaign invocation closes at most one Round
+(`--heavy` included, which runs one Round per invocation), a review pipeline declared in a Task
+file may close several, a run that failed after it published a conclusion lists that Round,
+and a resumed run never lists a Round twice. An interrupted command runs no hook: the kernel
+exits as ADR-0129 requires, and the plugin sees the run next time through `af store runs`. No
+command hands its document to the hook site.
+
+A hook never runs Task work. While `AF_PLUGIN_HOOK` is set, the kernel refuses `task run`,
+`task start --execute`, `review run` and bare `af review` with the reason, because a hook is
+killed at its wall with its process group while a Task's Workers live in groups of their own
+(`review-process` places them there): killing a nested `af` would leave paid Workers running
+without the kernel that settles them (ADR-0129). A plugin that starts Tasks does so from a
+foreground command of its own that owns, waits for and cancels them (§3.17, `af backlog`).
 
 The document on stdin is `af/plugin-hook@1`: `schema`, `hook`, `af_version`, `repo`, `argv`,
 `exit_code`, `occurred_unix_ms`, and the identifiers above. The environment is §3.3's plus
 `AF_PLUGIN_HOOK`.
 
-Hooks run after the command's result is written and flushed, after the Storage Budget sweep,
-and before the update check's detached child, in plugin-name order. In both modes the plugin
-receives the document on stdin, which is then closed, and is killed with its process group at
-`hook_wall_ms`. `detached` (the default) execs `$AF_BIN plugin hook-run` as a child in its own
-process group with stdio null, as `self refresh-check` is spawned, and waits for nothing; that
-supervisor spawns the plugin, delivers the document, waits up to the wall, reaps the group, and
-exits. It is a bounded child that outlives the command only as long as the plugin does, not a
-daemon. `sync` does the same in the command's own process with the plugin's stderr inherited
-and stdout null, and the command returns only when the plugin has. Neither mode changes stdout,
-the exit code or any `--json` document. A hook that cannot start, times out or exits non-zero is
+Hooks run after the command's result is written and flushed, after the post-command Storage
+Budget sweep, and before the update check's detached child, in plugin-name order. In both
+modes the plugin is invoked as `<bin> hook <name>`, receives the document on stdin, which is
+then closed, and is killed with its process group at `hook_wall_ms`. `detached` (the default)
+spawns `$AF_BIN plugin hook-run <name> --wall-ms N` as a child in its own process group with
+stdout and stderr null and stdin a pipe, into which the kernel writes the one document (at most
+64 KiB) and closes it, never blocking on a supervisor that does not read (a write that fails or
+stalls is the hook's failure line, and the child is killed); that supervisor reads the document,
+spawns the plugin, writes the same bytes to its stdin, closes it, waits up to the wall, kills
+and reaps the group, and exits. It is a bounded child that outlives the command only as long as
+the plugin does, not a daemon. `sync` does the same in the command's own process with the
+plugin's stderr inherited and stdout null, and the command returns only when the plugin has.
+Neither mode changes stdout, the exit code or any `--json` document. A hook that cannot start, times out or exits non-zero is
 one line: on stderr for `sync` (`af: plugin backlog: task.run.ended hook exited 3`), and for
 `detached` one line appended to `$XDG_STATE_HOME/af/plugins/hooks.log` (kernel-owned, 1 MiB,
 rotated once), which `af plugin list` summarises as each plugin's last hook failure. A plugin
@@ -425,9 +469,15 @@ plugin writing there anyway is a bug `af plugin check` catches with a fixture ru
 counts three storage kinds per plugin, `plugin-install:<name>`, `plugin-state:<name>` and
 `plugin-cache:<name>`, in `af storage` and the budget (ADR-0144). Cache directories are entries
 the kernel evicts whole, least recently used first, never within an hour of use. State is never
-evicted by the kernel: when the budget is still exceeded after the kernel's own eviction, the
-sweep runs each enabled plugin's `storage.sweep` hook synchronously with `target_bytes`, and
-whatever remains is the operator's with `af plugin remove --purge`. Installed versions other than
+evicted by the kernel. The `storage.sweep` hook runs only from the two sweeps that happen after
+a command's result, the post-command sweep and `af storage prune --apply`, and only when the
+budget is still exceeded after the kernel's own eviction; it runs synchronously, each enabled
+plugin in name order with the remaining `target_bytes`, under its own bound of 60 seconds
+whatever the manifest's `hook_wall_ms` says, and the sweep reports what it could not free. The
+sweeps the kernel runs during execution, at the free-disk floor (`ensure_free_disk`) and
+before a new warm key (`before_new_warm_key`), never invoke a plugin: nothing a plugin does can
+sit inside admission or an Attempt. Whatever remains is the operator's with
+`af plugin remove --purge`. Installed versions other than
 `current` and the pinned ones are evicted like other installed versions.
 
 Nothing in use is evicted (ADR-0144). Every plugin process the kernel starts, a command, a hook
@@ -519,14 +569,24 @@ pins exist so that a team runs the same plugin, which is what sharability asks.
 
 The second implementation a Provider kind still lacks is an external one. A runner adapter is a
 plugin whose manifest declares `runner = "gemini"` (one kind per plugin) and whose executable
-speaks `af.runner/1` through three verbs, so the Provider registry's `kind` may name it. It is
+speaks `af.runner/1` through four verbs, so the Provider registry's `kind` may name it. It is
 the exception §3.1 clause 2 names: the kernel hands it one Attempt's materialized sandbox and
 the exact input bytes it composed, under the Attempt's access class, and nothing else; it never
 sees a Store, another sandbox or another Attempt. P0's ADR states the two kinds of plugin and
 this bound in the same clause.
 
+Every verb runs under one Provider context: the kernel passes `AF_RUNNER_AUTH_DIR`, the
+machine-local authentication directory the Provider registry binds for that Provider, exactly
+as the native adapters receive the selected directory (`providers/task.rs`,
+`TaskProviderIdentity.auth_dir`), so two Providers of one runner kind never fall through to
+one ambient account (ADR-0042). The kernel derives the Provider's canonical principal and
+authentication method from `identity`, records only the derived principal, and rechecks
+`identity` before it delivers a private input, refusing the Attempt when the account changed
+(`CurrentTaskProviderAdapter` does the same for the native adapters today).
+
 | Verb | Request | Answer |
 |---|---|---|
+| `identity --json` | — | `af/RunnerIdentity@1`: the account's stable identifier and authentication method under `AF_RUNNER_AUTH_DIR`; private, never printed by a public command, never stored |
 | `status --json` | — | authenticated or not, account label, the one command a human runs at a terminal to log in (ADR-0112: the plugin never starts a login) |
 | `models --json` | — | the model catalog with effort levels, for ADR-0148's validation |
 | `invoke` | `af/RunnerRequest@1` on stdin: the exact input bytes the kernel composed, the sandbox directory, the access class (`ReadOnly`, `ExecuteChecks`, `WriteSource`, `WriteSourceWithShell`), model, effort, deadline, the sandbox-local environment | `af/RunnerResult@1` on stdout: the output bytes, the model that answered, usage counters in `af/TaskTokenUsage@3`'s shape or `unknown` with a cause (ADR-0143), and a failure class from the kernel's own list |
@@ -558,12 +618,19 @@ with only its declared state and cache directories mounted writable and no Store
 all; `AF_BIN` inside the container is a broker shim that sends each command line over a mounted
 FIFO to the harness, which runs the real `af` against the fixture Store outside and returns
 stdout and the exit code. The harness lives only for the check and records every brokered
-call. A direct Store open fails inside the container as a missing path, and a write outside the
-declared directories fails on a read-only mount; both are recorded against the plugin. Without
-a container provider the boundary check is reported `not_run` and `af plugin check` claims no
-conformance; `--require-boundary` turns that into a failure. The echo fixture's tests include a
-legitimate brokered `AF_BIN` read and a direct-open negative. A plugin template repository
-carries the fixture's structure for a new plugin.
+call. Denial alone proves nothing, because a plugin can swallow the error and exit 0, so the
+harness also audits: inside the container the plugin runs under a file-syscall tracer
+(`strace -f -e trace=%file`, the container is Linux on every host, with the ptrace capability
+the harness requests for this check only), and the trace, not the plugin's output, is the
+record. Any path-naming syscall outside the plugin's bundle, its declared directories, the
+broker FIFO, the system paths the image provides and a private scratch directory is a
+violation whatever its result, `ENOENT` and `EACCES` included. This harness policy is the
+check's own and shares nothing with the Worker sandbox policy. Without a container provider,
+or when the provider cannot grant the tracer, the boundary check is reported `not_run` and
+`af plugin check` claims no conformance; `--require-boundary` turns that into a failure. The
+echo fixture's tests include a legitimate brokered `AF_BIN` read, a direct-open negative, and
+a negative that catches the denial and exits 0. A plugin template repository carries the
+fixture's structure for a new plugin.
 
 ### 3.16 What stays in the kernel, and the whole surface on one page
 
@@ -583,7 +650,7 @@ Everything else is a plugin, including what the two notes in flight planned as k
 
 | Feature in flight | Kernel part | Plugin part |
 |---|---|---|
-| Telemetry | T1's substrate and segment writer, T2, T3's observer and taps, T5's probe and receiver, the `[telemetry]` table as a machine-only plugin table | `af-telemetry`: T4's analytics, exports and sinks, T6's pane, all reading the documented segment format and never the Store |
+| Telemetry | T1's substrate and segment writer, T2, T3's observer and taps, T5's probe and receiver, the `[telemetry]` table as a machine-only plugin table, the segment directory declared as a kernel export | `af-telemetry`: T4's analytics, exports and sinks, T6's pane, all reading the export through the seam of §3.6 and never the Store |
 | Project | the Project ID derivation, `--workspace` on the Task and review commands (they resolve `--state`) | `af-project`: Surveys, the Surveyor as a `task.run.ended` hook, Briefs rendered to a file and bound to the `project` port by whoever starts the Task, `activity` over `af store` |
 
 The whole kernel surface toward plugins, which `af help plugins` renders:
@@ -596,6 +663,7 @@ The whole kernel surface toward plugins, which `af help plugins` renders:
 | kernel keeps | the origin of §3.5, the receipts, `hooks.log` | `af.plugin-origin/1`, `receipt.toml`, one line per failure |
 | plugin reads | every `--json` document the CLI prints | each its own `kind@version` |
 | plugin reads | `af store list`, `runs`, `events`, `attempts`, `artifact` | `af/store-*@1` |
+| plugin reads | the kernel exports of §3.6: `$XDG_STATE_HOME/af/telemetry/v1/` (`segments/`, `blobs/`) | the telemetry note's `af/Telemetry*@1` records; one row per export |
 | plugin writes | a Task file | `af.task-file/2` |
 | plugin writes | a file-bound root input | the `file` form of `inputs` |
 | plugin answers | a pane | `af/plugin-pane@1` |
@@ -623,19 +691,22 @@ state directory; `af analytics spend --since 30d`, `failures`, `flakes`, `worker
 `projects` answer from the index; `af analytics pane --json` shows the last runs. It enumerates
 Stores through `af store list`, so work spread over many Stores and Workspaces is one answer.
 Nothing it records is read by the kernel; `af plugin remove analytics --purge` leaves no trace.
-Once the telemetry capture lands in the kernel, the same plugin reads the segments too and
-becomes the `af-telemetry` reader side.
+Once the telemetry capture lands in the kernel, the same plugin reads the telemetry export
+too (§3.6) and becomes the `af-telemetry` reader side.
 
 **`af backlog`.** A `command` plugin with `storage = "state"` and the hook `task.run.ended`. It
 holds an ordered queue of work items from the sources it is told about: GitHub issues through
 `gh`, a Jira filter, a directory of Markdown files, a hand-written list. `af backlog add`, `rank`,
-`next`, `status`. `af backlog run --parallel 2` writes one `af.task-file/2` per item under its
-state directory, binding an issue through the kernel's own issue sources (ADR-0061) and any
-Brief or evidence through the `file` form, and starts it with `"$AF_BIN" task start --file
---execute`; the `task.run.ended` hook moves the item to done, failed or needs-human and starts
-the next, each start being an ordinary Task with its own plan, budget and approval. It never
-approves a plan (ADR-0056), never delivers, never pushes. Its `pane` lists the queue with the
-state chips.
+`next`, `status`. `af backlog run --parallel 2` is a foreground command: it writes one
+`af.task-file/2` per item under its state directory, binding an issue through the kernel's own
+issue sources (ADR-0061) and any Brief or evidence through the `file` form, starts each with
+`"$AF_BIN" task start --file --execute` as a child it owns, waits for, and cancels by forwarding
+`SIGINT` and `SIGTERM` to the child `af`, which stops its Workers as ADR-0129 requires; when
+one child returns it starts the next until the queue is empty or the operator interrupts, and a
+cancellation fixture proves it leaves no Worker alive. Each start is an ordinary Task with its
+own plan, budget and approval. The `task.run.ended` hook only moves the item to done, failed or
+needs-human; it starts nothing (§3.8). It never approves a plan (ADR-0056), never delivers,
+never pushes. Its `pane` lists the queue with the state chips.
 
 **`af reviewer`.** A plugin that ships reviewer Worker packages under `packages/` (a
 `worker.toml` with `[runner] kind = "model"` or `"command"`, instructions, schemas), and a
@@ -702,8 +773,10 @@ command and for manifest discovery alone, with the hardware named; the package i
 while p99 exceeds 50 ms.
 
 Acceptance: `plugin_inherits_the_environment_with_the_overlay_and_passes_exit_codes` (0, 3,
-and a signal; `HOME` and `XDG_CONFIG_HOME` reach the plugin's `af` child; stale `AF_PLUGIN_*`
-removed; user scope without `AF_REPO`); `plugin_on_path_runs_as_dev_and_off_under_path_false`;
+and a signal; `HOME` and `XDG_CONFIG_HOME` reach the plugin's `af` child; only the six
+invocation-owned variables are removed; a non-default `AF_PLUGIN__ECHO__COLOUR` override and
+its environment origin survive into the plugin's `af config show --origin --json`; user scope
+without `AF_REPO`); `plugin_on_path_runs_as_dev_and_off_under_path_false`;
 `unknown_word_is_still_exit_2`; `help_lists_installed_plugins_without_scanning_path` (`PATH`
 set to a directory that would fail if read); `help_latency_with_twenty_manifests` (the protocol
 above); `reserved_names_are_refused`; `manifest_protocol_and_min_af_are_checked_before_exec`;
@@ -733,8 +806,9 @@ SQLite rows); `store_events_marks_an_unknown_type_known_false_and_decodes_nothin
 
 Deliverables: `af.task-file/2` with the `file` form, `/1` refused by name; the
 `task-input-bindings` document, schemas and fixtures moved together; capture, namespace check,
-type check, schema check, publication with provenance, pinning, manifest entry, preview and
-explain lines. ADR: an amendment to ADR-0134.
+cardinality and affinity check, the envelope and rendered-request bounds, type check, schema
+check, publication with provenance, pinning, manifest entry, preview and explain lines. ADR: an
+amendment to ADR-0134.
 
 Acceptance: `task_file_v1_is_refused_by_name`;
 `file_bound_port_reaches_only_the_worker_that_wires_it`;
@@ -745,7 +819,10 @@ report port); `file_bound_manifest_entry_carries_external_provenance`;
 `file_bound_input_replays_after_the_file_is_deleted`;
 `file_bound_input_cannot_cover_an_obligation` (a pipeline wiring it into `coverage` is refused
 at load); `refused_ports_stay_refused` (`requirements`, `base`, `continuation`);
-`file_over_16mib_is_refused_before_capture`.
+`file_bound_many_port_and_same_subject_port_are_refused_by_name` (an array payload stays one
+artifact); `file_bound_envelope_over_8mib_is_refused_before_publication` (payload plus envelope
+overhead at the bound); `file_bound_rendered_request_over_1mib_is_refused_before_execution`
+(several individually small inputs whose rendered request exceeds the bound).
 
 ### P4 — Hooks, state, cache, budget
 
@@ -757,7 +834,13 @@ record version.
 
 Acceptance: `hook_runs_after_the_result_and_changes_no_output` (stdout, `--json` document and
 exit code byte-identical with and without a failing hook); `interrupted_command_runs_no_hook`;
-`review_run_ended_lists_the_rounds_the_run_closed` (none for a failed run, two for a heavy run);
+`review_run_ended_lists_the_rounds_the_run_closed` (one for a Campaign `--heavy` invocation,
+several for a Task-file review pipeline, the published Round for a run that failed after its
+conclusion, none twice on resume); `task_work_is_refused_inside_a_hook` (`task run`, `task
+start --execute` and `review run` under `AF_PLUGIN_HOOK`);
+`hook_run_receives_the_exact_document_on_a_pipe` (byte-identical transfer, malformed input, a
+supervisor that never reads);
+`storage_sweep_hook_never_runs_at_the_free_disk_floor_or_before_a_warm_key`;
 `hooks_run_in_name_order_and_a_sync_hook_is_killed_at_its_wall`;
 `detached_hook_receives_the_document_is_killed_at_its_wall_and_is_reaped` (a plugin that never
 reads stdin, one that forks a grandchild, one that exits 3; the failure line in `hooks.log`);
@@ -795,11 +878,15 @@ Acceptance: `plugin_pane_paints_only_what_the_document_carries`;
 
 ### P7 — The runner seam
 
-Deliverables: `af.runner/1`, `af/RunnerRequest@1`, `af/RunnerResult@1`; the external adapter
-behind `WorkerModelAdapter`; the Provider registry accepting a runner plugin's kind; `status`,
-`models` and admission through the plugin; one external adapter as the proof. ADR: its own.
+Deliverables: `af.runner/1`, `af/RunnerRequest@1`, `af/RunnerResult@1`, `af/RunnerIdentity@1`;
+`AF_RUNNER_AUTH_DIR`; the external adapter behind `WorkerModelAdapter`; the Provider registry
+accepting a runner plugin's kind; `identity`, `status`, `models` and admission through the
+plugin; one external adapter as the proof. ADR: its own.
 
-Acceptance: `external_runner_is_supervised_cancelled_and_deadlined_by_the_kernel`;
+Acceptance: `two_providers_of_one_runner_kind_use_their_own_auth_directories`;
+`an_account_change_is_refused_before_the_private_input_is_delivered`;
+`runner_identity_is_never_printed_or_stored` (only the derived principal is recorded);
+`external_runner_is_supervised_cancelled_and_deadlined_by_the_kernel`;
 `external_runner_output_is_redacted_and_stored_as_raw_artifacts_before_parsing`;
 `external_runner_usage_is_validated_and_unknown_settles_at_zero` (ADR-0143);
 `external_runner_is_trusted_unsafe_and_cannot_auto_apply`;
@@ -813,6 +900,8 @@ Provider kind is wanted.
 
 ## 6. Not in v1
 
+- **A list-of-files binding.** A v1 file binding is one artifact on a `one` port; a form that
+  gathers several files into a `many` port is a later decision with its own fixtures.
 - **Plugin-to-plugin dependencies.** A plugin calls another's command line; the manifest
   declares no dependency graph.
 - **Completion of a plugin's own arguments.** `af completions` completes plugin names; a
@@ -855,6 +944,9 @@ Provider kind is wanted.
   invocations that have none. Rejected.
 - **An `op = "plugin"` Task operator.** Replay would depend on an executable the Store does not
   pin; the command Worker already runs a pinned program in a sandbox. Rejected.
+- **Tasks started from hooks.** A hook is killed with its process group at its wall; a Task's
+  Workers are in their own groups and would outlive the kernel that settles them. Refused by
+  the kernel while `AF_PLUGIN_HOOK` is set.
 - **A hook on interruption.** The interrupted path exits as ADR-0129 requires; a plugin that
   must know reads `af store runs` next time. Rejected.
 - **Proving the conformance boundary with file permissions.** The plugin and its `af` child run
