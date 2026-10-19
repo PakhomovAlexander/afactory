@@ -25,7 +25,7 @@ pub(crate) fn run(command: ProjectCommand) -> Result<i32, String> {
         ProjectCommand::Show { json } => show(json),
         ProjectCommand::Workspaces { json } => workspaces(json),
         ProjectCommand::Survey { json } => survey(json),
-        ProjectCommand::Refresh { json } => refresh(json),
+        ProjectCommand::Refresh { json, force } => refresh(json, force),
         ProjectCommand::History { json } => history(json),
         ProjectCommand::Workspace { command } => match command {
             WorkspaceCommand::New {
@@ -280,17 +280,19 @@ fn survey(json_output: bool) -> Result<i32, String> {
     Ok(0)
 }
 
-fn refresh(json_output: bool) -> Result<i32, String> {
+fn refresh(json_output: bool, force: bool) -> Result<i32, String> {
     let (checkout, store) = open_here()?;
     // Released while the head is measured; the Surveyor opens the Store again to record.
     drop(store);
-    let (word, recorded) = match super::survey::refresh(&checkout)? {
-        super::survey::Refreshed::Recorded(recorded) => ("recorded", recorded),
-        super::survey::Refreshed::Unchanged(recorded) => ("unchanged", recorded),
+    let (word, recorded) = match super::survey::refresh(&checkout, force)? {
+        super::survey::Refreshed::Recorded(recorded) => ("recorded".to_string(), recorded),
+        super::survey::Refreshed::Unchanged(recorded) => {
+            (super::survey::unchanged_line(&recorded.event), recorded)
+        }
     };
     if json_output {
-        if word == "unchanged" {
-            eprintln!("unchanged: the head, policy and Surveyor equal the newest Survey's");
+        if word != "recorded" {
+            eprintln!("{word}");
         }
         print_record(&recorded)?;
     } else {

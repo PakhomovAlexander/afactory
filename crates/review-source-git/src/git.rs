@@ -21,7 +21,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use review_core::{ChangeSetV1, PathRenameV1};
 use review_process::{
@@ -211,6 +211,9 @@ pub struct Repo {
     /// so it is paid once, not once per capture.
     repository_id: std::sync::OnceLock<String>,
     timeout: Duration,
+    /// One deadline for every subprocess, when a caller has one: each gets the lesser of
+    /// `timeout` and what remains of it.
+    deadline: Option<Instant>,
 }
 
 /// What a failed git command left behind. Its stderr, normally; when there is none, the exit
@@ -239,6 +242,7 @@ impl Repo {
             home: home.as_ref().to_path_buf(),
             repository_id: std::sync::OnceLock::new(),
             timeout: DEFAULT_GIT_TIMEOUT,
+            deadline: None,
         }
     }
 
@@ -246,6 +250,21 @@ impl Repo {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
+    }
+
+    /// Bound every Git subprocess by one shared `deadline` as well, so a sequence of them ends
+    /// with it rather than one timeout after another.
+    pub fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+
+    /// The timeout of the next subprocess: `timeout`, cut to what remains of the deadline.
+    fn limit(&self) -> Duration {
+        self.deadline.map_or(self.timeout, |deadline| {
+            self.timeout
+                .min(deadline.saturating_duration_since(Instant::now()))
+        })
     }
 
     pub fn workdir(&self) -> &Path {
@@ -332,7 +351,7 @@ impl Repo {
         input: Option<Vec<u8>>,
     ) -> Result<Output, GitError> {
         let output =
-            run_supervised_with_policy(command, input, self.timeout, ExitPolicy::KillProcessGroup)
+            run_supervised_with_policy(command, input, self.limit(), ExitPolicy::KillProcessGroup)
                 .map_err(|error| self.supervision_error(args, error))?;
         let mut stderr = output.stderr;
         if output.stderr_held {
@@ -564,7 +583,7 @@ impl Repo {
         let display_args = vec!["fast-import".into(), "--quiet".into(), "--force".into()];
         let output = run_supervised_streaming(
             &mut cmd,
-            self.timeout,
+            self.limit(),
             ExitPolicy::KillProcessGroup,
             |input| -> Result<(), GitError> {
             let mut input = BufWriter::with_capacity(256 * 1024, input);
@@ -863,7 +882,7 @@ impl Repo {
         let display_args = args.iter().map(|arg| (*arg).to_string()).collect();
         run_supervised_duplex(
             &mut cmd,
-            self.timeout,
+            self.limit(),
             ExitPolicy::KillProcessGroup,
             writer,
             reader,
@@ -1192,7 +1211,22 @@ pub fn split_nul(bytes: &[u8]) -> Vec<&[u8]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_tree_diff, rename_detection_was_truncated};
+    use super::{Repo, parse_tree_diff, rename_detection_was_truncated};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn one_deadline_cuts_every_subprocess_timeout_to_what_remains() {
+        let repo = Repo::open("/nonexistent", "/nonexistent").with_timeout(Duration::from_secs(60));
+        assert_eq!(
+            repo.limit(),
+            Duration::from_secs(60),
+            "no deadline, the timeout"
+        );
+        let soon = repo.with_deadline(Instant::now() + Duration::from_secs(5));
+        assert!(soon.limit() <= Duration::from_secs(5));
+        let passed = soon.with_deadline(Instant::now() - Duration::from_millis(1));
+        assert_eq!(passed.limit(), Duration::ZERO);
+    }
 
     const OID: &str = "0123456789012345678901234567890123456789";
 

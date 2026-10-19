@@ -334,10 +334,13 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
             digests: BTreeMap::from([("x86_64-unknown-linux-musl".into(), digest('d'))]),
         }),
         head: HEAD.into(),
+        refs_digest: digest('b'),
         tree_digest: Some(digest('e')),
+        tree_digest_reason: None,
         cutoff_unix_s: 1_792_000_000.into(),
         policy_digest: digest('f'),
-        surveyor_version: 1.into(),
+        surveyor_version: 2.into(),
+        git_version: "git version 2.50.1".into(),
     };
     let tree = SurveyTreeV1 {
         files: 3.into(),
@@ -384,6 +387,7 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
             other_files: 2.into(),
             other_lines: 2.into(),
         },
+        seen: BTreeMap::new(),
     };
     let window = |commits: u64| SurveyWindowV1 {
         commits: commits.into(),
@@ -423,9 +427,13 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
         ],
         tags: Some(SurveyTagsV1 {
             count: 2.into(),
-            release: vec!["v1.0.0".into()],
+            release: vec![SurveyNameV1 {
+                name: "v1.0.0".into(),
+                truncated: false,
+            }],
         }),
         local_branches: Some(1.into()),
+        seen: BTreeMap::new(),
     };
     let contributors = SurveyContributorsV1 {
         identity: SurveyIdentityPolicyV1::Name,
@@ -446,6 +454,7 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
                     first_unix_s: 1_700_000_000.into(),
                     last_unix_s: 1_791_000_000.into(),
                     active_90d: true,
+                    truncated: false,
                 },
             ),
             (
@@ -457,44 +466,57 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
                     first_unix_s: 1_700_000_000.into(),
                     last_unix_s: 1_700_000_000.into(),
                     active_90d: false,
+                    truncated: false,
                 },
             ),
         ]),
+        seen: BTreeMap::new(),
     };
     let decisions = SurveyDecisionsV1 {
         count: 2.into(),
         by_status: BTreeMap::from([("accepted".into(), 1.into()), ("unknown".into(), 1.into())]),
-        newest: vec![
-            SurveyDecisionV1 {
-                number: "0002".into(),
-                path: "docs/adr/0002-b.md".into(),
-                title: Some("ADR-0002: B".into()),
-                status: Some("accepted".into()),
-                date: Some("2026-10-19".into()),
-            },
+        records: vec![
             SurveyDecisionV1 {
                 number: "0001".into(),
                 path: "docs/adr/0001-a.md".into(),
                 title: None,
+                truncated: false,
                 status: None,
                 date: None,
             },
+            SurveyDecisionV1 {
+                number: "0002".into(),
+                path: "docs/adr/0002-b.md".into(),
+                title: Some("Contact ada@example.com".into()),
+                truncated: true,
+                status: Some("accepted".into()),
+                date: Some("2026-10-19".into()),
+            },
         ],
+        seen: BTreeMap::new(),
+    };
+    let term = |name: &str| SurveyNameV1 {
+        name: name.into(),
+        truncated: false,
     };
     let vocabulary = SurveyVocabularyV1 {
         file: "CONTEXT.md".into(),
         present: true,
-        count: 2.into(),
-        terms: vec!["Project".into(), "Survey".into()],
+        count: Some(2.into()),
+        terms: Some(vec![term("Project"), term("Survey")]),
+        seen: BTreeMap::new(),
     };
     let checks = SurveyChecksV1 {
         declared: vec![SurveyCheckV1 {
             source: ".af/code-policy.toml".into(),
             name: "check".into(),
             program: "make".into(),
+            truncated: false,
         }],
         toolchain: vec!["Cargo.toml".into(), "rust-toolchain.toml".into()],
         ci_workflows: 1.into(),
+        unreadable: Vec::new(),
+        seen: BTreeMap::new(),
     };
     ProjectSurveyV1 {
         schema: PROJECT_SURVEY_V1.into(),
@@ -540,6 +562,76 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
     );
     assert_valid(SCHEMA, &cut_value);
 
+    // An early deadline leaves the Tree Digest absent with its reason, never a digest of a part;
+    // a cut list says how many it saw; an unread declaration is listed; a name that is an
+    // address is hashed.
+    let mut cut_short = survey.clone();
+    cut_short.completeness = SurveyCompletenessV1::Partial;
+    if let Some(identity) = cut_short.identity.body.as_mut() {
+        identity.tree_digest = None;
+        identity.tree_digest_reason = Some(SurveyReasonV1::MaxWallMs);
+    }
+    cut_short.identity.completeness = SurveyCompletenessV1::Partial;
+    cut_short.identity.reason = Some(SurveyReasonV1::MaxWallMs);
+    if let Some(tree) = cut_short.tree.body.as_mut() {
+        tree.seen = std::collections::BTreeMap::from([("paths".into(), 200_001.into())]);
+    }
+    cut_short.tree.completeness = SurveyCompletenessV1::Partial;
+    cut_short.tree.reason = Some(SurveyReasonV1::MaxPaths);
+    if let Some(checks) = cut_short.checks.body.as_mut() {
+        checks.unreadable = vec![".af/pipelines/huge.toml".into()];
+    }
+    cut_short.checks.completeness = SurveyCompletenessV1::Partial;
+    cut_short.checks.reason = Some(SurveyReasonV1::MaxFileBytes);
+    if let Some(vocabulary) = cut_short.vocabulary.body.as_mut() {
+        vocabulary.count = None;
+        vocabulary.terms = None;
+    }
+    cut_short.vocabulary.completeness = SurveyCompletenessV1::Partial;
+    cut_short.vocabulary.reason = Some(SurveyReasonV1::MaxFileBytes);
+    if let Some(contributors) = cut_short.contributors.body.as_mut() {
+        let entry = contributors.by_identity.remove("Ada").unwrap();
+        contributors
+            .by_identity
+            .insert("h:0123456789abcdef".into(), entry);
+    }
+    cut_short.validate().unwrap();
+    let cut_short_value = serde_json::to_value(&cut_short).unwrap();
+    assert!(cut_short_value["identity"].get("tree_digest").is_none());
+    assert_eq!(
+        cut_short_value["identity"]["tree_digest_reason"],
+        "max_wall_ms"
+    );
+    assert_eq!(cut_short_value["tree"]["seen"]["paths"], "200001");
+    assert!(cut_short_value["vocabulary"].get("terms").is_none());
+    assert_valid(SCHEMA, &cut_short_value);
+    for (broken, why) in [
+        {
+            let mut both = cut_short.clone();
+            if let Some(identity) = both.identity.body.as_mut() {
+                identity.tree_digest = Some(digest('e'));
+            }
+            (both, "a Tree Digest and its absence's reason at once")
+        },
+        {
+            let mut complete = cut_short.clone();
+            complete.tree.completeness = SurveyCompletenessV1::Complete;
+            complete.tree.reason = None;
+            (complete, "a section that cut a list is never complete")
+        },
+        {
+            let mut unread = cut_short.clone();
+            unread.vocabulary.completeness = SurveyCompletenessV1::Complete;
+            unread.vocabulary.reason = None;
+            (
+                unread,
+                "an unread vocabulary is never complete with zero terms",
+            )
+        },
+    ] {
+        assert!(broken.validate().is_err(), "{why}");
+    }
+
     let mut hashed = survey.clone();
     if let Some(contributors) = hashed.contributors.body.as_mut() {
         contributors.identity = SurveyIdentityPolicyV1::EmailHash;
@@ -576,6 +668,41 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
                 "last_unix_s": "1", "active_90d": true}}),
             ),
             "an email is never an identity",
+        ),
+        (
+            pointer("/identity/git_version", json!("")),
+            "the git version is git's line",
+        ),
+        (
+            {
+                let mut changed = value.clone();
+                changed["identity"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("refs_digest");
+                changed
+            },
+            "the identity names the refs of the survey key",
+        ),
+        (
+            pointer("/decisions/records/0/number", json!("00001")),
+            "a decision number is four digits",
+        ),
+        (
+            pointer("/decisions/records/1/truncated", json!(false)),
+            "only a cut string is marked",
+        ),
+        (
+            {
+                let mut changed = value.clone();
+                changed["tree"]["seen"] = json!({"lines": "9"});
+                changed
+            },
+            "seen names the section's lists",
+        ),
+        (
+            pointer("/vocabulary/terms/0/name", json!("x".repeat(257))),
+            "a display string is at most 256 bytes",
         ),
         (
             pointer("/checks", json!({"completeness": "unavailable"})),
@@ -648,7 +775,8 @@ fn survey_events_name_the_survey_by_digest_and_never_a_path_or_an_email() {
         cutoff_unix_s: 1_792_000_000.into(),
         completeness: SurveyCompletenessV1::Complete,
         policy_digest: digest('b'),
-        surveyor_version: 1.into(),
+        surveyor_version: 2.into(),
+        refs_digest: digest('d'),
         previous_survey_id: Some(digest('c')),
         recorded_unix_ms: 1_792_000_000_123.into(),
     };
@@ -687,7 +815,11 @@ fn survey_events_name_the_survey_by_digest_and_never_a_path_or_an_email() {
         ),
         (
             without(&value, "policy_digest"),
-            "the skip rule needs the policy digest",
+            "the survey key needs the policy digest",
+        ),
+        (
+            without(&value, "refs_digest"),
+            "the survey key needs the refs digest",
         ),
     ] {
         refused(RECORDED, EventType::SurveyRecordedV1, &broken, why);

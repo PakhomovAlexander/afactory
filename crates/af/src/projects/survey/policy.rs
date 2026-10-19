@@ -1,4 +1,7 @@
-//! The `[survey]` table of `.af/af.toml` (ADR-0152): the bounds and globs a Survey measures by.
+//! The `[survey]` table of `.af/af.toml` (ADR-0152): the bounds and patterns a Survey measures
+//! by. Every pattern is matched by `crate::project::glob_matches`, the one grammar of
+//! `.af/af.toml`: `**` spans segments, `*` a run inside one, `?` one character, and every other
+//! character is literal, brackets included.
 //!
 //! The table lives in the project layer and deep-merges like every other table of the
 //! configuration ladder, so the directory layer above every checkout can set it once, and the
@@ -13,8 +16,6 @@ use review_core::project::SurveyIdentityPolicyV1;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::glob;
-
 /// The table as one layer writes it: every key optional, unknown keys refused.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +23,9 @@ pub(crate) struct SurveyTable {
     max_wall_ms: Option<u64>,
     max_commits: Option<u64>,
     max_file_bytes: Option<u64>,
+    max_paths: Option<u64>,
+    max_entries: Option<u64>,
+    max_survey_bytes: Option<u64>,
     exclude: Option<Vec<String>>,
     tests: Option<Vec<String>>,
     decisions: Option<String>,
@@ -34,9 +38,9 @@ pub(crate) struct SurveyTable {
     languages: Option<BTreeMap<String, String>>,
 }
 
-/// Upper bound on the entries of one glob list or of `[survey.languages]`.
+/// Upper bound on the entries of one pattern list or of `[survey.languages]`.
 const MAX_ENTRIES: usize = 256;
-/// Upper bound on one glob, path or language key.
+/// Upper bound on one pattern, path or language key.
 const MAX_TEXT: usize = 256;
 
 /// The effective policy: the defaults, with every layer's `[survey]` merged over them.
@@ -45,6 +49,12 @@ pub(crate) struct Policy {
     pub(crate) max_wall_ms: u64,
     pub(crate) max_commits: u64,
     pub(crate) max_file_bytes: u64,
+    /// Tree entries considered after `exclude`.
+    pub(crate) max_paths: u64,
+    /// Items in any list of a section.
+    pub(crate) max_entries: u64,
+    /// Bytes of the record.
+    pub(crate) max_survey_bytes: u64,
     pub(crate) exclude: Vec<String>,
     pub(crate) tests: Vec<String>,
     pub(crate) decisions: String,
@@ -65,9 +75,12 @@ impl Default for Policy {
             max_wall_ms: 60_000,
             max_commits: 100_000,
             max_file_bytes: 1_048_576,
+            max_paths: 200_000,
+            max_entries: 1_000,
+            max_survey_bytes: 1_048_576,
             exclude: Vec::new(),
             tests: strings(&["**/tests/**", "**/*_test.*", "**/test_*", "**/fixtures/**"]),
-            decisions: "docs/adr/[0-9][0-9][0-9][0-9]-*.md".into(),
+            decisions: "docs/adr/*.md".into(),
             vocabulary: "CONTEXT.md".into(),
             release_tags: "v*".into(),
             identity: SurveyIdentityPolicyV1::Name,
@@ -163,6 +176,9 @@ impl Policy {
             max_wall_ms: table.max_wall_ms.unwrap_or(defaults.max_wall_ms),
             max_commits: table.max_commits.unwrap_or(defaults.max_commits),
             max_file_bytes: table.max_file_bytes.unwrap_or(defaults.max_file_bytes),
+            max_paths: table.max_paths.unwrap_or(defaults.max_paths),
+            max_entries: table.max_entries.unwrap_or(defaults.max_entries),
+            max_survey_bytes: table.max_survey_bytes.unwrap_or(defaults.max_survey_bytes),
             exclude: table.exclude.unwrap_or(defaults.exclude),
             tests: table.tests.unwrap_or(defaults.tests),
             decisions: table.decisions.unwrap_or(defaults.decisions),
@@ -181,8 +197,17 @@ impl Policy {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if self.max_wall_ms == 0 || self.max_commits == 0 {
-            return Err("max_wall_ms and max_commits are at least 1".into());
+        if self.max_wall_ms == 0
+            || self.max_commits == 0
+            || self.max_paths == 0
+            || self.max_entries == 0
+            || self.max_survey_bytes == 0
+        {
+            return Err(
+                "max_wall_ms, max_commits, max_paths, max_entries and max_survey_bytes are at \
+                 least 1"
+                    .into(),
+            );
         }
         if self.max_wall_ms > 86_400_000 {
             return Err("max_wall_ms is at most 86400000 (one day)".into());
@@ -200,11 +225,11 @@ impl Policy {
             ("agent_trailers", &self.agent_trailers),
         ] {
             if globs.len() > MAX_ENTRIES {
-                return Err(format!("{key} holds at most {MAX_ENTRIES} globs"));
+                return Err(format!("{key} holds at most {MAX_ENTRIES} patterns"));
             }
             for pattern in globs {
                 if pattern.is_empty() || pattern.len() > MAX_TEXT {
-                    return Err(format!("{key} holds globs of 1 to {MAX_TEXT} bytes"));
+                    return Err(format!("{key} holds patterns of 1 to {MAX_TEXT} bytes"));
                 }
             }
         }
@@ -215,10 +240,22 @@ impl Policy {
             .map(|pattern| ("exclude or tests", pattern))
             .chain([("decisions", &self.decisions)])
         {
-            glob::validate_path_glob(pattern).map_err(|error| format!("{key}: {error}"))?;
+            // A pattern that could match no repository path is refused rather than ignored.
+            if pattern.is_empty()
+                || pattern.len() > MAX_TEXT
+                || pattern.starts_with('/')
+                || pattern.split('/').any(str::is_empty)
+            {
+                return Err(format!(
+                    "{key}: `{pattern}` is a pattern of 1 to {MAX_TEXT} bytes, anchored at the \
+                     repository root, without `/` at either end or an empty segment"
+                ));
+            }
         }
         if self.release_tags.is_empty() || self.release_tags.len() > MAX_TEXT {
-            return Err(format!("release_tags is a glob of 1 to {MAX_TEXT} bytes"));
+            return Err(format!(
+                "release_tags is a pattern of 1 to {MAX_TEXT} bytes"
+            ));
         }
         if !review_core::is_valid_repo_path(&self.vocabulary) || self.vocabulary.len() > MAX_TEXT {
             return Err("vocabulary is a repository path such as \"CONTEXT.md\"".into());
@@ -251,6 +288,9 @@ impl Policy {
             "max_wall_ms": self.max_wall_ms.to_string(),
             "max_commits": self.max_commits.to_string(),
             "max_file_bytes": self.max_file_bytes.to_string(),
+            "max_paths": self.max_paths.to_string(),
+            "max_entries": self.max_entries.to_string(),
+            "max_survey_bytes": self.max_survey_bytes.to_string(),
             "exclude": self.exclude,
             "tests": self.tests,
             "decisions": self.decisions,

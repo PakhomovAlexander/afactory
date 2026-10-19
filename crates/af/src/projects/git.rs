@@ -11,7 +11,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use review_process::{ExitPolicy, SupervisedError, SupervisedOutput, run_supervised_with_policy};
+use review_process::{
+    ExitPolicy, SupervisedDuplexOutput, SupervisedError, SupervisedOutput, run_supervised_duplex,
+    run_supervised_with_policy,
+};
 use review_source_git::Repo;
 
 /// The deadline of one plumbing command: delivery's.
@@ -126,6 +129,64 @@ impl Git {
             })
     }
 
+    /// Run git under `limit` with its stdout handed to `reader` as it arrives, never buffered
+    /// whole, and its stdin written by `writer`: the Surveyor's streams (ADR-0152). A reader
+    /// that returns early closes the pipe, which ends git; a git stopped at `limit` is told apart
+    /// from every other failure.
+    pub(crate) fn stream_within<I, R, F, G>(
+        &self,
+        args: &[OsString],
+        limit: Duration,
+        writer: F,
+        reader: G,
+    ) -> Result<SupervisedDuplexOutput<I, R>, Stopped>
+    where
+        I: Send,
+        R: Send,
+        F: FnOnce(&mut dyn std::io::Write) -> Result<(), I> + Send,
+        G: FnOnce(&mut dyn std::io::Read) -> R + Send,
+    {
+        let mut command = crate::task::isolated_git(&self.directory, self.home.path());
+        command.args(args);
+        run_supervised_duplex(
+            &mut command,
+            limit,
+            ExitPolicy::KillProcessGroup,
+            writer,
+            reader,
+        )
+        .map_err(|error| match error {
+            SupervisedError::TimedOut { .. } => Stopped {
+                deadline: true,
+                message: format!(
+                    "git {} did not finish within its deadline of {limit:?}; it was stopped with \
+                     its process group",
+                    rendered(args)
+                ),
+            },
+            error => Stopped {
+                deadline: false,
+                message: format!("git {}: {error}", rendered(args)),
+            },
+        })
+    }
+
+    /// [`Git::stream_within`] under the plumbing deadline.
+    pub(crate) fn stream<I, R, F, G>(
+        &self,
+        args: &[OsString],
+        writer: F,
+        reader: G,
+    ) -> Result<SupervisedDuplexOutput<I, R>, Stopped>
+    where
+        I: Send,
+        R: Send,
+        F: FnOnce(&mut dyn std::io::Write) -> Result<(), I> + Send,
+        G: FnOnce(&mut dyn std::io::Read) -> R + Send,
+    {
+        self.stream_within(args, deadline(PLUMBING_DEADLINE), writer, reader)
+    }
+
     /// Run git and require success: its trimmed stdout, or its stderr as the error.
     pub(crate) fn require<I, S>(&self, args: I, input: Option<Vec<u8>>) -> Result<String, String>
     where
@@ -182,12 +243,15 @@ impl Git {
 
     /// The read-only capture boundary of `review_source_git`, under the capture deadline.
     pub(crate) fn repo(&self) -> Repo {
-        self.repo_within(deadline(CAPTURE_DEADLINE))
+        Repo::open(&self.directory, self.home.path()).with_timeout(deadline(CAPTURE_DEADLINE))
     }
 
-    /// The capture boundary under `limit`, for a capture inside the Surveyor's deadline.
+    /// The capture boundary under `limit`, every one of its git commands ending by the same
+    /// instant, for a capture inside the Surveyor's deadline.
     pub(crate) fn repo_within(&self, limit: Duration) -> Repo {
-        Repo::open(&self.directory, self.home.path()).with_timeout(limit)
+        Repo::open(&self.directory, self.home.path())
+            .with_timeout(limit)
+            .with_deadline(std::time::Instant::now() + limit)
     }
 }
 

@@ -188,9 +188,9 @@ Store, and on `plan` and `start` its bindings file.\n\n\
 A Survey (`af/ProjectSurvey@1`) is one kernel-measured description of the Project at its head: \
 identity, tree, history, contributors, decisions, vocabulary and checks, every number decimal \
 text, bounded by the `[survey]` table of `.af/af.toml`. The token-free Surveyor records one at \
-`af onboard --apply` and on `af project refresh`, in the Project Store, and never twice for the \
-same head, policy and Surveyor version. It calls no Provider, runs no hook or project code, and \
-never stores an email.\n\n\
+`af onboard --apply` and on `af project refresh`, in the Project Store, and reuses a complete \
+Survey while its survey key (head, refs, policy digest, Surveyor version) is unchanged. It calls \
+no Provider, runs no hook or project code, and never stores an author email.\n\n\
 Never: writes inside a checkout, commits, pushes, or removes a Store. Results go to stdout \
 (`--json` prints `af/project@1`, `af/project-workspaces@1`, `af/ProjectSurvey@1` or \
 `af/project-history@1`); warnings go to stderr. Exit codes: 0 success, 1 failure (the message \
@@ -1444,25 +1444,32 @@ yet; `af project refresh` records one.",
         #[arg(long)]
         json: bool,
     },
-    /// Measure the head into a new Survey now, unless it is unchanged
+    /// Measure the head into a new Survey now, unless its survey key is unchanged
     #[command(
         long_about = "Run the Surveyor now and wait: measure this checkout's head into a Survey \
-and record it in the Project Store, then print its summary. A head whose commit, policy digest \
-and Surveyor version equal the newest Survey's is not surveyed again: the command prints \
-`unchanged` with that Survey's summary and records nothing.\n\nThe Surveyor reads the \
-repository only through supervised git plumbing (ls-tree, cat-file, log, rev-list, tag, \
-for-each-ref) under one deadline, `[survey] max_wall_ms`; a section it cannot finish is partial \
-or unavailable and the Survey is still recorded. It calls no Provider, runs no hook or project \
-code and writes nothing inside the checkout. Contributors are named by author name or, under \
+and record it in the Project Store, then print its summary. A complete newest Survey with an \
+unchanged survey key (the head commit, the digest of `refs/heads` and `refs/tags`, the policy \
+digest and the Surveyor version) is reused: the command prints `unchanged: head …, refs …, \
+policy …, surveyor …` with that Survey's summary and records nothing. A new tag or branch, a \
+policy change or a partial newest Survey records a new one; --force records one regardless of \
+the key.\n\nThe Surveyor reads the repository only through supervised git plumbing (ls-tree, \
+cat-file, log, rev-list, for-each-ref), every stream read as it arrives, under one deadline, \
+`[survey] max_wall_ms`, checked at every item; a section it cannot finish is partial or \
+unavailable and the Survey is still recorded. `max_paths`, `max_entries`, `max_file_bytes` and \
+`max_survey_bytes` bound the rest. It calls no Provider, runs no hook or project code and \
+writes nothing inside the checkout. Contributors are named by author name or, under \
 `[survey] identity = \"email_hash\"`, by the first 16 hex digits of SHA-256 of the lowercased, \
-trimmed email; an email is never stored. A Survey that cannot be taken records SurveyFailed@1, \
-which `af project show` prints, and exits 1.",
-        after_long_help = "Examples:\n  af project refresh\n  af project refresh --json | jq .completeness\n  AF_SURVEY__MAX_COMMITS=1000 af project refresh"
+trimmed email; an author email is never stored. A Survey that cannot be taken, or whose record \
+is over `max_survey_bytes`, records SurveyFailed@1, which `af project show` prints, and exits 1.",
+        after_long_help = "Examples:\n  af project refresh\n  af project refresh --force\n  af project refresh --json | jq .completeness\n  AF_SURVEY__MAX_COMMITS=1000 af project refresh"
     )]
     Refresh {
         /// The recorded (or unchanged) `af/ProjectSurvey@1` record on stdout instead of text
         #[arg(long)]
         json: bool,
+        /// Record a Survey even when the survey key is unchanged
+        #[arg(long)]
+        force: bool,
     },
     /// List the Project's Surveys, newest first
     #[command(
