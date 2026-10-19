@@ -152,6 +152,12 @@ impl Git {
         Ok(roots.join(","))
     }
 
+    /// The repository's common directory, made absolute.
+    pub(crate) fn common_dir(&self) -> Result<PathBuf, String> {
+        let common = self.require(["rev-parse", "--git-common-dir"], None)?;
+        Ok(self.directory.join(common))
+    }
+
     /// The read-only capture boundary of `review_source_git`, under the capture deadline.
     pub(crate) fn repo(&self) -> Repo {
         Repo::open(&self.directory, self.home.path()).with_timeout(deadline(CAPTURE_DEADLINE))

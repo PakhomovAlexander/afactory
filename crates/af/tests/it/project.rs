@@ -1108,6 +1108,19 @@ fn a_refused_workspace_new_leaves_nothing_behind_and_the_same_command_then_succe
 /// makes what git makes before it checks anything out (the worktree directory, its `gitdir:`
 /// `.git` file and a locked entry under `<gitdir>/worktrees/`) and then runs `then`.
 fn partial_worktree_git(bin: &Path, repo: &Path, then: &str) -> PathBuf {
+    worktree_add_git(
+        bin,
+        repo,
+        "mkdir -p \"$target\" \"$entry\"\n  echo initializing > \"$entry/locked\"\n  echo \
+         \"$target/.git\" > \"$entry/gitdir\"\n  echo \"gitdir: $entry\" > \"$target/.git\"",
+        then,
+    )
+}
+
+/// A fake `git` that passes every command to the real one except `worktree add`, which runs the
+/// shell `creates` (with `$target`, the worktree path, and `$entry`, its administrative entry
+/// under `<gitdir>/worktrees/`) and then `then`.
+fn worktree_add_git(bin: &Path, repo: &Path, creates: &str, then: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     // Baked in by its absolute path: af's isolated git inherits only `PATH`, which names the fake.
     let real = Command::new("sh")
@@ -1126,10 +1139,8 @@ fn partial_worktree_git(bin: &Path, repo: &Path, then: &str) -> PathBuf {
              \"$@\"; do\n  if [ \"$adding\" = after ]; then target=$argument; break; fi\n  [ \
              \"$previous\" = worktree ] && [ \"$argument\" = add ] && adding=yes\n  [ \"$adding\" \
              = yes ] && [ \"$argument\" = -- ] && adding=after\n  previous=$argument\ndone\nif [ \
-             -n \"$target\" ]; then\n  entry='{admin}'/$(basename \"$target\")\n  mkdir -p \
-             \"$target\" \"$entry\"\n  echo initializing > \"$entry/locked\"\n  echo \
-             \"$target/.git\" > \"$entry/gitdir\"\n  echo \"gitdir: $entry\" > \
-             \"$target/.git\"\n  {then}\nfi\nexec '{real}' \"$@\"\n",
+             -n \"$target\" ]; then\n  entry='{admin}'/$(basename \"$target\")\n  \
+             {creates}\n  {then}\nfi\nexec '{real}' \"$@\"\n",
             admin = admin.display(),
             real = real,
         ),
@@ -1193,6 +1204,90 @@ fn a_worktree_add_that_fails_or_is_stopped_midway_is_undone_and_the_same_command
             .map(|entries| entries.count())
             .unwrap_or(0);
         assert_eq!(entries, 0, "{case}: an administrative entry survived");
+        assert!(!worktree.exists(), "{case}");
+        assert!(!store.join("workspaces/spike").exists(), "{case}");
+    }
+
+    let created = machine.expect(&repo, &["project", "workspace", "new", "spike"], 0);
+    assert!(
+        created.starts_with("created Workspace spike\n"),
+        "{created}"
+    );
+    assert_eq!(
+        git(&worktree, &["rev-parse", "HEAD"]),
+        git(&repo, &["rev-parse", "HEAD"])
+    );
+    assert_eq!(git(&worktree, &["status", "--porcelain"]), "");
+    assert!(store.join("workspaces/spike/state").is_dir());
+}
+
+#[test]
+fn a_worktree_add_stopped_before_it_made_the_path_leaves_no_administrative_entry() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "show"], 0);
+    let store = machine
+        .projects()
+        .join(expected_project_id(&repo).trim_start_matches("sha256:"));
+    let worktree = machine.root().join("fixture-wt-spike");
+    let before = repository_state(&machine, &repo);
+    let listed = git(&repo, &["worktree", "list", "--porcelain"]);
+    // What git makes first: the entry, locked while it initializes, then its `gitdir` and `HEAD`;
+    // the path comes later. Git neither lists nor prunes the locked entry without a `gitdir`.
+    let locked = "mkdir -p \"$entry\"\n  echo initializing > \"$entry/locked\"";
+    let with_gitdir = format!(
+        "{locked}\n  echo \"$target/.git\" > \"$entry/gitdir\"\n  echo \
+         'ref: refs/heads/af/spike' > \"$entry/HEAD\""
+    );
+    for (case, creates, then) in [
+        ("locked", locked, "exit 128"),
+        ("with-gitdir", with_gitdir.as_str(), "exit 128"),
+        ("stopped", locked, "sleep 120"),
+    ] {
+        let bin = machine.root().join(format!("bin-{case}"));
+        worktree_add_git(&bin, &repo, creates, then);
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let output = crate::common::af()
+            .current_dir(&repo)
+            .env("XDG_STATE_HOME", machine.state_home())
+            .env("AF_SELF_OFFLINE", "1")
+            .env("NO_COLOR", "1")
+            .env("PATH", path)
+            .env("AF_TEST_PROJECT_GIT_DEADLINE_MS", "3000")
+            .args(["project", "workspace", "new", "spike"])
+            .output()
+            .unwrap();
+        let (stdout, stderr) = text(&output);
+        assert_eq!(output.status.code(), Some(1), "{case}\n{stdout}\n{stderr}");
+        assert!(
+            stderr.contains("removed the administrative entry worktrees/fixture-wt-spike"),
+            "{case}: {stderr}"
+        );
+        assert!(
+            stderr.contains("deleted the branch refs/heads/af/spike"),
+            "{case}: {stderr}"
+        );
+        assert!(
+            stderr.contains("nothing was left behind"),
+            "{case}: {stderr}"
+        );
+        if case == "stopped" {
+            assert!(stderr.contains("deadline of 3s"), "{case}: {stderr}");
+        }
+        let entries = std::fs::read_dir(repo.join(".git/worktrees"))
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        assert_eq!(entries, 0, "{case}: an administrative entry survived");
+        assert_eq!(
+            git(&repo, &["worktree", "list", "--porcelain"]),
+            listed,
+            "{case}"
+        );
+        assert_eq!(repository_state(&machine, &repo), before, "{case}");
         assert!(!worktree.exists(), "{case}");
         assert!(!store.join("workspaces/spike").exists(), "{case}");
     }

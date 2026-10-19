@@ -5,7 +5,8 @@
 //! failure: it cannot answer without the Project Store. Text goes to stdout, `--json` prints one
 //! versioned document, and nothing is written inside a checkout.
 
-use std::ffi::OsStr;
+use std::collections::BTreeSet;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 use review_core::project::WorkspaceOriginV1;
@@ -280,7 +281,13 @@ pub(super) enum Made {
         from: PathBuf,
         to: PathBuf,
     },
-    Worktree(PathBuf),
+    /// The worktree at `path`, with the names `administrative` (`<common dir>/worktrees`) held
+    /// before `git worktree add` ran.
+    Worktree {
+        path: PathBuf,
+        administrative: PathBuf,
+        before: BTreeSet<OsString>,
+    },
     Registration(String),
 }
 
@@ -544,8 +551,15 @@ fn make(
             to: to.to_path_buf(),
         });
     }
-    // Recorded before git runs: an add that fails or is stopped can leave a partial worktree.
-    made.push(Made::Worktree(worktree.clone()));
+    // Recorded before git runs: an add that fails or is stopped can leave a partial worktree, or
+    // only its administrative entry, which the names held before tell apart from older ones.
+    let administrative = git.common_dir()?.join("worktrees");
+    let before = administrative_names(&administrative)?;
+    made.push(Made::Worktree {
+        path: worktree.clone(),
+        administrative,
+        before,
+    });
     git.require(
         [
             OsStr::new("worktree"),
@@ -578,43 +592,166 @@ fn lists_worktree(git: &Git, path: &Path) -> Result<bool, String> {
         }))
 }
 
+/// The names in `<common dir>/worktrees`; a missing directory holds none.
+fn administrative_names(administrative: &Path) -> Result<BTreeSet<OsString>, String> {
+    let listing = |error: std::io::Error| format!("listing {}: {error}", administrative.display());
+    match std::fs::read_dir(administrative) {
+        Ok(entries) => entries
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<Result<_, _>>()
+            .map_err(listing),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(BTreeSet::new()),
+        Err(error) => Err(listing(error)),
+    }
+}
+
+/// Whether the administrative entry `name`, whose `gitdir` file holds `gitdir` (`None` while it
+/// has none), is one `git worktree add` made for the worktree at `path`: git names the entry by
+/// the worktree's basename, followed by digits when that name is taken, and writes into `gitdir`
+/// the path of the worktree's `.git` file.
+pub(super) fn owns_entry(path: &Path, name: &OsStr, gitdir: Option<&str>) -> bool {
+    let Some(basename) = path.file_name() else {
+        return false;
+    };
+    let named = name
+        .as_encoded_bytes()
+        .strip_prefix(basename.as_encoded_bytes())
+        .is_some_and(|digits| digits.iter().all(u8::is_ascii_digit));
+    named
+        && gitdir.is_none_or(|gitdir| {
+            let gitdir = gitdir.strip_suffix('\n').unwrap_or(gitdir);
+            Path::new(gitdir) == path.join(".git")
+        })
+}
+
+/// The entries of `administrative` that are new since `before` and belong to the add of `path`.
+fn added_entries(
+    path: &Path,
+    administrative: &Path,
+    before: &BTreeSet<OsString>,
+) -> Result<Vec<OsString>, String> {
+    let mut added = Vec::new();
+    for name in administrative_names(administrative)?.difference(before) {
+        let file = administrative.join(name).join("gitdir");
+        let gitdir = match std::fs::read_to_string(&file) {
+            Ok(gitdir) => Some(gitdir),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("reading {}: {error}", file.display())),
+        };
+        if owns_entry(path, name, gitdir.as_deref()) {
+            added.push(name.clone());
+        }
+    }
+    Ok(added)
+}
+
+fn entry_names(entries: &[OsString]) -> String {
+    entries
+        .iter()
+        .map(|name| format!("worktrees/{}", name.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Remove whatever exists of the worktree `workspace new` was adding at `path`: through git when
 /// git can remove it as a worktree; otherwise its directory, tolerating its absence, then the
 /// lock a stopped `worktree add` leaves on its administrative entry, then every entry whose
-/// worktree is gone. Whether anything of it existed; the error says what remains.
-fn remove_worktree(git: &Git, path: &Path) -> Result<bool, String> {
-    if std::fs::symlink_metadata(path).is_err() && !lists_worktree(git, path)? {
-        return Ok(false);
-    }
-    let remove = [
-        OsStr::new("worktree"),
-        OsStr::new("remove"),
-        OsStr::new("--force"),
-        OsStr::new("--force"),
-        path.as_os_str(),
-    ];
-    if git.run(remove, None)?.status.success() {
-        return Ok(true);
-    }
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("removing its directory: {error}")),
-    }
-    // `git worktree prune` keeps a locked entry; unlocking one git does not know changes nothing.
-    git.run(
-        [
+/// worktree is gone. Then every administrative entry this add made that survives, which git may
+/// neither list nor prune (a locked entry without a `gitdir`), is deleted, and git prunes again.
+/// What was removed, empty when nothing of it existed; the error says what remains.
+fn remove_worktree(
+    git: &Git,
+    path: &Path,
+    administrative: &Path,
+    before: &BTreeSet<OsString>,
+) -> Result<Vec<String>, String> {
+    let entries = added_entries(path, administrative, before)?;
+    let directory = std::fs::symlink_metadata(path).is_ok();
+    let listed = lists_worktree(git, path)?;
+    let cleared = (|| -> Result<(), String> {
+        let remove = [
             OsStr::new("worktree"),
-            OsStr::new("unlock"),
+            OsStr::new("remove"),
+            OsStr::new("--force"),
+            OsStr::new("--force"),
             path.as_os_str(),
-        ],
-        None,
-    )?;
-    git.require(["worktree", "prune"], None)?;
-    if lists_worktree(git, path)? {
-        return Err("git still lists its administrative entry after `git worktree prune`".into());
+        ];
+        if (directory || listed) && !git.run(remove, None)?.status.success() {
+            match std::fs::remove_dir_all(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("removing its directory: {error}")),
+            }
+            // `git worktree prune` keeps a locked entry; unlocking one git does not know changes
+            // nothing.
+            git.run(
+                [
+                    OsStr::new("worktree"),
+                    OsStr::new("unlock"),
+                    path.as_os_str(),
+                ],
+                None,
+            )?;
+            git.require(["worktree", "prune"], None)?;
+        }
+        // Git made these entries for this add: they are ours to delete.
+        let mut deleted = false;
+        for name in &entries {
+            let entry = administrative.join(name);
+            match std::fs::remove_dir_all(&entry) {
+                Ok(()) => deleted = true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("removing {}: {error}", entry.display())),
+            }
+        }
+        if deleted {
+            git.require(["worktree", "prune"], None)?;
+        }
+        if lists_worktree(git, path)? {
+            return Err(
+                "git still lists its administrative entry after `git worktree prune`".into(),
+            );
+        }
+        Ok(())
+    })();
+    let remaining = match added_entries(path, administrative, before) {
+        Ok(remaining) => remaining,
+        Err(listing) => {
+            return Err(match cleared {
+                Ok(()) => listing,
+                Err(error) => format!("{error}; {listing}"),
+            });
+        }
+    };
+    match cleared {
+        Ok(()) if remaining.is_empty() => {}
+        Ok(()) => {
+            return Err(format!(
+                "its administrative entry {} remains in {}",
+                entry_names(&remaining),
+                administrative.display()
+            ));
+        }
+        Err(error) if remaining.is_empty() => return Err(error),
+        Err(error) => {
+            return Err(format!(
+                "{error}; its administrative entry {} remains in {}",
+                entry_names(&remaining),
+                administrative.display()
+            ));
+        }
     }
-    Ok(true)
+    let mut removed = Vec::new();
+    if directory || (listed && entries.is_empty()) {
+        removed.push(format!("removed the worktree {}", path.display()));
+    }
+    removed.extend(entries.iter().map(|name| {
+        format!(
+            "removed the administrative entry worktrees/{}",
+            name.to_string_lossy()
+        )
+    }));
+    Ok(removed)
 }
 
 /// Undo what `workspace new` made, newest first, and say what was undone and what, if an undo
@@ -631,10 +768,13 @@ pub(super) fn undo(git: &Git, store: &mut ProjectStore, made: Vec<Made>) -> Stri
                      workspace remove`)"
                 )),
             },
-            Made::Worktree(path) => match remove_worktree(git, &path) {
-                Ok(true) => undone.push(format!("removed the worktree {}", path.display())),
-                // Git made nothing of it: nothing to undo or report.
-                Ok(false) => {}
+            Made::Worktree {
+                path,
+                administrative,
+                before,
+            } => match remove_worktree(git, &path, &administrative, &before) {
+                // Empty when git made nothing of it: nothing to undo or report.
+                Ok(removed) => undone.extend(removed),
                 Err(error) => remains.push(format!(
                     "the worktree {} ({error}; remove it with `git worktree remove --force \
                      --force`, or remove the directory and run `git worktree prune`)",

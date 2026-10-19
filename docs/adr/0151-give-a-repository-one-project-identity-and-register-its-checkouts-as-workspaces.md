@@ -102,8 +102,15 @@ directories.
    runs, so an add that fails or reaches its deadline after creating the worktree's directory,
    its `.git` file or its entry under `<gitdir>/worktrees/` is undone too: by `git worktree
    remove --force --force` when git can remove it, otherwise by removing the directory if it
-   exists, unlocking the entry a stopped add leaves locked, and `git worktree prune`. A step of
-   which nothing exists is not reported. It makes no commit and no push. `workspace add
+   exists, unlocking the entry a stopped add leaves locked, and `git worktree prune`. Git
+   creates the entry, locked, before the path and its `gitdir` file, and neither lists nor
+   prunes such an entry, so the intent also records the names under `<common
+   dir>/worktrees/` before the add; the undo deletes every entry that is new since then and
+   belongs to this add (named by the path's basename, alone or followed by digits, with no
+   `gitdir` or one naming `<path>/.git`), prunes, and reports each as `removed the
+   administrative entry worktrees/<name>`, or as remaining while git still lists the path or
+   such an entry survives. An entry of another add is left alone. A step of which nothing
+   exists is not reported. It makes no commit and no push. `workspace add
    PATH` adopts an existing checkout of the same Project, refusing one of another Project with
    both IDs. `workspace remove LABEL` unregisters; it never removes a Store, and when the Store
    holds a Task that is not collected it says so and names `af task gc`; `--delete-worktree`
@@ -159,12 +166,13 @@ directories.
   a path inside another Workspace and one inside af's state with exit 2 and nothing created;
   leaves worktrees, refs and Workspace directories unchanged when it refuses `--from` an orphan
   branch or undoes a `worktree add` that failed or reached its deadline after creating the
-  worktree's directory, `.git` file and administrative entry, after which the same label
-  succeeds; fails within the deadline, leaving no child, when a fake `git` sleeps; succeeds on
+  worktree's directory, `.git` file and administrative entry, or only a locked entry, with or
+  without its `gitdir` and `HEAD`, after which the same label succeeds; fails within the deadline, leaving no child, when a fake `git` sleeps; succeeds on
   the first `af task plan --workspace <checkout directory name>`; and keeps `git status
   --porcelain --ignored` empty and the checkout's files unchanged after every `af project`
   command and `af task plan --workspace`. Unit tests undo every kind of step in reverse order,
-  including a partial worktree whose entry a stopped add left locked, and find no unsupervised
+  including a partial worktree whose entry a stopped add left locked and a locked entry git
+  does not list, test which administrative entries belong to an add, and find no unsupervised
   process start under `crates/af/src/projects`.
   `crates/review-core/tests/schema_parity/project.rs` pins the three events and two documents,
   and `crates/af/tests/it/cli_surface.rs` the help surface.

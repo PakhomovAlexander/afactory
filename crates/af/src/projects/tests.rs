@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use review_core::project::WorkspaceOriginV1;
@@ -335,6 +337,12 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
     let root = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(root.path()).unwrap();
     let (git, commit) = committed_repository(&root);
+    let administrative = root.join("repo/.git/worktrees");
+    let worktree_made = |path: PathBuf| Made::Worktree {
+        path,
+        administrative: administrative.clone(),
+        before: BTreeSet::new(),
+    };
     let directory = root.join("store/workspaces/spike");
     std::fs::create_dir_all(directory.join("state")).unwrap();
     let reference = "refs/heads/af/spike".to_string();
@@ -379,7 +387,11 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
                 from: root.join("deep"),
                 to: root.join("deep/er"),
             },
-            Made::Worktree(worktree.clone()),
+            Made::Worktree {
+                path: worktree.clone(),
+                administrative: administrative.clone(),
+                before: BTreeSet::new(),
+            },
             Made::Registration(id.clone()),
         ],
     );
@@ -387,7 +399,8 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
         report,
         format!(
             "undone, newest first: unregistered Workspace {id}, removed the worktree {}, removed \
-             the directory {}, deleted the branch {reference}, removed {}; nothing was left behind",
+             the administrative entry worktrees/wt, removed the directory {}, deleted the branch \
+             {reference}, removed {}; nothing was left behind",
             worktree.display(),
             root.join("deep").display(),
             directory.display()
@@ -421,7 +434,7 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
     // A worktree git never began is not reported either; a partial one, its administrative entry
     // still locked the way a stopped `worktree add` leaves it, is removed with that entry.
     assert_eq!(
-        commands::undo(&git, &mut store, vec![Made::Worktree(root.join("never"))]),
+        commands::undo(&git, &mut store, vec![worktree_made(root.join("never"))]),
         "nothing was created"
     );
     let partial = root.join("partial");
@@ -440,9 +453,10 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
     .unwrap();
     std::fs::write(entry.join("locked"), "initializing\n").unwrap();
     assert_eq!(
-        commands::undo(&git, &mut store, vec![Made::Worktree(partial.clone())]),
+        commands::undo(&git, &mut store, vec![worktree_made(partial.clone())]),
         format!(
-            "undone, newest first: removed the worktree {}; nothing was left behind",
+            "undone, newest first: removed the worktree {}, removed the administrative entry \
+             worktrees/partial; nothing was left behind",
             partial.display()
         )
     );
@@ -474,4 +488,78 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
             .status
             .success()
     );
+}
+
+#[test]
+fn an_administrative_entry_belongs_to_the_add_whose_basename_and_gitdir_it_bears() {
+    let path = Path::new("/work/fixture-wt-spike");
+    let own = "/work/fixture-wt-spike/.git\n";
+    for (name, gitdir, owned) in [
+        ("fixture-wt-spike", None, true),
+        ("fixture-wt-spike", Some(own), true),
+        ("fixture-wt-spike1", None, true),
+        ("fixture-wt-spike27", Some(own), true),
+        ("fixture-wt-spike-2", None, false),
+        ("fixture-wt-spikes", None, false),
+        ("fixture-wt-other", None, false),
+        ("fixture-wt-other", Some(own), false),
+        (
+            "fixture-wt-spike",
+            Some("/elsewhere/fixture-wt-spike/.git\n"),
+            false,
+        ),
+        (
+            "fixture-wt-spike2",
+            Some("/work/fixture-wt-spike2/.git\n"),
+            false,
+        ),
+    ] {
+        assert_eq!(
+            commands::owns_entry(path, OsStr::new(name), gitdir),
+            owned,
+            "{name} {gitdir:?}"
+        );
+    }
+}
+
+#[test]
+fn undo_deletes_a_locked_entry_git_neither_lists_nor_prunes_and_only_one_of_this_add() {
+    use commands::Made;
+    let root = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(root.path()).unwrap();
+    let (git, _) = committed_repository(&root);
+    let mut store = ProjectStore::open_unrecorded(&root.join("state"), &project_id(ROOTS)).unwrap();
+    let administrative = root.join("repo/.git/worktrees");
+    let worktree = root.join("wt");
+    // Older than the add, and new but of another add: neither is touched nor reported.
+    for name in ["wt", "other"] {
+        std::fs::create_dir_all(administrative.join(name)).unwrap();
+        std::fs::write(administrative.join(name).join("locked"), "initializing\n").unwrap();
+    }
+    let before = BTreeSet::from([OsStr::new("wt").to_os_string()]);
+    // What a stopped add leaves: a locked entry with neither a path nor a `gitdir`.
+    std::fs::create_dir_all(administrative.join("wt1")).unwrap();
+    std::fs::write(administrative.join("wt1/locked"), "initializing\n").unwrap();
+    assert!(
+        !git.require(["worktree", "list", "--porcelain"], None)
+            .unwrap()
+            .contains("wt1")
+    );
+    let report = commands::undo(
+        &git,
+        &mut store,
+        vec![Made::Worktree {
+            path: worktree.clone(),
+            administrative: administrative.clone(),
+            before,
+        }],
+    );
+    assert_eq!(
+        report,
+        "undone, newest first: removed the administrative entry worktrees/wt1; nothing was left \
+         behind"
+    );
+    assert!(!administrative.join("wt1").exists());
+    assert!(administrative.join("wt/locked").is_file());
+    assert!(administrative.join("other/locked").is_file());
 }

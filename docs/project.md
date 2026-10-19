@@ -156,7 +156,11 @@ exactly what remains. The worktree counts as made from the moment `git worktree 
 add that fails or reaches its deadline after creating the worktree's directory, its `.git` file
 or its entry under the repository's `worktrees/` is undone like every other step, by `git
 worktree remove --force --force` or, when git cannot remove it, by removing the directory and
-pruning the entry.
+pruning the entry. Git creates that entry, locked, before the path, and neither lists nor prunes
+it until it names the path, so the command notes the entries under `worktrees/` before the add,
+and the undo deletes each new one named after the worktree's directory (alone or followed by
+digits) whose `gitdir` is missing or names that worktree, prunes, and reports it as `removed the
+administrative entry worktrees/<name>`. Entries of other worktrees are left alone.
 
 The command makes no commit and no push, the same local-only boundary delivery keeps.
 
