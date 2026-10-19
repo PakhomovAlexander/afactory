@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 9 after review rounds 1 to 8 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 10 after review rounds 1 to 9 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -687,6 +687,14 @@ the exact input bytes it composed, under the Attempt's access class, and nothing
 sees a Store, another sandbox or another Attempt. P0's ADR states the two kinds of plugin and
 this bound in the same clause.
 
+The four verbs are not public commands. The command seam of §3.3 refuses `af <name>
+identity|status|models|invoke` for a plugin whose manifest declares `runner`, with the reason,
+and forwards every other word as usual; the kernel speaks the verbs only over its private
+runner transport, pipes it owns for stdin and stdout, never the inherited terminal, and sets
+`AF_RUNNER_AUTH_DIR` on that transport alone. What the public sees of a runner is what it sees
+of a native adapter: `af provider status` and `af provider models`, the kernel's own sanitized
+projections (ADR-0112), which consume `identity` privately as `observe_identity` does today.
+
 Every verb runs under one Provider context: the kernel passes `AF_RUNNER_AUTH_DIR`, the
 machine-local authentication directory the Provider registry binds for that Provider, exactly
 as the native adapters receive the selected directory (`providers/task.rs`,
@@ -698,7 +706,7 @@ authentication method from `identity`, records only the derived principal, and r
 
 | Verb | Request | Answer |
 |---|---|---|
-| `identity --json` | — | `af/RunnerIdentity@1`: the account's stable identifier and authentication method under `AF_RUNNER_AUTH_DIR`; private, never printed by a public command, never stored |
+| `identity --json` | — | `af/RunnerIdentity@1`: the account's stable identifier and authentication method under `AF_RUNNER_AUTH_DIR`; private: reachable only over the kernel's runner transport, never through `af <name>`, never printed, never stored |
 | `status --json` | — | authenticated or not, account label, the one command a human runs at a terminal to log in (ADR-0112: the plugin never starts a login) |
 | `models --json` | — | the model catalog with effort levels, for ADR-0148's validation |
 | `invoke` | `af/RunnerRequest@1` on stdin: the exact input bytes the kernel composed, the sandbox directory, the access class (`ReadOnly`, `ExecuteChecks`, `WriteSource`, `WriteSourceWithShell`), model, effort, deadline, the sandbox-local environment | framed stdout: `af/RunnerUsage@1` frames (cumulative, `TaskUsageObservationV1`'s shape: the reported counters in `af/TaskTokenUsage@3`'s shape and `charge_complete`), then one terminal `af/RunnerResult@1` with the output bytes, the model that answered and a failure class from the kernel's own list |
@@ -711,7 +719,16 @@ decreases below a floor an earlier frame set, and `charge_complete = false` once
 false, so a later complete frame cannot erase earlier uncertainty and a decreasing cumulative
 counter cannot lower the charge; a run that is cancelled, times out or ends with a missing or
 malformed terminal frame settles from that accumulator, which is what the adapter returns as
-its one `ModelWorkerReturn`. A frame that
+its one `ModelWorkerReturn`.
+
+The transport's bounds are frozen here, enforced while reading rather than after collection
+(`drain_async` grows without a limit today and `validate_reply` checks `MAX_WORKER_BYTES` only
+afterwards, so the external adapter reads through a bounded drain of its own): a frame is at
+most 2 MiB, the terminal frame's output bytes at most `MAX_WORKER_BYTES` (1 MiB) as any Worker
+reply, aggregate stdout at most 16 MiB, stderr retained up to 1 MiB with the overflow counted
+and dropped, and `identity`, `status` and `models` answer within 256 KiB and 15 seconds each.
+Crossing any bound, an unterminated frame included, kills and reaps the process group, refuses
+the Attempt's business output, and settles the usage floors observed so far. A frame that
 is present but fails validation is malformed billing, not absence, and is treated as
 `add_usage` treats a malformed native report (ADR-0088): the counters it carries unambiguously
 are retained, the observation is recorded with `charge_complete = false`, cumulative floors are
@@ -766,7 +783,10 @@ checking it first against a typed allowlist: the kernel's declared read-only tab
 invocation but never a pane load, the one write form a plugin owns, `task start --file`
 without `--execute`, each only against the fixture's own Store and repository; the brokered `af` runs with the fixture's `HOME` and XDG tree, and a selector that
 escapes it (`--repo`, `--state`, `--file` outside the fixture) is rejected before execution.
-A brokered `task start --file` is executed only after staging: the harness reads the Task
+A brokered `task start --file` admits no `--source-bindings` and no Task file whose `issue`
+selector names a Jira source (`capture_selected` would read the bindings' `token_file` on the
+host, outside the fixture and the trace, and start a network process), only credential-free
+local issue fixtures; it is executed only after staging: the harness reads the Task
 file, resolves every `inputs.<port>.file` it names beneath the fixture roots without following
 a symlink out of them, copies the admitted bytes into a host-private immutable staging
 directory, rewrites the Task file to name the staged copies, and runs the staged request; a
@@ -971,7 +991,8 @@ a pane load);
 `open_campaign_store_read_only`);
 `plugin_check_broker_stages_task_files_and_rejects_outside_inputs` (a permitted Task file
 binding a JSON file outside the fixture roots, and a symlink variant, both rejected before
-capture);
+capture; `--source-bindings` with an in-fixture bindings file naming an outside sentinel
+`token_file`, rejected before any host read or network process, the sentinel unread);
 `directory_install_is_a_release_source_directory` (an unpacked bundle is refused with
 `--link` named; a `DirSource` directory installs with a receipt whose digest equals the
 archive's pin digest);
@@ -996,9 +1017,10 @@ stderr object read back byte-identical; a corrupted object refused; `--raw` with
 refused);
 `store_list_names_every_store_the_sweep_would_visit`; `store_reads_never_take_a_writer_lease`
 (a running Task's Store stays writable); `store_read_latency_under_200ms_on_10k_events`;
-`export_reader_writes_nothing_after_a_crash` (a fixture export with an abandoned segment: the
-conformance plugin reads it, the export's bytes are unchanged, and the next kernel writer
-recovers it within its bound).
+`export_reader_writes_nothing` (an immutable fixture export with an abandoned segment: the
+conformance plugin reads it and the export's bytes are unchanged). The writer's side, recovery
+of that segment by the next kernel writer within its bound, is telemetry T1's acceptance, with
+P2 as its prerequisite.
 
 ### P3 — File-bound inputs
 
@@ -1115,6 +1137,11 @@ frame carrying one valid counter, retained with `charge_complete = false` and th
 refused; a valid frame then a truncated terminal frame; a valid frame then cancellation;
 decreasing cumulative counters that keep the earlier floor; `charge_complete = false` followed
 by `true` that stays incomplete);
+`runner_verbs_are_refused_on_the_public_seam` (`af <runner> identity --json` executes nothing
+and prints no identity; `af provider status` shows the sanitized projection);
+`runner_transport_bounds_are_enforced_while_reading` (an oversized unterminated frame, a
+stderr flood, a stalled `status`: each killed and reaped at its bound, output refused, earlier
+usage floors kept);
 `runner_binding_is_captured_verified_and_never_substituted` (a second plugin declaring the
 kind is refused at install; `current` moved to other bytes refuses the Attempt; resume under a
 changed bundle is refused; replay validates the record with the plugin removed);
