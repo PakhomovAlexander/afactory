@@ -245,7 +245,10 @@ fn telemetry_blob_publication_survives_paused_sweep() {
         assert!(leftovers.is_empty(), "{step:?}: {leftovers:?}");
         index::replace(&layout).unwrap();
         let index = Index::open(&layout).unwrap();
-        assert!(index.missing_blobs().unwrap().is_empty(), "{step:?}");
+        assert!(
+            index.missing_blobs().unwrap().unwrap().is_empty(),
+            "{step:?}"
+        );
     }
 }
 
@@ -376,7 +379,7 @@ fn telemetry_missing_blob_is_reported() {
     assert_eq!(status.missing_blobs, 1);
     let index = Index::open(&layout).unwrap();
     assert_eq!(
-        index.missing_blobs().unwrap(),
+        index.missing_blobs().unwrap().unwrap(),
         [(gone.occurrence_id.clone(), gone.digest.clone().unwrap())]
     );
     let occurrence = index.occurrence(&gone.occurrence_id).unwrap().unwrap();
@@ -446,7 +449,7 @@ fn a_blob_is_dropped_while_a_sweep_holds_the_lock() {
     let Some(Record::Seal(seal)) = records.last() else {
         panic!("no seal");
     };
-    assert_eq!(seal.dropped, 1);
+    assert_eq!(seal.dropped, Some(1));
     assert!(walk(&layout.blobs()).is_empty(), "no file left behind");
     assert_eq!(std::fs::read_to_string(&sealed.refs).unwrap(), "");
 }
@@ -531,7 +534,7 @@ fn telemetry_exhausted_segment_creates_no_blob() {
     let Some(Record::Seal(seal)) = records.last() else {
         panic!("no seal");
     };
-    assert!(seal.dropped >= 1000, "{}", seal.dropped);
+    assert!(seal.dropped >= Some(1000), "{:?}", seal.dropped);
 }
 
 #[test]
@@ -602,7 +605,7 @@ fn telemetry_concurrent_same_digest_publishes_one_object() {
         panic!("no seal");
     };
     assert_eq!(seal.blobs, ROUNDS as u64, "the seal counts one per digest");
-    assert_eq!(seal.dropped, 0);
+    assert_eq!(seal.dropped, Some(0));
     index::replace(&layout).unwrap();
     let index = Index::open(&layout).unwrap();
     assert_eq!(

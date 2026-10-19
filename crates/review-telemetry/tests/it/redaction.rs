@@ -365,3 +365,85 @@ fn telemetry_redaction_covers_event_names_and_header_fields() {
         assert_eq!(config["rows"][0]["value"], "spans", "{level:?}");
     }
 }
+
+#[test]
+fn telemetry_config_rows_withhold_secret_named_keys() {
+    let row = |key: &str, value: &str| review_telemetry::record::ConfigRow {
+        key: key.into(),
+        value: value.into(),
+        layer: "user".into(),
+        origin: None,
+    };
+    for level in [Level::Metrics, Level::Spans, Level::Content] {
+        let temp = tempfile::tempdir().unwrap();
+        let writer =
+            review_telemetry::segment::writer::Writer::new(options(temp.path(), level)).unwrap();
+        let span = writer
+            .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+            .unwrap();
+        // Secret-named keys: the value is withheld whatever its length or shape — a short
+        // word, a number, an empty string, a table, a value longer than the string bound.
+        let parts = writer.config(
+            "exec",
+            vec![
+                row("provider.password", "violet"),
+                row("provider.api_key", "9081726354"),
+                row("sink.auth_token", ""),
+                row("provider.credentials", "{ file = \"~/.secret\" }"),
+                row("provider.SECRET", &"s".repeat(4096)),
+                // Ordinary keys keep their values under the ordinary rules.
+                row("telemetry.level", "\"spans\""),
+                row("telemetry.flush_bytes", "65536"),
+                row("telemetry.notes", "sk-proj-FIXTURE"),
+                row("telemetry.long", &"v".repeat(4096)),
+            ],
+        );
+        assert!(parts.is_some(), "{level:?}: the config record is written");
+        writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+        let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+        let lines = sealed_lines(&sealed.path);
+        let configs: Vec<&Value> = lines.iter().filter(|line| line["t"] == "config").collect();
+        assert!(!configs.is_empty(), "{level:?}");
+        let rows: Vec<&Value> = configs
+            .iter()
+            .flat_map(|config| config["rows"].as_array().unwrap())
+            .collect();
+        let value = |key: &str| {
+            rows.iter()
+                .find(|row| row["key"] == key)
+                .unwrap_or_else(|| panic!("{level:?}: no row {key}"))["value"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        for key in [
+            "provider.password",
+            "provider.api_key",
+            "sink.auth_token",
+            "provider.credentials",
+            "provider.SECRET",
+        ] {
+            assert_eq!(value(key), WITHHELD, "{level:?}: {key}");
+        }
+        assert_eq!(value("telemetry.level"), "\"spans\"", "{level:?}");
+        assert_eq!(value("telemetry.flush_bytes"), "65536", "{level:?}");
+        assert_eq!(value("telemetry.notes"), WITHHELD, "{level:?}");
+        let long = value("telemetry.long");
+        assert!(long.starts_with("vvv") && long.ends_with('…'), "{level:?}");
+        // Five secret-named rows and one credential-shaped value, counted on the parts.
+        let redacted: u64 = configs
+            .iter()
+            .map(|config| config["af.redacted"].as_u64().unwrap_or(0))
+            .sum();
+        assert_eq!(redacted, 6, "{level:?}");
+        for (path, text) in every_file_text(temp.path()) {
+            for planted in ["violet", "9081726354", "~/.secret", "ssss", "FIXTURE"] {
+                assert!(
+                    !text.contains(planted),
+                    "{level:?}: {planted} survived in {}",
+                    path.display()
+                );
+            }
+        }
+    }
+}

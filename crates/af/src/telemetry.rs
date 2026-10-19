@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 
 use review_telemetry::dirs::{self, Accounted};
 use review_telemetry::level::Settings;
-use review_telemetry::status::{self as telemetry_status, Reindex, Status, StatusInput};
+use review_telemetry::status::{
+    self as telemetry_status, BlobVerification, Reindex, Status, StatusInput,
+};
 
 use crate::config;
 use crate::storage::{self, human_bytes};
@@ -167,7 +169,10 @@ fn render_status(status: &Status) -> String {
         let state = entry
             .state
             .as_deref()
-            .map(|state| format!(" ({state})"))
+            .map(|state| match entry.capture.as_deref() {
+                Some(capture) if capture != "complete" => format!(" ({state}; {capture})"),
+                _ => format!(" ({state})"),
+            })
             .unwrap_or_default();
         let _ = writeln!(
             out,
@@ -183,10 +188,14 @@ fn render_status(status: &Status) -> String {
         "segments     {} live · {} unsealed · {} sealed · {} corrupt",
         segments.live, segments.unsealed, segments.sealed, segments.corrupt
     );
+    let missing = match status.blob_verification {
+        BlobVerification::Verified => status.missing_blobs.to_string(),
+        BlobVerification::Deferred => "deferred (gc.lock busy)".into(),
+    };
     let _ = writeln!(
         out,
-        "runs         {} · withheld Attempts {} · missing blobs {}",
-        status.runs, status.withheld_attempts, status.missing_blobs
+        "runs         {} · withheld Attempts {} · missing blobs {missing}",
+        status.runs, status.withheld_attempts
     );
     let index = &status.index;
     let _ = writeln!(
@@ -289,6 +298,13 @@ fn render_reindex(document: &Reindex) -> String {
     }
     for corrupt in &document.corrupt {
         let _ = writeln!(out, "corrupt      {corrupt} (renamed .corrupt, never read)");
+    }
+    if document.blob_verification == BlobVerification::Deferred {
+        let _ = writeln!(
+            out,
+            "blobs        verification deferred: gc.lock was not had within 2 s; no blob file \
+             was read"
+        );
     }
     if document.missing_blobs > 0 {
         let _ = writeln!(

@@ -4,6 +4,7 @@
 use std::io::Write as _;
 
 use review_telemetry::blob::Media;
+use review_telemetry::index::Index;
 use review_telemetry::layout::Layout;
 use review_telemetry::level::Level;
 use review_telemetry::record::{
@@ -496,4 +497,372 @@ fn telemetry_record_sequence_is_persisted() {
     for event in &derived_events {
         assert!(source_events.contains(event), "{event:?}");
     }
+}
+
+/// `status` over `root`, without a registry.
+fn status_of(root: &std::path::Path) -> review_telemetry::status::Status {
+    review_telemetry::status::status(&review_telemetry::status::StatusInput {
+        root: root.to_path_buf(),
+        level: Level::Spans,
+        max_bytes: 4 << 30,
+        registry: None,
+        accounted: Vec::new(),
+    })
+    .unwrap()
+    .0
+}
+
+/// The status entry of segment `segment_id`.
+fn entry_of(
+    status: &review_telemetry::status::Status,
+    segment_id: &str,
+) -> review_telemetry::status::Entry {
+    status
+        .bytes
+        .entries
+        .iter()
+        .find(|entry| entry.kind == "segment" && entry.name == segment_id)
+        .unwrap_or_else(|| panic!("no entry for {segment_id}: {:?}", status.bytes.entries))
+        .clone()
+}
+
+/// What every query of the index can see after an ingest.
+fn dump(layout: &Layout) -> std::collections::BTreeMap<String, Vec<Vec<String>>> {
+    let mut index = Index::open(layout).unwrap();
+    index.ingest().unwrap();
+    index.dump().unwrap()
+}
+
+#[test]
+fn telemetry_live_ingest_refuses_interior_corruption() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+    // A clean sealed segment beside the one that turns corrupt.
+    let clean = writer(temp.path(), Level::Spans);
+    let span = clean
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    clean.event(&span, "af.note", Attrs::new().int("n", 1));
+    clean.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    clean.finish(SealExit::Ok).unwrap();
+    let (segment_id, path) = killed_writer(temp.path());
+    let spans_of = |index: &Index| {
+        index
+            .count(&format!(
+                "SELECT count(*) FROM spans WHERE segment_id = '{segment_id}'"
+            ))
+            .unwrap()
+    };
+
+    // The valid prefix is ingested.
+    let mut index = Index::open(&layout).unwrap();
+    let (_, refused) = index.ingest().unwrap();
+    assert!(refused.is_empty(), "{refused:?}");
+    assert_eq!(spans_of(&index), 3);
+    drop(index);
+
+    // Then an invalid line and a valid one are appended: interior corruption.
+    let bytes = std::fs::read(&path).unwrap();
+    let valid = bytes
+        .split(|byte| *byte == b'\n')
+        .find(|line| line.windows(11).any(|window| window == b"\"t\":\"event\""))
+        .unwrap()
+        .to_vec();
+    let mut appended = b"{\"seq\":99,\"t\":\"event\",\"broken\n".to_vec();
+    appended.extend(&valid);
+    appended.push(b'\n');
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(&appended)
+        .unwrap();
+    let mut index = Index::open(&layout).unwrap();
+    let (_, refused) = index.ingest().unwrap();
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert_eq!(refused[0].0, path.display().to_string());
+    assert!(refused[0].1.contains("interior corruption"), "{refused:?}");
+    assert!(refused[0].1.contains("unreadable"), "{refused:?}");
+    // Its previously indexed rows are forgotten; the clean segment's stay.
+    assert_eq!(spans_of(&index), 0);
+    assert_eq!(index.count("SELECT count(*) FROM segments").unwrap(), 1);
+    drop(index);
+    let before_dump = dump(&layout);
+    let before = status_of(temp.path());
+    assert!(
+        before
+            .unreadable
+            .iter()
+            .any(|unreadable| unreadable.path == path.display().to_string()
+                && unreadable.reason.contains("interior corruption")),
+        "{:?}",
+        before.unreadable
+    );
+
+    // The reindex renames it `.corrupt`; every query answers as before.
+    let reindexed = review_telemetry::status::reindex(temp.path()).unwrap();
+    assert_eq!(reindexed.corrupt, [segment_id.clone()]);
+    assert!(layout.corrupt_segment(&segment_id).is_file());
+    assert_eq!(dump(&layout), before_dump);
+    let after = status_of(temp.path());
+    assert_eq!(after.runs, before.runs);
+    assert_eq!(after.problems, before.problems);
+    assert_eq!(after.missing_blobs, before.missing_blobs);
+    assert_eq!(after.withheld_attempts, before.withheld_attempts);
+    assert_eq!(after.segments.corrupt, 1);
+}
+
+#[test]
+fn telemetry_recovery_supersedes_a_stranded_seal() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+    let writer = writer(temp.path(), Level::Content);
+    let span = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event(&span, "af.note", Attrs::new().int("n", 1));
+    writer.event_with_content(
+        &span,
+        "gen_ai.content.output",
+        Attrs::new(),
+        b"an output\n",
+        Media::Text,
+    );
+    writer.count_dropped_chunks(3);
+    writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let original = sealed_records(&sealed.path);
+    let Some(Record::Seal(writer_seal)) = original.last().cloned() else {
+        panic!("no seal");
+    };
+    assert_eq!(writer_seal.exit, SealExit::Ok);
+    let manifest = std::fs::read(&sealed.refs).unwrap();
+
+    // The writer died after flushing its seal and before compressing: the `.jsonl` ends with
+    // its seal, and there is no `.jsonl.gz` and no manifest.
+    let id = sealed.segment_id.clone();
+    std::fs::write(layout.live_segment(&id), crate::sealed_bytes(&sealed.path)).unwrap();
+    std::fs::remove_file(&sealed.path).unwrap();
+    std::fs::remove_file(&sealed.refs).unwrap();
+    let unsealed = status_of(temp.path());
+    assert_eq!(unsealed.segments.unsealed, 1);
+    let entry = entry_of(&unsealed, &id);
+    assert_eq!(entry.exit, None, "an unsealed segment shows no exit");
+
+    assert_eq!(
+        reader::recover(&layout, &id).unwrap(),
+        Recovery::Recovered {
+            segment_id: id.clone(),
+            discarded_bytes: 0,
+            unended_spans: 0,
+        }
+    );
+    let records = sealed_records(&layout.sealed_segment(&id));
+    let seals: Vec<_> = records
+        .iter()
+        .filter(|record| matches!(record, Record::Seal(_)))
+        .collect();
+    assert_eq!(seals.len(), 1, "exactly one seal: {records:?}");
+    assert_eq!(records.len(), original.len());
+    let Some(Record::Seal(seal)) = records.last() else {
+        panic!("the seal is not last");
+    };
+    assert_eq!(seal.exit, SealExit::Recovered);
+    assert_eq!(seal.discarded_bytes, 0);
+    assert_eq!(
+        (
+            seal.spans,
+            seal.events,
+            seal.blobs,
+            seal.dropped,
+            seal.dropped_chunks
+        ),
+        (
+            writer_seal.spans,
+            writer_seal.events,
+            writer_seal.blobs,
+            writer_seal.dropped,
+            writer_seal.dropped_chunks
+        ),
+        "the writer's counts are known and kept"
+    );
+    assert_eq!(seal.dropped_chunks, Some(3));
+    assert_eq!(seal.ended_unix_ns, writer_seal.ended_unix_ns);
+    assert_eq!(std::fs::read(layout.refs(&id)).unwrap(), manifest);
+
+    // Every reader shows a recovered execution, never a clean exit.
+    let status = status_of(temp.path());
+    let entry = entry_of(&status, &id);
+    assert_eq!(entry.state.as_deref(), Some("sealed"));
+    assert_eq!(entry.exit.as_deref(), Some("recovered"));
+    assert_eq!(entry.capture.as_deref(), Some("recovered"));
+    let mut index = Index::open(&layout).unwrap();
+    index.ingest().unwrap();
+    assert_eq!(
+        index.seals().unwrap(),
+        [(id.clone(), "recovered".to_string(), "recovered".to_string())]
+    );
+    drop(index);
+    review_telemetry::status::reindex(temp.path()).unwrap();
+    assert_eq!(
+        entry_of(&status_of(temp.path()), &id).exit.as_deref(),
+        Some("recovered")
+    );
+}
+
+#[test]
+fn telemetry_recovered_seal_never_invents_counts() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+    let mut options = options(temp.path(), Level::Spans);
+    options.segment_max_bytes = 128 * 1024;
+    let writer = review_telemetry::segment::writer::Writer::new(options).unwrap();
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    // An exhausted writer that dropped records, flushed its prefix and died before `finish`.
+    let mut round = 0;
+    while writer.dropped() == 0 {
+        round += 1;
+        writer.event(
+            &command,
+            "af.store.event",
+            Attrs::new().text("af.note", "x".repeat(800)),
+        );
+        assert!(round < 10_000, "the limit never bound");
+    }
+    for index in 0..100 {
+        writer.event(&command, "af.store.event", Attrs::new().int("late", index));
+    }
+    assert!(writer.dropped() > 100);
+    writer.flush();
+    let id = writer.segment_id().unwrap();
+    writer.abandon();
+    let kept = reader::read_live(&layout.live_segment(&id)).unwrap();
+    assert!(
+        kept.records.iter().any(|record| matches!(
+            record,
+            Record::Problem(problem) if problem.what == ProblemWhat::Budget
+        )),
+        "the kept prefix holds the exhaustion problem"
+    );
+
+    assert!(matches!(
+        reader::recover(&layout, &id).unwrap(),
+        Recovery::Recovered { .. }
+    ));
+    let path = layout.sealed_segment(&id);
+    let Some(Record::Seal(seal)) = sealed_records(&path).last().cloned() else {
+        panic!("no seal");
+    };
+    assert_eq!(seal.exit, SealExit::Recovered);
+    assert_eq!(
+        (seal.dropped, seal.dropped_chunks),
+        (None, None),
+        "unknown, never 0"
+    );
+    assert!(!seal.complete());
+    assert_eq!(seal.capture(), "recovered, drops unknown");
+    // The published shape says so: null only beside `exit = recovered`.
+    let schema = crate::schemas::validator("telemetry-record-v1.json");
+    let line = sealed_lines(&path).last().unwrap().clone();
+    assert!(line["dropped"].is_null() && line["dropped_chunks"].is_null());
+    crate::schemas::assert_valid(&schema, &line);
+    let mut forged = line.clone();
+    forged["exit"] = serde_json::Value::from("ok");
+    assert!(!schema.is_valid(&forged));
+    assert!(Record::parse_line(forged.to_string().as_bytes()).is_err());
+
+    // Every reader treats the capture as incomplete.
+    let status = status_of(temp.path());
+    let entry = entry_of(&status, &id);
+    assert_eq!(entry.exit.as_deref(), Some("recovered"));
+    assert_eq!(entry.capture.as_deref(), Some("recovered, drops unknown"));
+    let mut index = Index::open(&layout).unwrap();
+    index.ingest().unwrap();
+    assert_eq!(
+        index
+            .count("SELECT count(*) FROM segments WHERE dropped IS NULL AND exit = 'recovered'")
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        index.seals().unwrap()[0].2,
+        "recovered, drops unknown".to_string()
+    );
+}
+
+#[test]
+fn telemetry_reader_refuses_oversized_records() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+    let writer = writer(temp.path(), Level::Spans);
+    let span = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event(&span, "af.big", Attrs::new().int("n", 1));
+    writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+
+    // The same sealed segment copied in with an otherwise valid event over 16 KiB.
+    let mut lines = sealed_lines(&sealed.path);
+    let at = lines.iter().position(|line| line["t"] == "event").unwrap();
+    lines[at]["attributes"]["af.note"] = serde_json::Value::from("x".repeat(RECORD_MAX_BYTES));
+    let oversized = serde_json::to_vec(&lines[at]).unwrap();
+    assert!(oversized.len() > RECORD_MAX_BYTES);
+    let record: Record = serde_json::from_slice(&oversized).unwrap();
+    record.validate().unwrap();
+    let error = Record::parse_line(&oversized).unwrap_err();
+    assert!(error.contains(&oversized.len().to_string()), "{error}");
+    assert!(error.contains(&RECORD_MAX_BYTES.to_string()), "{error}");
+    let mut bytes = Vec::new();
+    for line in &lines {
+        bytes.extend(serde_json::to_vec(line).unwrap());
+        bytes.push(b'\n');
+    }
+    std::fs::write(&sealed.path, review_telemetry::blob::compress(&bytes)).unwrap();
+
+    // The scanner treats it as any invalid line: the prefix before it kept, and interior
+    // corruption because a valid line follows.
+    let prefix = reader::scan(&bytes);
+    assert_eq!(prefix.records.len(), at);
+    assert!(prefix.interior_corruption);
+    assert!(prefix.invalid.as_deref().unwrap().contains("record bound"));
+    let cut = bytes
+        .split_inclusive(|byte| *byte == b'\n')
+        .take(at + 1)
+        .flatten()
+        .copied()
+        .collect::<Vec<u8>>();
+    let tail = reader::scan(&cut);
+    assert_eq!(tail.records.len(), at);
+    assert!(!tail.interior_corruption, "nothing valid follows");
+
+    // Refused at read, never indexed, listed like any invalid line.
+    let refusal = reader::read_sealed(&sealed.path).unwrap_err();
+    assert!(refusal.contains("record bound"), "{refusal}");
+    let mut index = Index::open(&layout).unwrap();
+    let (_, refused) = index.ingest().unwrap();
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(refused[0].1.contains("record bound"), "{refused:?}");
+    for table in ["segments", "spans", "events"] {
+        assert_eq!(
+            index
+                .count(&format!("SELECT count(*) FROM {table}"))
+                .unwrap(),
+            0,
+            "{table}"
+        );
+    }
+    drop(index);
+    let listed = |unreadable: &[review_telemetry::status::Unreadable]| {
+        unreadable.iter().any(|unreadable| {
+            unreadable.path == sealed.path.display().to_string()
+                && unreadable.reason.contains("record bound")
+        })
+    };
+    assert!(listed(&status_of(temp.path()).unreadable));
+    let reindexed = review_telemetry::status::reindex(temp.path()).unwrap();
+    assert!(listed(&reindexed.unreadable), "{:?}", reindexed.unreadable);
+    assert_eq!(reindexed.segments, 0);
 }

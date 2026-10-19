@@ -20,13 +20,13 @@ fn workspace_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
 }
 
-fn validator(name: &str) -> jsonschema::Validator {
+pub(crate) fn validator(name: &str) -> jsonschema::Validator {
     let path = workspace_root().join("schemas").join(name);
     let schema: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     jsonschema::validator_for(&schema).unwrap()
 }
 
-fn assert_valid(validator: &jsonschema::Validator, instance: &Value) {
+pub(crate) fn assert_valid(validator: &jsonschema::Validator, instance: &Value) {
     let errors: Vec<String> = validator
         .iter_errors(instance)
         .map(|error| format!("{error} at {}", error.instance_path()))

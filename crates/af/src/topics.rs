@@ -201,8 +201,9 @@ Levels
 
 Credential-looking material is withheld at every level, before any bound cuts it: a line that
 looks like a credential becomes `[line withheld: looks like credential material]`, a JSON member
-named like a secret keeps its key and loses its value (`[withheld]`), a line or document too
-long to judge whole is withheld whole. Identities and counters af produced are typed fields and
+named like a secret keeps its key and loses its value (`[withheld]`), and so does a
+configuration row whose key is named like a secret, a line or document too long to judge whole
+is withheld whole. Identities and counters af produced are typed fields and
 stay intact. A telemetry-only failure (an unwritable directory, a full segment) is one problem
 and the run continues.
 

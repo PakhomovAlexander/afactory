@@ -49,6 +49,9 @@ Provider's own words, and before any bound can cut it:
 - A line or JSON document too long to be judged whole is withheld whole, never cut.
 - Identities and counters `af` produced (digests, run, Attempt, segment and span ids, token
   counts as exact decimal strings, timestamps) are typed fields and stay intact.
+- A configuration row whose key is named like a secret (`provider.password`, `sink.auth_token`)
+  keeps its key and loses its value, whatever its length or shape; other rows keep their values
+  under the rules above. Each `config` record counts what it withheld in `af.redacted`.
 - Environment values are never recorded; the home directory prefix becomes `~`.
 
 Each blob records the rules it passed, `af-redact/1`.
@@ -97,11 +100,15 @@ af telemetry status [--json] [--dir PATH]
 
 Prints the configured level; the telemetry directory and its allocated bytes, in total against
 `[telemetry] max_bytes` and per entry (each segment with its manifest, the blobs, the index with
-its WAL and shared-memory files, temporary files, locks); the segments by state — `live` (a
-writer holds its lock), `unsealed` (nobody holds it: a crashed writer's, recoverable), `sealed`
-and `corrupt` (interior corruption, never read); the runs the index knows; the Attempts whose
-content was withheld; the stored occurrences whose blob file is missing (reported as
-`content unavailable: missing blob`, never a failed query); the index after this command
+its WAL and shared-memory files, temporary files, locks), each sealed segment with its seal's
+`exit` and whether its capture is `complete` or why not (`recovered, drops unknown` for a
+segment recovered without its writer's seal, `recovered`, `12 dropped`); the segments by state —
+`live` (a writer holds its lock), `unsealed` (nobody holds it: a crashed writer's, recoverable),
+`sealed` and `corrupt` (interior corruption, never read); the runs the index knows; the Attempts
+whose content was withheld; the stored occurrences whose blob file is missing (reported as
+`content unavailable: missing blob`, never a failed query), looked for with `gc.lock` held
+shared — when a sweep keeps it longer than two seconds the check is reported `deferred` and no
+blob file is looked at; the index after this command
 ingested every new segment byte; the distinct problems recorded; what cannot be read (a
 directory of another telemetry version such as `v0/` is listed and never read); and every
 telemetry directory registered on this machine, with any overlap rechecked. It never recovers
@@ -110,11 +117,16 @@ or removes a segment.
 `--json` prints one `af/telemetry-status@1` document
 ([`schemas/telemetry-status-v1.json`](../schemas/telemetry-status-v1.json)). `--dir PATH` reads
 another telemetry directory, such as one copied from another machine. Exit codes: 0; 1 when the
-directory cannot be read (or `--dir` names none); 2 for a wrong command line or a refused
-`[telemetry]` key.
+directory cannot be read (or `--dir` names none) or its index is of another schema version;
+2 for a wrong command line or a refused `[telemetry]` key.
 
-When another command is replacing the index, `status` reads the segments directly and says so
-on stderr; its answer is the same.
+A `.jsonl` segment in which an invalid line precedes a valid one is unreadable at once: none of
+it is indexed, and it is listed as unreadable until `reindex` renames it `.corrupt`. A line over
+the 16 KiB record bound is an invalid line, so a sealed segment holding one is refused and
+listed, never indexed. An `index.sqlite` of another schema version (`af/telemetry-index@2`) is
+refused, never migrated or read around: `status` exits 1 naming the file and both schemas, and
+`af telemetry reindex` replaces it. Only when another command is replacing the index does
+`status` read the segments directly, saying so on stderr; its answer is the same.
 
 ## `af telemetry reindex`
 
@@ -125,10 +137,17 @@ af telemetry reindex [--json] [--dir PATH]
 Recovers every unsealed segment whose lock nobody holds — keeping its longest prefix of
 complete, valid lines, recording the discarded bytes in a seal with `exit = "recovered"`,
 marking spans it never ended with no end — or renames it `.corrupt` when an invalid line
-precedes a valid one. Then it replaces the index under `index.lock` (taken exclusively within
-two seconds; new readers wait on `index.intent` meanwhile), rebuilds it from every segment and
-verifies every blob file's digest. Every query answers the same before and after: the index is
-derived state, never evidence. `--json` prints one `af/telemetry-reindex@1` document
+precedes a valid one. A recovered seal whose writer never sealed has `dropped` and
+`dropped_chunks` `null`: what the writer dropped is unknown, and the capture is incomplete. A
+writer that died after writing its seal but before compressing has that seal replaced by the
+recovered one, which keeps the writer's counts, so the segment still ends with exactly one seal
+and never reads as a clean exit. Then it replaces the index under `index.lock` (taken
+exclusively within two seconds; new readers wait on `index.intent` meanwhile), rebuilds it from
+every segment and verifies every blob file's digest with `gc.lock` held shared for the whole
+scan; when that lock is not had within two seconds no blob file is opened and the document says
+`blob_verification = "deferred"` instead of reporting corruption, with the same exit code.
+Every query answers the same before and after: the index is derived state, never evidence.
+`--json` prints one `af/telemetry-reindex@1` document
 ([`schemas/telemetry-reindex-v1.json`](../schemas/telemetry-reindex-v1.json)). Exit codes: 0;
 1 when the directory cannot be read or another command holds the index; 2 as for `status`.
 

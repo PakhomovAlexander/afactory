@@ -441,6 +441,11 @@
               }
             }
           }
+        },
+        "af.redacted": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "How many values of this part's rows the redaction withheld: a row whose key matches the secret-name rule has its value withheld whatever its shape; absent when none was."
         }
       }
     },
@@ -880,12 +885,20 @@
           "minimum": 0
         },
         "dropped": {
-          "type": "integer",
-          "minimum": 0
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Null means unknown: only in a seal with `exit = recovered` that a recovering reader wrote for a prefix without the writer's seal (the writer's in-memory counters died with it); such a capture is incomplete. A writer's seal, and a recovered seal that superseded a stranded writer's seal, carry the count."
         },
         "dropped_chunks": {
-          "type": "integer",
-          "minimum": 0
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Null means unknown: only in a seal with `exit = recovered` that a recovering reader wrote for a prefix without the writer's seal (the writer's in-memory counters died with it); such a capture is incomplete. A writer's seal, and a recovered seal that superseded a stranded writer's seal, carry the count."
         },
         "discarded_bytes": {
           "type": "integer",
@@ -894,6 +907,25 @@
         "refs": {
           "type": "string",
           "pattern": "^[0-9]+-[0-9]+-[0-9a-f]+\\.refs$"
+        }
+      },
+      "if": {
+        "not": {
+          "properties": {
+            "exit": {
+              "const": "recovered"
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "dropped": {
+            "type": "integer"
+          },
+          "dropped_chunks": {
+            "type": "integer"
+          }
         }
       }
     }

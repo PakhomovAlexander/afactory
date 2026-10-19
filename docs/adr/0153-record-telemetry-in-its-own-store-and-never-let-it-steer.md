@@ -93,7 +93,12 @@ under the state root's `telemetry/`. These eight clauses bind every package of t
    unwritable or overlapping directory, a full segment, a locked index) is recorded once as a
    problem and the run continues; ADR-0144's free-disk floor still refuses work, telemetry or
    not. A segment, record, index or directory written under another schema version is refused by
-   the reader and never migrated.
+   the reader and never migrated; so is a segment with an invalid line before a valid one, live
+   or sealed, and a line over the record bound. Only an index lock not had in time sends a
+   reader to the segments directly. A reader opens blob files only with `gc.lock` held shared,
+   and defers verification without it. A recovered seal never claims what it cannot know: a
+   writer's counts lost with the writer are `null`, the capture incomplete, and a writer's seal
+   stranded before compression is superseded, never shown as a clean exit.
 8. **Bounded disk, under the budget's rules.** Every physical byte under a telemetry directory
    is counted once in the Storage Budget as the kind `telemetry`, and evicted under ADR-0144's
    rules only: by sealed segment, least recently used first, never an entry in use or used within

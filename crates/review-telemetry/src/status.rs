@@ -5,7 +5,10 @@
 //! `unsealed` (recoverable) until a reader that owns its recovery seals it. It ingests new
 //! segment bytes into the index, then reads the index. A directory of another version (`v0/`,
 //! `v2/`) is listed unreadable and never read. `reindex` recovers every unsealed segment it can
-//! lock, replaces the index under `index.lock` and verifies every blob file's digest.
+//! lock, replaces the index under `index.lock` and verifies every blob file's digest under
+//! `gc.lock` shared; without that lock within two seconds it opens no blob file and reports the
+//! verification `deferred`. An index file of another schema version is refused (the command
+//! exits 1), never read around; `reindex` replaces it.
 
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
@@ -36,6 +39,14 @@ pub struct Entry {
     /// For a segment: `live`, `unsealed`, `sealed` or `corrupt`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+    /// For a sealed segment the index read: its seal's `exit` (`ok`, `error`, `signal`,
+    /// `recovered`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<String>,
+    /// For a sealed segment the index read: `complete`, or why the capture is incomplete
+    /// (`recovered, drops unknown`, `recovered, 3 dropped`, `12 dropped`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<String>,
     pub bytes: u64,
 }
 
@@ -119,10 +130,30 @@ pub struct Status {
     pub withheld_attempts: u64,
     /// Stored occurrences whose blob file is missing.
     pub missing_blobs: u64,
+    /// `verified`: blob files were looked at under `gc.lock` shared; `deferred`: the lock was
+    /// not had within two seconds, no blob file was looked at and `missing_blobs` is 0.
+    pub blob_verification: BlobVerification,
     pub index: IndexState,
     pub problems: Vec<ProblemCount>,
     pub unreadable: Vec<Unreadable>,
     pub registered: Vec<RegisteredDir>,
+}
+
+/// Whether blob files were read under `gc.lock` shared, or the read was deferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlobVerification {
+    Verified,
+    Deferred,
+}
+
+impl BlobVerification {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Deferred => "deferred",
+        }
+    }
 }
 
 /// One recovered segment.
@@ -152,6 +183,9 @@ pub struct Reindex {
     pub missing_blobs: u64,
     /// Blob files whose content does not match their digest.
     pub corrupt_blobs: Vec<String>,
+    /// `deferred` when `gc.lock` was not had shared within two seconds: no blob file was
+    /// opened, and `missing_blobs` and `corrupt_blobs` say nothing.
+    pub blob_verification: BlobVerification,
     pub unreadable: Vec<Unreadable>,
 }
 
@@ -237,6 +271,7 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
         runs: 0,
         withheld_attempts: 0,
         missing_blobs: 0,
+        blob_verification: BlobVerification::Verified,
         index: IndexState {
             state: "absent".into(),
             reason: None,
@@ -290,6 +325,8 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
                 kind: "segment".into(),
                 name: id.clone(),
                 state: Some(state.into()),
+                exit: None,
+                capture: None,
                 bytes,
             });
         }
@@ -310,12 +347,16 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
         kind: "blobs".into(),
         name: "blobs".into(),
         state: None,
+        exit: None,
+        capture: None,
         bytes: allocated_tree(&layout.blobs()),
     });
     entries.push(Entry {
         kind: "index".into(),
         name: "index.sqlite".into(),
         state: None,
+        exit: None,
+        capture: None,
         bytes: layout
             .index_files()
             .iter()
@@ -326,12 +367,16 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
         kind: "temporary".into(),
         name: "temporary".into(),
         state: None,
+        exit: None,
+        capture: None,
         bytes: orphans,
     });
     entries.push(Entry {
         kind: "locks".into(),
         name: "locks".into(),
         state: None,
+        exit: None,
+        capture: None,
         bytes: allocated(&layout.gc_lock())
             + allocated(&layout.index_lock())
             + allocated(&layout.index_intent())
@@ -358,7 +403,20 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
         "SELECT count(*) FROM spans WHERE name = 'af.harness'
          AND json_extract(end_attributes, '$.\"af.stream.withheld\"') = 1",
     )?;
-    status.missing_blobs = index.missing_blobs()?.len() as u64;
+    match index.missing_blobs()? {
+        Some(missing) => status.missing_blobs = missing.len() as u64,
+        None => status.blob_verification = BlobVerification::Deferred,
+    }
+    for (segment_id, exit, capture) in index.seals()? {
+        if let Some(entry) = entries.iter_mut().find(|entry| {
+            entry.kind == "segment"
+                && entry.state.as_deref() == Some("sealed")
+                && entry.name == segment_id
+        }) {
+            entry.exit = Some(exit);
+            entry.capture = Some(capture);
+        }
+    }
     status.problems = index
         .problems()?
         .into_iter()
@@ -383,14 +441,16 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
     Ok((status, note))
 }
 
-/// Verify every blob file's digest under `gc.lock` shared; returns the digests that fail.
-fn verify_blobs(layout: &Layout) -> Vec<String> {
+/// Verify every blob file's digest, holding `gc.lock` shared for the whole scan; returns the
+/// digests that fail. `None` when the lock was not had within two seconds: then no blob file is
+/// opened and the verification is deferred.
+fn verify_blobs(layout: &Layout) -> Option<Vec<String>> {
     let _shared = layout::shared_within(&layout.gc_lock(), layout::LOCK_WAIT)
         .ok()
-        .flatten();
+        .flatten()?;
     let mut corrupt = Vec::new();
     let Ok(prefixes) = std::fs::read_dir(layout.blobs()) else {
-        return corrupt;
+        return Some(corrupt);
     };
     for prefix in prefixes.filter_map(Result::ok) {
         let Ok(files) = std::fs::read_dir(prefix.path()) else {
@@ -417,7 +477,7 @@ fn verify_blobs(layout: &Layout) -> Vec<String> {
         }
     }
     corrupt.sort();
-    corrupt
+    Some(corrupt)
 }
 
 /// `af telemetry reindex`. `Err` when the directory cannot be read or the index cannot be
@@ -442,6 +502,7 @@ pub fn reindex(root: &Path) -> Result<Reindex, String> {
         blob_refs: 0,
         missing_blobs: 0,
         corrupt_blobs: Vec::new(),
+        blob_verification: BlobVerification::Verified,
         unreadable: reader::other_versions(root)
             .into_iter()
             .map(|path| Unreadable {
@@ -479,7 +540,16 @@ pub fn reindex(root: &Path) -> Result<Reindex, String> {
     document.events = index.count("SELECT count(*) FROM events")?;
     document.blobs = index.count("SELECT count(*) FROM blobs")?;
     document.blob_refs = index.count("SELECT count(*) FROM blob_refs")?;
-    document.missing_blobs = index.missing_blobs()?.len() as u64;
-    document.corrupt_blobs = verify_blobs(&layout);
+    let verified = match verify_blobs(&layout) {
+        Some(corrupt) => index.missing_blobs()?.map(|missing| (missing, corrupt)),
+        None => None,
+    };
+    match verified {
+        Some((missing, corrupt)) => {
+            document.missing_blobs = missing.len() as u64;
+            document.corrupt_blobs = corrupt;
+        }
+        None => document.blob_verification = BlobVerification::Deferred,
+    }
     Ok(document)
 }

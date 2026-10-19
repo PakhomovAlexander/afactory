@@ -7,8 +7,11 @@
 //! of a `.jsonl` segment owns its recovery: it keeps the longest prefix of complete, valid lines,
 //! appends a `span_end` with `end_unix_ns = null` for every span the prefix never ended and a
 //! `seal` with `exit = "recovered"` and the discarded suffix as `discarded_bytes`, writes the
-//! `.refs` manifest from the kept records, then compresses and renames. An invalid line before a
-//! valid one is interior corruption: the segment is renamed `.corrupt`, never read again.
+//! `.refs` manifest from the kept records, then compresses and renames. A prefix that already
+//! ends with the writer's seal (the writer died before compressing) has that seal superseded by
+//! the recovered one, which keeps the writer's counts; a prefix without it gets a recovered seal
+//! whose `dropped` and `dropped_chunks` are `null`, unknown. An invalid line before a valid one
+//! is interior corruption: the segment is renamed `.corrupt`, never read again.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
@@ -32,6 +35,8 @@ pub struct Prefix {
     pub discarded_bytes: u64,
     /// An invalid line precedes a valid one.
     pub interior_corruption: bool,
+    /// Why the first line after the prefix was refused, when it is complete.
+    pub invalid: Option<String>,
 }
 
 impl Prefix {
@@ -83,7 +88,18 @@ pub fn scan_from(bytes: &[u8], start: usize, previous: Option<Position>) -> Pref
                 prefix.records.push(record);
                 offset += newline + 1;
             }
-            _ => break,
+            Ok(record) => {
+                prefix.invalid = Some(format!(
+                    "a `{}` record at seq {} out of order",
+                    record.kind(),
+                    record.seq()
+                ));
+                break;
+            }
+            Err(reason) => {
+                prefix.invalid = Some(reason);
+                break;
+            }
         }
     }
     prefix.kept_bytes = offset;
@@ -121,8 +137,13 @@ pub fn read_sealed(path: &Path) -> Result<Vec<Record>, String> {
         .map_err(|error| format!("{}: {error}", path.display()))?;
     let prefix = scan(&bytes);
     if prefix.discarded_bytes > 0 || !prefix.sealed() {
+        let reason = prefix
+            .invalid
+            .as_deref()
+            .map(|reason| format!(": line {}: {reason}", prefix.records.len() + 1))
+            .unwrap_or_default();
         return Err(format!(
-            "{}: not a sealed segment of this release ({} bytes after the last valid line)",
+            "{}: not a sealed segment of this release ({} bytes after the last valid line{reason})",
             path.display(),
             prefix.discarded_bytes
         ));
@@ -273,75 +294,93 @@ pub fn recover(layout: &Layout, segment_id: &str) -> Result<Recovery, String> {
             segment_id: segment_id.to_string(),
         });
     }
+    // A writer that died between its seal flush and the compression left its seal as the last
+    // valid line: it is superseded, so the segment ends with exactly one seal, the recovered
+    // one, carrying the writer's counts (known in this case).
+    let (records, kept_bytes, stranded) = match prefix.records.split_last() {
+        Some((Record::Seal(seal), rest)) => {
+            let seal_line = bytes[..prefix.kept_bytes - 1]
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |at| at + 1);
+            (rest, seal_line, Some(seal.clone()))
+        }
+        _ => (prefix.records.as_slice(), prefix.kept_bytes, None),
+    };
     let mut additions = Vec::new();
     let mut unended = 0;
-    if !prefix.sealed() {
-        let mut open: BTreeMap<u64, String> = BTreeMap::new();
-        let (mut spans, mut events, mut blobs) = (0, 0, 0);
-        for record in &prefix.records {
-            match record {
-                Record::SpanStart(start) => {
-                    open.insert(start.seq, start.span_id.clone());
-                    spans += 1;
-                }
-                Record::SpanEnd(end) => open.retain(|_, id| *id != end.span_id),
-                Record::Event(_) => events += 1,
-                Record::Blob(_) => blobs += 1,
-                _ => {}
+    let mut open: BTreeMap<u64, String> = BTreeMap::new();
+    let (mut spans, mut events, mut blobs) = (0, 0, 0);
+    for record in records {
+        match record {
+            Record::SpanStart(start) => {
+                open.insert(start.seq, start.span_id.clone());
+                spans += 1;
             }
+            Record::SpanEnd(end) => open.retain(|_, id| *id != end.span_id),
+            Record::Event(_) => events += 1,
+            Record::Blob(_) => blobs += 1,
+            _ => {}
         }
-        let mut seq = prefix.records.last().map_or(1, Record::seq);
-        for span_id in open.into_values() {
-            seq += 1;
-            unended += 1;
-            additions.push(Record::SpanEnd(SpanEnd {
-                seq,
-                schema: schema::SPAN.into(),
-                span_id,
-                end_unix_ns: None,
-                status: SpanStatus::Unset,
-                attributes: Attributes::new(),
-            }));
-        }
-        let ended = prefix
-            .records
-            .iter()
-            .rev()
-            .find_map(record_time)
-            .unwrap_or("0")
-            .to_string();
-        additions.push(Record::Seal(Seal {
+    }
+    let mut seq = records.last().map_or(1, Record::seq);
+    for span_id in open.into_values() {
+        seq += 1;
+        unended += 1;
+        additions.push(Record::SpanEnd(SpanEnd {
+            seq,
+            schema: schema::SPAN.into(),
+            span_id,
+            end_unix_ns: None,
+            status: SpanStatus::Unset,
+            attributes: Attributes::new(),
+        }));
+    }
+    let seal = match stranded {
+        Some(writer) => Seal {
+            seq: seq + 1,
+            exit: SealExit::Recovered,
+            discarded_bytes: prefix.discarded_bytes,
+            refs: format!("{segment_id}{}", layout::REFS),
+            ..writer
+        },
+        // Without the writer's seal its in-memory drop counters are lost: unknown, never 0,
+        // even when the prefix holds the exhaustion `problem`.
+        None => Seal {
             seq: seq + 1,
             schema: schema::SEAL.into(),
-            ended_unix_ns: ended,
+            ended_unix_ns: records
+                .iter()
+                .rev()
+                .find_map(record_time)
+                .unwrap_or("0")
+                .to_string(),
             exit: SealExit::Recovered,
             spans,
             events,
             blobs,
-            dropped: 0,
-            dropped_chunks: 0,
+            dropped: None,
+            dropped_chunks: None,
             discarded_bytes: prefix.discarded_bytes,
             refs: format!("{segment_id}{}", layout::REFS),
-        }));
-    }
+        },
+    };
+    additions.push(Record::Seal(seal));
     let mut tail = Vec::new();
     for record in &additions {
         tail.extend(serde_json::to_vec(record).expect("a record serializes"));
         tail.push(b'\n');
     }
     let io = |error: std::io::Error| format!("{}: {error}", live.display());
-    held.set_len(prefix.kept_bytes as u64).map_err(io)?;
+    held.set_len(kept_bytes as u64).map_err(io)?;
     held.seek(SeekFrom::End(0)).map_err(io)?;
     held.write_all(&tail).map_err(io)?;
     held.sync_all().map_err(io)?;
-    let mut kept = bytes[..prefix.kept_bytes].to_vec();
+    let mut kept = bytes[..kept_bytes].to_vec();
     kept.extend_from_slice(&tail);
     let refs = layout.refs(segment_id);
-    super::writer::write_atomically(
-        &refs,
-        &super::writer::manifest(&referenced(&prefix.records)),
-    )
-    .map_err(|error| format!("{}: {error}", refs.display()))?;
+    super::writer::write_atomically(&refs, &super::writer::manifest(&referenced(records)))
+        .map_err(|error| format!("{}: {error}", refs.display()))?;
     let sealed = layout.sealed_segment(segment_id);
     super::writer::write_atomically(&sealed, &crate::blob::compress(&kept))
         .map_err(|error| format!("{}: {error}", sealed.display()))?;

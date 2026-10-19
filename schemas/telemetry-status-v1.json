@@ -16,6 +16,7 @@
     "runs",
     "withheld_attempts",
     "missing_blobs",
+    "blob_verification",
     "index",
     "problems",
     "unreadable",
@@ -91,6 +92,20 @@
                   "corrupt"
                 ]
               },
+              "exit": {
+                "enum": [
+                  "ok",
+                  "error",
+                  "signal",
+                  "recovered"
+                ],
+                "description": "For a sealed segment the index read: its seal's `exit`. A segment a reader recovered says `recovered`, never a clean exit."
+              },
+              "capture": {
+                "type": "string",
+                "minLength": 1,
+                "description": "For a sealed segment the index read: `complete` (a writer's seal, nothing dropped), or why the capture is incomplete, such as `recovered, drops unknown` (recovered without the writer's seal: its drop counters are unknown), `recovered, 3 dropped` or `12 dropped`."
+              },
               "bytes": {
                 "$ref": "#/$defs/count"
               }
@@ -137,7 +152,15 @@
     },
     "missing_blobs": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 0,
+      "description": "Stored occurrences whose blob file is missing, looked for under `gc.lock` shared; 0 when `blob_verification` is `deferred`."
+    },
+    "blob_verification": {
+      "enum": [
+        "verified",
+        "deferred"
+      ],
+      "description": "`verified`: blob files were looked at under `gc.lock` held shared; `deferred`: the lock was not had within 2 s (a sweep holds it), no blob file was looked at and `missing_blobs` says nothing."
     },
     "index": {
       "type": "object",

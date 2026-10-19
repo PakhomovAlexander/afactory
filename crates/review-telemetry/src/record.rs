@@ -224,6 +224,13 @@ pub struct ConfigPart {
     pub parts: u32,
     pub complete: bool,
     pub rows: Vec<ConfigRow>,
+    /// How many values of this part's rows the redaction withheld.
+    #[serde(
+        rename = "af.redacted",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub redacted: Option<u32>,
 }
 
 /// `node`, `af/TelemetryNode@1`: one plan node of an execution.
@@ -390,6 +397,13 @@ impl SealExit {
             Self::Recovered => "recovered",
         }
     }
+
+    /// The exit [`Self::as_str`] spells `text`.
+    pub fn parse(text: &str) -> Option<Self> {
+        [Self::Ok, Self::Error, Self::Signal, Self::Recovered]
+            .into_iter()
+            .find(|exit| exit.as_str() == text)
+    }
 }
 
 /// `seal`, `af/TelemetrySeal@1`: the last line.
@@ -403,13 +417,63 @@ pub struct Seal {
     pub spans: u64,
     pub events: u64,
     pub blobs: u64,
-    /// Records and blobs the writer did not keep.
-    pub dropped: u64,
-    pub dropped_chunks: u64,
+    /// Records and blobs the writer did not keep. `null` only in a seal a recovering reader
+    /// wrote for a prefix without the writer's seal: the in-memory counters died with the
+    /// writer, so the count is unknown and the capture incomplete, never `0`.
+    #[serde(deserialize_with = "present")]
+    pub dropped: Option<u64>,
+    /// Stream chunks the observer dropped; `null` exactly when `dropped` is.
+    #[serde(deserialize_with = "present")]
+    pub dropped_chunks: Option<u64>,
     /// Bytes a recovering reader discarded after the last complete valid line.
     pub discarded_bytes: u64,
     /// The file name of the segment's `.refs` manifest.
     pub refs: String,
+}
+
+/// A nullable member that must still be present: `null` says unknown, absence is refused.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
+impl Seal {
+    /// Whether what the segment captured is known complete: a writer's seal with nothing
+    /// dropped. A recovered segment lost what its writer never flushed, and a seal without the
+    /// writer's counts does not know what was dropped.
+    pub fn complete(&self) -> bool {
+        self.exit != SealExit::Recovered && self.dropped == Some(0) && self.discarded_bytes == 0
+    }
+
+    /// How a reader labels the capture: `complete`, or why it is incomplete
+    /// (`recovered, drops unknown`, `recovered, 3 dropped`, `12 dropped`).
+    pub fn capture(&self) -> String {
+        capture_label(self.exit, self.dropped, self.discarded_bytes)
+    }
+}
+
+/// [`Seal::capture`] over the fields an index row keeps.
+pub fn capture_label(exit: SealExit, dropped: Option<u64>, discarded_bytes: u64) -> String {
+    let mut reasons = Vec::new();
+    if exit == SealExit::Recovered {
+        reasons.push("recovered".to_string());
+    }
+    match dropped {
+        None => reasons.push("drops unknown".into()),
+        Some(0) => {}
+        Some(count) => reasons.push(format!("{count} dropped")),
+    }
+    if discarded_bytes > 0 {
+        reasons.push(format!("{discarded_bytes} bytes discarded"));
+    }
+    if reasons.is_empty() {
+        "complete".into()
+    } else {
+        reasons.join(", ")
+    }
 }
 
 impl Record {
@@ -560,14 +624,33 @@ impl Record {
                 }
             }
             Self::Problem(r) => decimal("time_unix_ns", &r.time_unix_ns)?,
-            Self::Seal(r) => decimal("ended_unix_ns", &r.ended_unix_ns)?,
+            Self::Seal(r) => {
+                decimal("ended_unix_ns", &r.ended_unix_ns)?;
+                if r.dropped.is_none() != r.dropped_chunks.is_none() {
+                    return Err("`dropped` and `dropped_chunks` are unknown together".into());
+                }
+                if r.dropped.is_none() && r.exit != SealExit::Recovered {
+                    return Err(format!(
+                        "a seal with `exit = {}` and unknown drops: only a recovered seal may \
+                         not know them",
+                        r.exit.as_str()
+                    ));
+                }
+            }
             Self::Config(_) | Self::Node(_) | Self::Finding(_) | Self::Demand(_) => {}
         }
         Ok(())
     }
 
-    /// Parse and [`Self::validate`] one line (without its newline).
+    /// Parse and [`Self::validate`] one line (without its newline). A line over
+    /// [`RECORD_MAX_BYTES`] is refused before any deserialization: the bound holds on read too.
     pub fn parse_line(line: &[u8]) -> Result<Self, String> {
+        if line.len() > RECORD_MAX_BYTES {
+            return Err(format!(
+                "a record of {} bytes exceeds the {RECORD_MAX_BYTES}-byte record bound",
+                line.len()
+            ));
+        }
         let record: Record = serde_json::from_slice(line).map_err(|error| error.to_string())?;
         record.validate()?;
         Ok(record)
@@ -861,6 +944,47 @@ mod tests {
         assert!(!attributes.contains_key("af.usage.output_tokens"));
         assert_eq!(counters.redacted, 1);
         assert_eq!(counters.dropped, 1);
+    }
+
+    #[test]
+    fn a_line_over_the_record_bound_is_refused_before_parsing() {
+        let mut attributes = Attributes::new();
+        attributes.insert("af.note".into(), Value::from("x".repeat(RECORD_MAX_BYTES)));
+        let line = serde_json::to_vec(&span_start(attributes)).unwrap();
+        let error = Record::parse_line(&line).unwrap_err();
+        assert!(error.contains(&line.len().to_string()), "{error}");
+        assert!(error.contains("16384"), "{error}");
+        // Not even its shape is looked at.
+        let garbage = vec![b'x'; RECORD_MAX_BYTES + 1];
+        assert!(
+            Record::parse_line(&garbage)
+                .unwrap_err()
+                .contains("record bound")
+        );
+    }
+
+    #[test]
+    fn unknown_seal_counts_are_recovered_only_and_never_absent() {
+        let seal = |exit: &str, dropped: &str| {
+            format!(
+                r#"{{"seq":3,"t":"seal","schema":"af/TelemetrySeal@1","ended_unix_ns":"1","exit":"{exit}","spans":0,"events":0,"blobs":0,"dropped":{dropped},"dropped_chunks":{dropped},"discarded_bytes":0,"refs":"1-2-ab.refs"}}"#
+            )
+        };
+        let Record::Seal(recovered) =
+            Record::parse_line(seal("recovered", "null").as_bytes()).unwrap()
+        else {
+            panic!("not a seal");
+        };
+        assert_eq!(recovered.dropped, None);
+        assert!(!recovered.complete());
+        assert_eq!(recovered.capture(), "recovered, drops unknown");
+        assert!(Record::parse_line(seal("ok", "null").as_bytes()).is_err());
+        let Record::Seal(clean) = Record::parse_line(seal("ok", "0").as_bytes()).unwrap() else {
+            panic!("not a seal");
+        };
+        assert!(clean.complete());
+        let absent = seal("recovered", "null").replace(r#""dropped":null,"#, "");
+        assert!(Record::parse_line(absent.as_bytes()).is_err());
     }
 
     #[test]

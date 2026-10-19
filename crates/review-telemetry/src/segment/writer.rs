@@ -43,7 +43,7 @@ use crate::record::{
     Problem, ProblemWhat, RECORD_MAX_BYTES, Record, Seal, SealExit, SegmentHeader, SpanEnd,
     SpanKind, SpanStart, SpanStatus, schema,
 };
-use crate::redact::Redactor;
+use crate::redact::{self, Redactor};
 use crate::trace;
 
 /// A step of the blob publication protocol, offered to a [`PublishHook`].
@@ -1194,39 +1194,59 @@ impl Writer {
     }
 
     /// An execution's configuration snapshot, split into as many `config` parts as the record
-    /// bound needs, in the rows' order. Keys, values, layers and origins are untrusted text,
-    /// each judged whole and only then bounded.
+    /// bound needs, in the rows' order. Each row is judged by its key first: a key the
+    /// secret-name rule matches (`key`, `token`, `secret`, `password`, …) has its value withheld
+    /// whatever its length or shape, as a secret-named JSON member's is. Keys, other values,
+    /// layers and origins are untrusted text, each judged whole and only then bounded; each
+    /// part counts its withheld values in `af.redacted`.
     pub fn config(&self, execution_id: &str, rows: Vec<ConfigRow>) -> Option<u32> {
         let redactor = &self.shared.options.redactor;
-        let rows: Vec<ConfigRow> = rows
+        let rows: Vec<(ConfigRow, u32)> = rows
             .into_iter()
-            .map(|row| ConfigRow {
-                key: record::cut(&redactor.value(&row.key).0, MAX_KEY_BYTES),
-                value: record::cut(&redactor.value(&row.value).0, MAX_STRING_BYTES),
-                layer: record::cut(&redactor.value(&row.layer).0, MAX_KEY_BYTES),
-                origin: row
-                    .origin
-                    .map(|origin| record::cut(&redactor.value(&origin).0, MAX_STRING_BYTES)),
+            .map(|row| {
+                let mut redacted = u32::from(redact::secret_name(&row.key));
+                let mut judge = |text: &str| {
+                    let (text, withheld) = redactor.value(text);
+                    redacted += u32::from(withheld);
+                    text
+                };
+                let key = judge(&row.key);
+                let value = if redact::secret_name(&row.key) {
+                    redact::WITHHELD.to_string()
+                } else {
+                    judge(&row.value)
+                };
+                let layer = judge(&row.layer);
+                let origin = row.origin.map(|origin| judge(&origin));
+                let row = ConfigRow {
+                    key: record::cut(&key, MAX_KEY_BYTES),
+                    value: record::cut(&value, MAX_STRING_BYTES),
+                    layer: record::cut(&layer, MAX_KEY_BYTES),
+                    origin: origin.map(|origin| record::cut(&origin, MAX_STRING_BYTES)),
+                };
+                (row, redacted)
             })
             .collect();
         // Pack rows into parts that fit with room for the part's own fields.
         let room = RECORD_MAX_BYTES - 512;
-        let mut parts: Vec<Vec<ConfigRow>> = vec![Vec::new()];
+        let mut parts: Vec<(Vec<ConfigRow>, u32)> = vec![(Vec::new(), 0)];
         let mut size = 0;
-        for row in rows {
+        for (row, redacted) in rows {
             let bytes = serde_json::to_vec(&row).expect("a row serializes").len() + 1;
             let current = parts.last_mut().expect("one part at least");
-            if !current.is_empty() && size + bytes > room {
-                parts.push(Vec::new());
+            if !current.0.is_empty() && size + bytes > room {
+                parts.push((Vec::new(), 0));
                 size = 0;
             }
-            parts.last_mut().expect("pushed").push(row);
+            let current = parts.last_mut().expect("pushed");
+            current.0.push(row);
+            current.1 += redacted;
             size += bytes;
         }
         let count = u32::try_from(parts.len()).unwrap_or(u32::MAX);
         let execution_id = execution_id.to_string();
         self.commit(false, |batch| {
-            for (index, rows) in parts.into_iter().enumerate() {
+            for (index, (rows, redacted)) in parts.into_iter().enumerate() {
                 let part = u32::try_from(index).unwrap_or(u32::MAX) + 1;
                 batch.push(
                     Record::Config(ConfigPart {
@@ -1237,6 +1257,7 @@ impl Writer {
                         parts: count,
                         complete: part == count,
                         rows,
+                        redacted: (redacted > 0).then_some(redacted),
                     }),
                     Counters::default(),
                 )?;
@@ -1309,8 +1330,8 @@ impl Writer {
                     spans: counts.spans,
                     events: counts.events,
                     blobs: counts.blobs,
-                    dropped: counts.dropped,
-                    dropped_chunks: counts.dropped_chunks,
+                    dropped: Some(counts.dropped),
+                    dropped_chunks: Some(counts.dropped_chunks),
                     discarded_bytes: 0,
                     refs,
                 }),

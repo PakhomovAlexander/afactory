@@ -22,7 +22,7 @@ use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
 use serde_json::Value;
 
 use crate::layout::{self, Held, Layout};
-use crate::record::Record;
+use crate::record::{Record, SealExit};
 use crate::segment::reader::{self, Position};
 use crate::trace;
 
@@ -177,8 +177,8 @@ const TABLES: [(&str, &str); 13] = [
 pub enum Mode {
     /// The shared index file, under `index.lock` shared.
     Shared,
-    /// The lock was not had within two seconds (or the file is of another shape): an in-memory
-    /// index built from the segments directly.
+    /// The lock was not had within two seconds: an in-memory index built from the segments
+    /// directly.
     Direct,
 }
 
@@ -240,10 +240,15 @@ fn configure(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-/// Open the index file, creating it when absent; refuse one of another shape.
+/// Open the index file, creating it when absent; refuse one of another shape or schema version
+/// (ADR-0145: refused, never migrated), naming the file, both schemas and the command that
+/// replaces it. A refused file is left as it was found.
 fn open_file(layout: &Layout) -> Result<Connection, String> {
-    let connection = Connection::open(layout.index()).map_err(sql)?;
-    configure(&connection)?;
+    let path = layout.index();
+    let connection = Connection::open(&path).map_err(sql)?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(sql)?;
     let has_meta: bool = connection
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
@@ -257,8 +262,13 @@ fn open_file(layout: &Layout) -> Result<Connection, String> {
             .query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get(0))
             .map_err(sql)?;
         if tables > 0 {
-            return Err("the telemetry index is of another shape; run af telemetry reindex".into());
+            return Err(format!(
+                "{}: the telemetry index is of another shape, not {INDEX_SCHEMA}; it is refused, \
+                 never migrated: `af telemetry reindex` replaces it",
+                path.display()
+            ));
         }
+        configure(&connection)?;
         create(&connection)?;
         return Ok(connection);
     }
@@ -270,17 +280,22 @@ fn open_file(layout: &Layout) -> Result<Connection, String> {
         .map_err(sql)?;
     if schema.as_deref() != Some(INDEX_SCHEMA) {
         return Err(format!(
-            "the telemetry index is {}, not {INDEX_SCHEMA}; run af telemetry reindex",
+            "{}: the telemetry index is {}, not {INDEX_SCHEMA}; it is refused, never migrated: \
+             `af telemetry reindex` replaces it",
+            path.display(),
             schema.unwrap_or_else(|| "unversioned".into())
         ));
     }
+    configure(&connection)?;
     Ok(connection)
 }
 
 impl Index {
     /// Open the directory's index under `index.lock` shared, waiting at most two seconds; when
-    /// the lock is not had, or the file cannot be used, an in-memory index of the segments read
-    /// directly, with [`Self::note`] saying why. Nothing is ingested yet.
+    /// the lock is not had, an in-memory index of the segments read directly, with
+    /// [`Self::note`] saying why. An index file of another shape or schema version is refused
+    /// with `Err`, never read around: the reader fails closed and `reindex` replaces it.
+    /// Nothing is ingested yet.
     pub fn open(layout: &Layout) -> Result<Self, String> {
         let deadline = std::time::Instant::now() + layout::LOCK_WAIT;
         let intent = layout::shared_within(&layout.index_intent(), layout::LOCK_WAIT)
@@ -300,18 +315,13 @@ impl Index {
                 "the telemetry index is being replaced; reading the segments directly",
             );
         };
-        match open_file(layout) {
-            Ok(connection) => Ok(Self {
-                connection,
-                layout: layout.clone(),
-                mode: Mode::Shared,
-                note: None,
-                _lock: Some(lock),
-            }),
-            Err(reason) => {
-                Self::direct(layout, &format!("{reason}; reading the segments directly"))
-            }
-        }
+        Ok(Self {
+            connection: open_file(layout)?,
+            layout: layout.clone(),
+            mode: Mode::Shared,
+            note: None,
+            _lock: Some(lock),
+        })
     }
 
     /// An in-memory index over the segments, read without the index file.
@@ -435,6 +445,20 @@ impl Index {
                 (offset, position)
             };
             let prefix = reader::scan_from(&bytes, offset, position);
+            if prefix.interior_corruption {
+                // An invalid line before a valid one: the segment is unreadable now, exactly as
+                // it is once recovery renames it `.corrupt`, so no query sees any of it.
+                forget(&transaction, segment_id)?;
+                refused.push((
+                    path.display().to_string(),
+                    format!(
+                        "interior corruption: an invalid line ({}) precedes a valid one; \
+                         unreadable",
+                        prefix.invalid.as_deref().unwrap_or("not a record")
+                    ),
+                ));
+                continue;
+            }
             if prefix.records.is_empty() {
                 continue;
             }
@@ -527,8 +551,43 @@ impl Index {
             .map_err(sql)
     }
 
-    /// Stored occurrences whose blob file is missing: `(occurrence_id, digest)`.
-    pub fn missing_blobs(&self) -> Result<Vec<(String, String)>, String> {
+    /// Every sealed segment's seal as the index holds it: `(segment_id, exit, capture)`, the
+    /// capture `complete` or why it is not ([`crate::record::capture_label`]): a recovered
+    /// segment is never shown as a clean exit, and one whose drops are unknown says so.
+    pub fn seals(&self) -> Result<Vec<(String, String, String)>, String> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT segment_id, exit, dropped, discarded_bytes FROM segments
+                 WHERE exit IS NOT NULL ORDER BY segment_id",
+            )
+            .map_err(sql)?;
+        statement
+            .query_map([], |row| {
+                let exit: String = row.get(1)?;
+                let dropped: Option<i64> = row.get(2)?;
+                let discarded: Option<i64> = row.get(3)?;
+                let capture = SealExit::parse(&exit).map_or_else(
+                    || format!("unknown exit {exit}"),
+                    |parsed| {
+                        crate::record::capture_label(
+                            parsed,
+                            dropped.map(|value| u64::try_from(value).unwrap_or(0)),
+                            discarded.map_or(0, |value| u64::try_from(value).unwrap_or(0)),
+                        )
+                    },
+                );
+                Ok((row.get(0)?, exit, capture))
+            })
+            .map_err(sql)?
+            .collect::<Result<_, _>>()
+            .map_err(sql)
+    }
+
+    /// Stored occurrences whose blob file is missing: `(occurrence_id, digest)`, looked for
+    /// under `gc.lock` shared. `None` when the lock was not had within two seconds (a sweep
+    /// holds it): the check is deferred, never answered while files may be collected.
+    pub fn missing_blobs(&self) -> Result<Option<Vec<(String, String)>>, String> {
         let mut statement = self
             .connection
             .prepare(
@@ -541,18 +600,25 @@ impl Index {
             .map_err(sql)?
             .collect::<Result<_, _>>()
             .map_err(sql)?;
-        let _shared = layout::shared_within(&self.layout.gc_lock(), layout::LOCK_WAIT)
+        if all.is_empty() {
+            return Ok(Some(all));
+        }
+        let Some(_shared) = layout::shared_within(&self.layout.gc_lock(), layout::LOCK_WAIT)
             .ok()
-            .flatten();
+            .flatten()
+        else {
+            return Ok(None);
+        };
         let mut present = BTreeMap::new();
-        Ok(all
-            .into_iter()
-            .filter(|(_, digest)| {
-                !*present
-                    .entry(digest.clone())
-                    .or_insert_with(|| crate::blob::reader::exists(&self.layout, digest))
-            })
-            .collect())
+        Ok(Some(
+            all.into_iter()
+                .filter(|(_, digest)| {
+                    !*present
+                        .entry(digest.clone())
+                        .or_insert_with(|| crate::blob::reader::exists(&self.layout, digest))
+                })
+                .collect(),
+        ))
     }
 
     /// The occurrence record of `occurrence_id`, as the index holds it.
@@ -960,7 +1026,7 @@ impl<'a> SegmentIngest<'a> {
                                 segment_id,
                                 ns(&seal.ended_unix_ns),
                                 seal.exit.as_str(),
-                                as_i64(seal.dropped),
+                                seal.dropped.map(as_i64),
                                 as_i64(seal.discarded_bytes)
                             ],
                         )

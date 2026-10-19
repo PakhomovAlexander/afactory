@@ -307,3 +307,111 @@ fn telemetry_commands_refuse_and_report_with_their_exit_codes() {
     let status = json(&machine.af_in(&repo, &[], &["telemetry", "status", "--json"]));
     assert_eq!(status["level"], "spans");
 }
+
+#[test]
+fn telemetry_reindex_defers_blob_verification_without_the_lock() {
+    let machine = Machine::new();
+    sealed_run(&machine.telemetry(), "run-1");
+    let layout = Layout::new(machine.telemetry());
+    // A blob file whose content no longer matches its digest: only a verification that opens
+    // it can tell.
+    let digest = std::fs::read_to_string(
+        layout.refs(
+            &review_telemetry::segment::reader::list(&layout)
+                .unwrap()
+                .sealed[0],
+        ),
+    )
+    .unwrap()
+    .lines()
+    .next()
+    .unwrap()
+    .to_string();
+    std::fs::write(
+        layout.blob(&digest),
+        review_telemetry::blob::compress(b"other bytes\n"),
+    )
+    .unwrap();
+
+    // A sweep holds gc.lock exclusively for longer than LOCK_WAIT, through the whole command.
+    let held = review_telemetry::layout::exclusive_within(
+        &layout.gc_lock(),
+        review_telemetry::layout::LOCK_WAIT,
+    )
+    .unwrap()
+    .unwrap();
+    let started = std::time::Instant::now();
+    let deferred = json(&machine.af(&[], &["telemetry", "reindex", "--json"]));
+    assert!(started.elapsed() >= review_telemetry::layout::LOCK_WAIT);
+    schemas::valid(&schemas::validator("telemetry-reindex-v1.json"), &deferred);
+    assert_eq!(deferred["blob_verification"], "deferred");
+    assert_eq!(deferred["corrupt_blobs"], serde_json::json!([]));
+    assert_eq!(deferred["missing_blobs"], 0);
+    assert_eq!(deferred["segments"], 1);
+    let output = machine.af(&[], &["telemetry", "reindex"]);
+    assert_eq!(output.status.code(), Some(0));
+    let (stdout, _) = text(&output);
+    assert!(stdout.contains("verification deferred"), "{stdout}");
+    assert!(!stdout.contains("corrupt blob"), "{stdout}");
+    let status = json(&machine.af(&[], &["telemetry", "status", "--json"]));
+    schemas::valid(&schemas::validator("telemetry-status-v1.json"), &status);
+    assert_eq!(status["blob_verification"], "deferred");
+    assert_eq!(status["missing_blobs"], 0);
+    drop(held);
+
+    // With the lock free the same command verifies, and reports the corruption.
+    let verified = json(&machine.af(&[], &["telemetry", "reindex", "--json"]));
+    schemas::valid(&schemas::validator("telemetry-reindex-v1.json"), &verified);
+    assert_eq!(verified["blob_verification"], "verified");
+    assert_eq!(verified["corrupt_blobs"], serde_json::json!([digest]));
+    let status = json(&machine.af(&[], &["telemetry", "status", "--json"]));
+    assert_eq!(status["blob_verification"], "verified");
+}
+
+#[test]
+fn telemetry_status_refuses_a_foreign_index_schema() {
+    let machine = Machine::new();
+    sealed_run(&machine.telemetry(), "run-1");
+    let layout = Layout::new(machine.telemetry());
+    json(&machine.af(&[], &["telemetry", "status", "--json"]));
+    {
+        let index = review_telemetry::index::Index::open(&layout).unwrap();
+        index
+            .connection()
+            .execute(
+                "UPDATE meta SET value = 'af/telemetry-index@2' WHERE key = 'schema'",
+                [],
+            )
+            .unwrap();
+    }
+
+    // Refused, never read around: the exit code of a refused read, naming the file, both
+    // schemas and the command that replaces it.
+    for args in [
+        &["telemetry", "status"][..],
+        &["telemetry", "status", "--json"][..],
+    ] {
+        let output = machine.af(&[], args);
+        let (stdout, stderr) = text(&output);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{args:?}\n{stdout}\n{stderr}"
+        );
+        assert!(
+            stderr.contains(&layout.index().display().to_string()),
+            "{stderr}"
+        );
+        assert!(stderr.contains("af/telemetry-index@2"), "{stderr}");
+        assert!(stderr.contains("af/telemetry-index@1"), "{stderr}");
+        assert!(stderr.contains("af telemetry reindex"), "{stderr}");
+        assert!(!stderr.contains("directly"), "{stderr}");
+    }
+
+    // The reindex replaces it, and status reads it again.
+    let reindexed = json(&machine.af(&[], &["telemetry", "reindex", "--json"]));
+    assert_eq!(reindexed["segments"], 1);
+    let status = json(&machine.af(&[], &["telemetry", "status", "--json"]));
+    assert_eq!(status["index"]["state"], "fresh");
+    assert_eq!(status["runs"], 1);
+}

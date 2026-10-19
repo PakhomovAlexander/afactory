@@ -1418,17 +1418,22 @@ pub(crate) enum TelemetryCommand {
         long_about = "The level, the directory, its bytes, segments, runs, the index and every problem.\n\n\
 Prints the configured `[telemetry] level`; the telemetry directory and its allocated bytes, in \
 total against `[telemetry] max_bytes` and per entry (each segment with its manifest, the blobs, \
-the index with its WAL and shared memory, temporary files, locks); the segments by state — \
-`live` (a writer holds its lock), `unsealed` (nobody does: a crashed writer's, recovered by the \
-next `reindex`), `sealed` and `corrupt` (interior corruption, never read); the runs the index \
-knows, the Attempts whose content was withheld, and stored occurrences whose blob file is \
-missing (`content unavailable: missing blob`); the index after ingesting every new segment byte \
-(`fresh`, or `direct` when another command is replacing it and the segments were read \
+the index with its WAL and shared memory, temporary files, locks), each sealed segment with its \
+seal's `exit` and its capture (`complete`, or why not: `recovered, drops unknown`); the segments \
+by state — `live` (a writer holds its lock), `unsealed` (nobody does: a crashed writer's, \
+recovered by the next `reindex`), `sealed` and `corrupt` (interior corruption, never read); the \
+runs the index knows, the Attempts whose content was withheld, and stored occurrences whose blob \
+file is missing (`content unavailable: missing blob`), looked for under `gc.lock` shared or \
+reported `deferred` when a sweep holds it past 2 s; the index after ingesting every new segment \
+byte (`fresh`, or `direct` when another command is replacing it and the segments were read \
 directly, said on stderr); the distinct problems recorded; what cannot be read (a directory of \
-another telemetry version such as `v0/`, never read); and every telemetry directory registered \
-on this machine, with any overlap rechecked.\n\n\
-Never: recovers or removes a segment, records telemetry, reads a Store, or contacts a network.\n\n\
-Exit codes: 0 success, 1 the telemetry directory cannot be read, 2 a refused `[telemetry]` key.",
+another telemetry version such as `v0/`, never read; a segment with an invalid line before a \
+valid one or a line over the 16 KiB record bound, never indexed); and every telemetry directory \
+registered on this machine, with any overlap rechecked.\n\n\
+Never: recovers or removes a segment, records telemetry, reads a Store, reads around an index of \
+another schema version, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or its index is of another \
+schema version (`af telemetry reindex` replaces it), 2 a refused `[telemetry]` key.",
         after_long_help = "Examples:\n  af telemetry status\n  af telemetry status --json\n  af telemetry status --dir /backup/telemetry --json | jq .bytes.total"
     )]
     Status {
@@ -1443,11 +1448,14 @@ Exit codes: 0 success, 1 the telemetry directory cannot be read, 2 a refused `[t
     #[command(
         long_about = "Recover crashed writers' segments and rebuild the index from every segment.\n\n\
 Every `.jsonl` segment whose lock nobody holds is recovered to its last complete line: the \
-discarded bytes are recorded in its seal (`exit = recovered`), spans it never ended are marked \
-with no end, and it is compressed; an invalid line before a valid one renames it `.corrupt`. \
-Then the index is replaced under `index.lock` — taken exclusively within 2 s, checkpointed, \
-closed, its database, WAL and shared-memory files unlinked — and rebuilt from every segment, \
-and every blob file's digest is verified. Every query answers the same before and after: the \
+discarded bytes are recorded in its seal (`exit = recovered`; the writer's drop counts `null`, \
+unknown, unless the writer's own seal was already written, which the recovered seal then \
+supersedes), spans it never ended are marked with no end, and it is compressed; an invalid line \
+before a valid one renames it `.corrupt`. Then the index is replaced under `index.lock` — taken \
+exclusively within 2 s, checkpointed, closed, its database, WAL and shared-memory files unlinked \
+— and rebuilt from every segment, and every blob file's digest is verified with `gc.lock` held \
+shared (`blob_verification = deferred`, no blob file opened, when the lock is not had within \
+2 s). Every query answers the same before and after: the \
 index is derived state, never evidence.\n\n\
 Never: removes a sealed segment or a blob, reads a Store, or contacts a network.\n\n\
 Exit codes: 0 success, 1 the directory cannot be read or another command holds the index, 2 a \
