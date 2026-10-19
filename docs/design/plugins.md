@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 22 after review rounds 1 to 21 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 23 after review rounds 1 to 22 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -952,8 +952,11 @@ broker frame at most 64 KiB, a broker reply at most the CAS bound of 8 MiB plus 
 the container's aggregate stdout at most 64 MiB, its stderr at most 1 MiB, and the trace, which
 `strace -o` writes to a pipe the relay forwards as a second framed stream on the container's
 stdout, so that the harness counts its bytes before retaining them as on every other channel,
-at most 256 MiB, with the size of the trace file the harness keeps as no more than a second
-check; the first excess byte on any of them cancels the check, which confirms the container's removal
+at most 32 MiB of trace bytes, a logical ceiling of its own beneath the physical one (framing
+bytes count toward the 64 MiB of stdout, and each logical limit is reached and reported on its
+own channel before the physical one is; a check that needs more stdout than that is not a
+conformance check), with the size of the trace file the harness keeps as no more than a
+second check; the first excess byte on any of them cancels the check, which confirms the container's removal
 (§3.15 below) and fails with the channel named, and a truncated trace is never evidence. The
 harness runs the real `af` against the fixture Store outside, and
 answers with stdout and the exit code. A mounted FIFO would not do: on macOS the container is
@@ -983,7 +986,8 @@ rejected before anything spawns and recorded as a boundary violation, since the 
 syscall trace cannot see what a host-side `af` reads or writes. Denial alone proves nothing, because a plugin can swallow the error and exit 0, so the
 harness also audits: inside the container the plugin runs under a file-syscall tracer
 (`strace -f -y -s 4096 -o <the relay's trace pipe> -e
-trace=%file,fchdir,dup,dup2,dup3,fcntl,close,unshare,%process`, the
+trace=%file,fchdir,dup,dup2,dup3,fcntl,close,fchmod,fchown,fsetxattr,fremovexattr,ftruncate,fallocate,ioctl,unshare,%process`,
+the
 container is Linux on every host, with the ptrace capability the harness requests for this
 check only), and the trace, not the plugin's output, is the record. The auditor resolves every
 access to an absolute path before classifying it: a descriptor-relative call through the path
@@ -1008,7 +1012,24 @@ or a process the trace does not see exit makes the check `unresolved`, which fai
 violation: the record is complete or the check claims nothing. Any path-naming syscall outside the plugin's bundle, its declared directories, the
 mounted export (reads only), the fixture repository (reads, and `init`'s one destination), the
 broker FIFO, the system paths the image provides and a private scratch directory is a
-violation whatever its result, `ENOENT` and `EACCES` included. This harness policy is the
+violation whatever its result, `ENOENT` and `EACCES` included. The system paths are a closed
+list the harness owns, not whatever the image happens to hold: `/usr`, `/lib`, `/lib64`,
+`/bin`, `/sbin`, `/etc`, `/dev/null`, `/dev/zero`, `/dev/urandom`, `/tmp` as the private
+scratch, and the read-only informational files the runtimes need, `/proc/self/{status, stat,
+statm, maps, auxv, cgroup, mountinfo, limits}`, `/proc/{cpuinfo, meminfo, stat}`,
+`/proc/sys/kernel/`, `/sys/fs/cgroup/`, `/sys/devices/system/cpu/` and
+`/sys/kernel/mm/transparent_hugepage/`, reads only. The kernel's aliases reach targets that
+lexical classification cannot see, so any access naming `/proc/<pid>/{root, cwd, fd, exe,
+map_files, ns}` for any pid, `/proc/self` or `/proc/thread-self` beyond that list, or
+`/dev/fd`, is a violation whatever it resolves to; and the image's own symlinks are known
+before the run, the harness walking the admitted system paths once, recording every symlink
+with its target and resolving an access through one of them to that target before classifying
+it, with an image whose admitted paths cannot be walked `unresolved`. A mutation through a
+descriptor (`fchmod`, `fchown`, `fsetxattr`, `fremovexattr`, `ftruncate`, `fallocate`, and an
+`ioctl` other than the read-only queries the harness lists, `FIOCLEX`, `FIONCLEX`, `FIGETBSZ`,
+`FS_IOC_GETFLAGS`, `FS_IOC_FSGETXATTR`) is classified by the descriptor's decoded path as a
+write to that target whatever its result, so an export opened read-only and then `fchmod`ed
+with the error swallowed is a violation like the write it attempted. This harness policy is the
 check's own and shares nothing with the Worker sandbox policy. Without a container provider,
 or when the provider cannot grant the tracer or attach the relay's stdio, the boundary check is
 reported `not_run` and
@@ -1264,17 +1285,21 @@ archive's pin digest);
 `plugin_check_audit_resolves_relative_and_descriptor_relative_accesses` (an `openat` through a
 numeric dirfd into a permitted directory and into a forbidden one, a relative open after
 `fchdir` into each, a symlink created in the cache, used and unlinked before exit 0, a write
-attempted through such a link to the read-only export, and a denied outside write followed by
-exit 0: the permitted ones pass and every other is a recorded violation; a trace with a lost
+attempted through such a link to the read-only export, a denied outside write followed by
+exit 0, an export opened read-only and then `fchmod`ed and `fsetxattr`ed with the failures
+swallowed and exit 0, and one forbidden target reached directly and through
+`/proc/self/root` with its error swallowed: the permitted ones pass and every other is a
+recorded violation; a trace with a lost
 process is `unresolved` and fails; a working directory renamed under the process and then
 left through `..`, classified by the renamed path; a thread that changes the directory and
 the parent's relative open after it, classified by the shared context; an `unshare` child
 whose `chdir` leaves the parent's resolution alone; a `chroot` call, `unresolved`);
 `plugin_check_bounds_every_channel` (a plugin flooding each channel in turn, a broker frame
 over 64 KiB, a reply over its bound, container stdout over 64 MiB, stderr over 1 MiB and a
-trace over 256 MiB, crossed in a burst inside the first second: each cancels the check with
-the channel named, the container's removal is confirmed, the retained trace bytes stay within
-the bound, and no truncated trace is reported as evidence);
+trace over 32 MiB, crossed in a burst inside the first second: each cancels the check with its
+own channel named, the logical limits before the physical one and the framing bytes counted
+toward stdout, the container's removal is confirmed, the retained trace bytes stay within the
+bound, and no truncated trace is reported as evidence);
 `plugin_check_without_a_container_reports_not_run`;
 `plugin_check_binds_its_result_to_the_content_digest_and_target` (a native Darwin bundle is
 `not_run`, `--target` checks the Linux bundle and claims nothing for the other; two archives
