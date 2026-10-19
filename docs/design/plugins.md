@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 3 after review rounds 1 and 2 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 4 after review rounds 1 to 3 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -208,9 +208,9 @@ and stderr inherited, in the caller's working directory, and exits with the plug
 A plugin inherits the operator's environment, so `HOME`, the XDG variables, `PATH` and every
 `AF_*` override, the `AF_PLUGIN__<NAME>__<KEY>` overrides of §3.10 included, reach it and the
 `af` children it runs. The invocation protocol is the overlay the kernel adds, after removing
-exactly the six invocation-owned variables (`AF_PLUGIN_PROTOCOL`, `AF_PLUGIN_NAME`,
-`AF_PLUGIN_DIR`, `AF_PLUGIN_STATE`, `AF_PLUGIN_CACHE`, `AF_PLUGIN_HOOK`) an enclosing
-invocation may have left; nothing else is removed:
+exactly the five identity variables (`AF_PLUGIN_PROTOCOL`, `AF_PLUGIN_NAME`, `AF_PLUGIN_DIR`,
+`AF_PLUGIN_STATE`, `AF_PLUGIN_CACHE`) an enclosing invocation may have left; nothing else is
+removed, and `AF_PLUGIN_HOOK` in particular is inherited and never cleared (§3.8):
 
 | Variable | Holds |
 |---|---|
@@ -240,9 +240,14 @@ as it is for `af self`, and there is no registry file. `af --help` keeps its 50 
 `PATH` is never scanned for help.
 
 Dispatch is unchanged: `af <plugin>` inside a pinned project first execs the release the lock
-pins, which then runs the plugin (ADR-0044); `af plugin …` is machine-local and exempt, like
-the binary-management `self` commands. A pinned release older than this design answers `af
-<plugin>` with its usage error, the same way it answers any command it does not have.
+pins, which then runs the plugin (ADR-0044). The machine-management commands `af plugin
+install|remove|list|show|check|hook-run` are exempt, like the binary-management `self`
+commands (ADR-0105); `af plugin pin` writes repository authority and dispatches like
+`onboard`, so the lock is written by the release the project pins. When that release predates
+this design the dispatching binary refuses `af plugin pin` before the exec, naming the upgrade
+(`af self pin`), rather than letting the default binary write a shape the pinned release would
+reject. A pinned release older than this design answers `af <plugin>` with its usage error,
+the same way it answers any command it does not have.
 
 ### 3.4 The manifest
 
@@ -378,27 +383,36 @@ nothing a plugin writes can be presented to a Worker as something the kernel obs
 `source`, `history`, `sources`, `requirements`, `base` and `continuation` are refused by name.
 
 A v1 file binding is exactly one artifact: cardinality `one`, admitted only on a root port
-whose declared cardinality is `one` and whose `snapshot_affinity` is `unbound` or `any`. A
-`many` port, a `same_subject` port, and a port already bound by another form are refused by
-name before capture (ADR-0134 forbids implicit cardinality conversion, and a file carries no
-Subject Snapshot); a JSON array in the file is one payload, never several artifacts; a
-list-of-files form is deferred (§6).
+whose declared cardinality is `one` and whose `affinity` is `{ kind = "unbound" }`
+(`PortAffinityV1`). A `many` port, a `same_as` or `derived_from` port, and a port already
+bound by another form are refused by name before capture (ADR-0134 forbids implicit
+cardinality conversion, and a file carries no Snapshot to be the same as or derived from). The
+file's top level must be a canonical JSON object, because the artifact envelope admits nothing
+else (`ArtifactEnvelope::validate`); an array or a scalar at the top level is refused before
+publication, and arrays live inside the object. A list-of-files form is deferred (§6).
 
-The limits are the ones the kernel already enforces, applied before execution and never by
-truncation: the serialized envelope must fit the CAS bound (8 MiB,
-`MAX_ARTIFACT_ENVELOPE_BYTES`), and the complete rendered request of every Worker that wires the
-port, this input included, must fit the Worker request bound (1 MiB, `MAX_WORKER_BYTES`). A
-binding that breaks either is refused at plan time with the bound named, so a payload that
-could be published but never delivered is refused before anything is published.
+The limits are the ones the kernel already enforces, and never by truncation: the serialized
+envelope must fit the CAS bound (8 MiB, `MAX_ARTIFACT_ENVELOPE_BYTES`), and the complete
+rendered request of every Worker that wires the port, this input included, must fit the Worker
+request bound (1 MiB, `MAX_WORKER_BYTES`). Planning checks what it can see, the captured file
+with its envelope and the statically known components of each wiring Worker's request, and
+refuses with the bound named before anything is published. The complete request can only be
+checked when its other inputs exist, an earlier Worker's output or retry feedback among them,
+so every complete request is checked before dispatch by the shared renderer
+(`WorkerContract::prepare`), exactly as today, and an Attempt whose request the file pushes
+over the bound is refused there with the bound and the port named.
 
 At plan time the Task-file adapter reads the file, requires
 canonical JSON, requires `type` to equal the port's declared `artifact_type`, validates the
 payload against the schema the selected Worker package carries for that port when it carries
 one, publishes it into the Task Store's CAS with the producer `kernel_operation` and the
 operation `task_file_input`, pins its artifact ID in the compiled plan, and lists it in the
-Attempt's context manifest with its bytes, its estimated tokens and the provenance `external`,
-the way every port is listed; the manifest line the Worker sees carries that provenance.
-Resume, retry and replay never read the file again (ADR-0117). The port must be declared by the
+Attempt's stored context manifest with its bytes and estimated tokens the way every port is
+listed, plus `provenance = "external"`: that member is new, so the stored context takes its
+next version (`ContextEntry`, ADR-0145). The Worker's request is unchanged: a Worker sees the
+port's payload as it sees every port, and what the package's instructions say about the port
+is the package author's (value 2). Resume, retry and replay never read the file again
+(ADR-0117). The port must be declared by the
 selected Pipeline and admitted by the Worker package's `[signature.contract.inputs]` and
 `input.schema.json`, so a reviewed, locked pipeline decides which Workers see a plugin's data
 and a Worker that does not wire the port sees nothing (value 2). A file-bound artifact can cover
@@ -429,11 +443,14 @@ and a resumed run never lists a Round twice. An interrupted command runs no hook
 exits as ADR-0129 requires, and the plugin sees the run next time through `af store runs`. No
 command hands its document to the hook site.
 
-A hook never runs Task work. While `AF_PLUGIN_HOOK` is set, the kernel refuses `task run`,
-`task start --execute`, `review run` and bare `af review` with the reason, because a hook is
-killed at its wall with its process group while a Task's Workers live in groups of their own
-(`review-process` places them there): killing a nested `af` would leave paid Workers running
-without the kernel that settles them (ADR-0129). A plugin that starts Tasks does so from a
+A hook never runs Task work. While `AF_PLUGIN_HOOK` is set, the kernel refuses every command
+`runs_task_work` classifies (`task run`, `task start --execute`, `review run`, bare `af
+review` and `provider doctor`, whose admission Attempts are paid Workers too, ADR-0129) with
+the reason, because a hook is killed at its wall with its process group while Workers live in
+groups of their own (`review-process` places them there): killing a nested `af` would leave
+paid Workers running without the kernel that settles them. `AF_PLUGIN_HOOK` is inherited by
+every process a hook starts, a plugin called through `$AF_BIN` included, and the kernel never
+clears it, so a hook cannot launder Task work through a second plugin. A plugin that starts Tasks does so from a
 foreground command of its own that owns, waits for and cancels them (§3.17, `af backlog`).
 
 The document on stdin is `af/plugin-hook@1`: `schema`, `hook`, `af_version`, `repo`, `argv`,
@@ -589,7 +606,13 @@ authentication method from `identity`, records only the derived principal, and r
 | `identity --json` | — | `af/RunnerIdentity@1`: the account's stable identifier and authentication method under `AF_RUNNER_AUTH_DIR`; private, never printed by a public command, never stored |
 | `status --json` | — | authenticated or not, account label, the one command a human runs at a terminal to log in (ADR-0112: the plugin never starts a login) |
 | `models --json` | — | the model catalog with effort levels, for ADR-0148's validation |
-| `invoke` | `af/RunnerRequest@1` on stdin: the exact input bytes the kernel composed, the sandbox directory, the access class (`ReadOnly`, `ExecuteChecks`, `WriteSource`, `WriteSourceWithShell`), model, effort, deadline, the sandbox-local environment | `af/RunnerResult@1` on stdout: the output bytes, the model that answered, usage counters in `af/TaskTokenUsage@3`'s shape or `unknown` with a cause (ADR-0143), and a failure class from the kernel's own list |
+| `invoke` | `af/RunnerRequest@1` on stdin: the exact input bytes the kernel composed, the sandbox directory, the access class (`ReadOnly`, `ExecuteChecks`, `WriteSource`, `WriteSourceWithShell`), model, effort, deadline, the sandbox-local environment | `af/RunnerResult@1` on stdout: the output bytes, the model that answered, the usage observation in `TaskUsageObservationV1`'s shape (the reported counters in `af/TaskTokenUsage@3`'s shape when any were reported, and `charge_complete`), and a failure class from the kernel's own list |
+
+The usage observation keeps the distinction the native adapters keep: counters reported with
+`charge_complete = false` retain the known counters and the reservation floor (ADR-0088), and
+only a wholly absent report settles at zero and is marked unknown (ADR-0143). An observation the
+runner wrote before it was cancelled, timed out or terminated malformed is kept and settled
+through the existing accounting path, as a native adapter's partial return is.
 
 The kernel keeps what it keeps for the native adapters: it composes the input, materializes the
 sandbox, reserves the budget, supervises the process through `review-process` with the deadline
@@ -610,6 +633,14 @@ hook after a fixture Task, through the pane and through a pin, and asserts the i
 §3.1 against the Store. `af plugin check DIR` runs the same checks against any plugin: manifest
 valid, `--help` exits 0 within 100 ms, environment honoured, hook document parsed, pane document
 within bounds, and the boundary check.
+
+A conformance result is bound to one bundle: its digest and its target, and `af plugin check`
+prints both. The boundary check runs the bundle inside a Linux container, so it checks a bundle
+the container can execute: a Linux target matching the container's architecture, or a bundle
+whose `bin` is an interpreter script the image provides (the echo fixture is one). A native
+Darwin bundle is reported `not_run` with the reason, `--require-boundary` then fails, and
+`af plugin check DIR --target <triple>` checks that target's bundle and claims nothing for any
+other; a native-target fixture pins the refusal.
 
 The boundary check cannot be proven by file permissions: a plugin runs as the operator, and
 whatever it cannot read, its legitimate `af` child cannot read either. So `af plugin check` runs
@@ -651,7 +682,7 @@ Everything else is a plugin, including what the two notes in flight planned as k
 | Feature in flight | Kernel part | Plugin part |
 |---|---|---|
 | Telemetry | T1's substrate and segment writer, T2, T3's observer and taps, T5's probe and receiver, the `[telemetry]` table as a machine-only plugin table, the segment directory declared as a kernel export | `af-telemetry`: T4's analytics, exports and sinks, T6's pane, all reading the export through the seam of §3.6 and never the Store |
-| Project | the Project ID derivation, `--workspace` on the Task and review commands (they resolve `--state`) | `af-project`: Surveys, the Surveyor as a `task.run.ended` hook, Briefs rendered to a file and bound to the `project` port by whoever starts the Task, `activity` over `af store` |
+| Project | the Project ID derivation (`repository_id`), printed by the Task and review inspections | `af-project`: Workspaces and their registry, resolving a Workspace label into explicit `--state`, `--bindings` and file paths before it invokes the kernel (no kernel `--workspace`); Surveys; the Surveyor as a `task.run.ended` hook; Briefs rendered to a file and bound to the `project` port by whoever starts the Task; `activity` over `af store` |
 
 The whole kernel surface toward plugins, which `af help plugins` renders:
 
@@ -674,7 +705,8 @@ the `plugin` and `store` namespaces); `main.rs` (one arm each for the two namesp
 to `plugins::after_command`); `topics.rs` (one topic, rendered from the surface table);
 `layout.rs` (one entry); `config.rs` (the `[plugin.*]` passthrough and manifest-declared
 machine-only names); `project.rs` (one opaque field, one table); `storage.rs` (three kinds);
-`selfmgmt.rs` (the `plugin` namespace in `exempt_from_dispatch`); `lock.rs` (one table);
+`selfmgmt.rs` (the machine-management `plugin` commands in `exempt_from_dispatch`, and the
+pre-exec refusal of `plugin pin` under a release that predates plugins); `lock.rs` (one table);
 `tui/mod.rs` (one folder, one pane); the Task-file adapter (one binding form, `af.task-file/2`);
 `storage_sweep.rs` (the sweep record's next version with plugin kinds). New code, by
 package, is estimated at 3,500 lines including tests, most of it `plugins/` reusing
@@ -698,8 +730,13 @@ too (§3.6) and becomes the `af-telemetry` reader side.
 holds an ordered queue of work items from the sources it is told about: GitHub issues through
 `gh`, a Jira filter, a directory of Markdown files, a hand-written list. `af backlog add`, `rank`,
 `next`, `status`. `af backlog run --parallel 2` is a foreground command: it writes one
-`af.task-file/2` per item under its state directory, binding an issue through the kernel's own
-issue sources (ADR-0061) and any Brief or evidence through the `file` form, starts each with
+`af.task-file/2` per item under its state directory. A Jira item, or a JSON or TOML issue file
+committed in the repository, is named through the Task file's `issue` selector, the kernel's own
+issue sources (ADR-0061, `IssueSource`); every other source, a GitHub issue read through `gh`,
+a Markdown file, a hand-written item, is normalized by the plugin into the Task file's `goal`
+and `requirements` fields, because the kernel's issue sources read nothing under plugin state
+and `requirements` is not a bindable port; a GitHub-shaped fixture proves it writes nothing to
+the checkout. Any Brief or evidence goes through the `file` form. It starts each Task with
 `"$AF_BIN" task start --file --execute` as a child it owns, waits for, and cancels by forwarding
 `SIGINT` and `SIGTERM` to the child `af`, which stops its Workers as ADR-0129 requires; when
 one child returns it starts the next until the queue is empty or the operator interrupts, and a
@@ -787,7 +824,9 @@ above); `reserved_names_are_refused`; `manifest_protocol_and_min_af_are_checked_
 `layout_declares_plugins_directory_and_drift_test_passes`;
 `surface_table_matches_the_code` (every `AF_PLUGIN_*` variable in `plugins/` is in the table
 and nothing else is set); `plugin_check_boundary_records_a_direct_store_open_and_an_outside_write`;
-`plugin_check_without_a_container_reports_not_run`.
+`plugin_check_without_a_container_reports_not_run`;
+`plugin_check_binds_its_result_to_the_bundle_digest_and_target` (a native Darwin bundle is
+`not_run`, `--target` checks the Linux bundle and claims nothing for the other).
 
 ### P2 — `af store`
 
@@ -814,15 +853,19 @@ Acceptance: `task_file_v1_is_refused_by_name`;
 `file_bound_port_reaches_only_the_worker_that_wires_it`;
 `file_bound_type_must_equal_the_port_type`;
 `file_claiming_a_kernel_type_is_refused_even_with_a_valid_payload` (`af/Measurement@1` on a
-report port); `file_bound_manifest_entry_carries_external_provenance`;
+report port); `stored_context_records_external_provenance_and_the_worker_request_is_unchanged`
+(bytes delivered on first execution, retry and replay compared with a recorded-output binding of
+the same payload);
 `file_bound_payload_fails_the_package_schema`;
 `file_bound_input_replays_after_the_file_is_deleted`;
 `file_bound_input_cannot_cover_an_obligation` (a pipeline wiring it into `coverage` is refused
 at load); `refused_ports_stay_refused` (`requirements`, `base`, `continuation`);
-`file_bound_many_port_and_same_subject_port_are_refused_by_name` (an array payload stays one
-artifact); `file_bound_envelope_over_8mib_is_refused_before_publication` (payload plus envelope
-overhead at the bound); `file_bound_rendered_request_over_1mib_is_refused_before_execution`
-(several individually small inputs whose rendered request exceeds the bound).
+`file_bound_many_same_as_and_derived_from_ports_are_refused_by_name` (declared with
+`PortAffinityV1`); `file_with_an_array_or_scalar_top_level_is_refused_before_publication`;
+`file_bound_envelope_over_8mib_is_refused_before_publication` (payload plus envelope overhead
+at the bound); `file_bound_static_request_over_1mib_is_refused_at_plan_time`;
+`file_bound_request_pushed_over_1mib_by_a_later_output_is_refused_before_dispatch` (an earlier
+Worker's output, then retry feedback, each tipping the bound).
 
 ### P4 — Hooks, state, cache, budget
 
@@ -836,8 +879,9 @@ Acceptance: `hook_runs_after_the_result_and_changes_no_output` (stdout, `--json`
 exit code byte-identical with and without a failing hook); `interrupted_command_runs_no_hook`;
 `review_run_ended_lists_the_rounds_the_run_closed` (one for a Campaign `--heavy` invocation,
 several for a Task-file review pipeline, the published Round for a run that failed after its
-conclusion, none twice on resume); `task_work_is_refused_inside_a_hook` (`task run`, `task
-start --execute` and `review run` under `AF_PLUGIN_HOOK`);
+conclusion, none twice on resume); `task_work_is_refused_inside_a_hook` (every `runs_task_work` command under `AF_PLUGIN_HOOK`,
+`provider doctor` with a credential-free admission fixture among them);
+`a_hook_calling_a_second_plugin_cannot_start_task_work` (the marker survives `$AF_BIN`);
 `hook_run_receives_the_exact_document_on_a_pipe` (byte-identical transfer, malformed input, a
 supervisor that never reads);
 `storage_sweep_hook_never_runs_at_the_free_disk_floor_or_before_a_warm_key`;
@@ -861,7 +905,9 @@ the recorded origin); `pin_without_an_origin_refuses_with_the_install_command`;
 `install_from_another_source_is_refused_without_origin_replacement`;
 `pin_without_a_digest_for_this_target_is_never_installed`; `dev_plugin_never_satisfies_a_pin`;
 `offline_refuses_with_the_command_to_run`; `signature_mismatch_refuses_install`;
-`remove_refuses_a_version_a_seen_project_pins`.
+`remove_refuses_a_version_a_seen_project_pins`; `plugin_pin_dispatches_to_the_pinned_release`
+(a cross-release fixture: the lock written by the pinned release, and the pre-exec refusal
+with the upgrade action when the pinned release predates plugins).
 
 ### P6 — The pane
 
@@ -888,7 +934,10 @@ Acceptance: `two_providers_of_one_runner_kind_use_their_own_auth_directories`;
 `runner_identity_is_never_printed_or_stored` (only the derived principal is recorded);
 `external_runner_is_supervised_cancelled_and_deadlined_by_the_kernel`;
 `external_runner_output_is_redacted_and_stored_as_raw_artifacts_before_parsing`;
-`external_runner_usage_is_validated_and_unknown_settles_at_zero` (ADR-0143);
+`external_runner_usage_observation_is_settled_like_a_native_one` (known zero; wholly absent,
+settled at zero and marked unknown, ADR-0143; valid counters followed by `charge_complete =
+false`, retaining the counters and the floor, ADR-0088; an observation written before
+cancellation);
 `external_runner_is_trusted_unsafe_and_cannot_auto_apply`;
 `native_adapters_are_byte_identical_with_the_seam_present`; the Task fixture run through the
 external adapter with a command-backed fake model.
