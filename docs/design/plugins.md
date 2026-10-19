@@ -965,7 +965,7 @@ Each package is one af Task, delivered, verified and merged before the next star
 `af task report` in the pull request (ADR-0142), its schemas and parity tests, a
 `changelog.d/` note, and the ADR or amendment named. Acceptance is staged with the
 deliverables: a test names only what its own and earlier packages ship, so the conformance
-harness's core is P1's, its Store-reader coverage P2's and its file-binding staging P3's;
+harness's core is P1's, its Store-reader coverage P2's and its Task-creation refusal P3's;
 hooks are tested unpinned in P4, under a pin in P5, and with the pane in P6.
 
 ### P0 — The decision
