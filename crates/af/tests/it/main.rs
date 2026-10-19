@@ -44,6 +44,7 @@ mod task_experiment;
 mod task_file;
 mod task_gc;
 mod task_heavy;
+mod task_human_report;
 mod task_input_bindings;
 mod task_interrupt;
 mod task_issues;

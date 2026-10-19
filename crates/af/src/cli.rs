@@ -1156,11 +1156,14 @@ pub(crate) enum TaskCommand {
         inspect: TaskInspectArgs,
     },
     /// Write one recorded Task output to an absent file (Markdown for a Document, or JSON)
+    #[command(
+        after_long_help = "Formats:\n  json            the recorded artifact envelope, for machines and audit\n  markdown        the canonical rendering the checks and the reviewer judged\n  human-markdown  a readable presentation of a Document or report: its sections, sources,\n                  plain-language result and matching review; derived, not itself reviewed\n\nExamples:\n  af task output TASK_ID --port report --format human-markdown --output report.md\n  af task output TASK_ID --port report --format markdown --output report-canonical.md"
+    )]
     Output {
         task_id: String,
         #[arg(long)]
         port: String,
-        #[arg(long, default_value="json", value_parser=["json","markdown"])]
+        #[arg(long, default_value="json", value_parser=["json","markdown","human-markdown"])]
         format: String,
         #[arg(long)]
         output: PathBuf,
