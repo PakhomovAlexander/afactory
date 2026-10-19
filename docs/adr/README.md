@@ -273,3 +273,5 @@ future readers need.
   carries](0150-name-the-path-a-status-line-error-carries.md)
 - [0151 — Export a human presentation of a report beside its canonical
   Markdown](0151-export-a-human-presentation-of-a-report-beside-its-canonical-markdown.md)
+- [0152 — Push the release pin with a deploy key that bypasses main's
+  ruleset](0152-push-the-release-pin-with-a-deploy-key-that-bypasses-mains-ruleset.md)
