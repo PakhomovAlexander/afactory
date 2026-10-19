@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 17 after review rounds 1 to 16 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 18 after review rounds 1 to 17 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -203,9 +203,15 @@ listed in §3.16.
    `plugin.toml` sits beside it. `[plugins] path = false` in a machine layer turns this off.
 3. Otherwise clap's usage error, exit 2, as today.
 
-The kernel execs the plugin with the rest of the command line as its arguments, stdin, stdout
-and stderr inherited, in the caller's working directory, and exits with the plugin's exit code
-(128 plus the signal number for a signal). `af <word> --help` is the plugin's help; `af help
+A foreground invocation replaces the `af` process with the plugin's: a Unix `exec`, after the
+overlay is set and the shared lock of §3.9 is taken on a descriptor without close-on-exec, so
+the lock lives exactly as long as the plugin. There is no launcher left for a signal to miss:
+`SIGINT` and `SIGTERM` from the terminal reach the plugin and its children directly (`af
+backlog` forwards them to its Task child, §3.17), and the shell sees the plugin's own exit
+status (128 plus the signal number for a signal). The rest of the command line are its
+arguments, stdin, stdout and stderr are inherited, and the working directory is the caller's.
+Background invocations, hooks, pane loads and the runner, are supervised children in groups
+of their own (§3.8, §3.12, §3.14), never an `exec`. `af <word> --help` is the plugin's help; `af help
 <word>` runs `<plugin> --help`. Clap gains one `external_subcommand` variant; nothing else in
 `cli.rs` changes for any later plugin.
 
@@ -576,7 +582,8 @@ version that is not installed is the hook's failure line, or the pane's error ro
 `af plugin install`; on-demand installation belongs to foreground plugin commands only.
 
 Hooks run after the command's result is written and flushed, after the post-command Storage
-Budget sweep, and before the update check's detached child, in plugin-name order. In both
+Budget sweep (`storage.sweep` alone runs inside that sweep, the one exception, §3.9), and
+before the update check's detached child, in plugin-name order. In both
 modes the plugin is invoked as `<bin> hook <name>`, receives the document on stdin, which is
 then closed, and is killed with its process group at `hook_wall_ms`. `detached` (the default)
 spawns `$AF_BIN plugin hook-run <name> --wall-ms N --repo PATH --bundle DIR` as a child in its
@@ -605,11 +612,17 @@ plugin writing there anyway is a bug `af plugin check` catches with a fixture ru
 counts three storage kinds per plugin, `plugin-install:<name>`, `plugin-state:<name>` and
 `plugin-cache:<name>`, in `af storage` and the budget (ADR-0144). Cache directories are entries
 the kernel evicts whole, least recently used first, never within an hour of use. State is never
-evicted by the kernel. The `storage.sweep` hook runs only from the two sweeps that happen after
-a command's result, the post-command sweep and `af storage prune --apply`, and only when the
-budget is still exceeded after the kernel's own eviction; it runs synchronously, each enabled
-plugin in name order with the remaining `target_bytes`, under its own bound of 60 seconds
-whatever the manifest's `hook_wall_ms` says, and the sweep reports what it could not free. The
+evicted by the kernel. The `storage.sweep` hook is the one timing exception to §3.8: it runs
+inside the sweep, after the kernel's own eviction and before the sweep finalizes its report and
+the `storage_sweep` observation, so that `total_after` and the stop reason describe the state
+after the plugins ran. It runs only from the two sweeps a command finishes with, the
+post-command sweep, whose command result is already written and stays unchanged, and `af
+storage prune --apply`, where `prune` runs `sweep` before it prints `af/storage-prune@1`, so
+the document is emitted afterwards and carries what the plugins freed; and only when the
+budget is still exceeded after the kernel's own eviction. It runs synchronously, each enabled
+plugin in name order with the remaining `target_bytes` remeasured after the previous plugin,
+under its own bound of 60 seconds whatever the manifest's `hook_wall_ms` says, and the sweep
+reports what it could not free. The
 sweeps the kernel runs during execution, at the free-disk floor (`ensure_free_disk`) and
 before a new warm key (`before_new_warm_key`), never invoke a plugin: nothing a plugin does can
 sit inside admission or an Attempt. Whatever remains is the operator's with
@@ -695,7 +708,16 @@ unchanged (ADR-0052, ADR-0053). The kernel knows nothing about who wrote a packa
 A plugin with `pane = true` answers `af <name> pane [--item ID] --json` with `af/plugin-pane@1`:
 `title`, `items` (the bar entries under the plugin's folder: `id`, `label`, nested `children`),
 `rows` (`text`, optional `tone` from the design system's chip set: `run`, `pass`, `fail`),
-`legend`, `status` and `actions` (a key to an `af` command line). The document is bounded: at
+`legend`, `status` and `actions`, a map of at most 16 entries from a single printable ASCII
+key to an argument array without the leading `af` (`{ "s": ["backlog", "start", "--item",
+"<id>"] }`), each array at most 32 words of at most 256 bytes. The permitted keys exclude every
+key the browser binds globally (`q`, `R`, `Enter`, `o` and the sequence prefixes `g`, `z`,
+`]`, `[`, `Z`, read from the keymap rather than listed by hand) and the bar's `r`, `D` and
+`d`, so a plugin's key never shadows navigation; a document naming one is malformed and is one
+error row. A plugin's keys act only while its pane holds focus and never from the bar, whose
+keys stay the browser's; an action's words are validated through the CLI parser, so a
+`--confirm` the parser accepts for that command, in either spelling, is caught here and not by
+string search, and they are shell-quoted into the prefill. The document is bounded: at
 most 1 MiB, 1,024 items, a depth of eight, 4,096 rows, and a load deadline of ten seconds. The
 bar gets one folder `plugins/` with a child per such plugin; one generic renderer paints every
 plugin pane, loads it on a thread like the other panes, reloads on `R`, and shows nothing a
@@ -809,12 +831,12 @@ The transport's bounds are frozen here, enforced while reading rather than after
 through it and collects the reader's result only after the leader exits, and `validate_reply`
 checks `MAX_WORKER_BYTES` only afterwards), and they are enforced where ADR-0026 puts output
 collection, in `review-process`: P7 extends the leaf crate with a retention limit per stream,
-an overflow policy per stream and a cancellation the reader raises the moment a frame breaks
-the protocol, while group killing, draining and reaping stay there as they are; the adapter
+an overflow policy per stream (one policy here: the first excess byte on any stream cancels)
+and a cancellation the reader raises the moment a frame breaks the protocol, while group killing, draining and reaping stay there as they are; the adapter
 interprets frames and nothing more: a frame is at
 most 2 MiB, the terminal frame's output bytes at most `MAX_WORKER_BYTES` (1 MiB) as any Worker
-reply, aggregate stdout at most 16 MiB, stderr retained up to 1 MiB with the overflow counted
-and dropped, and `identity`, `status` and `models` answer within 256 KiB and 15 seconds each.
+reply, aggregate stdout at most 16 MiB, stderr at most 1 MiB, a hard limit like the others,
+and `identity`, `status` and `models` answer within 256 KiB and 15 seconds each.
 Crossing any bound, an unterminated frame included, kills and reaps the process group, refuses
 the Attempt's business output, and settles the usage floors observed so far. A frame that
 is present as `af/RunnerUsage@1` but fails validation is malformed billing, not absence, and is treated as
@@ -1093,7 +1115,7 @@ command and for manifest discovery alone, with the hardware named; the package i
 while p99 exceeds 50 ms.
 
 Acceptance: `plugin_inherits_the_environment_with_the_overlay_and_passes_exit_codes` (0, 3,
-and a signal; `HOME` and `XDG_CONFIG_HOME` reach the plugin's `af` child; only the six
+and a signal, as the shell sees them after the `exec`; `HOME` and `XDG_CONFIG_HOME` reach the plugin's `af` child; only the six
 invocation-owned variables are removed, `AF_REPO` among them, and a nested invocation that
 left the repository sees no `AF_REPO`; a non-default `AF_PLUGIN__ECHO__COLOUR` override and
 its environment origin survive into the plugin's `af config show --origin --json`; user scope
@@ -1106,6 +1128,10 @@ neither an installed manifest nor `PATH` can shadow a help topic); `manifest_pro
 `--link`, each listed `invalid` by `af --help` within its bound);
 `bin_escaping_the_bundle_or_a_symlink_is_refused_at_install` (and `bin = "receipt.toml"`, at
 install, `--link`, `check` and invocation);
+`foreground_plugin_replaces_af_and_owns_its_signals` (`SIGINT`, then `SIGTERM`, sent to the
+original `af` PID while the echo fixture owns a command-backed Task started through `$AF_BIN`:
+the plugin is that PID, it cancels the child, no Worker and no descendant stays alive, and the
+lock is released; a hook and a pane load remain children);
 `plugin_lock_root_is_one_resolver` (`XDG_RUNTIME_DIR` unset: a concurrent invocation and
 sweep share the fallback's one lock; set but relative, not owned by the user, or not mode
 `0700`: the invocation, the install and the sweep each refuse with the reason through the one
@@ -1271,7 +1297,10 @@ refused at their entry points, and a hook timeout leaves no Provider process ali
 reads stdin, one that forks a grandchild, one that exits 3; the failure line in `hooks.log`);
 `disabled_plugin_runs_nothing`; `hook_leaves_the_event_log_byte_identical` (the log with hooks
 on and off differs only by the sweep observation, when one is recorded);
-`storage_sweep_hook_receives_target_bytes_and_cannot_block_the_sweep`.
+`storage_sweep_hook_receives_target_bytes_and_cannot_block_the_sweep` (the report's
+`total_after` and stop reason describe the state after the plugins ran, `target_bytes` is
+remeasured between plugins, and `af storage prune --apply --json` prints its document after
+the hooks with what they freed).
 
 ### P5 — Pins and release sources
 
@@ -1304,7 +1333,11 @@ Acceptance: `plugin_pane_paints_only_what_the_document_carries`;
 `plugin_pane_loads_off_the_key_loop_and_a_slow_plugin_shows_the_spinner`;
 `oversized_malformed_and_timed_out_pane_documents_are_one_error_row`;
 `reload_cancels_and_reaps_the_superseded_load`;
-`pane_action_prefills_and_never_submits`; `pane_action_with_confirm_is_refused`;
+`pane_action_prefills_and_never_submits` (a word with a space and a quote round-trips through
+the prefill); `pane_action_with_confirm_is_refused` (`--confirm X` and `--confirm=X`);
+`pane_action_keys_never_shadow_the_browser` (a document binding `q`, `R`, `g` or `r` is one
+error row; a permitted key acts only with the pane focused, and from the bar the browser's
+binding wins);
 `pane_load_runs_only_the_read_only_table` (a pane calling `task start --execute` is refused
 before any Attempt and its cancellation leaves no Worker; a pane calling `task start --file`
 without `--execute` or `task plan` is refused and the Store's event log is byte-identical);
