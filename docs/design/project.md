@@ -158,8 +158,9 @@ no push: the same local-only boundary delivery keeps (ADR-0031). `workspace add 
 existing checkout with its default Store, or the `--state`, `--bindings` and `--tasks` paths
 given, which is how each of the owner's `workstreams/<name>/` directories becomes a Workspace
 without moving a byte. `workspace remove` never deletes a Store that still holds an uncollected
-Task; it names `af task gc`. `--delete-worktree` compares the worktree with its commit through
-the kernel's committed capture and refuses a difference; it never calls `git worktree remove`,
+Task; it names `af task gc`. `--delete-worktree` requires the worktree's index and its files both to equal its HEAD
+commit, through delivery's supervised, filter-free cached-index comparison and the kernel's
+committed capture, refusing a staged, unmerged or differing entry without moving a byte; it never calls `git worktree remove`,
 whose cleanliness check runs the repository's clean filters (ADR-0001), and it deletes the
 directory and the worktree's own administrative entry itself.
 
@@ -186,10 +187,10 @@ for one third, `0` for an empty population), with these sections. Every section 
 | `tree` | files and bytes in total; per top-level directory files, lines and bytes; per language files and lines; the `tests` split | `git ls-tree -l`, blob reads | lines only for text blobs at or under `max_file_bytes` (1 MiB); `[survey] exclude` globs; `[survey] tests` globs; `[survey.languages]` extends the built-in extension map |
 | `history` | commits and merges in total and in the last 30, 90 and 365 days; first and last commit time; churn (commits, lines added, removed) per top-level directory over 90 days; hot paths; tags in total and the newest five matching `release_tags`; local branch count | `git log --numstat`, `rev-list`, `tag` | `max_commits` (100,000; beyond it `partial`, oldest commit reached recorded); `hot_paths` (20) |
 | `contributors` | per identity: commits, lines added and removed, first and last time, active in 90 days; the top identity's share; human and agent-assisted commit counts and shares | `git log` | `[survey] identity = "name"` (default) or `"email_hash"`: an email is hashed or absent, never stored, and an author name any whitespace-separated token of which is an email address (an `@` between non-empty parts) is replaced whole, before any truncation and under both policies, by `h:` and the first 16 hex digits of its hash; `agent_authors` (`*[bot]`) and `agent_trailers` (`Co-Authored-By` matching `*Claude*`, `*Codex*`, `*GPT*`): a commit is agent-assisted when its author or any `Co-Authored-By` name matches, otherwise human; each commit counts once in that partition and its author keeps the per-identity totals; an empty window makes every share `0` |
-| `decisions` | per decision record: number, title, status, date; counts by status | the `decisions` pattern, default `docs/adr/*.md`, then the name rule (four ASCII digits and a dash): title from the first H1, status and date from the first line that names one | `max_entries`; a Brief variant picks the newest N (§3.5) |
+| `decisions` | per decision record: number, title, status, date; counts by status | the `decisions` pattern, default `docs/adr/*.md`, then the name rule (four ASCII digits and a dash): title from the first H1; status and date from the first line that starts with `**Status:**` or `Status:`: the status is the first of `proposed`, `accepted`, `superseded`, `deprecated`, `rejected` on that line (`accepted; superseded in part by` is `accepted`; `amended` becomes a flag when the line says so), the date the first `YYYY-MM-DD` on it, each `unknown` when absent or malformed | `max_entries`; a Brief variant picks the newest N (§3.5) |
 | `vocabulary` | the defined term names and their count | the `vocabulary` file, default `CONTEXT.md`: bold-colon headings | names only; definitions stay in the tree |
 | `checks` | declared check names and programs; toolchain declarations present; CI workflow file count | `.af/code-policy.toml`, review pipelines' `[[checks]]`, a fixed file list, `.github/workflows/` | names and programs only, no arguments |
-| `activity` (PJ5) | per Workspace: Tasks by outcome, Attempts, chargeable tokens, active time; Campaigns, open and fixed Findings by severity; delivered Tasks; Developer Plan Decisions, Resolutions and Demand waivers; the window `cutoff - 30 days < t <= cutoff`, a Task counted by its completion event, an Attempt and its charge by its settlement event, a delivery and a decision by its recording event, active time as the run spans cut to the window, Finding counts as the current state beside the changes within the window, and `unknown` where a Store cannot say | every Store of the discovery set, read-only: the Workspaces' Task Stores, the default review roots (`$XDG_STATE_HOME/af/review/local` and `review/campaigns`, which the registry never lists) and every explicit Store and review-root entry of the registry, deduplicated by canonical path; work whose Store belongs to no Workspace forms the `unassigned` group, and a Store two or more Workspaces name forms a `shared` group keyed by its instance ID that lists their Workspace IDs, counted once in the Project's totals and referenced, never repeated, by each Workspace's line; through one aggregation projection PJ5 adds that joins each Store's validated Task accounting with its Campaign Ledger's current Resolutions and Demand waivers (`af task show --json` alone carries neither); Stores are deduplicated by their recorded identity, a Task counts for this Project only when its recorded source `repository_id` matches, Task IDs are qualified by Store, and a Task without retained source evidence counts as `unknown` | a Store this release cannot read makes its Workspace `unavailable` with the replay error (ADR-0145); Provider IDs and host paths never enter the section |
+| `activity` (PJ5) | per Workspace: Tasks by outcome, Attempts, chargeable tokens, active time; Campaigns, open and fixed Findings by severity; delivered Tasks; Developer Plan Decisions, Resolutions and Demand waivers; the window `cutoff - 30 days < t <= cutoff`, a Task counted by its completion event, an Attempt and its charge by its settlement event, a delivery and a decision by its recording event, active time as the run spans cut to the window, Finding counts as the current state beside the changes within the window, and `unknown` where a Store cannot say | every Store of the discovery set, read-only: the Workspaces' Task Stores, every Store under the default Task root (`$XDG_STATE_HOME/af/task/local`) and the default review roots (`review/local` and `review/campaigns`), none of which the registry lists, enumerated under the Survey's bounds, and every explicit Store and review-root entry of the registry, deduplicated by canonical path; work whose Store belongs to no Workspace forms the `unassigned` group, and a Store two or more Workspaces name forms a `shared` group keyed by its instance ID that lists their Workspace IDs, counted once in the Project's totals and referenced, never repeated, by each Workspace's line; through one aggregation projection PJ5 adds that joins each Store's validated Task accounting with its Campaign Ledger's current Resolutions and Demand waivers (`af task show --json` alone carries neither); Stores are deduplicated by their recorded identity, a Task counts for this Project only when its recorded source `repository_id` matches, Task IDs are qualified by Store, and a Task without retained source evidence counts as `unknown` | a Store this release cannot read makes its Workspace `unavailable` with the replay error (ADR-0145); Provider IDs and host paths never enter the section |
 
 Lines are newline counts: deterministic, no tokenizer. A hot path names the path the commits
 touched; one absent from the head tree is marked `removed` (on afactory today three of the ten
@@ -237,14 +238,15 @@ The Surveyor runs in three ways, and in none of them does it call a Provider:
    records nothing.
 2. **On demand.** `af project refresh` records a Survey now and waits; `--json` prints it.
 3. **After a run.** When `af task run`, `af task start --execute`, `af task deliver` or
-   `af review run` ends, after the Storage Budget sweep, af spawns `af project refresh
-   --detached` when `[survey] refresh = "after-run"` (the default; `"manual"` turns it off).
+   `af review run` ends, after the Storage Budget sweep, af computes the survey key (the parent's bounded reads: `rev-parse`,
+   `for-each-ref`, the policy and the log) and spawns `af project refresh --detached` only when
+   the key changed or the newest Survey is not complete, when `[survey] refresh = "after-run"`
+   (the default; `"manual"` turns it off).
    That is one bounded process that reads, writes one record and exits, the precedent being
    `af self refresh-check`; the kernel still runs no daemon and polls nothing (values §3, §8).
    It takes the single-flight lock `$XDG_RUNTIME_DIR/af/project-<hex>.lock` and leaves silently
-   if another refresh holds it, and it computes the survey key before any work: an unchanged key with a complete
-   newest Survey means no measurement, only `rev-parse`, `for-each-ref`, the policy read and
-   the log read.
+   if another refresh holds it, and it compares the survey key again under that lock, so two parents racing record one
+   Survey and an unchanged key means no measurement.
 
 Bounds come from `[survey]`: `max_wall_ms` (60,000), `max_commits`, `max_file_bytes`. A bound
 hit makes the sections after it `partial` or `unavailable`; the Survey is still recorded. Fixed
@@ -278,7 +280,7 @@ later feed a Brief section without changing this rule.
 
 `af/ProjectBrief@1` holds the Survey ID and Project ID it was rendered from, the variant name,
 the Survey head (commit, and Tree Digest when the Survey has one; preview and explain say
-`tree digest unavailable` otherwise), `behind_commits` when it can be computed, the rendered
+`tree digest unavailable` otherwise), the rendered
 sections, the sections dropped with their reasons, and `rendered_bytes`.
 
 Variants are project policy in `.af/af.toml`. Two are built in: `orient`, shown here as a
@@ -292,7 +294,8 @@ decisions = 12
 hot_paths = 20
 ```
 
-A project adds variants or overrides these. `contributors` and `activity` are never part of
+A project adds variants or overrides these. A Brief's `decisions` holds the variant's newest N
+records: by date descending, undated last, then number descending, then path. `contributors` and `activity` are never part of
 `orient`: an implementer does not need names or bills.
 
 A pipeline that wants a Brief declares the root port and wires it only where it is wanted:
@@ -324,9 +327,12 @@ provenance in the payload; the Snapshot checks of every other port are untouched
 and pinned in the lock like every other Worker input, decides which Workers see the project.
 That is the "not for all of them, configurable" requirement, and it uses no new mechanism.
 
-Resolution happens where `empty_review_history` is filled today, in the Task-file adapter at
-plan time: take the newest recorded Survey of the Project whose `repository_id` equals the
-captured source's; render the variant; drop whole sections, last-declared first, until the
+The Task's initial capture pins the newest complete Survey of the Project whose `repository_id`
+equals the captured source's, copying the record into the Task Store's CAS (or recording that
+there is none), with the effective `[brief]` policy as part of the captured policy, before any
+pipeline is selected. Resolution is then a pure function of that pinned data wherever
+`empty_review_history` is filled today (`normalize_root_inputs`: the Task-file adapter, proposal
+validation and a generated pipeline's handoff): render the variant; drop whole sections, last-declared first, until the
 Brief's exact serialized bytes, metadata and drop reasons included, fit `max_bytes`, recording
 each drop (a section is never cut mid-way, as Worker Notes are dropped whole with a reason); a
 variant whose `max_bytes` is below 1,024 is refused when the policy loads, and a Brief whose
@@ -340,9 +346,12 @@ other bindable root input: ADR-0134 admits a recorded Task result output of type
 records one) and refuses the exact-artifact form; an explicit binding suppresses the
 `project_brief` construction for that port.
 
-Staleness is reported, not refused, in v1: `behind_commits` is the number of commits from the
-Survey head to the source commit when the former is an ancestor of the latter, and `unknown`
-otherwise; `af task plan` and `af task explain` print it beside the port.
+Staleness is reported, not refused, in v1, and it is the consuming Task's, not the Brief's: the
+compiled plan records a staleness receipt keyed by the Brief's artifact ID and the Task's source
+commit, with `behind_commits` the number of commits from the Survey head to the source commit
+when the former is an ancestor of the latter, and `unknown` otherwise or without a committed
+revision, computed alike for a constructed and an explicitly bound Brief without rewriting the
+bound artifact; `af task plan` and `af task explain` print it beside the port.
 
 What the Worker sees is one more entry in its context manifest — name `project`, required by
 `port:project`, the artifact ID and type, bytes and estimated tokens — and `af project brief
@@ -452,8 +461,12 @@ sections = ["tree", "vocabulary", "decisions", "checks", "hot_paths"]
 max_bytes = 8192
 ```
 
-Patterns use the matcher the `.af/af.toml` routes already use (`glob_matches` in
-`crates/af/src/project.rs`): `**` spans segments, `*` a run inside one, `?` one character, and
+Patterns use the semantics of the matcher the `.af/af.toml` routes already use (`glob_matches`
+in `crates/af/src/project.rs`), which PJ2 re-implements for both by dynamic programming, so a
+match costs pattern length times text length and never backtracks (the recursive form takes
+billions of steps on `*a` thirty times against thirty `a`s, inside the string limits and outside
+every deadline); a pattern is at most 256 bytes and a list at most 64 patterns, refused at policy
+load beyond that, and the Surveyor checks its deadline between matches: `**` spans segments, `*` a run inside one, `?` one character, and
 every other character is literal, brackets included, so `*[bot]` matches `dependabot[bot]` and no
 name that merely ends in `t`. There are no character ranges; the decision files are selected by
 `decisions` and then by the four-digits-and-a-dash name rule.
@@ -467,15 +480,18 @@ The Project Store is never evicted whole: it indexes the Project's Workspaces, a
 directories beneath it hold Task Stores and operator files (`tasks/`, `bindings.toml`) that the
 Storage Budget inventories one by one under ADR-0144's own rules, as PJ1 implements in
 `crates/af/src/storage.rs`. What the budget collects from a Project is Surveys, and PJ2 defines how: Surveys beyond
-`keep_surveys` are collected oldest first. Collection appends `SurveyCollected@1` (the collected
+`keep_surveys` are collected oldest first, only in the Storage Budget's own collection passes (an
+explicit `af storage` collection with `--apply`, or the automatic pass when `auto_gc = true`),
+under ADR-0144's retention age and recent-use protections, so `keep_surveys` is a target that
+protected Surveys may exceed; `af project refresh` collects nothing itself. Collection appends `SurveyCollected@1` (the collected
 Survey's ID, head, cutoff, completeness and the totals of `tree` and `history`) and then deletes
 the record from the CAS; replay treats a `SurveyRecorded@1` whose Survey a tombstone names as
 collected, so `af project history` answers from the tombstone and `af project survey` reports the
 newest Survey only while it is uncollected; `previous_survey_id` is a name, never a reachability
 edge, so a collected predecessor keeps nothing alive and a chain that reaches a collected Survey
 ends at its tombstone. The tombstone is appended before the bytes go, so an interruption between
-the two leaves a record the next sweep finishes. Collection runs in the Storage Budget sweep and
-in `af project refresh` after a Survey is recorded. Under the machine budget (ADR-0144 clause 4)
+the two leaves a record the next sweep finishes. Both collection paths, the count and the budget, protect the newest complete Survey and any
+held one. Under the machine budget (ADR-0144 clause 4)
 every Survey is besides an inventoried entry of kind `survey`, sized by its CAS bytes and last
 used at its cutoff, that the budget pass may reclaim oldest first through the same tombstone and
 deletion even below `keep_surveys`; protected are the newest complete Survey, any Survey a running
@@ -542,7 +558,10 @@ policy change, a partial newest Survey or `--force` records one; `max_commits` a
 produce `partial` sections and a recorded Survey; an early deadline leaves the Tree Digest absent
 with its reason, never a partial digest; a repository whose `repository_id` joins seven roots
 (286 bytes) keeps it exact; `max_paths = 0`, a value above its ceiling and an overflowing one
-are refused at policy load; one third of three commits is the share `3333`; no author email appears in a record under either identity policy, an email-only author name
+are refused at policy load; one third of three commits is the share `3333`; the
+adversarial pattern (`*a` thirty times against thirty `a`s) matches within the bound; the status
+fixture (two dates on one line, a partial supersession, a missing date, no status line) yields the
+stated statuses and dates; no author email appears in a record under either identity policy, an email-only author name
 and a name carrying an email beside ordinary text included; the measurement-policy fixture (divergent author and committer dates, a merge, a
 rename, a binary change, the `max_commits` boundary) yields the stated totals; an oversized commit
 and a very large tree stay within the fixed maxima with recorded reasons; collection beyond
@@ -559,7 +578,10 @@ drop rule; `behind_commits`; the manifest entry; preview and `af task explain` l
 declared port.*
 
 Acceptance: a Task file binding the port to a recorded Brief output suppresses construction and
-the exact-artifact form is refused; a pipeline wiring the port to one of two Workers delivers the Brief to that Worker's
+the exact-artifact form is refused; one Brief bound into two Tasks at different source commits
+gets two staleness receipts; a generated pipeline that introduces the port after capture builds
+its Brief from the pinned Survey, a refresh or a removed Project Store in between changing
+nothing; a pipeline wiring the port to one of two Workers delivers the Brief to that Worker's
 manifest and not the other's; replay after a refresh renders the pinned Brief, not the newer
 Survey; a variant over `max_bytes` drops the last section and records the reason; without a
 Survey the plan previews the empty port and runs; a `max_bytes` below 1,024 is refused at policy
@@ -576,7 +598,8 @@ within the machine budget*, naming the PJ2 clauses it supersedes; PJ2's accepted
 a status-line link (ADR-0113 clause 6).
 
 Acceptance: a Task run on a changed head is followed by exactly one new Survey; two concurrent
-runs produce one; a run on an unchanged survey key spawns nothing; a Surveyor failure leaves the
+runs produce one; a run on an unchanged survey key spawns no process (the parent compares the
+key; process creation is tested apart from recording); a Surveyor failure leaves the
 Task's exit code unchanged and is visible in `af project show`; budget pressure below
 `keep_surveys` reclaims the oldest Survey and never the newest complete one, a held one or the
 Project's files; a refresh and a collection at once leave one consistent log.
@@ -595,7 +618,8 @@ totals for the two and `unavailable` with the replay error for the third; no Pro
 path or email appears in the section; a shared Store, a mixed-Project Store and a duplicate Task ID across
 two Stores count each Task once and only for its own Project; a default named and an unnamed
 review Campaign and an explicit Store are all discovered, an alias once and a copy as a second
-instance; a Store two Workspaces name forms one `shared` group counted once; a Task completed 31
+instance; a default Task Store whose checkout is gone and which no Workspace names is discovered
+and counted under `unassigned`; a Store two Workspaces name forms one `shared` group counted once; a Task completed 31
 days before the cutoff contributes nothing and an unfinished one only its settled Attempts; a
 Store replaced at its path with different events under equal counts changes the key; a Resolution and a waiver recorded
 after a Task finished change the next `activity` without changing Task spend.
