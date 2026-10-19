@@ -154,7 +154,12 @@ af project workspaces --json
 `--path`, `--branch` or `--from` say otherwise, and creates
 `$XDG_STATE_HOME/af/project/<hex>/workspaces/<label>/` holding an empty `state/` Store, an empty
 `tasks/` directory and a `bindings.toml` template that names no account. It makes no commit and
-no push: the same local-only boundary delivery keeps (ADR-0031). `workspace add PATH` adopts an
+no push: the same local-only boundary delivery keeps (ADR-0031). A failed add undoes only what
+it owns: it created the destination itself and recorded its filesystem identity, and it deletes
+it only when that identity is unchanged, the index it wrote is unchanged and every remaining
+entry equals the captured manifest in path, kind, mode and content (the comparison delivery's
+rollback makes), besides the `.git` file naming its own administrative entry; otherwise the
+worktree is kept and reported as left behind with the first differing path. `workspace add PATH` adopts an
 existing checkout with its default Store, or the `--state`, `--bindings` and `--tasks` paths
 given, which is how each of the owner's `workstreams/<name>/` directories becomes a Workspace
 without moving a byte. `workspace remove` never deletes a Store that still holds an uncollected
@@ -183,7 +188,7 @@ for one third, `0` for an empty population), with these sections. Every section 
 
 | Section | Holds | Source | Bound or policy |
 |---|---|---|---|
-| `identity` | Project ID, `repository_id`, `[project] name` and `min_af`, the af release `.af/af.lock` pins, head commit, Tree Digest, cutoff, policy digest, Surveyor version, git version | `.af/af.toml`, `.af/af.lock`, git | the Tree Digest is the kernel's capture digest of the whole head tree, independent of `exclude` and of every maximum: absent with reason `deadline` when the capture did not finish, never the digest of a part |
+| `identity` | Project ID, `repository_id`, `[project] name` and `min_af`, the af release `.af/af.lock` pins, head commit, Tree Digest, cutoff, policy digest, Surveyor version, git version | `.af/af.toml`, `.af/af.lock`, git | the Tree Digest is the kernel's capture digest of the whole head tree, independent of `exclude` and of every maximum, computed by a digest-only path (no blob written to any CAS, no listing buffered: fixed-size blob buffers through the hash, bounded manifest memory and temporary storage, under the Survey deadline) that equals the committed capture's digest of the same tree: absent with reason `deadline` when it did not finish or a typed resource reason (`max_record_bytes`, `temp_bytes`) when its bounds stopped it, never the digest of a part |
 | `tree` | files and bytes in total; per top-level directory files, lines and bytes; per language files and lines; the `tests` split | `git ls-tree -l`, blob reads | lines only for text blobs: regular or executable blobs at or under `max_file_bytes` (1 MiB) whose first 8 KiB hold no NUL, UTF-8 validity irrelevant (the rule ADR-0133's citations use); symlinks and gitlinks contribute no lines; a declaration (a decision, the vocabulary file, a check file) is parsed only when it is such a text blob and valid UTF-8, else unreadable; `[survey] exclude` globs; `[survey] tests` globs; `[survey.languages]` extends the built-in extension map (the one docs/project.md lists): each file counts for exactly one language, a configured pattern overrides a built-in extension, among configured patterns the bytewise-first matching one wins, and a file nothing matches is `other` like a symlink or submodule |
 | `history` | commits and merges in total and in the last 30, 90 and 365 days; first and last commit time; churn (commits, lines added, removed) per top-level directory over 90 days; hot paths; tags in total and the newest five matching `release_tags`; local branch count | `git log --numstat`, `rev-list`, `tag` | `max_commits` (100,000; beyond it `partial`, oldest commit reached recorded); `hot_paths` (20) |
 | `contributors` | per identity, keyed by `key` (under `name` the first 16 hex digits of SHA-256 of the exact author-name bytes, under `email_hash` the 16-hex email hash) with `name` the bounded display text, grouped and ranked by `key` so two names sharing a 256-byte prefix stay distinct: commits, lines added and removed, first and last time, active in 90 days; the top identity's share; human and agent-assisted commit counts and shares | `git log` | `[survey] identity = "name"` (default) or `"email_hash"`: an email is hashed or absent, never stored, and an author name any whitespace-separated token of which is an email address (an `@` between non-empty parts) is replaced whole, before any truncation and under both policies, by `h:` and the first 16 hex digits of its hash; `agent_authors` (`*[bot]`) and `agent_trailers` (`Co-Authored-By` matching `*Claude*`, `*Codex*`, `*GPT*`): a commit is agent-assisted when its author or any `Co-Authored-By` name matches, otherwise human; each commit counts once in that partition and its author keeps the per-identity totals; an empty window makes every share `0` |
@@ -206,7 +211,9 @@ Store of the discovery set its instance ID and the digest of what one read trans
 from it, every run prefix's events and its `attempt_wall` rows, so the aggregate and the
 watermark come from the same captured bytes (a Store replaced at its path with different events
 under equal counts changes the key; a read the Survey deadline cuts marks the Store `partial` and
-never enters the key as complete), plus the Workspace membership list. The instance ID is opaque, assigned by the Project Store in its machine-local
+never enters the key as complete; a captured prefix holding an event newer than the cutoff marks
+`activity` partial with reason `post_cutoff_events` and the Survey is never reused, so the next
+refresh counts that event's outcome and charge exactly once), plus the Workspace membership list. The instance ID is opaque, assigned by the Project Store in its machine-local
 `stores` table the first time it meets a Store's canonical path (symbolic links resolved), and
 recorded in the Survey in place of the path; the Task Store itself is never written. An alias of
 a Store resolves to the same canonical path and counts once; a copy or a move is a new path and
@@ -257,7 +264,10 @@ The Surveyor runs in three ways, and in none of them does it call a Provider:
    measured (a Task settling after the holder captured its watermark, PJ5) is measured by the
    waiter in turn.
 
-Bounds come from `[survey]`: `max_wall_ms` (60,000), `max_commits`, `max_file_bytes`. A bound
+Bounds come from `[survey]`: `max_wall_ms` (60,000; one deadline over the whole Survey, every
+git subprocess started under the minimum of its own limit and the remaining time and its process
+group terminated at the deadline, so a silent git never extends a refresh), `max_commits`,
+`max_file_bytes`. A bound
 hit makes the sections after it `partial` or `unavailable`; the Survey is still recorded. Fixed
 maxima bound everything else: `max_paths` (200,000) tree entries, `max_entries` (1,000) items in
 any list of a section (directories, languages, hot paths, tags, decisions, terms, contributors),
@@ -314,9 +324,17 @@ decisions = 12
 hot_paths = 20
 ```
 
-A project adds variants or overrides these. A Brief's `decisions` holds the variant's newest N
-records: by date descending, undated last, then number descending, then path. `contributors` and `activity` are never part of
-`orient`: an implementer does not need names or bills.
+A project adds variants or overrides these under a closed schema: a `[brief.<variant>]` table
+admits exactly `sections` (an ordered, duplicate-free list whose members are `identity`, `tree`,
+`history`, `contributors`, `decisions`, `vocabulary`, `checks`, `hot_paths`, which is
+`history.hot_paths`, or `activity`), `max_bytes`, `decisions` and `hot_paths` (integers from 0 to
+`max_entries`, defaults 12 and 20); an unknown field, an unknown or repeated section name, a
+count out of range, a `[brief.none]` table (`none` is not overridable) or `contributors` or
+`activity` in `orient` is refused when the policy loads, naming the variant and the field, and a
+node that requests a variant the policy does not define is a plan-time error naming both. A
+Brief's `decisions` holds the variant's newest N records: by date descending, undated last, then
+number descending, then path. `contributors` and `activity` are never part of `orient`: an
+implementer does not need names or bills.
 
 A pipeline that wants a Brief declares the root port and wires it only where it is wanted:
 
@@ -583,7 +601,9 @@ layout test still passes; `af --help` and `af project --help` stay under 50 ms.
 ### PJ2 — Survey and Surveyor
 
 Deliverables: `af/ProjectSurvey@1` with `identity`, `tree`, `history`, `contributors`,
-`decisions`, `vocabulary` and `checks`; the Surveyor operator with its bounds; `af onboard
+`decisions`, `vocabulary` and `checks`; the Surveyor operator with its bounds, every git subprocess under the
+minimum of its own limit and the remaining Survey time with its process group terminated at the
+deadline, and the digest-only capture path for the Tree Digest; `af onboard
 --apply` recording the first Survey; `af project survey|refresh|history`; the survey key and
 `--force`; `SurveyFailed@1` with its schema and replay and the outcome `af project refresh`
 prints; Survey collection under `[storage] keep_surveys` with the replay rules of §3.9, and
@@ -594,7 +614,9 @@ fixed cutoff; a second run with an unchanged survey key records nothing, while a
 policy change, a partial newest Survey or `--force` records one, and an older complete Survey
 behind a partial newest one or behind another head's Survey prevents nothing; `max_commits` and `max_wall_ms`
 produce `partial` sections and a recorded Survey; an early deadline leaves the Tree Digest absent
-with its reason, never a partial digest; a repository whose `repository_id` joins seven roots
+with its reason, never a partial digest, and a silent git process against a short deadline
+leaves no process behind and a partial Survey within the deadline; a blob above `max_file_bytes`
+and a tree beyond `max_paths` still digest, equal to the committed capture's digest; a repository whose `repository_id` joins seven roots
 (286 bytes) keeps it exact; `max_paths = 0`, a value above its ceiling and an overflowing one
 are refused at policy load; one third of three commits is the share `3333`; the
 failing adversarial pattern (`*a` thirty times then `b`, against thirty `a`s) returns false within
@@ -634,7 +656,8 @@ nothing, and a handoff after the original checkout is gone still reports the cap
 staleness; `af project brief --json` prints the preview document byte-equal in its payload to
 the text form; collecting earlier Tasks
 releases their pinned Survey data while a later Task remains replayable; a variant with
-`max_bytes` 262,145 is refused at policy load, and a node whose
+`max_bytes` 262,145 is refused at policy load, as are an unknown or repeated section, a `[brief.none]`
+table and `contributors` in `orient`, an unknown requested variant is a plan-time error, and a node whose
 known inputs plus the Brief exceed the renderer cap is refused at plan time; a pipeline wiring the port to one of two Workers delivers the Brief to that Worker's
 manifest and not the other's; replay after a refresh renders the pinned Brief, not the newer
 Survey; a variant over `max_bytes` drops the last section and records the reason; without a
@@ -677,7 +700,9 @@ and counted under `unassigned`; a Store two Workspaces name forms one `shared` g
 days before the cutoff contributes no outcome count while its delivery, Resolution and waiver
 recorded within the window still count, and an unfinished one only its settled Attempts; a
 Store replaced at its path with different events under equal counts changes the key; a Task
-settling after a running refresh captured its watermark is measured by the next refresher; a Resolution and a waiver recorded
+settling after a running refresh captured its watermark is measured by the next refresher; a
+Task settling between the cutoff and the Store read leaves `activity` partial with reason
+`post_cutoff_events`, and the next refresh counts its outcome and charge exactly once; a Resolution and a waiver recorded
 after a Task finished change the next `activity` without changing Task spend.
 
 ## 6. Not in v1
