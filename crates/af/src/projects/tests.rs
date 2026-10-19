@@ -545,7 +545,7 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
         .unwrap();
     assert_eq!(listed.matches("worktree ").count(), 1, "{listed}");
 
-    // A branch that moved is not deleted, and the report says it remains.
+    // A branch that moved since it was created at `1111…` is not deleted, and the report says so.
     git.require(["update-ref", &reference, &commit], None)
         .unwrap();
     let report = commands::undo(
@@ -556,9 +556,9 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
             commit: "1111111111111111111111111111111111111111".into(),
         }],
     );
-    assert!(
-        report.starts_with(&format!("left behind: the branch {reference} (")),
-        "{report}"
+    assert_eq!(
+        report,
+        format!("left behind: the branch {reference} moved since this add created it and is kept")
     );
     assert!(
         git.run(["rev-parse", "--verify", "--quiet", &reference], None)
@@ -651,6 +651,8 @@ fn undo_deletes_only_an_entry_whose_gitdir_names_the_path_and_reports_a_locked_o
     // What a stopped add leaves, or a concurrent add of another path with the same basename: a
     // locked entry with neither a path nor a `gitdir`. Git neither lists nor prunes it.
     lock("wt1");
+    // The same, unlocked: `git worktree prune` removes it once no add is running.
+    std::fs::create_dir_all(administrative.join("wt3")).unwrap();
     // This add's own entry, its `gitdir` naming `<path>/.git`.
     lock("wt2");
     std::fs::write(
@@ -676,15 +678,16 @@ fn undo_deletes_only_an_entry_whose_gitdir_names_the_path_and_reports_a_locked_o
         report,
         format!(
             "undone, newest first: removed the administrative entry worktrees/wt2; left behind: \
-             {}: a locked entry without a gitdir, created during this add and possibly another \
-             add's; remove it once no add is running by deleting that directory, since `git \
-             worktree prune` keeps a locked entry",
-            administrative.join("wt1").display()
+             {}: a locked entry without a gitdir, created during this add and possibly another add's; delete that directory once no add is running (git worktree prune keeps a locked entry); \
+             {}: an entry without a gitdir, created during this add and possibly another add's; run git worktree prune once no add is running",
+            administrative.join("wt1").display(),
+            administrative.join("wt3").display()
         )
     );
     assert!(!report.contains("nothing was left behind"), "{report}");
     assert!(!administrative.join("wt2").exists());
     assert!(administrative.join("wt1/locked").is_file());
+    assert!(administrative.join("wt3").is_dir());
     assert!(administrative.join("wt/locked").is_file());
     assert!(administrative.join("other/locked").is_file());
     assert!(administrative.join("stale").is_dir(), "the undo pruned");

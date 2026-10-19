@@ -6,12 +6,17 @@
   Workspace directory without a commit, filling the worktree the way `af task deliver` does, so no
   checkout, filter or hook of the repository runs; it refuses a `--path` inside the checkout,
   another Workspace or af's state (exit 2) and a `--from` commit of another history before it
-  makes anything, and undoes what it made when a later step fails, deleting only administrative
-  entries whose `gitdir` names its worktree, reporting a locked entry without one as left behind,
-  and never running `git worktree prune`. `workspace add PATH` adopts an existing checkout, and
-  `workspace remove LABEL` unregisters one and never removes a Store; `--delete-worktree` removes
-  a worktree only when its files equal its commit, compared through the committed capture rather
-  than `git worktree remove`, so no clean filter runs. Automatic Workspace labels follow one
+  makes anything, and undoes what it made when a later step fails, deleting only what it can
+  prove it made: the worktree directory its own `create_dir` made, while its `.git` is absent or
+  names this add's entry; administrative entries whose `gitdir` names its worktree; the branch
+  only while it still holds the commit it was created at. Every other new entry is reported as
+  left behind with one fixed recovery line, also when the undo's final check fails, and `git
+  worktree prune` never runs. `workspace add PATH` adopts an existing checkout, and `workspace
+  remove LABEL` unregisters one and never removes a Store; `--delete-worktree` removes a worktree
+  only when its files equal its commit, compared through the committed capture rather than `git
+  worktree remove`, so no clean filter runs; when its directory went but its entry could not,
+  the message says exactly that, the Workspace stays registered, and the same command finishes
+  it. Automatic Workspace labels follow one
   stated rule within 128 bytes. `af
   onboard --apply`, `af task plan|start`, `af review run` and `af project` register the Project
   and the checkout lazily (`af task plan|start` before resolving `--workspace`), refuse a shallow
