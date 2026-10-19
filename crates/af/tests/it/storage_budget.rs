@@ -135,7 +135,7 @@ fn af_storage_reports_what_af_holds_and_prune_previews_before_it_removes() {
     let fresh = warm_key(&machine, '3', 600 * 1024, Duration::from_secs(5));
 
     let shown = json(&machine.af(&machine.root, &[], &["storage", "--json"]));
-    schemas::valid(&schemas::validator("storage-v1.json"), &shown);
+    schemas::valid(&schemas::validator("storage-v2.json"), &shown);
     assert_eq!(shown["max_bytes"], 20_u64 << 30);
     assert_eq!(shown["min_free_bytes"], 10_u64 << 30);
     let warm = shown["kinds"]

@@ -32,6 +32,7 @@ pub mod integration;
 pub mod json;
 pub mod patch;
 pub mod path;
+pub mod project;
 pub mod resolution;
 pub mod reviewer_result;
 pub mod slice;
@@ -102,6 +103,10 @@ pub use patch::{
     ProposalPreparedPayloadV1, ProposalRefusalReasonV1, ProposalRefusedPayloadV1,
 };
 pub use path::{contains_report_path, decode_path, encode_path, is_valid_repo_path};
+pub use project::{
+    ProjectRegisteredPayloadV1, WorkspaceOriginV1, WorkspaceRegisteredPayloadV1,
+    WorkspaceRemovedPayloadV1,
+};
 pub use resolution::{
     ChangeAttestationV1, ChangedRegionV1, FindingResolutionOutcome, FindingResolutionV1,
     FixVerificationV1, PolicyTimeV1, ResolutionChallengeKind, ResolutionChallengeV1,

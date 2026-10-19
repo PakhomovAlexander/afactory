@@ -24,6 +24,7 @@ and journaled.
 Namespaces:
   review     plan, run, and work a review Campaign
   task       start, inspect, and deliver an implement Task
+  project    show this repository's Project and manage its Workspaces
   catalog    capture shared Pipeline, Worker and Task-kind packages from Git
   provider   inspect and preflight the configured model providers
   onboard    generate or validate `.af/` review authority for a repository
@@ -165,6 +166,34 @@ local branch and worktree, after confirming the Task ID.",
         #[command(subcommand)]
         command: TaskCommand,
     },
+    /// Show this repository's Project and manage its Workspaces
+    #[command(
+        subcommand_required = true,
+        arg_required_else_help = true,
+        long_about = "Show this repository's Project and manage its Workspaces.\n\n\
+A Project is the identity of one repository across every clone and worktree: `sha256:` + \
+hex(SHA-256(`af/project-id@1\\0` + repository_id)), where repository_id is the sorted root \
+commits every Snapshot origin already carries; never a path or a remote URL. Its Project Store \
+lives under `$XDG_STATE_HOME/af/project/<hex>/`. A Workspace is one registered checkout of the \
+Project, with its own Task Store, bindings file and Task-file directory, under one label; the \
+paths are kept on this machine only, in the Project Store's `workspaces.toml`.\n\n\
+Registration is lazy and token-free: `af onboard --apply`, `af task plan`, `af task start`, \
+`af review run` and every `af project` command register the Project and the invoking checkout \
+(origin `adopted`, labelled by its directory name, its Store the default Task Store). A shallow \
+clone is refused until `git fetch --unshallow`; a repository without commits has no Project. \
+`af task deliver` registers the worktree it creates (origin `delivered`, labelled by the Task \
+ID). `--workspace LABEL` on the `af task` commands that take `--state` selects a Workspace's \
+Store, and on `plan` and `start` its bindings file.\n\n\
+Never: writes inside a checkout, commits, pushes, or removes a Store. Results go to stdout \
+(`--json` prints `af/project@1` or `af/project-workspaces@1`); warnings go to stderr. Exit \
+codes: 0 success, 1 failure (the message names the next action; `af/error@1` under --json), 2 \
+usage error.",
+        after_long_help = "Examples:\n  af project show\n  af project workspaces --json\n  af project workspace new research --branch agent/research\n  af project workspace add ../afactory-wt-research --label research --state \"$W/state\"\n  af project workspace remove research\n  af project workspace remove research --delete-worktree\n  af task plan --workspace research --file ticket.json"
+    )]
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
     /// Show the effective configuration and where each value came from
     #[command(
         subcommand_required = true,
@@ -211,8 +240,8 @@ or activates a release older than 0.8.0 (the oldest supported release).",
         args_conflicts_with_subcommands = true,
         long_about = "Show what af keeps on this machine against its storage budget, and reclaim it.\n\n\
 af keeps at most `[storage] max_bytes` (20 GiB by default) between runs: warm build keys, warm \
-Workspaces, review campaign Stores, Task Stores (in the state root and registered elsewhere) and \
-installed versions. `af storage` prints, per kind, the entries, their bytes and their oldest and \
+Workspaces, review campaign Stores, Task Stores (in the state root and registered elsewhere), \
+Project Stores (counted, never evicted) and installed versions. `af storage` prints, per kind, the entries, their bytes and their oldest and \
 newest use; the Stores this release cannot read, with the reason; the total against the budget; \
 and the free bytes against `[storage] min_free_bytes`, the floor below which af refuses to start a \
 check or a Worker Attempt. It reads only; `af storage prune` previews the sweep that runs after \
@@ -222,7 +251,7 @@ repository's `.af/af.toml` cannot change it. See `af help storage`.",
         after_long_help = "Examples:\n  af storage\n  af storage --json | jq .total_bytes\n  af storage prune\n  af storage prune --apply\n  AF_STORAGE__MAX_BYTES=10GiB af storage prune --apply"
     )]
     Storage {
-        /// Machine-readable af/storage@1
+        /// Machine-readable af/storage@2
         #[arg(long)]
         json: bool,
         #[command(subcommand)]
@@ -1090,6 +1119,14 @@ pub(crate) enum TaskCommand {
         /// Explicit state directory (outside the repository)
         #[arg(long, value_name = "DIR", help_heading = "Selector")]
         state: Option<PathBuf>,
+        /// The Workspace whose Store and bindings file to use, by label (`af project workspaces`)
+        #[arg(
+            long,
+            value_name = "LABEL",
+            conflicts_with = "state",
+            help_heading = "Selector"
+        )]
+        workspace: Option<String>,
         /// Source revision (default: HEAD)
         #[arg(
             long,
@@ -1122,6 +1159,9 @@ pub(crate) enum TaskCommand {
         repo: PathBuf,
         #[arg(long, value_name = "DIR")]
         state: Option<PathBuf>,
+        /// The Workspace whose Store and bindings file to use, by label (`af project workspaces`)
+        #[arg(long, value_name = "LABEL", conflicts_with = "state")]
+        workspace: Option<String>,
         #[arg(long, default_value = "HEAD", conflicts_with = "uncommitted")]
         authority: String,
         #[arg(long)]
@@ -1249,6 +1289,14 @@ opens a pull request, or contacts a remote.",
         /// Explicit state directory
         #[arg(long, value_name = "DIR", help_heading = "Selector")]
         state: Option<PathBuf>,
+        /// The Workspace whose Store to use, by label (`af project workspaces` lists them)
+        #[arg(
+            long,
+            value_name = "LABEL",
+            conflicts_with = "state",
+            help_heading = "Selector"
+        )]
+        workspace: Option<String>,
         /// One JSON document on stdout instead of text
         #[arg(long, help_heading = "Output")]
         json: bool,
@@ -1341,6 +1389,135 @@ and model; no Provider label, path, credential, prompt or Worker output is print
     },
 }
 
+// ------------------------------------------------------------------------------------------
+// project
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum ProjectCommand {
+    /// Show the Project: identity, name, Store and every Workspace
+    #[command(
+        long_about = "Show the Project of the checkout af runs in: its ID, repository_id, the \
+`[project] name` and `min_af` its `.af/af.toml` declared when it was registered, the Project \
+Store, and every Workspace with its label, origin, checkout, Task Store, bindings file, Task-file \
+directory and registration time.\n\nRegisters the Project and this checkout first when they \
+are new. Reads nothing else and writes nothing inside the checkout.",
+        after_long_help = "Examples:\n  af project show\n  af project show --json | jq .project_id"
+    )]
+    Show {
+        /// One `af/project@1` document on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the Project's Workspaces: label, origin, checkout, Store, bindings, Task files
+    #[command(
+        long_about = "List every registered Workspace of this checkout's Project, in label order: \
+its label, origin (`adopted`, `created` or `delivered`), checkout, Task Store, bindings file and \
+Task-file directory. A path this machine's `workspaces.toml` does not know is shown as unknown.",
+        after_long_help = "Examples:\n  af project workspaces\n  af project workspaces --json"
+    )]
+    Workspaces {
+        /// One `af/project-workspaces@1` document on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create, adopt, or remove one Workspace
+    #[command(subcommand_required = true, arg_required_else_help = true)]
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum WorkspaceCommand {
+    /// Create a worktree, a branch and a Workspace directory, and register them
+    #[command(
+        long_about = "Create a Workspace for one line of work: `git worktree add` of a new \
+branch (`af/LABEL` unless --branch) from this checkout's HEAD (unless --from) at \
+`<checkout>-wt-LABEL` beside this checkout (unless --path), and the directory \
+`$XDG_STATE_HOME/af/project/<hex>/workspaces/LABEL/` holding an empty `state/` for its Task \
+Store, an empty `tasks/` for its Task files and a `bindings.toml` template that names no \
+account. The Workspace is registered with origin `created`.\n\nRefuses an existing path, \
+branch, label or Workspace directory. Never: commits, pushes, or contacts a remote.",
+        after_long_help = "Examples:\n  af project workspace new research\n  af project workspace new research --branch agent/research --from main\n  af project workspace new spike --path ../spike"
+    )]
+    New {
+        /// The new Workspace's label: letters, digits, `-` and `_`
+        #[arg(value_parser = workspace_label)]
+        label: String,
+        /// The new branch [default: af/LABEL]
+        #[arg(long, value_name = "NAME")]
+        branch: Option<String>,
+        /// Where the worktree goes [default: <checkout>-wt-LABEL beside this checkout]
+        #[arg(long, value_name = "DIR")]
+        path: Option<PathBuf>,
+        /// The commit the branch starts at [default: this checkout's HEAD]
+        #[arg(long, value_name = "REV")]
+        from: Option<String>,
+        /// One `af/project-workspaces@1` document on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Register an existing checkout of this Project as a Workspace
+    #[command(
+        long_about = "Register an existing checkout of this Project (a worktree or a clone) as a \
+Workspace of origin `adopted`. Its Store is the default Task Store for that checkout unless \
+--state names another; --bindings and --tasks name its bindings file and Task-file directory. \
+This is how a hand-made directory of `tasks/`, `bindings.toml` and `state/` becomes a Workspace \
+without moving a byte.\n\nA checkout of another Project is refused, naming both Project IDs; \
+a checkout already registered is refused, naming its label.",
+        after_long_help = "Examples:\n  af project workspace add ../afactory-wt-research --label research --state \"$W/state\" --bindings \"$W/bindings.toml\" --tasks \"$W/tasks\""
+    )]
+    Add {
+        /// The checkout to adopt
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+        /// Its label [default: the checkout's directory name]
+        #[arg(long, value_name = "LABEL", value_parser = workspace_label)]
+        label: Option<String>,
+        /// Its Task Store [default: the checkout's default Task Store]
+        #[arg(long, value_name = "DIR")]
+        state: Option<PathBuf>,
+        /// Its bindings file, which `--workspace` supplies as `--bindings`
+        #[arg(long, value_name = "FILE")]
+        bindings: Option<PathBuf>,
+        /// The directory holding its Task files
+        #[arg(long, value_name = "DIR")]
+        tasks: Option<PathBuf>,
+        /// One `af/project-workspaces@1` document on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+    /// Unregister a Workspace; keep its Store, and its worktree unless asked
+    #[command(
+        long_about = "Unregister a Workspace. Its Task Store is never removed: when it still \
+holds a Task that is not collected, the command says so and names `af task gc`. \
+--delete-worktree also removes the checkout, only when `git worktree remove` accepts it as a \
+clean linked worktree; the branch stays.",
+        after_long_help = "Examples:\n  af project workspace remove research\n  af project workspace remove research --delete-worktree"
+    )]
+    Remove {
+        /// The Workspace's label
+        #[arg(value_parser = workspace_label)]
+        label: String,
+        /// Also remove the worktree, when git accepts it as clean
+        #[arg(long)]
+        delete_worktree: bool,
+        /// One `af/project-workspaces@1` document on stdout instead of text
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// A Workspace label: the safe-name rule of Task IDs, refused as a usage error.
+fn workspace_label(value: &str) -> Result<String, String> {
+    if review_core::project::is_workspace_label(value) {
+        Ok(value.to_string())
+    } else {
+        Err("a label is 1 to 128 ASCII letters, digits, `-` or `_`, starting with a letter or digit".into())
+    }
+}
+
 #[derive(Debug, Args, Clone)]
 pub(crate) struct TaskInspectArgs {
     /// Repository the Task belongs to
@@ -1354,6 +1531,14 @@ pub(crate) struct TaskInspectArgs {
     /// Explicit state directory
     #[arg(long, value_name = "DIR", help_heading = "Selector")]
     pub(crate) state: Option<PathBuf>,
+    /// The Workspace whose Store to use, by label (`af project workspaces` lists them)
+    #[arg(
+        long,
+        value_name = "LABEL",
+        conflicts_with = "state",
+        help_heading = "Selector"
+    )]
+    pub(crate) workspace: Option<String>,
     /// One JSON document on stdout instead of text
     #[arg(long, help_heading = "Output")]
     pub(crate) json: bool,

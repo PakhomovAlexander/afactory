@@ -482,9 +482,9 @@ pub const ELSEWHERE: &str = "\
 Nothing the kernel records belongs here. Task files, run state, candidate patches, transcripts,
 reviewer results, receipts, logs and measurements go to the Store under $XDG_STATE_HOME/af: af
 refuses a state directory inside the checkout, and a Task file is captured into the Store at plan
-time, so the copy on disk is disposable. Keep Task files outside every checkout — for example
-under $XDG_STATE_HOME/af/tasks/ — because a Task file git would track rides along in every later
-Snapshot this repository captures, and af warns when it finds one.";
+time, so the copy on disk is disposable. Keep Task files outside every checkout, in a Workspace's
+tasks/ directory (`af project workspaces` shows it), because a Task file git would track rides
+along in every later Snapshot this repository captures, and af warns when it finds one.";
 
 #[cfg(test)]
 mod tests {
@@ -692,6 +692,8 @@ mod tests {
             "logs",
             "measurements",
             "$XDG_STATE_HOME/af",
+            "a Workspace's\ntasks/ directory",
+            "`af project workspaces`",
         ];
         for phrase in expected {
             assert!(ELSEWHERE.contains(phrase), "{phrase} is missing");

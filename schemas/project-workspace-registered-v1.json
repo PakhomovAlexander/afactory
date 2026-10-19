@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-workspace-registered:1",
+  "title": "WorkspaceRegistered@1",
+  "description": "One checkout registered as a Workspace of the Project (ADR-0151): its opaque ID, its label and how it came to be one. The checkout, Store, bindings and Task-file paths live only in the machine-local workspaces.toml.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "workspace_id",
+    "label",
+    "origin",
+    "registered_unix_ms"
+  ],
+  "properties": {
+    "workspace_id": {
+      "$ref": "urn:af:schema:project-registered:1#/$defs/workspace_id"
+    },
+    "label": {
+      "$ref": "urn:af:schema:project-registered:1#/$defs/label"
+    },
+    "origin": {
+      "$ref": "urn:af:schema:project-registered:1#/$defs/origin"
+    },
+    "registered_unix_ms": {
+      "$ref": "urn:af:schema:project-registered:1#/$defs/unix_ms"
+    }
+  }
+}

@@ -263,6 +263,83 @@ fn provider_models_help_and_man_page_describe_the_command() {
     assert!(page.contains("list_models"), "{page}");
 }
 
+/// `af project` is a namespace of its own with long help and examples, listed in `af --help`,
+/// and every `af task` command that takes `--state` takes `--workspace` beside it (ADR-0151).
+#[test]
+fn project_help_and_the_workspace_flag_describe_the_commands() {
+    let root = out(&af(&["--help"]));
+    assert!(
+        root.lines()
+            .any(|line| line.trim_start().starts_with("project ")),
+        "{root}"
+    );
+    for help in [af(&["project", "--help"]), af(&["help", "project"])] {
+        assert!(help.status.success(), "{}", err(&help));
+        let text = out(&help).split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            "Usage: af project <COMMAND>",
+            "show",
+            "workspaces",
+            "workspace",
+            "af/project-id@1\\0",
+            "$XDG_STATE_HOME/af/project/<hex>/",
+            "workspaces.toml",
+            "git fetch --unshallow",
+            "--workspace LABEL",
+            "Never: writes inside a checkout, commits, pushes, or removes a Store.",
+            "af/project@1",
+            "af/error@1",
+            "af project workspace new research --branch agent/research",
+            "af project workspace remove research --delete-worktree",
+        ] {
+            assert!(text.contains(needle), "`{needle}` missing:\n{text}");
+        }
+        assert!(!text.contains("ledger"), "{text}");
+    }
+    let workspace = out(&af(&["project", "workspace", "--help"]));
+    for command in ["new", "add", "remove"] {
+        assert!(
+            workspace
+                .lines()
+                .any(|line| line.trim_start().starts_with(&format!("{command} "))),
+            "{workspace}"
+        );
+    }
+    let bare = af(&["project"]);
+    assert_eq!(bare.status.code(), Some(2));
+    assert!(err(&bare).contains("Usage: af project"), "{}", err(&bare));
+    for command in [
+        &["task", "plan"][..],
+        &["task", "start"],
+        &["task", "run"],
+        &["task", "show"],
+        &["task", "list"],
+        &["task", "explain"],
+        &["task", "deliver"],
+        &["task", "report"],
+        &["task", "gc"],
+    ] {
+        let mut args = command.to_vec();
+        args.push("--help");
+        let help = out(&af(&args));
+        assert!(help.contains("--workspace <LABEL>"), "{command:?}: {help}");
+    }
+    let both = af(&["task", "list", "--workspace", "w", "--state", "/tmp/state"]);
+    assert_eq!(both.status.code(), Some(2));
+    assert!(err(&both).contains("cannot be used with"), "{}", err(&both));
+
+    let dir = tempfile::tempdir().unwrap();
+    let man = af(&["self", "man", dir.path().to_str().unwrap()]);
+    assert!(man.status.success(), "{}", err(&man));
+    for page in [
+        "af-project.1",
+        "af-project-show.1",
+        "af-project-workspace-new.1",
+    ] {
+        assert!(dir.path().join(page).is_file(), "{page} missing");
+    }
+}
+
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();

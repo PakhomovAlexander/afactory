@@ -1,0 +1,807 @@
+//! The Project and its Workspaces (ADR-0151).
+//!
+//! A Project is the identity of one repository across every clone, worktree and fork af has
+//! seen: `sha256:` + hex(SHA-256(`af/project-id@1\0` ‖ repository_id)), where `repository_id` is
+//! the sorted root commits every Snapshot origin already carries. It owns one Project Store,
+//! `$XDG_STATE_HOME/af/project/<hex>/` (`cas/` and the event log), which the Store registry
+//! records so the Storage Budget reaches it. A Workspace is one registered checkout of the
+//! Project, with its own Task Store, bindings file and Task-file directory, under one label.
+//!
+//! The log names a Workspace by an opaque ID and a label only. Every host path lives in the
+//! machine-local `workspaces.toml` beside the log, written whole and atomically like
+//! `stores.toml`. Registration is lazy, token-free and best effort: a command that registers
+//! never changes its own result because of it, and nothing is ever written inside a checkout.
+//!
+//! `crate::project` is something else: the parser of the `.af/af.toml` declaration.
+
+pub(crate) mod commands;
+mod file;
+#[cfg(test)]
+mod tests;
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use review_core::project::{
+    ProjectRegisteredPayloadV1, WorkspaceOriginV1, WorkspaceRegisteredPayloadV1,
+    WorkspaceRemovedPayloadV1,
+};
+use review_core::{EventType, RunEvent};
+use review_source_git::Repo;
+use review_store::{Cas, EventStore, NewEvent};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+
+pub(crate) use file::WorkspacePaths;
+
+/// The domain of the Project ID digest.
+const PROJECT_ID_DOMAIN: &[u8] = b"af/project-id@1\0";
+/// The domain of the Workspace ID digest.
+const WORKSPACE_ID_DOMAIN: &[u8] = b"af/workspace-id@1\0";
+/// The one run of a Project Store's log.
+const RUN_ID: &str = "project";
+/// What a shallow clone is told; the message names the way out.
+pub(crate) const UNSHALLOW: &str = "this checkout is a shallow clone: its boundary commit is not \
+     a root commit, so af cannot tell which Project it belongs to and registers nothing; run \
+     `git fetch --unshallow`, then run the command again";
+
+/// The Project ID of a repository: a domain-separated digest of its `repository_id`.
+pub(crate) fn project_id(repository_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(PROJECT_ID_DOMAIN);
+    digest.update(repository_id.as_bytes());
+    format!("sha256:{}", review_core::hex::encode(&digest.finalize()))
+}
+
+/// The Workspace ID of a canonical checkout path within a Project: opaque, so the path itself
+/// never enters a record.
+pub(crate) fn workspace_id(project_id: &str, checkout: &Path) -> String {
+    let mut digest = Sha256::new();
+    digest.update(WORKSPACE_ID_DOMAIN);
+    digest.update(project_id.as_bytes());
+    digest.update(b"\0");
+    digest.update(checkout.as_os_str().as_encoded_bytes());
+    let hex = review_core::hex::encode(&digest.finalize());
+    format!(
+        "w-{}",
+        &hex[..review_core::project::PROJECT_WORKSPACE_ID_HEX_LEN]
+    )
+}
+
+/// Every Project Store of this machine lives below this directory.
+pub(crate) fn projects_root(state_home: &Path) -> PathBuf {
+    state_home.join("af").join("project")
+}
+
+/// The Project Store of `project_id`: the hex of the digest, never the `sha256:` prefix.
+pub(crate) fn store_directory(state_home: &Path, project_id: &str) -> PathBuf {
+    projects_root(state_home).join(project_id.trim_start_matches("sha256:"))
+}
+
+/// A git checkout with at least one commit: what a Project and a Workspace are made of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Checkout {
+    /// The canonical top level of the worktree.
+    pub(crate) toplevel: PathBuf,
+    pub(crate) repository_id: String,
+    pub(crate) project_id: String,
+}
+
+/// What a directory is, as registration sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Located {
+    /// Not inside a git worktree: nothing to register.
+    NotGit,
+    /// A repository without commits has no root commit, so it has no Project.
+    NoCommit,
+    /// A shallow clone's boundary commit is not a root: refused, with [`UNSHALLOW`].
+    Shallow,
+    Checkout(Checkout),
+}
+
+/// Find the checkout `directory` belongs to, with read-only git plumbing.
+pub(crate) fn locate(directory: &Path) -> Result<Located, String> {
+    let Ok(directory) = std::fs::canonicalize(directory) else {
+        return Ok(Located::NotGit);
+    };
+    let home = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let repo = Repo::open(&directory, home.path());
+    let Ok(toplevel) = repo.line(&["rev-parse", "--show-toplevel"]) else {
+        return Ok(Located::NotGit);
+    };
+    let toplevel = std::fs::canonicalize(toplevel.trim_end_matches(['\n', '\r']))
+        .map_err(|error| format!("resolving the checkout's top level: {error}"))?;
+    let repo = Repo::open(&toplevel, home.path());
+    if repo
+        .line(&["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+        .is_err()
+    {
+        return Ok(Located::NoCommit);
+    }
+    let shallow = repo
+        .line(&["rev-parse", "--is-shallow-repository"])
+        .map_err(|error| error.to_string())?;
+    if shallow.trim() == "true" {
+        return Ok(Located::Shallow);
+    }
+    let repository_id = repo.repository_id().map_err(|error| error.to_string())?;
+    Ok(Located::Checkout(Checkout {
+        project_id: project_id(&repository_id),
+        repository_id,
+        toplevel,
+    }))
+}
+
+/// The checkout `directory` belongs to, or why an `af project` command cannot work there.
+pub(crate) fn require_checkout(directory: &Path) -> Result<Checkout, String> {
+    match locate(directory)? {
+        Located::Checkout(checkout) => Ok(checkout),
+        Located::NotGit => Err(format!(
+            "{} is not inside a git checkout; run `af project` inside a checkout of the repository",
+            directory.display()
+        )),
+        Located::NoCommit => Err(
+            "this repository has no commit yet, so it has no Project; commit once, then run the \
+             command again"
+                .into(),
+        ),
+        Located::Shallow => Err(UNSHALLOW.into()),
+    }
+}
+
+/// The `[project] name` and `min_af` of the checkout's `.af/af.toml`, when that file parses.
+fn declared(checkout: &Path) -> (Option<String>, Option<String>) {
+    #[derive(Deserialize)]
+    struct Declared {
+        project: DeclaredProject,
+    }
+    #[derive(Deserialize)]
+    struct DeclaredProject {
+        name: String,
+        min_af: String,
+    }
+    let Ok(text) = std::fs::read_to_string(checkout.join(".af").join("af.toml")) else {
+        return (None, None);
+    };
+    if crate::project::ProjectFile::parse(&text).is_err() {
+        return (None, None);
+    }
+    match toml::from_str::<Declared>(&text) {
+        Ok(declared) => (Some(declared.project.name), Some(declared.project.min_af)),
+        Err(_) => (None, None),
+    }
+}
+
+/// One registered Workspace, as the log records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Registered {
+    pub(crate) workspace_id: String,
+    pub(crate) label: String,
+    pub(crate) origin: WorkspaceOriginV1,
+    pub(crate) registered_unix_ms: u64,
+}
+
+/// The fold of a Project Store's log.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Log {
+    pub(crate) project: Option<ProjectRegisteredPayloadV1>,
+    /// Registered Workspaces by ID.
+    pub(crate) workspaces: std::collections::BTreeMap<String, Registered>,
+}
+
+impl Log {
+    /// Fold the log's events in sequence order. A Workspace registered again after its removal
+    /// is registered with what the newer event says.
+    pub(crate) fn fold(events: &[RunEvent]) -> Result<Self, String> {
+        let mut log = Log::default();
+        for event in events {
+            match event.event_type {
+                EventType::ProjectRegisteredV1 => {
+                    if log.project.is_some() {
+                        return Err("the Project Store records its Project twice".into());
+                    }
+                    let payload: ProjectRegisteredPayloadV1 =
+                        serde_json::from_value(event.payload.clone())
+                            .map_err(|error| format!("ProjectRegistered@1: {error}"))?;
+                    log.project = Some(payload);
+                }
+                EventType::WorkspaceRegisteredV1 => {
+                    let payload: WorkspaceRegisteredPayloadV1 =
+                        serde_json::from_value(event.payload.clone())
+                            .map_err(|error| format!("WorkspaceRegistered@1: {error}"))?;
+                    log.workspaces.insert(
+                        payload.workspace_id.clone(),
+                        Registered {
+                            workspace_id: payload.workspace_id,
+                            label: payload.label,
+                            origin: payload.origin,
+                            registered_unix_ms: payload.registered_unix_ms.get(),
+                        },
+                    );
+                }
+                EventType::WorkspaceRemovedV1 => {
+                    let payload: WorkspaceRemovedPayloadV1 =
+                        serde_json::from_value(event.payload.clone())
+                            .map_err(|error| format!("WorkspaceRemoved@1: {error}"))?;
+                    log.workspaces.remove(&payload.workspace_id);
+                }
+                other => {
+                    return Err(format!("a Project Store does not hold {other} events"));
+                }
+            }
+        }
+        Ok(log)
+    }
+
+    pub(crate) fn by_label(&self, label: &str) -> Option<&Registered> {
+        self.workspaces
+            .values()
+            .find(|workspace| workspace.label == label)
+    }
+}
+
+/// One open Project Store, held exclusively for the life of the value: registrations of two
+/// processes never interleave.
+pub(crate) struct ProjectStore {
+    pub(crate) directory: PathBuf,
+    pub(crate) project_id: String,
+    cas: Cas,
+    events: EventStore,
+    _lock: nix::fcntl::Flock<std::fs::File>,
+}
+
+impl ProjectStore {
+    /// Open (creating when absent) the Project Store of `project_id` below `state_home`, and
+    /// record it in the Store registry so the Storage Budget reaches it.
+    pub(crate) fn open(state_home: &Path, project_id: &str) -> Result<Self, String> {
+        let store = Self::open_unrecorded(state_home, project_id)?;
+        crate::storage::registry::record(
+            &store.directory,
+            crate::storage::registry::StoreKind::Project,
+        );
+        Ok(store)
+    }
+
+    /// [`ProjectStore::open`] without the registry, which lives in the machine's own state home.
+    fn open_unrecorded(state_home: &Path, project_id: &str) -> Result<Self, String> {
+        let directory = store_directory(state_home, project_id);
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| format!("creating {}: {error}", directory.display()))?;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(directory.join("project.lock"))
+            .map_err(|error| error.to_string())?;
+        let lock = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive)
+            .map_err(|(_, errno)| format!("locking the Project Store: {errno}"))?;
+        let cas = Cas::open(directory.join("cas")).map_err(|error| error.to_string())?;
+        let events = EventStore::open(directory.join("events.sqlite"))
+            .map_err(|error| format!("the Project Store {}: {error}", directory.display()))?;
+        Ok(Self {
+            directory,
+            project_id: project_id.to_string(),
+            cas,
+            events,
+            _lock: lock,
+        })
+    }
+
+    pub(crate) fn log(&self) -> Result<Log, String> {
+        let events = self
+            .events
+            .replay(RUN_ID)
+            .map_err(|error| format!("the Project Store {}: {error}", self.directory.display()))?;
+        let log = Log::fold(&events)?;
+        if let Some(project) = &log.project
+            && project.project_id != self.project_id
+        {
+            return Err(format!(
+                "the Project Store {} records Project {}, not {}",
+                self.directory.display(),
+                project.project_id,
+                self.project_id
+            ));
+        }
+        Ok(log)
+    }
+
+    fn append(&mut self, event_type: EventType, payload: serde_json::Value) -> Result<(), String> {
+        let event = NewEvent::new(event_type, payload).at(
+            review_core::task::collection::collected_time(crate::storage::now_unix_ms()),
+        );
+        self.events
+            .append(RUN_ID, &self.cas, event)
+            .map(|_| ())
+            .map_err(|error| format!("recording {event_type}: {error}"))
+    }
+
+    fn workspaces_file(&self) -> PathBuf {
+        file::location(&self.directory)
+    }
+
+    pub(crate) fn paths(&self) -> Result<Vec<WorkspacePaths>, String> {
+        file::read(&self.workspaces_file())
+    }
+
+    /// Record the Project when the log does not hold it yet.
+    pub(crate) fn ensure_project(&mut self, checkout: &Checkout) -> Result<Log, String> {
+        let log = self.log()?;
+        if log.project.is_some() {
+            return Ok(log);
+        }
+        let (name, min_af) = declared(&checkout.toplevel);
+        let mut payload = ProjectRegisteredPayloadV1 {
+            project_id: checkout.project_id.clone(),
+            repository_id: checkout.repository_id.clone(),
+            name,
+            min_af,
+            registered_unix_ms: crate::storage::now_unix_ms().into(),
+        };
+        // A declaration the record cannot hold is left out rather than refused.
+        if payload.validate().is_err() {
+            payload.name = None;
+            payload.min_af = None;
+        }
+        payload.validate()?;
+        self.append(
+            EventType::ProjectRegisteredV1,
+            serde_json::to_value(&payload).map_err(|error| error.to_string())?,
+        )?;
+        self.log()
+    }
+
+    /// Register `paths` as a Workspace of `origin`, or say which Workspace the checkout already
+    /// is. The log is written first; the paths file follows, and a later registration of the
+    /// same checkout repairs it.
+    pub(crate) fn register(
+        &mut self,
+        log: &Log,
+        origin: WorkspaceOriginV1,
+        paths: WorkspacePaths,
+    ) -> Result<Registration, String> {
+        if let Some(existing) = log.workspaces.get(&paths.id) {
+            let mut known = self.paths()?;
+            if !known.iter().any(|entry| entry.id == paths.id) {
+                known.push(WorkspacePaths {
+                    label: existing.label.clone(),
+                    ..paths
+                });
+                file::write(&self.workspaces_file(), known)?;
+            }
+            return Ok(Registration::Existing(existing.clone()));
+        }
+        let payload = WorkspaceRegisteredPayloadV1 {
+            workspace_id: paths.id.clone(),
+            label: paths.label.clone(),
+            origin,
+            registered_unix_ms: crate::storage::now_unix_ms().into(),
+        };
+        payload.validate()?;
+        self.append(
+            EventType::WorkspaceRegisteredV1,
+            serde_json::to_value(&payload).map_err(|error| error.to_string())?,
+        )?;
+        let mut known = self.paths()?;
+        known.retain(|entry| entry.id != paths.id);
+        known.push(paths);
+        file::write(&self.workspaces_file(), known)?;
+        Ok(Registration::New(Registered {
+            workspace_id: payload.workspace_id,
+            label: payload.label,
+            origin,
+            registered_unix_ms: payload.registered_unix_ms.get(),
+        }))
+    }
+
+    /// Unregister one Workspace: its event, then its paths.
+    pub(crate) fn unregister(&mut self, workspace_id: &str) -> Result<(), String> {
+        let payload = WorkspaceRemovedPayloadV1 {
+            workspace_id: workspace_id.to_string(),
+            removed_unix_ms: crate::storage::now_unix_ms().into(),
+        };
+        payload.validate()?;
+        self.append(
+            EventType::WorkspaceRemovedV1,
+            serde_json::to_value(&payload).map_err(|error| error.to_string())?,
+        )?;
+        let mut known = self.paths()?;
+        known.retain(|entry| entry.id != workspace_id);
+        file::write(&self.workspaces_file(), known)
+    }
+
+    /// The directory `af project workspace new` makes for a Workspace's Store, Task files and
+    /// bindings.
+    pub(crate) fn workspace_directory(&self, label: &str) -> PathBuf {
+        self.directory.join("workspaces").join(label)
+    }
+}
+
+/// What registering a checkout did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Registration {
+    New(Registered),
+    Existing(Registered),
+}
+
+impl Registration {
+    pub(crate) fn workspace(&self) -> &Registered {
+        match self {
+            Registration::New(workspace) | Registration::Existing(workspace) => workspace,
+        }
+    }
+}
+
+/// A label for `preferred` that no other Workspace holds: `preferred` itself, or `preferred`
+/// and the first eight hex digits of the Workspace ID.
+pub(crate) fn free_label(log: &Log, preferred: &str, workspace_id: &str) -> Result<String, String> {
+    if log.by_label(preferred).is_none() {
+        return Ok(preferred.to_string());
+    }
+    let suffix = &workspace_id.trim_start_matches("w-")[..8];
+    let label = format!("{preferred}-{suffix}");
+    if log.by_label(&label).is_none() {
+        Ok(label)
+    } else {
+        Err(format!(
+            "the labels `{preferred}` and `{label}` are both taken; name one with --label"
+        ))
+    }
+}
+
+/// A safe label from a directory name: every other byte becomes `-`, and it starts with a
+/// letter or digit.
+pub(crate) fn label_from_name(name: &str) -> String {
+    let mapped: String = name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed: String = mapped
+        .trim_start_matches(['-', '_'])
+        .chars()
+        .take(119)
+        .collect();
+    if trimmed.is_empty() {
+        "checkout".into()
+    } else {
+        trimmed
+    }
+}
+
+/// The default Task Store of a checkout: the one `af task` uses there without `--state`.
+pub(crate) fn default_store(checkout: &Path) -> Result<PathBuf, String> {
+    crate::task_execution::default_task_state(&crate::xdg_state_root()?, checkout)
+}
+
+/// Register the checkout `paths` describes as a Workspace of `checkout`'s Project, creating the
+/// Project when it is new. `label` is the preferred label; `exact` refuses a taken one instead
+/// of deriving another.
+pub(crate) fn register(
+    checkout: &Checkout,
+    origin: WorkspaceOriginV1,
+    label: &str,
+    exact: bool,
+    paths: WorkspacePaths,
+) -> Result<(ProjectStore, Registration), String> {
+    let mut store = ProjectStore::open(&crate::xdg_state_root()?, &checkout.project_id)?;
+    let registration = register_in(&mut store, checkout, origin, label, exact, paths)?;
+    Ok((store, registration))
+}
+
+/// [`register`] in a Project Store this process already holds.
+pub(crate) fn register_in(
+    store: &mut ProjectStore,
+    checkout: &Checkout,
+    origin: WorkspaceOriginV1,
+    label: &str,
+    exact: bool,
+    mut paths: WorkspacePaths,
+) -> Result<Registration, String> {
+    let log = store.ensure_project(checkout)?;
+    if !log.workspaces.contains_key(&paths.id) {
+        paths.label = if exact {
+            if let Some(holder) = log.by_label(label) {
+                return Err(format!(
+                    "the label `{label}` is taken by Workspace {}; choose another",
+                    holder.workspace_id
+                ));
+            }
+            label.to_string()
+        } else {
+            free_label(&log, label, &paths.id)?
+        };
+    }
+    store.register(&log, origin, paths)
+}
+
+/// Register the invoking checkout as an `adopted` Workspace when it is new: labelled by its
+/// directory name, its Store the explicit `state` or the default Task Store.
+pub(crate) fn adopt(
+    checkout: &Checkout,
+    state: Option<&Path>,
+) -> Result<(ProjectStore, Registration), String> {
+    let state = match state {
+        Some(state) => {
+            let state = crate::resolve_filesystem_path(state)?;
+            if state.starts_with(&checkout.toplevel) {
+                default_store(&checkout.toplevel)?
+            } else {
+                state
+            }
+        }
+        None => default_store(&checkout.toplevel)?,
+    };
+    let name = checkout
+        .toplevel
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let label = label_from_name(&name);
+    let paths = WorkspacePaths {
+        id: workspace_id(&checkout.project_id, &checkout.toplevel),
+        label: label.clone(),
+        path: checkout.toplevel.clone(),
+        state,
+        bindings: None,
+        tasks: None,
+    };
+    register(checkout, WorkspaceOriginV1::Adopted, &label, false, paths)
+}
+
+/// What a command that registers lazily registers: the checkout of `repo`, with an explicit
+/// `--state` when one was given.
+#[derive(Debug, Clone)]
+pub(crate) struct Lazy {
+    pub(crate) repo: PathBuf,
+    pub(crate) state: Option<PathBuf>,
+}
+
+/// The lazy registration of `af onboard --apply`, `af task plan|start` and `af review run`:
+/// best effort, token-free, never inside the checkout. Silent unless it fails or meets a
+/// shallow clone, which it reports in one line on stderr; the command's result is unchanged.
+pub(crate) fn register_lazily(lazy: &Lazy) {
+    let outcome = match locate(&lazy.repo) {
+        Ok(Located::Checkout(checkout)) => adopt(&checkout, lazy.state.as_deref()).map(|_| ()),
+        Ok(Located::NotGit | Located::NoCommit) => Ok(()),
+        Ok(Located::Shallow) => Err(UNSHALLOW.to_string()),
+        Err(error) => Err(error),
+    };
+    if let Err(error) = outcome {
+        eprintln!("af: the Project was not registered: {error}");
+    }
+}
+
+/// Register the worktree `af task deliver` created as a Workspace of origin `delivered`,
+/// labelled by the Task ID. Best effort, after delivery succeeded: the receipt is already out.
+pub(crate) fn register_delivered(worktree: &Path, task_id: &str) {
+    let outcome = (|| -> Result<(), String> {
+        let Located::Checkout(checkout) = locate(worktree)? else {
+            return Ok(());
+        };
+        let paths = WorkspacePaths {
+            id: workspace_id(&checkout.project_id, &checkout.toplevel),
+            label: task_id.to_string(),
+            path: checkout.toplevel.clone(),
+            state: default_store(&checkout.toplevel)?,
+            bindings: None,
+            tasks: None,
+        };
+        register(
+            &checkout,
+            WorkspaceOriginV1::Delivered,
+            task_id,
+            false,
+            paths,
+        )
+        .map(|_| ())
+    })();
+    if let Err(error) = outcome {
+        eprintln!("af: the delivered worktree was not registered as a Workspace: {error}");
+    }
+}
+
+/// The paths `--workspace LABEL` stands for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Selected {
+    pub(crate) state: PathBuf,
+    /// The Workspace's bindings file, when it names one and the file exists.
+    pub(crate) bindings: Option<PathBuf>,
+}
+
+/// Resolve `--workspace LABEL` against the Project of the checkout `repo` belongs to.
+pub(crate) fn select(repo: &Path, label: &str) -> Result<Selected, String> {
+    let checkout = require_checkout(repo)?;
+    let unknown = || {
+        format!(
+            "this Project has no Workspace labelled `{label}`; `af project workspaces` lists them"
+        )
+    };
+    let state_home = crate::xdg_state_root()?;
+    if !store_directory(&state_home, &checkout.project_id)
+        .join("events.sqlite")
+        .is_file()
+    {
+        return Err(unknown());
+    }
+    let store = ProjectStore::open(&state_home, &checkout.project_id)?;
+    let log = store.log()?;
+    let workspace = log.by_label(label).ok_or_else(unknown)?;
+    let paths = store
+        .paths()?
+        .into_iter()
+        .find(|entry| entry.id == workspace.workspace_id)
+        .ok_or_else(|| {
+            format!(
+                "Workspace `{label}` has no paths on this machine; add them with `af project \
+                 workspace remove {label}` and `af project workspace add`"
+            )
+        })?;
+    Ok(Selected {
+        state: paths.state,
+        bindings: paths.bindings.filter(|bindings| bindings.is_file()),
+    })
+}
+
+/// Apply `--workspace` to an `af task` command: its Store becomes `--state`, and on `plan` and
+/// `start` its bindings file becomes `--bindings` when none was given. clap already refused
+/// `--workspace` beside `--state`.
+pub(crate) fn resolve_task_workspace(
+    mut command: crate::cli::TaskCommand,
+) -> Result<crate::cli::TaskCommand, String> {
+    use crate::cli::TaskCommand as T;
+    let selector: Option<(&Path, &mut Option<String>, &mut Option<PathBuf>)> = match &mut command {
+        T::Start {
+            repo,
+            state,
+            workspace,
+            bindings,
+            ..
+        }
+        | T::Plan {
+            repo,
+            state,
+            workspace,
+            bindings,
+            ..
+        } => {
+            if let Some(label) = workspace.take() {
+                let selected = select(repo, &label)?;
+                *state = Some(selected.state);
+                if bindings.is_none() {
+                    *bindings = selected.bindings;
+                }
+            }
+            None
+        }
+        T::Deliver {
+            repo,
+            state,
+            workspace,
+            ..
+        } => Some((repo.as_path(), workspace, state)),
+        T::Refresh { inspect, .. }
+        | T::DecisionPayload { inspect, .. }
+        | T::Output { inspect, .. }
+        | T::Approve { inspect, .. }
+        | T::Reject { inspect, .. }
+        | T::Run { inspect, .. }
+        | T::Explain { inspect, .. }
+        | T::Export { inspect, .. }
+        | T::ObserveAdoption { inspect, .. }
+        | T::List { inspect, .. }
+        | T::Gc { inspect, .. }
+        | T::Show { inspect, .. }
+        | T::Report { inspect, .. } => Some((
+            inspect.repo.as_path(),
+            &mut inspect.workspace,
+            &mut inspect.state,
+        )),
+    };
+    if let Some((repo, workspace, state)) = selector
+        && let Some(label) = workspace.take()
+    {
+        *state = Some(select(repo, &label)?.state);
+    }
+    Ok(command)
+}
+
+/// What a command registers once it ran, if anything.
+pub(crate) fn lazy_target(command: &crate::cli::Command) -> Option<Lazy> {
+    use crate::cli::{Command as C, ReviewCommand as R, TaskCommand as T};
+    match command {
+        C::Onboard(args) if args.apply => Some(Lazy {
+            repo: args.repo.clone(),
+            state: None,
+        }),
+        C::Task {
+            command: T::Start { repo, state, .. } | T::Plan { repo, state, .. },
+        } => Some(Lazy {
+            repo: repo.clone(),
+            state: state.clone(),
+        }),
+        C::Review(namespace) => match &namespace.command {
+            None => Some(Lazy {
+                repo: namespace.run.repo.clone(),
+                state: None,
+            }),
+            Some(R::Run(args)) => Some(Lazy {
+                repo: args.repo.clone(),
+                state: None,
+            }),
+            Some(_) => None,
+        },
+        _ => None,
+    }
+}
+
+/// The worktree and Task ID of an `af task deliver`, for registration after it succeeded.
+pub(crate) fn delivered_target(command: &crate::cli::Command) -> Option<(PathBuf, String)> {
+    match command {
+        crate::cli::Command::Task {
+            command:
+                crate::cli::TaskCommand::Deliver {
+                    worktree, task_id, ..
+                },
+        } => crate::resolve_filesystem_path(worktree)
+            .ok()
+            .map(|worktree| (worktree, task_id.clone())),
+        _ => None,
+    }
+}
+
+/// A git command for the mutations `af project workspace` makes (`worktree add`, `worktree
+/// remove`): no user or system configuration, no hooks, no transport, no prompt — the same
+/// boundary delivery keeps (ADR-0031).
+fn git(directory: &Path, home: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.env_clear();
+    command
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("LC_ALL", "C")
+        .env("TZ", "UTC")
+        .current_dir(directory)
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "credential.helper=",
+        ]);
+    command
+}
+
+/// Run git in `directory`; its stdout, or its stderr as the error.
+fn run_git(directory: &Path, args: &[&std::ffi::OsStr]) -> Result<String, String> {
+    let home = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let output = git(directory, home.path())
+        .args(args)
+        .output()
+        .map_err(|error| format!("starting git: {error}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let rendered: Vec<String> = args
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect();
+        Err(format!(
+            "git {}: {}",
+            rendered.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
+    }
+}

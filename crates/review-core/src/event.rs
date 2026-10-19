@@ -96,10 +96,16 @@ pub enum EventType {
     BuildCacheCapturedV1,
     #[serde(rename = "WorkspaceRebased@1")]
     WorkspaceRebasedV1,
+    #[serde(rename = "ProjectRegistered@1")]
+    ProjectRegisteredV1,
+    #[serde(rename = "WorkspaceRegistered@1")]
+    WorkspaceRegisteredV1,
+    #[serde(rename = "WorkspaceRemoved@1")]
+    WorkspaceRemovedV1,
 }
 
 impl EventType {
-    pub const ALL: [Self; 42] = [
+    pub const ALL: [Self; 45] = [
         Self::TaskTransitionV5,
         Self::TaskReviewResultSelectedV1,
         Self::CheckCompletedV1,
@@ -142,6 +148,9 @@ impl EventType {
         Self::WorkerNotesRecordedV1,
         Self::BuildCacheCapturedV1,
         Self::WorkspaceRebasedV1,
+        Self::ProjectRegisteredV1,
+        Self::WorkspaceRegisteredV1,
+        Self::WorkspaceRemovedV1,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -188,6 +197,9 @@ impl EventType {
             Self::WorkerNotesRecordedV1 => "WorkerNotesRecorded@1",
             Self::BuildCacheCapturedV1 => "BuildCacheCaptured@1",
             Self::WorkspaceRebasedV1 => "WorkspaceRebased@1",
+            Self::ProjectRegisteredV1 => "ProjectRegistered@1",
+            Self::WorkspaceRegisteredV1 => "WorkspaceRegistered@1",
+            Self::WorkspaceRemovedV1 => "WorkspaceRemoved@1",
         }
     }
 
@@ -240,6 +252,9 @@ impl EventType {
             Self::WorkerNotesRecordedV1 => ("WorkerNotesRecorded", 1),
             Self::BuildCacheCapturedV1 => ("BuildCacheCaptured", 1),
             Self::WorkspaceRebasedV1 => ("WorkspaceRebased", 1),
+            Self::ProjectRegisteredV1 => ("ProjectRegistered", 1),
+            Self::WorkspaceRegisteredV1 => ("WorkspaceRegistered", 1),
+            Self::WorkspaceRemovedV1 => ("WorkspaceRemoved", 1),
         }
     }
 }
@@ -328,6 +343,9 @@ impl std::str::FromStr for EventType {
             "WorkerNotesRecorded@1" => Ok(Self::WorkerNotesRecordedV1),
             "BuildCacheCaptured@1" => Ok(Self::BuildCacheCapturedV1),
             "WorkspaceRebased@1" => Ok(Self::WorkspaceRebasedV1),
+            "ProjectRegistered@1" => Ok(Self::ProjectRegisteredV1),
+            "WorkspaceRegistered@1" => Ok(Self::WorkspaceRegisteredV1),
+            "WorkspaceRemoved@1" => Ok(Self::WorkspaceRemovedV1),
             other => Err(UnknownEventType(other.to_string())),
         }
     }
@@ -859,6 +877,21 @@ pub fn validate_event_payload(
             rebased
                 .validate()
                 .map_err(|error| format!("WorkspaceRebased@1: {error}"))
+        }
+        EventType::ProjectRegisteredV1 => {
+            serde_json::from_value::<crate::ProjectRegisteredPayloadV1>(payload.clone())
+                .map_err(|error| format!("ProjectRegistered@1: {error}"))?
+                .validate()
+        }
+        EventType::WorkspaceRegisteredV1 => {
+            serde_json::from_value::<crate::WorkspaceRegisteredPayloadV1>(payload.clone())
+                .map_err(|error| format!("WorkspaceRegistered@1: {error}"))?
+                .validate()
+        }
+        EventType::WorkspaceRemovedV1 => {
+            serde_json::from_value::<crate::WorkspaceRemovedPayloadV1>(payload.clone())
+                .map_err(|error| format!("WorkspaceRemoved@1: {error}"))?
+                .validate()
         }
     }
 }

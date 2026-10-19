@@ -1,6 +1,6 @@
 //! The Store registry (ADR-0144): `$XDG_STATE_HOME/af/stores.toml`, every Task and review
-//! Store af opened or created outside its default roots (`--state`, `--state-root`), so the
-//! Storage Budget's sweep reaches Stores nothing else knows.
+//! Store af opened or created outside its default roots (`--state`, `--state-root`), and every
+//! Project Store (ADR-0151), so the Storage Budget's sweep reaches Stores nothing else knows.
 //!
 //! Recording is best effort and never fails a command: a registry that cannot be read or
 //! written is reported once on stderr and left as it is. The sweep visits every registered
@@ -21,6 +21,9 @@ pub(crate) enum StoreKind {
     Review,
     /// A directory of review campaign Stores (`af review … --state-root DIR`).
     ReviewRoot,
+    /// A Project Store, `$XDG_STATE_HOME/af/project/<hex>` (ADR-0151). An older release does not
+    /// know this kind, so it cannot read a registry that holds one (ADR-0145).
+    Project,
 }
 
 /// One registered Store.

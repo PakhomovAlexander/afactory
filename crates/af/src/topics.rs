@@ -144,8 +144,8 @@ affected by a TTY, colours, or the update notice (which goes to stderr, and only
 
 const STORAGE: &str = "\
 af keeps a bounded amount of disk between runs (ADR-0144). One budget covers warm build keys,
-warm Workspaces, review campaign Stores, the finished Tasks of every Task Store, Stores this
-release cannot read, and installed versions. When af holds more than the budget, the least
+warm Workspaces, review campaign Stores, the finished Tasks of every Task Store, Project Stores
+(counted, never evicted; ADR-0151), Stores this release cannot read, and installed versions. When af holds more than the budget, the least
 recently used entry goes first; nothing in use and nothing used within the last hour ever goes.
 
   af storage                  what af holds, per kind, against the budget and the free-disk floor

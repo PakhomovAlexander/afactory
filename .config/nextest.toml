@@ -38,6 +38,9 @@ path = "junit.xml"
 #   Run alone on a 14-core macOS host (median of three), the pair takes 45.5 s + 19.8 s against
 #   60.3 s for the single test it replaces. With E the exclusive seconds and S the sum, the
 #   expected wall time E*(T-1)/T + S/T is 50.5 s at 4 threads and 48.3 s at 7 (60.3 s single).
+# - af_help_and_af_project_help_answer_in_under_50_ms: the fastest of ten launches of `af --help`
+#   and of `af project --help` must answer in under 50 ms (ADR-0151); about 5 ms run directly on
+#   a 14-core macOS host.
 [[profile.ci.overrides]]
 filter = '''
 test(/::identity_rechecks_cancel_an_inflight_status_process$/)
@@ -45,6 +48,7 @@ test(/::identity_rechecks_cancel_an_inflight_status_process$/)
 | test(/::setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask$/)
 | test(/typed_reply_never_falls_back_and_failed_outputs_keep_accounting$/)
 | test(/light_cache_candidate_measures_real_latency_and_grounds_later_adoption_evidence$/)
+| test(/::af_help_and_af_project_help_answer_in_under_50_ms$/)
 '''
 threads-required = "num-test-threads"
 priority = 100

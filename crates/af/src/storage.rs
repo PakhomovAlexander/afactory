@@ -111,6 +111,9 @@ pub(crate) enum Kind {
     /// What a Task Store holds beyond its finished Tasks: never evicted itself; its Tasks are,
     /// one at a time.
     TaskStore,
+    /// A Project Store (ADR-0151) beyond the Task Stores of its Workspaces: never evicted, since
+    /// it indexes the Project's Workspaces.
+    ProjectStore,
     UnreadableStore,
     Version,
     /// A removal a process that died left claimed under a private name: never inventoried, only
@@ -119,12 +122,13 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
-    const ALL: [Kind; 7] = [
+    const ALL: [Kind; 8] = [
         Kind::WarmKey,
         Kind::Workspace,
         Kind::Campaign,
         Kind::Task,
         Kind::TaskStore,
+        Kind::ProjectStore,
         Kind::UnreadableStore,
         Kind::Version,
     ];
@@ -136,6 +140,7 @@ impl Kind {
             Kind::Campaign => "campaign",
             Kind::Task => "task",
             Kind::TaskStore => "task_store",
+            Kind::ProjectStore => "project_store",
             Kind::UnreadableStore => "unreadable_store",
             Kind::Version => "version",
             Kind::Claim => "claim",
@@ -149,6 +154,7 @@ impl Kind {
             Kind::Campaign => "review campaigns",
             Kind::Task => "finished Tasks",
             Kind::TaskStore => "Task Stores (rest)",
+            Kind::ProjectStore => "Project Stores",
             Kind::UnreadableStore => "unreadable Stores",
             Kind::Version => "installed versions",
             Kind::Claim => "finished removals",
@@ -507,6 +513,7 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
         .chain(listed(&mut inventory, &roots.local_reviews))
         .collect();
     let mut tasks: BTreeSet<PathBuf> = listed(&mut inventory, &roots.tasks).into_iter().collect();
+    let mut projects: BTreeSet<PathBuf> = BTreeSet::new();
     for entry in &registered {
         match entry.kind {
             StoreKind::Task => {
@@ -516,7 +523,13 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
                 campaigns.insert(entry.path.clone());
             }
             StoreKind::ReviewRoot => campaigns.extend(listed(&mut inventory, &entry.path)),
+            StoreKind::Project => {
+                projects.insert(entry.path.clone());
+            }
         }
+    }
+    for path in projects.into_iter().filter(|path| has_store(path)) {
+        project_store(&mut inventory, &path);
     }
     for path in campaigns.into_iter().filter(|path| has_store(path)) {
         match written_by_another_release(&path) {
@@ -647,6 +660,52 @@ fn warm_keys(roots: &Roots, inventory: &mut Inventory) {
                 }),
             }
         }
+    }
+}
+
+/// A Project Store (ADR-0151): its own log and CAS, `workspaces.toml` and the Task files and
+/// bindings of the Workspaces `af project workspace new` made. The Task Stores below it are
+/// registered and counted on their own, so they are left out of its bytes. It is never evicted:
+/// it indexes the Project's Workspaces, and one another release wrote is kept while it still
+/// holds a Workspace directory, whose Task Store this release may well read.
+fn project_store(inventory: &mut Inventory, path: &Path) {
+    let workspace_stores: Vec<PathBuf> = real_directories(&path.join("workspaces"))
+        .into_iter()
+        .map(|workspace| workspace.join("state"))
+        .filter(|state| state.is_dir())
+        .collect();
+    match written_by_another_release(path) {
+        Ok(Some(reason)) => {
+            unreadable(inventory, path, reason);
+            if let Some(entry) = inventory.entries.last_mut()
+                && entry.kind == Kind::UnreadableStore
+                && entry.in_use.is_none()
+                && !real_directories(&path.join("workspaces")).is_empty()
+            {
+                entry.in_use = Some("it holds Workspace directories".into());
+            }
+        }
+        Ok(None) => {
+            measure_into(inventory, Kind::ProjectStore, path, |path| {
+                (
+                    newest_store_write(path),
+                    Some("the Project Store is kept: it indexes the Project's Workspaces".into()),
+                )
+            });
+            if let Some(entry) = inventory.entries.last_mut()
+                && entry.kind == Kind::ProjectStore
+            {
+                let below = workspace_stores
+                    .iter()
+                    .filter_map(|state| review_sandbox::storage::allocated_bytes(state).ok())
+                    .fold(0, u64::saturating_add);
+                entry.bytes = entry.bytes.saturating_sub(below);
+            }
+        }
+        Err(reason) => inventory.problems.push(Problem {
+            path: path.to_path_buf(),
+            reason,
+        }),
     }
 }
 
@@ -923,7 +982,7 @@ pub(crate) fn sweep(
         .entries
         .iter()
         .filter(|entry| {
-            entry.kind != Kind::TaskStore
+            !matches!(entry.kind, Kind::TaskStore | Kind::ProjectStore)
                 && entry.in_use.is_none()
                 && entry.last_use_unix_ms.saturating_add(HOUR_MS) <= now
                 && !entry
@@ -1019,7 +1078,7 @@ fn finish_abandoned_claims(roots: &Roots) -> (Vec<(PathBuf, u64)>, Vec<String>) 
 
 fn drop_gone_registrations(roots: &Roots, apply: bool) -> Result<Vec<PathBuf>, String> {
     let holds = |entry: &registry::Registered| match entry.kind {
-        StoreKind::Task | StoreKind::Review => has_store(&entry.path),
+        StoreKind::Task | StoreKind::Review | StoreKind::Project => has_store(&entry.path),
         StoreKind::ReviewRoot => entry.path.is_dir(),
     };
     if !apply {
@@ -1337,6 +1396,7 @@ fn evict(
             }
         }
         Kind::TaskStore => Err(failed("a Task Store is never removed whole".into())),
+        Kind::ProjectStore => Err(failed("a Project Store is never evicted".into())),
         Kind::Claim => Err(failed(
             "a claim is finished by recovery, never evicted".into(),
         )),
@@ -1482,7 +1542,7 @@ pub(crate) fn observation(
                 Kind::UnreadableStore => StorageSweepKindV1::UnreadableStore,
                 Kind::Version => StorageSweepKindV1::Version,
                 Kind::Claim => StorageSweepKindV1::Claim,
-                Kind::TaskStore => return None,
+                Kind::TaskStore | Kind::ProjectStore => return None,
             };
             let path = removal.path.to_str()?.to_string();
             (path.len() <= MAX_SWEEP_PATH_BYTES && !path.chars().any(char::is_control)).then(|| {
@@ -1855,7 +1915,7 @@ pub(crate) fn purge_outside_roots() -> Vec<String> {
     }
     for entry in &registered {
         let stores = match entry.kind {
-            StoreKind::Task | StoreKind::Review => vec![entry.path.clone()],
+            StoreKind::Task | StoreKind::Review | StoreKind::Project => vec![entry.path.clone()],
             StoreKind::ReviewRoot => real_directories(&entry.path),
         };
         for store in stores.into_iter().filter(|path| has_store(path)) {
@@ -1975,7 +2035,7 @@ pub(crate) fn show(json_output: bool) -> Result<i32, String> {
     let total = stock.total();
     if json_output {
         let document = json!({
-            "schema": "af/storage@1",
+            "schema": "af/storage@2",
             "max_bytes": policy.max_bytes,
             "total_bytes": total,
             "min_free_bytes": policy.min_free_bytes,

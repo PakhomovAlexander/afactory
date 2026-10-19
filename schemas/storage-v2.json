@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:storage:1",
-  "title": "af/storage@1",
-  "description": "`af storage --json` (ADR-0144): every entry af keeps between runs on this machine, per kind and one by one, against the `[storage]` budget and the free-disk floor. An entry is the unit the budget evicts whole; its bytes are allocated bytes (a finished Task's are the bytes only it reaches). `in_use` says why an entry is never evicted now; `reason` why a Store cannot be read by this release.",
+  "$id": "urn:af:schema:storage:2",
+  "title": "af/storage@2",
+  "description": "`af storage --json` (ADR-0144): every entry af keeps between runs on this machine, per kind and one by one, against the `[storage]` budget and the free-disk floor. An entry is the unit the budget evicts whole; its bytes are allocated bytes (a finished Task's are the bytes only it reaches). `in_use` says why an entry is never evicted now; `reason` why a Store cannot be read by this release. Version 2 adds the kind `project_store`: a Project Store (ADR-0151), counted and never evicted, since it indexes its Project's Workspaces.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,7 +17,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/storage@1"
+      "const": "af/storage@2"
     },
     "max_bytes": {
       "$ref": "#/$defs/bytes"
@@ -153,6 +153,7 @@
         "campaign",
         "task",
         "task_store",
+        "project_store",
         "unreadable_store",
         "version"
       ]

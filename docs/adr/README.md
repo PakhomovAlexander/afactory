@@ -271,3 +271,5 @@ future readers need.
   token](0149-never-wrap-a-suggested-command-inside-a-shell-token.md)
 - [0150 — Name the path a status-line error
   carries](0150-name-the-path-a-status-line-error-carries.md)
+- [0151 — Give a repository one Project identity and register its checkouts as
+  Workspaces](0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)

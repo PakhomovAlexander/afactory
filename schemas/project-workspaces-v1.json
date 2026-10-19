@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-workspaces:1",
+  "title": "af/project-workspaces@1",
+  "description": "`af project workspaces --json` (ADR-0151): every registered Workspace of the invoking checkout's Project, in label order.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "project_id",
+    "workspaces"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/project-workspaces@1"
+    },
+    "project_id": {
+      "$ref": "urn:af:schema:project-registered:1#/$defs/project_id"
+    },
+    "workspaces": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:project:1#/$defs/workspace"
+      }
+    }
+  }
+}

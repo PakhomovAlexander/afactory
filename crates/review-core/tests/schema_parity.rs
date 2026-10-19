@@ -30,7 +30,12 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 170] = [
+const SCHEMAS: [&str; 175] = [
+    "project-registered-v1.json",
+    "project-workspace-registered-v1.json",
+    "project-workspace-removed-v1.json",
+    "project-v1.json",
+    "project-workspaces-v1.json",
     "task-report-v1.json",
     "provider-models-v1.json",
     "code-task-policy-v1.json",
@@ -3926,6 +3931,8 @@ mod provider_onboarding;
 #[path = "schema_parity/task_recording.rs"]
 mod task_recording;
 
+#[path = "schema_parity/project.rs"]
+mod project;
 #[path = "schema_parity/remote_check.rs"]
 mod remote_check;
 #[path = "schema_parity/task_report.rs"]

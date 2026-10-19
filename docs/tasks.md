@@ -92,10 +92,12 @@ The Task ID is chosen here and must be new to the state directory. Without `pipe
 ## Start and inspect a Task
 
 Run from the clean repository at committed `HEAD`. State defaults to a directory outside the
-repository under the user's XDG state directory; `--state` selects another external directory.
-Save the Task request outside the checkout too (for example, `../ticket.json`); Afactory captures
-its contents into Task state. `--file` selects the request, not the source repository, so remain
-in the source checkout or select it with `--repo`.
+repository under the user's XDG state directory; `--state` selects another external directory,
+and `--workspace LABEL` selects a Workspace's Store and bindings file
+([Projects and Workspaces](project.md)).
+Save the Task request outside the checkout too (for example, `../ticket.json`, or a Workspace's
+`tasks/` directory); Afactory captures its contents into Task state. `--file` selects the request,
+not the source repository, so remain in the source checkout or select it with `--repo`.
 
 ```sh
 af provider status
@@ -296,7 +298,7 @@ the lock `af self` holds while it changes the default or a pin, so one that beca
 stays.
 
 `af storage` prints what af holds, per kind, against the budget, and the free bytes against
-`[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@1` document.
+`[storage] min_free_bytes` (10 GiB by default); `--json` prints one `af/storage@2` document.
 After every `af task run` and `af review run` the sweep holds af to `max_bytes`, evicting least
 recently used entries; it does not collect by age unless `[storage] auto_gc = true`. `af storage
 prune` previews the sweep with collection; `af storage prune --apply` performs it now. It collects
