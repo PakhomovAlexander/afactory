@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 21 after review rounds 1 to 20 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 22 after review rounds 1 to 21 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -240,8 +240,8 @@ cleared (§3.8):
 | `AF_PLUGIN_PROTOCOL` | `1`; a plugin whose manifest declares another protocol is refused before it runs |
 | `AF_PLUGIN_NAME` | the plugin's name |
 | `AF_PLUGIN_DIR` | the directory holding its manifest and executable |
-| `AF_PLUGIN_STATE` | `$XDG_STATE_HOME/af/plugins/<name>`, created on first use when the manifest declares `storage = "state"` |
-| `AF_PLUGIN_CACHE` | `$XDG_CACHE_HOME/af/plugins/<name>`, likewise for `"cache"` or `"state"` |
+| `AF_PLUGIN_STATE` | `$XDG_STATE_HOME/af/plugins/<name>/data`, the payload under the plugin's control directory (§3.9), created on first use when the manifest declares `storage = "state"` |
+| `AF_PLUGIN_CACHE` | `$XDG_CACHE_HOME/af/plugins/<name>/data`, likewise for `"cache"` or `"state"`; the entry the kernel evicts whole (§3.9) |
 | `AF_BIN` | the absolute path of the running `af`: the plugin calls this, never `af` from `PATH` (ADR-0123) |
 | `AF_VERSION` | the running release |
 | `AF_REPO` | the repository the invocation resolved: the kernel-owned `--repo` before the plugin name, else the git toplevel the command was run in; absent outside a repository when no `--repo` was given |
@@ -257,9 +257,16 @@ the repository in question, by the one resolver every use shares, commands, `con
 hooks and panes: `AF_PLUGIN_VERSION_<NAME>` first, as `AF_VERSION` precedes the project pin in
 `maybe_dispatch`, then the pin, then `current`, then the `PATH` development fallback where it
 is enabled;
-`config show` applies the same selection for the repository it is run for, reads that manifest
-with the bounded read, and fails closed, treating the table as machine-only, when it cannot be
-read, so one invocation never sees values another version's manifest would have filtered.
+`config show` run under an invocation's overlay (`AF_PLUGIN_NAME` and `AF_PLUGIN_DIR` set) for
+the repository `AF_REPO` names does not run the selection again, because another process can
+change it in between (a pin moved to an installed version with another `machine_only` after
+the plugin started; `load_rooted` and `selfmgmt::pinned` re-read the filesystem, and the
+plugin locks do not cover the lockfile): it filters `plugin.<name>` with the manifest at
+`AF_PLUGIN_DIR`, the bundle already running, re-read with the bounded read, and fails closed,
+treating the table as machine-only, when that manifest is gone, names another plugin or
+cannot be read. A `config show` with no overlay, or for another repository, resolves the
+current selectors. So one invocation never sees values another version's manifest would have
+filtered.
 
 Names are two to thirty-two characters: a letter first, then alphanumeric segments joined
 by single hyphens, no hyphen at either end and none doubled (`[a-z][a-z0-9]*(-[a-z0-9]+)*`),
@@ -615,8 +622,11 @@ persistence in the kernel. A plugin that wants to see what it missed reads `af s
 
 ### 3.9 State, cache and the budget
 
-A plugin declaring `storage = "state"` owns `$XDG_STATE_HOME/af/plugins/<name>/` and
-`$XDG_CACHE_HOME/af/plugins/<name>/`; `"cache"` owns the second only; `"none"` neither, and a
+A plugin declaring `storage = "state"` owns the payload directories
+`$XDG_STATE_HOME/af/plugins/<name>/data/` and `$XDG_CACHE_HOME/af/plugins/<name>/data/`, each
+beneath a control directory, `$XDG_STATE_HOME/af/plugins/<name>/` and
+`$XDG_CACHE_HOME/af/plugins/<name>/`, that the kernel keeps for its lock (below); `"cache"`
+owns the second only; `"none"` neither, and a
 plugin writing there anyway is a bug `af plugin check` catches with a fixture run. The kernel
 counts three storage kinds per plugin, `plugin-install:<name>`, `plugin-state:<name>` and
 `plugin-cache:<name>`, in `af storage` and the budget (ADR-0144). The kinds are new values in
@@ -624,8 +634,8 @@ closed enums (`schemas/storage-v1.json`, `schemas/storage-prune-v1.json`), so th
 that carry them are versioned with them (ADR-0145, clause 6 of §3.1): P1 introduces
 `af/storage@2` and `af/storage-prune@2` beside the sweep record's next version, producers,
 readers, schemas and parity fixtures together, and the `@1` documents stay as they are. Cache
-directories are entries
-the kernel evicts whole, least recently used first, never within an hour of use. State is never
+payloads (`data/`) are entries the kernel evicts whole, least recently used first, never
+within an hour of use. State is never
 evicted by the kernel. The `storage.sweep` hook is the one timing exception to §3.8: it runs
 inside the sweep, after the kernel's own eviction and before the sweep finalizes its report and
 the `storage_sweep` observation, so that `total_after` and the stop reason describe the state
@@ -645,19 +655,27 @@ sit inside admission or an Attempt. Whatever remains is the operator's with
 
 Nothing in use is evicted (ADR-0144). Every plugin process the kernel starts, a command, a hook
 supervisor, a pane load or a runner adapter, holds shared locks on
-`.lock` files that live in the directories they protect, one per root the plugin has,
-`$XDG_DATA_HOME/af/plugins/<name>/.lock`, `$XDG_STATE_HOME/af/plugins/<name>/.lock` and
-`$XDG_CACHE_HOME/af/plugins/<name>/.lock`, for its whole lifetime, as `hold_running` anchors
-a Task's protection to the Store directory it protects: every process that sees the same
+`.lock` files in the control directories beside what they protect, one per root the plugin
+has, `$XDG_DATA_HOME/af/plugins/<name>/.lock` beside the versions,
+`$XDG_STATE_HOME/af/plugins/<name>/.lock` and `$XDG_CACHE_HOME/af/plugins/<name>/.lock` beside
+their `data/` payloads, for its whole lifetime, as `hold_running` anchors a Task's protection
+to the Store directory it protects: every process that sees the same
 directory sees the same lock object, whatever else its environment says, so two invocations
 with different data roots and one cache root contend on that cache's lock, and no runtime
-directory is involved. The files are created at install, at `--link` and at the first start
-of a `PATH` plugin, together with the state and cache directories, are never evicted, and a
-lock that cannot be taken refuses the operation with the reason rather than running unlocked;
-the hook supervisor holds them while the plugin's process group lives. The sweep, and `remove
---purge`, take the exclusive lock of the root they are about to evict, without blocking, skip
-it and say so when they cannot, and re-read the entry's identity and protection under that
-lock before removing it, as `campaign_in_use` guards a Campaign today. Every start records the plugin's last use.
+directory is involved. The control directories and their lock files are created at install, at `--link` and at
+the first start of a `PATH` plugin, and no sweep removes them: the sweep evicts the `data/`
+payload beneath, never the control directory, so an open lock and its path never part. A
+start takes the shared lock, checks with `fstat` that the file it holds is still linked at
+its path (a link count above zero), retrying once and refusing otherwise, and creates `data/`
+when it is absent; a lock that cannot be taken refuses the operation with the reason rather
+than running unlocked; the hook supervisor holds them while the plugin's process group lives.
+The sweep takes the exclusive lock of the root it is about to evict, without blocking, skips
+it and says so when it cannot, re-reads the payload's identity (device and inode) and
+protection under that lock before removing it, as `campaign_in_use` guards a Campaign today,
+and releases it before any start proceeds to recreate the payload. `remove --purge` takes
+every exclusive lock, removes the payloads and the versions, and removes the control
+directories last while still holding the descriptors, so a start racing it finds an unlinked
+lock and refuses. Every start records the plugin's last use.
 
 A plugin never reads or writes another plugin's directories; composition between plugins is
 through their command lines, like everything else.
@@ -931,9 +949,11 @@ the container, which forwards it on the container's own stdout and reads the ans
 stdin: the harness drives the container runtime's attached stdin and stdout, supervised
 through `review-process` with the stream limits P1 adds there (§3.14) and bounds of its own, a
 broker frame at most 64 KiB, a broker reply at most the CAS bound of 8 MiB plus its header,
-the container's aggregate stdout at most 64 MiB, its stderr at most 1 MiB, and the trace file,
-written to a mount the harness owns, at most 256 MiB, its size checked every second; the
-first excess byte on any of them cancels the check, which confirms the container's removal
+the container's aggregate stdout at most 64 MiB, its stderr at most 1 MiB, and the trace, which
+`strace -o` writes to a pipe the relay forwards as a second framed stream on the container's
+stdout, so that the harness counts its bytes before retaining them as on every other channel,
+at most 256 MiB, with the size of the trace file the harness keeps as no more than a second
+check; the first excess byte on any of them cancels the check, which confirms the container's removal
 (§3.15 below) and fails with the channel named, and a truncated trace is never evidence. The
 harness runs the real `af` against the fixture Store outside, and
 answers with stdout and the exit code. A mounted FIFO would not do: on macOS the container is
@@ -962,7 +982,8 @@ command, `task start --file`, `help <plugin>` and `onboard --refresh-lock` among
 rejected before anything spawns and recorded as a boundary violation, since the plugin's
 syscall trace cannot see what a host-side `af` reads or writes. Denial alone proves nothing, because a plugin can swallow the error and exit 0, so the
 harness also audits: inside the container the plugin runs under a file-syscall tracer
-(`strace -f -y -s 4096 -e trace=%file,fchdir,dup,dup2,dup3,fcntl,close,unshare,%process`, the
+(`strace -f -y -s 4096 -o <the relay's trace pipe> -e
+trace=%file,fchdir,dup,dup2,dup3,fcntl,close,unshare,%process`, the
 container is Linux on every host, with the ptrace capability the harness requests for this
 check only), and the trace, not the plugin's output, is the record. The auditor resolves every
 access to an absolute path before classifying it: a descriptor-relative call through the path
@@ -1183,7 +1204,9 @@ in one process and unset in the other: a running invocation blocks a concurrent 
 reinstall of the same version and the sweep's eviction of its aged cache; two invocations with
 different `XDG_DATA_HOME` and one `XDG_CACHE_HOME`: the aged shared cache of the running
 plugin is not evicted by the other's sweep, which skips it and says so; a `PATH` plugin gets
-its lock files at first start);
+its lock files at first start; a start racing the eviction and recreation of its cache
+payload keeps one lock object and recreates `data/` once; a `remove --purge` racing a start
+leaves the start refused on the unlinked lock);
 `plugin_context_resolves_the_git_toplevel` (invoked from `/repo/subdir`, and with
 `--repo /repo/subdir`: the bundle, `enabled`, the configuration and `AF_REPO` are `/repo`'s,
 and no Task Store is created or registered);
@@ -1213,8 +1236,9 @@ passes, one trace covering both; the peer calling `task start --file` is refused
 a nested call to a peer that is not provisioned reports `not_run` and fails
 `--require-boundary`);
 `config_filtering_uses_the_selected_bundles_manifest` (two installed versions whose
-`machine_only` differ: `current` governs, and an unreadable manifest fails closed; the pinned
-and override variants are P5's); `plugin_arguments_never_steer_dispatch` (under a
+`machine_only` differ: `current` governs, and an unreadable manifest fails closed; a pin moved
+between the plugin's start and its `config show` leaves the running bundle's manifest in
+force; the pinned and override variants are P5's); `plugin_arguments_never_steer_dispatch` (under a
 plugin-capable pinned release, `af echo --help`, `af echo -V` and `af echo --repo /elsewhere`
 each dispatch to the pinned release, which hands the words to the plugin untouched);
 `a_release_predating_plugins_receives_argv_unchanged` (the cross-release fixture: `af echo
@@ -1248,8 +1272,9 @@ the parent's relative open after it, classified by the shared context; an `unsha
 whose `chdir` leaves the parent's resolution alone; a `chroot` call, `unresolved`);
 `plugin_check_bounds_every_channel` (a plugin flooding each channel in turn, a broker frame
 over 64 KiB, a reply over its bound, container stdout over 64 MiB, stderr over 1 MiB and a
-trace over 256 MiB: each cancels the check with the channel named, the container's removal is
-confirmed, and no truncated trace is reported as evidence);
+trace over 256 MiB, crossed in a burst inside the first second: each cancels the check with
+the channel named, the container's removal is confirmed, the retained trace bytes stay within
+the bound, and no truncated trace is reported as evidence);
 `plugin_check_without_a_container_reports_not_run`;
 `plugin_check_binds_its_result_to_the_content_digest_and_target` (a native Darwin bundle is
 `not_run`, `--target` checks the Linux bundle and claims nothing for the other; two archives
