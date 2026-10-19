@@ -1,6 +1,7 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 25 after review rounds 1 to 24 (Codex gpt-6-astra, xhigh).
+**Status:** final 2026-10-19, the accepted direction; revision 25 after review rounds 1 to 24
+(Codex gpt-6-astra, xhigh; 5.77M tokens; 110 findings, every one folded; §8 records the decisions).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -1195,6 +1196,24 @@ deliverables: a test names only what its own and earlier packages ship, so the c
 harness's core is P1's, its Store-reader coverage P2's and its Task-creation refusal P3's;
 hooks are tested unpinned in P4, under a pin in P5, and with the pane in P6.
 
+P1 is larger than one implementer Attempt can finish, so it is delivered as four Tasks in this
+order, each a pull request of its own and each verified before the next starts, with P1's
+acceptance split among them by what they ship: **P1a**, the command seam, the manifest, the
+dispatch classification, the plugin-context resolver, `af --help`, `af help <plugin>` and
+`af help plugins`, the `[plugin.*]` configuration, the `plugins/` `LAYOUT` entry and
+`ProjectFile`'s field, the locks and the release lease of §3.9 and §3.3, the three storage
+kinds with `af/storage@2`, `af/storage-prune@2` and the sweep record's next version, and the
+echo fixture run through `af echo`; **P1b**, `af plugin install|remove|list|show` for an
+archive, a `DirSource` directory and `--link`, `origin.toml`, receipts with both digests, the
+content digest `af.plugin-digest/1` with its fixed fixtures, and the parts of `af plugin check`
+that need no container (manifest, verbs within their bounds, `init` preview and apply);
+**P1c**, the conformance harness without the audit: the stream limits and reader-raised
+cancellation in `review-process`, the duplex execution path in `review-sandbox`, the relay and
+broker with the read-only allowlist, the channel bounds, container cleanup, provisioned peers,
+`not_run` and `--require-boundary`, and the result bound to the content digest and target;
+**P1d**, the syscall audit of §3.15 in full, with every audit fixture. P0's ADR rides with
+P1a's pull request.
+
 ### P0 — The decision
 
 Deliverables: the ADR with the clauses of §3.1; `CONTEXT.md` entries of §2; this note indexed;
@@ -1594,23 +1613,25 @@ Provider kind is wanted.
 - **Proving the conformance boundary with file permissions.** The plugin and its `af` child run
   as the same user; whatever one cannot read, neither can. Rejected for the container harness.
 - **A plugin monorepo.** One release train and one PR queue again. One repository per plugin
-  from a template is recommended; the owner decides (§8).
+  from a template is recommended and decided (§8).
 
-## 8. Open decisions for the owner
+## 8. Decisions
 
-1. **The namespace name.** `af plugin` here; `af ext` is shorter and reads less like an
-   implementation detail. The note keeps `plugin`, the word the values use.
-2. **`PATH` fallback on by default.** On here, for the development loop and value 8; off would
-   mean `af plugin install --link .` is the only way to run an unreleased plugin.
-3. **Hook default mode.** `detached` here. `sync` by default makes a backlog's next start
-   visible before the prompt returns, at the cost of up to `hook_wall_ms` per run.
-4. **Re-planning the two notes.** Whether `af project` and `af telemetry` are built as in §3.16
-   now, with their kernel parts first, or shipped as designed and extracted later. The note
-   recommends now: both are the first proof that the seams are enough.
-5. **Automatic Briefs.** PJ3's root default rendered a Brief at plan time without a Task file
-   naming it; under this design the starter binds a file. Whether one kernel root default is
-   wanted for Briefs is the owner's call; the note recommends the explicit binding.
-6. **Repositories.** One per plugin from a template (recommended), or a plugins workspace.
-7. **Signatures.** Digest-only installs allowed with a visible receipt and keys recorded at
-   first install (here, mirroring `af self`, whose receipts are `lock`, `minisign` or
-   `sha256sums`), or a signature required for every release install.
+Taken 2026-10-19 with the note's recommendations, when the owner closed the review campaign;
+each stands unless the owner changes it here before P0's ADR is written.
+
+1. **The namespace name is `plugin`.** `af plugin …`, the word the values use; `af ext` was
+   the alternative.
+2. **`PATH` fallback is on by default.** `af-<name>` on `PATH` runs as a `dev` plugin for the
+   development loop (value 8); `[plugins] path = false` in a machine layer turns it off.
+3. **Hooks are `detached` by default.** A plugin that wants its work visible before the prompt
+   returns declares `sync` and pays up to `hook_wall_ms` per run.
+4. **The two notes in flight are re-planned now.** `af project` and `af telemetry` are built as
+   §3.16 divides them, kernel parts first, then `af-project` and `af-telemetry` as plugins:
+   they are the first proof that the seams are enough.
+5. **No automatic Brief.** Whoever starts a Task binds the Brief with the `file` form; no
+   kernel root default renders one.
+6. **One repository per plugin, from a template.** No plugins workspace and no monorepo.
+7. **Signatures as `af self` has them.** Digest-only installs are allowed with a visible
+   receipt (`verified_by = "sha256sums"`), the key is recorded at first install and enforced
+   afterwards, and a signature is not required for every release install.
