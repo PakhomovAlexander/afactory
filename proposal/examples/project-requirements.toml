@@ -1,0 +1,45 @@
+# Proposed project contract fragment. It is captured in the Execution Plan.
+# The pipeline binds a node to one named resource profile explicitly.
+# These requirements cannot set the machine budget or authorize an executor.
+[execution_resources.profiles.build]
+cpu_request = "0.5"
+cpu_limit = "2"
+memory_limit = "1536MiB"
+estimated_working_set = "1GiB"
+pids_limit = 128
+scratch_growth = "4GiB"
+scratch_storage = "disk"
+scratch_inodes = 65536
+retained_growth = "512MiB"
+retained_inodes = 4096
+required_capabilities = ["memory.per_execution.hard", "process_tree.terminate", "scratch.disk_backed"]
+
+[execution_resources.profiles.format]
+cpu_request = "0.1"
+cpu_limit = "0.5"
+memory_limit = "256MiB"
+pids_limit = 32
+scratch_growth = "64MiB"
+scratch_storage = "disk"
+scratch_inodes = 1024
+retained_growth = "0B"
+retained_inodes = 0
+required_capabilities = ["scratch.disk_backed"] # Also implied by scratch_storage; no hard quota required.
+
+# CPU request is an AF scheduling commitment; CPU limit is a ceiling.
+# Memory limit is fully reserved. The estimate does not reduce that reservation.
+# A strict project profile is never downgraded by machine enforcement = "auto".
+
+# This profile explicitly requires stronger restart evidence; it may refuse native
+# standalone or instance-scoped cells even when hard live memory limits are available.
+[execution_resources.profiles.recoverable_build]
+cpu_request = "0.5"
+cpu_limit = "2"
+memory_limit = "1536MiB"
+pids_limit = 128
+scratch_growth = "4GiB"
+scratch_storage = "disk"
+scratch_inodes = 65536
+retained_growth = "512MiB"
+retained_inodes = 4096
+required_capabilities = ["memory.per_execution.hard", "process_tree.terminate", "scratch.disk_backed", "domain.aggregate.registered", "recovery.restart.proven"]

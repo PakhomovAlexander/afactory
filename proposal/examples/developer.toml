@@ -1,0 +1,51 @@
+# Proposed syntax, not accepted by the current AF release.
+# Machine-owned config. All participating AF commands share this budget.
+[resources]
+enforcement = "auto"
+backend = "auto"
+domain = "auto"
+max_active_tasks = 4
+max_queued_requests = 256
+
+[resources.budget]
+memory = "4GiB"
+cpu = "2"
+pids = 2048
+
+[resources.headroom]
+memory = "10%"
+min_memory = "256MiB"
+
+[resources.control]
+base_memory = "256MiB"
+coordinator_memory = "128MiB"
+base_cpu = "0.05"
+coordinator_cpu = "0.05"
+base_pids = 32
+coordinator_pids = 16
+
+[resources.scheduling]
+strategy = "weighted_fair"
+protect_after = "60s"
+
+[resources.scheduling.weights]
+background = 1
+normal = 2
+interactive = 4
+
+[resources.pressure]
+sample_interval = "2s"
+stale_after = "6s"
+pause_after_samples = 3
+recover_after_samples = 5
+
+[resources.telemetry]
+max_bytes = "64MiB"
+raw_retention = "30m"
+rollup_retention = "24h"
+
+# Existing storage policy remains the single authority for disk cleanup.
+[storage]
+max_bytes = "20GiB"
+min_free_bytes = "10GiB"
+auto_gc = false

@@ -1,0 +1,344 @@
+# Proposed test campaign configuration, not an implemented AF command interface.
+# Budgets are initial engineering targets. Exhaustion means incomplete, never pass.
+schema = "af.resource-qualification-plan/1"
+status = "proposed"
+feature_acceptance = "acceptance.csv"
+qualification_cases = "qualification-cases.csv"
+measurement_oracles = "measurement-oracles.csv"
+qualification_coverage = "qualification-coverage.csv"
+
+[identity]
+require_source_manifest = true
+require_binary_digests = true
+require_oracle_revision = true
+require_config_digest = true
+require_environment_capabilities = true
+retain_failures = true
+
+[isolation]
+private_home_and_xdg = true
+canonical_rendezvous_preflight = true
+require_disposable_account_vm_or_disjoint_container = true
+test_only_rendezvous_override_requires_verified_test_binary = true
+refuse_production_account_rendezvous = true
+owned_disposable_allocations = true
+external_watchdog = true
+build_on_capable_runner = true
+production_fault_injection = false
+paid_inference_default = false
+
+[formal]
+activation = "requires-reviewed-measured-calibration-before-candidate-qualification"
+require_separate_safety_and_no_deadline_liveness_costs = true
+submodel_changes_require_reviewed_bounds_and_refinement = true
+coordinators = 2
+requests = 5
+request_bound_is_simultaneous = true
+recycle_completed_small_requests = true
+finite_arrival_count_may_not_prove_progress = true
+require_slot_claim_liveness_for_every_ready_root = true
+resource_dimensions = 3
+require_task_and_group_slot_coordinates = true
+require_live_slot_fifo_model = true
+weak_fairness_only = true
+parent_child_pairs = 2
+remote_executor_records = 2
+duplicate_pods = 2
+require_no_deadline_liveness_run = true
+owner_generations = 3
+max_crashes = 2
+require_liveness_assumptions = true
+require_state_space_completion = true
+# Models must use finite abstractions and report their bounds.
+max_states = 5000000
+
+[simulation]
+production_decision_code = true
+independent_expected_model = true
+virtual_clock = true
+retain_seed_generator_and_minimized_trace = true
+failpoint_hit_required = true
+
+[tiers.per_change]
+activation = "requires-full-tier-measured-calibration-including-isolation"
+wall_budget = "15m"
+cpu_cores = 4
+memory = "8GiB"
+property_sequences = 1000
+max_events_per_sequence = 500
+require_regression_corpus = true
+require_changed_backend_contract = true
+require_bounded_model = true
+real_provider_calls = false
+
+[tiers.nightly]
+wall_budget = "4h"
+max_runner_core_hours = 32
+property_sequences = 10000
+max_events_per_sequence = 2000
+fault_policy = "all-mandatory-single-boundaries-and-targeted-pairs"
+real_linux_and_docker = true
+cooperative_desktop = true
+contention_duration = "2h"
+critical_mutation_detection = "all-non-equivalent-named-mutants"
+real_provider_calls = false
+
+[tiers.release]
+wall_budget = "72h"
+max_runner_core_hours = 512
+require_all_advertised_backends = true
+linux_soak = "24h"
+docker_soak = "8h"
+kubernetes_soak = "8h"
+macos_cooperative_soak = "8h"
+fresh_restarts_per_backend = 5
+real_provider_calls = "bounded-separately-authorized-canaries"
+
+[acceptance]
+invariant_violations_allowed = 0
+duplicate_controlled_starts_allowed = 0
+premature_reservation_releases_allowed = 0
+false_proven_cleanup_claims_allowed = 0
+cooperative_retirement_requires_residual_risk_receipt = true
+mandatory_missing_evidence_allowed = 0
+skip_counts_as_support = false
+post_result_threshold_relaxation = false
+comparison_bounds = "declared-before-candidate-run"
+claim_coverage_required = true
+require_clause_fault_and_assertion_receipts = true
+require_independent_executable_hook_registry = true
+
+[fairness_fixture]
+max_active_tasks = 4
+group_caps = "disabled"
+initial_and_backfill_structure = "finite-single-operation-roots-no-retry-or-dynamic-followups"
+waiting_root_structure = "one-operation-root"
+worker_memory = "3GiB"
+waiting_request_memory = "2GiB"
+backfill_request_memory = "1GiB"
+protect_after = "60s"
+all_running_remaining_bound_at_protection = "30s"
+scheduler_cadence_bound = "2s"
+expected_latest_virtual_start = "94s"
+require_no_earlier_protected_waiter = true
+require_stable_capacity_and_valid_authority = true
+require_live_dispatcher = true
+max_live_queue_clients = 16
+arrival_interval = "1s"
+initial_waiter_has_live_slot = true
+live_client_rotation = false
+bound_clock = "wall-from-acknowledged-eligibility"
+dispatch_ack_delay = "0s"
+inactive_protection_bound = "4250ms"
+dispatch_sample_interval = "250ms"
+require_live_pulse_positive_control = true
+protect_selection_cadence_allowance = "2s"
+
+[evidence]
+raw_metrics = true
+allocator_api_history = true
+effect_sink_without_deduplication = true
+fault_schedule_and_hits = true
+capability_and_freshness_labels = true
+failed_and_censored_runs = true
+cleanup_proof = true
+cooperative_retirement_evidence_is_not_cleanup_proof = true
+replay_recipe = true
+secrets_and_transcripts = false
+
+[fairness_saturated_fixture]
+max_active_tasks = 4
+group_caps = "disabled"
+initial_and_backfill_structure = "finite-single-operation-roots-no-retry-or-dynamic-followups"
+V_and_W_structure = "single-operation-roots-in-head-claim-channel-sequentially"
+live_slots = 1
+older_live_waiters = 1
+arrival_interval = "1s"
+live_client_rotation = false
+expected_waiter_live_by = "98s"
+expected_waiter_start_by = "192s"
+require_no_deadline_expiry = true
+
+[calibration]
+status = "required-before-candidate-campaign-freeze"
+baseline = "pinned-last-accepted-increment-or-reviewed-calibration-only-bootstrap"
+independent_fresh_runs = 5
+budget_statistic = "maximum-plus-25-percent-rounded-up"
+require_pre_measurement_runner_and_source_manifest = true
+require_full_tier_setup_cost = true
+require_explicit_cases_and_cells = true
+per_change_cells = "reference-linux-plus-trusted-changed-contract-map"
+release_cells = "all-advertised-applicable"
+require_review_before_candidate_for_budget_or_tier_change = true
+pulse_durability = "none-shared-memory"
+ledger_durability = "qualified-platform-sync-including-fullfsync-if-required"
+
+[benchmarks]
+activation = "requires-predeclared-materialized-cell-manifest-and-all-claim-gates"
+requested_performance_cells = 42
+platforms = ["linux-ext4", "linux-xfs", "macos-apfs"]
+cell_families = ["A-reference-and-low-load", "B-fractional-outer-allocation", "C-explicit-stress-policy", "D-injected-durability-fault"]
+require_independent_readiness_arithmetic = true
+require_frozen_baseline_control_and_probe_minima = true
+require_numeric_cpu_memory_and_expected_outcome_per_cell = true
+require_all_overrides_labelled = true
+unsupported_is_performance_pass = false
+fresh_runs_per_cell = 5
+warmup = "2m"
+minimum_measurement = "10m"
+maximum_measurement = "20m"
+block_duration = "15s"
+minimum_blocks = 40
+minimum_renewals_per_live_dispatcher = 1000
+minimum_reference_admissions = 2000
+minimum_other_healthy_admissions = 200
+minimum_per_rate_admissions = 50
+minimum_per_qualifying_reference_rate_admissions = 200
+reference_qualifying_rate_fractions = ["0.25", "0.50"]
+measurement_duration_scope = "whole-cell-run-four-equal-rate-segments"
+minimum_fault_admissions = 500
+maximum_unexpected_live_owner_losses = 0
+publisher_gap_exclusive_max = "2s"
+sampler_interval_max = "250ms"
+scheduler_interval_max = "2s"
+inactive_protection_bound = "4250ms"
+per_pulse_durable_writes_allowed = 0
+reference_cell = "A-2CPU-4GiB-4coordinators-16dispatchers-100queued-16active-zero-injected-delay"
+reference_admission_p95_exclusive_max = "20ms"
+reference_status_exclusive_max = "200ms"
+reference_observer_cpu_exclusive_max = "0.01"
+reference_observer_memory_exclusive_max = "64MiB"
+neighbor_baseline = "same-candidate-test-only-static-resource-control"
+neighbor_uses_same_randomized_paired_blocks = true
+neighbor_p95_delta_max = "5ms"
+neighbor_p95_ratio_max = "1.20"
+neighbor_ratio_denominator_floor = "1ms"
+confidence = "one-sided-95-percent-time-block-bootstrap-per-fresh-run"
+bootstrap_replicates = 10000
+claim_failure = "unsupported-for-that-claim-or-reviewed-new-manifest-and-full-affected-rerun"
+
+[calibration.holdout]
+independent_fresh_runs = 5
+allowed_overruns = 0
+require_frozen_budget_before_holdout = true
+require_reviewed_new_identity_after_failure = true
+
+[formal.submodels.dispatch_nested]
+coordinators = 2
+roots = 3
+parent_child_pairs = 2
+simultaneous_execution_requests = 5
+require_parent_wait_nonvacuity = true
+
+[formal.submodels.task_slot_fifo]
+coordinators = 2
+root_identities = 5
+sequential_operations_per_root = 2
+max_active_tasks = 2
+group_caps = [1, 2]
+recycled_small_roots = 2
+require_hidden_remaining_graph = true
+require_slot_only_block_nonvacuity = true
+require_later_fitting_root_nonvacuity = true
+deadline_may_discharge_liveness = false
+
+[formal.submodels.client_observation]
+coordinators = 2
+distinguished_waiters = 2
+symmetric_client_counter_max = 16
+live_client_limits = [1, 16]
+reserved_fifo_head_channels = 1
+require_pressure_staleness_and_handover = true
+require_counter_refinement_and_nonvacuity = true
+
+[slot_overtaking_fixture]
+max_active_tasks = 2
+max_live_queue_clients = 16
+memory_after_base = "3GiB"
+coordinator_memory = "128MiB"
+waiter_operation_memory = "2GiB"
+small_root_operation_memory = "1GiB"
+holder_structure = "multi-operation-with-unknown-remaining-graph-until-settlement"
+small_root_arrivals = "recycled-continuously"
+minimum_simulated_later_roots = 1000
+expected_start_after_last_slot_release = "98s"
+require_no_deadline_expiry = true
+repeat_with_group_caps = true
+
+[benchmarks.overhead]
+baseline = "same-candidate-test-only-static-resource-control"
+require_identical_logical_arrival_and_probe_trace = true
+require_identical_admission_timestamps = false
+require_exact_qualifying_operation_id_sets = true
+require_exact_boundary_states_and_work_units = true
+work_count_tolerance = 0
+mismatched_work_outcome = "incomplete"
+posthoc_cohort_filtering = false
+all_waiting_client_process_cost_included = true
+cpu = "difference-of-summed-AF-process-CPU-time-per-segment-wall"
+memory = "difference-of-peak-summed-PSS-or-qualified-unique-resident"
+qualifying_rates = ["0.25", "0.50"]
+statistic = "one-sided-95-percent-block-bootstrap-per-rate-per-fresh-run"
+minimum_status_calls_per_qualifying_segment = 200
+status_statistic = "p95-upper-one-sided-95-percent-bound"
+require_test_only_mode_refuses_production = true
+
+[formal.submodels.task_slot_fifo.observations]
+classes = ["domain-wide-stale", "stale-for-W-only", "fits-small-only", "fits-large"]
+require_outside_use_and_unprotected_claim = true
+require_grace_hysteresis_and_client_refinement = true
+
+[formal.submodels.task_slot_fifo.groups]
+require_unbounded_group_holder_variant = true
+require_disjoint_group_progress = true
+require_overlapping_memberships = true
+retain_partial_slot_claims = false
+require_original_ticket_on_group_release = true
+require_existing_claim_premise_in_start_bound = true
+
+[formal.submodels.client_observation.scoped_stale]
+require_second_large_fresh_waiter = true
+competitor_eligibility_ignores_only_suspended_unused_claims = true
+require_infinite_small_backfill = true
+require_domain_wide_positive_control = true
+require_coordinate_and_competitor_churn = true
+allow_grace_reset_on_churn = false
+require_live_execution_charges_preserved = true
+require_hysteretic_reclaim = true
+
+[group_obstruction_fixture]
+max_active_tasks_variants = [2, 4]
+group_caps = [1, 2]
+holder_lifetime = "unbounded-for-disjoint-progress"
+unused_task_slots_held_by_group_blocked_root = 0
+partial_group_claims_allowed = false
+disjoint_fitting_root_start_bound = "6s"
+require_healthy_writer_cadence_ack_and_capacity = true
+require_original_ticket_priority_at_group_release = true
+
+[scoped_stale_fixture]
+suspension_grace = "30s"
+fresh_competitor_turn_or_claim_handoff_bound = "36s"
+bound_means_execution_start = false
+recover_after_samples = 5
+deadline_may_discharge_liveness = false
+require_released_unused_claims_and_client_slot = true
+require_retained_active_execution_charges = true
+require_preserved_fifo_and_eligible_wait = true
+
+[benchmarks.release_cost]
+accounting = "allocated-cores-times-every-runner-wall-interval"
+maximum_costed_cpu_cores = 2
+paired_builds = 2
+measurement_core_minutes = 16800
+paired_warmup_core_minutes = 1680
+saturation_rates = [1, 2, 4, 8, 16, 32, 64]
+saturation_step_minutes = 2
+saturation_warmup_minutes_per_cell = 2
+saturation_core_minutes = 1344
+named_soak_core_minutes = 5760
+subtotal_core_minutes = 25584
+maximum_remaining_core_minutes = 5136
+require_full_dag_including_setup_and_drains = true
+require_separate_extra_comparator_cost = true
+subtotal_proves_campaign_fits = false

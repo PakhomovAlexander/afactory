@@ -1,0 +1,19 @@
+{
+  "proposal/README.txt": "6b7b049ad9788b8dd19f94dc0753ae2ff11d1aea58b816d5c78fabcdf8cf1c4a",
+  "proposal/acceptance.csv": "08911fd1f4483c0498b553014d3366a261313409a4e5027efaa0a3d751bd0fde",
+  "proposal/capability-registry.csv": "ac570d5fd348901dbfbb2bd1f7c9a23b7f42a9448ce1192a197a9bd67098ce43",
+  "proposal/configuration.txt": "dc14290a8f381bf7fab20e5e8801c32cf734ba1c5da9d623b80806663f2334e1",
+  "proposal/decisions.txt": "0dfebf5d18778a4374ffb4e2832fcf9ff29ec51831255bc8e866fef20675433c",
+  "proposal/design.txt": "42bd9f58ddd408dd446d8e71ed71c5cc324a192f454110c1f12872ca7075faab",
+  "proposal/examples/developer.toml": "7d5a2c945c3d2d92fedb905edd718be804e0ba6d4e8378a1a8a245a7d7e58c03",
+  "proposal/examples/in-container.toml": "a91057c7d0087d73329fa810a9db7b0da56469ad2a94aba5ed49830071ea2626",
+  "proposal/examples/project-requirements.toml": "78ea983cd0b4e8fbdfc360c213004771a331c962b0f0242d732b575e0494af3d",
+  "proposal/examples/resource-status.json": "99c9c5c884490bb9d88d27892b6c59cb0617b03a7e3447eb1deef8cedab9324d",
+  "proposal/examples/shared-small-vm.toml": "1df536cd1b896fcd7f3b29b5ee83a7509ea035345ad23fe13897c6e86ae21ec4",
+  "proposal/measurement-oracles.csv": "855b244a69bebb300ae6a0e1d631cdad96c90447e3db13b710602b2c4d15e878",
+  "proposal/qualification-cases.csv": "8e82ae85432226c1e1b7d3b3eba61dc689ac30fa943a721ddfe21caee6f6ca54",
+  "proposal/qualification-coverage.csv": "fca46be326e7420997b5960586ed4b470407a01d8d135409ab4bde3896ea9810",
+  "proposal/qualification-plan.toml": "64ced0921cf037cd1500d13cf453cadebcf077edb309b1f622acd1f62c553649",
+  "proposal/revision-notes.txt": "51edafc2a439b8bb5149f19f698969ad4bed1dd844dbaf418f0c106f143685a3",
+  "proposal/testing.txt": "1cbdea7896ee759626645cc1201d1b5e617a4e0d9e2429ba467710f8379eae75"
+}

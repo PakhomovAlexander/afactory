@@ -1,0 +1,68 @@
+Resource-management performance assessment — 2026-10-19
+=======================================================
+The accepted architecture is suitable to implement behind qualification gates.
+Performance safety has not been demonstrated by an implemented candidate. The
+owner has deferred implementation; these are future requirements, not test results.
+
+Distinguish control overhead from intentional waiting/concurrency/CPU limits.
+A resource policy can make one Task finish later while protecting a shared host.
+No memory overcommit and control reservations may reduce usable worker capacity.
+For example, the 1.5 GiB AF allowance on a 4 GiB VM leaves 1 GiB for workers after
+the default 256 MiB base plus two 128 MiB coordinator reservations. Reservations
+are not measurements of actual resident usage. No arbitrary pair of agents is
+promised to fit. Cooperative mode cannot promise hard isolation of other apps.
+
+Existing protections
+--------------------
+One capacity observer per domain; bounded active sampling with idle backoff;
+fixed-size shared-memory heartbeats with zero per-heartbeat durable writes;
+short single-writer admission critical sections; no external calls/scans under
+that lock; bounded indexed status projections; bounded queues and telemetry;
+no mandatory daemon or model call to make a resource-admission decision.
+
+Main implementation risks
+-------------------------
+* Durable domain/Task/registration writes and checkpoint latency, particularly on
+  APFS or slow/full state volumes. SQLite has one writer at a time and checkpoint
+  behavior affects latency: https://www.sqlite.org/wal.html
+* Conservative memory/control reservations, Task caps and fairness can reduce
+  isolated-task throughput; report policy waits separately from compute cost.
+* 250 ms liveness sampling and 500 ms renewals need CPU/wakeup/energy measurements,
+  especially on fractional CPUs and laptops. One capacity observer still permits
+  several coordinator pulse samplers and scheduling contenders.
+* Short tasks, cold startup, containment creation and recovery need end-to-end
+  latency tests; an admission-transaction p95 is not the full launch latency.
+* A 64 MiB telemetry cap limits retained size, not write throughput or protected
+  evidence growth. Measure bytes/flushes per lifecycle and per idle/active hour.
+* One disk neighbor probe cannot establish UI/CPU responsiveness, swap behavior
+  or battery impact. Docker Desktop's VM adds a separate cold/warm runtime cost.
+* Opt-in large queues and a stopped live database writer need explicitly qualified
+  scaling and recovery; safe refusal/stall is not successful workload operation.
+
+Accepted reference gates (NOT achieved results)
+-----------------------------------------------
+Reference A: qualified filesystem; 2 CPU/4 GiB; four coordinators; 16 live
+clients; 100 queued/16 active operations; healthy storage; 25%/50% load rates.
+Admission transaction p95 <20 ms; status p95 <200 ms; incremental aggregate
+control CPU <0.01 cores; incremental peak memory <64 MiB. Neighbor I/O p95
+upper bounds: delta <=5 ms AND ratio <=1.20 with the specified 1 ms denominator
+floor. Zero per-pulse durable writes and unexpected healthy live-owner losses.
+The 64 MiB incremental-memory target is separate from total control reservations.
+
+Use exact equal logical work, same-candidate static-control comparison, five
+fresh runs and the specified paired-block confidence procedure. Preserve raw
+maxima, failures and counts. Do not imply these targets hold on every allocation.
+The complete normative statistical and fault protocol is in proposal/testing.txt
+and proposal/qualification-plan.toml. A performance/refusal claim is cell-specific.
+
+Recommended additional evidence before broad desktop rollout
+-----------------------------------------------------------
+Native developer-host workloads with 1/2/4 Tasks and competing applications;
+separate prior-release comparison for total AF regression; idle/watch/provider-
+waiting wakeups and energy; full startup/dispatch/recovery latency; short checks;
+CPU/UI and memory-pressure neighbors alongside I/O; slow watch consumers; disk
+traffic and retention at steady state. Freeze workload-specific thresholds before
+testing. A <=5% regression goal for long no-contention jobs is a proposed engineering
+criterion needing calibration, not an already accepted or achieved numeric gate.
+All destructive tests use disposable isolated allocations. No new experiments,
+model budget or infrastructure are authorized by publishing this archive.

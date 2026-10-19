@@ -1,0 +1,134 @@
+Resource design revision and review lineage — 2026-10-15
+=======================================================
+
+This revision responds to 13 recoverable claims from the unsuccessful native Opus review.
+Those claims are unadmitted input, not a valid AF findings ledger. The correctness reviewer
+returned no result. No design acceptance is inferred from either run.
+
+A01: retain user-approved cooperative default; add observed excess holds and warning semantics.
+A02: separate proven termination from cooperative retirement and explicit residual uncertainty.
+A03: define per-volume byte/inode growth equations, floors, retained transfer and oversize refusal.
+A04: bind scratch backing to allocation; tmpfs fits total memory; map Docker placement explicitly.
+A05: atomic Task permit grant followed by one-use domain claim; specify paused launcher recovery.
+A06: duplicate Kubernetes losers wait boundedly; completion evidence belongs to claim-holder UID.
+A07: durable domain UUID and Task Store registration survive allocation epochs; fence succession.
+A08: physically preallocate bounded recovery slots; qualify sync/backing; retain unknown on failure.
+A09: closed scoped capability registry and readiness before paid admission for mandatory nodes.
+A10: independent native cooperative measurement and cleanup oracles with applicability labels.
+A11: first activation persists policy; subsequent environment changes require explicit apply.
+A12: operator priority ceiling and recorded reprioritization with unchanged service debt.
+A13: show Kubernetes requests/limits/QoS and eviction separately. A hard cap is no availability
+      guarantee; do not redefine all resource ceilings as guaranteed non-eviction reservations.
+
+Additional internal correction: only a live acknowledged dispatcher may hold a protected drain
+turn. Inactive queued work retains age but cannot indefinitely prevent others from dispatching.
+
+The user authorized 1,000,000 additional tokens to continue toward design acceptance. AF
+0.12.0-rc.3 cannot mutate captured limits, so a new bounded typed Review Task links to the old
+Campaign. Preserve all prior receipts and unknown usage. Opus 5.5/max is the requested model.
+Typed native structured output avoids the previous legacy free-text JSON parse path. Longer
+attempt bounds are captured before execution. Passing requires complete admitted review
+results and a passing review gate, not merely Task execution completion or use of the budget.
+
+All new behavior and qualification scenarios remain proposed. No feature implementation or
+new OS/platform qualification has run as part of this design revision.
+
+Native Review D — changes requested, 2026-10-16 revision
+--------------------------------------------------------
+
+Both Opus 5.5/max reports were admitted: 8 major and 8 minor findings, plus one dispatcher-latency
+benchmark demand. Native usage 505,944; no failed or unknown Attempt in D. Native conclusion was
+changes_requested, not acceptance. Original captured proposal/results remain immutable.
+
+This candidate addresses all 16 reports, including overlapping nested/fairness and disk-diagnosis
+reports: host-scoped boot proof; canonical discovery; explicit operator bounds; nonblocking nested
+expansion; renewable protected turns; vector conflict and unreleasable-hold rules; remote domain
+consume before authorization publication and terminal sealing; mandatory acceptance-case mapping;
+zero-tolerance duplicate starts; cooperative recovery exits; typed recovery commands; explicit
+storage ADR amendments; scratch backing predicates; complete memory/disk/inode diagnosis.
+
+The packet now has 69 acceptance rows, 65 mandatory qualification cases and 20 measurement oracles.
+All behavior remains proposed. Fix dispositions are author responses pending native follow-up;
+none is represented as reviewer-accepted merely because the document changed.
+
+
+Native Review F corrections — 2026-10-16, pending independent review
+------------------------------------------------------------------
+F admitted 5 major and 10 minor findings. Its reducer requested changes; the outer Task failed
+finalization after recorded token exhaustion. These edits do not rewrite that evidence.
+All 15 reports have author fixes: positive native reboot paths; canonical persistent registration,
+succession and outside-snapshot inventory/rebuild; scoped operator/nested authority; per-check
+Execution Binding constraints; explicit unregistered opt-in; XDG value amendment; pulse liveness
+and stopped-writer diagnosis; exact qualification hooks plus OOM/escape/rootless/no-CAS injections;
+remote seal semantics; accumulated eligible wait; complete summary; disposable test isolation;
+and in-place container restart support/refusal. Formal cost needs measured preimplementation
+calibration. The packet has 74 acceptance rows, 73 mandatory cases and 20 measurement oracles.
+All platform behavior/tests remain proposed; local static checks establish document consistency
+only. New authorization is 2M additional native chargeable tokens, extendible to 3M total for this
+tranche if needed. The old overrun and four unknown bills remain separate and visible.
+
+Native Review G corrections — pending independent review
+-----------------------------------------------------------------
+G finished with changes_requested: 5 major/7 minor, 718,307 chargeable tokens, no unknown calls.
+This candidate separates allocation capacity from unresolved authority after boot/instance change;
+brackets Store inventory activity/quiescence; supports registered private-instance containers;
+proxies nested access and protects authority files; fixes unregistered opt-in scope and recipe
+replacement; specifies common pulse location, shared freshness, sampling and corrected 94s/4250ms
+bounds; fixes outcome codes, slow-writer remedies and FIFO live-client access. Coverage bindings
+now name semantically matched cases, permit multiple clauses and distinguish production evidence
+from formal/Loom supplements. Author semantic checks await native acceptance of the exact manifest.
+Full-tier and dispatcher overhead calibration remain explicit unmeasured activation gates.
+
+Native Review I corrections — pending independent review
+---------------------------------------------------------
+I finished changes_requested with3 major/5 minor,711897 tokens. This revision addresses Task-slot
+cycles, home-less/network-home bootstrap, bounded unproven predecessor retirement and missing
+capability predicates; removes live-client quantum rotation; moves pulse freshness outside the
+durable writer; preserves ADR-0154 breach-first outcomes; completes remaining multi-case runtime
+bindings. Calibration now names its build/runner authority, statistic, cell selection and combined
+writer/neighbor-load protocol. Counts:74 acceptance,73 mandatory cases,81 bindings,15 capabilities,
+20 measurement oracles. All behavior and platform testing remain proposed. The user-authorized
+3M total new-tranche ceiling is now active; prior overrun/unknown bills remain separate.
+
+Review J architecture corrections — pending complete review and next native assessment
+---------------------------------------------------------------------------------------
+Proposed fixes for FIFO root-slot overtaking, first-add/remove locator succession, and explicit
+benchmark gate/sample/readiness/holdout rules. No native resolution or measurement pass is claimed.
+
+Review J completed changes_requested:2 major/5 minor,740911 native tokens. Both major findings
+name the same root-slot overtaking defect. The candidate also preserves live owner continuity
+through stale capacity, bounds pressure suspension, specifies ephemeral observer takeover,
+expands formal submodels/non-vacuity, pins benchmark/other-tier authority and completes A03/E05
+runtime clauses. All seven author fixes and future qualification claims await native assessment.
+
+Native Review K — incomplete, context refusal before correctness dispatch
+-------------------------------------------------------------------------
+Architecture reported0 major/4 minor; correctness instructions were263822 bytes against262144
+native limit, so no correctness provider call began. Native charge322593. The earlier status
+tracker counted that reserved-but-undispatched Attempt as active; corrected from native events.
+Four architecture defects have proposed fixes. L uses compact instructions and source retrieval,
+with a preflight size gate. Review L source counts:75 acceptance rows,73 cases,83 bindings,15 capabilities,
+20 oracles. No performance, platform or implementation success is claimed.
+
+Review L corrections — 2026-10-17
+--------------------------------
+The exact prior source d7fca16 received a native pass at the major gate:0 major/3 minor, both
+Opus5.5/max reviewers present. Its Task failed finalization after an Attempt overrun. This revised
+source does not inherit that pass and does not change the native ledger or old token limits.
+
+architecture-1: remove retained partial Task/group claims; test group eligibility before global
+claim selection; release unused slots on group blocking, retain original ticket, preserve disjoint
+progress and explicitly state fixed-bound premises. Add long-lived-holder and multiple-group tests.
+correctness-1: domain-wide stale retains a live owner; coordinate-scoped stale with a fresh eligible
+competitor uses bounded grace. Release unused protection/claims/client slots while retaining live
+execution charges, preserve age, prevent timer-reset churn and require healthy-sample rejoin.
+correctness-2: pin same-candidate static-control for neighbor and overhead; compare exact logical
+work and boundary states, allow timing divergence, reject unequal work. Include warmups and the
+saturation ladder in426.4-core-hour subtotal; account remaining85.6 before freezing the full DAG.
+
+These are authored design corrections with static consistency verification. Native Fix Verification
+and executable feature qualification remain pending. Original L reports are in prior-review-l/;
+review-l-author-responses.json maps exact native claims to changes and required evidence.
+
+Current corrected bundle:75 acceptance rows,73 cases,84 clause bindings,15 capabilities,20 oracles.
+F07/QT32 now requires real-process scoped-stale fault/assertion receipts alongside simulation.

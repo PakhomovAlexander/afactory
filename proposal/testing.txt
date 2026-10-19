@@ -1,0 +1,1074 @@
+AF resource management qualification
+=====================================
+
+Proposed testing and release contract — revised 2026-10-16
+Extends design.txt and the acceptance.csv scenarios. No new feature tests have been executed.
+
+1. Claims to establish
+----------------------
+
+The qualification program must demonstrate five things independently:
+
+A. Measurement: AF reports the correct resource, scope, units, observation interval and
+   uncertainty. Its admission calculations do not omit ancestors or double-count allocations.
+B. Safety: AF does not over-admit its own commitments, start work without authority, release
+   reservations contrary to their declared evidence contract or duplicate controlled execution.
+   Cooperative retirement is separately checked for truthful residual risk; it does not claim
+   that unobserved descendants are absent or enforce a whole-tree resource ceiling.
+C. Progress: eligible work eventually advances when the declared conditions for recovery and
+   available capacity hold. Bounded-polling ready clients obtain live slots by FIFO hand-off;
+large or low-priority eligible work does not starve behind repeated arrivals. Offline/inactive
+clients that do not acknowledge offers have no automatic-progress guarantee.
+D. Durability: recorded decisions and outcomes survive supported crash/restart paths; unresolved
+   external execution remains unresolved until reconciled rather than being guessed away.
+E. Explainability: a human can distinguish the cause of a wait, find its evidence and choose
+   an appropriate next action. Accurate accounting with misleading diagnostics is a failure.
+
+There is no single green 'resources work' test. A release carries a support/claim matrix whose
+cells link to exact evidence. An unsupported backend, untested scenario and passing refusal
+are different outcomes. Safety failures block release even if later retries succeed.
+
+2. Test architecture
+---------------------
+
+Use a small independent reference model, the actual AF admission/runtime implementation, and
+real operating-system/runtime probes. Do not use production decision functions to compute
+expected decisions. Sharing wire schemas is acceptable; sharing arithmetic and state transitions
+between implementation and oracle defeats independence.
+
+Proposed test components:
+
+* Pure reference model: bounded resource vectors, queue eligibility, reservations, owner
+  generations, start claims and terminal observations. Written for clarity, not throughput.
+* Deterministic simulation: runs the production scheduler/recovery state machine with injected
+  clocks, process/runtime adapters, persistence completion and message delivery. Uses virtual
+  time, seeded scheduling, explicit faults and replayable traces. It does not simulate kernel
+  memory physics or claim to validate cgroup enforcement.
+* Concurrency harness: real separate AF processes against one domain plus focused Rust thread
+  interleaving checks. Independent operation history validates admissions and releases.
+* Workload probes: small prebuilt programs with explicit start/plateau/finish barriers, bounded
+  memory/CPU/I/O/process actions and verifiable effect receipts.
+* Independent collector: raw kernel/runtime measurements, identities and monotonic timestamps;
+  no AF parsing/aggregation code. Runs outside the tested workload boundary, with its own
+  measured allowance and a surviving watchdog.
+* Fault controller: injects faults at named transitions and observes they actually occurred.
+* Evidence checker: evaluates invariant violations, measurement comparisons, fairness, recovery
+  and diagnostic truth; produces one claim report bound to source and executable digests.
+
+A run binds the specification/oracle revision, test binary, AF source/binary, workload binary,
+fault schedule, configuration, OS/kernel/runtime versions and capability probe results. Build
+on capable runners and transfer exact prebuilt binaries to constrained environments.
+
+3. Formal and generated testing
+--------------------------------
+
+3.1 Model the hard protocol first
+
+Use a TLA+/TLC model for the allocation/dispatch/recovery protocol. Begin with two coordinators,
+five simultaneously represented requests (two parent/child pairs plus a protected waiter), three
+resource dimensions including Task/group slots, policy
+generations and crashes. Explicitly model separate domain-store and Task-journal commits, domain
+consume/close, remote authorization publication/sealing, duplicate pod claim acquisition and
+external start acknowledgments. Parent completion depends on its child; it is not an independent
+timer that can conceal a resource wait cycle. Expand bounds as implementation state requires.
+
+Safety properties:
+* Every start has a charged reservation, consumed unique claim and a matching durable Task
+  permit committed under the valid writer epoch. Writer takeover does not erase committed
+  authority. A closed claim cannot start; a consumed claim includes its launcher in recovery.
+* No two live owners may grant the same execution identity.
+* Same-domain admitted disjoint vectors plus control fit the admitted budget at grant time.
+* External allocation shrink is a named state; it does not retroactively make a valid earlier
+  grant a scheduler violation, and it prevents new overcommitting grants.
+* Unknown/surviving current-allocation execution never frees occupied capacity. Boot/instance
+  re-attribution releases only proven-absent current coordinates; authority and other obligations persist.
+* released_proven requires whole-boundary termination and sealed future entry.
+* retired_cooperative requires its narrower tracked cleanup contract and durable residual-risk
+  disclosure; it never satisfies process_tree.complete or process_tree.terminate.
+* Nested allocations and retained storage transfers are counted exactly once.
+* Pending/canceled requests cannot reappear as new requests under the same idempotency key.
+* Token/Attempt budgets and deadlines never increase through retries or resource recovery.
+
+Liveness properties name their assumptions: a live coordinator, eventually functioning durable
+storage/backend, stable sufficient capacity, finite existing work and fair processing of enabled
+transitions. Under those assumptions an eligible request eventually starts or obtains its
+truthful terminal refusal; reconciliation eventually resolves; release eventually becomes
+visible. During permanent partition, quarantine is a valid safety outcome, not successful
+failover. Model capability absence, too-small allocations and expired authority as refusals.
+
+Record state-space bounds, explored states and liveness settings. Exhaustion of a bounded model
+is evidence for that model, not a proof of arbitrary-size production software. Counterexamples
+become concrete implementation regressions. Require a state/transition mapping from code to model.
+
+3.2 Test actual Rust decisions and interleavings
+
+Use property-based state-machine tests (for example Proptest) over real production decision
+code with the separate oracle. Generate dependency graphs, resource vectors, capacities,
+configuration generations, time advances, cancellations and partial observations. Shrink both
+inputs and event sequences; retain the minimized trace as well as the seed and generator version.
+
+Test rename/permutation invariance where order is irrelevant, unit normalization, parent/child
+conservation, capacity monotonicity for a single fixed request without competing queue changes,
+and identical-input replay. Do not assert a global 'more memory never increases latency' rule:
+changed admission order can legitimately change contention.
+
+Use Loom for small in-process synchronization components, such as ownership handoff, observer
+selection and cancellation-versus-start. It does not validate OS flock, SQLite durability,
+interprocess IPC or every possible machine execution. Those need real-process histories and
+crash tests. Use explicit barriers rather than sleeps to expose race windows.
+
+Check allocator admission histories for linearizability against the resource-domain model.
+Keep invocation/response times, pending calls and committed transaction sequence; timeout is
+an unknown operation outcome, not proof it did nothing. The Task/domain/executor protocol is
+multi-stage, not one atomic distributed transaction; validate its ordering/fencing invariants
+rather than falsely calling the whole protocol linearizable.
+
+4. Measurement calibration
+---------------------------
+
+Every observable has a declared measurement contract in measurement-oracles.csv. The test
+oracle reads raw interfaces separately from AF and verifies scope IDs and sampling intervals.
+
+Validate three layers separately:
+
+1. Discovery and parsing: exact integer conversion, units, controller availability, parent
+   limits, affinity, quotas, quota periods, unlimited values and malformed input handling.
+2. Attribution and aggregation: complete descendants, nested scopes, page cache/tmpfs,
+   shared data, external use and the difference between memory usage and commitments.
+3. Timing and explanation: fresh versus stale, timestamp alignment, peak versus sampled maximum,
+   derivation of rates and honest uncertainty in the human/JSON views.
+
+Memory workloads must fault/touch their pages; malloc size alone is not resident usage. Include
+anonymous pages, fork/copy-on-write, shared mmap, file cache, tmpfs, swap and short-lived children.
+Use plateau barriers for stable comparisons and fresh boundaries or qualified reset semantics
+for peak counters. Record allocator/runtime overhead separately from the intended payload.
+A sampled high-water mark must never be labelled the true whole-run peak.
+
+CPU workloads include CPU-bound workers, sleeping workers, quota-limited workers and nested
+ancestor throttling. Use CPU-time deltas over the matching monotonic interval; raw utilization
+may exceed one core. A throttled-duration counter is not automatically a percentage of lost
+throughput. A workload doing no useful progress must not appear healthy merely because CPU
+is busy. Distinguish quota throttling, scheduler contention and waiting on a provider.
+
+Storage probes cover sparse files, hard links, reflinks where supported, open-but-unlinked
+files, quotas, inodes, tmpfs and multiple paths sharing one volume. No source of allocated bytes
+is promoted into exact physical ownership where the filesystem cannot provide that information.
+Use isolated mounts/volumes for destructive capacity tests; never fill a developer filesystem.
+
+Counter comparison rules:
+* Static capability/config values and unit conversion are exact; no percentage tolerance.
+* Monotonic counters: bracket the AF sample with independent before/after reads of the same
+  boundary/generation and require AF's raw value to lie within that interval.
+* Nonmonotonic gauges: use a stable plateau and bounded sampling skew. The initial independent
+  calibration establishes a named tolerance from read skew/accounting granularity before the
+  candidate is tested. Publish the raw readings and bound; do not widen it after a failed run.
+* Missing/unsupported/stale readings stay null with a reason. Zero is never their substitute.
+* OOM/process-limit events are checked by event identity/counter deltas and observed lifecycle;
+  an exit code or signal alone is insufficient cause attribution.
+
+An independent collector cannot prove the kernel itself is correct. Analytic workload checks
+and a second observation source test semantic plausibility; same-source raw comparisons prove
+AF interpreted the platform consistently. Report the exact claim each comparison supports.
+
+5. Crash and failover campaign
+-------------------------------
+
+Instrument stable failpoints around every persistence/side-effect boundary of the dispatch
+protocol. They are test-build facilities, never a production environment-variable bypass.
+For each point test immediately before and after the operation, including an acknowledged
+commit/start whose acknowledgment is lost to its caller.
+
+Boundaries include queue insert; vector reservation; Task intent append; boundary creation;
+execution identity persistence; domain claim arming; atomic Task permit/authority commit;
+claim consumption versus closure; execution gate open;
+start acknowledgment; receipt capture; descendant stop; empty-boundary confirmation; reservation
+release; Task settlement; policy activation; metric/receipt compaction and storage charge transfer.
+
+Fault dimensions:
+* Coordinator SIGKILL, observer death, child crash and repeated restart during reconciliation.
+* Lease expiry during a long pause; takeover; wall clock jumps; suspend/resume; host reboot.
+* Disk ENOSPC/EIO, short writes, delayed fsync, corrupt records and unreadable live reservations.
+* Process death after durable commit versus VM power-loss simulation with unsynced writes lost.
+* Remote request accepted but response dropped; delayed stale completion; duplicated/out-of-order
+  events; API timeout; partition; container/pod/node disappearance.
+* Reused PID/path/name and a new container/pod UID occupying a previous display identity.
+* Storage restore from an older snapshot while remote work still exists.
+
+SIGKILL is not a power-loss test. Use a fault-injecting persistence adapter/VFS and disposable
+VM power-cycle tests to examine persistence assumptions. Respect the actual SQLite synchronous
+mode, filesystem and device semantics; an integrity_check pass alone does not prove cross-store
+intent correctness. Full-store corruption may require an explicit repair/restore response;
+AF must not silently recreate an empty allocator and start new work.
+
+Observe effectful starts with an independent append-only test sink keyed by Attempt, claim and
+execution UID. The sink records every invocation without deduplicating it, so the checker can
+see duplicate starts that an idempotent target would otherwise hide. It contains no real secret
+or paid operation. Distinct authorized retries remain distinct Attempts, with all prior receipts.
+Real provider internals remain outside this exactly-once test claim.
+
+Each fault scenario has two phases:
+  failure phase: prove no unsafe admission, premature release or unauthorized duplicate;
+  recovery phase: heal the declared fault, run a healthy coordinator and prove progress within
+  the scenario's finite bound, or the precise remaining dependency that prevents it.
+
+Recovery latency is measured from restored prerequisites to a reconciled visible outcome,
+not from fault injection while a service is intentionally unavailable. Report detection,
+reconciliation, cleanup and re-admission separately. An attested new boot of the same host/kernel identity proves its old local processes
+are gone; migration to another host does not; deleting a remote object does not prove a partitioned node stopped its process.
+
+6. Starvation, fairness and overload
+------------------------------------
+
+Use generated workloads plus named deterministic adversarial scenarios:
+
+* Continual small arrivals ahead of one large eligible request.
+* Background work beside continuous interactive arrivals.
+* Many roots versus many children of one root; repeated new Tasks attempting to reset service.
+* CPU-heavy and memory-heavy vectors competing for different scarce dimensions.
+* Large parent holding memory while its child needs more capacity.
+* More submissions than the queue/coordinator budget and abrupt quota shrink.
+* Cancellation/reprioritization while a request owns the protected drain turn.
+* Long external pressure followed by a clear healthy period.
+
+Primary metrics: largest accumulated eligible_wait, first admission after a drain turn,
+service per root/weight, normalized turnaround, queue length, throughput and control latency.
+Report completed, canceled, timed-out and still-waiting requests. Excluding unfinished requests
+would hide starvation. Aggregate throughput and a fairness score alone cannot establish progress.
+
+A concrete drain-turn oracle:
+  available worker allocation = 3 GiB, separately from the control reserve;
+  two initial 1 GiB jobs run; every job live at protection, including admitted backfill,
+  finishes within 30 seconds after protection begins;
+  a waiting 2 GiB request has no earlier protected waiter;
+  small 1 GiB jobs arrive continuously; protect_after = 60 seconds;
+  stable capacity, no backend fault, no deadline expiry, scheduler cadence <= 2 seconds;
+  live dispatcher immediately acknowledges its claim (ack delay is zero in this fixture).
+  The large request must start by 60 + 2 + 30 + 2 = 94 wall-clock virtual seconds from acknowledged eligibility, and no
+  new conflicting admission is allowed during its drain turn. Physical runs add only the
+  predeclared runner observation/dispatch tolerance, shown in the result.
+
+The reference model determines weighted-service expectations for homogeneous bounded jobs;
+physical comparisons allow predeclared granularity for the largest non-preemptible quantum.
+Heterogeneous vectors are checked against the scheduler contract, not an invented universal
+1:2:4 completion ratio. Deliberately impossible workloads must refuse rather than age forever.
+
+If a stable healthy environment cannot make progress despite eligible work, that is a liveness
+failure. During permanent scarcity/partition, accurate waiting/quarantine is the expected safety
+behavior; it must not be marketed as successful failover or as proven starvation freedom.
+
+7. Contention and environment matrix
+-------------------------------------
+
+Keep the OpenClaw-like resident application as one reference neighbor. Add an interactive
+latency probe in a sibling allocation, a competing agent workload, two independent AF commands,
+and nested Tasks. Measure neighbor responsiveness as well as AF throughput and OOM outcomes.
+Use non-sensitive synthetic inputs for regular tests; bounded real-provider canaries come last.
+
+Qualify:
+* Linux delegated cgroup v2, different parent limits, fractional CPU and limited process counts.
+* Native cooperative desktop mode, including macOS; strict requests must refuse correctly.
+* Docker limited container, executor-created container, no delegated hierarchy, rootless mode
+  and Docker Desktop's extra VM boundary.
+* Kubernetes coordinator pod and Job executor: namespace quota, Pending scheduling, mutated
+  admission limits, eviction, duplicate pod delivery, node isolation and durable state restart.
+* Multiple users with externally bounded allocations and no cross-user identity leakage.
+* Optional Windows/WSL only with an implemented, declared supported backend.
+
+Use pairwise coverage for routine combinations and explicit high-risk triples: low memory +
+CPU throttling + heartbeat; slow disk + crash + pending receipt; namespace partition + duplicate
+pod + owner takeover; nested Task + full budget + fairness drain. Pairwise coverage never
+replaces named mandatory hazards. Record kernel/controller/runtime features instead of assuming
+all containers have the same capabilities.
+
+Stress profiles include 0.25/0.5/2/8 CPU, 512 MiB/1/4/16 GiB, 1/2/8/32 concurrent submissions,
+10k and long-history task logs, cold/warm caches, short peaks, sustained pressure and recovery.
+Correct refusal on a too-small allocation is tested separately from successful execution.
+
+Linux kernel memory enforcement can have transient accounting overshoot. Tests require correct
+limits, scoped events, cleanup and no AF over-admission; they must not assert the physically
+false invariant 'observed memory can never exceed memory.max by even one byte'. Cooperative
+mode receives no hard-cap protection badge after a sampled no-OOM run.
+
+8. Test the diagnosis and the test system
+----------------------------------------
+
+Every injected bottleneck has a ground-truth label and alternative plausible causes. Assert
+that explain/status/history reports the correct constraint, scope, age, quantities, owners and
+next action. Include mixed bottlenecks and unknown attribution. Provider rate-limit or CLI
+compatibility failures must not recommend more RAM. A slow filesystem must not be called full
+without capacity evidence. TUI, JSON and exported history must agree on the same read-model prefix.
+
+Mutation controls deliberately break the system under test: omit an ancestor cap, convert KiB
+as bytes, use RSS as whole-boundary memory, release on owner death, grant duplicate start,
+ignore nested reservations, remove fairness aging, discard fsync failure, hide stale data or
+label cooperative enforcement hard. Every named non-equivalent critical mutant must be caught
+by its mapped test. Fix the test when it fails to detect the mutant; do not dismiss it as noise.
+
+Test the harness too: watchdog survives coordinator death; effect sink detects duplicates;
+collector scope mismatch is rejected; missing fault-trigger acknowledgment makes the test
+incomplete; deleting a required result cannot produce a green aggregate. Event counts alone
+are insufficient: each fault must reach its intended transition and oracle assertion.
+
+9. Continuous qualification and release gates
+---------------------------------------------
+
+qualification-plan.toml defines proposed test tiers and numeric initial budgets. Calibrate
+execution cost on a reference runner before enforcing them; a budget timeout is incomplete,
+never a pass. Every tier keeps failed attempts and the exact tested identity.
+
+Per change: deterministic regression corpus; bounded formal model; relevant property traces;
+thread/interprocess races; measurement parsing; changed backend conformance. No paid inference.
+Nightly: rotating deterministic seeds; all mandatory crash boundaries; targeted fault pairs;
+real Linux/Docker tests, cooperative desktop lane and bounded sustained contention.
+Release: every advertised environment; extended fault campaigns and soaks; measurement
+calibration; resource/neighbor latency comparison; bounded Claude and Codex canaries.
+
+Proposed release workload: 24-hour Linux mixed-load soak, 8-hour Docker lane, 8-hour Kubernetes
+lane, 8-hour macOS cooperative lane and at least five independent fresh-environment restarts
+for each advertised backend. These are engineering coverage targets, not statistical proof.
+Do not schedule cloud infrastructure or destructive tests on the production VM implicitly.
+
+A gate passes only when all mandatory checks for its declared support cell ran, all invariant
+checks passed, measurement accuracy met predeclared bounds, critical mutation controls were
+detected, and raw evidence is complete. A missing capability may be a passing expected-refusal
+test but leaves the corresponding enforcement claim unsupported. Skips do not fill support cells.
+
+Retrying infrastructure may establish whether a result is reproducible, but it never deletes
+the original failure or turns an unexplained invariant violation green. A known flaky safety
+test blocks release until the cause is fixed or its claimed invariant is corrected through
+review. No post-result widening of deadlines, tolerances or required environments.
+
+The required test inventory, invariant checker and comparison bounds come from the reviewed
+qualification authority, not candidate-controlled output. A candidate may propose harness or
+oracle changes, but cannot remove its own failing gate or lower the support requirements.
+Test changes require review and retained negative controls; bind both old and new oracle
+identities when an accepted semantic change intentionally updates expected behavior.
+
+10. Performance and statistics
+--------------------------------
+
+Compare baseline/candidate under the same allocated resources, workload, optimization mode and state
+size. Randomize their order in independent blocks and separate cold and warm runs. For absolute
+resource overhead and neighbor impact, use the same-candidate static-control build specified in
+section20; its deliberate control-process difference is the treatment being measured. Any
+separate prior-release regression keeps its own pinned build modes and explicitly costed runs.
+Use fixed arrival schedules as well as closed-loop clients so slowdown does not silently
+reduce offered load. Report saturation curves and refusals, not only throughput at easy loads.
+
+Preserve per-run data, confidence intervals and unresolved/censored tasks. Report maxima and
+percentiles with sample counts and observation duration; do not claim p99 from twenty runs.
+Use run-level or time-block analysis for correlated traces. Never treat every two-second sample
+of one soak as an independent successful reliability trial.
+
+For zero failures in n independent, identically distributed trials, a one-sided 95% binomial
+upper bound is 1 - 0.05^(1/n), approximately 3/n. Twenty clean trials still permit an upper
+bound around 13.9%; 3000 give about 0.10%. Those bounds apply only to the defined trial model,
+not all production faults or adversarial scheduling. Deterministic seed counts are coverage,
+not a direct probability estimate of production failure.
+
+The existing status/admission/observer targets in design.txt remain separate performance gates.
+Neighbor responsiveness has a predeclared workload-specific threshold and confidence bound;
+a ratio alone is unstable when baseline latency is near zero. Preserve both absolute latency
+and ratio. Kernel protection and resource accounting invariants are not relaxed for speed.
+
+After a warm-up, run at least 1000 bounded complete start/finish/reconcile cycles in the leak
+fixture. Check live boundaries, processes, file descriptors, scratch allocation, reservations
+and retained-state bytes against explicit expected residuals. Tombstones, shared warm caches
+and intentionally quarantined executions have named retention rules; they are not blindly
+required to be zero. Report growth curves and hard budget compliance. A statistically flat
+trend cannot excuse a leaked process or unreachable active evidence.
+
+11. Reproducibility and evidence
+--------------------------------
+
+Each run exports:
+* source, AF/test/probe/oracle binaries and configuration digests; manifest and schema versions;
+* allocation topology, identities, kernel/runtime capabilities, mount/filesystem and clock data;
+* random seed and generator version, minimized input trace, explicit fault schedule and hits;
+* allocator API history, start-sink observations, raw independent metrics and AF observations;
+* before/after reservations, Task prefixes, accounting totals and owned-boundary cleanup proof;
+* invariant/measurement/fairness/diagnostic verdicts plus missing evidence and capabilities;
+* performance samples, retention limits and an exact replay recipe with no production paths.
+
+Hashes bind evidence to the tested bytes; privileged test helpers cannot be substituted by the
+candidate unnoticed. A replay uses the verified disposable account/allocation/rendezvous from section 16, fresh
+state, HOME/XDG directories, backend IDs and
+fake credentials. It never reconnects to a production provider or deletes real worker groups.
+The harness is bounded in CPU/RAM/disk/output and has an independent outer watchdog. Destructive
+OOM, disk corruption and node-isolation tests run in disposable owned allocations only.
+
+The test cost is visible: wall/core hours, fixture memory/disk, test outcomes, external runtime
+operations and any separately authorized provider spend. A qualification campaign must itself
+be a good neighbor and may not use the feature under test as its only safety boundary.
+
+12. Implementation and integration
+-----------------------------------
+
+Add the testing interfaces before the new allocator ships: injectable time and effects, stable
+failpoint IDs, independent event collection and externally checkable start claims. Build the
+reference model and crash reproductions alongside R1/R2, fairness tests with R3, platform probes
+with R4-R6 and diagnostic truth checks throughout. R8 aggregates existing evidence instead of
+inventing a late end-to-end checklist.
+
+Implement through native AF Tasks in the product repository, respecting AGENTS.md. This draft
+adds testing.txt, measurement-oracles.csv, qualification-cases.csv and qualification-plan.toml
+beside the feature design. Their scenarios are planned, not evidence of passing implementation.
+The original acceptance.csv remains the feature acceptance mapping; new case IDs link to it.
+
+13. Method references
+---------------------
+
+These primary sources inform the proposed methods; none demonstrates AF correctness:
+
+* FoundationDB's paper describes deterministic simulation of process, disk and network faults.
+  AF adopts replayable fault schedules around its own runtime, with a smaller scope.
+  https://www.foundationdb.org/files/fdb-paper.pdf
+* TLA+/TLC supports bounded exploration of specification behaviors and safety/liveness checks.
+  https://lamport.org/tla/tools.html
+* Proptest provides generated state-machine sequences and shrinking.
+  https://proptest-rs.github.io/proptest/proptest/state-machine.html
+* Loom explores supported Rust concurrency interleavings and documents its limits.
+  https://github.com/tokio-rs/loom
+* SQLite describes crash/power-loss and I/O testing, including fault-injecting VFS techniques.
+  AF still needs to validate its own transaction settings and cross-store protocol.
+  https://sqlite.org/testing.html
+* Linux cgroup counters/limits and PSI define the platform measurement semantics used by probes.
+  https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html
+  https://www.kernel.org/doc/html/latest/accounting/psi.html
+* Kubernetes documents that a Job can start the same program twice even with one completion.
+  https://kubernetes.io/docs/concepts/workloads/controllers/job/
+* NIST documents exact binomial confidence limits; the zero-failure expression above is the
+  one-sided bound under the stated independent-trial assumptions.
+  https://www.itl.nist.gov/div898/software/dataplot/refman2/auxillar/exacbici.htm
+
+14. Revision-specific adversarial qualification
+-----------------------------------------------
+
+Permit race: pause the old writer after checking its lease but before the Task permit commit.
+Take over, then resume it: the old commit must fail. Separately pause a launcher after a valid
+permit commit, consume-versus-close the domain claim during takeover/cancellation, and resume.
+Exactly one transition wins; a consumed launcher remains charged even before its worker exists.
+A replacement cannot start until that launcher and its execution are reconciled. Enumerate both
+commit orders, lost acknowledgments, cancellation and original-deadline expiry in TLC and the
+real process barrier harness. No API guarantees completion of an unobservable remote effect.
+
+Cooperative cleanup: independently witness a tracked child surviving its root, PID reuse, an
+unreadable launcher, and an untracked escaping descendant. Surviving/unknown tracked execution
+quarantines. All verified tracked identities terminal plus sealed launcher may produce only
+retired_cooperative with residual-risk evidence; the witness escape must never yield a proven
+empty-tree badge. Run separate macOS and non-delegated Linux cells. Measurement cells state
+applicability: per-process native memory, RSS/PSS, tree completeness, pressure and sampled peak
+retain their own semantics; absent boundary counters are expected unavailable, not passing zero.
+
+Disk arithmetic: 15 GiB available, 10 GiB floor, two simultaneous 4 GiB growth requests admit
+only one. As 2 GiB is allocated, available falls to 13 GiB and that request's outstanding growth
+falls to 2 GiB; the second still cannot fit. Deleting that allocation restores both available
+space and the possibility of rewrite. Test retained transfer, shared CAS references, unavailable
+inode counts, separate state/scratch mounts and quota headroom. An intrinsically oversized
+request refuses; temporarily occupied capacity waits only to its original deadline.
+
+Backing placement: reject a 4 GiB memory scratch bound in a 1536 MiB total memory limit before
+paid admission. The example succeeds only with declared disk backing and a sufficient volume
+reservation. Compare same-host Docker attribution with Docker Desktop/remote execution: never
+charge the same resident memory as both AF and outside use, and never pretend separate host/VM
+limits are one allocation.
+
+Recovery storage: exhaust ordinary isolated filesystem capacity after preallocating slots and
+ballast. Verify bounded final receipt writes and sync under each advertised strict backing
+contract, then restart and replay exactly once. Inject metadata allocation failure, short write,
+EIO and failed fsync separately. Where durability cannot be obtained, retain prior charged
+intents and report unknown final evidence; a missing final receipt cannot become a successful
+recovery claim. Repeat with inode exhaustion and multiple registered Task Store volumes.
+
+Fairness: disconnect the protected waiter's dispatcher. A healthy coordinator must suspend its
+protection by last pulse write plus sample interval, lease and cadence (4250ms at defaults), preserve age and allow other work.
+A live waiter with delayed acknowledgment adds its predeclared ack bound to the 94s fixture.
+Policy: race two first activations, restart/reboot, and submit conflicting environment overrides.
+Exactly one durable policy generation wins; only explicit config apply changes it. Test priority
+above the operator ceiling and reprioritization without resetting service debt.
+
+Kubernetes: hold the claim winner busy while a duplicate loser waits without producing worker
+effects or a successful completion. The loser must not trigger winner termination or Task
+completion. Inject duplicate supervisor crashes and excess duplicate count; any resulting Job
+termination is an explicit interrupted outcome, never false business success or automatic retry.
+Use the exact claim-holder pod/container UID for terminal evidence, separately from Job status.
+Record version-dependent Job behavior, request/limit mutation and QoS/eviction events.
+
+Closed capabilities: reject misspelled/unknown IDs, aggregate-only proofs offered for per-worker
+limits, stale scope identities and strict requests offered cooperative retirement. Verify all
+mandatory planned nodes before any paid admission, then recheck exact scope after creation.
+
+15. Review D regression and coverage requirements
+-------------------------------------------------
+
+These are planned tests, not executed results. Each acceptance ID must map to at least one
+mandatory qualification case; the design checker rejects missing mappings. For full release qualification, expand
+that mapping into every advertised applicable support cell and require a real case receipt with
+source/binary/capability identities. A missing/skip/unknown receipt cannot satisfy coverage.
+Platform-specific claims use their named backend cells; generic safety, refusal, configuration
+and privacy contracts apply to every cell. Unsupported platforms demonstrate explicit refusal,
+not a success claim. The release matrix must materialize applicability before the campaign;
+post-result omission of a failing cell is prohibited. Independent oracle contracts alone are
+not executable coverage. Native Review D exposed this gap in the former shape-only checker.
+
+Nested concurrency: hold two roots, each needing more capacity to start a child. Planned maxima
+must already be reserved; unplanned expansion must immediately grant or return the typed conflict.
+No live-parent resource waiter may remain queued. Repeat with a protected request depending on
+one parent's release. Disable deadlines in the finite liveness model so expiry cannot mask a
+deadlock; require every ready root eventually to start under finite-holder/stable-capacity/live
+client assumptions, including roots temporarily blocked by Task/group slots, and truthful nonblocking
+outcomes for unplanned expansion. Test quarantine, stale excess and unreadable Task Store holds:
+they cannot support drain eligibility, and unrelated fitting work keeps progressing. Include a
+second large eligible waiter: fitting small-job backfill alone does not demonstrate turn fairness.
+
+Dispatcher loss: after acknowledgment inject SIGSTOP, SIGTSTP, a half-open IPC channel and crash.
+Process/socket/lock existence must not preserve the turn. At default settings, with a healthy
+scheduler, protection disappears by last pulse write + 4.25 seconds; accumulated eligible_wait pauses while
+inactive and resumes on rejoin without resetting or preempting an existing turn.
+Separately measure live ack/renew latency under the supported 0.25/0.5 CPU, 512 MiB/1 GiB cells
+beside CPU/memory/I/O neighbors. Record every latency, sample count, maximum, per-run quantiles,
+turn loss, starvation and censored runs. No running result is claimed when readiness correctly
+refuses below the measured control minimum. Qualify defaults and acceptance tolerance before
+promotion; enforce the 94-second fixture plus its declared acknowledgment allowance.
+
+Remote races: pause before/after domain consume, authorization publication, executor terminal
+seal, duplicate-pod selection and gate opening. Race takeover, cancellation and deadline against
+each boundary. If close wins no authorization can be published; if consume wins the execution is
+possibly live until sealed and reconciled even with no ack. Test delayed old-adapter publication
+after sealing. Run the independent model per change and a real supported cluster at release.
+
+Host continuity: replace a coordinator on another node while the old node is partitioned and a
+pod-local workload remains alive. A changed boot ID on the new host must not release old work.
+Same-host attested reboot can prove old-local termination; ambiguous/cloned host identity cannot.
+Recovery transitions include reconciling/quarantined -> retired_cooperative under the narrower
+tracked evidence and residual-risk contract, as well as released_proven for complete proof.
+
+Duplicate definition: more than one effect-sink start for the same (Attempt, permit/claim), or
+more than one start for the same execution UID, is a safety failure regardless of explanation.
+Distinct newly authorized Attempts are not duplicates. The external sink performs no deduplication.
+The mixed-resource fixture in design.txt section 20 checks conflict arithmetic independently.
+
+Operator paths: stale-generation, duplicate-request, spoofed/expired evidence, unreachable backend
+and crash between intent/effect/receipt must preserve holds and produce truthful typed results.
+No recovery command can force-clear uncertainty. Changed HOME and XDG roots must find the same
+canonical registration; private test roots must also use disposable allocation/rendezvous
+fixtures, never accidentally contend with a real operator domain.
+
+
+16. Review F regression contracts and qualification activation
+--------------------------------------------------------------
+All cases below are required implementation tests, not results of this design review.
+
+Isolation: real-process tests require a disposable OS account, disposable VM, or container with
+an externally disjoint allocation and its own qualified canonical rendezvous. On native macOS
+and non-delegated Linux, private HOME/XDG alone is forbidden as isolation. Alternatively an
+explicit test build may supply a test-only rendezvous root compiled out of release binaries;
+the harness verifies that build identity and disjoint allocation. Before any child/failpoint,
+resolve the actual account/allocation/rendezvous/anchor and compare with an externally produced
+fixture manifest. Reject production or unowned roots even if HOME is temporary. Linux cgroup
+and filesystem fault helpers have an independent outer boundary/watchdog, never the candidate's
+allocator as their sole containment. Isolation preflight is a mandatory no-effects negative test.
+
+Native reboot: uncleanly reboot disposable Linux VM and macOS instance with two live reservations.
+With the same local marker and a new kernel boot ID, ordinary work retires only cooperatively,
+seals old claims and records assumed continuity. Exercise explicit owner_same_host_reboot when
+marker evidence is unavailable; strict/current-boot/remote requests cannot use that assertion.
+Clone marker/state onto another host with the original alive: no strict proof, no automatic
+qualified-continuity result; any cooperative owner assertion remains visibly owner-asserted.
+Container restart: test an in-place OOM/restart with unchanged host boot and container ID. A
+qualified outside supervisor must prove old-instance termination before release. With no such
+adapter, preflight refuses durable managed work; no indefinite recovery advertised as supported.
+
+Inventory: first invoke with temporary HOME/XDG then delete it; the canonical default anchor
+must survive. Restore a snapshot predating a second Store/executor registration and separately
+lose the entire anchor. The outside inventory finds both; a permit missing its claim is charged
+possibly-consumed. Inject crash before/after inventory sync and first reservation; no unlisted
+reservation may start. Missing/unreadable inventory keeps recovery-only until restoration or
+complete external fencing. Replacement allocation resolves DOMAIN@EPOCH and fences the old one.
+
+Operator authority: from a tracked worker tool, attempt terminate of another Task, priority
+promotion, binding apply, recovery and capability issuance, with/without inherited parent ref.
+All refuse with no mutation/effect; nested access to its own authorized child still works.
+Test a registered executor principal against unrelated claims and domain policy. A cooperative
+escaped same-user process is a declared security limitation, never a proof of human authorship.
+
+Writer/liveness: stop inside ack or renewal transport; it must hold no global writer guard and
+protection expires within 4.25s with a healthy scheduler/store. Stop inside admission's SQLite
+transaction: new admission safely refuses within busy timeout, read-only diagnosis identifies
+the holder, and progress resumes after resume/verified exit plus replay. Test the guard-before-
+side-record and side-record-before-BEGIN cuts; unknown holder remains unknown, never guessed.
+F06's 4250ms bound applies to pulse transport, not an intentionally frozen global writer.
+
+Coverage: qualification-coverage.csv binds every acceptance row's exact injection and outcome
+clauses to mandatory case IDs, explicit fault_action_id and oracle_assertion_id. The corresponding
+case lists those hook IDs. These are required harness interfaces, not proof from string matching.
+The implementation harness registry must bind each hook to independently reviewed executable
+code/source digest; missing/unimplemented hooks block qualification. Each applicable support cell
+must emit a fault-hit receipt and independently evaluated assertion receipt for BOTH clauses.
+Candidate-produced labels alone do not count. The checker rejects a mapping if its case lacks
+either hook, clause digests differ, or any execution receipt is absent/skipped. Semantic review
+must establish that the case actually performs the named injection and asserts the whole outcome.
+
+I04's case separately exceeds memory.max, pids.max and runs a genuine failing test with healthy
+resources: use independent M10 kernel/event and process-exit witnesses, distinguish resource_exceeded(memory),
+resource_exceeded(pids) and negative_result, preserve evidence, never pass or grant an unauthorized retry.
+E01's escape case attempts cgroup.procs migration, hierarchy modification and any available
+namespace/delegation route; no uncontrolled child/effect may escape, or preflight/launch must
+return typed unsupported/failure. Verify with independent boundary membership and effect sink.
+E04 launches rootless and non-delegated Docker variants, reads back real limits/capabilities,
+checks explicit unsupported predicates and unchanged UID/capability/mount/service privileges.
+P04 independently traces filesystem access for status on 10k events under delayed fsync; it
+must use bounded projections and not enumerate/read the full CAS. Record latency/control cost.
+O05 checks summary, detail, TUI and JSON, including ALL memory/disk/inode blockers simultaneously.
+
+Formal calibration is a prerequisite for activating the proposed per-change gate, not a claim
+that 5,000,000 states/15 minutes suffice. Build each mandatory submodel below at its declared bounds, retain the refinement mapping, and
+measure exhaustive safety and no-deadline liveness separately on the reference runner. Record
+states, depth, memory, wall time and fairness assumptions. If it cannot complete, submit reviewed
+submodels (dispatch/remote authority and nested/drain liveness) with explicit shared invariants,
+projection/refinement obligations and complete bounds in the plan BEFORE candidate qualification.
+No lowering bounds or excluding failing interleavings after candidate results. Until a reviewed,
+measured plan completes, formal qualification is incomplete and the feature cannot ship. Test
+runtime budget changes require recorded qualification review, not a candidate-controlled escape.
+
+17. Review G qualification amendments
+-------------------------------------
+Native boot/instance changes: keep strict permits unresolved but remove predecessor-local CPU/
+RAM/PID commitments from current capacity. Retained bytes and shared-volume future growth stay
+charged. QT62 must admit unrelated fitting work after an unattested standalone VM reboot while
+refusing replacement of unresolved Attempts. Test copied-marker registration review separately.
+QT19 includes a deleted check-runtime Store whose synced quiescent record proves no obligations,
+and an active missing Store whose authority stays unknown after capacity re-attribution. Crash
+at every active/quiescent append boundary; race a new reservation against quiescence. Existing
+stores.toml path cleanup must not erase resource inventory evidence.
+
+QT71 includes two concurrent AF invocations in a container without outside supervision. They
+must share one registered budget before/after in-place restart, report unsupported proven
+restart recovery, preserve unknown permits and never auto-retry. Reject shared-backing or
+non-private namespace masquerading as this instance-scoped mode. Distinguish capability refusal
+for a strict recovery requirement from ordinary shared scheduling with lower evidence strength.
+
+QT70 attempts direct registry/anchor/inventory/marker writes and parent-channel bypass: strict
+separation denies access; cooperative hash-chain-detectable corruption quarantines as
+external_mutation. No claim of detecting a coherent same-user forgery. QT50/QT70 include an
+unreachable registry, undecidable membership and an attempted worker unregistered opt-in.
+QT52 raises an underestimated recipe value through an exact binding, while fixed project
+requirements remain constraints. Capture provenance before paid work.
+
+Pulse tests independently timestamp writes, observations and scheduling ticks. With sample <=250ms,
+renew <=500ms, lease=2s and cadence<=2s, a live owner keeps protection and a stopped dispatcher
+loses it by last write +4.25s. Stop one symmetric sampler outside a transaction while another
+continues; no hidden election or per-sample durable freshness commit. Change XDG_RUNTIME_DIR/TMPDIR on each process,
+remove the runtime directory, and verify common locator plus explicit re-handshake generation.
+Measure the 94s fixture from acknowledged eligibility: <=60s accumulated eligible wait, <=2s
+selection, <=30s earlier-work remainder after protection, <=2s final dispatch. The94s bound starts when W holds an acknowledged live slot; it is not a bound on prior inactive
+queueing. No periodic rotation interrupts it. Missed offers/lost readiness pause eligibility.
+
+QT30's saturated FIFO fixture uses one live slot and no rotation. One older live eligible root V
+starts at t=0; W is the next ready ticket; later small requests arrive every1s. No earlier protected
+turn, stable capacity, <=2s scheduler cadence, <=2s offer acknowledgment, protect_after60s and
+<=30s finite existing-work remainder at protection. V admits by94s and releases its live slot;
+W is acknowledged live by98s. With the same finite-drain conditions W admits by192s from t=0.
+No deadline expiry counts as progress. Generic bounds add the finite admission/offer intervals of
+already-ahead live clients/tickets; later arrivals cannot increase that prefix. Offline clients
+or unbounded external pressure are diagnosed outside these progress assumptions.
+QT69/QT72 distinguish stopped writers from slow live fsync; slow storage must never suggest
+terminating a live coordinator as the resource remedy.
+
+Coverage bindings allow multiple required clauses/cases per acceptance ID; formal and Loom
+bindings supplement implementation evidence. Each primary binding has an explicit evidence kind,
+whole acceptance text, scoped clause, fault/assertion hook and author semantic-review verdict.
+That verdict is a proposal; native review acceptance of the exact binding manifest is retained
+separately before harness activation. Runtime/OS claims need actual process/backend evidence,
+and policy claims need production-code simulation or runtime evidence; model/Loom alone cannot
+satisfy either. F07 requires both uncertain-hold suspension and vector finite-bound cases. The
+checker validates evidence kinds and required case sets; independent executable hook registry
+and per-cell fault/assertion receipts remain necessary at qualification.
+
+Calibration before activation covers the ENTIRE per-change tier, including disposable isolation
+setup, formal safety/liveness, QT65, property sequences, Loom and real-process cases. Measure
+per-case wall/CPU/peak memory and full-tier totals repeatedly; 15m/4-core/8GiB is a target, not a
+measured guarantee. Reviewed tier/model adjustments precede candidate runs; no result can relax
+its own gate. Separately benchmark 1/16/100/256 live queued dispatchers, pulse writes, shared
+freshness reads and scheduler lateness on Linux/macOS at 0.25/0.5/2 CPU. The <1% CPU/64MiB
+observer target and default client/sampling limits remain unqualified until that benchmark passes.
+
+18. Review I contracts and explicit calibration authority
+---------------------------------------------------------
+Task slots: QT25/QT60 and the no-deadline model include max_active_tasks and enabled group caps
+as resource coordinates. Use A/B occupying two Task slots and needing later2.5GiB operations,
+with W requiring a new slot plus1GiB and max_live_queue_clients=1. W cannot consume the active
+A/B coordinator handshakes or hold a live slot while its finite-release readiness test fails.
+Also fill inactive slots with requests invalidated by external pressure/non-finite holds, then
+submit a fitting request: the former release client slots and the fitting ready ticket progresses.
+W must report task_concurrency and obtain no drain turn
+while those non-finite Task-slot holds persist; A/B operations keep progressing. On a released
+slot, FIFO root hand-off reserves it for the oldest ready root, even if its operation does not
+fit immediately. Coordinator cost is charged only at eventual admission; the slot claim counts
+once. The slot claim does not block A/B operations before resource protection begins.
+Model live-slot FIFO offers, retained ownership and actual admission under weak fairness only;
+there is no quantum/phase synchronization or deadline escape from a cycle.
+
+Pulse records use qualified fixed-size shared memory, no per-pulse fsync and no durable writer.
+Stop a publisher inside a torn write: only that publisher loses liveness; guard/side record stay
+untouched. Continue pulses through a5s admission-writer/slow-fsync stall; on resume the live owner
+keeps its nonce and protected turn. A publisher whose OWN inter-write gap reaches2s must change
+nonce and re-handshake. Test stale/future timestamps, reordered/replayed sequence, boot/runtime
+change and two sampler processes. Check exact native file/lock/syscall traces independently.
+
+Coverage additions: QT62 has a remote executor run surviving coordinator reboot and asserts its
+concurrency, shared-volume hold, bounded recovery footprint and unresolved permit remain. Repeat
+unattested LOCAL Provider reboots through original deadline+grace and retire-unproven; no monotonic
+N/active-Store growth, no success/retry/strict proof, and zero live per-claim control when no adapter
+can act. QT46 binds the ack/renew half of R13; QT72 binds its admission-writer half. QT51 creates
+competing externally bounded user slices as well as privacy/export cases. QT22 makes a local
+adapter and Docker daemon unreachable mid-execution, retaining holds until verified reconciliation.
+QT06 uses different Task Stores and checks identical reported budget; QT47 replaces allocation
+while remote work survives. QT50 covers NFS/home-less accounts with administrator local bootstrap,
+without bootstrap, hostile HOME/XDG overrides, UID reuse and changed-locator succession.
+
+QT66/M10 compare exact ordered causes: memory/pids breach -> resource_exceeded subtype; escape
+without resource breach -> containment_escaped; mutation/failed test secondary when breach exists;
+mutation alone -> negative_result. A scoped pids refusal fails even with command exit0. Include
+breach-plus-mutation, escape, passing-command-with-pids-event and unrelated-event negative controls.
+Unknown attribution is not a typed proven breach. All measurements remain independently witnessed.
+
+Calibration is a separate pre-candidate activity, not a candidate selecting its own gate. A trusted
+qualification manifest pins the harness/oracle revision and baseline build: last accepted R1–R8
+increment that implements the relevant interfaces; before any such increment, an explicitly
+reviewed bootstrap prototype marked calibration-only, never feature-qualified. Pin its binary,
+source, compiler, OS/kernel/runtime, filesystem, hardware class, allocation and cold/warm setup.
+Publish the calibration source/runner manifest BEFORE measuring. A candidate may not supply it.
+
+The per-change cell set is explicit: the reference Linux cgroup-v2 cell for generic contracts,
+plus conformance cells for changed backend adapters; shared enforcement/authority changes include
+all implemented affected backend cells. The trusted path-to-contract map determines this set
+before a candidate runs. ANY unmapped/new path selects EVERY implemented cell until a trusted
+mapping is reviewed; mapping absence cannot silently select only Linux. The release campaign covers EVERY advertised applicable cell, regardless
+of per-change selection. Nightly rotates the remaining full matrix. Each campaign manifest lists
+the exact cases, cells, invocations and budgets; absence/skip never fills advertised support.
+
+Run the entire declared tier at least5 independent fresh setups on the pinned4-core/8GiB reference
+runner allocation (platform-specific OS images use matched declared hardware classes). Capture
+provisioning/isolation cost, per-case and total wall/core time, peak memory, filesystem type and
+formal states/depth. Before those runs fix the rule: round measured maximum wall/core/memory up
+with25% headroom to their integer units, subject to the physical reference allocation. The15m,
+4-core/8GiB values are engineering targets, not established ceilings or proven feasible results.
+If target/allocation limits are exceeded, independently review tier subdivision, runner budget or
+model abstraction BEFORE freezing the candidate campaign; preserve all safety/release obligations
+and original measurements. No thresholds/tier moves follow a candidate result. On an established
+campaign, overruns are incomplete; changes require a new reviewed calibration/campaign identity.
+
+One explicit benchmark protocol covers all resource-control overhead: on pinned Linux ext4/xfs
+and macOS APFS state volumes, 1/4/16 coordinators and1/16/100/256 live dispatchers at0.25/0.5/2 CPU,
+under open-loop admission load and0/10/50/200ms injected fsync delays, plus the5s stall continuity
+control. Pulse renewal uses the non-durable shared-memory mode; admission, turn/checkpoint and
+inventory activity/quiescence use the platform-qualified durable sync mode, including F_FULLFSYNC
+where required. Record commits/fsyncs per second, writer guard wait/hold/utilization, inventory
+append latency, sampler/tick lateness, handshake/turn losses, admission p50/p95/p99/max with counts,
+CPU/RSS and an independent neighbor I/O-latency probe. Per-pulse durable commits MUST be zero.
+Measured targets activate only for the declared qualified load/cell; no current performance claim
+or platform success is made by this design. These protocols are implementation acceptance work;
+design acceptance checks their completeness, reproducibility and authority, not fictional results.
+
+19. Review J progress, locator succession and benchmark gates
+-------------------------------------------------------------
+QT25/QT60 include max_active_tasks=2, 3GiB after base reserve, 128MiB per coordinator; A/B have
+unknown remaining graphs until settlement. W needs 2GiB plus its coordinator; an endless stream
+of smaller multi-operation roots needs 1GiB. At A's completion, reserve its slot for W while B
+runs a finite 1GiB operation. Later roots cannot take that slot. B continues; W gains eligible
+wait and starts by last-slot-release+98s under the section7 fixture assumptions. Repeat for
+resuming inactive roots and enabled group caps; no partial Task/group claim may be retained.
+Group-blocked roots yield the global role and unused slots. Repeat with a long-lived repoX holder,
+cap1, a freed repoY slot and continuous disjoint fitting roots: repoY dispatch by6s under the
+healthy fixture, independent of repoX lifetime. At group-holder release the original ticket wins
+before later overlapping roots; the98s fixture has no already granted competing claim/turn.
+Multiple overlapping memberships preserve one ticket order, with disjoint groups still progressing.
+Disable deadlines as progress exits. Test claim loss/ack failure,
+external/unknown blockers, and active-holder next-operation progress. The TLC model recycles
+finished small-request slots as fresh arrivals indefinitely; no finite arrival counter cuts off
+starvation. Its finite abstraction preserves enqueue order relative to W, lifecycle authority
+and the no-duplicate-start invariant. QT60 production simulation injects at least1000 later roots.
+
+QT50 installs the first admin locator over a live default domain and quarantined claim; changes
+an entry; replaces it with a retained removal tombstone/successor; and attempts raw deletion.
+Include an inaccessible default root, a truly absent home, generation revalidation by the old
+writer, and a Store journal bound to the unfenced predecessor. Assert one admitting generation,
+old obligations preserved, typed conflicts, and no home fallback. Succession is not a fresh budget.
+
+The following benchmark rules are fixed BEFORE measurement in qualification-plan.toml and the
+trusted campaign manifest. They extend calibration authority in section18; no result has yet
+qualified them. Materialize each cell's platform, physical allocation, active-control requests,
+policy overrides, workload, expected readiness and claim set before any candidate campaign.
+Readiness is independently derived from the pinned baseline's qualified control/client minima,
+not the candidate: base=max(configured base, baseline engine/client minimum), plus each active
+coordinator's max(configured reserve, baseline minimum), plus full work vectors. Check CPU in
+integer millicores, bytes, PIDs, max_active_tasks and live-client bounds. Freeze these numeric
+minima and expected outcomes in the manifest; a candidate cannot redefine them. Unsupported
+physical allocation/runtime cells are explicit unsupported evidence, never performance passes.
+
+Default-policy refusal controls include 0.25CPU/4GiB with4 coordinators (187m budget<250m
+configured control), 0.5CPU/4GiB with16 (375m<850m and Task cap4), 2CPU/4GiB with16 (Task cap4),
+and 2CPU/512MiB with1 (60% memory<384MiB control). At default max_live_queue_clients=16,100/256
+submitted inactive clients result in at most16 live plus bounded inactive entries, not100/256
+live owners. These cells qualify truthful refusal/queuing only. No absent workload counts as a
+successful latency or starvation sample. Independently check all arithmetic against actual limits.
+
+The performance cell set is a declared covering matrix, not an unspecified Cartesian product.
+For EACH qualified Linux-ext4, Linux-xfs and macOS-APFS platform:
+  A: 2CPU/4GiB, up to1 or4 active coordinators,1 or16 live dispatchers, zero injected fsync delay
+     (four cells). At the 4/16 reference cell, include100 queued and16 active operations.
+  B: 0.25 or0.5CPU/1GiB, up to1 coordinator and16 live dispatchers (two cells), only where an
+     exact outer fractional allocation is supported. An ordinary macOS host cannot substitute
+     an AF preference or busy neighbor for a proven fractional outer allocation.
+  C: 2CPU/16GiB, (4 coordinators,100 live dispatchers) and (16,256) (two stress cells). Explicit
+     operator policy sets max_active_tasks=16/max_live_queue_clients=256 and a base control
+     reserve meeting the frozen client minimum. These qualify that named policy, not defaults.
+  D: A's4/16 reference with10/50/200ms injected AF fsync delay and5s/12s writer-stall controls plus observer kill during a protected turn
+     (six fault cells). Predetermined injected intervals and recovery windows are reported
+     separately; they cannot be silently removed from reference observations.
+There are42 requested performance cells before platform applicability; missing/unsupported cells
+remain visible. Minimal probes have pinned full resource profiles from the baseline, fixed in
+the manifest, and all expected-admit arithmetic includes them. If their minimum cannot fit a
+cell, predeclare refusal and leave its performance claim unqualified. This never changes after
+seeing the candidate result. Campaign budgets include every declared cell and setup; calibrate
+cost before freeze using the full-tier authority, and report an overrun as incomplete.
+
+Each admitted performance cell has5 fresh runs,2min warm-up then at least10min measurement,
+40 consecutive15s blocks,>=1000 renewals per live dispatcher and>=2000 admitted operations for
+reference cells (>=200 for other healthy cells;>=500 for injected-fault cells). Maximum measurement time is20min; not reaching
+the count is incomplete. Pin arrivals/open-loop rate and baseline probe workload before running;
+report refusals and saturation, not a silently reduced offered load. Use paired randomized
+baseline/candidate blocks; all raw timestamps and denominator counts survive.
+
+Pass rules: every admitted healthy A/B/C cell has zero unexpected live-owner handshake/turn
+losses, maximum publisher write gap<2s, maximum sampler interval<=250ms and scheduler interval
+<=2s, and each disconnected-owner protection loss<=4.25s with available writer. Require zero
+per-pulse durable writes and invariant violations in ALL cells. Fault D preserves a continuously
+pulsing owner's nonce/turn across the injected writer stall; dispatch timing in the predeclared
+unavailable-writer interval is censored, with no4.25s promise there. Outside that interval the
+healthy timing rules apply; missing or unexpected censorship is incomplete. Publisher failure
+is tested separately and is never relabeled writer-stall continuity.
+
+The <20ms admission p95, <200ms bounded status, <1% of one CPU observation/scheduling overhead
+and <64MiB incremental memory targets bind A's4/16 reference cell on each qualified filesystem,
+using its actual required sync including APFS F_FULLFSYNC when qualified. They are reported,
+without that performance claim, in B/C and injected-fault D. Neighbor probe: pinned64MiB file,
+4KiB90%-read/10%-sync-write requests at20/s on the same volume, independent of AF. In reference
+cells require both upper95% block-bootstrap bounds: candidate p95 minus SAME-CANDIDATE STATIC-CONTROL baseline p95<=5ms and
+candidate p95/max(the same static-control baseline p95,1ms)<=1.20. Report the unfloored ratio too. Fixed block resampling
+method/seed and10,000 replicates are captured before measurement; correlated samples remain in
+blocks. Admission p95 passes only when its upper95% block-bootstrap bound is<20ms in EVERY fresh
+reference run at the qualifying25%/50% load fractions; per-run raw max/p50/p95/p99 and pooled descriptive results remain available.
+Use independently measured incremental CPU/RSS with the same candidate static-resource-control baseline defined below;
+require the reference CPU and peak-memory bounds in every run. No aggregate average hides a loss.
+
+A failing cell cannot be advertised for the failed claim. A reviewed default/control-minimum,
+workload, tier or support change creates a NEW manifest and reruns all affected cases with old
+failures retained; no result changes its own thresholds. Refusal cells establish only refusal.
+For per-change tier budgeting, use5 calibration runs to set max+25%, then5 additional independent
+fresh holdout setups under those frozen budgets; require zero overruns and complete evidence.
+Only then freeze the candidate campaign. Holdout failure requires a separately reviewed new
+calibration identity, never an after-the-fact margin increase on that result.
+
+J correctness completion: observation, model bounds, empirical scope and missing cases
+-------------------------------------------------------------------------------------
+QT46/QT72/QT32 kill the elected capacity observer during W's protected turn, stall the durable
+writer for5s and12s (2 x stale_after), and pause a publisher separately. In the DOMAIN-WIDE stale
+case with fresh W pulses, retain its live slot/turn; handover/publication use no durable writer.
+Recovery retains W as next owner. A stopped publisher loses liveness under its own contract.
+Fresh pressure beyond30s releases protection; shorter pressure retains it. Domain-wide stale time
+pauses accumulated grace. Separately make one volume unreadable while another large waiter has
+fresh coordinates; the scoped-stale grace releases protection/unused claims within36s and the
+next eligible fresh waiter obtains the turn even with infinite small backfill. Compute its
+eligibility ignoring only the stale owner's unused claims/turn/queue-order restrictions, while
+retaining actual execution charges; the blocked claim cannot make the trigger circular. No stale data grants work.
+Change the missing coordinate, churn competitors and alternate fresh pressure with scoped stale:
+none resets elapsed grace. Five healthy samples are required before rejoin with preserved age.
+A paused durable writer censors handoff latency; its pause alone does not lose a fresh pulse owner.
+Verify old-generation sample rejection and the5.75s last-publication gap bound, killing just before
+the next sample, independently.
+
+Formal qualification comprises mandatory mapped submodels, not an impossible single five-request
+model. Each has its own5,000,000-state exploration ceiling and independent safety/liveness cost;
+exhaustion remains incomplete. Shared dispatch/recovery invariants have explicit refinement maps.
+  dispatch_nested:2 coordinators,3 roots,2 parent-child pairs,5 simultaneous execution requests,
+    3 generic resource dimensions,2 remote records,2 duplicate pods,3 generations,2 crashes.
+  task_slot_fifo:2 coordinators,5 root identities (A/B/W and2 recyclable small roots),2 sequential
+    operations per root (not parent-child), max_active_tasks2, memory plus Task/group slot
+    coordinates, group cap1/2, weak fairness and deadlines disabled. Future operations are hidden
+    from admission until enabled. Finished small roots recycle indefinitely with fresh abstract
+    authority; a finite arrival count may not discharge liveness. Preserve order relative to W.
+  client_observation:2 coordinators,two distinguished waiters W/W-prime and up to16 symmetric ordinary
+    waiting clients represented by bounded class counters; live limits1/16, one reserved head
+    channel, active-coordinator pending requests, pressure/staleness, observer handover, writer
+    stall and publisher loss. Counter abstraction preserves head order, liveness and turn identity.
+Each submodel includes non-vacuity witnesses: two parents really wait on children; W is blocked
+only by Task slots; a freed slot is too small in memory for W while a later root fits; W gains
+a slot claim; invalidated clients fill all ordinary channels while the dedicated head progresses;
+writer unavailable with fresh W pulses; long-lived group holder while disjoint roots progress;
+stale-for-W-only while W-prime obtains protection under small backfill. Check mutations that
+restore overtaking, retain partial group claims, retain scoped-stale ownership indefinitely or
+release DOMAIN-WIDE stale ownership. Each must produce its intended counterexample. Model group
+holders with unbounded future lifetime separately from the finite-holder start fixture. Expanded
+bounds/refinements require independent cost calibration; no previous state count is reused.
+
+Benchmark authority pins BOTH the independent baseline and exact candidate source/binary/build
+for comparison. Defaults remain engineering criteria requiring measurement; this design makes no
+empirical feasibility or target-achievement claim. Reference incremental memory includes all
+resource-control/sampler/projection allocations and resident mappings in coordinators AND live
+queue-client processes, including otherwise-empty client process overhead; exclude only baseline
+AF non-resource work, workload probes and independent collectors with separately recorded PIDs.
+Report total RSS and a documented unique-resident/PSS basis without double-counting shared pages;
+if the platform cannot qualify incremental attribution, that memory claim remains unsupported.
+No unexplained subtraction can make the64MiB target pass.
+
+Offered-load protocol: first determine saturation of the frozen BASELINE per runnable cell using
+the pinned mix (70% short executions,20% queued admissions/cancellations,10% completion/reconcile),
+fixed probe profile and a predeclared rate ladder1/2/4/8/16/32/64 admissions per second, each for2min.
+Saturation is the first ladder rate with>5% admission refusals or a monotonically growing queue
+in its final60s; if absent use64/s as the tested ceiling, not measured saturation. The trusted
+manifest freezes load rates at25%,50%,90% and110% of the highest nonsaturating tested rate.
+A cell with no positive nonsaturating rate fails calibration rather than inventing a zero load.
+Divide each fresh cell run's10–20min measurement interval equally among the four rates; the
+10min minimum/20min maximum and total sample counts apply to the WHOLE cell run, not each rate.
+Warm up before measurement; each rate gets at least10 consecutive15s blocks. Require>=50
+admissions per rate, and>=200 per qualifying reference25%/50% rate. The reference p95 criterion
+binds those two rates individually, with their per-run block confidence bounds;90%/110% rates
+qualify bounded overload/refusal and report latency without a20ms claim. If the frozen baseline
+cannot supply these counts within20min, calibration is incomplete; use a separately reviewed
+workload/cell/campaign identity before candidate qualification. No silent extension or rescaling.
+Each reference workload still carries the declared100 queued/16 active state exposure; count
+exposure duration explicitly and require at least10min across the qualifying reference runs.
+Fixed-capacity load controllers pin the requested coordinator/client upper counts; reference
+steady windows must actually achieve4 coordinators,16 active operations and100 queued intents,
+including16 live dispatchers. Report time outside this shape; missing reference exposure is
+incomplete. Other A/B/C cells report achieved counts, never infer load from configured maxima.
+The full paired run and setup costs enter campaign budgeting. At maximum declared durations:
+  42 cells x5 fresh runs x2 builds x20min measurement =140 runner-hours =280 core-hours at2CPU.
+  42 cells x5 fresh runs x2 builds x2min warmup =14 runner-hours =28 core-hours at2CPU.
+  Last-accepted-build ladder:42 cells x(2min warmup +7 rates x2min) =11.2 runner-hours
+    =22.4 core-hours at2CPU. One2min warmup precedes each whole ladder, not each rate.
+  Named2CPU soaks:24+8+8+8=48 runner-hours =96 core-hours.
+Subtotal426.4 core-hours; the72h/512-core-hour planning ceiling leaves AT MOST85.6 core-hours
+for provisioning, resets/drains, other faults/checks and any extra comparator runs. Allocations
+larger than2CPU require recomputed actual core-hours. No former136-core-hour remainder applies.
+At least4 independent lanes are necessary for this wall target, but this arithmetic alone does
+not prove fit. Freeze the full DAG, lane overlap and every setup/teardown interval before holdout;
+count any extra regression comparator separately. If all mandatory work does not fit, review an
+explicit budget/lane change without deleting cells or shortening soaks. No infrastructure is
+launched by this design, and these planning ceilings are not measured completion promises.
+
+Per-change calibration uses the specified5 training+5 holdout runs per affected runner class.
+Nightly/release budgets are reviewed separately against fixed lane durations and a materialized
+DAG, using the same trusted baseline/harness identities and measured setup/per-case costs from
+those campaigns. They do NOT imply five repetitions of an entire48h release soak. Before the
+candidate, freeze exact lane lengths, concurrency, core-hour arithmetic and per-case worst-observed
+cost+25%; demonstrate that all mandatory cells/segments fit wall/core/memory budgets or review
+an explicit budget/lane change with the complete matrix retained. Soaks retain their full fixed
+durations. Schedule safety-critical cells regardless of cost. Actual overruns are incomplete.
+Holdout statistics report spread and an upper bound on the incomplete rate from independent
+setups; five clean runs are not a high-reliability guarantee. Publication must retain that limit.
+
+QT52 now submits an unprofiled custom check: assert estimate_missing plus exact selector/template;
+apply an explicit operator bound on a cooperative-only host and run with cooperative labels;
+request calibration there and assert refusal; repeat on an authorized hard-boundary executor and
+assert a bounded calibrated run. QT54 actually runs two ordinary workers inside an outer-limited
+container and asserts status/receipts distinguish hard aggregate from cooperative per-worker
+limits throughout execution, separately from its missing-strict-capability refusal cells.
+
+20. Review K: bounded claims, adoption evidence and exact overhead attribution
+----------------------------------------------------------------------------
+QT25/QT60/QT32 hold outside memory for longer than the grace, leaving1.5GiB growth room with
+2GiB roots W1/W2 ahead of fitting1GiB roots R. Include max_active_tasks1 and2. There is one
+claimant until admission/lapse, never accumulating blocked claims. Its unprotected claim lapses
+within30s; R starts within36s under qualified cadence/ack, and W1/W2 retain order/age. After
+five fresh healthy samples clear the outside shortfall, FIFO reclaims slots; W1 starts within
+last-required-slot-release+98s under the usual fixture. Repeated blocked observations cannot
+reclaim/churn the same slot. Add observations {unknown, fits-R-only, fits-W}, outside use,
+non-protected claims and grace/hysteresis to task_slot_fifo; qualify its interaction with the
+client_observation refinement. Domain-wide stale-only retains the live owner; scoped staleness
+uses the competing-waiter grace in section6. Finite releases still use normal drain protection. All existing cancellation/authority and no-deadline properties remain.
+
+QT50 separately tests no-predecessor bootstrap with a local home, NFS home, home-less principal
+and non-conventional admin root. Persist adoption history, then launch a build and retain a
+quarantined claim. Remove only the row, then the whole locator file. Old and new invocations must
+refuse admission while preserving those obligations; no default fallback. Local adoption
+tombstones and fixed administrator history are independently inspected. Missing adoption history
+prevents bootstrap. D08 supplies explicit fault/assertion receipts for all these succession paths.
+
+Overhead AND neighbor attribution have ONE baseline: the SAME CANDIDATE SOURCE in a pinned
+test-only static-resource-control build, in the same randomized paired blocks. The last-accepted
+build supplies saturation calibration, not the absolute overhead/neighbor comparator. Any separate
+release-regression comparison needs a predeclared rule, runs and added campaign cost; it cannot
+replace the static-control neighbor gate or hide cumulative I/O harm behind a previous release.
+
+Static control replays a precomputed independent-model admission schedule with identical logical
+arrivals/probe work, without observer, pulses or waiting-client processes. Existing Task/permit/
+sandbox authority remains enforced. Pin both builds/flags and disposable allocation; test-only
+injection refuses production. All real waiting-client process overhead is counted in full.
+
+Equivalence is exact logical work, NOT equal admission timestamps. Pin operation/arrival IDs,
+payloads, resource vectors, seeds, lifecycle outcomes and work-unit counts. In each qualifying
+25%/50% rate segment require identical admitted/completed/canceled/refused operation-ID sets and
+identical initial/final states plus completed work-unit counts for boundary-spanning probes.
+Count tolerance is ZERO; no post-hoc cohort filtering, rescaling or subtracting rejected work.
+The static schedule is frozen before candidate measurement. Candidate admission/start/finish times
+may differ and are reported, including queue age and throughput. A missing/different work cohort
+makes that overhead comparison incomplete, even when CPU is lower; calibrate the probe protocol
+before freezing the campaign to establish that the equality criterion is achievable. Do not
+retune it after seeing a candidate. No extra drain window is implicit in the declared20min cap;
+any needed reset/drain/setup is separately predeclared, accounted and bounded. Overload90%/110%
+segments report admitted/refused work differences and overload behavior, not qualifying CPU/RAM
+claims. Neighbor gates still use identical offered probe/arrival traces and report both AF work
+cohorts, so a lower-throughput candidate is not described as an equal-work performance improvement.
+
+For each qualifying25%/50% reference segment, CPU overhead is the difference in SUMMED AF-process
+CPU time divided by the SAME declared segment wall duration, in cores. The exact work/boundary
+state check above precedes this calculation. Memory overhead is the difference in peak SUMMED PSS
+(or qualified unique-resident equivalent) over those matched segments, covering all coordinator,
+sampler, projection and live-client processes. Shared pages count once; retain raw totals,
+process identities, work counts and both peaks. Workload/collector processes are identified and
+excluded symmetrically. Other AF non-resource work is present in BOTH builds. Missing attribution
+or equivalence evidence is unsupported/incomplete; there is no discretionary subtraction.
+
+In EVERY fresh reference run and each qualifying25%/50% segment, require one-sided95% block-
+bootstrap upper bounds <0.01 CPU cores and <64MiB incremental peak memory, using the same pinned
+15s blocks/10,000 replicates; also report raw per-run maxima and all paired differences.90%/110%
+segments are diagnostic only for these targets. Status uses >=200 calls per qualifying segment,
+with per-segment p95 upper95% block-bootstrap bound <200ms; report raw max and count. The
+admission p95 rule remains <20ms on its existing qualifying reference segments. Neighbor absolute
+and ratio thresholds remain unchanged, using the explicit same-candidate static-control comparator. O06.QT69 is a required reference-cell primary binding alongside O06.QT38's VM
+scenario; neither can substitute for the other.
+
+Observer timing oracle timestamps the last publication, kills immediately before the next
+scheduled sample, and measures the next valid generation's publication. With sample2s, lease1s,
+scan250ms and jitter margin500ms, the maximum gap is5.75s. Reject stale_after4s at these settings;
+validate both >=3*sample_interval and the strict complete-gap inequality. The3.25s kill-relative
+handover/first-sample component is not the freshness gap. Repeat with old-generation late writes,
+owner exit on Task completion and the5s/12s durable-writer stalls already required.
+
+21. Review L correction closure — required qualification additions
+-----------------------------------------------------------------
+QT59/QT60 production simulation and QT32 real-process fault injection keep V unreadable beyond30s
+while W-prime needs only fresh memory coordinates. W-prime has eligible_wait>=60s and infinite
+small backfill. It receives the turn within36s under qualified cadence/ack/available writer.
+Repeat for stale claimant W1 ahead of fresh W2 and fitting R. Expiry releases unused claims and
+inactive client charges, preserves ticket/age, and produces coordinate-named observation_stale
+receipts. Active execution charges remain. Five fresh samples permit reclaim. Include a domain-
+wide stale positive control and oscillating coordinate/competitor/pressure labels as negative
+controls for timer reset. No deadline may discharge these liveness assertions.
+
+QT60 also asserts group-blocked W holds no idle Task slot/global role and cannot prevent disjoint
+roots from claiming/protecting. Use max_active_tasks2 and4, group cap1 and2, multiple memberships,
+unbounded group-holder lifetime, group cap changes, cancellation and restart. Group-release
+transactions preserve original FIFO order; previously granted claims have an explicit premise in
+fixed start bounds. Every simulator/model receipt names which scenario exercised which property.
+
+QT38/QT69 compare same-candidate static-control neighbor/overhead traces and exact qualifying work
+cohorts. Required mutations: substitute last-accepted neighbor baseline, drop a costly operation,
+match only counts with different IDs, shift boundary work out of the CPU interval, require equal
+admission timestamps, and omit warmup/ladder cost. The first four and cost omission must invalidate
+the comparison; timing-only divergence with identical work must remain valid. Require independent
+cost arithmetic and the exact declared comparator/build IDs. No static document check claims
+these executable faults were run.

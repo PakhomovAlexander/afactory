@@ -1,0 +1,11 @@
+{
+  "schema": "resource-design-human-acceptance/1",
+  "recorded_at": "2026-10-19T11:33:57.865541+00:00",
+  "proposal_source_commit": "ced8a3ce112ec43184da73a8eca1e62de1e2b721",
+  "decision": "accepted_by_user",
+  "user_statement": "Ok, the final design accepted.",
+  "scope": "Final resource-management design; implementation and performance qualification remain outstanding.",
+  "native_review_history_changed": false,
+  "fable_review_completed": false,
+  "performance_analysis": "PERFORMANCE-ANALYSIS.txt"
+}

@@ -1,0 +1,1540 @@
+AF resource management
+======================
+
+Final design draft for implementation — revised 2026-10-17
+Review L's three findings are addressed in this revision; native fix verification is pending.
+
+1. Product contract
+-------------------
+
+AF shares a bounded allocation with other applications and schedules concurrent Tasks within
+that allocation. A human can inspect what is running, what is waiting, what prevents progress,
+which limits apply, and what action would help. After a crash, AF can reconstruct reservations
+and reconcile surviving work without inventing completion, freeing occupied capacity, or
+blindly dispatching the same effect again.
+
+The same contract applies to a laptop, a small VM, a container and a Kubernetes workload.
+Enforcement capabilities differ by environment and are reported per resource and scope.
+The product never equates observed low usage with a guarantee that memory is available.
+
+The user-selected default is cooperative scheduling when hard enforcement is unavailable.
+An explicit strict requirement must be satisfied by a capable executor or refused. A resource
+mode does not change the source sandbox, credential access, tool permissions or Task authority.
+
+Success means:
+
+* Several independent AF invocations cooperate without each assuming ownership of the machine.
+* Interactive applications and unrelated agents have configurable headroom.
+* Nested Tasks, provider children, checks, source preparation, cleanup and reporting are counted.
+* Waiting is bounded by the Task's existing deadline and has a precise reason.
+* Pressure reduces new admissions before failure where observations permit it.
+* A resource failure preserves evidence, budget accounting and the true Task outcome.
+* Useful diagnosis is possible without reading transcripts or raw system logs.
+
+Resource management does not promise to prevent host OOM caused by unrelated processes, make
+an arbitrary workload fit, provide exactly-once behavior from an external provider, or control
+other users without an operator-created allocation. Those boundaries appear in the UI.
+
+2. Terminology and ownership
+---------------------------
+
+Reuse Task, Attempt, Execution Plan, Observation, Measurement, Provider, Remote Check and
+Storage Budget with their existing meanings. Add the following glossary entries when this
+design enters product documentation:
+
+Resource Domain: the allocation within which participating AF executions share capacity and
+admission decisions. Its identity binds the allocation boundary and coordinating state.
+
+Resource Policy: operator-owned limits, fairness preferences and enforcement requirements for
+a Resource Domain. It can constrain execution but cannot grant project or remote authority.
+
+Resource Request: the resources and enforcement capabilities one execution unit needs before
+it may start. Estimates and configured ceilings are distinguished in the request.
+
+Resource Reservation: a durable claim against a domain, bound to a Task Attempt or kernel
+operation and an exact execution identity. It is not evidence that physical memory was allocated.
+
+Resource Observation: timestamped measurements with scope, units, provenance, freshness and
+completeness. It carries no dispatch or recovery authority by itself.
+
+Resource Decision: the reproducible admit, wait or refuse result of policy, a queue snapshot,
+reservations and observations, including every blocking constraint and the selected remedy.
+
+Execution identity: a local process boundary or remote execution object bound to an Attempt,
+generation and start claim. A PID, display name or pathname alone is insufficient identity.
+
+Do not introduce another Task budget or business ledger. Existing Task journals own authority,
+Attempt lifecycle, tokens, retries and outcomes. The domain coordination store owns shared
+capacity, queue order and reservation state. It is coordination state with a versioned transaction
+log and recoverable snapshots, not a second source of business authority. Durable records use
+checksums and validated schema reads; corrupted reservations quarantine the affected domain
+instead of being counted as zero. Backup/recovery preserves generation and execution identities;
+restoring an older snapshot never authorizes new work until later effects are reconciled. Both link through immutable IDs and receipts.
+
+3. Resource domains
+-------------------
+
+Default local domain: one operating-system user within one allocation boundary. It is shared
+across repositories, Task Stores, terminals and AF invocations. Changing --state or repository
+must not create an independent machine allowance.
+
+Discovery uses the user identity, durable domain UUID and registered allocation identity.
+Boot identity is an execution epoch, not the durable domain's primary key.
+It does not create a new domain for each child cgroup or nested AF process. A nested invocation
+inherits a verified parent reservation reference; an environment variable alone cannot grant
+or enlarge capacity. The allocator validates owner, generation, Task linkage and containment. Nested requests travel
+through the parent-bound authenticated channel to the parent coordinator outside the work
+boundary, charged to control reserve. Nested workers do not open or transact domain files.
+A missing/dead parent channel returns a typed unavailable outcome; there is no direct-store
+fallback that elevates authority or consumes the worker's quota for allocator control work.
+
+Domain discovery first checks a fixed administrator-owned bootstrap locator file, independent of
+HOME/XDG/TMPDIR or --state: /etc/af/resource-locators.toml on Linux and
+/Library/Application Support/af/resource-locators.toml on macOS. Verify root ownership, modes,
+no symlink traversal and a closed mapping-only schema. Each entry binds OS principal/UID,
+allocation identity, persistent LOCAL rendezvous root, generation and any predecessor locator.
+It contains no resource budgets or policy overrides. User/project/environment layers cannot set
+it. Discovery also checks a fixed protected adoption history beside that file, under
+resource-locators.d/adoptions. This history is provisioned/appended by the administrator with
+qualified durability, root-owned integrity and read access for the applicable principal. It binds
+principal/allocation, adopted locator identity/generation and predecessor/successor records; it
+contains no budgets. The administrator must persist adoption BEFORE the mapping becomes usable.
+AF verifies the matching record before admitting at an administrator root; it never elevates
+privileges to create it. A missing mapping row/file after recorded adoption is domain_policy_conflict,
+not never-provisioned. History and its head cannot be pruned while successor or predecessor
+obligations remain. Local-home discovery also checks the adoption tombstone described below.
+An entirely absent history AND absent local adoption tombstone permits the ordinary first-use
+default; deleting all protected evidence is outside the trusted-administrator continuity claim. Administrators may provision /var/lib/af/resource-domains/<principal> or a qualified service
+StateDirectory; AF never changes privileges or service units itself. Dynamic/reused UIDs require
+an administrator-bound service/allocation identity and fenced succession, not UID equivalence.
+Adding the FIRST administrator entry, changing it, and removing it are all locator succession.
+An entry names its predecessor (including the home-default locator) or a root-authenticated
+no-predecessor assertion bound to principal/allocation and generation. Before accepting that
+assertion, perform a bounded non-blocking check of the account-database home default: a matching
+registration, an inaccessible plausible old root or an inconclusive check refuses with
+ domain_policy_conflict and domain register --predecessor. A positively established absent home
+or absent default registration permits bootstrap; NFS delay is not absence. With an accessible
+qualified local home, the no-predecessor path writes and syncs an owner/mode-verified adoption
+tombstone at the home-default registry BEFORE successor admission, binding principal/allocation,
+locator root and generation. Default discovery refuses on that tombstone if its matching live
+entry is missing. Home-less/NFS/non-conventional accounts use the fixed retained administrator
+history, so missing mapping files cannot be mistaken for never provisioned. If neither qualified
+evidence location is available, refuse the no-predecessor bootstrap. The administrator can
+instead supply predecessor/fencing evidence without a blocking home lookup.
+Removal is a retained tombstone row with generation and explicit successor, never deletion or
+silent reversion to the home default. A tombstone or invalid locator file refuses ordinary join
+until the declared succession is completed. Every transition fences/reconciles predecessor
+writers, claims and inventory before admitting on the successor; it cannot create a second live
+budget. Registrations/receipts bind the resolved locator identity and generation. Every admission validates
+the current locator generation against the registration; missing/changed entries or disappeared
+locator files stop old writers. A Store whose journals name another unfenced domain/locator cannot
+register in the successor. Existing default registrations also validate the fixed locator source,
+so first entry installation cannot leave them admitting under an obsolete discovery rule.
+An inaccessible
+configured root refuses with the setting and provision/remount remedy; never fall back silently.
+Without an administrator entry, discovery derives its default from the OS account database and
+qualified allocation identity. An NFS/network home or home-less account needs that one-time
+administrator bootstrap, not an unregistered allowance for each invocation. On native Linux/macOS
+its directory is <OS-account-home>/.local/state/af/resources/registry, with verified owner/mode,
+no symlink traversal and qualified locking/durability. It stores domain UUID, allocation epochs,
+protocol version, state-anchor locator and the append-only registration inventory below.
+Implicit domain=auto registration uses only the persistent sibling anchor domains/<domain-UUID>.
+It never chooses the invoking Task Store or a temporary HOME/XDG path as the domain anchor.
+A different anchor requires explicit authorized domain register. Task Stores still use standard
+AF state roots, including configured XDG roots. This narrow environment-independent exception
+for registration/default domain state amends the Unix-native value in the domain ADR (decisions H).
+Changing an environment variable cannot create another registration for the same allocation.
+An operator-provided canonical directory is usable through the resolved canonical registration;
+the administrator bootstrap above can establish that registration without an account-home anchor.
+Containerized instances also require an allocation-scoped rendezvous supplied by the qualified
+adapter (a delegated-boundary marker or a shared local persistent discovery mount). Separate
+mount namespaces are not proof of disjoint allocation. Adapters must identify externally bounded
+disjoint allocations or join the same registration; otherwise aggregate cooperation is unavailable.
+The rendezvous itself is persistent and needs qualified lock/durability semantics.
+A durable domain store belongs under the persistent AF state root on a filesystem with qualified
+locking and durability. Runtime roots may hold sockets and disposable projections only. A pod
+that must recover after replacement requires a persistent state allocation; emptyDir is insufficient.
+The state anchor can coordinate multiple Task Stores on different local volumes. Before any
+reservation involving a new Store or executor, append and sync its stable ID, volume, evidence
+locator, allocation epoch and endpoint identity in a registration inventory beside the rendezvous,
+OUTSIDE the restorable domain database. Registration is a write-ahead operation; the domain and
+Task receipts bind its sequence/hash high-water mark. For each Store, bracket activity with a
+synced active-generation record BEFORE its first reservation after quiescence, and a synced
+quiescent-generation record AFTER its last claim closes. Serialize activation and quiescence
+with admission under the domain writer guard; no new reservation can race a quiescent record.
+Quiescence includes closed claims, finalized capacity transitions and reconciled external
+obligations, not merely absent coordinator processes. A missing Store last recorded quiescent
+has no live obligations and can be tombstoned from that proof. Crash before quiescent sync leaves
+it active conservatively. Missing active Stores use predecessor boot/instance capacity separation,
+Task evidence when available and enumeration of every recorded executor; unknown authority stays
+unresolved even after local capacity becomes usable. Inventory retains active allocation/boot,
+registered executor set and conservative reservation ceilings sufficient to preserve uncertainty.
+This resource inventory is distinct from stores.toml's path/discovery/collection index. Removing
+a vanished path from stores.toml does not erase resource obligations. Storage collection may
+remove a quiescent Store; active inventory evidence is protected by Storage reachability. A check
+runtime must reconcile its nested Store and append quiescence before normal private-HOME cleanup;
+failed cleanup retains active uncertainty. Unregister appends a tombstone, retained
+until all related claims are closed and their evidence retention has expired. Snapshot recovery
+scans this inventory including post-snapshot registrations; it never trusts the snapshot's list.
+An unavailable anchor enters anchor_missing or anchor_unreadable recovery-only mode, preserving registration.
+Rebuild, even without a snapshot, from the independent inventory, all registered Task journals and
+executor enumeration. A surviving permit with no domain claim is possibly consumed and stays
+charged; close/fence launch and reconcile it before retirement. Restore a new domain epoch only
+under fenced writer authority after accounting for every potentially live execution. Missing or
+unreadable active Stores keep referenced authority unknown; an independently synced quiescent
+record proves no obligations for that completed Store generation. If inventory
+is also lost, require restored verified inventory or externally proven fencing of the entire old
+allocation and all registered remote authority. Otherwise managed recovery remains unavailable;
+a new externally disjoint allocation may run without claiming the old work terminated.
+A domain registration binds stable identity to its allocation and state anchor. Alternate
+configurations targeting the same boundary must join the existing domain or fail with
+domain_policy_conflict. An unreachable rendezvous refuses registered managed execution with
+domain_registration_unavailable. An operator may explicitly select --unregistered-resources on
+that invocation with operator capability (configuration section 6); environment, project and user
+config cannot enable it. Every status/receipt binds that opt-in and says unregistered, aggregate
+budget coordination unavailable.
+It cannot advertise aggregate isolation, join a registered parent's budget or satisfy a Task
+requiring domain.aggregate.registered. This exception is never inferred from a changed HOME/XDG root.
+Hard aggregate guarantees require shared registration or externally disjoint enforced allocations. This is a coordination mechanism
+among cooperating invocations, not a same-user adversarial security boundary.
+
+Domains must be disjoint allocations or form a validated parent/child hierarchy. A child
+allocation is charged to its parent once. Independently configured overlapping roots may not
+both advertise strict aggregate isolation; registration refuses the overlap. File identity,
+mount identity and backend allocation IDs establish equivalence; names alone do not.
+
+Multiple users: per-user domains by default. For a machine-wide bound the operator assigns
+OS-enforced per-user/service slices whose total fits. A privileged cross-user AF daemon is
+not required or introduced by this feature. Other users' details remain private.
+
+Docker: each allocated container is a domain unless multiple containers are explicitly given
+a shared, supported allocator. Shared JSON files over arbitrary mounts do not establish this.
+
+Kubernetes: AF schedules within its assigned container/pod allocation. The cluster scheduler
+owns node placement and namespace quotas. Separate AF replicas do not coordinate through a
+SQLite file on a network volume. Use externally bounded replica allocations and the existing
+Task writer ownership contract. A distributed AF allocator is a separate extension.
+
+Allocation succession is explicit: domain register --predecessor DOMAIN@EPOCH resolves through
+the persistent domain-UUID index, validates the recorded old allocation and fences its writer.
+The predecessor reference selects evidence, never authority or capacity. Reconcile its execution
+permits, then CAS the inventory's predecessor epoch and bind a new allocation epoch to the same
+domain UUID. Retain the old allocation-to-domain lookup as a fenced tombstone; late old commands
+cannot create a fresh budget. A successor without access to the canonical index needs a verified
+restoration/adapter-provided predecessor record, not inference from --state or a pod name. Retain remote claims, unknown executions and their remote concurrency charges.
+Recompute local capacity from the new boundary; do not reuse old capacity observations. A changed
+boot proves old local processes gone only when attested against the same host/kernel-instance
+identity that ran them. A different or unknown host identity proves no termination. Moving a
+coordinator pod/container to another host makes predecessor-local executions remote-uncertain;
+retain their remote concurrency and bounded local recovery footprint until fencing/termination
+evidence arrives. An API object deletion, volume detach, new pod UID or differing boot ID alone
+does not prove termination on the former host.
+If the former coordinator's state writer cannot be fenced, refuse takeover. A storage backend
+whose mount/locking semantics cannot provide this contract is unsupported for durable succession.
+
+4. Capacity, reservation and usage
+----------------------------------
+
+For each resource, show all of these separately:
+
+* Observed environment limit: host, affinity/cpuset, cgroup ancestors, container or executor.
+* Operator budget: AF's permitted share, including where it came from.
+* Reserved capacity: commitments to admitted operations, including unused portions.
+* Measured usage: current and peak consumption, with scope and sample age.
+* Outside use and headroom: external consumption or an explicitly unknown quantity.
+* Enforceability: kernel, runtime, cooperative, observation-only or unavailable.
+
+A hidden ancestor limit is unknown, not unlimited. Where an executor can attest a complete
+boundary, record that attestation. Otherwise label the visible scope and stop short of a
+machine-wide guarantee. Never infer container resources solely from host /proc/meminfo.
+
+CPU is a decimal count of cores, stored as integer millicores. Byte counts use explicit units;
+durations normalize to integer milliseconds. CPU request, share/weight and ceiling are distinct.
+A CPU request is an AF scheduling commitment, not an OS guarantee of available CPU time.
+
+Memory uses whole-boundary accounting where available, including charged cache and tmpfs.
+RSS sampling is a different metric and remains labelled. Shared pages and nested boundaries
+must not be summed as if disjoint. Swap has its own limit and usage; it is never added to RAM.
+
+Default memory admission is non-overcommitting: reserve the execution's full memory ceiling.
+An estimated working set can be lower and is used for diagnosis and suggestions, not as a
+license to reserve less. Memory bursting beyond the reservation is excluded from version 1.
+CPU may burst up to its configured ceiling if the backend can redistribute shares, without
+changing the admitted minimum or depriving coordinator work of its declared share.
+
+For a resource r within a domain:
+
+  budget(r) = min(operator ceiling, every applicable known environment ceiling)
+  uncommitted(r) = budget(r) - control reserve(r) - sum(disjoint reservations(r))
+                   - sum(observed excess holds(r))
+
+Negative uncommitted capacity means overcommitted; saturating arithmetic must not hide that.
+Reject numeric overflow and inconsistent snapshots.
+
+Memory admission also considers current pressure. For every applicable measured ancestor:
+
+  growth_pending = sum(max(0, reservation - attributed current usage))
+  growth_room = observed available growth - growth_pending - outside headroom
+
+A new full reservation must fit both uncommitted capacity and growth_room. Ancestor scopes
+are constraints on the same allocation, not additional pools to sum. Missing attributable
+usage conservatively counts the full outstanding reservation; it never counts as zero.
+Host MemAvailable is an observation, not reserved capacity or a prediction of external growth.
+Headroom is subtracted once at its declared scope; the UI exposes each term of the calculation.
+
+An externally reserved OpenClaw footprint is expressed by setting AF's domain budget and
+outside headroom. There is no gateway-specific field in the general model.
+
+Disk is resolved per filesystem/quota domain, including state, cache, source staging, workspaces
+and temporary directories. Paths on the same volume share a free-space constraint. Allocated
+bytes, logical bytes, quotas, inodes and available blocks are distinct where observable.
+Memory-backed filesystems count against memory as well as any size limit.
+
+Disk reservations cover future growth, not bytes already included in filesystem use. As writes
+land, transfer their charge from outstanding growth to measured allocated storage atomically
+in the accounting projection. Retained artifacts keep a Storage Budget charge after execution
+ends; they do not become free disk when the worker reservation releases. Shared CAS/cache data
+is charged once with reachability references, not once per Task. Protect active data even when
+it makes the configured storage budget temporarily unattainable, and refuse new growth.
+Without a filesystem/runtime quota, scratch monitoring and admission are cooperative and may
+overshoot between samples. Strict scratch requirements need a proven quota-capable executor.
+
+For every writable volume V, let A be available allocated bytes for the executing identity,
+F the existing Storage Budget free-space floor, E the emergency-reserve shortfall still needing
+allocation, and G the sum of outstanding growth commitments. Then growth_room(V) = A - F - E - G.
+G includes scratch, source preparation, telemetry and retained-output growth, with disjoint
+ownership references so shared CAS bytes are charged once. For one operation, outstanding growth
+is max(0, admitted peak incremental allocation - currently attributed incremental allocation).
+Deletion increases that outstanding amount again if the operation can rewrite the bytes.
+If attribution is incomplete, retain the full growth commitment. Existing allocated emergency
+files are already absent from A: do not subtract their size again. An unfilled required reserve
+separately blocks admission. Quota headroom and observable inode floors are additional constraints,
+using the same outstanding-growth rule, never substitute pools of byte capacity.
+
+Retained-output allowance is a required part of each request. After authorized eligible cleanup,
+current managed storage plus outstanding retained growth must fit the existing [storage] max_bytes
+when finite. Active/protected storage is never deleted to make that inequality pass. Transfers
+between a scratch reservation and retained storage update ownership once, before releasing growth.
+The request names every destination volume; there is no uncharged output path or duplicate disk
+budget in [resources.budget]. Physical capacity or quota minus permanent floors below the request
+is estimate_too_large; temporary own/external occupancy is disk_space wait, bounded by its deadline.
+Unreadable capacity is observation_stale with its volume/quota coordinate and unavailable
+source reason, not a zero or an unlimited allocation. Section6 governs scoped stale retention;
+calling the same missing observation unavailable does not select a different grace rule.
+Example: 15 GiB free, 10 GiB floor, fully allocated emergency reserve and two 4 GiB growth requests:
+the first fits; the second waits because only 1 GiB remains uncommitted. With 13 GiB free a 4 GiB
+request waits if the volume's total usable capacity can fit it after occupancy clears; otherwise
+it is refused. ADR-0144's last pre-start floor check remains a final guard. Its stop-on-current-
+floor-breach behavior is explicitly supplemented by queueing future growth before paid dispatch.
+
+5. Execution units and requirements
+----------------------------------
+
+Allocate capacity immediately before an operation is dispatched, not for every future graph
+node. Every spawning path goes through the shared supervisor: planning probes, source fetch,
+provider admission, workers and tools, checks, measurements, nested tasks and cleanup.
+
+Requests include:
+
+* Work identity, parent, Task/Attempt or kernel-operation identity and approved executor.
+* CPU request and ceiling; memory ceiling and optional estimated working set.
+* Process limit; scratch growth and volume identity; expected retained output allowance.
+* Required enforcement capabilities by resource and process-tree scope.
+* Maximum execution duration, inherited Task deadline and queue wait allowance.
+* Estimate origin and exact environment/workload fingerprint.
+
+Fingerprints bind the command/package, source where relevant, toolchain, input size class,
+executor, platform and concurrency. A check name alone is not a measurement key. Cache warmth
+is recorded. Observations from another environment cannot silently raise confidence.
+
+The request resolves from captured project declarations, a pinned built-in worker recipe, or
+an operator-supplied explicit bound using the stable node/package binding in configuration.txt
+section 4.1. Bindings are captured before paid work and supply missing values or replace
+recipe-derived quantities in either direction within machine constraints; project quantities stay fixed;
+they cannot weaken required capabilities, select a destination or alter already admitted plans.
+Historical measurements suggest values for future plans;
+they never silently change approved limits or become a worst-case guarantee.
+
+Unknown custom work needs an explicit bound or a declared remote executor. AF may offer a
+bounded calibration run using a hard boundary and an explicit reservation; it must not guess
+that an arbitrary build fits a laptop. A built-in recipe is labelled an initial estimate and
+can fail with resource_exceeded. Never silently shrink a worker's memory ceiling to make it fit.
+
+The native provider process and all tool descendants share one execution reservation unless
+a supported tool bridge transfers a sub-allocation. AF cannot predict a shell command hidden
+inside an opaque provider session. Its aggregate boundary still limits that session; precise
+per-command scheduling requires a verified tool bridge. Status must state that granularity.
+
+Resolve each writable region to a backing allocation and class before admission. memory_limit
+is the total execution ceiling including tmpfs, charged cache and helper overhead; scratch_growth
+never silently increases it. A memory-backed scratch maximum must fit within that ceiling alongside
+the declared non-scratch live-memory allowance, or readiness refuses the profile. Such scratch
+uses a tmpfs size limit and memory commitments, not disk-growth commitments; retained data later
+copied to disk needs a separate disk allowance. The default strict-build example explicitly needs
+disk-backed scratch. That requires an amendment of ADR-0144's blanket tmpfs convention for this
+executor; unmodified executors that cannot supply it refuse that profile before model calls.
+scratch_storage=disk implies scratch.disk_backed; memory implies scratch.memory_backed. These
+are visible resolved requirements even when required_capabilities is empty. A declaration alone
+is insufficient: validate mount/runtime backing evidence with exact volume identity at readiness
+and read it back at dispatch. Cooperative native adapters may attest backing without claiming
+hard byte quotas. Unattestable or changed backing produces capability_missing before launch.
+
+A same-host container's resource commitment belongs to the physical backing host allocation even
+if the daemon places its cgroup outside the coordinator subtree; attribute usage by container ID
+and avoid counting it again as outside use. A Desktop VM or remote cluster has its own capacity
+domain. Local launch/control work remains charged locally. Unknown placement cannot support a
+strict host-wide claim. Capture these allocation mappings with the approved executor binding.
+
+6. Coordinator reserve and nested work
+-------------------------------------
+
+Reserve capacity for admission, heartbeats, cancellation, output draining, artifact sealing
+and terminal recording before worker admission. Worker limits exclude this control reserve.
+An active Task is a root with a locally charged coordinator or local execution still live/possibly
+live in the CURRENT allocation. It holds one task slot and its coordinator control vector across
+operations, until terminal or explicitly checkpointed inactive with no current local executions.
+A crashed coordinator with current-boot local survivors retains that slot; boot/instance capacity
+re-attribution removes predecessor-local slots without closing their unresolved permits. Remote
+uncertainty alone uses bounded shared reconciliation metadata, not an active local Task slot.
+A live queue client is a smaller measured control reservation awaiting admission, not an active
+Task/coordinator slot. It can be served by control-side scheduling without acquiring a Task slot.
+The max_live_queue_clients limit covers these inactive-root clients only. An already active Task
+uses its existing measured coordinator allocation for one pending admission handshake; it never
+waits for an inactive-root client slot while holding a Task slot. Its further operations receive
+fresh scheduling tickets, not another inactive-client allocation. Additional pending intents are
+bounded durable metadata and cannot create additional live coordinators. Thus an inactive W
+cannot monopolize the channel needed by active A/B to finish and release their Task slots.
+Kernel recovery/inspection uses the domain's bounded base pool, not an unbounded coordinator per
+old unknown Task. Resuming an inactive Task atomically charges its coordinator/first-operation
+vector and converts its slot claim to active ownership; without a prior claim the ordinary grant
+acquires the whole vector at once. Pending slot claims count against concurrency, not active
+coordinator memory. Status shows active Tasks and reserved pending slots separately. Within an already active Task, new operations request zero extra Task
+slots and no second coordinator charge. A ceiling on active Tasks bounds these coordinator charges.
+
+Queueing processes retain a measured minimal control reservation. Queue entries and short
+submission commands are bounded; clients that would exceed that bound receive a durable
+queued/inactive status and can reconnect. Ready reconnecting clients acquire live slots through
+a durable FIFO ticket queue; later arrivals cannot overtake an outstanding ready ticket. Offers
+expire after dispatch_ack_timeout if not acknowledged, allowing offline clients to be skipped.
+There is NO quantum rotation of a live resource waiter. A slot is retained until admission,
+cancellation, its original finite Task deadline, loss of liveness, or loss of request readiness.
+After admission the queue-client slot is released; further operations obtain a new FIFO ticket.
+Ordinary resource-wait readiness uses W+N<=B after finite releases. New-root slot tickets use
+the separate root-slot readiness/claim rule in section7, so full active slots cannot prevent
+FIFO access or erase the opportunity to age after a slot is claimed.
+Stale observations never authorize affected admission. Protection distinguishes two scopes:
+* Domain-wide staleness affects admission observations common to every otherwise-ready request,
+  so none can establish eligibility from fresh required coordinates. A live owner keeps its
+  slot/turn identity; eligible_wait pauses and resource protection is suspended. No replacement turn can use the missing evidence either.
+* Coordinate-scoped staleness names the affected subset of resources. When another live
+  protection-eligible waiter or claim-ready root uses only fresh coordinates, bounded handoff
+  applies. Without such a competitor, retain ownership and keep the coordinate scope visible.
+  Evaluate that competitor ignoring the suspended owner's unused
+  claims, group queue-order restrictions and sole-turn occupancy, while retaining every active
+  execution/control charge and all other eligibility constraints. Its existence starts
+  suspended_turn_pressure_grace (default30s) for the stale holder, including an unprotected root claimant. The blocker receipt names every
+  missing coordinate. Unreadable volume/quota and missing backend observation use this same rule.
+
+During a bounded suspension the owner retains its unused claims and queue-client slot until the
+grace expires; nonconflicting admissions continue. At expiry release the protected turn, unused
+Task/group claims and inactive-root client slot in one transaction. Preserve the original FIFO
+ticket and eligible_wait, record observation_stale and offer the next fresh eligible waiter the
+turn/claim. No expired claim retains a concurrency charge. Active Task/coordinator reservations
+and live execution vectors remain charged; only unused claims and protection are released.
+Reclaim requires recover_after_samples consecutive fresh observations for the affected coordinates
+and restored eligibility. Persistent stale data cannot reacquire the turn. A canceled/replaced
+competing waiter or a changed stale coordinate never resets an already started grace. Time with
+no fresh eligible competitor pauses the scoped-stale timer; its elapsed amount is retained until
+healthy recovery. Domain-wide stale time neither consumes that timer nor grants new authority.
+
+Fresh pulses also retain ownership through transient, fresh-measured pressure, with eligible_wait
+paused and protection suspended. Persistent pressure/headroom/growth-room/backend blocking uses
+the same30s grace for EVERY claimant. Fresh-pressure and scoped-stale episodes share accumulated
+blocked time; relabelling the same blocker cannot reset it. Healthy recovery requires the existing
+five fresh samples before a released request can rejoin. Under an available writer, qualified
+cadence and responsive dispatchers, a fresh eligible competitor obtains the released turn/claim
+within grace+two scheduler cadences+ack (36s at defaults). Its execution still needs its own
+finite-release conditions;36s is not an unconditional execution-start guarantee.
+
+Persistent structural capacity loss, quarantine/unknown holds, lost authority, cancellation,
+deadline or lost pulse release affected unused claims under their own rules. These are not stale
+observation gaps. Ordinary unprotected clients losing readiness release their live slot; the
+explicit bounded/domain-wide retention rules above are the only observation exceptions.
+Control-side snapshots evaluate durable intents without giving each a live slot. Tickets and
+recorded age survive rejoin; no periodic live-client quantum exists. Under healthy capacity/service
+assumptions, earlier live requests finish admission in finite time and ready FIFO clients receive
+released slots without new-arrival overtaking. Deadlines bound real work independently, and never
+prove starvation freedom in the no-deadline model. Offline clients have no automatic progress
+claim. A foreground af task run/wait or an explicitly operated service must be alive to advance
+work; read-only inspection never starts it.
+
+Nested work uses parent sub-allocation or an atomic expansion of the existing reservation.
+The domain charges the parent aggregate once. A parent may surrender only resources it has
+actually stopped using, after its execution boundary has been reduced or terminated safely.
+Sleeping or SIGSTOP does not free its memory.
+
+At planning, reject a known parent/child maximum-live-set that cannot fit. Reserve that complete
+known maximum live vector before starting the parent; subsequent child sub-allocations inside it
+consume no new domain capacity and never wait for a drain turn. A live parent's unplanned atomic
+expansion is nonblocking: grant the whole vector immediately under ordinary admission, or return
+nested_capacity_conflict with the blocker. It never enters the capacity wait queue while the
+parent holds resources. A drain refusal is labelled fair_share_wait in that diagnostic, not a
+claim that the vector exceeds physical capacity. The parent must release at a supported checkpoint,
+use an already-authorized remote plan, or finish that Attempt truthfully. No hidden retry occurs.
+This rule eliminates cross-root resource hold-and-wait cycles; two parents cannot both retain
+their holds while queueing for each other's release. A resource-waiting continuation may requeue
+only after safe release of the parent's live vector. The policy deliberately does not guarantee
+completion of unplanned nested work under contention. Known nested workloads must use planned
+aggregate reservation; failing to model their overlap is an actionable planning defect.
+
+Requests spanning several volumes or provider slots acquire all AF-controlled requirements
+atomically or none. Backend preparation has a short bounded reservation and cannot hold a
+Task Store lock. Define one lock order: domain transaction, release; Task transaction, release;
+backend effects outside both. Cross-store steps use idempotent intents, not nested transactions.
+
+7. Fair scheduling
+------------------
+
+Version 1 uses deterministic weighted fair admission with aging and a protected drain turn.
+It is non-preemptive for arbitrary running workers. Native CPU weights may change within the
+configured envelope; AF does not kill or suspend a running provider to improve queue fairness.
+
+Each root Task is a scheduling account. Nested tasks remain in that account; spawning many
+children must not multiply its share. Operator-configured project groups may cap aggregate
+concurrency. Verified cleanup and terminalization retain the control reserve independently.
+
+Scheduling proceeds from a durable queue snapshot:
+
+1. Reconcile expired preparation claims, changed capacities and execution boundaries.
+2. Remove requests whose authority, cancellation or deadline is no longer valid.
+3. Compute all blocking constraints, retaining their numeric shortfalls.
+4. Among fitting requests choose the account with the smallest weighted service score;
+   break ties by durable enqueue sequence and request ID.
+5. Commit the complete resource vector, policy generation and decision inputs atomically.
+
+Service is reservation occupancy over time: integrate the largest normalized resource share
+for each account and divide by its operator-assigned weight. Use fixed-point integers and
+recorded monotonic-time observations. Include actual work beneath an admitted parent once.
+New accounts enter at the active virtual-time floor so creating new Tasks does not erase debt.
+Explicit priorities are weights, not an unlimited right to starve other work.
+
+Default weights are background 1, normal 2 and interactive 4. A project cannot promote itself
+above an operator ceiling. Each request accumulates eligible_wait only while it meets all
+eligibility conditions, including live dispatcher acknowledgment. Queue registration/renewal can establish this
+handshake before turn selection; acknowledgment does not itself grant a turn or capacity.
+Inactivity or suspension pauses
+this counter without resetting it; unknown reboot intervals add no time. At each free-turn selection,
+requests with eligible_wait >= protect_after (60 seconds) compete by decreasing eligible_wait,
+then enqueue sequence and request ID. A rejoined eligible request competes at the next selection
+without another 60-second delay; it does not preempt an existing protected turn. The winner
+gets the protected drain turn: stop new conflicting admissions until it fits, withdraws,
+expires or loses eligibility. Nonconflicting work may continue. Existing jobs keep running.
+There is one protected turn per coordination domain in v1, chosen by the eligibility key above.
+This avoids incompatible turns over partially overlapping resource vectors. Coordinates are
+memory, CPU, PIDs, active Task slots, enabled project-group caps, each (volume, bytes/inodes/quota)
+and each scoped provider/executor concurrency slot;
+canonical allocation identities distinguish coordinates. Let B be the budget vector and N the
+non-releasable commitments (control, uncertainty/quarantine, stale excess and retained storage
+without an authorized finite reclamation). An active Task slot whose holder has remaining work
+outside the frozen finite set L is non-releasable N, even if its current operation is finite.
+A new root W includes one Task slot and its full new coordinator footprint; an already active
+root requests zero new slots/control charge. If W+N exceeds any cap, it is not protection-eligible:
+show task_concurrency/project cap without stopping those holders' next operations. Slot hand-off uses durable FIFO root tickets and an explicit slot claim, before resource aging.
+Root-slot readiness checks authority, dependencies, capabilities, configured maximum slot counts
+and the NON-SLOT W+N<=B test after finite operations release. Ordinary active TASK-slot holders
+do not disqualify it merely because their future graph is unknown. Project-group caps use the
+separate group eligibility rule below. Quarantined/unknown slot holders without a finite release
+contract disqualify claims depending on those slots.
+The oldest ready root is offered the next freed slot, EVEN WHEN its memory/CPU vector does not
+fit yet. After bounded acknowledgment the claim charges that slot, with only the already measured
+queue-client cost and no new coordinator allocation. Later small roots cannot take it. Slot
+readiness and the offer can be evaluated without a pre-existing inactive-client slot; the oldest
+group-eligible ready ticket uses the root-claim handshake channel reserved within max_live_queue_clients.
+Exactly one such channel is reserved for the global FIFO head; the remaining configured channels
+serve ordinary pending clients. It cannot be occupied by a later ticket. With a limit of1 there
+are zero ordinary channels, but the head still progresses. Its measured cost is included in the
+base pool. This avoids a head claimant waiting on client slots occupied by roots behind it.
+
+Group eligibility is evaluated BEFORE granting the global root-slot claimant role. A root is
+group-blocked whenever its required group-cap coordinates cannot all be acquired together because
+of active holders or previously granted claims. No group-holder drain claim is made before
+group eligibility; their future Task graph need not be known. It retains its original ticket but holds no global claimant role, unused Task slot or
+partial group claim; it cannot restrict commitments of roots whose group sets are disjoint.
+If an existing claim becomes group-blocked, release those unused claims at the next scheduler
+transaction (within the qualified cadence), preserving ticket and eligible_wait.
+
+Queued group tickets order conflicting group admission by original enqueue sequence. A live,
+otherwise-ready group-blocked ticket prevents later roots sharing a required group from overtaking
+it; this is a queue-order restriction, not a reservation or a global drain turn. Disjoint groups
+remain eligible and may obtain the global claim. Multiple group memberships use the same total
+ticket order on every overlapping group, preventing opposite acquisition orders. Lost authority,
+liveness, structural eligibility or observation grace releases these queue-order restrictions
+as well; unknown/stale roots cannot hold them indefinitely. Status identifies the blocking group,
+active holder and affected ticket, without charging a fictitious Task/coordinator allocation.
+
+On a holder's terminal/inactive transition, release its Task and group coordinates together.
+In that transaction, reconsider original group tickets before later roots consume the released
+coordinates. The oldest newly group-eligible root rejoins global FIFO at its original position.
+It cannot take slots already claimed by another eligible root or preempt an existing drain turn;
+those earlier grants keep their finite progress contract. This exception is visible in wait
+attribution and excluded from the98s fixture's no-prior-claim/turn premise. A group holder always
+also holds a Task slot, so retaining a different freed Task slot while waiting for that holder
+adds no progress guarantee. The next eligible unrelated fitting root can use that freed slot
+within two scheduler cadences+ack (6s at defaults) under healthy admission conditions and with
+no prior granted competing claim/turn, even if the group holder never
+finishes. Progress for the group-blocked root itself requires the relevant holder to finish.
+
+One global root-slot claimant remains until admission or lapse after group eligibility. Reserve
+its Task slot and all currently free required group coordinates atomically; no partial Task/group
+claims are retained. Several blocked roots cannot accumulate independent claims. Later roots
+cannot consume a needed freed Task slot or add non-finite commitments invalidating the claimant's
+non-slot readiness. Active roots request no additional Task/group slots and can continue their
+operations. A slot claim alone never blocks them. Lost readiness/liveness, expired acknowledgment,
+cancellation or deadline releases unused claims; section6 defines bounded observation suspension.
+
+Fresh pressure, growth-room/headroom or backend blocking applies the30s grace to EVERY claimant.
+On lapse preserve FIFO order and eligible_wait; recover_after_samples fresh healthy observations
+are required before reclaim. Scoped-stale time follows section6, rather than unbounded retention.
+After lapse offer freed slots to the oldest currently eligible ticket; fitting ordinary roots may
+use them if none exists. A fitting R starts within grace+two cadences+ack (36s at defaults) under
+the otherwise healthy fixture. Unknown/non-finite blockers release unused claims and their global
+role; the request remains queued with its original history. No deadline exit proves progress.
+
+Once all required slots are claimed and the dispatcher is live, W is resource-eligible and ages
+toward the protected drain turn. Include its own claimed slots once, not as competing N. At
+admission atomically convert the claim to active Task/group ownership and charge the coordinator
+plus operation vector. Active holders' future operations remain subject to the ordinary drain
+rule only after the turn is granted. New-root FIFO progress assumes earlier ordinary root holders
+actually finish in finite time; the scheduler need not know their remaining graph in advance.
+With no already granted competing claim/turn and otherwise the94s resource fixture conditions,
+from the last required slot release: <=2s offer selection + <=2s ack +94s bounds W's start by98s. Missing capacity, unknown holders or external pressure are outside that
+bound and are named explicitly. Deadline expiry is never evidence for this progress property.
+At turn grant, freeze the set L of earlier admitted
+finite operations, including their fully reserved planned child overlap. W is eligible only if
+W + N <= B componentwise after L releases. A proposed admission X conflicts precisely when
+W + N + sum(post-turn live commitments) + X > B in any coordinate. Nonconflicting work may
+backfill. All grants still pass current capacity/pressure checks. Freed allocations and converted
+retained output update N; if W then depends on an unbounded hold clearing, suspend protection
+and name that hold/action. Never infer reclaimability from a lease timeout or from a backend merely
+being reachable. Planned child sub-allocation within L is not a new admission; unplanned expansion
+uses the nonblocking rule in section 6 and cannot make an earlier operation wait indefinitely.
+
+Only a live, acknowledged dispatcher may hold that turn. Queue metadata survives disconnected
+clients, but an inactive request cannot reserve capacity or stop backfill. A dispatch claim has
+a 2-second monotonic acknowledgment deadline. After acknowledgment, it is a renewable liveness
+lease with a default 2-second duration measured by the scheduler's monotonic clock. The dispatcher
+requests renewal every 500 ms through a per-dispatcher bounded pulse record (nonce, boot/process
+identity, increasing sequence), never a shared SQLite writer transaction. Ack uses this transport.
+The canonical registration publishes the per-domain runtime locator plus runtime generation; each
+queue entry pins its exact pulse locator/nonce. Resolve neither from a caller's XDG_RUNTIME_DIR
+nor TMPDIR. Native default is an owner/mode-verified runtime subdirectory of the canonical domain
+root; its files are ephemeral and require no fsync. A qualified adapter may register another local
+runtime root. If it vanishes, CAS a new runtime generation through registration, invalidate old
+handshakes and reconnect all live clients; no split fallback or false freshness. This narrowly
+extends the domain ADR's XDG exception to its shared pulse/IPC locator.
+
+Each live dispatcher publishes a single-writer fixed-size shared-memory pulse record at its
+registered runtime locator. An atomic sequence protocol detects torn/incomplete writes; a paused
+writer affects only its own record and holds no shared lock. Fields bind runtime generation,
+boot/process identity, handshake nonce, sequence, and the last WRITE's boot-monotonic timestamp.
+The trusted control publisher changes its handshake nonce after any inter-write gap >= lease;
+it cannot resume an expired nonce. Future, backward or incoherent timestamps are invalid. This
+protocol is qualified per platform and outside the worker boundary; cooperative same-user forgery
+remains a stated risk. Initial handshake/grant binds the nonce; pulse renewal writes never fsync,
+acquire the durable writer guard or modify the domain database.
+
+Control-side samplers read these records at a qualified <=250ms interval, independent of the
+<=2s capacity-selection cadence. All coordinators use the same boot-scoped monotonic clock and
+compute freshness from WRITE time, not from the time an observer happened to read it. They are
+symmetric readers; no election or durable per-sample freshness transaction exists. Only turn
+grants/revocations and bounded eligible_wait checkpoints are durable. Before a durable scheduling
+decision, re-read the current pulse/nonce and validate authority under the writer transaction.
+A restart/runtime-generation change invalidates old handshakes. A delayed pulse cannot resurrect
+an expired nonce; a fresh handshake re-enters with preserved eligible_wait, no new authority.
+Validate sample interval + renew interval < both ack timeout and lease duration.
+During a durable-writer stall, fresh pulses remain observable and old acknowledged ownership is
+not revoked merely because no database commit occurred. Resume checks the advancing nonce/time;
+a healthy publisher retains its turn. Detection/dispatch timing is censored while the writer is
+unavailable, but liveness continuity is preserved. No admissions occur through a stalled writer.
+This pulse transport is ephemeral liveness evidence, not launch authority. At the next scheduler tick, an unacknowledged or expired claim becomes inactive and loses its turn,
+even if its process, socket or file lock still exists. The request retains its historical age. A valid live
+owner must rejoin before it becomes eligible again. No model Attempt begins during this exchange.
+External pressure, stale observations, an unavailable backend or a shortfall that depends on
+quarantined/unknown/cleanup-pending or otherwise non-releasable holds suspends protection while
+preserving wait history; they must not block unrelated fitting work indefinitely. Qualification
+of the 94-second fixture assumes an immediately responsive dispatcher. A disconnected protected
+waiter must lose protection by last pulse WRITE + sample interval + lease + scheduler cadence
+(4.25 seconds at defaults). The independent oracle records writes, accepted observations and ticks;
+from the last accepted observation the bound is lease + cadence. Live pulses must retain protection
+under the qualified timing bounds. Cadence/commit misses are recorded as degraded/censored for
+latency, not passing observations. Stop-inside-ack/renew cannot hold the writer lock. A stopped
+writer is the separate unavailable state in section 10 and does not claim bounded backfill.
+
+This prevents endless small-job backfill from starving a larger request. It does not promise
+a fixed start time while external pressure persists or existing work has unbounded duration.
+All admitted operations need a finite bound; status reports the exact reason when a service
+guarantee is impossible. Queue estimates are ranges only when supported by measurements.
+
+An eligible request has ready graph dependencies, valid authority, a finite remaining deadline,
+a supported executor and a resource vector that can fit after already admitted finite work
+and its planned children finish, without relying on uncertain holds or unbounded cleanup. A permanently oversized or unsupported request is refused, not given a drain turn.
+Capacity wait age uses a monotonic clock within a boot; reboot recovery retains recorded wait
+history without inventing elapsed monotonic time. Fairness never overrides a Task deadline.
+
+Protected verification token/Attempt reserves keep their existing meaning. They do not reserve
+all future machine resources. Verification competes as a ready operation within its root Task's
+account, with operator policy allowed to prioritize completion. Readiness exposes likely
+resource/queue infeasibility before paid work; it must not promise completion within a deadline
+from uncertain duration estimates. Mandatory verification cannot be skipped to clear a queue.
+
+8. Policy and configuration
+---------------------------
+
+Human configuration is TOML, using AF's existing configuration ladder and --origin reporting.
+Machine [resources] is accepted from built-in, system, user and environment layers only.
+Repository layers cannot change the domain, total budget, executor credentials or telemetry
+retention. Repository declarations describe work requirements and stricter constraints.
+
+Effective authority is the intersection of Task/project requirements, operator policy and
+backend capabilities. Local policy cannot weaken a captured strict requirement, remove a
+gate, change a Provider/model or add a remote destination. A larger available machine budget
+allows more existing work to fit; it does not enlarge the Task's approved token/time allowance.
+
+Mode auto selects only an already-authorized local enforcement mechanism; it does not select
+Docker, a cluster or another remote destination merely because the local host is crowded.
+Mode cooperative explicitly permits observational limits for ordinary work; proven hard caps
+may still be used. Mode strict requires per-execution hard memory/CPU/process limits and
+whole-tree termination. Scratch quotas, I/O limits and other capabilities are separately
+required when the Task needs them. Every mode is intersected with captured Task requirements.
+
+Use the established last-wins machine preference ladder. OS/administrator enforced limits
+remain ceilings regardless of any user/env setting. Do not invent a machine TOML file as a
+security boundary against its owner. Attempt-local narrowing may reduce priority/concurrency;
+it may not create a second domain budget or silently reduce an execution requirement.
+
+Simple setup exposes four choices: AF memory budget, CPU budget, maximum active Tasks and
+strict/cooperative requirements. Advanced resource, queue and pressure settings remain visible
+through config explain but are not required for ordinary onboarding.
+
+First activation atomically persists machine file/default preferences and their origins. Only one
+winner creates the initial policy generation. Domain-wide environment overrides are activation
+inputs for explicit config apply; ordinary runs with different values report domain_policy_conflict
+and show active versus pending values. An idle domain retains its generation. Later invocations
+and reboot do not elect a new policy from whichever process starts first. Proven allocation
+changes update derived capacity epochs while retaining the operator policy and its provenance.
+af config show and af resources config expose both the active policy and any pending resolution.
+
+The capability registry is closed and versioned with ResourceCapabilities@1. Required identifiers
+are exact predicates in capability-registry.csv, not prefixes or an ordering of kernel above
+runtime above cooperative. Each offered predicate binds the resource, allocation, execution
+scope and evidence. A hard aggregate cap does not satisfy a per-execution predicate on a shared
+boundary. Unknown IDs/versions refuse. strict expands to memory.per_execution.hard,
+cpu.per_execution.hard, pids.per_execution.hard, process_tree.complete and process_tree.terminate.
+Other predicates remain explicit requirements. Check every mandatory planned node against its
+authorized executors at readiness before Provider admission, then re-probe/read back at dispatch.
+Dynamic generated nodes must pass that readiness check before their own paid work begins.
+
+Proposed default policy for qualification:
+
+* enforcement = auto: use proven hard capabilities where available, otherwise cooperative;
+  honor all explicit strict requirements. Effective mode is printed on every run/status.
+* memory = 60% of effective finite memory allocation; outside headroom = max(10%, 256 MiB).
+* cpu = 75% of effective CPU allocation, including fractional quotas; no integer rounding-up.
+* max active Tasks = 4; each still needs its resource vector. Queue bound = 256 per domain.
+* Control reserve starts at 256 MiB per domain plus 128 MiB per active coordinator, with
+  separately measured CPU/process allowances. These initial defaults require qualification;
+  they are not evidence that any particular AF binary fits those numbers.
+* Default memory overcommit is off. No automatic memory-limit growth or task termination.
+* Existing [storage] defaults and retention semantics remain authoritative.
+
+Percent budgets resolve against the effective allocation, not current free memory. They are
+recomputed on a proven allocation change, recorded as a new generation, and shown as bytes.
+Below the minimum viable control footprint AF refuses execution with a concrete requirement.
+
+Configuration changes are validated and staged before activation. Admission records reference
+the exact effective generation and origin map. Conflicting invocations join the active policy
+or report a mismatch; they do not each schedule under different totals.
+
+Decreases below live reservations enter draining: stop new conflicting admissions and explain
+when the new cap can take effect. Never force a live memory.max below current use merely to
+make config reload appear successful. Changes requiring immediate termination need an explicit
+operator cancellation action, separate from applying configuration. Requirement/capability
+changes that weaken isolation affect no already-approved strict Task.
+
+9. Enforcement backends
+-----------------------
+
+All implementations expose a versioned capability and lifecycle contract:
+probe, observe, prepare, start, inspect, stop, finalize, reconcile. Each mutation has an
+idempotency key, expected identity and generation. Adapters return typed observations;
+the kernel owns admission and acceptance. Reuse existing executor interfaces before adding
+another plugin entity; the process-supervision implementation stays in review-process.
+
+Capabilities are a matrix, not one boolean: aggregate/per-execution memory, CPU ceiling/share,
+process count, scratch quota, I/O control, descendant tracking, start fencing, termination and
+reconciliation. Actual read-back must match requested limits before user code begins.
+
+Linux delegated cgroup v2:
+  Use separate control and work groups; charge every descendant. Verify visible ancestor
+  memory/CPU/cpuset/process limits and delegation. A placement gate prevents workload execution
+  before containment is established. Do not give workers writable access to the controlling
+  hierarchy. memory.max and OOM events implement bounded failure; memory.high is a separate
+  optional pressure mechanism, not a hard ceiling. No default blanket memory.high throttling
+  until its effects are qualified. Details follow Linux's actual cgroup semantics [S1].
+
+Cooperative native execution:
+  Shared reservations, bounded spawning, process groups, available platform metrics, explicit
+  child concurrency and pressure-aware admission. Sampling cannot enforce a whole-tree hard
+  memory ceiling. Show that limitation. A matching PID after restart is not enough to reclaim
+  or kill a process. Strict per-tree requirements cannot select this backend.
+
+  Distinguish released_proven from retired_cooperative. A cooperative execution may retire its
+  scheduling reservation only after its exact launcher/root is terminal, its launch gate is
+  irreversibly closed, and every identity-verified tracked member is terminal after bounded
+  cleanup. Record a durable residual-risk receipt: descendant completeness remains partial and
+  unobserved escapees may exist. This is not proof of an empty tree and never satisfies strict
+  termination or complete-accounting requirements. The execution claim is never recycled.
+  Ambiguous root/launcher identity, a surviving known member, or missing durable evidence instead
+  quarantines the reservation. Recovery actions are identity-aware cleanup, a qualified boundary
+  reconciliation, or confirmed old-boot termination; there is no force-clear file operation.
+  Display residual-risk history after retirement and treat unattributed use as outside pressure.
+  Thus cooperative progress covers tracked executions; whole-tree safety claims require complete
+  containment. This explicitly narrows the blanket release-proof wording of the initial draft.
+
+Docker:
+  Distinguish AF inside a container from AF launching a container executor. In the former,
+  the outer allocation is inherited; writable cgroups or a Docker socket are not assumed.
+  In the latter, configure and read back limits on an operator-authorized daemon, bind container
+  ID to the Attempt and reconcile by ID. A whole-container limit is not per-worker isolation.
+  In-place restart has two supported evidence levels; neither mounts a Docker socket implicitly.
+  A qualified outside runtime/boundary supervisor can verify exact old-instance termination and
+  new instance identity, satisfying recovery.restart.proven when the full adapter qualifies.
+  Without it, registered instance-scoped cooperation remains available: all AF invocations in
+  the same container instance join one budget, with recovery.restart.proven=unsupported.
+  Require a private PID namespace, qualified private local writable backing for the resource
+  registry/anchor, and a common allocation identity/locator from the container adapter. The
+  adapter records current kernel boot ID, PID-namespace identity and PID 1 start identity.
+  Its canonical rendezvous is account/allocation-scoped on that verified private backing;
+  HOME/XDG overrides and separate terminals cannot select different roots. An account home on
+  shared backing requires explicit registration of a private local anchor/rendezvous through
+  the allocation adapter; an arbitrary tmp directory or shared volume cannot qualify.
+  A changed PID 1/namespace instance within the same boot re-attributes predecessor-local holds
+  away from the current instance's CPU/RAM/PIDs; retain execution_unknown permits, bounded
+  recovery cost and remote obligations, with explicit clone/committed-image residual risk.
+  No automatic retry, success or strict termination proof follows. Current retained files stay
+  charged; shared storage growth is not freed without exclusive-backing/fencing evidence.
+  The resource state persists in that instance's private writable layer across in-place restart;
+  ephemeral-only state cannot promise recovery after its loss. Surviving Task journals referencing
+  lost instance state remain unresolved, never silently reissued. Task journal durability remains
+  the existing Task contract; instance mode does not waive it. A Task requiring recovery.restart.proven refuses this mode before paid admission. Hard live limits may still be used where
+  independently available; the UI distinguishes live enforcement from restart evidence.
+  Missing private backing/namespace/allocation evidence produces capability_missing with an
+  explicit registration/executor remedy. This mode does not claim to coordinate separate
+  containers or protect a host beyond the observed/assigned allocation.
+  Rootless resource controls require capability probing. Docker Desktop's Linux VM is an
+  intermediate allocation; its limits are not a guarantee about macOS host responsiveness [S2].
+
+Kubernetes:
+  Support both an AF coordinator inside a bounded pod and an explicitly authorized Job executor.
+  Use resource requests for placement and limits for runtime constraints, and report the
+  admitted manifest after mutation by cluster policy. Namespace quota, Pending scheduling,
+  eviction and node loss are distinct from AF local queueing. Track scratch/emptyDir and logs;
+  tmpfs consumption belongs to memory. Do not claim ephemeral-storage eviction is a synchronous
+  per-write quota [S3]. Durable Task state must survive pod replacement, with one fenced writer;
+  local coordination SQLite is not shared over RWX/NFS.
+
+  Each Job is bound to one Attempt/source/plan and a deterministic external identity. Use
+  restartPolicy Never, completions=1, parallelism=1, backoffLimit=0 and a finite active deadline;
+  there are no application-level automatic retries hidden from AF accounting.
+  A duplicate pod must acquire the unique durable execution start claim before running effects;
+  losing pods stay in a bounded supervisor-only wait without executing workload effects or
+  reporting successful completion until the claim holder has definitively terminated. Their
+  control footprint is reserved in the executor allocation; exceeding the duplicate-supervisor
+  bound cancels the Attempt truthfully, never silently restarts it. Implement the claim via an
+  executor-owned conditional-create record keyed
+  to the Attempt and consumed domain-claim identity (for example a Kubernetes object with
+  UID-bound ownership), authorized in the executor contract. This record only deduplicates pods;
+  it never independently grants Task authority. Section 10 defines the preceding domain consume
+  and authenticated remote authorization delivery. Do not reset that claim while a previous execution might survive.
+  Job configuration alone does not guarantee that a program starts only once [S4]. Lost create
+  responses are reconciled by object identity; a second random Job name is never a retry.
+
+  Terminal evidence belongs to the claim-holder pod UID/container and its fenced supervisor,
+  not a Job condition or a losing pod's exit. Cancellation or deadline must reconcile that holder
+  even if the Job controller terminates pods. Pin and test the chosen controller behavior: inject
+  duplicate pods, winner loss and node partition, verify the winner is not completed or killed by
+  a loser's ordinary path, and retain unknown completion when termination cannot be proved.
+  Record requests, limits and QoS separately. Limits are ceilings, not promises against eviction
+  or guaranteed CPU service. A Task may demand a qualified availability policy separately;
+  strict resource isolation by itself does not make that promise.
+
+macOS:
+  Cooperative native mode is a first-class path. A tested container/VM executor can supply hard
+  workload limits. Do not describe native process RSS limits as equivalent to a Linux cgroup.
+  Native strict support requires its own proven backend before being advertised.
+
+Windows:
+  The contract admits a Job Object backend after validating child/breakaway, kill and limit
+  behavior; this is a later delivery slice, not a present support claim [S5]. WSL is qualified
+  as a Linux environment with its own parent allocation. Universal contracts do not imply all
+  native platforms ship in the first release.
+
+Network and GPU:
+  Track provider concurrency/rate-limit wait and network latency as distinct bottlenecks.
+  Global network bandwidth shaping and GPU allocation are extension points, not promised v1
+  enforcement. A Task requiring unsupported GPU or bandwidth enforcement is refused explicitly.
+
+10. Durable admission and recovery
+----------------------------------
+
+Use one local domain coordination store on a filesystem with validated locking and durability.
+SQLite transactions with a short single-writer critical section are the proposed implementation;
+no daemon is needed. Active coordinators perform scheduling on state changes and bounded timers.
+No lock is held across network calls, child execution, full CAS validation or filesystem scans.
+Ack and renewal pulse transport never acquires this writer lock. Catchable job-control stops are
+masked across short store transactions; SIGSTOP/freezer suspension cannot be masked. Serialize
+all writer contenders first through an advisory writer guard. Before SQLite BEGIN, publish its
+holder's boot/PID/start identity, transaction kind and generation in a bounded atomic side record;
+clear it after COMMIT/ROLLBACK while still holding the guard. A reader checks the guard and record
+without taking the SQLite writer lock. An interrupted pre-BEGIN holder is also diagnosed honestly.
+A busy timeout (default 1s, below scheduler cadence) returns domain_writer_unavailable with the
+holder or explicit unknown identity and elapsed observation. It is a retryable wait while the
+holder is live. Read qualified OS state: stopped/traced permits a resume action (or authorized
+identity-aware termination); running/uninterruptible I/O suggests waiting and storage-latency
+inspection with M13 evidence, never termination as a performance remedy. Exited holders require
+rollback/replay; unknown state gets observation/retry guidance, no guessed kill action. Never
+break the guard or steal a SQLite lock from a stopped live owner. No unsafe grants
+occur; release receipts remain pending/charged. After resume or verified holder exit, rollback/
+replay and schedule normally. A stopped admission writer can halt the domain; this limitation is
+visible and distinct from dispatcher liveness. Diagnostics remain available from bounded side
+records/read models even when the database cannot service a fresh read.
+
+Persist queue sequence, policy generation, reservation vector, owner generation, backend object
+identity, dispatch intent, start claim, evidence references and state transitions. Read models
+are cached and reconstructible. Failure to read/write the allocator refuses new admission.
+An external process freeing a flock proves owner loss, not that its descendants stopped.
+
+Reservation states:
+
+  queued -> reserved -> preparing -> running -> releasing -> released_proven
+                                                  \-> retired_cooperative (ordinary work only)
+                          |             |
+                          +-------> reconciling -> quarantined
+                                           |          |
+                                           +<---------+ (identity-aware recovery action)
+                                           +-> released_proven (qualified complete proof)
+                                           +-> retired_cooperative (ordinary work; narrower evidence)
+
+Each recovery exit uses the same evidence contract as normal release. A quarantined reservation
+cannot jump directly to free capacity; reconciliation seals future launch and verifies termination
+or cooperative retirement first. Unresolved evidence keeps the hold and its uncertainty label.
+
+Queue cancellation/expiry does not consume a model Attempt. Admission preparation is a kernel
+operation until the existing Task runtime actually reserves an Attempt. Retries of bookkeeping
+reuse the same request ID; execution attempts follow existing Attempt accounting.
+
+Dispatch protocol:
+
+1. Validate readiness, authority, writer ownership and deadlines.
+2. Commit reservation and dispatch intent in the domain store.
+3. Record the corresponding reservation/intent receipt in the Task journal under its writer.
+4. Prepare the boundary without starting user code; persist exact backend identity.
+5. Arm an immutable domain claim for the exact prepared boundary. In one Task-journal transaction,
+   validate writer epoch, cancellation, budgets, deadline and the armed receipt, then record a
+   one-use execution permit. This Task commit is the start-authorization linearization point.
+6. The trusted local supervisor, or coordinator-side adapter for a remote executor, validates
+   the durable permit and CAS-consumes the armed domain claim. This single CAS decides
+   consume-versus-close for both paths. Open the verified local gate once, or deliver the bound
+   authorization to the remote supervisor using the protocol below; persist acknowledgments.
+7. On completion, retain final usage/exit evidence and terminate remaining owned descendants.
+8. Confirm boundary empty or remote execution definitively terminal; release capacity. For an
+   explicitly cooperative incomplete-tracking backend, use the separately labelled retirement
+   procedure in section 9; never emit released_proven for that procedure.
+9. Settle the Task outcome through its existing lifecycle. A capacity record is not a verdict.
+
+Every cross-store phase is idempotent and reconciles from durable intent. Recovery must handle
+a crash between each pair of steps, including start accepted but acknowledgment lost.
+Never use a timed-out reservation lease alone to conclude a worker is gone.
+
+The permit binds Task revision, Attempt, writer epoch at authorization, plan/source digests,
+domain/claim generation, prepared boundary identity, resource vector and start deadline. It is
+Task authority, not authority invented by the domain store. A writer cannot commit a new permit
+after losing its lease. A permit already committed is an in-flight authorized execution; writer
+takeover alone neither revokes it nor grants a replacement. The new writer first records recovery
+intent and closes every unconsumed claim by CAS. If consumption won that race, include the gated
+launcher itself in the possibly-live execution boundary and reconcile/terminate it before any
+replacement. A paused old launcher is not an empty boundary. No identity or claim is reused.
+
+An armed claim without a Task permit stays charged until the authoritative Task journal proves
+the old writer epoch sealed and no permit exists; absence from an unreadable or stale projection
+is insufficient. A consumed claim without an acknowledgment is execution_unknown. Cancellation
+becomes effective at confirmed gate closure or execution termination, not merely when a flag is
+written. Show cancel_pending while uncertain. Deadline expiry closes/terminates through the same
+supervisor; no late grant or retry is allowed. The protocol provides at-most-one AF-controlled
+launch for a permit, not transactional completion of a remote provider effect. Formal qualification
+must cover old-owner suspension before/after Task commit and domain CAS, plus takeover and cancel.
+
+Fencing binds domain epoch, owner generation, execution identity and Task writer authority.
+Local identity includes attested host/kernel-instance ID, boot ID, process start identity and
+retained boundary handles. Host identity is provided by a qualified adapter (for example a
+cluster node UID with trusted mapping); cloned or ambiguous machine IDs are insufficient for
+strict termination proof. Native ordinary work uses the explicitly weaker continuity contract
+below; its evidence must not be relabelled externally attested.
+Remote identity
+includes cluster/namespace/object UID. Reused PID, cgroup path, pod name or container name is
+not enough. A new owner cannot dispatch until old execution is reconciled or safely terminated.
+
+If the backend cannot resolve the execution under its declared evidence level, keep its reservation quarantined and show
+the required inspection. Retain conservative accounting; do not pretend the physical resource
+is occupied with certainty. Remote uncertainty reserves remote concurrency and only the local
+control footprint it actually needs, not imaginary local execution memory.
+
+After a verified reboot of the same host/kernel instance, local processes from its old boot
+are dead. A replacement on another host provides no such proof; old-local work becomes remote-
+uncertain. If same-host continuity cannot be attested, strict work stays quarantined until trusted
+termination/fencing evidence resolves it; ordinary native work can use the scoped cooperative path
+below. Remote effects may persist even after confirmed local termination.
+Retain their identities and reconcile them. SIGTERM uses bounded graceful cleanup; SIGKILL,
+disk failure and power loss are tested crash paths. Resource evidence is appended to Tasks
+through idempotent receipts without rewriting their history.
+
+
+Native continuity/reboot support is qualified separately for macOS and Linux hosts/VMs:
+* At registration create and sync a random host-local marker beside the canonical registry on
+  a verified local non-shared volume, outside any relocatable domain anchor. Bind its identity,
+  volume provenance and current kernel boot ID in launch receipts. Linux reads
+  /proc/sys/kernel/random/boot_id; macOS reads kern.bootsessionuuid. These identify boots, not
+  physical hosts [S-native]. Neither /etc/machine-id nor a marker alone is clone-proof.
+* For ordinary cooperative work, a matching marker on the registered local volume plus a changed
+  kernel boot ID permits reconciliation of old-local holds as retired_cooperative: seal every
+  old claim, retain tombstones, and record host_continuity_assumed with the explicit cloned-image/
+  restored-volume risk. This is automatic only for the qualified non-migrating local-host cell.
+  Copying/restoring/moving its marker requires explicit registration review, not automatic proof.
+* If marker continuity is unavailable, the operator can provide owner_same_host_reboot through
+  the separate operator capability. Require the exact old host/boot, current distinct boot,
+  reservation set and a recorded statement that the same host was rebooted and no live copy
+  exists. This admits only cooperative retirement with an owner-asserted residual-risk receipt;
+  it is not verified termination, never satisfies strict requirements, and cannot clear remote
+  or current-boot holds. A strict reservation cannot be downgraded to use this path.
+* Strict released_proven needs an externally qualified host/runtime identity and old-instance
+  terminal/fencing evidence; ordinary marker continuity does not supply that capability.
+  If recovery.restart.proven is required, missing qualified restart evidence refuses admission.
+  Hard live resource limits alone do not imply that recovery capability. Positive reboot tests
+  exercise both ordinary retirement and the strict capacity/authority separation below.
+
+[S-native] Kernel boot-ID sources (not proof of host continuity):
+https://www.kernel.org/doc/html/latest/admin-guide/sysctl/kernel.html#random
+https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_sysctl.c
+
+Boot/instance changes separate CURRENT allocation capacity from unresolved execution authority.
+On a trusted new kernel boot, old-boot processes cannot consume this kernel's CPU, RAM or PIDs,
+even if host continuity is unknown. Move all old-local claims, including strict ones, to
+execution_unknown with predecessor allocation/boot identity. They no longer reserve current
+local CPU/RAM/PIDs. Keep bounded local recovery/control cost and provider/remote concurrency
+obligations; the same permit is unresolved and cannot be replaced or reported successful.
+Release outstanding future growth only on qualified non-shared backing that the predecessor
+cannot still write; actual retained files still occupy disk, and shared/uncertain volumes retain
+their growth holds. New unrelated work may use proven current capacity. This is re-attribution,
+not released_proven or a downgrade of strict termination evidence. A Task can expose unresolved
+termination as execution_unknown without granting a retry; its history preserves that outcome.
+
+
+Terminal unresolved authority has an explicit unresolvable_unproven disposition. An authorized
+operator may select it only for predecessor-local executions whose current-allocation absence
+is established by boot/instance re-attribution and whose adapter has no remaining reconciliation
+path. Native Task settlement remains execution_unknown/inconclusive, never success. A durable
+sealed-permit tombstone forbids replacement/reuse forever; this is not released_proven and cannot
+satisfy recovery.restart.proven or process_tree.terminate evidence. Current-boot ambiguous local
+work and executor-enumerated remote jobs cannot take this exit merely because they are offline.
+
+No active adapter means zero per-claim live coordinator/recovery reservation: retain only bounded
+metadata in the base pool/storage budget. Predecessor-local Provider concurrency (distinct from
+an executor-enumerated remote Job/container) retires no earlier than the original permit's recorded
+maximum execution end plus captured watchdog grace, with explicit external-effect residual risk.
+The launch intent MUST already contain a finite original upper duration and finite adapter
+watchdog/cleanup grace; these are qualified adapter constants captured by digest at readiness,
+not values chosen during retirement. Missing or unbounded values make this retirement unavailable;
+readiness must refuse an adapter promising bounded predecessor-local retirement without them.
+If elapsed time cannot be established across boot, wait the FULL original remaining upper bound
+plus grace from the new boot; never infer elapsed monotonic time. This retires AF scheduling scope,
+not a guarantee about a remote API's completion, actual usage or rate limits. Preserve unknown
+billing/outcome markers. Executor-enumerated remote obligations and shared-volume growth remain
+charged until qualified reconciliation/fencing; no timeout releases those by analogy.
+
+Once those bounded predecessor-local obligations retire, the Store can sync quiescence with the
+unproven tombstone. Original claims cannot relaunch. Per-claim tombstones may compact into a sealed
+allocation-epoch watermark plus retained digest/receipt references: all older epochs permanently
+refuse grants, even after normal terminal Task retention expires. Existing Storage Budget rules
+control retained artifacts; no unbounded permanent row or 128MiB coordinator per old claim is
+required. Repeated local reboots cannot monotonically grow live N or active Stores after these
+bounded horizons. Truly unresolved remote work remains bounded by configured concurrency/storage
+limits and may require external action. Status distinguishes these two situations explicitly.
+
+A copied/restored marker requires domain register --review-continuity --predecessor DOMAIN@EPOCH
+through operator authority. It fences succession, records the changed placement and evidence,
+and selects externally attested or cooperative-assumed continuity explicitly. Unknown continuity
+uses the capacity/authority split, never automatic strict proof. A reference or matching clone
+marker alone cannot establish continuity or erase remote authority.
+
+Kernel limits remain active if the scheduler dies. A per-execution watchdog may enforce a
+finite execution deadline but cannot grant a retry. External APIs can complete after timeout;
+AF reports unknown completion until it can reconcile. No exactly-once provider claim is made.
+
+Remote authorization uses the domain claim as the only consume-versus-close authority:
+* Preparing a Job/container supplies no executable authorization. Its supervisor starts behind
+  a closed gate and has bounded control resources/deadline. Workload credentials cannot read or
+  create launch authorizations or modify claims.
+* After the Task permit commit, the coordinator-side adapter CAS-consumes that exact domain claim.
+  Before consumption it cannot publish any token, record or response that can open a remote gate.
+  The CAS winner records a durable consumed receipt including executor identity and payload hash.
+* After confirmed consumption, the adapter may publish an immutable authenticated authorization
+  to an executor-owned record keyed by permit/claim. The supervisor validates the pinned trusted
+  issuer, exact record/object UID, payload/source/plan, claim generation, allowed Job/container
+  identity and original start deadline. An authenticated transport plus executor RBAC protects
+  publication; a workload-supplied JSON receipt is not evidence. Remote clock uncertainty must be
+  bounded by the qualified adapter, which refuses a start when it cannot prove before-deadline.
+* A separate conditional-create record selects one pod UID for that consumed permit. Only that
+  pod's trusted supervisor can open its gate. This is executor deduplication, not another authority
+  race. Losing pods follow the bounded no-effects/no-early-completion procedure in section 9.
+* If takeover/cancellation closes the armed domain claim first, consumption and therefore all
+  authorization publication fail. If consumption wins, the execution becomes possibly live even
+  if publication or acknowledgment is absent. Recovery cannot close it as unconsumed or release
+  it on a local observation of absence. It seals remote authorization delivery and reconciles the
+  exact executor record and all prepared supervisors before retry/release; an unreachable executor
+  remains quarantined. A delayed old adapter publication cannot escape this consumed-claim hold.
+* Sealing is an executor-enforced terminal record for that immutable permit. It serializes with
+  authorization publication and pod-claim acquisition; delayed creates/requests are rejected.
+  The seal prevents new publication and pod-claim acquisition, not a physical start by a holder
+  selected before sealing. That holder remains possibly live even if its gate has not yet opened.
+  cancel_effective requires supervisor-confirmed irreversible closure of its gate before launch,
+  or holder-specific termination after launch; seal alone leaves cancel_pending. Release requires
+  a durable seal plus terminal evidence for the selected holder and prepared supervisors. Lost
+  responses are read back by immutable identity; no claim identity is reused.
+
+Executor contracts include authenticated adapter publication, terminal seal CAS and read-back,
+supervisor-only claim mutation, and pod-specific termination evidence. If unavailable, the remote
+executor is unsupported; it is not emulated through shared SQLite over a network mount. Deleting a
+Kubernetes object, moving a state volume or losing node contact does not prove termination. Node
+fencing or trusted holder-specific termination acknowledgment is required to resolve uncertainty.
+Executor availability cannot override Task writer ownership or grant another Attempt.
+
+Reserve disk space for allocator recovery and terminal receipts before dispatch. Rotate expendable
+telemetry before it consumes this reserve. If state storage cannot commit, start nothing new;
+keep enforcing/cleaning existing boundaries and report the storage failure distinctly.
+
+Each state volume registers physically allocated emergency storage, including the domain store
+and every active Task Store. Preallocate bounded checksummed receipt slots for admitted operations
+before launch, with schema/source/Attempt IDs and sequence numbers; do not depend on creating a new
+file after ENOSPC. Keep a separately allocated ballast margin for qualified journal/WAL recovery.
+The configured target must meet measured worst-case slot, metadata and journal bounds; otherwise
+refuse admission. Under ENOSPC, enter recovery-only mode, stop growth, reclaim expendable data via
+storage authority, and use existing slots for terminal/unknown-usage evidence. A receipt becomes
+durable only after its required synchronization succeeds. Replay it idempotently into the Task
+journal before accepting a Task result or releasing a protected hold. Domain cleanup is not
+business acceptance. Reserve replenishment is required before new admissions.
+
+Cooperative filesystem preallocation reduces ENOSPC risk but is not immunity from other writers,
+metadata allocation failure, EIO or device loss. Report the actual capability. A strict emergency-
+storage claim requires an isolated/quota-protected state allocation and a qualified fixed-slot
+write/replay path. If a critical write or sync still fails, retain previously durable intents,
+keep the outcome/usage unknown and quarantine; do not promise recoverable final data never durably
+written. R07 tests both qualified reserve success and truthful failure outside that guarantee [S6].
+
+11. Pressure response and policy changes
+----------------------------------------
+
+Observe at a bounded cadence, starting at two seconds while active and backing off when idle.
+Wake immediately on completion, config changes and backend events. Multiple AF processes elect
+one observation owner per domain through a non-durable, atomic generation/lease record in the
+registered runtime root. Election, renewal and capacity-sample publication NEVER acquire the
+durable domain writer or a shared process-held lock. Default owner lease1s, renewal250ms and
+handover scan250ms give takeover<=1.25s; the first full sample follows within2s. Generation and
+boot identity accompany each atomic sample; writes from an expired owner are ignored. Require
+2*sample_interval + owner_lease + handover_scan + observer_jitter_margin < stale_after,
+and renewal<owner_lease/2. The first interval covers the previous sample's age at owner death;
+the second bounds the new owner's first full sample. With a500ms jitter margin, default maximum
+publication gap is5.75s (<6s). Measure from the LAST PUBLISHED SAMPLE, not from the kill. A coordinator may exit
+at any moment; remaining coordinators take over, without a permanent service. If actual timing
+misses this bound, mark stale/degraded and pause affected admission. Domain-wide stale retains a
+live owner; coordinate-scoped stale with a fresh competitor uses section6's bounded grace and
+hysteretic rejoin. A retained owner resumes first; a released owner retains age/ticket but cannot
+preempt the next granted turn. Publisher liveness alone does not decide observation-scope retention.
+Persist only the bounded observation snapshot actually used by a durable decision; high-frequency
+publication remains ephemeral. Freshness expires at the configured stale_after; its minimum is
+three sample intervals and it must also satisfy the full handover inequality above.
+
+Use hysteresis: default pause new conflicting admissions after three consecutive high-pressure
+samples, recover after five healthy samples. Available-memory headroom and volume floors are
+hard admission conditions immediately; pressure scores supplement them. CPU utilization alone
+is not memory pressure and 100% CPU use alone is not a failure.
+
+Where available, pressure-stall measurements, throttling, major faults, swap activity, I/O
+latency and coordinator heartbeat margin guide the response. Preserve the exact thresholds and
+samples behind every decision. Unsupported metrics remain unknown.
+
+Responses, in order:
+  stop additional conflicting admissions; adjust only supported elastic concurrency/shares;
+  reclaim eligible unused cache via the Storage Budget; suggest a different approved executor
+  or a future plan change. Do not SIGSTOP arbitrary providers, extend deadlines or grant retries.
+
+If the OS externally reduces a live allocation, report allocation_reduced and overcommit.
+Stop new work and preserve control capacity as far as the outer boundary permits. An operator
+can cancel selected work. A resulting OOM is recorded as an observed resource failure; AF cannot
+guarantee survival when a parent limit suddenly becomes smaller than its live working set.
+
+For cooperative overshoot, emit cooperative_limit_exceeded with source, scope and sampled peak;
+do not turn it into a kernel-OOM diagnosis or automatically kill work. Keep the captured reservation
+immutable and charge observed excess as a separate temporary hold: excess=max(0, attributed usage
+- reservation). Admission subtracts reservations plus excess holds and control exactly once.
+Growth-pending still uses max(0, reservation-usage), so excess is not subtracted twice in the
+available-growth check. Stale/partial observations keep conservative holds. Clear an excess hold
+only on fresh evidence or the backend's declared terminal/retirement procedure. Ordinary execution
+keeps its normal business outcome with a resource warning; strict limit violations follow existing
+typed failure rules. This supersedes ADR-0154's sampled-peak-as-failure rule for cooperative use.
+
+12. Human diagnostics
+---------------------
+
+The default resource screen answers five questions in order:
+
+1. Is work progressing, and is the limiting factor AF, the environment or an external service?
+2. Which task/operation is affected and for how long?
+3. What numerical constraint or event explains that conclusion?
+4. What is enforced, estimated or unknown?
+5. Which action is useful, and who controls it?
+
+Proposed commands:
+
+  af resources                         summary and most important waits
+  af resources watch                   live view, bounded refresh
+  af resources explain TASK_ID          blockers, calculations, evidence and actions
+  af resources history TASK_ID          wait/progress timeline and peaks
+  af resources doctor                  token-free capability/config/CLI checks
+  af resources config --effective --origin
+  af resources config validate --file PATH
+  af resources config apply --file PATH [--dry-run]
+  af resources priority TASK_ID --class CLASS --expected-generation N
+  af resources export --task TASK_ID    bounded diagnostic bundle
+  af resources domain register/recover  canonical registration or recovery-only restore
+  af resources store register           bind Task Store and recovery volume
+  af resources binding apply            capture explicit operator workload bounds
+  af resources reconcile/terminate      exact reservation, generation and operation ID
+  af resources attest                   verified typed fencing/termination evidence
+
+Each inspection command supports --json. watch supports a versioned JSONL stream with sequence
+and resume cursor; a gap is explicit. Mutations use idempotent operation IDs, show the concrete
+target and expected generation, and have noninteractive forms. There is no duplicate resources
+prune command; storage cleanup stays under af storage. Resource config apply uses AF's normal
+machine config writer and atomic validation rather than inventing another config file format.
+
+Example screen (illustrative numbers):
+
+  Allocation: 8 GiB RAM / 4 CPU     AF budget: 4 GiB / 2 CPU
+  Scope: this user and registered allocation     Mode: hard memory, cooperative I/O
+  AF memory: 1.6 GiB used / 3.0 GiB committed / 4.0 GiB budget
+  Commitments: control 0.5 GiB; Task A 1.5 GiB; Task B 1.0 GiB
+  2 tasks running, 1 waiting. C blocked by memory reservation, disk growth room and inodes on example-scratch-volume.
+
+  Task A  RUNNING  implementation   0.8 GiB used / 1.5 GiB reserved
+  Task B  RUNNING  tests            0.6 GiB used / 1.0 GiB reserved
+  Task C  WAITING  build            needs 1.5 GiB; only 1.0 GiB uncommitted; 42s
+
+  C needs 0.5 GiB more memory capacity, 3.5 GiB more disk growth room and 35,296 inodes.
+  C's 4 GiB scratch + 0.5 GiB retained output share example-scratch-volume; 69,632 new
+  inodes are required there, with only 34,336 available after floors and existing holds.
+  A and B own memory commitments; A owns the outstanding 4 GiB/65,536-inode disk hold.
+  Low current usage does not make remaining allowances free. Resolving memory alone is insufficient.
+  Action: inspect each holder and eligible storage reclamation, or choose an approved remote plan.
+  Increasing AF's budget is an option only after checking environment headroom.
+
+Show the strongest blockers together rather than inventing one universal bottleneck score.
+Use three confidence labels: observed constraint, supported inference and unknown.
+
+Examples of diagnoses:
+
+* Reservation shortage: requested vector exceeds ledger headroom; exact arithmetic proves it.
+* External memory pressure: available growth is below the threshold while AF remains within
+  its budget. Unattributed pressure is not blamed on OpenClaw without evidence.
+* CPU throttling: boundary counters show throttling; distinguish quota saturation from host
+  scheduling contention and provider network wait. High CPU by itself is ordinary utilization.
+* Disk capacity/inodes: name the affected volume, floor, outstanding writes and reclaimable cache.
+* Disk I/O: observed stall/latency and checkpoint durations suggest a bottleneck; causal claims
+  need corroboration. A slow fsync is not automatically proof of a full disk.
+* Provider wait: authentication, rate limit, capacity, network or CLI incompatibility; increasing
+  local RAM is not suggested as a remedy. Issue #259 supplies the CLI capability checks.
+* Remote queue: include Pending reason or runner availability, with remote allocation scope.
+* AF overhead: projection time, lock wait/hold, fsync, dispatch latency and heartbeat margin.
+* Recovery: orphan reconciliation or unknown completion blocks re-dispatch; show identity and age.
+
+An explanation includes domain/task/operation, desired/reserved/used/available values, policy
+key and origin, affected scope, sample age, constraint ID, evidence reference, wait age, deadline
+remaining, enforcement capability, actions and uncertainty. Never print a guessed ETA as fact.
+
+Task history separates graph dependency wait, resource admission wait, provider wait, remote
+queue, active work, cleanup and recovery. Simultaneous blockers may overlap. A primary state
+partitions one operation's wall time; secondary blockers are annotated, not summed. Task wall
+time, critical-path estimates and summed worker time are separate metrics.
+
+The TUI adds a Resources view using the same read model and schema as the CLI. It groups by
+domain, Task and operation and allows inspection of constraint calculations and configuration
+origins. Color reinforces text and is never the only indication. Every number carries units.
+No implementation log jargon is necessary to decide whether to wait, reduce concurrency or
+change an executor; detailed evidence remains one level deeper.
+
+13. Telemetry, privacy and operational cost
+------------------------------------------
+
+Critical transitions and final resource summaries are durable. High-frequency measurements
+are a bounded ring with rollups; telemetry loss is reported and cannot change acceptance.
+Suggested retention: two-second samples for 30 minutes, one-minute rollups for 24 hours,
+then per-operation summaries and decision evidence subject to existing Task retention.
+Telemetry has a 64 MiB per-domain default cap and is included in the Storage Budget.
+
+Per-operation summary: start/end times, peak and measurement basis, reservation occupancy,
+CPU time, throttling, process peak, disk growth, exit/OOM evidence, time by primary wait state,
+policy generations, capabilities and completeness. A provider wait does not release the memory of a live provider process. A scarce provider
+concurrency slot is acquired alongside local launch requirements where AF can control both;
+remote quotas outside AF are observed and reported, not fabricated as guaranteed capacity.
+Recorded counters retain native meanings;
+PSI, CPU utilization and throttling percentages are not interchangeable.
+
+Critical summaries and evidence referenced by active Tasks are protected by reachability.
+Metrics pruning must not remove the only explanation for a recorded admission decision.
+Export omits prompts, credentials, environment contents and unrelated process command lines.
+Outside use is aggregate by default. Operator-only local inspection may reveal owned process
+names; shared bundles use aliases and bounded identifiers. No automatic external telemetry.
+
+Read-only status reads a bounded indexed projection, not the whole CAS or all task journals.
+Freshness and reconciliation state are explicit. Target: existing AF status contract below
+200 ms for a 10k-event Task on the declared reference fixture, with 100 queued and 16 active
+operations, and bounded output pagination. Admission transaction p95 below 20 ms on that
+fixture, no external I/O under lock. Total observation/scheduling overhead target below 1%
+of one CPU and 64 MiB incremental memory at that load; report raw samples and maxima.
+These are qualification targets, not measured current performance or universal timing promises.
+
+14. Data contracts
+-------------------
+
+Introduce versioned records in the existing artifact family, without renaming existing types:
+
+  af/ResourceCapabilities@1
+  af/ResourceRequest@1
+  af/ResourceObservation@1
+  af/ResourceDecision@1
+  af/ResourceReservationReceipt@1
+  af/ResourceUsageSummary@1
+  af/resource-status@1 (CLI read model)
+
+Common fields: schema/type version, stable record ID, domain ID, policy generation,
+Task/Attempt/operation references where applicable, source of facts, observation timestamp,
+monotonic/boot clock identity, completeness and evidence references. JSON counters use the
+repository's existing exact integer conventions; no precision-losing float byte/token counts.
+
+The reservation receipt binds request, admitted vector, execution identity, enforcement
+capabilities, domain generation, start claim and transitions. Status is an inspection document
+with an observed prefix, not an authority token. ResourceDecision records distinguish immutable
+contract refusal from temporary pressure, stale observation and unreadable coordination state.
+
+Required reason codes include memory_reserved, memory_pressure, cpu_reserved, cpu_throttled,
+disk_space, disk_quota, inode_pressure, process_limit, task_concurrency, fair_share_wait,
+fairness_drain, nested_capacity_conflict, capability_missing, estimate_missing, allocation_reduced,
+observation_stale, domain_policy_conflict, allocator_unavailable, cleanup_pending,
+execution_unknown, estimate_too_large, priority_not_permitted, cooperative_limit_exceeded,
+dispatch_inactive, recovery_space_unavailable, cancel_pending, domain_writer_unavailable,
+domain_registration_unavailable, anchor_missing, anchor_unreadable and external_mutation. Resource limits, provider availability, graph dependencies and authority
+refusals remain separate categories. Match codes, never free-text substrings.
+
+Execution failure mapping amends ADR-0150/0154 without inventing a second Task outcome system:
+qualified memory.max OOM evidence maps to resource_exceeded with subtype memory; a qualified
+pids.max refusal during the execution maps to resource_exceeded with subtype pids. Genuine
+unsuccessful check execution with healthy limits maps to negative_result. If a limit event and
+failed test coincide, resource_exceeded is primary and the negative_result/check-exit evidence
+is retained as secondary. Preserve ADR-0154 clause 5: breach plus forbidden mutation keeps the
+breach primary and mutation/check-exit evidence secondary. A qualified containment escape is
+containment_escaped when no resource_exceeded breach is present; otherwise resource_exceeded
+stands and escape evidence is secondary. Mutation alone is negative_result. A qualified scoped
+pids-limit refusal fails the operation as resource_exceeded(pids) even if its command exits zero;
+this conservative failure policy is explicit and never implies that a process was killed. A pids limit can refuse fork without killing a process;
+no kill is inferred. process_limit remains an admission reason, not a competing Task class.
+SIGKILL/137 or unrelated event alone is insufficient cause evidence. Preserve Attempt usage and
+all failure evidence; none of these outcomes grants a pass, retry or new token allowance.
+
+Admission is a pure function of recorded policy, request, queue, reservations and observations.
+Replay reproduces decisions and ordering for the same recorded inputs. Real external timing
+changes input observations; the design does not promise identical schedules on different runs.
+
+15. Integration with current AF
+-------------------------------
+
+Reuse:
+* Whole coordinator lifecycle ownership, prefix consistency and cancellation handling.
+* Typed infrastructure recovery, immutable receipts and declared retry reserves.
+* Process supervisor and existing containment gates/probes.
+* Idempotent submission and typed operation status.
+* Existing Storage Budget, protected Task/CAS retention and cleanup identities.
+* Source/run binding, readiness and exact binary pins.
+
+Replace or generalize:
+* gateway-specific JSON host profile -> machine TOML Resource Policy and typed records.
+* memory-only/coarse admission -> resource vectors, shared scope and fair queues.
+* owner-lock release as a sufficient reclamation signal -> backend reconciliation.
+* one coordinator bucket containing all provider children -> attributable execution units.
+* Linux-delegation-required for every profiled coordinator -> capability-specific backend choice.
+* check-name peak lookup -> environment/workload-bound measurement provenance.
+
+Proposed crate placement: pure resource contracts and decisions in review-core; process/OS
+observation and containment in review-process; domain persistence in review-store or a small
+shared coordination module after dependency review; Task lifecycle integration in
+review-pipeline; configuration, explain/doctor and TUI projections in af. Reuse executor
+adapters for Docker/Kubernetes effects, with a versioned substitution contract.
+
+Binding decisions required before implementation:
+* Domain coordination and Task authority separation, including durable fencing/reconciliation.
+* Memory reservation and fair admission semantics, including nested-task accounting.
+* Machine policy, cooperative/strict capability negotiation and executor authority.
+
+These ADRs must explicitly supersede the affected clauses of the candidate's ADR-0148 and
+related amendments; they do not weaken existing strict profiles by default. Decision F is a
+fourth binding pre-implementation ADR: amend ADR-0144's pre-start-only storage admission to
+include per-volume growth queueing and its blanket tmpfs scratch convention to admit attested
+disk backing; supersede ADR-0154's sampled cooperative-peak failure rule with labelled excess
+holds. Preserve Storage Budget authority, retention/reachability and cleanup identity rules,
+and preserve exact Task token/Attempt/deadline contracts. Existing executors keep their original
+scratch contract until explicitly migrated and qualified; incompatible requested profiles refuse
+before paid admission, never silently switch backing or weaken an existing strict requirement. Assign ADR numbers at integration, after checking the actual
+index. Do not hard-code numbers from this draft.
+
+Pre-GA upgrade: finish or reconcile old executions using their originating release; preserve
+old evidence. New configuration is explicitly re-created, not silently migrated from the
+unreleased small-host profile. Concurrent pinned engines need a compatible coordination
+protocol or separate OS-enforced partitions. An incompatible active protocol refuses new
+managed execution; it must not start a competing allocator or mutate unknown state.
+
+16. Qualification and delivery plan
+-----------------------------------
+
+The current claw-1 evidence remains a scenario, bound to its exact candidate manifest:
+three containment probes passed; a repeated deterministic loaded run passed; an earlier
+60-second deadline failure is retained. Production gateway identity remained stable during
+those tests. Real-model canaries stopped on Claude/Codex CLI compatibility. This is not proof
+of multi-environment support, scheduling fairness or the proposed allocator recovery protocol.
+
+Deliver in independently verifiable increments:
+
+R1. Contracts and read-only diagnostics: glossary/ADRs, capability matrix, config origins,
+    request/observation/status schemas and exact bottleneck explanations.
+R2. Durable domain admission: cross-process registration, resource vectors, crash reconciliation,
+    intent/start fencing and one-ledger interoperability. No fairness claims until R3.
+R3. Fair and nested scheduling: service accounting, protected drain turns, bounded queues,
+    coordinator reserve and deadlock controls.
+R4. Native backends: Linux strict containment and macOS/Linux cooperative behavior; every spawn
+    path covered, pressure feedback and typed failures.
+R5. Docker: inside-container discovery plus explicit container execution, rootless capability
+    checks, lifecycle reconciliation and Desktop allocation visibility.
+R6. Kubernetes: in-pod policy plus Job executor, durable state/restart contract, duplicate start
+    fencing, namespace quota/scheduling diagnostics and resource receipts.
+R7. Human operations: live/history/explain UI, bounded metrics, diagnostic bundles, config drain
+    and bottleneck playbooks. Implement the read model alongside R1-R6, not as a late log viewer.
+R8. Qualification/release: cross-environment controls, stress matrix, real-provider canaries,
+    measured overhead, release pins, isolated rollout and documented rollback.
+
+Each increment goes through native AF implementation and verification Tasks and a reviewable
+change. Existing VM correctness fixes can ship separately if their own acceptance is complete;
+they must not be advertised as this entire feature. Provider compatibility issue #259 is a
+prerequisite for real-provider qualification, not for deterministic scheduler tests.
+
+Environment matrix: Linux VM with a resident application; Linux multi-user allocations;
+macOS developer machine; Docker with/without internal delegation; rootless Docker; Docker
+Desktop; Kubernetes bounded pod and Job executor; Windows/WSL only when their declared backend
+is implemented and qualified. Record exact kernel/runtime versions and capabilities.
+
+Load matrix: 0.25/0.5/2/8 CPU where supported; 512 MiB/1/4/16 GiB allocations; 1/2/8/32
+concurrent submissions; cold/warm caches; unknown requirements; memory/CPU/I/O spikes;
+disk/inode exhaustion; nested fan-out; crash at every dispatch boundary; coordinator restart;
+allocation shrink; remote completion after timeout; duplicate execution deliveries.
+Tiny allocations may correctly refuse; success is a truthful outcome with preserved evidence.
+
+The testing.txt qualification contract expands this matrix with an independent measurement
+collector, bounded formal modeling, production-code deterministic simulation, generated and
+concurrency tests, fault injection at every dispatch boundary, starvation oracles, mutation
+controls and exact release evidence. measurement-oracles.csv names independent measurement contracts;
+qualification-cases.csv maps detailed scenarios to feature acceptance; qualification-plan.toml
+sets proposed tier budgets and mandatory outcomes. These are required design deliverables,
+not tests that have already run. Build testability and independent oracles with R1/R2.
+
+The acceptance.csv file gives concrete invariants and expected outcomes. The configuration
+reference is configuration.txt; examples/ contains parseable illustrative TOML and a coherent
+JSON explanation. These are draft interfaces, not production configuration to install. Performance testing
+must record sample size, duration, load and binary identity. Qualify cooperating AF fairness
+separately from externally imposed contention. A short clean run proves no universal tail.
+
+17. Operator playbook
+---------------------
+
+Waiting for reservation: inspect owning Tasks and the deficit. Wait, lower future concurrency,
+cancel named work or use an already-approved execution destination. Do not treat low RSS as
+permission to bypass outstanding reservations.
+
+Waiting under external pressure: inspect available growth, sample age and observed scope.
+Reduce AF's budget or competing work; do not reflexively increase memory limits.
+
+CPU bottleneck: distinguish quota throttling, competitive scheduling and useful full utilization.
+Adjust operator CPU allocation or future build parallelism only within policy.
+
+Disk bottleneck: identify volume and whether the issue is capacity, quota, inodes or latency.
+Use af storage to preview eligible reclamation; never delete active sandboxes or Task evidence.
+
+Unknown execution after failure: inspect bound execution identity and last receipt. Reconcile
+using af resources reconcile; terminate using af resources terminate with the exact reservation
+and expected generation. Missing fencing evidence may be supplied through af resources attest.
+These mutations follow configuration.txt section 6; none is a force-clear operation.
+
+Provider/remote wait: inspect provider compatibility/rate limit or remote scheduling reason.
+Local resource tuning is useful only if local observations also identify a constraint.
+
+18. Sources and evidence
+------------------------
+
+Existing AF contracts: CONTEXT.md; docs/values.md; ADR-0026, ADR-0049, ADR-0052,
+ADR-0089, ADR-0113, ADR-0128, ADR-0130, ADR-0140 and ADR-0144 in the integration baseline.
+Candidate-specific basis: ADR-0145 through ADR-0156, docs/task-execution/small-host.md,
+review-process resource.rs/host_ledger.rs/containment.rs and review-pipeline host_admission.rs.
+
+External sources checked 2026-10-14. They establish platform behavior; the AF design above
+is a proposal, not behavior supplied by these platforms:
+
+[S1] Linux cgroup v2: https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html
+[S2] Docker resource constraints: https://docs.docker.com/engine/containers/resource_constraints/
+     Rootless mode: https://docs.docker.com/engine/security/rootless/
+[S3] Kubernetes resource management:
+     https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+[S4] Kubernetes Jobs: https://kubernetes.io/docs/concepts/workloads/controllers/job/
+[S5] Windows Job Objects: https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects
+[S6] SQLite WAL durability and checkpoint behavior: https://www.sqlite.org/wal.html
+     Platform sources [S1], [S4] and [S6] rechecked 2026-10-15; AF protocols remain proposals.
+
+No current claim of native macOS hard memory isolation is made. Backend capability proof,
+default calibration and measured performance are implementation/release gates, not unresolved
+permission requests to the user.
+
+20. Review D integration contracts — 2026-10-16
+------------------------------------------------
+
+The named recovery and registration interface is defined in configuration.txt section 6 and is
+part of v1, not deferred optional tooling. explain actions name those commands, exact identities,
+expected generations and evidence requirements. Their effects are idempotent journaled operations.
+
+Multi-dimensional fairness fixture: work capacity B=(3 GiB, 2 CPU); protected W=(2 GiB,1.5 CPU).
+Earlier operations release their complete planned vectors within 30 s after protection selected no later than t=62 s (60s eligible-wait threshold + 2s cadence).
+Post-turn backfill may occupy at most (1 GiB,0.5 CPU) componentwise; a request (0.5 GiB,1 CPU)
+conflicts despite fitting current RAM. With stable capacity, immediately acknowledged continuously
+renewed dispatcher and <=2 s scheduler cadence, W starts by t=94 s. An admitted ack delay adds
+its predeclared tolerance; deadline expiry cannot count as fairness success in this fixture.
+
+The 2-second dispatcher lease is a qualification default, not an established low-CPU service
+guarantee. Measure claim-ack and renewal latency, live-owner turn losses and latest-start bounds
+at 0.25/0.5 CPU and 512 MiB/1 GiB under memory/I/O/CPU contention before advertising that cell.
+If the engine/control minimum cannot fit, the cell must explicitly refuse rather than silently
+pass a fairness test with no running dispatcher. Calibration changes are explicit policy changes
+and require rerunning the predeclared bound; defaults are not relaxed after observing a failure.
+

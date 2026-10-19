@@ -1,0 +1,438 @@
+AF resource management configuration contract
+=============================================
+
+Proposed interface. All paths and keys below are design targets, not current CLI support.
+Human configuration is TOML. Machine records and public status use versioned JSON contracts.
+The examples are deliberately small, parseable fragments of this contract.
+
+1. Configuration homes and precedence
+-------------------------------------
+
+The existing AF system/user configuration files carry [resources]. Do not introduce a second
+host-profile JSON file. Use af config show --origin and af resources config --effective --origin
+to inspect the same resolved policy. Environment overrides use AF_RESOURCES__SECTION__KEY.
+Project/directory/local files that attempt to set the machine table are reported as ignored,
+matching the existing machine-only [storage] behavior; they never change the domain budget.
+
+Order for machine preferences: built-in < system < user < environment. Tables merge, scalar
+values replace and arrays replace, following the existing loader. Separately intersect with
+OS/runtime ceilings and captured Task requirements. Neither an environment override nor a
+machine preference weakens a project's strict requirement or authorizes a destination.
+
+A running domain has one active policy generation. A new command can inspect a changed file
+but cannot silently join with a different total. It reports the pending change and offers
+config apply. Apply is explicit, atomic and idempotent; validation/dry-run lists changed values,
+origins, affected running reservations, draining requirements and unsupported capabilities.
+A config file absent on first use resolves the built-in defaults; no prompt or file is required.
+The first generation is committed once from default/system/user files. Domain-wide environment
+values are proposed activation inputs for explicit config apply, not implicit first-run authority.
+A run with a conflicting override refuses with active/pending values and the variable's origin.
+The active generation persists across idle periods and reboot; apply uses expected-generation CAS.
+Capacity epochs may change when an allocation changes without replacing the operator preferences.
+
+2. Units and validation
+-----------------------
+
+Memory/disk: integer bytes or strings B, KiB, MiB, GiB, TiB. Budgets/headroom also accept whole
+percentages 0..100; execution memory limits cannot be percentages. Percent of a known effective
+allocation rounds down to bytes, and positive budgets must resolve above zero. Unknown finite
+capacity cannot resolve a percentage; request an explicit cap and report the observation gap.
+
+CPU: decimal core strings with precision at most 0.001, internally integer millicores; budget
+may be a percentage of observed effective allocation. Percentage results round down to 1m,
+never up to one CPU. A CPU request must be positive and no larger than its ceiling.
+
+Time: nonnegative integer duration strings ms, s, m, h, d where applicable. Sampling and control
+intervals must be positive. Counters are checked integers; overflow, duplicate fields, unknown
+keys and invalid units refuse configuration. No silent clamping of contradictory settings.
+
+An impossible budget, such as control reserve greater than the entire allocation, is a typed
+configuration/readiness error. A temporary shortage caused by live work is a wait, not an
+invalid configuration. Task deadlines always bound queue/dispatch/recovery time.
+
+3. Machine keys
+----------------
+
+[resources]
+  enforcement: auto | cooperative | strict; default auto.
+    auto uses proven available local caps and labels the rest cooperative.
+    cooperative allows ordinary work without hard limits, without discarding available caps.
+    strict requires per-execution hard memory, CPU and process limits plus tree termination.
+    Required scratch/I/O capabilities are declared separately. All modes honor stricter Tasks.
+  backend: auto or a registered local enforcement adapter; default auto.
+    Does not select a remote execution destination or mount a container socket.
+  domain: auto or an operator-registered identity; default auto.
+    A label selects a registration, not a new independent allowance. Registrations bind real
+    boundaries and allocation identities. Arbitrary per-Task domain creation is refused.
+  max_active_tasks: 1..1024; default 4. Bounds active roots PLUS pending FIFO slot claims.
+    One slot per current-allocation active root Task,
+    including its coordinator and local live/possibly-live work; children share it. Inactive
+    queue clients and predecessor-only uncertainty do not hold active Task slots. Slots and
+    newly needed coordinator resources are atomic admission-vector coordinates. Group-blocked
+    tickets have no unused Task slot/partial group claim; all slot coordinates are granted atomically.
+  max_queued_requests: 1..100000; default 256. Admission still bounds actual queue memory.
+
+[resources.budget]
+  memory: positive bytes or percent; default "60%".
+  cpu: positive decimal cores or percent; default "75%".
+  pids: positive integer; proposed default 2048, intersected with parent limits.
+  All budgets include control resources and work. The process count includes helpers.
+  Memory overcommit is unsupported in v1; there is no knob that silently enables it.
+
+[resources.headroom]
+  memory: bytes or percentage of the environment allocation; default "10%".
+  min_memory: byte count; default "256MiB".
+  Effective outside headroom is max(memory, min_memory), subtracted once in available-growth
+  checks. It is not a protected OS reservation and does not guarantee unrelated apps survive.
+
+[resources.control]
+  base_memory: default "256MiB"; domain-wide control/recovery reservation.
+  coordinator_memory: default "128MiB"; each live Task coordinator.
+  base_cpu: default "0.05" cores.
+  coordinator_cpu: default "0.05" cores per live coordinator.
+  base_pids: default 32.
+  coordinator_pids: default 16.
+  These are initial qualification values. Runtime control requests must meet the measured
+  engine minimum. Smaller user settings do not override that minimum. Queued submissions with
+  no live coordinator use bounded metadata space within the base pool.
+
+[resources.scheduling]
+  strategy: weighted_fair in v1; alternative algorithms require an adapter contract/qualification.
+  max_live_queue_clients: default 16, 1..256; intersected with measured control-pool capacity.
+    Applies to inactive roots; one channel is reserved for the global FIFO slot-claim head.
+    At limit1 only that head channel exists. Active Tasks use their reserved coordinator for one pending
+    handshake, so inactive waiters cannot block Task-slot holders from finishing. Live-slot readiness
+    uses the finite-release test and section7's distinct FIFO root-slot claim rule. Full ordinary
+    Task slots cannot prevent a root ticket from reaching the eligible head. Group-blocked roots
+    yield the global role and unused slots; disjoint groups progress. Domain-wide stale retention
+    and bounded coordinate-scoped stale/pressure suspension follow design section6. Claims count once.
+    Ready live-slot offers are FIFO and bounded by dispatch_ack_timeout. Live resource waiters
+    retain slots until admission, cancellation, original deadline or lost readiness/liveness.
+    There is no live_client_quantum key or periodic rotation. Pulse/slot cost is qualified first.
+  protect_after: default "60s" of accumulated eligible_wait; inactive/suspended time pauses,
+    never resets this counter. Rejoined requests compete at the next free-turn selection.
+  dispatch_ack_timeout: default "2s", positive and bounded by the original operation deadline.
+  dispatch_lease: default "2s"; scheduler-monotonic renewable protection lease.
+  dispatch_renew_interval: default "500ms", strictly less than half dispatch_lease.
+  dispatch_sample_interval: default "250ms"; maximum read interval for non-durable pulse records.
+    sample_interval + dispatch_renew_interval must be strictly below dispatch_lease AND ack timeout.
+  scheduler_cadence: default "2s"; maximum capacity-selection interval, independently qualified.
+    Coordinators read shared boot-monotonic pulse timestamps; no per-sample durable writes/election.
+    Expiry precedes renewal; expired owners rejoin. From last pulse write, protection loss is
+    sample_interval + dispatch_lease + scheduler_cadence (4.25s at defaults); from last accepted
+    sample the conservative bound is lease + cadence. Dispatch timing needs an available writer;
+    a stalled writer does not discard a continuously advancing publisher's handshake or turn.
+    Pulses/IPC use the canonical registration's runtime locator, never caller XDG/TMPDIR.
+    Stopped admission writers report domain_writer_unavailable without a backfill bound.
+  max_class: background | normal | interactive; default normal.
+    A Task request above this operator ceiling is refused with priority_not_permitted.
+    Priority changes require the operator command and expected policy generation, are recorded,
+    and cannot alter past service or grant a fresh root scheduling account.
+
+[resources.scheduling.weights]
+  background: default 1; normal: 2; interactive: 4; each 1..100.
+  A captured Task may request a class within operator permission. A tracked worker lacks
+  operator mutation capability and cannot self-promote through its nested channel. Root accounts and operator project caps prevent child-count amplification.
+
+[resources.pressure]
+  sample_interval: default "2s", permitted 250ms..60s.
+  stale_after: default "6s", at least three times the sample interval.
+  observer_lease: default "1s"; positive ephemeral ownership duration.
+  observer_renew_interval: default "250ms", positive and < observer_lease/2.
+  observer_handover_scan: default "250ms", positive.
+  observer_jitter_margin: default "500ms", positive qualification margin.
+    2*sample_interval + observer_lease + observer_handover_scan + observer_jitter_margin
+    < stale_after is mandatory. At defaults the last-publication gap bound is5.75s, not3.25s.
+    Election and sample publication use the runtime generation, never the durable writer.
+  suspended_turn_pressure_grace: default "30s", positive; effective grace=min(configured grace, original deadline remaining).
+    Fresh-measured pressure/headroom/growth-room/backend blocking bounds EVERY slot claim,
+    including a non-protected one, by this interval. A lapsed claimant re-enters only after
+    recover_after_samples fresh observations clear its shortfall; its FIFO order/age survive.
+    Scoped stale/unavailable observations also consume grace when another eligible waiter/claimant
+    needs only fresh coordinates. At expiry release protection, unused Task/group claims, group
+    queue-order restrictions and the inactive-root client slot; preserve ticket/age. Retain live
+    work and active coordinator charges. Domain-wide stale time pauses grace without resetting it.
+    Competitor churn, changing missing coordinates or switching pressure/stale labels cannot reset
+    accumulated blocked time. Reset/reclaim needs recover_after_samples consecutive healthy samples.
+    Receipts name observation scope, coordinates, elapsed grace and remaining charge. No work starts
+    from stale data. With available writer and qualified cadence/ack, handoff is bounded by grace
+    + two scheduler cadences + ack; the default36s is handoff, not every competitor's start time.
+  pause_after_samples: default 3, permitted 1..100.
+  recover_after_samples: default 5, permitted 1..100.
+  memory_some_avg10: proposed "10%" when Linux PSI is available.
+  memory_full_avg10: proposed "1%" when Linux PSI is available.
+  High memory pressure means either configured PSI threshold exceeded; counters are interpreted
+  according to their source. These are conservative qualification starting points, not portable
+  performance guarantees. Missing PSI disables that trigger and is shown as unavailable;
+  available-growth and hard-boundary checks still apply. OS memory-pressure events map through
+  a versioned adapter rule with source labels, never guessed PSI numbers.
+  CPU/IO pressure is diagnosed in v1; it does not trigger generic suspension or automatic
+  destination switching. CPU capacity and disk floors still constrain admission.
+
+[resources.telemetry]
+  max_bytes: default "64MiB"; expendable samples/rollups, included in [storage].
+  raw_retention: default "30m"; rollup_retention: "24h".
+  A protected Task-referenced decision receipt is not disposable telemetry.
+  Export is local and redacted by default. External metric transport is an explicit extension.
+
+[resources.backends.linux]
+  delegated_root: optional absolute operator-delegated cgroup path.
+  Absent: probe available delegation without changing privileges or service configuration.
+  An explicit path is still checked for scope, identity, controller support and escape safety.
+
+[storage]
+  Existing keys retain their existing meanings. Do not duplicate max_bytes, min_free_bytes,
+  age retention or deletion authorization in [resources]. Resources consumes storage inventory,
+  growth reservations and reclamation results; storage remains the cleanup authority.
+
+[resources.disk]
+  min_free_inodes: default 128 for filesystems exposing a meaningful finite inode pool.
+    Unknown/unavailable counters remain labelled; strict inode guarantees need a qualified backend.
+    The existing [storage] min_free_bytes supplies byte floors on each registered writable volume.
+    There is no independent resource disk-byte budget or cleanup authority.
+
+[resources.recovery]
+  reserve_per_state_volume: default "64MiB"; physically allocated emergency slots plus margin.
+  receipt_slot_bytes: default "64KiB" per admitted execution per participating state store.
+    These are qualification starting values, never proof of sufficient capacity. The resolved
+    target is at least the engine's measured maximum slot/journal/metadata bound at configured
+    concurrency. Refuse if the target cannot be allocated/read back or lacks enough slots.
+    Register the domain-state and each Task Store's actual volume; shared volumes are counted once.
+    Slots remain protected by storage reachability until replay and reservation reconciliation.
+    State storage is durable; runtime directories and pod emptyDir cannot hold authoritative state.
+
+Group-cap admission keeps the original root ticket across group blocking. Conflicting groups
+share one ticket order; disjoint groups remain eligible. Group readiness precedes global claim
+selection, and active holder release reconsiders the older ticket before later group admissions.
+There are no retained partial Task/group claims. Already granted eligible claims/turns are not
+preempted; their bounded progress assumptions appear in any promised wait bound.
+Project-group caps and runtime adapter binding options require typed schemas before exposure;
+these are advanced capability contracts, not arbitrary unvalidated maps. A first release may
+ship per-root-Task fairness before exposing optional project groups, and must label that scope.
+
+4. Project workload profiles
+-----------------------------
+
+A proposed [execution_resources.profiles.NAME] table is captured with the plan and bound to
+specific nodes. All emitted/embedded nodes use typed profiles; no magic check-name convention.
+
+  cpu_request: required positive decimal cores; reservation for fair admission.
+  cpu_limit: required ceiling >= request; hard only when proven by the selected backend.
+  memory_limit: required positive bytes; full value reserved.
+  estimated_working_set: optional positive bytes <= limit; advisory, with separate provenance.
+  pids_limit: required positive integer.
+  scratch_growth: required bytes, possibly zero; maps to the executor's writable volumes.
+  scratch_storage: disk | memory; required resolved backing class, never silently substituted.
+    Resolves to scratch.disk_backed or scratch.memory_backed, displayed in expanded requirements.
+    Qualified mount/runtime evidence plus volume identity is required at readiness and dispatch;
+    a backing declaration alone does not satisfy it. Absence is capability_missing.
+  scratch_inodes: nonnegative maximum incremental inode use where the backend exposes inode limits.
+  retained_growth: required maximum output growth, possibly zero; charged to Storage Budget and
+    the exact retained-output volume before launch, with transfers counted once.
+  retained_inodes: nonnegative maximum output inode growth where observable.
+  nonscratch_memory_bound: required for memory-backed scratch; non-scratch maximum live memory.
+    memory_limit >= nonscratch_memory_bound + scratch_growth; the ceiling is not auto-enlarged.
+    Disk-backed scratch does not require this decomposition. Every executor declares placement.
+  required_capabilities: array of additional versioned capability identifiers; empty permits
+    ordinary cooperative work but does not erase scratch_storage's implied backing predicate
+    or independent sandbox/security requirements. Backing attestation is distinct from a quota.
+    Exact IDs and meanings are in capability-registry.csv under ResourceCapabilities@1.
+    No total order on kernel/runtime/cooperative labels is used to satisfy a requirement.
+    Unknown IDs/versions refuse. A complete-tracking or proven-termination requirement excludes
+    cooperative retirement. Requirements are checked for all mandatory ready/planned work before
+    paid Provider admission, and again against actual read-back at dispatch.
+
+The admitted Execution Plan expands profiles to exact quantities, executor identity and the
+existing operation timeout/deadline. Omitted profiles are resolved only through a pinned
+built-in recipe or explicit operator binding. Unknown custom work gets estimate_missing.
+The profile does not grant execute-checks, add tools or choose a Provider/model.
+
+5. Change behavior and examples
+-------------------------------
+
+Raise total budget: affects future admission after validation; no Task token/time increase.
+Lower budget below live commitments: enter drain; show old and proposed effective values.
+Raise concurrency: admits only vectors that still fit; never multiplies the budget.
+Change priority: operator action, recorded; affects future fair admission, not past accounting.
+Change strictness: applies to future work; captured strict requirements remain binding.
+Change backend or boundary: drain and reconcile old executions before changing identity.
+Change telemetry retention: affects expendable metrics; protected decision evidence remains.
+Change storage policy: follow existing storage authority/retention rules, never manual deletion.
+
+Examples:
+  examples/developer.toml             explicit user budget and advanced defaults
+  examples/shared-small-vm.toml       generic bounded AF beside a resident application
+  examples/in-container.toml          percentages of the inherited allocation
+  examples/project-requirements.toml  strict build and ordinary formatting requirements
+  examples/resource-status.json       numeric explanation of a reservation bottleneck
+
+All examples are illustrative. They are parsed and cross-checked as design artifacts, not run
+against the current AF binary. Configuration implementation requires schema fixtures and tests.
+
+4.1 Explicit operator resource bindings
+---------------------------------------
+
+Machine configuration accepts [[resources.bindings]] records with a unique id, exact package
+content digest, stable compiled node path, per-check/executable execution_unit key, captured
+execution_definition_digest, executor registration ID and typed profile quantities from section 4.
+The execution-definition digest binds the code-policy entry including program, argument values
+and provenance, relevant environment/toolchain and input-class fingerprint. A check name is only
+an address component; matching by name alone or wildcard is refused. Separate fmt/test commands
+inside one check node can have distinct bindings. Changing a command invalidates its selector.
+An unmatched/stale selector is reported, never applied to a different node by name. Example:
+
+  [[resources.bindings]]
+  id = "local-custom-test"
+  package_digest = "sha256:<exact 64 lowercase hex characters>"
+  node = "root.nodes.checks"
+  execution_unit = "check:test"
+  execution_definition_digest = "sha256:<exact 64 lowercase hex characters>"
+  executor = "registered-local"
+  # [resources.bindings.profile] contains the complete section-4 profile for missing values.
+
+This fragment is explanatory; the placeholder digest is not executable configuration. The full
+typed schema rejects malformed digests, duplicate matching selectors and unknown profile keys.
+System/user machine configuration or af resources binding apply --file FILE --expected-generation
+N installs the record atomically. Environment changes cannot implicitly activate bindings.
+
+Resolution: captured project quantities first, then pinned recipe values only for omitted
+quantities, then one matching operator binding. It supplies remaining missing values or tightens
+only advisory bounds, or replaces a recipe-derived quantity in either direction before capture.
+Project-declared quantities remain fixed constraints. A bound below ANY project-required quantity is
+unsatisfiable before paid admission; a project memory_limit cannot silently be lowered. Required
+quantities and machine ceilings intersect as constraints, not overwrite precedence.
+Required capabilities are a union. A binding cannot change executor authority, choose a new
+destination, increase a project-declared ceiling or weaken a strict requirement. Capture its digest,
+origin, selector and expanded vector in the Execution Plan before paid provider admission.
+Resolve these constraints into the existing content-pinned Execution Binding quota policy.
+The resource profile/binding is an input to that authority, never a second independent quota home.
+Changing a binding affects new plans only; an existing plan needs explicit native replanning.
+An existing unprofiled custom check on upgrade receives estimate_missing with the exact selector
+and missing fields, plus a template for a machine binding; no repository edit is required.
+Calibration requires an authorized hard-boundary executor and explicit bound. Cooperative-only
+hosts accept explicit bounds but do not silently run unbounded calibration.
+
+6. Registration and recovery mutations
+---------------------------------------
+
+All commands below are proposed public contracts. Domain-wide mutation requires an explicit
+operator capability scoped to domain, allowed verbs, generation and expiry, obtained by the
+operator control channel and never included in Task Execution Bindings, environment or tool
+arguments. Owner bootstrap is an out-of-Task local session authenticated by the OS account,
+with a non-inheritable control handle; capability issuance and use both verify peer process/start
+identity and refuse any tracked execution/sandbox member. The nested channel issues only a
+parent-bound capability for sub-allocation/reconciliation of that parent's authorized children.
+Dropping its parent reference or forging an environment variable never promotes it to operator.
+Executor principals are registered with authenticated adapter identity and an allowlist limited
+to their own claims, terminal evidence and reconciliation; they cannot change domain policy,
+terminate unrelated Tasks, register anchors or install bindings.
+
+On cooperative same-user hosts this is accidental-authority separation, not adversarial security:
+an untracked escaped process may impersonate the account or read same-user secrets. Record
+operator_context=cooperative_os_authenticated and that residual risk; do not claim human identity
+or "never a model". Strict operator separation requires a qualified OS/sandbox boundary that protects the control
+channel/capability AND denies workers direct read/write access to the registry, anchor, inventory,
+marker and writer/pulse metadata; refuse that security claim otherwise. Nested operations proxy
+through the parent coordinator outside the work boundary. On cooperative hosts, detect broken
+transaction-log hash chains or out-of-protocol edits as external_mutation and quarantine; a
+same-user actor may coherently forge files/chain, so detection is not adversarial integrity proof.
+Direct file edits are explicitly part of the cooperative residual-risk contract.
+A model-originated ordinary nested invocation is tracked and denied operator verbs even if it
+omits its parent reference. CLI/JSON guidance for workers labels required_action.actor=operator,
+authorizing=false; the guidance itself carries no executable authority or capability.
+
+Each mutation takes --request-id and --expected-generation; idempotency keys canonical arguments.
+Same ID/different arguments refuses. Stale generation returns conflict without effects; retries
+read the recorded operation/receipt. Backend actions run outside store transactions under durable
+intent. Authorized operators may execute directly without repeated interactive confirmation.
+
+* af resources domain register --allocation ID --state-anchor PATH --expected-generation N
+  validates persistent anchor, owner/protocol/overlap and commits registration through the canonical
+  rendezvous. Implicit auto uses only its canonical persistent default anchor. Replacement adds
+  --predecessor DOMAIN@EPOCH, resolves the persistent UUID index, fences old writer authority and
+  CAS-binds succession after reconciliation. Keep predecessor lookup tombstones. A reference alone
+  grants no authority. --review-continuity records changed placement and the chosen evidence
+  level for copied/restored markers; unresolved predecessor authority remains execution_unknown.
+  Store/executor registration appends and syncs the independent inventory
+  BEFORE admitting any related reservation. Store active/quiescent generations bracket activity
+  under the writer guard; quiescence is synced only after every related obligation closes.
+  A vanished Store with a proven quiescent generation can be tombstoned; a missing active Store
+  retains uncertainty and uses boot/instance capacity separation plus executor reconciliation.
+  Removing registrations cannot discard live/unknown
+  claims or their evidence inventory; unregister is a retained tombstone.
+* af resources reconcile --reservation ID --expected-generation N checks exact local/remote
+  identity, seals future launch where appropriate and appends verified receipts. Missing evidence
+  leaves the reservation quarantined; repetition cannot invent a successful release.
+* af resources terminate --reservation ID --expected-generation N records cancel_pending and
+  requests identity-aware termination. PID/path/name alone refuses. Terminal status requires the
+  normal release/retirement evidence. A selected remote holder is possibly live after sealing
+  until its gate is irreversibly closed or it is terminated; seal alone is not cancel_effective.
+* af resources attest --reservation ID --evidence FILE --expected-generation N accepts a
+  versioned envelope: same_host_reboot, boundary_terminal or host_fenced requires adapter-verified
+  provenance, exact host/boot/execution/generation/issuer and backend reference. Offline evidence
+  remains pending. The separate owner_same_host_reboot kind is an operator assertion scoped only
+  to ordinary old-local cooperative work under design section 10's distinct-boot contract; it
+  records residual risk and can yield only retired_cooperative, never released_proven or strict
+  evidence. It cannot discard current-boot/remote uncertainty or downgrade a strict reservation.
+* af resources retire-unproven --reservation ID --expected-generation N is operator-only. It
+  records execution_unknown/inconclusive and a permanent sealed-permit tombstone only for the
+  predecessor-local/no-reconciliation-path case in design section10. It cannot satisfy strict
+  evidence or retry. No active adapter means no live per-claim control charge; Provider scheduling
+  holds retire after the captured original end plus watchdog grace, with explicit residual risk.
+  Current-local uncertainty, shared disk growth and executor-enumerated remote obligations cannot
+  be force-cleared. Retired local obligations permit Store quiescence with an unproven receipt.
+* af resources domain recover (--snapshot ID | --rebuild-from-inventory) --expected-generation N
+  fences the writer and enters recovery-only mode. Scan the OUTSIDE-snapshot append-only Store/
+  executor inventory, each registered journal and executor, including registrations newer than
+  the snapshot. Missing claim plus surviving permit means possibly consumed, charged authority.
+  Rebuild the lost anchor even without a snapshot from those receipts, closing/reconciling old
+  claims before a new epoch can admit. Lost inventory requires verified restoration or complete
+  external fencing of old local AND remote authority; otherwise remain unavailable. Never create
+  an empty allocator behind a surviving registration or infer a complete scan from missing data.
+* --unregistered-resources requires a domain-less opt-in capability bound to OS account,
+  observed allocation, invocation identity, allowed verb and expiry; it does not require a
+  nonexistent domain generation. Issuance is outside tracked work and verifies caller process
+  membership using qualified cgroups/sandbox identity, plus AF ancestry and inherited parent
+  reference/handle on cooperative hosts. Any tracked indication or undecidable membership
+  refuses, even if the registry is unreachable; absence from an unreadable Store proves nothing.
+  No environment, project or user-file key enables it. It labels every receipt with unregistered scope, excludes
+  shared aggregate guarantees and cannot inherit a registered parent's reservation. Tasks requiring strict unavailable predicates or
+  domain.aggregate.registered refuse it. It cannot erase registered holds. A container without an outside supervisor should use
+  registered instance-scoped cooperation when its private backing/namespace qualify; the
+  unregistered flag is not required merely because strict restart evidence is unavailable.
+
+Receipts include verified caller context (not inferred human authorship), capability scope,
+idempotency key, generations, identities, evidence, outcome and residual risk. Read-only explain
+shows operator-only actions and prerequisites without authority-bearing handles. No generic
+force-clear action exists; admissible evidence levels remain visible in status and Task history.
+
+6.1 Administrator rendezvous bootstrap
+---------------------------------------
+The fixed root-owned mapping files named in design section3 are the only pre-home locator
+source. A versioned [[principals]] row contains principal/UID, allocation identity, local root,
+generation and explicit predecessor or administrator no-predecessor assertion; no budget/config
+keys are legal. First entry and removal count as succession. Removal retains a tombstone plus
+successor; raw deletion/invalid files refuse, never fall back. No-predecessor requires the bounded
+home-default check from design section3. Missing, inaccessible and positively absent are distinct. The file is never
+found through environment/user/project configuration. A service account with no home and an NFS
+home use the same mechanism. A changed root requires explicit succession with old writers fenced;
+receipts include locator identity/generation. No implicit new allowance or privilege change.
+Readiness names this setting when provisioning is missing. This narrow bootstrap is part of the
+domain ADR's Unix-native/XDG exception, not a second machine-resource policy file.
+
+Optional project predicates are exact capability-registry.csv IDs: domain.aggregate.registered
+requires shared registered accounting; recovery.restart.proven requires qualified termination/
+fencing after a supported restart. Hard live limits alone do not imply either predicate.
+The recoverable_build profile demonstrates both and refuses unsupported cells before paid work.
+
+Each admission validates locator generation, including default-root writers when a first entry
+appears. Store journals naming another unfenced domain prevent registration under a new locator.
+The bootstrap is operator-managed; root compromise or deletion of all protected predecessor
+records is outside the trusted-administrator model and cannot support a continuity claim.
+
+Administrator adoption history: fixed resource-locators.d/adoptions beside the platform locator
+file, independently retained and protected against user/project mutation. Administrators append
+and sync a principal/allocation/root/generation adoption record before activating any mapping.
+AF refuses an entry without its record, or a missing row/file with recorded adoption. Accessible
+qualified local homes additionally receive an adoption tombstone before no-predecessor admission.
+Missing history/tombstone evidence cannot be replaced with a guessed continuity assertion.

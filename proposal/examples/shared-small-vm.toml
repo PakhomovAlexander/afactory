@@ -1,0 +1,24 @@
+# Proposed syntax. A 4 GiB VM shared with a resident application.
+# Values illustrate an operator allocation, not a certified workload capacity.
+[resources]
+enforcement = "strict"
+backend = "linux-cgroup-v2"
+domain = "auto"
+max_active_tasks = 2
+max_queued_requests = 64
+
+[resources.budget]
+memory = "1536MiB"
+cpu = "1.5"
+pids = 512
+
+[resources.headroom]
+memory = "0%"
+min_memory = "512MiB"
+
+# The operator provisions delegation; AF does not change service units.
+[resources.backends.linux]
+delegated_root = "/sys/fs/cgroup/af-allocation"
+
+# Heavy checks still require an explicitly selected remote pipeline.
+# This machine config cannot redirect a check by itself.

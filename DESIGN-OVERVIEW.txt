@@ -1,0 +1,279 @@
+PUBLICATION NOTE — 2026-10-19
+Design accepted by the owner; implementation deferred at the owner's request.
+Normative files are preserved exactly in proposal/. Historical review/navigation references
+in the text refer to the authoring workspace; this archive contains the full normative design.
+The original native review record has not been changed into a successful Fable review.
+See README.txt and PERFORMANCE-NOTES.txt for publication status and future release gates.
+
+AF resource management — accepted design
+===========================================
+Date:2026-10-17. Source:ced8a3ce112ec43184da73a8eca1e62de1e2b721
+
+Accepted by the user on 2026-10-19. See DESIGN-ACCEPTANCE.json.
+Performance analysis: PERFORMANCE-ANALYSIS.txt; implementation benchmarks remain pending.
+
+All three remaining Review L findings are addressed in the design, configuration, qualification
+matrix and measurement contracts. Static consistency checks and six targeted negative controls
+passed. Native Fix Verification remains pending. L's passing round covered d7fca16; its outer
+Task still has the previously documented finalization failure. No new paid review was run.
+This is the implementation design; the feature and its proposed commands are not yet shipped.
+
+This document is a readable guide. Detailed authority remains design.txt, configuration.txt,
+decisions.txt, capability-registry.csv and testing.txt with their linked CSV/TOML contracts.
+
+1. Product promise
+-------------------
+AF operates inside a declared allocation while sharing it with other applications, other agents
+and concurrent AF Tasks. The same rules apply on a developer machine, small VM, Docker container
+or Kubernetes workload. The2 CPU/4 GiB OpenClaw VM is one required qualification case.
+
+The operator can always see the work waiting, every resource blocking it, the owner of existing
+reservations, the freshness of measurements, what is actually enforced and which action helps.
+Resource admission cannot create another Task Attempt, enlarge a token budget, choose a new
+executor or retry an uncertain effect. Existing Task authority remains authoritative.
+
+2. One shared allowance per real allocation
+-------------------------------------------
+Separate AF commands, repositories and Task Stores discover the same durable resource domain.
+Changing HOME/XDG, opening another terminal or spawning a nested AF does not create fresh capacity.
+Parent OS/container limits always bound the effective allocation. Overlapping registrations are
+refused or reconciled; incompatible engines cannot silently run competing allocators.
+
+A local transactional domain ledger records reservations. Existing Task journals retain execution
+and business authority. Durable, idempotent intents connect them. A mandatory background daemon
+is unnecessary: active coordinators advance the queue. Automatic progress after all commands exit
+requires an explicitly operated runner/service. Kubernetes schedules cluster nodes; AF manages
+its admitted pod/Job allocations and separately accounts for local launch/control work.
+
+3. Resources and their accounting
+----------------------------------
+Resource                  Admission and reporting rule
+CPU                       Reserve requested share; enforce a ceiling where supported. Show quota,
+                          ancestor throttling and scheduling contention separately.
+Memory                    Reserve the full execution ceiling plus control overhead. Low RSS does
+                          not make the unconsumed reservation available. No memory overcommit in v1.
+Processes/threads         Charge every helper/descendant using the backend's declared count meaning.
+Disk bytes                Reserve outstanding growth on each real volume/quota. Distinguish free,
+                          allocated, logical, retained and reclaimable bytes.
+Disk inodes               Separate per-volume admission coordinate; free bytes cannot replace inodes.
+Task/group concurrency    Bound active roots and unused admitted slot claims. Children share their
+                          root account; group-blocked roots hold no idle global Task slot.
+Provider/executor slots   Reserve controllable slots with the local vector; external quotas remain
+                          observed constraints with their own scope.
+Control/recovery          Reserve coordination, cancellation, sealing and terminal recording before
+                          workers. A full worker pool cannot consume the recovery reserve.
+
+All AF-controlled coordinates are acquired atomically. A request that fits RAM but lacks disk,
+inodes or process capacity waits with all deficits visible. Permanent impossibility is a refusal;
+temporary occupancy is a wait, bounded by the original Task deadline.
+
+Disk growth_room = available allocated bytes - existing storage floor - unallocated emergency
+reserve shortfall - outstanding growth commitments. Newly written bytes transfer from outstanding
+growth to attributed allocation once. Retained artifacts remain charged after a worker finishes.
+Shared CAS/cache data is charged once. Existing af storage owns retention and cleanup; there is
+no second resource-prune authority. Active/protected data is never deleted to force admission.
+Memory-backed scratch also consumes memory; strict disk quotas require a proven backend capability.
+I/O latency and pressure are measured and diagnosed; sampling alone is not a hard I/O limit.
+
+4. Cooperative default; strict when required
+---------------------------------------------
+Default auto mode uses proven available caps and explicitly labels remaining dimensions
+cooperative. A workload requiring strict CPU, memory, process-tree termination or scratch limits
+must have those exact capabilities or refuse before paid dispatch. Complete tracking, hard limits,
+termination proof and restart recovery are separate predicates; one does not imply the others.
+
+Linux delegation, native desktop permissions, rootless Docker, Docker Desktop and Kubernetes may
+provide different capability sets. The UI names actual scope and evidence. Outer container limits
+can be hard while per-worker allocation inside that container remains cooperative. A configured
+resource policy never mounts a daemon socket, changes privilege or selects a remote destination.
+
+Outside applications consume observed headroom; AF does not schedule them. Cooperative excess
+usage creates a separate conservative excess hold and a warning. A proven strict breach is a typed
+resource failure. An external parent shrink or unrelated process can still exhaust the allocation;
+headroom is admission policy, not an OS promise that another application survives.
+
+5. Configuration people can understand
+---------------------------------------
+Machine policy owns total budgets and pressure behavior. Project profiles declare work requirements.
+Exact operator bindings can fill unknown custom-work estimates before a plan is captured. OS/runtime
+ceilings intersect those inputs. Show every resolved value with its origin and enforcement strength.
+
+Proposed defaults (qualification targets, not measured engine minima):
+  enforcement                    auto
+  AF memory budget               60% of effective allocation
+  AF CPU budget                  75% of effective allocation
+  outside memory headroom        max(10% of allocation,256MiB)
+  maximum active Tasks           4, subject to complete vector fit
+  control memory                 256MiB base +128MiB per active coordinator
+  maximum queued requests        256; live waiting-client channels16
+  protected-turn threshold       60s of eligible waiting
+  stale/pressure suspension grace 30s where a fresh competitor can progress
+  pressure observation           every2s; stale after6s at default handover settings
+  healthy recovery               5 fresh samples
+  telemetry                      64MiB; raw30min, rollups24h
+
+The engine's measured minimum overrides an undersized control declaration. Changing concurrency
+never multiplies the total budget. Shrinking below existing commitments drains new admission;
+it does not silently kill workers or alter their captured limits. One active policy generation
+is committed atomically. Configuration changes show old/new values and affected reservations.
+
+For the small VM, examples/shared-small-vm.toml illustrates strict delegated Linux execution with
+1.5 CPU,1536MiB AF memory,512MiB outside headroom and at most2 active Tasks. Every workload still
+needs to fit the control+worker vector; this example is not a certification that two agents fit.
+examples/developer.toml and in-container.toml show ordinary shared-host and inherited-allocation use.
+
+6. Operation lifecycle
+----------------------
+  Resolve requirements and capabilities
+    -> queue with exact blockers
+    -> reserve the full vector
+    -> persist Task permission and unique launch claim
+    -> establish containment and read back limits
+    -> launch and observe
+    -> record result, retained storage and resource summary
+    -> release only the capacity justified by terminal/recovery evidence.
+
+Every spawning path participates: source preparation, provider admission, model workers, tools,
+checks, nested work and cleanup. An opaque provider session and its children share its aggregate
+boundary; precise inner-tool scheduling requires a verified tool bridge. Unknown custom work
+requires an explicit bound or separately authorized bounded calibration; AF does not guess.
+
+7. Fair scheduling and the two repaired starvation cases
+---------------------------------------------------------
+Each root Task has one weighted service account. Occupied reservation share over time determines
+service; more children cannot buy more share. Defaults are background1, normal2 and interactive4,
+within operator permissions. Eligible large waiters obtain a protected drain opportunity after60s;
+new conflicting work waits while already admitted finite work finishes. Nonconflicting work can run.
+
+Task slots use durable FIFO tickets before memory aging, preventing a stream of small roots from
+continually stealing the next slot. Tickets and accumulated eligible age survive suspension/rejoin.
+A live dispatcher must acknowledge and renew its turn. Heartbeat pulses use bounded ephemeral
+records, independent of the durable database writer. A paused writer is diagnosed as unavailable;
+it does not turn healthy liveness into an invented process death.
+
+Correction A — project-group blocking:
+A root whose group cap is occupied yields the global claimant role and holds no unused Task slot
+or partial group claim. It retains ticket order for overlapping groups. Disjoint groups continue.
+When the group holder releases, its Task/group coordinates are released together and older tickets
+are reconsidered before later overlapping roots. Existing granted claims/turns keep their progress
+contract. The next eligible disjoint fitting root can start within6s in the healthy named fixture;
+the long-lived group holder cannot monopolize that free slot. Fixed bounds state all assumptions.
+
+Correction B — stale information scoped to a resource:
+A domain-wide observation outage preserves a live suspended owner. An unreadable individual
+volume cannot indefinitely hold the only turn/claim when another waiter uses entirely fresh
+coordinates. Start the30s grace, then release unused claims/protection and the inactive client
+slot; preserve ticket and eligible age. Do not release an active execution's memory or coordinator.
+The next eligible fresh waiter receives the turn/claim within36s under qualified timing/writer
+conditions. That is a handoff bound, not an unconditional execution-start guarantee. Require five
+fresh healthy samples before reclaim. Changing coordinates, competitors or blocker labels cannot
+reset elapsed grace. Compute competitor eligibility without the suspended unused claim, avoiding
+a circular rule in which the blocked slot hides the competitor that should receive it.
+
+Known nested parent/child overlap is reserved as one maximum live vector. Unplanned expansion
+is nonblocking: grant atomically or return nested_capacity_conflict. A parent cannot retain scarce
+memory while waiting forever for a child needing that same memory. Sleeping or SIGSTOP frees none.
+
+8. Durable recovery and failures
+---------------------------------
+Register persistent domain identity, Task Stores, execution identities and state volumes before
+launch. Persist the launch claim and exact Task permission in a recoverable order. A start consumes
+one unique claim; stale coordinators are fenced. Replay reconstructs reservations and uncertainty.
+
+A crash, timeout or missing process sample is not proof that work ended. Unknown execution retains
+its obligations until qualified evidence permits release or explicitly labelled cooperative
+retirement. A new local boot can remove old local RAM charges while leaving the business result
+unknown; this does not authorize an automatic retry. Remote jobs retain independent reconciliation.
+Kubernetes duplicate deliveries, stale completion, partitions and executor restart are explicit cases.
+
+Preallocated recovery slots protect critical recording where the storage backend can qualify that
+claim. Failed sync or exhausted metadata remains unknown; the system never claims that unwritten
+evidence is durable. Decision receipts survive ordinary telemetry rotation. Token/Attempt budgets,
+resource outcome and ordinary business outcome remain distinct and truthfully accounted.
+
+9. Human diagnosis
+-------------------
+Proposed interfaces:
+  af resources
+  af resources watch
+  af resources explain TASK_ID
+  af resources history TASK_ID
+  af resources doctor
+  af resources config --effective --origin
+
+Inspection has JSON output; watch has a versioned JSONL stream and explicit gaps. The TUI uses the
+same projection. A wait shows requested/reserved/used/available quantities, every blocking owner,
+resource scope, policy key/origin, sample age, enforcement, uncertainty and actionable next steps.
+
+Illustrative explanation:
+  Task C waits for a build.
+  Memory: needs1.5GiB;1.0GiB uncommitted ->0.5GiB short.
+  Scratch/output volume:4.5GiB new growth;1.0GiB room ->3.5GiB short.
+  Inodes:69,632 requested;34,336 room ->35,296 short.
+  Holders and eligible storage reclamation are named. Freeing RAM alone is insufficient.
+
+History separates dependency, resource, provider, remote queue, execution, cleanup and recovery
+time. Provider/network/CLI waits are not called CPU bottlenecks. Slow fsync is not automatically
+called a full disk. Diagnostic exports omit prompts, credentials and unrelated command lines.
+
+10. Qualification and the repaired benchmark contract
+------------------------------------------------------
+75 acceptance requirements;73 mandatory scenarios;84 clause bindings;20 independent measurement
+oracles;15 capability predicates. Every supported claim needs source/binary/environment identity,
+an actual fault-hit receipt and an assertion receipt. A skipped or merely listed case is not proof.
+
+The program combines:
+  - bounded formal safety and no-deadline liveness models with explicit assumptions/refinements;
+  - deterministic simulation using production decision code and an independent expected model;
+  - generated sequences, shrinking and concurrency-interleaving exploration;
+  - real OS/runtime process, crash, partition, OOM, disk/inode and measurement-access faults;
+  - infinite/recycled small-job starvation workloads and independent timing witnesses;
+  - targeted mutations, soak/leak campaigns, matched benchmarks and bounded provider canaries.
+
+F07/QT32 now requires a real-process stale-volume handoff test alongside QT59/QT60 simulation.
+Group tests include an unbounded holder lifetime while disjoint work continues. Model and test
+qualification must detect the old bugs, timer-reset churn and accidental live-resource release.
+
+Correction C — comparisons and complete cost:
+Both overhead and neighbor impact use the SAME candidate source's test-only static-resource-
+control build as baseline. A previous release is used separately for saturation calibration and
+cannot conceal cumulative neighbor harm. Pair runs with identical logical workloads/probes.
+Qualifying25%/50% load segments require identical operation IDs, outcomes, work counts and boundary
+states, with zero count tolerance. Admission timestamps may differ. Unequal work is incomplete;
+no post-hoc filtering or normalization can make a cheaper partial workload pass.90%/110% segments
+report overload behavior without claiming the qualifying CPU/RAM target.
+
+Reference targets awaiting measurement: status p95<200ms, admission p95<20ms, incremental control
+CPU<0.01 cores and memory<64MiB, under the exact100-queued/16-active reference fixture and specified
+confidence procedure. Neighbor upper bounds are both absolute delta<=5ms and ratio<=1.20 with
+its declared denominator floor. Targets never imply that all small allocations admit that fixture.
+
+Release planning includes42 cells x5 paired runs, warmups, a separate saturation ladder and48h
+of named2CPU soaks:426.4 core-hours before remaining setup/drains/faults. At most85.6 remains within
+512 core-hours. The72h wall target requires a materialized, calibrated multi-lane DAG; arithmetic
+alone is not feasibility evidence. Missing mandatory work or overruns mean incomplete.
+
+11. Delivery order
+-------------------
+R1  Contracts/ADRs, capabilities, configuration, read-only diagnostics and independent harness.
+R2  Persistent domain registration, atomic vectors, launch fencing and crash reconciliation.
+R3  Fairness, group/scoped-stale corrections, bounded queues and nested-work rules.
+R4  Linux strict and native cooperative backends; all spawn paths, pressure and typed failures.
+R5  Docker inherited allocations and explicit execution, rootless and Desktop capability cases.
+R6  Kubernetes pod/Job authority, duplicate fencing, restart and partition recovery.
+R7  Complete live/history/explain experience, bounded telemetry and operator actions.
+R8  Full support matrix, faults/soaks/overhead, bounded real-provider canaries and staged release.
+
+Each product increment uses native AF implementation and verification Tasks. Read models and tests
+are developed with the corresponding increment. Product support is advertised only for qualified
+cells. The existing AF finalization defect remains a separate runtime repair; its Store budget
+safety guard must remain intact. These design corrections did not modify or deploy product code.
+
+Files
+------
+Full architecture:design.txt. Configuration:configuration.txt. Testing:testing.txt.
+Acceptance:acceptance.csv. Cases:qualification-cases.csv. Bindings:qualification-coverage.csv.
+Independent measurements:measurement-oracles.csv. Campaign:qualification-plan.toml.
+Exact fixes:review-continuation-20261015/repo/review-l-author-responses.json.
+Checks:review-continuation-20261015/static-negative-after-l.json.
+Current result:REVIEW-RESULT.txt. Original L evidence remains in review-continuation-20261015/.

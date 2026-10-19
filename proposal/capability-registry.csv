@@ -1,0 +1,16 @@
+version,id,scope,satisfaction,required_evidence
+1,memory.per_execution.hard,execution boundary,Kernel or qualified runtime enforces total memory ceiling,Read-back bound to boundary ID and qualified descendant coverage
+1,cpu.per_execution.hard,execution boundary,Kernel or qualified runtime enforces finite CPU ceiling,Quota period and effective ancestor ceiling bound to boundary ID
+1,pids.per_execution.hard,execution boundary,Kernel or qualified runtime enforces process/task ceiling,Read-back count semantics and descendant boundary ID
+1,process_tree.complete,execution boundary,All effectful descendants remain inside an identifiable boundary,Qualified containment and no unobserved escape; cooperative tracking insufficient
+1,process_tree.terminate,execution boundary,Can terminate all descendants and prove terminal with sealed future entry,Qualified exact-boundary stop empty/terminal evidence and launcher gate closure
+1,memory.aggregate.hard,registered allocation,Hard total memory ceiling covers allocation,Allocation ID ancestor read-back and declared excluded scopes
+1,cpu.aggregate.hard,registered allocation,Hard CPU ceiling covers allocation,Allocation ID quota period cpuset and effective ancestor read-back
+1,scratch.bytes.hard,scratch volume and execution ownership,Enforced byte quota at declared accounting basis,Quota ID filesystem backing and allocated-byte semantics
+1,scratch.inodes.hard,scratch volume and execution ownership,Enforced finite inode quota,Quota ID and inode-count semantics; bytes alone insufficient
+1,scratch.disk_backed,scratch mount,Scratch consumes disk rather than anonymous/tmpfs memory allowance,Mount/runtime attestation of actual backing with volume ID
+1,scratch.memory_backed,scratch mount,Scratch charges the same total memory boundary,Mount and memory charge relationship plus explicit nonscratch bound
+1,io.rate.hard,execution and backing device,Qualified byte or operation rate ceiling with exact unit,Device mapping limits read-back and supported accounting semantics
+1,recovery.storage.protected,state volume,Qualified protected capacity for preallocated bounded synced receipts,Backing quota or isolation and ENOSPC replay qualification at admitted concurrency
+1,domain.aggregate.registered,registered allocation,All participating invocations share one registered capacity ledger,Canonical locator and domain/allocation epoch bound in every receipt; unregistered mode cannot satisfy
+1,recovery.restart.proven,execution boundary across supported restart,Qualified identity and terminal/fencing evidence reconcile old instance after restart,Attested host/instance mapping plus old-execution terminal/fencing proof and durable sealed authority; instance-assumed or unproven retirement insufficient

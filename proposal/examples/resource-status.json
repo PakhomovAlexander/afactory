@@ -1,0 +1,185 @@
+{
+  "schema": "af/resource-status@1",
+  "illustrative": true,
+  "domain": {
+    "id": "example-local-domain",
+    "scope": "one user in one registered allocation",
+    "policy_generation": 7,
+    "observed_prefix": 120,
+    "allocation_epoch": 3,
+    "policy_source": "persisted_generation"
+  },
+  "observation": {
+    "age_ms": 800,
+    "complete": true,
+    "memory_basis": "boundary charge including cache",
+    "outside_process_attribution": "aggregate"
+  },
+  "capabilities": {
+    "schema": "af/ResourceCapabilities@1",
+    "evidence": [
+      {
+        "id": "memory.per_execution.hard",
+        "satisfied": true,
+        "enforcement": "kernel",
+        "scope": "example-worker-boundaries",
+        "observed_prefix": 120
+      },
+      {
+        "id": "scratch.bytes.hard",
+        "satisfied": false,
+        "enforcement": "cooperative",
+        "scope": "example-scratch-volume",
+        "reason": "quota backend unavailable"
+      },
+      {
+        "id": "scratch.disk_backed",
+        "satisfied": true,
+        "enforcement": "observed",
+        "scope": "example-scratch-volume",
+        "observed_prefix": 120,
+        "basis": "qualified mount/runtime backing read-back; no byte quota claim"
+      }
+    ]
+  },
+  "memory": {
+    "environment_limit_bytes": "8589934592",
+    "af_budget_bytes": "4294967296",
+    "control_reserved_bytes": "536870912",
+    "work_reserved_bytes": "2684354560",
+    "committed_total_bytes": "3221225472",
+    "used_bytes": "1717986918",
+    "uncommitted_bytes": "1073741824",
+    "observed_excess_hold_bytes": "0"
+  },
+  "operations": [
+    {
+      "task": "A",
+      "state": "running",
+      "phase": "implementation",
+      "memory_reserved_bytes": "1610612736",
+      "memory_used_bytes": "858993459"
+    },
+    {
+      "task": "B",
+      "state": "running",
+      "phase": "check",
+      "memory_reserved_bytes": "1073741824",
+      "memory_used_bytes": "644245094"
+    },
+    {
+      "task": "C",
+      "state": "queued",
+      "phase": "build",
+      "wait_ms": 42000,
+      "deadline_remaining_ms": 480000,
+      "blockers": [
+        {
+          "code": "memory_reserved",
+          "confidence": "observed_constraint",
+          "requested_bytes": "1610612736",
+          "available_bytes": "1073741824",
+          "shortfall_bytes": "536870912",
+          "owners": [
+            "A",
+            "B"
+          ],
+          "policy_key": "resources.budget.memory",
+          "policy_origin": {
+            "layer": "user",
+            "line": 10
+          },
+          "observation_age_ms": 800,
+          "decision_ref": "example-decision-120"
+        },
+        {
+          "code": "disk_space",
+          "confidence": "observed_constraint",
+          "volume_id": "example-scratch-volume",
+          "requested_bytes": "4831838208",
+          "available_bytes": "1073741824",
+          "shortfall_bytes": "3758096384",
+          "owners": [
+            "A"
+          ],
+          "policy_key": "storage.min_free_bytes",
+          "decision_ref": "example-decision-120"
+        },
+        {
+          "code": "inode_pressure",
+          "confidence": "observed_constraint",
+          "volume_id": "example-scratch-volume",
+          "requested_inodes": 69632,
+          "available_inodes": 34336,
+          "shortfall_inodes": 35296,
+          "owners": [
+            "A"
+          ],
+          "policy_key": "resources.disk.min_free_inodes",
+          "decision_ref": "example-decision-120"
+        }
+      ],
+      "actions": [
+        {
+          "kind": "wait",
+          "reason": "All constraints must clear: 512 MiB memory, 3.5 GiB disk growth room and 35296 inodes; memory release alone is insufficient."
+        },
+        {
+          "kind": "inspect_tasks",
+          "tasks": [
+            "A",
+            "B"
+          ]
+        },
+        {
+          "kind": "storage_preview",
+          "volume_id": "example-scratch-volume",
+          "reason": "Inspect outstanding A growth and eligible reclamation; no automatic deletion"
+        },
+        {
+          "kind": "inspect_approved_remote_plan",
+          "changes_authority": false
+        }
+      ],
+      "eta": {
+        "kind": "unknown",
+        "reason": "no qualified completion estimate for A or B"
+      },
+      "profile": "build",
+      "scratch_volume_id": "example-scratch-volume",
+      "retained_volume_id": "example-scratch-volume",
+      "disk_requested_bytes": "4831838208",
+      "disk_requested_inodes": 69632
+    }
+  ],
+  "control_used_bytes": "214748365",
+  "privacy": {
+    "prompts": false,
+    "environment_contents": false,
+    "external_command_lines": false
+  },
+  "disk": {
+    "volume_id": "example-scratch-volume",
+    "available_bytes": "16106127360",
+    "floor_bytes": "10737418240",
+    "unallocated_emergency_shortfall_bytes": "0",
+    "outstanding_growth_bytes": "4294967296",
+    "growth_room_bytes": "1073741824",
+    "available_inodes": 100000,
+    "floor_inodes": 128,
+    "outstanding_inodes": 65536,
+    "inode_room": 34336,
+    "accounting": "allocated blocks; each shared ownership reference charged once",
+    "outstanding_owners": [
+      {
+        "task": "A",
+        "growth_bytes": "4294967296",
+        "inodes": 65536
+      }
+    ]
+  },
+  "cleanup_semantics": {
+    "released_proven": "whole boundary terminal and future launch sealed",
+    "retired_cooperative": "verified tracked identities terminal; untracked descendants may remain"
+  }
+}

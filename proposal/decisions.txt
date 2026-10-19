@@ -1,0 +1,226 @@
+Resource management architecture decisions
+===========================================
+
+Proposed decisions for eventual ADRs. Numbers are assigned only on integration into AF.
+User-approved policy: cooperative default; strict requirements never silently downgraded.
+
+A. One resource domain with durable coordination and no mandatory daemon
+-----------------------------------------------------------------------
+
+Use a local transactional domain store shared by participating coordinators. Keep all model
+budgets, Task authority and business results in existing Task journals. Durable intents and
+receipts connect the stores; a resource reservation is not a Task verdict.
+
+Rejected: an in-process semaphore (independent AF commands overcommit); a mandatory machine
+daemon (conflicts with AF's operating model and installation simplicity); network-shared
+SQLite for a cluster (does not supply a validated distributed authority/locking contract).
+
+Consequence: active commands advance the queue. Autonomous resumption after every coordinator
+exits requires an explicitly operated runner/service. Cluster node allocation stays with
+Kubernetes. Domain setup has to identify overlapping allocations and incompatible engines.
+
+B. Full memory reservations and non-preemptive fair admission
+------------------------------------------------------------
+
+Reserve each admitted execution's whole memory ceiling. Use weighted reservation-occupancy
+service and an age-triggered drain turn. Nested Tasks remain in their root's fair-share account.
+
+Rejected: admit against instantaneous RSS (running workers can grow together); reserve only
+historical peaks with no ceiling (measurements are not worst-case bounds); strict FIFO alone
+(unnecessary blocking); unlimited small-job backfill (large jobs starve); arbitrary suspension
+or eviction (memory is not freed by pause, provider state/effects may be lost).
+
+Consequence: utilization may be lower than an overcommitting scheduler. AF exposes the cost of
+unused reservations and suggests future plan changes. Finite operation bounds and stable
+capacity are prerequisites for progress claims; there is no unconditional start-time SLA.
+
+C. Capability-specific enforcement with a cooperative default
+-------------------------------------------------------------
+
+One contract reports hard, cooperative, observed and unavailable capabilities by resource and
+scope. Ordinary local work may use cooperative scheduling. Strict work requires a capable
+boundary. Resource policy never weakens security isolation or changes execution destination.
+
+Rejected: require delegated cgroups on all machines (excludes common desktops and containers);
+claim sampling is hard isolation (false); silently remove strict requirements (changes the
+approved contract); automatically launch containers/Jobs (introduces unapproved effects).
+
+Consequence: native Linux, containers and native desktops can share interfaces without making
+identical protection claims. Each backend needs its own capability probes and qualification.
+
+D. Recover occupied resources by execution identity
+--------------------------------------------------
+
+Owner death moves an unresolved reservation to reconciliation. released_proven requires the
+owned boundary empty or definitively terminal with its launch gate sealed. Ordinary cooperative
+work may use retired_cooperative only under design.txt section 9: verified tracked identities
+terminal, launcher/root terminal, sealed gate and a durable residual-risk receipt. Unknown root,
+launcher or tracked survivor stays quarantined. Neither retirement nor partial observation proves
+whole-tree cleanup. Persist exact IDs and the Task-authorized permit before effectful work.
+
+Rejected: free on PID absence, flock release or timeout alone (descendants/remote work can
+survive); retry a remote create under a new name after losing its response (duplicate work).
+
+Consequence: an unavailable backend can leave a visible quarantined reservation. That is a
+truthful uncertainty, with an inspection action. Reconciliation never fabricates provider usage
+or promises exactly-once behavior from an external service.
+
+E. Explainable decisions with bounded telemetry
+-----------------------------------------------
+
+Every admission/wait/refusal has structured constraints, quantities, origins and evidence.
+Keep decision receipts and final resource summaries durable; keep detailed samples bounded.
+The CLI, TUI and agents consume the same read model.
+
+Rejected: a single opaque health score (cannot guide a human); unbounded raw metrics (resource
+management becomes the bottleneck); inferring root causes from log text or high utilization
+alone (confuses evidence and inference); treating status projections as execution authority.
+
+Consequence: explanations expose uncertainty, simultaneous blockers and stale samples. Human
+history remains useful after raw metrics expire, and active evidence remains protected by the
+existing Storage Budget/reachability contract.
+
+F. Durable policy identity, one-use authorization and storage growth
+------------------------------------------------------------------
+
+A persistent domain UUID survives boot/allocation epochs; registered Task Stores and execution
+identities remain reachable across replacement. Fence the previous store writer before binding
+a new epoch; reconcile remote work independently. A new pod UID is not termination evidence.
+Task-journal commit of a one-use permit is the authorization point. It follows domain claim
+arming and validates the current Task writer in that same Task transaction. A committed permit
+survives writer handoff as already-authorized in-flight work. Takeover closes unconsumed claims
+or reconciles consumed launchers; it never treats a paused launcher as an empty execution.
+
+Disk is a vector resource per actual backing volume: current free blocks less the existing
+storage floor, unallocated emergency shortfall and outstanding incremental growth. Allocation
+transfers a growth hold into filesystem occupancy once; retained output transfers ownership
+before scratch retirement. tmpfs consumes the total memory ceiling. Disk scratch must be an
+explicit executor capability instead of silently inheriting a tmpfs convention.
+
+Recovery slots are physically allocated before admission, synchronized before reporting a
+receipt durable, then replayed into Task journals. Strict recovery-space claims require qualified
+protected backing. Unrecoverable storage failure leaves unknown evidence and charged intents;
+64 MiB of bookkeeping or a sparse file is not a durability guarantee.
+
+These decisions amend ADR-0144 storage admission/scratch conventions and ADR-0154 sampled
+cooperative overage behavior in addition to the small-host ADR-0148 family. Existing strict
+profiles retain their contract until an explicit reviewed migration. Cooperative overshoot is
+visible extra occupancy and a warning, not invented hard enforcement or an inferred OOM.
+
+G. Review D closures: authority, liveness and operability
+-------------------------------------------------------
+
+Canonical OS-account/allocation rendezvous is independent of HOME/XDG; unavailable discovery
+never silently creates a second aggregate budget. Host identity is distinct from boot identity;
+cross-host successor cannot declare predecessor-local execution dead. Remote authorization is
+published only after the unique domain claim is consumed, and executor sealing prevents delayed
+publication from bypassing recovery. Pod claims deduplicate only already-authorized execution.
+
+Known nested maxima are reserved with parents. Unplanned live-parent expansion is immediate-or-
+conflict, never queued holding capacity. One domain-wide drain turn uses a defined vector predicate,
+excludes unbounded holds, and requires renewable dispatcher liveness. Operator bindings and recovery
+mutations have exact identity, generation, idempotency and evidence contracts in configuration.txt.
+
+All acceptance IDs require mandatory mapped executable qualification. Deadline expiry cannot mask
+deadlock in liveness models. Duplicate effect starts have zero tolerance, including explained ones.
+The low-allocation dispatcher-latency benchmark remains a required implementation qualification,
+not a measured result or a claim that every listed small allocation can fit the engine.
+
+
+H. Review F amendments: recovery, authority and progress
+------------------------------------------------------
+The domain-coordination ADR explicitly resolves a collision with the Unix-native XDG value:
+canonical rendezvous and default domain anchor use the account database's XDG-shaped default
+<OS-account-home>/.local/state/af/resources independently of environment overrides. This narrow
+exception prevents changed HOME/XDG roots from creating second budgets or temporary anchors.
+Task Stores, normal configuration, telemetry and runtime sockets retain their ordinary roots.
+Persistent registry coordination uses a lock file on its qualified durable filesystem; transient
+pulse/IPC records use the canonical registration's qualified runtime locator and generation,
+independent of caller XDG_RUNTIME_DIR/TMPDIR. Its default is an ephemeral runtime subdirectory
+of canonical domain state; this shared locator is also in the explicitly scoped XDG exception.
+These disposable records are not recovery authority. Arbitrary shared
+network homes remain unsupported unless their identity/locking/durability contract is qualified.
+
+The independent write-ahead Store/executor inventory makes snapshot and no-snapshot recovery
+complete when evidence survives; loss of both inventory and authority requires restoration or
+external fencing, never a blind reset. Predecessor lookup and epoch succession are explicit.
+Native cooperative reboot retirement records local-marker/owner-asserted continuity risk; strict
+release still requires qualified termination evidence. Container in-place recovery requires an
+external instance supervisor; unsupported durability is refused before admission.
+
+Operator capabilities are excluded from worker bindings; nested work receives parent scope only.
+Same-user cooperative execution cannot claim adversarial human-versus-model separation. Execution
+resource constraints resolve into the existing Execution Binding quota authority. Dispatcher
+liveness uses separate pulse records; stopped SQLite writers have an explicit unavailable state.
+Remote sealing prevents publication/selection but does not retroactively stop a selected holder.
+Accumulated eligible wait pauses across inactivity and rejoin competes at the next free turn.
+
+Qualification mappings bind exact injection/outcome clauses and required fault/assertion hooks.
+Disposable allocation plus rendezvous isolation is mandatory before real-process fault injection.
+Formal cost and dispatcher latency are unmeasured implementation gates, not demonstrated success.
+
+I. Review G: current capacity, unresolved authority, and executable claims
+------------------------------------------------------------------------
+Boot/instance re-attribution is not proof of termination: strict permits remain unresolved while
+old-local work no longer charges current kernel capacity. Retained/shared storage and remote
+obligations stay charged. Registered instance-scoped containers preserve shared scheduling without
+claiming externally proven restart recovery. Store active/quiescent evidence outlives path cleanup.
+Nested work proxies through parent control; strict operator separation also protects domain files.
+Operator bindings can replace estimates in either direction, never project-required constraints.
+The domain ADR also pins the shared runtime locator. Symmetric coordinators read non-durable boot-monotonic pulses; 4250ms loss and 94s fixture
+bounds include observation/selection allowances. FIFO live-slot offers preserve an admitted
+waiter until admission or loss of eligibility/liveness; no periodic rotation exists.
+Amend ADR-0150/0154's failure mapping with resource_exceeded(memory/pids), negative_result and
+explicit simultaneous-reason precedence; preserve breach-first mutation handling and native Task budgets.
+Required-case mappings distinguish runtime/production simulation from supplemental formal/Loom
+proof. Benchmark targets activate only after reviewed measurements of the full declared tier.
+
+J. Review I: slot ownership, bootstrap and bounded uncertainty
+--------------------------------------------------------------
+Task slots/group caps are vector coordinates. A holder's remaining work outside the finite drain
+set makes its slot non-finite N; new-root protection must not deadlock existing Task progress.
+FIFO live-slot offers keep a healthy admitted waiter live; periodic quantum rotation is removed.
+Non-durable shared-memory pulses preserve continuity through durable-writer stalls; only scheduling
+changes/checkpoints and inventory transitions sync. The fixed administrator-owned locator mapping
+supports network-home and home-less/service accounts without per-invocation independent budgets.
+This bootstrap is another narrowly defined Unix-native/XDG exception in the same domain ADR.
+Unresolvable predecessor-local authority has a terminal inconclusive, permanently sealed disposition
+with bounded Provider-slot horizon and metadata; remote executor obligations remain evidence-gated.
+Closed registry predicates now express shared coordination and proven restart recovery separately.
+Preserve ADR-0154 breach-first classification, including mutation secondary and explicit pids policy.
+The calibration authority names source/build/runner identities, five fresh runs, statistic and
+case/cell selection before a candidate campaign. No benchmark success is claimed in this proposal.
+
+K. Review J: reserve slot opportunity and freeze empirical gates
+----------------------------------------------------------------
+A root's FIFO slot claim precedes resource aging; later fitting roots cannot repeatedly steal
+its next slot. Claims consume slot capacity but no coordinator footprint before admission.
+Active roots retain their control/progress path. One global claimant orders optional group caps.
+First administrator locator entry and removal are fenced succession, with tombstones and Store
+journal checks. Each admission revalidates locator identity. Benchmark defaults are activated
+only against declared numeric cells, outcomes, sample counts, timing/neighbor thresholds and
+independent holdout runs; expanded-policy runs do not certify the defaults.
+
+L. Review K: every slot claim is pressure-bounded; adoption survives mapping deletion
+-----------------------------------------------------------------------------------
+The single slot claimant remains unique until admission/lapse. The30s pressure grace also binds
+unprotected claims; observation hysteresis prevents immediate reclaim. Fixed administrator
+adoption history and local adoption tombstones make deleted mappings distinguishable from
+first use. Overhead uses one same-candidate static-control baseline and exact per-rate statistics.
+Observer freshness includes old sample age and a declared jitter margin. D08 and O06/QT69 have
+explicit required runtime receipts. K's architecture output is partial evidence, not acceptance.
+
+M. Review L: scope protection and make benchmark work comparable
+----------------------------------------------------------------
+Group-blocked roots release unused global slots and the claimant role. They retain original
+queue order on overlapping groups; disjoint groups make progress without waiting for that holder.
+Slot vectors are atomic, and fixed start bounds name prior-claim/turn premises. Domain-wide stale
+retention is distinct from scoped stale: a fresh competitor bounds the latter by30s grace plus
+qualified handoff, with preserved age and five fresh samples before reclaim. Existing live-work
+charges never release merely because an unused claim or protected turn does.
+
+Overhead and neighbor comparisons use the same-candidate static-control baseline. Exact logical
+work and boundary states must match in qualifying segments; admission timestamps may differ.
+Reject post-hoc cohort filtering and zero-work CPU wins. The release arithmetic includes paired
+warmups and the last-accepted-build saturation ladder:426.4 of512 core-hours before remaining
+setup/fault work. That subtotal is a planning constraint, not evidence of campaign feasibility.

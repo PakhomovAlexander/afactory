@@ -1,0 +1,25 @@
+# Proposed syntax. AF inside an already limited Docker container or pod.
+[resources]
+enforcement = "auto"
+backend = "auto"
+domain = "auto"
+max_active_tasks = 2
+max_queued_requests = 64
+
+[resources.budget]
+memory = "75%"
+cpu = "90%"
+pids = 256
+
+[resources.headroom]
+memory = "5%"
+min_memory = "128MiB"
+
+# Percentages resolve against the observed allocation, not the node's RAM/CPU.
+# An outer container limit does not establish strict per-worker containment.
+# The Task Store needs storage with the durability and single-writer semantics
+# required by AF; a shared SQLite file on a network volume is not an allocator.
+
+# Without an outside supervisor, qualified private backing + a private PID namespace
+# permit registered instance-scoped cooperation across terminals. Proven restart
+# recovery is unsupported; unresolved predecessor permits are not automatically retried.

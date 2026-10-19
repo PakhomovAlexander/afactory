@@ -1,0 +1,76 @@
+id,area,scenario,injection,acceptance,increment
+D01,Domain,Two terminals and different Task Stores,Simultaneous admission at the last free slot,Exactly one reservation commits; both commands show the same budget,R2
+D02,Domain,Nested AF and child cgroups,Invoke child with inherited and forged references,Valid child is charged once; forged or detached reference grants nothing,R2/R3
+D03,Domain,Overlapping roots and custom state paths,Change HOME and XDG roots over one allocation; deny canonical rendezvous access,Same canonical registration or explicit conflict/refusal; unregistered opt-in has no aggregate guarantee,R2
+D04,Domain,Multiple users,Competing externally bounded user slices,No cross-user data leak; guarantees limited to assigned slices,R4
+C01,Capacity,Container with large visible host,Apply 0.25 CPU and 512 MiB limits,Effective limits use allocation; refuse if control footprint cannot fit,R4/R5
+C02,Capacity,Nested ancestors and cpusets,Change tighter ancestor quota,Correct minimum constraint and provenance; no CPU rounding up,R4
+C03,Capacity,Unreadable ancestor or stale metrics,Deny observation access,Unknown is visible; strict claim refused; no missing value treated as zero,R1/R4
+C04,Capacity,Page cache and tmpfs,Grow tmpfs while RSS stays low,Memory boundary accounting detects growth; no RSS-only claim,R4/R6
+C05,Capacity,Limit reduction,Shrink parent below live reservations,New admissions stop; overcommit visible; no silent budget reset,R4
+A01,Admission,Concurrent mixed resource requests,One request fits RAM but not CPU or scratch,Atomic vector acquisition or none; all shortfalls explained,R2
+A02,Admission,Low usage and high reservations,Admit another request using apparent free RAM,Unused commitments remain counted; deficit calculation is correct,R2
+A03,Admission,Unknown custom command,No measurement or explicit memory ceiling,Actionable estimate_missing with typed machine-binding template; explicit bounds work cooperatively; calibration needs authorized hard boundary,R1/R2
+A04,Admission,Changed source or toolchain,Reuse a named check with different inputs,Estimate provenance invalidation visible; no name-only trust,R1/R2
+A05,Admission,CPU burst and memory peaks,All admitted workers approach ceilings together,No internal memory overcommit; CPU stays within aggregate hard budget if supported,R4
+F01,Fairness,Long stream of small jobs,A larger fitting request waits over protect_after,Protected drain turn prevents perpetual backfill starvation,R3
+F02,Fairness,Weighted competing tasks,Repeated finite operations at weights 1 2 4,Recorded deterministic service policy and bounded progress under controlled load,R3
+F03,Fairness,Nested fan-out,Create many children under one root Task,Children do not gain independent fair-share accounts,R3
+F04,Fairness,Parent holds capacity,Child cannot fit while parent is live,Planned aggregate charged once; unplanned live-parent expansion grants immediately or returns conflict; no cross-root hold-and-wait,R3
+F05,Fairness,Burst of 1000 submissions,Exceed queue and coordinator capacity,Bounded memory and inactive status without inference; FIFO live-slot offers prevent overtaking; retained live ownership meets declared saturated fixture bound,R3
+R01,Recovery,Each dispatch transition,Crash before and after every durable intent and effect,No premature release or blind redispatch; each state reconciles or quarantines,R2
+R02,Recovery,Coordinator SIGKILL with live worker,Owner lock released while descendants continue,Charge until exact execution reconciled under declared backend evidence; no release for unknown launcher or tracked survivor,R2/R4
+R03,Recovery,PID and pathname reuse,Replace process or container with same display identity,Unrelated process never killed or adopted,R2/R4/R5
+R04,Recovery,Machine reboot with remote run,Restart while external operation survives,Boot change re-attributes old-local capacity for strict and ordinary work; authority stays unresolved without proof; cooperative retirement explicitly labelled; remote and shared-storage holds retained,R2/R6
+R05,Recovery,Lost backend create response,Creation accepted before network breaks,Existing object looked up by identity; no second random execution,R5/R6
+R06,Recovery,Backend unavailable,Cannot establish live/terminal state,Quarantine with bounded control use; no fabricated failure or completion,R2/R5/R6
+R07,Recovery,Disk full at finalization,Fail allocator or Task journal commit,Qualified protected preallocation supports synced bounded receipts; failed durability retains charged intents and unknown evidence,R2
+R08,Recovery,Different pinned AF versions,Second engine uses incompatible allocator protocol,Refuse joining; no competing writable store or speculative migration,R2
+E01,Enforcement,Linux whole tree,Fork reparent and attempt cgroup escape,Boundary retained or typed failure; no unaccounted descendants,R4
+E02,Enforcement,Strict request on native cooperative host,No hard memory support,Refuse before paid inference with capable-executor action,R4
+E03,Enforcement,Ordinary request on cooperative host,Run within declared budget without hard memory cap,Runs with visible cooperative guarantees; sampling never labelled hard,R4
+E04,Enforcement,Docker rootless/no delegation,Probe and launch with varying capabilities,Read-back checked; unsupported controls explicit; no privilege escalation,R5
+E05,Enforcement,Outer limited container,Run two internal workers,Outer hard aggregate distinguished from cooperative per-worker limits,R5
+E06,Enforcement,Kubernetes mutation and quota,LimitRange mutation or quota rejection,Admitted manifest checked; structured remote capacity explanation,R6
+E07,Enforcement,Kubernetes duplicate pods,Deliver two pods for one Attempt,Only claim holder performs effects; duplicate loser cannot prematurely complete or terminate winner; terminal authority binds holder UID,R6
+E08,Enforcement,Kubernetes eviction and termination,Evict node or terminate coordinator pod,Durable state preserved and remote effects reconciled before retry,R6
+P01,Pressure,External memory spikes,Competing agent increases consumption,Pressure wait identifies scope without guessing culprit; hysteresis prevents flapping,R4
+P02,Pressure,CPU quota saturation,Sustained throttling versus provider idle wait,Distinct diagnoses and appropriate remedies,R4/R7
+P03,Pressure,Disk and inode exhaustion,Fill scratch/state/cache on separate and shared volumes,Correct volume/floor identified; active evidence protected,R4/R7
+P04,Pressure,Slow I/O and long history,Inject fsync latency with 10k Task events,Control margin and overhead visible; no full-CAS status scan,R7
+P05,Pressure,Config decreases while busy,Apply smaller budget and then cancel selected work,Drain state visible; no implicit termination or live hard-limit shrink,R2/R7
+O01,Observability,Several simultaneous blockers,Memory reservation plus provider wait,Show all constraints; primary wall-time partition does not double count,R7
+O02,Observability,Historical bottleneck,Inspect after completion and telemetry rotation,Durable summary and decision evidence explain the wait,R7
+O03,Observability,Unknown samples and timing gaps,Drop samples or restart observer,Freshness and gaps explicit; no zero substitution or false ETA,R7
+O04,Observability,Diagnostic bundle,Include unrelated processes and credential-shaped environment,No prompts secrets or unrelated command lines exported,R7
+O05,Observability,Resource arithmetic example,Compare text TUI and JSON,Summary detail TUI and JSON agree on all memory/disk/inode quantities owners shortfalls and origins; versioned schema,R1/R7
+O06,Observability,Reference load,10k events 100 queued 16 active operations; exact static-control comparator and qualifying work cohorts; full campaign arithmetic,Status admission CPU memory and neighbor targets use declared comparator and equal logical work; timing divergence alone allowed; warmup ladder and all setup costs accounted,R7/R8
+I01,Integrity,Timeouts retries and queueing,Wait until original Task deadline expires,No deadline extension token reset or resource wait counted as paid inference,R2/R3
+I02,Integrity,Remote/local choice,Change machine policy to suggest new destination,No undeclared publication or automatic authority change,R1/R6
+I03,Integrity,Provider CLI mismatch,Authenticated unsupported Claude or Codex executable,Token-free actionable compatibility refusal linked to issue 259,R1/R8
+I04,Integrity,Resource OOM versus failed test,Trigger each independently,Distinct typed outcomes; neither becomes a pass or unauthorized retry,R4
+I05,Integrity,Storage collection,Allocator references active Task receipts,No active evidence evicted; storage remains single cleanup authority,R2/R7
+Q01,Qualification,Real OpenClaw VM,Exact candidate isolated beside gateway,Record gateway responsiveness identity OOM and retained failures,R8
+Q02,Qualification,Real providers per environment,Bounded Claude and Codex canaries,Required checks and truthful final outcomes; credentials unchanged,R8
+Q03,Qualification,Deterministic replay,Replay identical recorded input snapshots,Same admission queue order decisions and receipts,R2/R3
+D05,Domain,Durable allocation succession,Replace pod or boot with remote work still running,Same domain UUID and policy; fence old writer and reconcile old permits before new epoch dispatch,R2/R6
+A06,Admission,Disk growth arithmetic,15 GiB free 10 GiB floor two simultaneous 4 GiB requests,Only one admits; allocation and deletion transfer outstanding growth exactly once; oversize distinct from temporary occupancy,R2
+A07,Admission,Scratch and executor placement,4 GiB tmpfs under 1536 MiB total limit; Docker host versus VM,Reject inconsistent memory scratch; require explicit disk backing; charge each allocation once,R1/R5
+F06,Fairness,Inactive protected waiter,Disconnect stop or half-open dispatcher before or after acknowledgment,Live pulses retain protection; stopped dispatcher loses turn by last write plus sample lease and cadence; eligible wait pauses inactive; stopped writer diagnosed separately,R3
+R09,Recovery,Paused stale writer and launcher,Take over before permit commit and between permit commit and claim CAS,Stale permit commit fails; committed permit reconciled as inflight; no replacement beside unresolved launcher,R2
+R10,Recovery,Recovery evidence cannot sync,Inject metadata ENOSPC EIO and fsync failure,No durable receipt claim without successful sync; prior intents remain charged and unknown evidence visible,R2
+E09,Enforcement,Cooperative cleanup evidence,Tracked survivor unknown launcher and witnessed untracked escape,Survivor or unknown quarantines; tracked cleanup permits only labelled cooperative retirement; no whole-tree badge,R4
+E10,Enforcement,Closed capability negotiation,Unknown ID aggregate-only cap or later mandatory strict node,Reject invalid or insufficient scoped predicates before paid admission; recheck exact boundary at dispatch,R1/R4
+P06,Pressure,Cooperative ceiling overage,Usage exceeds reservation then falls,Separate observed excess hold; no double count automatic kill invented OOM or changed captured limit,R2/R4
+O07,Observability,Durable policy activation,Race initial policy and conflicting environment override after restart,One durable generation; explicit apply only for changes; show active and pending origins,R1/R2
+O08,Observability,Operator priority ceiling,Request interactive above normal ceiling,priority_not_permitted before dispatch; authorized reprioritization preserves service debt,R3/R7
+D06,Domain,Cross-host state relocation,Partition old node and move coordinator/state volume,Different-host boot ID never proves predecessor termination; remote uncertainty retained,R2/R6
+F07,Fairness,Scoped stale observations and group-slot obstruction,Quarantine and stale volume with fresh large competitor; unbounded group holder with disjoint roots; mixed RAM CPU backfill,Unused claims release on non-finite blocking; scoped stale handoff by declared grace; domain-wide stale retention; disjoint groups progress; original tickets and finite-start premises preserved,R3
+R11,Recovery,Remote permit delivery and seal,Race takeover and cancel with publication duplicate pod claim and gate,One domain consume/close winner; no publication or pod-claim acquisition after seal; pre-seal holder stays possibly live until gate closure or termination,R2/R6
+O09,Observability,Operator recovery mutations,Stale generation spoofed attestation repeated request and crash,Identity-checked idempotent operations retain uncertainty; unresolvable predecessor-local authority can retire with permanent no-retry tombstone and residual risk; no generic force-clear,R2/R7
+D07,Domain,Anchor missing and post-snapshot Stores,Temporary first HOME/XDG; restore old snapshot; delete anchor with new Store live,Canonical implicit anchor survives temp roots; inventory discovers later Stores; absent claim with permit charged; no-snapshot rebuild preserves unknowns,R2
+O10,Authority,Worker versus operator mutations,Tracked worker drops parent ref and attempts terminate priority binding recover and capability issuance,Refuse all operator effects; own-child scoped work allowed; receipts record verified context and cooperative residual risk,R2/R7
+R12,Recovery,In-place container restart,Restart same container ID and host boot with inflight work; vary outside supervisor,Qualified external proof supports terminal recovery; no-supervisor private-instance mode shares one budget and retains unknown permits after restart; strict recovery requirement refuses before paid admission,R5
+R13,Recovery,Stopped writer,SIGSTOP inside ack renewal and admission transaction,Ack/renew never hold shared writer; admission lock stall safely refuses and diagnoses holder; resume/exit recovers,R2/R3
+Q04,Qualification,Canonical test isolation,Private HOME/XDG but production account rendezvous,Harness refuses before fork or fault; only verified disposable allocation/rendezvous permitted,R8
+D08,Domain,Administrator locator succession and deletion,First add/change/remove locator; delete row or whole file after no-predecessor adoption with live and quarantined work,One admitting budget; retained adoption history/tombstone prevents fallback; old obligations stay charged; missing evidence refuses,R2
