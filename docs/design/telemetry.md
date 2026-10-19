@@ -1,6 +1,6 @@
 # AF telemetry and observability
 
-**Design note for review — 19 October 2026, revision 4 after three af reviews.**
+**Design note — 19 October 2026, revision 5 after four af reviews.**
 
 This note designs the component that records what `af` does while it works: every kernel
 phase, every process it supervises, every model turn, tool call and reasoning summary a harness
@@ -63,7 +63,7 @@ answer it:
 | What | Source | Level |
 | --- | --- | --- |
 | Model context: the exact Worker input af composed (manifest, prompt bytes, estimated tokens) | kernel, `af.context.compose` | sizes and digests at `spans`; bytes at `content` |
-| Model context: the request the harness actually sent (system prompt, tool definitions, messages), bounded by the harness's own content limit | harness-native raw API bodies (Claude Code), package T5 | `content` |
+| Model context: the request the harness actually sent (system prompt, tool definitions, messages), bounded by the harness's own content limit | harness-native raw API bodies (Claude Code), package P9 | `content` |
 | Tool calls: name, arguments, result, duration, outcome | harness stream: Claude `tool_use` and `tool_result` blocks; Codex `command_execution`, `mcp_tool_call`, `file_change`, `web_search` items | names, sizes and timings at `spans`; arguments and results at `content` |
 | Reasoning: Codex reasoning summaries, Claude thinking blocks | harness stream | counts and sizes at `spans`; text at `content` |
 | Configuration: effective configuration with origins, pipeline, policy revision, lock, bindings, Provider registry, versions, host | kernel, once per run, metadata only | `spans`; the texts of the pipeline, the Task file and the policy at `content` |
@@ -103,10 +103,12 @@ These are the clauses proposed for ADR-0151. Each is pinned by a test named in �
 6. **Credentials are withheld at every level, and identities survive.** Every untrusted string
    passes the one redaction implementation (the rules review-runner applies to Provider-authored
    text today, moved to the leaf crate) before any truncation, so a bound never removes the
-   evidence that makes a fragment a credential; kernel-produced, validated identity fields and
-   numeric counters are typed fields the heuristic does not see; environment values are never
-   recorded; Provider grants are replaced by placeholders as the adapters already do for
-   captured streams.
+   evidence that makes a fragment a credential, and a line or document too long to be judged
+   whole is withheld whole, never cut; a harness stream's untrusted content is published only
+   after the adapter's whole-capture privacy decision, and what is recorded live is validated
+   structure (§7.3); kernel-produced, validated identity fields and numeric counters are typed
+   fields the heuristic does not see; environment values are never recorded; Provider grants are
+   replaced by placeholders as the adapters already do for captured streams.
 7. **Telemetry fails open for the run and closed for the reader.** A telemetry-only write
    error (an unwritable directory, a quota, a locked index) is recorded once as a problem and
    the run continues; ADR-0144's free-disk floor still refuses a check, a measurement or an
@@ -127,7 +129,7 @@ These are the clauses proposed for ADR-0151. Each is pinned by a test named in �
 | Traces, not logs, as the primary record; metrics derived from them | OpenTelemetry's data model; Perfetto; Bazel's JSON trace profile | Spans and events are the only primary records; every metric in §9 is a query over them. |
 | A shared vocabulary for agent telemetry | OpenTelemetry GenAI semantic conventions (`gen_ai.*`, still *Development* status, now kept in their own repository) | Use `gen_ai.operation.name`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.usage.*`, `gen_ai.tool.*`, `gen_ai.agent.name`, `gen_ai.conversation.id` and `error.type`; pin the names af uses in `af/TelemetrySpan@1`, so upstream churn never breaks a reader. |
 | Content capture is opt-in and separate from structure | Claude Code redacts prompts, tool input and tool output unless `OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_TOOL_DETAILS` and `OTEL_LOG_TOOL_CONTENT` are set; the GenAI conventions mark `gen_ai.input.messages` and its siblings *Opt-In* | The `content` level; content lives in blobs, never in attributes. |
-| The harness is the authority on its own API traffic | Claude Code's `claude_code.api_request`, `api_error` and `tool_result` events and its inline, length-bounded raw API bodies; Codex's `[otel]` table | Harness-native telemetry is the fourth source (T5), received on loopback, attributed by `OTEL_RESOURCE_ATTRIBUTES`. |
+| The harness is the authority on its own API traffic | Claude Code's `claude_code.api_request`, `api_error` and `tool_result` events and its inline, length-bounded raw API bodies; Codex's `[otel]` table | Harness-native telemetry is the fourth source (P9), received on loopback, attributed by `OTEL_RESOURCE_ATTRIBUTES`. |
 | Append-only, crash-safe local files with a rebuildable index | Perfetto's streaming protobuf; the OTLP file exporter; journald | Per-process JSONL segments under an exclusive lock, sealed on exit, recovered to their last complete line; a SQLite index rebuilt from the segments by `af telemetry reindex`. |
 | Per-process resource accounting | `wait4(2)`; `/usr/bin/time -v`; Bazel's execution log | `af.rusage.*` on every supervised-process span. |
 | Critical path and self time over a dependency graph | Bazel's JSON trace profile critical path; Chrome's trace viewer | `af telemetry critical-path` and `af telemetry bottlenecks`. |
@@ -161,24 +163,35 @@ each process's `af.command` span, with `af.execution_id` equal to its segment id
 that execution's `af.run` span covering the time this process spent on the run. Configuration
 (§7.4), plan identity (`af.plan` with the pipeline digest and the node list) and the node graph
 are recorded per execution, because a resumed or refreshed Task may run under another
-configuration or plan hours later. The reader defines, per run: **active time**, the sum of its
-executions' `af.run` durations, which never overlap; **elapsed time**, from the first execution's
-start to the last one's end, idle gaps included; and **wall time** of an execution, its own
-`af.run` duration. `runs` prints active and elapsed; `config`, `critical-path` and `diff` work
-on one execution, the latest by default, `--execution ID` for another, and `diff --by run`
-compares two runs' active totals. A fixture pins a resume under a changed configuration after
-an idle interval.
+configuration or plan hours later. Executions can overlap: a lease is taken over after it
+expires without waiting for the fenced predecessor to exit (ADR-0089), so a suspended writer may
+wake and end its `af.run` span after its successor started. The reader defines, per run:
+**active time**, the union of its executions' observed `af.run` intervals, an overlap counted
+once; **execution time**, the sum of the same intervals, reported beside it as
+`af.execution.duration_sum`; **elapsed time**, from the first execution's start to the last
+one's end, idle gaps included; and **wall time** of an execution, its own `af.run` duration. An
+interval without an end (an execution whose segment was never sealed) ends at its segment's last
+record time and is marked `open`. `runs` prints active, execution and elapsed time; `config`,
+`critical-path` and `diff` work on one execution, the latest by default, `--execution ID` for
+another, and `diff --by run` compares two runs' active totals. Fixtures pin a resume under a
+changed configuration after an idle interval, and a paused writer that loses its lease, a
+successor that starts, and the original process ending later: active time counts the overlap
+once.
 
 **Retained history.** Capture completeness (nothing dropped or cut while writing) and retained
-completeness (nothing evicted since) are different facts. Each execution's `af.run` span records
-`af.execution.ordinal`, its number among the run's executions, which the kernel derives from the
-Store's committed lease records when it starts, and `af.store.sequence_at_start`, the Store's
-highest committed event sequence at that moment. A reader, after ingest, reindex or a `dir`
-export, marks a run `af.history = complete` only when executions 1 to n are all present with
-their seals; otherwise `partial`, and every total, ledger view and analytic over that run says
-`partial`, with the missing ordinals listed — unless a retained accounting snapshot (§7.5)
-supplies the figure, in which case the figure is shown with its snapshot's sequence. A fixture
-evicts the first execution of a resumed run and checks every view.
+completeness (nothing evicted since) are different facts, and a reader cannot learn from retained
+segments how many executions a run had: a later execution may have been evicted or found corrupt,
+and the kernel's own count lives in the Store, which `af telemetry` does not consult. Each
+execution's `af.run` span records `af.execution.ordinal`, its number among the run's executions,
+which the kernel derives from the Store's committed lease records when it starts, and
+`af.store.sequence_at_start`, the Store's highest committed event sequence at that moment. A
+reader, after ingest, reindex or a `dir` export, labels a run's history `prefix:k` when
+executions 1 to k are retained with their seals and no ordinal between them is missing, and
+`partial` when one is; it never says a run's history is complete. Every total, ledger view and
+analytic over a run says `retained executions 1–k` (or `partial`, with the missing ordinals
+listed), and a figure a retained accounting snapshot (§7.5) supplies is shown with its
+snapshot's sequence. Fixtures evict the first execution of a resumed run (`partial`), and remove
+the latest execution before a reindex and a `dir` export (`prefix:1`, never complete).
 
 ### Records
 
@@ -190,11 +203,12 @@ A segment holds one JSON object per line. `t` names the record; `schema` names i
 | `span_start` | `af/TelemetrySpan@1` | `trace_id`, `span_id`, `parent_span_id` (null for a root), `name`, `kind` (`internal`, `process`, `client`), `start_unix_ns`, `attributes`. |
 | `span_end` | `af/TelemetrySpan@1` | `span_id`, `end_unix_ns`, `status` (`ok`, `error`, `unset`), `attributes` known only at the end (exit, usage, outcome). |
 | `event` | `af/TelemetryEvent@1` | `span_id`, `time_unix_ns`, `name`, `attributes`, optional `blob` (digest) and `blob_media_type`. |
-| `config` | `af/TelemetryConfig@1` | the metadata-only configuration snapshot of §7.4; one per execution, bounded like every record. |
+| `config` | `af/TelemetryConfig@1` | one part of the metadata-only configuration snapshot of §7.4: `execution_id`, `part`, `parts`, `complete`, and the rows this part carries; as many parts per execution as the record bound needs. |
 | `node` | `af/TelemetryNode@1` | one plan node of an execution: `execution_id`, `plan_digest`, `node_id`, `kind`, `package`, `depends_on` (a record field of up to 64 node ids, outside the attribute bounds), `expected_nodes`. §7.1. |
 | `finding` | `af/TelemetryFinding@1` | the bounded summary of an admitted Finding, §7.5. |
 | `demand` | `af/TelemetryDemand@1` | the bounded summary of a Demand, keyed by Demand id, §7.5. |
-| `blob` | `af/TelemetryBlob@1` | `digest` (`sha256:` and 64 hex, over the retained redacted bytes), `source_digest` (over the original bytes), `original_bytes`, `bytes` (retained), `stored_bytes` (compressed), `media_type`, `truncated`, `redaction` (`af-redact/1`). One record per occurrence; the content is in `blobs/`. |
+| `blob` | `af/TelemetryBlob@1` | the shared object: `digest` (`sha256:` and 64 hex, over the retained redacted bytes), `bytes` (retained), `stored_bytes` (compressed), `media_type`, `redaction` (`af-redact/1`). Written once per digest per segment; the content is in `blobs/`. |
+| `blob_ref` | `af/TelemetryBlobRef@1` | one occurrence: `occurrence_id` (`segment_id:sequence`), `digest`, `span_id` and the owning event's sequence, `source_digest` (over the original bytes), `original_bytes`, `truncated`, `state` (`stored`, `dropped`). An event names its content by `occurrence_id`. |
 | `problem` | `af/TelemetryProblem@1` | `time_unix_ns`, `what` (`write`, `blob`, `receiver`, `budget`, `redaction`, `sink`, `observer`), `reason`. Recorded once per distinct `what` and `reason` per process. |
 | `seal` | `af/TelemetrySeal@1` | `ended_unix_ns`, `exit` (`ok`, `error`, `signal`, `recovered`), `spans`, `events`, `blobs`, `dropped`, `dropped_chunks`, `discarded_bytes`, `refs` (the name of the segment's `.refs` manifest). The last line; a recovering reader writes it with `recovered`. |
 
@@ -208,7 +222,7 @@ and reproducible from the segment.
 Attributes are a flat map from string to string, integer, float, boolean, decimal string or
 array of strings: at most 64 per record, keys at most 128 bytes, string values at most 1 KiB,
 arrays at most 32 elements and 4 KiB together. A value over its bound becomes, at `content`, a
-blob whose digest the attribute names; at every other level it is cut at the bound with a
+blob occurrence the attribute names; at every other level it is cut at the bound with a
 trailing `…` marker. A record that would still exceed 16 KiB drops attributes from the end of
 the writer's attribute order until it fits; `af.truncated_fields` counts cut values and
 `af.dropped_fields` counts dropped ones, and 256 bytes of every record are reserved for these two
@@ -235,6 +249,7 @@ value the source did not deliver is absent, never zero (ADR-0143).
 | `af.node_id`, `af.node.kind`, `af.attempt_id` | node and below | the plan node and its Attempt |
 | `af.worker`, `af.provider`, `af.provider.kind` (`claude`, `codex`) | attempt and below | the Worker package as `name@version`, the registry Provider and its kind |
 | `af.native` (`received`, `unavailable`) | `af.harness` | whether the harness's native telemetry (§7.6) arrived for this Attempt |
+| `af.stream.withheld` | `af.harness` | the adapter's whole-capture privacy decision withheld the streams; no stream content was published (§7.3) |
 | `af.snapshot`, `af.policy_rev`, `af.pipeline`, `af.pipeline.digest` | run | what was reviewed or built, under which authority |
 | `af.phase` | internal spans | the span name of §7.1 |
 | `af.outcome`, `af.failure.class`, `af.failure.reason` | attempt, check, process, run | the kernel's own class (`model_refused`, `model_unavailable`, `invalid_output_contract`, `deadline_expired`, `gate_failed`, `unknown_usage`, `refused`, `unavailable`, `failed`, `timed_out`, `lease_lost`) and its reason text |
@@ -244,8 +259,9 @@ value the source did not deliver is absent, never zero (ADR-0143).
 | `af.admission.wait_ms`, `af.admission.reserved_tokens` | admission | queueing before dispatch |
 | `af.store.event.type`, `af.store.event.sequence`, `af.store.event.id`, `af.store.event.causation_id` | store event mirror | the mirrored Store event |
 | `af.ledger.coverage` (`complete`, `incomplete`) | run | whether every committed event, Finding and Demand summary of the run reached Telemetry at capture time |
-| `af.history` (`complete`, `partial`), `af.execution.ordinal`, `af.store.sequence_at_start` | run, execution | retained completeness (§5) |
-| `af.usage.sequence`, `af.usage.source` (`wall`, `usage_observed`, `settled`, `released`) | `af.usage.state` events | the ordering key (the Store's committed event sequence) and the transition of an accounting snapshot (§7.5) |
+| `af.history` (`prefix:k`, `partial`), `af.execution.ordinal`, `af.execution.duration_sum`, `af.store.sequence_at_start` | run, execution | retained completeness and execution time (§5) |
+| `af.usage.sequence`, `af.usage.source` (`usage_observed`, `settled`, `released`) | `af.usage.state` events | the ordering key (the Store's committed event sequence) and the committed transition of an accounting snapshot (§7.5) |
+| `af.usage.wall.sequence` | `af.usage.wall` events | the segment record sequence ordering a sidecar observation, a separate series (§7.5) |
 | `af.measurement.id` | measure | the kernel measurement (ADR-0132) the spans belong to |
 | `af.git.op`, `af.cas.op`, `af.cas.bytes`, `af.store.op` | git, CAS and Store spans | the operation |
 | `process.pid`, `process.command` (the program only), `process.exit_code`, `process.signal`, `af.rusage.user_ms`, `af.rusage.system_ms`, `af.rusage.max_rss_bytes`, `af.stdout_bytes`, `af.stderr_bytes`, `af.stderr_held` | process spans | the supervised process |
@@ -328,19 +344,29 @@ digest into a temporary file under `blobs/` and renamed into place; an existing 
 digest is reused after its size is checked, and `reindex` verifies every file's digest. Blobs are
 shared across segments and runs: an identical Worker input is stored once.
 
-**Publication.** A blob reference is published before the blob can be collected and never
-after: the writer takes `gc.lock` shared, non-blocking; appends the `blob` record and flushes the
-buffer; renames the blob file into place; releases the lock. If the lock cannot be taken at once
-— the sweep holds it exclusively — the blob is dropped, counted in `dropped`, and the record names
-the digest with `state = dropped`; execution never waits on collection. A reader that reads blob
-files holds `gc.lock` shared for the read. The sweep takes `gc.lock` exclusively, waiting at
-most 2 s, and skips blob collection this time if it cannot. A blob referenced by a live
-(locked) segment's `blob` records or by a sealed segment's `.refs` manifest is never removed. A
-fixture pauses a sweep between a blob's rename and its reference flush and proves the blob kept.
+**Publication.** A blob file exists before any reference to it can be read, and a reference is
+published before the file can be collected: the writer takes `gc.lock` shared, non-blocking;
+renames the completed blob file into place; appends the `blob` object record (once per digest
+per segment) and the `blob_ref` occurrence record and flushes the buffer; releases the lock. If
+the lock cannot be taken at once — the sweep holds it exclusively — the blob is dropped, counted
+in `dropped`, and the occurrence record says `state = dropped`; execution never waits on
+collection. A crash after the rename and before the flush leaves an unreferenced file, which the
+sweep removes as an orphan once it is an hour old; a crash before the rename leaves a temporary
+file, removed the same way. A reader that reads blob files holds `gc.lock` shared for the read;
+a reference whose file is nevertheless missing (a hand-deleted file, a copied directory) is
+reported for that occurrence as `content unavailable: missing blob`, counted by `status`, and
+never fails the query. The sweep takes `gc.lock` exclusively, waiting at most 2 s, and skips blob
+collection this time if it cannot. A blob referenced by a live (locked) segment's records or by a
+sealed segment's `.refs` manifest is never removed. Fixtures pause a sweep between the rename and
+the reference flush, read a reference the moment it is flushed while another thread publishes,
+and crash a publisher at each step, then run a sweep and a reindex. Two sources that redact to
+identical retained bytes share one object and keep two occurrence records, through reindex and
+export.
 
 **Index.** `index.sqlite` (WAL, `synchronous = NORMAL`, the bundled SQLite with FTS5 and JSON1)
-holds `segments`, `runs`, `spans` (with `self_ns` computed at ingest), `events`, `configs`,
-`findings`, `blobs`, `problems` and, when `content_index = true`, the FTS5 table `content_fts`
+holds `segments`, `runs`, `executions`, `spans` (with `self_ns` computed at ingest), `events`,
+`configs`, `nodes`, `findings`, `demands`, `blobs`, `blob_refs`, `problems` and, when
+`content_index = true`, the FTS5 table `content_fts`
 over text blobs. A reader ingests every sealed segment the index has not seen and the tail of
 each live segment beyond its last ingested byte offset, in one transaction; ingest is idempotent
 by `span_id`, event sequence and digest. Every connection to the index holds `index.lock`
@@ -375,16 +401,24 @@ as allocated bytes, never as deleted rows. Fixtures cover a blob shared by two s
 larger than its segments, and an inventory holding only old corrupt segments, orphan temporaries
 and free index pages, each brought under the cap.
 
-**Directory registry.** `[telemetry] dir` may point anywhere, and ADR-0144's registry of Stores
-(`Task`, `Review`, `ReviewRoot`) does not know telemetry, so before its first write a process
-registers the canonical path of its telemetry directory in `telemetry-dirs.v1.json` (an
-`af/TelemetryDirs@1` document, machine-local, deduplicated by canonical path, versioned under
-ADR-0145 like the Store registry); a process that cannot register records one `problem` and
-writes no telemetry. `af storage` and the sweep inventory every registered directory whatever
-the current level or `dir`, under the same rules, and `af telemetry status` lists them. A
-registered directory that no longer exists is reported and dropped from the registry by an
-applied prune. A fixture writes to directory A, switches to B, then inventories and prunes with
-Telemetry `off`.
+**Directory registry.** `[telemetry] dir` may point anywhere that does not overlap other
+accounted state, and ADR-0144's registry of Stores (`Task`, `Review`, `ReviewRoot`) does not know
+telemetry, so before its first write a process registers the canonical path of its telemetry
+directory in `telemetry-dirs.v1.json` (an `af/TelemetryDirs@1` document, machine-local,
+deduplicated by canonical path, versioned under ADR-0145 like the Store registry); a process that
+cannot register records one `problem` and writes no telemetry. A root is refused at registration,
+with one `problem` and no telemetry, when it is inside or contains another registered telemetry
+root, a registered Store, the warm check cache, a release installation or any other directory the
+storage inventory accounts on its own — `af storage` measures a Store's whole allocated directory,
+so a telemetry root inside one would be counted twice and could be removed with it. The inventory
+rechecks overlap every time (a Store registered later inside a telemetry root, a registry edited
+by hand): an overlapping telemetry root is reported `overlapping`, counted once by the containing
+entry, and excluded from the telemetry kind's eviction. `af storage` and the sweep inventory every
+registered directory whatever the current level or `dir`, under the same rules, and
+`af telemetry status` lists them. A registered directory that no longer exists is reported and
+dropped from the registry by an applied prune. Fixtures write to directory A, switch to B, then
+inventory and prune with Telemetry `off`; refuse a telemetry root inside a Task Store; refuse
+nested telemetry roots; and report a Store registered inside an existing telemetry root.
 
 **Versioning.** The directory is versioned (`v1/`). A release that changes any record shape
 writes `v2/` and leaves `v1/` for `af storage` to list as `unreadable_telemetry` and evict;
@@ -476,21 +510,39 @@ stderr, each with its existing classification and its retained bytes. `ModelRunn
 observer through a `capture_observed` variant of `capture_filtered`; the adapters'
 complete-stream filtering and the Store's raw capture are unchanged.
 
-**The tap.** The consumer frames lines incrementally with a partial-line buffer of at most
-`content_max_blob_bytes` (a longer line is cut there and marked), applies to every complete line
-the same grant replacement the adapters apply to the whole stream — so a grant value split across
-two chunks is still replaced, because replacement runs on the assembled line — then the
-credential rules of §8, and records the line's arrival time (the drain's clock at the read, not
-the consumer's). A chunk whose offset is not the one expected marks a **gap**: the consumer
-discards its partial frame, records the event `af.stream.gap` with the missing byte range, skips
-to the first newline after the gap and frames from there, so bytes on either side of a drop are
-never joined into a record the harness did not emit; a drop at the end of a stream is a trailing
-gap. Dropped chunks and gaps are counted on `af.harness` (`dropped_chunks`, `gaps`), and a stream
-with any gap is `incomplete` for turn and tool analysis. It records at `spans` and above. Tests
-cover a stream smaller than `flush_bytes` whose child waits until the test has seen its last line
-in `tail`, a line delayed until after the harness's last turn, a cancelled Attempt, a credential
-split across a chunk boundary, a full queue, a dropped middle chunk whose neighbours would
-otherwise form valid but altered JSON, and a stalled consumer.
+**The tap.** The consumer frames lines incrementally. A frame that exceeds
+`content_max_blob_bytes` before its newline is discarded whole through the next newline: the
+consumer records only a withheld marker with the frame's size and never parses, redacts or
+retains any prefix of it, because a line too long to be judged whole cannot be judged at all
+(§3.6, as `bounded_cli_line` judges the complete line before shortening it). A complete line
+is parsed for structure. **What is recorded live** — while the process runs, at `spans` and
+above — is validated structure only: the record kind from the closed vocabulary of §7.3, counts,
+byte sizes, arrival times, ids that match the printable grammar of ADR-0147, tool names that are
+in the invocation's own tool set, stop reasons and item statuses from their closed enumerations,
+and the bound model's id when the reported model equals it. **Every untrusted string** — text,
+thinking, tool arguments and results, agent messages, reasoning summaries, error texts, unparsed
+lines — is never published live: at `spans` only its size is recorded; at `content` its bytes
+are pended in a per-process buffer bounded by the Attempt's content allowance (overflow drops
+the oldest pending content and counts it). When the process has ended, the adapter's
+whole-capture privacy decision runs on the complete streams exactly as today
+(`NativeFailureKind::redact_capture`, `carries_auth_material`): if it withholds the streams,
+every pending byte is dropped and `af.harness` records `af.stream.withheld = true`; otherwise
+the pending content passes the grant replacement the adapters apply to the whole stream and the
+credential rules of §8 and becomes blobs. A grant value split across two chunks is therefore
+still replaced, because replacement runs on assembled, complete content. The tap records the
+arrival time of every line (the drain's clock at the read, not the consumer's). A chunk whose
+offset is not the one expected marks a **gap**: the consumer discards its partial frame, records
+the event `af.stream.gap` with the missing byte range, skips to the first newline after the gap
+and frames from there, so bytes on either side of a drop are never joined into a record the
+harness did not emit; a drop at the end of a stream is a trailing gap. Dropped chunks and gaps
+are counted on `af.harness` (`dropped_chunks`, `gaps`), and a stream with any gap is
+`incomplete` for turn and tool analysis. Tests cover a stream smaller than `flush_bytes` whose
+child waits until the test has seen its last structural line in `tail`, a line delayed until
+after the harness's last turn, a cancelled Attempt, a credential split across a chunk boundary,
+a credential crossing the frame limit, a device code on one line followed by a challenge URL on
+the next (and the same wrapped across lines, and split across stdout and stderr) with nothing of
+either visible in `tail`, a blob or an export, a full queue, a dropped middle chunk whose
+neighbours would otherwise form valid but altered JSON, and a stalled consumer.
 
 **Claude.** The invocation changes from `--output-format json` to
 `--output-format stream-json --verbose` (`stream-json` requires `--verbose` under `-p`);
@@ -507,7 +559,7 @@ closes the matching `af.tool` by `tool_use_id`; `system/api_retry` (`attempt`, `
 `permission_denied` are events on `af.harness`. `thinking` and `text` blocks are counted and sized
 at `spans` and kept as blobs at `content`. Turn and tool times are the observer's arrival times;
 a message's own `timestamp`, when present, is an attribute; the harness's own `duration_ms`
-arrives with T5. The adapter grants a Worker `Read,Glob,Grep` and, by its declared access,
+arrives with P9. The adapter grants a Worker `Read,Glob,Grep` and, by its declared access,
 `Edit`, `Write` and `Bash`, never the Agent tool, so no subagent messages exist.
 
 **Raw-output rule.** Today the Claude adapter stores its whole stdout (the one envelope) in the
@@ -533,31 +585,38 @@ and one `model_reasoning_effort`, and `model_reasoning_summary` stays whatever t
 configuration says. Codex's native OpenTelemetry export would need `-c otel.*` keys this design
 does not admit, so Codex Attempts record `af.native = "unavailable"`; admitting a closed,
 adapter-owned set of telemetry-only `otel` keys is a later design, after a probe has shown that
-`codex exec --ephemeral` honours them, and is not part of T5.
+`codex exec --ephemeral` honours them, and is not part of P9.
 
 The complete list of flags Telemetry may add: Claude `--output-format stream-json --verbose`,
 always, at every level, one invocation shape — unless the invocation-cost gate of §12 fails, in
 which case `json` stays the shape at `off` and `metrics` and `stream-json` is the shape at
-`spans` and `content`, both pinned by the envelope-parity fixture; and, with T5 and only when
+`spans` and `content`, both pinned by the envelope-parity fixture; and, with P9 and only when
 `harness_native = true`, the Claude environment of §7.6. Nothing else.
 
 ### 7.4 Configuration snapshot
 
-At each execution's `af.run` start (§5) the writer records one `config` record,
+At each execution's `af.run` start (§5) the writer records the configuration snapshot
 `af/TelemetryConfig@1`: a metadata-only, allow-listed document, permitted at `spans` because it
-holds no model input and no value a Worker wrote. It carries: `af --version --json`; the effective configuration as one row
-per key with the layer it came from, the file (home-relative) and line, and the value — except
-that a value whose origin is the environment layer is recorded as `<env>`, so an override's
-value is never retained; the policy revision; the pipeline's name, digest and node list; the
-digests of `.af/af.toml` and `.af/af.lock`; the Task's id, kind and pipeline for a Task run; the
-execution bindings (node, Worker, Provider, model and effort); the Provider registry entries by
-name, kind and model, with grant paths replaced by placeholders; the harness versions the
-preflight probed; the host facts; and the names, never the values, of the `AF_*` and `OTEL_*`
-variables present. The texts of the pipeline, the Task file (which carries the request the
-Workers receive) and `.af/af.toml` are blobs at `content` only, named by the event
-`af.config.text`. `af telemetry config RUN [--execution ID]` prints the execution's record and,
-at `content`, the texts. Fixtures pin both representations and prove an environment-layer value
-absent.
+holds no model input and no value a Worker wrote, written as one or more `config` **parts**,
+each a record within the 16 KiB bound carrying `execution_id`, `part` (its ordinal), `parts`
+(the expected count) and `complete` (whether this is the last part), with the rows split across
+parts in one fixed order (version, configuration rows, policy and pipeline, bindings, Providers,
+harness versions, host, variable names), so that a valid 64-node plan with its bindings fits
+without a content blob. `af telemetry config` assembles the parts and says `incomplete` when one
+is missing. It carries: `af --version --json`; the effective configuration as one row per key
+with the layer it came from, the file (home-relative) and line, and the value — except that a
+value whose origin is the environment layer is recorded as `<env>`, so an override's value is
+never retained; the policy revision; the pipeline's name, digest and node list; the digests of
+`.af/af.toml` and `.af/af.lock`; the Task's id, kind and pipeline for a Task run; the execution
+bindings (node, Worker, Provider, model and effort); the Provider registry entries by name, kind
+and model, with grant paths replaced by placeholders; the harness versions the preflight probed;
+the digest of each Claude Code managed-settings file the probe of §7.6 read, when one exists; the
+host facts; and the names, never the values, of the `AF_*` and `OTEL_*` variables present. The
+texts of the pipeline, the Task file (which carries the request the Workers receive) and
+`.af/af.toml` are blobs at `content` only, named by the event `af.config.text`.
+`af telemetry config RUN [--execution ID]` prints the execution's assembled record and, at
+`content`, the texts. Fixtures pin both representations, prove an environment-layer value
+absent, and assemble a configuration whose rows exceed 16 KiB from its parts.
 
 ### 7.5 Store commit observer and Finding summaries
 
@@ -571,21 +630,28 @@ the payload is a blob. A mirror failure is a `problem`, never a Store error, and
 `af.ledger.coverage = incomplete`.
 
 **Accounting snapshot.** Telemetry never re-derives usage, and no single kernel write is the
-charge: the `attempt_wall` sidecar merges only its own earlier values, the Task log's committed
-`UsageObserved` retains a floor in the Task projection without touching the sidecar, and recovery
-settles an abandoned Attempt at the greater of its observed usage and its reservation. So the
-kernel emits one **accounting snapshot** after every charge-changing transition of an Attempt —
-a sidecar write, a committed `UsageObserved`, `Settled` (including recovery), a release — taken
-from the Task projection after that transition is durable: the retained charge and counters as
-`af task show` reports them, the separately identified native observation when one exists, and
-the Store's committed event sequence after the transition as its one ordering key. Telemetry
-records it as the event `af.usage.state` on the Attempt's span at `metrics` and above, with
-`af.usage.source` naming the transition. The reader shows, per Attempt, the snapshot with the
-highest sequence and never computes a maximum, a sum or a replacement of its own; a sidecar-only
-write can therefore never replace a committed charge, because the snapshot reads the projection,
-not the sidecar. A fixture with a decreasing, an absent and a resumed late observation, a
-sidecar write after a committed floor, and a recovery whose observed usage is below the
-reservation yields the kernel's figures at every level.
+charge: the `attempt_wall` sidecar merges only its own earlier values and appends no Store
+event, the Task log's committed `UsageObserved` retains a floor in the Task projection without
+touching the sidecar, and recovery settles an abandoned Attempt whose usage was reported at the
+greater of its observed usage and its reservation, and one whose usage was never reported at
+zero with `unknown_usage.cause = lease_expired` (ADR-0143). Two series, never merged. The
+**charge series**: after every committed Task event that changes an Attempt's accounting —
+`UsageObserved`, `Settled` (including recovery, in both branches), `Released` — the kernel emits
+the event `af.usage.state` on the Attempt's span at `metrics` and above, taken from the Task
+projection after the commit: the retained charge and counters as `af task show` reports them,
+`af.usage.observation` and `af.usage.unknown_cause`, the separately identified native
+observation when one exists, `af.usage.source` naming the transition, and `af.usage.sequence`,
+the committed event's own sequence, which is unique per run. The **wall series**: every sidecar
+`record_wall` write emits the event `af.usage.wall` with the merged sidecar row, `af.usage.source
+= sidecar` and `af.usage.wall.sequence`, the segment's record sequence, so several sidecar
+writes with no Task event between them keep their order and never compete with the charge. The
+reader shows, per Attempt, the charge snapshot with the highest `af.usage.sequence`, shows the
+latest wall observation beside it as what it is, and never computes a maximum, a sum or a
+replacement of its own; after a reindex the same records give the same answer. A fixture with a
+decreasing, an absent and a resumed late observation, several sidecar writes with no intervening
+Task event, a sidecar write after a committed floor, a recovery whose observed usage is below the
+reservation, and an abandoned Attempt that reported nothing (charged zero, labelled unknown)
+yields the kernel's figures at every level.
 
 A Ledger is not a projection of events alone: its Findings come from the Report artifacts the
 events reference (ADR-0005; `apply_report` reads the Report from the CAS). So that `af telemetry
@@ -605,7 +671,7 @@ Tests cover an ordinary Task transition, a Round publication and an atomic integ
 mirrored after its commit and absent after its rollback, and a standalone Demand with its
 satisfaction.
 
-### 7.6 Harness-native telemetry (T5)
+### 7.6 Harness-native telemetry (P9)
 
 Claude Code exports OpenTelemetry metrics, log events and beta traces when
 `CLAUDE_CODE_ENABLE_TELEMETRY=1`. The events carry what af cannot see from the stream:
@@ -618,6 +684,24 @@ to disk, is not used: af cannot bound what the harness writes while it runs, and
 staging directory defeats the budget. Codex Attempts are `af.native = "unavailable"` in this
 design (§7.3), and so is a Claude Attempt whose harness did not export.
 
+**Destination proof.** Setting exporter variables does not by itself make the loopback receiver
+the destination: Claude Code's managed settings may set `OTEL_EXPORTER_OTLP_*` variables, in
+which case it removes the conflicting developer-set variables at startup, and a per-signal
+endpoint set there routes that signal elsewhere. So P9 enables capture only for what it has
+proven: before the first Attempt of a run (and again whenever the harness version or a readable
+managed-settings file's digest changes), af starts the bound harness with the environment below,
+a nonce in `OTEL_RESOURCE_ATTRIBUTES` and a minimal turn-free input, and waits a bounded time for
+each enabled signal's first export carrying the nonce to arrive at the loopback receiver; a
+signal whose export does not arrive is not enabled, and no content flag (`OTEL_LOG_*`,
+`OTEL_LOG_RAW_API_BODIES`) is ever set unless every signal that can carry content (logs, and
+traces when enabled) has been proven to arrive at the loopback; af also reads the platform's
+managed-settings files when they are readable and records their digests in the configuration
+record, and a managed exporter setting it can see is reported in `af telemetry status`. What the
+proof cannot see — a managed policy that routes a signal af disabled, such as metrics, to the
+organisation's collector — carries no content and is outside af. Fixtures cover a managed
+endpoint override, a managed per-signal endpoint override and a beta-tracing endpoint override,
+each leaving the affected signal unavailable and the content flags unset.
+
 **Receiver.** When `harness_native = true` the process that runs Attempts binds one listener to
 `127.0.0.1:0` at its first Attempt and closes it when its last Attempt ends. It is a thread of the
 running command, not a daemon; it accepts only `POST /v1/logs`, `/v1/traces` and `/v1/metrics`
@@ -627,8 +711,10 @@ span under the Attempt the resource attributes name, within that Attempt's conte
 The environment added to a Claude Attempt: `CLAUDE_CODE_ENABLE_TELEMETRY=1`,
 `OTEL_LOGS_EXPORTER=otlp`, `OTEL_TRACES_EXPORTER=otlp` with
 `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1`, `OTEL_METRICS_EXPORTER=none`,
-`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<port>`,
-`OTEL_LOGS_EXPORT_INTERVAL=1000`, `OTEL_TRACES_EXPORT_INTERVAL=1000`,
+`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`, `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:<port>`
+and the three per-signal variables `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT`,
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` and `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` set to the same
+address, `OTEL_LOGS_EXPORT_INTERVAL=1000`, `OTEL_TRACES_EXPORT_INTERVAL=1000`,
 `OTEL_RESOURCE_ATTRIBUTES=af.store_id=<id>,af.run_id=<id>,af.attempt_id=<id>`, and at `content`
 `OTEL_LOG_USER_PROMPTS=1`, `OTEL_LOG_TOOL_DETAILS=1`, `OTEL_LOG_TOOL_CONTENT=1`,
 `OTEL_LOG_ASSISTANT_RESPONSES=1`, `OTEL_LOG_RAW_API_BODIES=1` and
@@ -643,7 +729,7 @@ reveal — with `content_tool_io = false` no body is captured and the Attempt re
 redact extended-thinking content on the harness side; stream `thinking` blocks follow
 `content_reasoning`. A fixture disables each switch and proves the content absent both where it
 is emitted directly and inside a later request body. The sandbox, permission mode and tool set
-are untouched, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` stays set; T5's
+are untouched, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` stays set; P9's
 first deliverable is the probe that proves export still works under it, `--safe-mode` and
 `--restricted`. If it does not, the source is unavailable and no flag is relaxed. Usage the
 harness reports natively is recorded under its own names (`claude_code.*`) and never added to af
@@ -683,7 +769,7 @@ base over the blob bound, an upstream cut, an exhausted Attempt allowance, a del
 dropped, a retried request, a compaction request, bodies delivered out of order, a missing
 response event, and a Worker whose output exhausts every telemetry allowance without filling the
 volume or being terminated. The joins are version-specific by Claude Code's own statement; the
-probe of T5 records the harness version, and a version below 2.1.274 has no bodies.
+probe of P9 records the harness version, and a version below 2.1.274 has no bodies.
 
 ### 7.7 Measurements
 
@@ -698,14 +784,14 @@ own record in the Store; the laboratory's diagnostics read the spans by that id.
 | `off` | nothing: no directory, no subscriber | 0 |
 | `metrics` | `af.command`, `af.run`, `af.gate`, `af.check`, `af.node`, `af.attempt`, `af.harness` and `af.sweep` spans with identity and numeric attributes; failure records; rusage; no turns, tools, configuration, mirror, summaries or blobs | tens of KiB |
 | `spans` | every span and event of §7; the `config` record; the Store commit mirror and Finding summaries; sizes and digests of content; no blobs | low MiB |
-| `content` | `spans` plus blobs: composed Worker inputs, assistant text, thinking and reasoning, tool arguments and results, check stdout and stderr, Store event payloads, Finding bodies, configuration texts, bounded raw API bodies when T5 delivers them | tens to hundreds of MiB, bounded by `content_attempt_max_bytes` and `content_process_max_bytes` |
+| `content` | `spans` plus blobs: composed Worker inputs, assistant text, thinking and reasoning, tool arguments and results, check stdout and stderr, Store event payloads, Finding bodies, configuration texts, bounded raw API bodies when P9 delivers them | tens to hundreds of MiB, bounded by `content_attempt_max_bytes` and `content_process_max_bytes` |
 
 The `[telemetry]` table, machine-only, with flat keys like `[storage]`:
 
 | Key | Default | Bounds | Meaning and failure behaviour |
 | --- | --- | --- | --- |
 | `level` | `"spans"` | `off`, `metrics`, `spans`, `content` | another value refuses the configuration load, naming the key |
-| `dir` | the state root's `telemetry/` (`$XDG_STATE_HOME/af/telemetry`) | an absolute path | unwritable: one `problem`, the run continues |
+| `dir` | the state root's `telemetry/` (`$XDG_STATE_HOME/af/telemetry`) | an absolute path that neither contains nor lies inside a Store, a cache or another telemetry root (§6) | unwritable or overlapping: one `problem`, no telemetry, the run continues |
 | `max_bytes` | `"4GiB"` | `256MiB` to `[storage] max_bytes` | telemetry entries evicted LRU past it, under ADR-0144's rules |
 | `flush_bytes` | `"64KiB"` | `4KiB` to `16MiB` | buffer size before a write |
 | `flush_latency_ms` | `1000` | 50 to 10000 | the longest a record waits in the buffer while a run is open (§6) |
@@ -717,9 +803,9 @@ The `[telemetry]` table, machine-only, with flat keys like `[storage]`:
 | `content_native_body_max_chars` | `1048576` | 4096 to 8388608 | what the harness may put inline in one raw body (`CLAUDE_CODE_OTEL_CONTENT_MAX_LENGTH`, UTF-16 code units) |
 | `content_reasoning` | `true` | boolean | keep thinking blocks and reasoning summaries at `content` |
 | `content_tool_io` | `true` | boolean | keep tool arguments and results at `content` |
-| `content_model_bodies` | `true` | boolean | keep raw API bodies at `content` when T5 delivers them |
+| `content_model_bodies` | `true` | boolean | keep raw API bodies at `content` when P9 delivers them |
 | `content_index` | `true` | boolean | maintain the FTS5 index over text blobs |
-| `harness_native` | `false` | boolean | T5's receiver and harness environment |
+| `harness_native` | `false` | boolean | P9's receiver and harness environment |
 | `sink` | `"none"` | `none`, `otlp` | push after each run |
 | `sink_endpoint` | `""` | an `http://` or `https://` URL | required with `sink = "otlp"`, refused otherwise |
 | `sink_headers_file` | `""` | a path | one `Name: value` per line, read at push time, never recorded |
@@ -769,7 +855,7 @@ which is the kernel's own merged state, and `af.attempt`'s end attributes carry 
 at that moment. Run totals are sums of those Attempt states. Turn counters
 (`af.turn`) are the harness's per-turn report (Codex's adapter already sums them into the Attempt
 total) and serve turn-level analysis only; they are never added into a run or Attempt total. Usage
-the harness exports natively (T5) is a third series under its own names and is never added
+the harness exports natively (P9) is a third series under its own names and is never added
 either. A fixture with several turns, a resume and a late usage update yields the same aggregate
 at `metrics`, `spans` and `content`.
 
@@ -798,16 +884,21 @@ record with its redacted stderr excerpt, exit, retries, rusage and, at `content`
 and tool call in flight. The classes are the kernel's own; Telemetry invents none.
 
 **Correctness analytics.** `af.check.fingerprint` is `af/check-fingerprint@1`: `SHA-256` over
-the canonical JSON of the declared check (program, arguments, the names of the environment it is
-granted, timeout, working-directory policy), the executor identity (platform triple, the resolved
-program's version string or digest, the toolchain snapshot id when one is declared) and the
-Snapshot digest; when any of those is unavailable the fingerprint is `unknown` and the check is
-excluded from flake detection and listed separately. `af telemetry flakes --since 30d` lists
-checks that were executed more than once under one fingerprint with both `passed` and `failed`
-among the outcomes; `not_run` is never an outcome in that comparison and is reported on its own,
-so a refused execution followed by a pass is not a flake. It also lists reviewer nodes whose
-output failed its contract. Fixtures pin the fingerprint, a changed execution input, and a
-refused run followed by a pass. `af telemetry findings --since 30d` joins the Finding summaries of §7.5 with their
+the canonical JSON of the declared check (program, arguments, timeout, working-directory policy),
+the executor identity (platform triple, the resolved program's version string or digest, the
+toolchain snapshot id when one is declared), a digest of the **effective environment** the check
+ran with — every name and value, after the runner has replaced the runtime paths it knows it
+introduced (the sandbox root, `CARGO_HOME`, `RUSTUP_HOME`, `CARGO_TARGET_DIR`, the warm cache
+directory, the temporary directory) with placeholders, hashed and never retained in plaintext,
+because `PATH` and the toolchain homes decide which subordinate tools run — and the Snapshot
+digest; when any part is unavailable, or the runner cannot name the runtime paths it introduced,
+the fingerprint is `unknown` and the check is excluded from flake detection and listed
+separately. `af telemetry flakes --since 30d` lists checks that were executed more than once
+under one fingerprint with both `passed` and `failed` among the outcomes; `not_run` is never an
+outcome in that comparison and is reported on its own, so a refused execution followed by a pass
+is not a flake. It also lists reviewer nodes whose output failed its contract. Fixtures pin the
+fingerprint, a changed execution input, identical environment names with different values (two
+fingerprints, never a flake pair), and a refused run followed by a pass. `af telemetry findings --since 30d` joins the Finding summaries of §7.5 with their
 later disposition events per Worker and model and prints the share rejected or wontfix, a
 precision proxy; a run marked `incomplete` or `partial` is counted separately and labelled.
 Unknown-usage causes and model-identity refusals appear by class in `failures`.
@@ -843,7 +934,7 @@ telemetry directory, such as one copied from another machine.
 | `show RUN [--attempt ID] [--span ID] [--depth N]` | the span tree with start offset, total, self, status and key attributes; `--span` prints one span with its events | `af/telemetry-show@1` |
 | `tail [RUN]` | follows the live segments (all, or the run's) and prints spans and events as they end, like `tail -f`; exits when the writer seals | `af/telemetry-tail@1`, one line each |
 | `turns RUN [--attempt ID]`, `tools RUN [--attempt ID]` | one row per turn or tool call with timing, usage, outcome and sizes | `af/telemetry-turns@1`, `af/telemetry-tools@1` |
-| `context RUN ATTEMPT [--turn N] [--raw]` | the composed Worker input; with T5, the request the model saw at turn N, with its `complete`, `partial` or `unavailable` state | `af/telemetry-context@1` |
+| `context RUN ATTEMPT [--turn N] [--raw]` | the composed Worker input; with P9, the request the model saw at turn N, with its `complete`, `partial` or `unavailable` state | `af/telemetry-context@1` |
 | `reasoning RUN ATTEMPT` | thinking blocks and reasoning summaries in order | `af/telemetry-reasoning@1` |
 | `config RUN [--execution ID]` | the execution's configuration record and, at `content`, the texts | `af/TelemetryConfig@1` |
 | `ledger RUN` | the committed Store events and Finding summaries in sequence, with the coverage marker | `af/telemetry-ledger@1` |
@@ -857,7 +948,7 @@ A `RUN` argument is the kernel run id; when two Stores share it, the command lis
 their `af.store_id` and asks for `--store ID`. Exit codes follow `af help exit-codes`: 0; 1 when
 the store is unreadable or a run is unknown, stderr naming it; 2 for a wrong command line or a
 refused configuration key. Each `--json` document has a schema under `schemas/telemetry-*.json`
-and a parity fixture. The TUI gets a Telemetry pane in T6 that shows what `show` and `tail`
+and a parity fixture. The TUI gets a Telemetry pane in P10 that shows what `show` and `tail`
 print for the selected Task; it reads only what those commands read.
 
 ## 11. Exports and sinks
@@ -867,14 +958,24 @@ print for the selected Task; it reads only what those commands read.
 | `otlp-json --signal traces`, `--signal logs`, `--signal metrics` | one `ExportTraceServiceRequest`, `ExportLogsServiceRequest` or `ExportMetricsServiceRequest` in the OTLP JSON mapping (nanosecond strings, hex ids, resource attributes `service.name = af`, `service.version`, `host.*`, `af.store_id`), directly postable to `/v1/traces`, `/v1/logs` or `/v1/metrics`; `--signal` is required | any collector or backend (Jaeger, Tempo, Honeycomb, Grafana) through `curl` or the `otlp` sink |
 | `perfetto` | Chrome JSON trace events: one process track per af process, one thread track per Attempt, `X` events for spans, `i` events for events, flow events along the critical path; overlapping non-nested work on async tracks | Perfetto UI, `chrome://tracing`, the laboratory's HTML report |
 | `jsonl` | the segment records of the selection, concatenated, records only (a blob is its reference record; content never inline) | `jq` and ad-hoc analysis |
-| `dir` | the selection in the Telemetry Store's own layout: the sealed segments with their manifests, every blob they reference, and `manifest.json` (`af/TelemetryExport@1`: the selection, the af version, counts and bytes) | `af telemetry --dir` on any machine, after `tar` or `rsync` by the operator |
+| `dir` | the selection in the Telemetry Store's own layout: segments holding only the selected records, their manifests, every blob those records reference, and `manifest.json` (`af/TelemetryExport@1`: the selection, its completeness per run, the af version, counts and bytes) | `af telemetry --dir` on any machine, after `tar` or `rsync` by the operator |
 | `csv` | one table of spans with the attributes `--columns` names | spreadsheets, R, Python |
 
 `af telemetry export --format F --out PATH|- [--run RUN|--since D] [--content --yes-content]`
 writes one file, or for `dir` one directory; `--content` includes blobs, as the blob files of a
-`dir` export or as a sidecar directory for `perfetto`, and is refused for the other formats. A
-`dir` export read with `--dir` answers every query exactly as the source did for the selection;
-a parity fixture exports several segments sharing blobs, one over 16 KiB, and compares.
+`dir` export or as a sidecar directory for `perfetto`, and is refused for the other formats.
+**Selection.** A segment belongs to a process, and one process may serve several runs (a Task
+whose review node runs a Campaign writes both streams to one segment), so `--run` and `--since`
+never copy a segment whole: the export writes, for each source segment, a derived segment that
+keeps the source's header, segment id and record sequences and holds only the records of the
+selected runs (their spans, events, `config` parts, `node`, `finding`, `demand`, `blob` and
+`blob_ref` records and the segment's `problem` and `seal` records), so every span id and
+occurrence id is unchanged, plus a `.refs` manifest of the blobs those records reference and
+those blob files alone; `manifest.json` lists the selected runs and, per run, whether every
+retained execution is present. A `dir` export read with `--dir` answers every query exactly as the
+source did for the selection; a parity fixture exports several segments sharing blobs, one over
+16 KiB, and compares, and a second fixture puts two runs with distinct blobs in one segment and
+proves the export of one discloses no record and no blob of the other.
 The `otlp` sink runs `af.sink` at the end of each run after the
 result is printed: it posts the run's traces, logs and metrics to the three signal endpoints
 under `sink_endpoint` in requests of at most 4 MiB each, with the headers from
@@ -972,7 +1073,7 @@ decision with its own ADR.
 - **Text logs through the `log` crate.** Unstructured and unjoinable. Rejected.
 - **Reading the harnesses' session files instead of the stream.** Claude's transcripts live
   under `~/.claude` in an undocumented shape and af removes them unless `keep_worker_transcripts`
-  is set; Codex runs `--ephemeral`. Rejected: the documented streams are the contract, and T5
+  is set; Codex runs `--ephemeral`. Rejected: the documented streams are the contract, and P9
   adds the harness's own telemetry.
 - **Only the harnesses' native telemetry, no kernel spans.** Misses the kernel, which is where
   "make af faster" lives, and is unavailable where a harness does not export. Rejected as the
@@ -1007,6 +1108,13 @@ decision with its own ADR.
   capturing bodies at all when a switch they imply is off.
 - **Scanning for telemetry directories.** Finds nothing outside the default root. Rejected for a
   machine-local registry of every directory written.
+- **Publishing stream content live.** A live transcript in `tail`. Rejected: the adapter's
+  whole-capture privacy decision (a device code beside a challenge URL) exists only once the
+  streams are complete; live records are validated structure, content follows the decision.
+- **Summing execution durations as active time.** Simple, and wrong after a lease takeover,
+  when two executions overlap. Rejected for the union, with the sum reported beside it.
+- **Trusting the exporter variables as the destination.** Managed settings override them.
+  Rejected for a behavioural proof per signal before any content flag is set.
 - **Codex `-c otel.*` keys in this design.** Their names and `codex exec` support are unverified.
   Deferred to a later design behind a probe; no Codex invocation changes here.
 - **zstd for segments and blobs.** Better ratio and speed, one more C build. Rejected for v1;
@@ -1015,76 +1123,128 @@ decision with its own ADR.
 
 ## 15. Packages
 
-Each package is one implementer Attempt under the implementation pipeline's Attempt budget
-(1,000,000 tokens) with its verification reserve, changes at most about 4,000 lines, and ends
-with its tests green and `af task report` in the pull request (ADR-0142). The order is binding;
-each package's acceptance assumes the earlier ones.
+Each package is one `kernel/implementation-reviewed` Task: one implementer Attempt (1,500,000
+tokens, three hours) that must leave a gate-passing candidate, then the gate, two reviewers and
+the evaluator, with follow-up rounds as needed and one `kernel/verification-reviewed` Task
+before each pull request (ADR-0142). The six packages of the first revisions are cut into ten
+so that each fits one Attempt; the order is binding, and each package's acceptance assumes the
+earlier ones. The change note `changelog.d/telemetry.md` is created by P1 and extended by every
+later package; ADR-0151 lands with P1 and no package adds another ADR.
 
-**T1 — Store, substrate, levels.** A new leaf crate `review-telemetry` (depending on `serde`,
-`serde_json`, `tracing-core`, `flate2`, `rusqlite` for the index, and nothing in the workspace;
-linked by `af`, `review-pipeline`, `review-runner`, `review-check`, `review-source-git` and
-`review-sandbox`, never by `review-process`): the locked segment writer with its total limit and
-terminal reserve, sealing and recovery, blobs, structured redaction (moved from review-runner,
-which re-exports it), the `tracing` subscriber, the levels, the record bound, the Store-instance
-trace namespace, the `[telemetry]` table with `af help telemetry`, `af telemetry status`, `runs`,
-`show`, `tail`, `reindex` and `gc`, the `telemetry` storage kind with physical-union accounting
-and ADR-0144 eviction, and the spans `af.command`, `af.run`, `af.plan`, `af.authority.load`,
-`af.node`, `af.attempt` and `af.sweep`. Acceptance: `telemetry_off_opens_nothing`,
-`telemetry_never_steers`, `telemetry_trace_namespace_separates_stores`,
-`telemetry_segment_recovery_keeps_complete_prefix`,
-`telemetry_segment_recovery_refuses_interior_corruption`, `telemetry_writer_lock_survives_pid_reuse`,
-`telemetry_segment_limit_bounds_every_record_kind`, `telemetry_record_bound_holds`,
-`telemetry_index_rebuild_is_identical`,
+**P1 — the crate: records, segments, blobs, redaction, levels, index, status.** A new leaf
+workspace crate `review-telemetry` (depending on `serde`, `serde_json`, `tracing-core`, `flate2`
+with its pure-Rust backend, `rusqlite`, and nothing in the workspace; linked by `af` in this
+package, later by `review-pipeline`, `review-runner`, `review-check`, `review-source-git` and
+`review-sandbox`, never by `review-process`): the records of §5 with the record bound, the
+locked segment writer with its total limit, terminal reserve, `.refs` manifest, sealing and
+recovery, blob objects and occurrences with retained-bytes identity, redaction before truncation
+and the publication protocol, structured redaction moved from review-runner (which re-exports
+it), the `tracing` subscriber, the trace and execution identities, the directory registry with
+its overlap rule, the index with its lifecycle lock, the `[telemetry]` table with
+`af help telemetry`, `af telemetry status` and `reindex`, ADR-0151, `docs/telemetry.md`.
+Acceptance: `telemetry_segment_recovery_keeps_complete_prefix`,
+`telemetry_segment_recovery_refuses_interior_corruption`,
+`telemetry_writer_lock_survives_pid_reuse`, `telemetry_segment_limit_bounds_every_record_kind`,
+`telemetry_record_bound_holds`, `telemetry_index_rebuild_is_identical`,
+`telemetry_index_replacement_under_lock`,
 `telemetry_machine_only_table_is_ignored_in_project_layers`,
+`telemetry_redaction_keeps_identities`, `telemetry_redaction_withholds_secret_members`,
+`telemetry_redaction_precedes_truncation`, `telemetry_blob_identity_is_retained_bytes`,
+`telemetry_blob_occurrences_survive_dedup`, `telemetry_blob_publication_survives_paused_sweep`
+(a paused sweep, a concurrent reader, a crash at each step), `telemetry_missing_blob_is_reported`,
+`telemetry_trace_namespace_separates_stores`, `telemetry_dirs_overlap_refused`,
+`telemetry_off_touches_nothing`, and schema and parity fixtures for the two documents.
+
+**P2 — kernel integration: the consumer, the first spans, the storage kind, runs/show/tail/gc.**
+The consumer thread with its wake conditions and the visibility bound; the spans `af.command`,
+`af.run`, `af.authority.load`, `af.plan` with `node` records, `af.node`, `af.attempt` and
+`af.sweep`; the `telemetry` storage kind with physical-union accounting, ADR-0144 eviction,
+reclamation of every class, the registered-directory inventory with the overlap recheck;
+retained history as a prefix; `af telemetry runs`, `show`, `tail` and `gc`. Acceptance:
+`telemetry_off_opens_nothing`, `telemetry_never_steers`, the reader-import source test,
+`telemetry_default_opens_no_socket`, `telemetry_visibility_latency_holds` (including a deep
+kernel record under a silent child), `telemetry_executions_of_a_resume`,
+`telemetry_executions_overlap_after_takeover`, `telemetry_history_prefix_only` (the latest
+execution removed before reindex and export), `telemetry_history_partial_after_eviction`,
 `telemetry_budget_counts_physical_bytes_once`, `telemetry_eviction_follows_storage_rules`,
-`telemetry_write_failure_is_fail_open`, `telemetry_redaction_keeps_identities`,
-`telemetry_redaction_withholds_secret_members`, `telemetry_blob_identity_is_retained_bytes`,
-`telemetry_blob_publication_survives_paused_sweep`, `telemetry_sweep_reclaims_every_class`,
-`telemetry_visibility_latency_holds` (including a deep kernel record under a silent child),
-`telemetry_executions_of_a_resume`, `telemetry_history_partial_after_eviction`,
-`telemetry_index_replacement_under_lock`, `telemetry_dirs_registry_reaches_every_directory`,
-`telemetry_redaction_precedes_truncation`, and schema and parity fixtures for the documents it
-prints.
+`telemetry_sweep_reclaims_every_class`, `telemetry_dirs_registry_reaches_every_directory`,
+`telemetry_dirs_overlap_reported_at_inventory`, `telemetry_write_failure_is_fail_open`,
+`insufficient_disk_still_refuses_admission`, `telemetry_plan_nodes_at_64`, and golden fixtures
+for the four commands.
 
-**T2 — Kernel coverage, processes, configuration, mirror.** The remaining spans of §7.1,
-`wait4` rusage in `SupervisedOutput` and its recording by the supervising crates, the `config`
-record, the Store commit observer, the Finding summaries and dispositions, the accounting rules
-of §9, `af telemetry config` and `ledger`, and the overhead measurement. Acceptance:
-`telemetry_span_catalogue`, `telemetry_rusage_is_absent_not_zero`,
-`telemetry_config_record_withholds_environment_values`,
+**P3 — full span coverage, process resource use, the configuration record, the check
+fingerprint.** The remaining spans of §7.1 except `af.turn`, `af.tool` and `af.sink`, with the
+catalogue table in `docs/architecture.md`; `libc::wait4` rusage through every `review-process`
+result type and its recording by the supervising crates; the `config` parts and
+`af telemetry config`; `af/check-fingerprint@1` and `af.check.status`; measurements under
+`af.run`. Acceptance: `telemetry_span_catalogue`, `telemetry_rusage_on_every_result_type`
+(model, cancelled, timed-out check, duplex git), `telemetry_rusage_is_absent_not_zero`,
+`telemetry_config_record_withholds_environment_values`, `telemetry_config_parts_assemble` (a
+configuration over 16 KiB), `telemetry_check_fingerprint_pins` (a changed execution input,
+identical environment names with different values, `unknown` without the executor identity),
+and a golden fixture for `config`.
+
+**P4 — the Store commit observer, Finding and Demand summaries, accounting series, the ledger
+view.** The post-commit observer over every commit path; `finding` and `demand` records and
+their lifecycle events; the charge and wall series of §7.5; `af telemetry ledger`. Acceptance:
 `telemetry_mirror_covers_every_commit_path`, `telemetry_mirror_skips_rolled_back_transactions`,
-`telemetry_findings_from_summaries_only`, `telemetry_usage_exact_above_u64`,
-`telemetry_accounting_snapshot_is_the_projection` (decreasing, absent and resumed observations,
-a sidecar write after a committed floor, recovery below the reservation),
-`telemetry_plan_nodes_at_64`, `telemetry_demands_keyed_by_demand`,
-`telemetry_rusage_on_every_result_type` (model, cancelled, timed-out check, duplex git),
-`telemetry_aggregates_identical_across_levels`, `telemetry_spans_overhead_within_2pct` under the
-protocol of §12, and the read-latency corpus with its three measurements.
+`telemetry_findings_from_summaries_only`, `telemetry_demands_keyed_by_demand`,
+`telemetry_accounting_snapshot_is_the_projection` (decreasing, absent and resumed observations;
+several sidecar writes with no Task event between; a sidecar write after a committed floor;
+recovery below the reservation; an abandoned unreported Attempt charged zero and labelled
+unknown), `telemetry_usage_series_separate`, `telemetry_usage_exact_above_u64`,
+`telemetry_aggregates_identical_across_levels`, and a golden fixture for `ledger`.
 
-**T3 — Harness streams and content.** The `OutputObserver` in `review-process`, the tap, Claude
-`stream-json --verbose` with the raw-output rule, the Codex item tap, the `af.harness`, `af.turn`
-and `af.tool` spans with `gen_ai.*` attributes, the `content` level's blobs and allowances, FTS5,
-and `af telemetry turns`, `tools`, `context`, `reasoning` and `search`. Acceptance:
+**P5 — the performance contract.** The three bench fixtures, `scripts/telemetry-overhead.py`
+with the paired protocol and the gate rule, `make telemetry-gate`, the one-pair smoke in
+`make check`, `scripts/telemetry-corpus.py` with the three read-latency measurements, the
+`Performance` section of `docs/telemetry.md` with this machine's first numbers. Acceptance:
+`telemetry_overhead_smoke`, `telemetry_corpus_is_deterministic`, `telemetry_overhead_gate_rule`,
+and the measured report in the pull request.
+
+**P6 — harness streams: the observer, the tap, Claude stream-json, Codex items, turns and
+tools.** `OutputObserver` in `review-process` with the non-blocking enqueue and byte offsets;
+the consumer tap with frame withholding, live structure only, pending content, the
+whole-capture decision and the gap protocol; Claude `stream-json --verbose` with the raw-output
+rule; the Codex item tap; `af.turn` and `af.tool` with the `gen_ai.*` attributes; the
+invocation-cost measurement and its fallback; `af telemetry turns` and `tools`. Acceptance:
 `telemetry_observer_sees_lines_before_exit`, `telemetry_observer_survives_cancellation`,
-`telemetry_observer_redacts_split_credential`, `telemetry_observer_full_queue_drops_and_counts`,
+`telemetry_observer_redacts_split_credential`, `telemetry_frame_over_bound_withheld_whole`,
+`telemetry_stream_withheld_until_decision` (a device code then a challenge URL, wrapped, and
+split across stdout and stderr), `telemetry_observer_full_queue_drops_and_counts`,
 `telemetry_observer_gap_never_joins_fragments`, `telemetry_observer_keeps_held_outcomes`,
-`telemetry_stalled_consumer_never_blocks_drain`, `telemetry_stream_json_cost_gate`,
+`telemetry_stalled_consumer_never_blocks_drain`, `telemetry_observer_failure_never_blocks_drain`,
 `claude_stream_result_envelope_is_the_json_envelope` (fixture pairs),
 `claude_accounting_identical_at_every_level`, `codex_accounting_identical_at_every_level`,
-`telemetry_store_bytes_do_not_grow_with_level`, `telemetry_codex_items_become_spans`,
-`telemetry_claude_messages_become_spans`, `telemetry_content_blob_bounds_and_truncation`,
-`telemetry_content_allowances_hold`, `telemetry_search_only_at_content`.
+`telemetry_store_bytes_do_not_grow_with_level`, `telemetry_claude_messages_become_spans`,
+`telemetry_codex_items_become_spans`, `telemetry_stream_json_cost_gate`, and golden fixtures
+for `turns` and `tools`.
 
-**T4 — Analytics and export.** `failures`, `flakes` with the check fingerprint, `findings`, `bottlenecks`, `critical-path`,
-`diff`, `sql`, `export` in four formats with per-signal OTLP, and the `otlp` sink. Acceptance: a
-golden fixture per command from one recorded fixture run; `telemetry_sql_is_read_only`;
-`telemetry_otlp_signal_files_accepted_by_collector`;
-`telemetry_otlp_omits_unrepresentable_counters`;
-`telemetry_perfetto_export_is_valid_trace_json`; `telemetry_dir_export_round_trips`;
-`telemetry_sink_failure_keeps_exit_code`.
+**P7 — the content level.** Blobs for composed Worker inputs, assistant text, reasoning, tool
+arguments and results, check output, Store event payloads, Finding bodies and configuration
+texts, behind their switches and allowances; the FTS5 index; `af telemetry context`,
+`reasoning` and `search`. Acceptance: `telemetry_content_blob_bounds_and_truncation`,
+`telemetry_content_allowances_hold`, `telemetry_search_only_at_content`,
+`telemetry_content_switches_hold`, the Worker-context fixtures of §16.2 with a telemetry
+directory full of content, the credential fixture through every blob path, the source test that
+no prompt-composing, Warm Set, Worker Notes or optimization-source code imports the reader, and
+golden fixtures for the three commands.
 
-**T5 — Harness-native telemetry (Claude).** The probe, the loopback receiver, the Claude
-environment, inline raw bodies as `af/TelemetryBodyDelta@1`, `context --turn`. Acceptance:
+**P8 — analytics, exports and the sink.** `failures`, `flakes`, `findings`, `bottlenecks`,
+`critical-path`, `diff`, `sql`; `export` in `otlp-json` per signal, `perfetto`, `jsonl`, `dir`
+with selection and `csv`; the `otlp` sink. Acceptance: a golden fixture per command from one
+recorded fixture run, `telemetry_sql_is_read_only`,
+`telemetry_otlp_signal_files_accepted_by_collector`,
+`telemetry_otlp_omits_unrepresentable_counters`, `telemetry_perfetto_export_is_valid_trace_json`,
+`telemetry_dir_export_round_trips`, `telemetry_export_run_selection_discloses_nothing_else`,
+`telemetry_sink_failure_keeps_exit_code`, `telemetry_critical_path_partial_when_nodes_missing`,
+`telemetry_flakes_ignore_not_run`.
+
+**P9 — harness-native telemetry (Claude).** The destination proof, the loopback receiver, the
+Claude environment derived from the content switches, inline raw bodies as
+`af/TelemetryBodyDelta@1` joined by ids, `context --turn`. Acceptance:
+`telemetry_native_destination_proven` (a managed endpoint, a managed per-signal endpoint and a
+beta-tracing override each leave the signal unavailable and the content flags unset),
 `telemetry_receiver_accepts_only_loopback_json`, `telemetry_native_unavailable_relaxes_no_flag`,
 `telemetry_native_usage_never_joins_totals`, `telemetry_bodies_states_and_reassembly` (changed
 tools, changed parameter, upstream cut, dropped base), `telemetry_bodies_join_by_ids` (retry,
@@ -1092,8 +1252,8 @@ compaction, reordered delivery, missing response), `telemetry_content_switches_g
 `telemetry_native_exhaustion_neither_fills_nor_kills`, and a credential-free fixture of Claude
 Code events.
 
-**T6 — TUI pane.** The Telemetry pane. Acceptance: it renders the `show` and `tail` documents and
-nothing else, and the TUI's open and state-read timings are unchanged.
+**P10 — the TUI pane.** The Telemetry pane renders the `show` and `tail` documents and nothing
+else; the TUI's open and state-read timings are unchanged; pseudo-terminal goldens.
 
 ## 16. Acceptance
 
@@ -1105,7 +1265,7 @@ is green:
    nothing in either run, and asserts byte-identical Store event logs, including the
    `storage_sweep` records, and identical `af task show --json` apart from wall times; a source
    test asserts that no crate outside `af`, the TUI and the leaf crate's own reader module
-   imports that reader.
+   imports that reader; `telemetry_executions_overlap_after_takeover` counts an overlap once.
 2. §3.2: the Worker-context fixtures that already prove parent transcripts and other Workers'
    reasoning absent gain a telemetry directory full of content and prove the prompt bytes
    unchanged.
@@ -1114,7 +1274,10 @@ is green:
    `sink = "none"` and `harness_native = false`.
 5. §3.6: the credential fixture passes through every path and every export, with credentials
    placed across each truncation boundary; `WITHHELD_LINE` stands where the fixture planted
-   material, every planted digest and id is intact, and every JSON document still parses.
+   material, every planted digest and id is intact, and every JSON document still parses;
+   `telemetry_frame_over_bound_withheld_whole` and `telemetry_stream_withheld_until_decision`
+   prove that no prefix of an unjudgeable frame and no byte of a withheld stream is ever
+   published.
 6. §3.7: `telemetry_write_failure_is_fail_open` injects telemetry-only failures (a read-only
    telemetry directory, a quota on it, a locked index) and asserts one `problem` and a successful
    run; `insufficient_disk_still_refuses_admission` fills the work volume below `min_free_bytes`
@@ -1123,13 +1286,15 @@ is green:
 7. §3.8: `telemetry_budget_counts_physical_bytes_once`,
    `telemetry_eviction_follows_storage_rules` (in use, last hour, age only under `auto_gc` or an
    applied prune), `telemetry_segment_limit_bounds_every_record_kind` with sustained shallow
-   events after exhaustion, and `telemetry_dirs_registry_reaches_every_directory`.
+   events after exhaustion, `telemetry_dirs_registry_reaches_every_directory`,
+   `telemetry_dirs_overlap_refused` and `telemetry_dirs_overlap_reported_at_inventory`.
 8. §12: the overhead gate under its protocol, the invocation-cost gate with its fallback rule,
    the read-latency corpus measurements, and the no-directory test.
 
 Verification items, each owned by the package that resolves it: whether Claude Code's
-`stream-json` carries `thinking` blocks under `--safe-mode` with the models af binds (T3; if not,
+`stream-json` carries `thinking` blocks under `--safe-mode` with the models af binds (P6; if not,
 Claude reasoning is sizes only and this note says so); whether Claude Code exports OpenTelemetry
-under `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `--safe-mode` and `--restricted` (T5);
-and the deflate ratio on real content, which decides whether the `content_attempt_max_bytes`
-default stays (T3). Codex native telemetry is outside this design (§7.3).
+under `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, `--safe-mode` and `--restricted`, and to the
+loopback alone under this machine's settings (P9); and the deflate ratio on real content, which
+decides whether the `content_attempt_max_bytes` default stays (P7). Codex native telemetry is
+outside this design (§7.3).
