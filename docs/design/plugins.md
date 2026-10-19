@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 7 after review rounds 1 to 6 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 8 after review rounds 1 to 7 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -364,9 +364,15 @@ first. An export is a directory the kernel writes in a versioned, self-describin
 (`af/TelemetrySegment@1`, `af/TelemetrySpan@1`, `af/TelemetryBlob@1` and the other records that
 note versions), documented as a contract, listed by root and format in the surface table, and
 never read back by the kernel for any decision (the telemetry note's own rule). A plugin reads
-an export directly, read-only, honouring the format's own locking and recovery rules (a sealed
-`.jsonl.gz` segment is immutable; a live `.jsonl` segment is the writer's), and validating every
-record it reads by its `kind@version`; the conformance plugin reads a fixture export. The
+an export directly and strictly read-only: it never seals, recovers, compresses, renames or
+indexes inside the export (a sealed `.jsonl.gz` segment is immutable, a live `.jsonl` segment is
+the writer's, a `.corrupt` segment is excluded), and it validates every record it reads by its
+`kind@version`. Whatever an export's format needs written after a crash is the kernel's: the
+telemetry substrate recovers abandoned segments itself, at the start of the next kernel
+command that opens the export for writing, bounded (at most eight segments and two seconds per
+start) and under the writer's lock; the reader's rebuildable index lives in the plugin's own
+cache directory, never in the export. The conformance plugin reads a fixture export, and a
+crash-recovery fixture proves the reader wrote nothing there. The
 SQLite Store, the sidecar and the CAS are not exports and never become one.
 
 ### 3.7 Writing into the kernel
@@ -462,17 +468,20 @@ Worker.
 | `storage.sweep` | the sweep over the budget, after the kernel evicted what it owns | `target_bytes` |
 
 `target` is a tagged value naming what the invocation recorded: `{ "kind": "task", "store",
-"task_id" }` for a Task (a review started from a Task file with `review run --file` is a Task,
-so its hook carries a `task` target); `{ "kind": "campaign", "store", "campaign", "run_id",
-"rounds_closed" }` for a Campaign; and `{ "kind": "none", "reason" }` when the invocation
+"task_id", "rounds_closed" }` for a Task (a review started from a Task file with `review run
+--file` is a Task, so its hook carries a `task` target, and a Task that runs no review pipeline
+carries an empty list); `{ "kind": "campaign", "store", "campaign", "run_id", "rounds_closed" }`
+for a Campaign; and `{ "kind": "none", "reason" }` when the invocation
 failed before it recorded anything, a Task file that would not open or parse, a Task ID no
 Store holds, a Store that would not open. The `none` variant is delivered, not suppressed, so a
 queue plugin learns that its start failed; it carries the failure's reason text and nothing
 else. A hook names an invocation that returned, not a state the Task or Round reached; the
 plugin reads the state with `"$AF_BIN" task show ID --state DIR --json` for a Task and
 `"$AF_BIN" review report --campaign NAME --state DIR --format json` for a Campaign.
-`rounds_closed` is derived from the Round-closure events this invocation appended to the
-Store, whatever its exit code: an ordinary Campaign invocation closes at most one Round
+`rounds_closed` is `[ { "round": N, "sequence": S }, … ]`: one entry per Round-closure event
+this invocation appended to the target's Store, identified by the Round number and the Store
+sequence of that event, ordered by sequence, and nothing appended by an earlier invocation,
+whatever this one's exit code: an ordinary Campaign invocation closes at most one Round
 (`--heavy` included, which runs one Round per invocation), a review pipeline declared in a Task
 file may close several, a run that failed after it published a conclusion lists that Round,
 and a resumed run never lists a Round twice. An interrupted command runs no hook: the kernel
@@ -615,9 +624,16 @@ bar gets one folder `plugins/` with a child per such plugin; one generic rendere
 plugin pane, loads it on a thread like the other panes, reloads on `R`, and shows nothing a
 document does not carry; a superseded load is cancelled and its process reaped on reload, on
 closing the pane and on quit, and a malformed, oversized or timed-out document is one error
-row. A pane load runs with `AF_PLUGIN_BACKGROUND=pane`, so the refusal of §3.8 applies to it
-and to every `af` it calls: a load that is killed on timeout, reload or close can orphan no
-Worker, and loading a pane writes no Store (ADR-0119). An action prefills the `:` line and never submits it: the operator reads the line and
+row. A pane load runs with `AF_PLUGIN_BACKGROUND=pane`, and in that mode the kernel runs only
+the commands of its declared read-only table (`READ_ONLY_COMMANDS` in `main.rs`, beside
+`runs_task_work`: `config show`, `task list|show|report|explain`, `review
+plan|report|ledger|show|campaigns`, `store *`, `storage` without `prune --apply`, `provider
+status|models`, `plugin list|show`, `help`, `--version`), each of which opens a Store read-only
+or none at all; every other command, `task plan` and `task start --file` without `--execute`
+among them, is refused before any Store is opened for writing. So a load that is killed on
+timeout, reload or close can orphan no Worker, and loading a pane writes no Store (ADR-0119).
+The same table is the conformance broker's reader allowlist (§3.15) and the reader surface
+`af help plugins` prints (§3.16): one declaration, three uses. An action prefills the `:` line and never submits it: the operator reads the line and
 presses Enter or `Esc`, exactly as the Tasks pane's `r` and `D` work (ADR-0123, Prefills). A
 document whose action carries `--confirm` is refused as malformed, so a plugin cannot reduce
 delivery's typed Task-ID confirmation to a keypress. The plugin's pane is a projection of its
@@ -734,11 +750,10 @@ read-only, except that for the plugin's `init` the absent `.af/plugins/<name>/` 
 alone is writable (§3.11); `AF_BIN` inside the container is a broker shim that sends each
 command line over a mounted FIFO to the harness, which runs the real `af` against the fixture
 Store outside and returns stdout and the exit code. The harness lives only for the check, records every brokered call, and executes none without
-checking it first against a typed allowlist: the reading commands (`config show`, `task list`,
-`task show`, `review report`, `review ledger`, `review campaigns`, `store *`, `storage`,
-`plugin list`, `plugin show`, `help`, `--version`) and the one write form a plugin owns,
-`task start --file` without `--execute`, each only against the fixture's own Store and
-repository; the brokered `af` runs with the fixture's `HOME` and XDG tree, and a selector that
+checking it first against a typed allowlist: the kernel's declared read-only table (§3.12,
+`task report` and `task explain` among its entries) with its flags, and, for a command or hook
+invocation but never a pane load, the one write form a plugin owns, `task start --file`
+without `--execute`, each only against the fixture's own Store and repository; the brokered `af` runs with the fixture's `HOME` and XDG tree, and a selector that
 escapes it (`--repo`, `--state`, `--file` outside the fixture) is rejected before execution.
 Any other command, `onboard --refresh-lock` among them, is rejected and recorded as a boundary
 violation, since the plugin's syscall trace cannot see what a host-side `af` writes. Denial alone proves nothing, because a plugin can swallow the error and exit 0, so the
@@ -775,7 +790,7 @@ Everything else is a plugin, including what the two notes in flight planned as k
 
 | Feature in flight | Kernel part | Plugin part |
 |---|---|---|
-| Telemetry | T1's substrate and segment writer, T2, T3's observer and taps, T5's probe and receiver, the `[telemetry]` table as a built-in machine-only kernel table (§3.10), the segment directory declared as a kernel export | `af-telemetry`: T4's analytics, exports and sinks, T6's pane, all reading the export through the seam of §3.6 and never the Store |
+| Telemetry | T1's substrate and segment writer with abandoned-segment recovery on the writer's side (§3.6), T2, T3's observer and taps, T5's probe and receiver, the `[telemetry]` table as a built-in machine-only kernel table (§3.10), the segment directory declared as a kernel export | `af-telemetry`: T4's analytics, exports and sinks, T6's pane, the rebuildable index under the plugin's cache, all reading the export through the seam of §3.6 and never writing it or the Store |
 | Project | the Project ID derivation (`repository_id`), printed by the Task and review inspections | `af-project`: Workspaces and their registry, resolving a Workspace label into explicit `--state`, `--bindings` and file paths before it invokes the kernel (no kernel `--workspace`); Surveys; the Surveyor as a `task.run.ended` hook; Briefs rendered to a file and bound to the `project` port by whoever starts the Task; `activity` over `af store` |
 
 The whole kernel surface toward plugins, which `af help plugins` renders:
@@ -784,6 +799,7 @@ The whole kernel surface toward plugins, which `af help plugins` renders:
 |---|---|---|
 | kernel to plugin | the invocation environment of §3.3 | protocol `1` |
 | kernel to plugin | the hook document of §3.8 | `af/plugin-hook@1` |
+| kernel declares | the read-only command table of §3.12: pane mode, the conformance broker and the printed reader surface | one table in `main.rs` |
 | kernel reads | the manifest of §3.4 | `af.plugin/1` |
 | kernel keeps | the origin of §3.5, the receipts, `hooks.log` | `af.plugin-origin/1`, `receipt.toml`, one line per failure |
 | plugin reads | every `--json` document the CLI prints | each its own `kind@version` |
@@ -928,8 +944,11 @@ reader absent, disabled and replaced by a manifest without `machine_only`);
 and nothing else is set); `plugin_check_verifies_the_manifest_and_each_declared_verb_within_its_bound`;
 `plugin_check_runs_init_preview_then_apply_inside_the_destination_only` (a file the preview did
 not name, a write under a neighbouring `.af/` path);
-`plugin_check_broker_rejects_commands_outside_the_allowlist` (`onboard --refresh-lock` and an
-escaping `--repo` through `AF_BIN`, recorded as violations);
+`plugin_check_broker_admits_every_declared_reader_and_rejects_the_rest` (`task report` and
+`task explain` pass; `onboard --refresh-lock`, `task plan`, and an escaping `--repo` through
+`AF_BIN` are recorded as violations; `task start --file` passes for a command and is refused for
+a pane load);
+`read_only_table_matches_the_code` (every command in the table opens no Store for writing);
 `plugin_check_boundary_records_a_direct_store_open_and_an_outside_write`;
 `plugin_check_without_a_container_reports_not_run`;
 `plugin_check_binds_its_result_to_the_bundle_digest_and_target` (a native Darwin bundle is
@@ -946,7 +965,10 @@ SQLite rows); `store_events_marks_an_unknown_type_known_false_and_decodes_nothin
 `run_event_v1_validation_is_unchanged`;
 `store_artifact_verifies_envelope_and_payload_identity` (a corrupted object is refused);
 `store_list_names_every_store_the_sweep_would_visit`; `store_reads_never_take_a_writer_lease`
-(a running Task's Store stays writable); `store_read_latency_under_200ms_on_10k_events`.
+(a running Task's Store stays writable); `store_read_latency_under_200ms_on_10k_events`;
+`export_reader_writes_nothing_after_a_crash` (a fixture export with an abandoned segment: the
+conformance plugin reads it, the export's bytes are unchanged, and the next kernel writer
+recovers it within its bound).
 
 ### P3 — File-bound inputs
 
@@ -990,7 +1012,8 @@ Acceptance: `hook_runs_after_the_result_and_changes_no_output` (stdout, `--json`
 exit code byte-identical with and without a failing hook); `interrupted_command_runs_no_hook`;
 `review_run_ended_lists_the_rounds_the_run_closed` (one for a Campaign `--heavy` invocation,
 several for a Task-file review pipeline, the published Round for a run that failed after its
-conclusion, none twice on resume); `task_work_is_refused_inside_a_hook` (every `runs_task_work` command under `AF_PLUGIN_BACKGROUND`,
+conclusion, none twice on resume; each entry `{ round, sequence }` matching the Store's
+closure events, for a Campaign target and for a `review run --file` Task target); `task_work_is_refused_inside_a_hook` (every `runs_task_work` command under `AF_PLUGIN_BACKGROUND`,
 `provider doctor` with a credential-free admission fixture and `self optimize --execute` among
 them, refused before any Attempt starts, and at `task_execution::start` itself);
 `a_hook_calling_a_second_plugin_cannot_start_task_work` (the marker survives `$AF_BIN`);
@@ -1036,8 +1059,9 @@ Acceptance: `plugin_pane_paints_only_what_the_document_carries`;
 `oversized_malformed_and_timed_out_pane_documents_are_one_error_row`;
 `reload_cancels_and_reaps_the_superseded_load`;
 `pane_action_prefills_and_never_submits`; `pane_action_with_confirm_is_refused`;
-`pane_load_cannot_start_task_work` (a pane calling `task start --execute` is refused before any
-Attempt, and its cancellation leaves no Worker); the existing
+`pane_load_runs_only_the_read_only_table` (a pane calling `task start --execute` is refused
+before any Attempt and its cancellation leaves no Worker; a pane calling `task start --file`
+without `--execute` or `task plan` is refused and the Store's event log is byte-identical); the existing
 `terminal_data_is_printable_ascii` and the TUI's timing tests unchanged.
 
 ### P7 — The runner seam
