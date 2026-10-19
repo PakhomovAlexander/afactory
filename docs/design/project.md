@@ -184,7 +184,7 @@ for one third, `0` for an empty population), with these sections. Every section 
 | Section | Holds | Source | Bound or policy |
 |---|---|---|---|
 | `identity` | Project ID, `repository_id`, `[project] name` and `min_af`, the af release `.af/af.lock` pins, head commit, Tree Digest, cutoff, policy digest, Surveyor version, git version | `.af/af.toml`, `.af/af.lock`, git | the Tree Digest is the kernel's capture digest of the whole head tree, independent of `exclude` and of every maximum: absent with reason `deadline` when the capture did not finish, never the digest of a part |
-| `tree` | files and bytes in total; per top-level directory files, lines and bytes; per language files and lines; the `tests` split | `git ls-tree -l`, blob reads | lines only for text blobs: regular or executable blobs at or under `max_file_bytes` (1 MiB) whose first 8 KiB hold no NUL, UTF-8 validity irrelevant (the rule ADR-0133's citations use); symlinks and gitlinks contribute no lines; a declaration (a decision, the vocabulary file, a check file) is parsed only when it is such a text blob and valid UTF-8, else unreadable; `[survey] exclude` globs; `[survey] tests` globs; `[survey.languages]` extends the built-in extension map |
+| `tree` | files and bytes in total; per top-level directory files, lines and bytes; per language files and lines; the `tests` split | `git ls-tree -l`, blob reads | lines only for text blobs: regular or executable blobs at or under `max_file_bytes` (1 MiB) whose first 8 KiB hold no NUL, UTF-8 validity irrelevant (the rule ADR-0133's citations use); symlinks and gitlinks contribute no lines; a declaration (a decision, the vocabulary file, a check file) is parsed only when it is such a text blob and valid UTF-8, else unreadable; `[survey] exclude` globs; `[survey] tests` globs; `[survey.languages]` extends the built-in extension map (the one docs/project.md lists): each file counts for exactly one language, a configured pattern overrides a built-in extension, among configured patterns the bytewise-first matching one wins, and a file nothing matches is `other` like a symlink or submodule |
 | `history` | commits and merges in total and in the last 30, 90 and 365 days; first and last commit time; churn (commits, lines added, removed) per top-level directory over 90 days; hot paths; tags in total and the newest five matching `release_tags`; local branch count | `git log --numstat`, `rev-list`, `tag` | `max_commits` (100,000; beyond it `partial`, oldest commit reached recorded); `hot_paths` (20) |
 | `contributors` | per identity, keyed by `key` (under `name` the first 16 hex digits of SHA-256 of the exact author-name bytes, under `email_hash` the 16-hex email hash) with `name` the bounded display text, grouped and ranked by `key` so two names sharing a 256-byte prefix stay distinct: commits, lines added and removed, first and last time, active in 90 days; the top identity's share; human and agent-assisted commit counts and shares | `git log` | `[survey] identity = "name"` (default) or `"email_hash"`: an email is hashed or absent, never stored, and an author name any whitespace-separated token of which is an email address (an `@` between non-empty parts) is replaced whole, before any truncation and under both policies, by `h:` and the first 16 hex digits of its hash; `agent_authors` (`*[bot]`) and `agent_trailers` (`Co-Authored-By` matching `*Claude*`, `*Codex*`, `*GPT*`): a commit is agent-assisted when its author or any `Co-Authored-By` name matches, otherwise human; each commit counts once in that partition and its author keeps the per-identity totals; an empty window makes every share `0` |
 | `decisions` | per decision record: number, title, status, date; counts by status | the `decisions` pattern, default `docs/adr/*.md`, then the name rule (four ASCII digits and a dash): title from the first H1; status and date from the first line that starts with `**Status:**` or `Status:`: the status is the first of `proposed`, `accepted`, `superseded`, `deprecated`, `rejected` on that line (`accepted; superseded in part by` is `accepted`; `amended` becomes a flag when the line says so), the date the first `YYYY-MM-DD` on it, each `unknown` when absent or malformed | `max_entries`; a Brief variant picks the newest N (§3.5) |
@@ -485,7 +485,7 @@ agent_authors = ["*[bot]"]
 agent_trailers = ["*Claude*", "*Codex*", "*GPT*"]
 hot_paths = 20
 
-[survey.languages]             # extends the built-in extension map
+[survey.languages]             # overrides the built-in map; bytewise-first pattern wins
 "*.pest" = "pest"
 
 [brief.orient]                 # overrides the built-in variant
@@ -609,7 +609,9 @@ lines, a NUL before the 8 KiB boundary makes a blob binary and one after it does
 symlinks and gitlinks have no lines; a small head with one historical commit touching more
 paths than `max_paths` leaves history partial with reason `max_paths` and the Survey recorded;
 two author names sharing a 256-byte prefix are two identities; an unused pipeline, equal check
-names in two pipelines and two toolchain files yield the stated checks; collection beyond
+names in two pipelines and two toolchain files yield the stated checks; overlapping language
+patterns, a pattern overriding a built-in extension and an unmatched file yield the stated
+languages; collection beyond
 `keep_surveys` appends tombstones, frees the bytes, replays `af project history` and recovers
 after an interruption between the tombstone and the deletion; budget pressure below
 `keep_surveys` reclaims the oldest Survey and never the newest complete one, a held one or the
