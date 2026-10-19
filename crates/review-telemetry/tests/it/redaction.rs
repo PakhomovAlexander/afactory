@@ -268,3 +268,100 @@ fn telemetry_redaction_precedes_truncation() {
     assert_eq!(withheld as usize, credential_lines().len());
     assert_no_fixture(&text);
 }
+
+/// Every file below `root`, decompressed when it is gzip.
+fn every_file_text(root: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
+    use std::io::Read as _;
+    let mut all = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(Result::ok)
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            let bytes = std::fs::read(&path).unwrap();
+            let mut text = Vec::new();
+            if flate2::read::GzDecoder::new(bytes.as_slice())
+                .read_to_end(&mut text)
+                .is_err()
+            {
+                text = bytes;
+            }
+            all.push((path, String::from_utf8_lossy(&text).to_string()));
+        }
+    }
+    all
+}
+
+#[test]
+fn telemetry_redaction_covers_event_names_and_header_fields() {
+    use review_telemetry::record::ConfigRow;
+    use review_telemetry::subscriber::TelemetrySubscriber;
+    const PLANTED: &str = "API_KEY=abc123";
+    for level in [Level::Metrics, Level::Spans, Level::Content] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut options = options(temp.path(), level);
+        options.cwd = std::path::PathBuf::from(format!("/work/{PLANTED}/repo"));
+        let writer = review_telemetry::segment::writer::Writer::new(options).unwrap();
+        let dispatch = tracing::Dispatch::new(TelemetrySubscriber::new(writer.clone()));
+        tracing::dispatcher::with_default(&dispatch, || {
+            let command = tracing::info_span!("af.command");
+            let _entered = command.enter();
+            // A `tracing` event named by `af.event`, and one named by its message.
+            tracing::info!(af.event = PLANTED, af.attempt = 1_u64);
+            tracing::info!("{PLANTED}");
+        });
+        // The writer's own entry points: a span and an event named with a credential, and a
+        // configuration row whose origin carries one.
+        let span = writer
+            .span_start(None, None, PLANTED, SpanKind::Internal, Attrs::new())
+            .unwrap();
+        writer.event(&span, PLANTED, Attrs::new());
+        writer.config(
+            "exec",
+            vec![ConfigRow {
+                key: "telemetry.level".into(),
+                value: "spans".into(),
+                layer: "user".into(),
+                origin: Some(format!("/etc/af/af.toml {PLANTED}")),
+            }],
+        );
+        writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 1);
+        let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+
+        // Nothing of the credential persists anywhere under the directory.
+        for (path, text) in every_file_text(temp.path()) {
+            assert!(
+                !text.contains("abc123"),
+                "{level:?}: the credential survived in {}: {text}",
+                path.display()
+            );
+        }
+        // Each field carries the withheld marker instead.
+        let lines = sealed_lines(&sealed.path);
+        let header = lines.iter().find(|line| line["t"] == "segment").unwrap();
+        assert_eq!(header["cwd"], WITHHELD, "{level:?}");
+        let events: Vec<&Value> = lines.iter().filter(|line| line["t"] == "event").collect();
+        assert_eq!(events.len(), 3, "{level:?}");
+        for event in &events {
+            assert_eq!(event["name"], WITHHELD, "{level:?}: {event}");
+            assert_eq!(event["attributes"]["af.redacted"], 1, "{level:?}: {event}");
+        }
+        assert_eq!(events[0]["attributes"]["af.attempt"], 1, "{level:?}");
+        let started: Vec<&Value> = lines
+            .iter()
+            .filter(|line| line["t"] == "span_start")
+            .collect();
+        assert_eq!(started[0]["name"], "af.command", "{level:?}");
+        assert_eq!(started[1]["name"], WITHHELD, "{level:?}");
+        let config = lines.iter().find(|line| line["t"] == "config").unwrap();
+        assert_eq!(config["rows"][0]["origin"], WITHHELD, "{level:?}");
+        assert_eq!(config["rows"][0]["key"], "telemetry.level", "{level:?}");
+        assert_eq!(config["rows"][0]["value"], "spans", "{level:?}");
+    }
+}

@@ -211,14 +211,27 @@ pub fn stage(layout: &Layout, prepared: &Prepared) -> std::io::Result<Staged> {
     })
 }
 
+/// How a staged blob came to be in place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placed {
+    /// This blob's temporary file was renamed into place.
+    Renamed,
+    /// A file of the digest with the same size was already there and is reused.
+    Reused,
+}
+
 /// Put a staged blob in place: an existing file of the digest with the same size is reused and
 /// the temporary file removed; anything else is replaced by the rename.
-pub fn place(staged: &Staged) -> std::io::Result<()> {
+pub fn place(staged: &Staged) -> std::io::Result<Placed> {
     match std::fs::metadata(&staged.path) {
         Ok(existing) if existing.is_file() && existing.len() == staged.stored_bytes => {
-            std::fs::remove_file(&staged.temp)
+            std::fs::remove_file(&staged.temp)?;
+            Ok(Placed::Reused)
         }
-        _ => std::fs::rename(&staged.temp, &staged.path),
+        _ => {
+            std::fs::rename(&staged.temp, &staged.path)?;
+            Ok(Placed::Renamed)
+        }
     }
 }
 

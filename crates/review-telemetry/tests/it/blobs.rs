@@ -450,3 +450,218 @@ fn a_blob_is_dropped_while_a_sweep_holds_the_lock() {
     assert!(walk(&layout.blobs()).is_empty(), "no file left behind");
     assert_eq!(std::fs::read_to_string(&sealed.refs).unwrap(), "");
 }
+
+/// Every file under `blobs/`, with its size.
+fn blob_files(layout: &Layout) -> Vec<(std::path::PathBuf, u64)> {
+    let mut files: Vec<_> = walk(&layout.blobs())
+        .into_iter()
+        .map(|path| {
+            let bytes = std::fs::metadata(&path).unwrap().len();
+            (path, bytes)
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+#[test]
+fn telemetry_exhausted_segment_creates_no_blob() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+    let mut options = options(temp.path(), Level::Content);
+    options.segment_max_bytes = 128 * 1024;
+    options.content_max_blob_bytes = 64 * 1024;
+    let writer = Writer::new(options).unwrap();
+    let span = writer
+        .span_start(None, None, "af.attempt", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    // Unique content until the limit refuses a batch: the refused batch is a content batch
+    // that would have crossed the limit, and it leaves no file behind.
+    let mut round = 0;
+    while writer.dropped() == 0 {
+        round += 1;
+        writer.event_with_content(
+            &span,
+            "gen_ai.content.output",
+            Attrs::new(),
+            format!("unique output {round}\n").repeat(20).as_bytes(),
+            Media::Text,
+        );
+        assert!(round < 10_000, "the limit never bound");
+    }
+    let at_exhaustion = blob_files(&layout);
+    assert!(!at_exhaustion.is_empty());
+    // A sustained producer of unique content after exhaustion adds no bytes under blobs/:
+    // neither event content nor an attribute over its bound becomes a file.
+    for index in 0..500 {
+        assert_eq!(
+            writer.event_with_content(
+                &span,
+                "gen_ai.content.output",
+                Attrs::new(),
+                format!("late output {index}\n").repeat(20).as_bytes(),
+                Media::Text,
+            ),
+            None
+        );
+        writer.event(
+            &span,
+            "af.note",
+            Attrs::new().text("af.text", format!("late attribute {index} ").repeat(100)),
+        );
+    }
+    assert_eq!(blob_files(&layout), at_exhaustion);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    // Every file under blobs/ is one the sealed segment references: the batch the limit
+    // refused placed nothing, and no temporary file is left.
+    let referenced: std::collections::BTreeSet<String> = std::fs::read_to_string(&sealed.refs)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let on_disk: std::collections::BTreeSet<String> = at_exhaustion
+        .iter()
+        .map(|(path, _)| {
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            format!("sha256:{}", name.strip_suffix(".gz").unwrap())
+        })
+        .collect();
+    assert_eq!(on_disk, referenced);
+    let records = sealed_records(&sealed.path);
+    let Some(Record::Seal(seal)) = records.last() else {
+        panic!("no seal");
+    };
+    assert!(seal.dropped >= 1000, "{}", seal.dropped);
+}
+
+#[test]
+fn telemetry_concurrent_same_digest_publishes_one_object() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+    // Both publishers hold gc.lock and have staged their file before either reaches the
+    // segment: the race on the segment's known digests is as close as it gets.
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let mut options = options(temp.path(), Level::Content);
+    let hook_barrier = barrier.clone();
+    options.publish_hook = Some(Arc::new(move |step| {
+        if step == PublishStep::Locked {
+            hook_barrier.wait();
+        }
+        HookAction::Continue
+    }));
+    let writer = Writer::new(options).unwrap();
+    let span = writer
+        .span_start(None, None, "af.attempt", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    const ROUNDS: usize = 25;
+    for round in 0..ROUNDS {
+        let content = format!("the same output of round {round}\n");
+        let threads: Vec<_> = (0..2)
+            .map(|_| {
+                let writer = writer.clone();
+                let span = span.clone();
+                let content = content.clone();
+                std::thread::spawn(move || {
+                    writer.event_with_content(
+                        &span,
+                        "gen_ai.content.output",
+                        Attrs::new(),
+                        content.as_bytes(),
+                        Media::Text,
+                    )
+                })
+            })
+            .collect();
+        for thread in threads {
+            assert!(thread.join().unwrap().is_some());
+        }
+    }
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let records = sealed_records(&sealed.path);
+    let mut objects = std::collections::BTreeMap::<String, usize>::new();
+    for record in &records {
+        if let Record::Blob(object) = record {
+            *objects.entry(object.digest.clone()).or_default() += 1;
+        }
+    }
+    assert_eq!(objects.len(), ROUNDS);
+    assert!(
+        objects.values().all(|count| *count == 1),
+        "one blob object per digest: {objects:?}"
+    );
+    let occurrences: Vec<_> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::BlobRef(occurrence) => Some(occurrence.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(occurrences.len(), 2 * ROUNDS);
+    assert!(occurrences.iter().all(|o| o.state == BlobState::Stored));
+    let Some(Record::Seal(seal)) = records.last() else {
+        panic!("no seal");
+    };
+    assert_eq!(seal.blobs, ROUNDS as u64, "the seal counts one per digest");
+    assert_eq!(seal.dropped, 0);
+    index::replace(&layout).unwrap();
+    let index = Index::open(&layout).unwrap();
+    assert_eq!(
+        index.count("SELECT count(*) FROM blobs").unwrap(),
+        ROUNDS as u64
+    );
+    assert_eq!(
+        index.count("SELECT count(*) FROM blob_refs").unwrap(),
+        2 * ROUNDS as u64
+    );
+}
+
+#[test]
+fn telemetry_blob_read_requires_shared_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    let layout = Layout::new(temp.path());
+    let writer = writer(temp.path(), Level::Content);
+    let span = writer
+        .span_start(None, None, "af.attempt", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event_with_content(
+        &span,
+        "gen_ai.content.input",
+        Attrs::new(),
+        b"read only under the lock\n",
+        Media::Text,
+    );
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let occurrence = sealed_records(&sealed.path)
+        .into_iter()
+        .find_map(|record| match record {
+            Record::BlobRef(occurrence) => Some(occurrence),
+            _ => None,
+        })
+        .unwrap();
+    let digest = occurrence.digest.clone().unwrap();
+    assert!(layout.blob(&digest).is_file());
+    // A collection holds gc.lock: the reader waits its bound, then reports the occurrence
+    // without opening the file, although the file is there and readable.
+    let collection = review_telemetry::layout::exclusive_within(&layout.gc_lock(), HOUR)
+        .unwrap()
+        .unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(
+        blob_reader::content(&layout, &occurrence),
+        Content::Unavailable(blob_reader::COLLECTING.into())
+    );
+    assert!(started.elapsed() >= review_telemetry::layout::LOCK_WAIT);
+    assert_eq!(
+        blob_reader::read(&layout, &digest),
+        Content::Unavailable(blob_reader::COLLECTING.into())
+    );
+    assert_eq!(
+        blob_reader::COLLECTING,
+        "content unavailable: collection in progress"
+    );
+    drop(collection);
+    assert_eq!(
+        blob_reader::content(&layout, &occurrence),
+        Content::Bytes(b"read only under the lock\n".to_vec())
+    );
+}

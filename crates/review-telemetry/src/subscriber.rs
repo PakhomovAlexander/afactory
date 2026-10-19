@@ -6,14 +6,18 @@
 //! stacks; a span started on a worker thread names its parent explicitly (`parent: &span`), as
 //! the kernel hands parent ids to its threads.
 //!
-//! Field names decide how a value is written: identities, digests and enumerations are typed
-//! fields that never pass the credential heuristic ([`typed_kind`]); exact counters are decimal
-//! strings, dropped when they are not canonical; everything else is untrusted text. Four fields
-//! steer the record instead of becoming attributes: `af.kind` (the span kind), `af.status` (the
-//! end status), `af.event` (an event's name) and `message`.
+//! A field is untrusted text by default, whatever its name: a name says nothing about where its
+//! value came from, so `request_id = "sk-proj-…"` passes the credential rules like any free text.
+//! Only a value the kernel produced and validated, handed over as a [`Typed`] value
+//! (`af.run_id = run.field()`), is written as a typed field that never passes the heuristic; the
+//! subscriber recognises it by its type, never by the field's name or the value's shape. Integers
+//! and booleans are typed by their Rust type; an integer under an exact counter's name is written
+//! as a canonical decimal string (ADR-0078). Four fields steer the record instead of becoming
+//! attributes: `af.kind` (the span kind), `af.status` (the end status), `af.event` (an event's
+//! name) and `message`; the event name is free text too and the writer judges it whole.
 
 use std::collections::HashMap;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::ThreadId;
@@ -23,6 +27,7 @@ use tracing_core::span::{Attributes as SpanAttributes, Id, Record as SpanRecord}
 use tracing_core::{Dispatch, Event, Interest, Metadata, Subscriber};
 
 use crate::record::{Attr, Attrs, SpanKind, SpanStatus};
+use crate::redact;
 use crate::segment::writer::Writer;
 use crate::trace;
 
@@ -32,77 +37,80 @@ const STATUS_FIELD: &str = "af.status";
 const EVENT_FIELD: &str = "af.event";
 const MESSAGE_FIELD: &str = "message";
 
-/// How a field's value is written.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FieldKind {
-    /// A kernel identity, digest or enumerated value: typed, exempt from the heuristic when it
-    /// validates as one.
-    Typed,
-    /// An exact counter: a canonical decimal string or nothing.
-    Decimal,
-    /// Untrusted text.
-    Text,
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TypedValue {
+    Identity(String),
+    Decimal(String),
+    Enumerated(&'static str),
 }
 
-/// Fields af's schema types as enumerations.
-const ENUMERATED: [&str; 16] = [
-    "af.run.kind",
-    "af.node.kind",
-    "af.provider.kind",
-    "af.native",
-    "af.outcome",
-    "af.failure.class",
-    "af.check.status",
-    "af.check.warm",
-    "af.usage.observation",
-    "af.usage.unknown_cause",
-    "af.usage.source",
-    "af.ledger.coverage",
-    "af.history",
-    "gen_ai.operation.name",
-    "gen_ai.provider.name",
-    "error.type",
-];
+/// A value the kernel produced and validated, for a `tracing` field: a digest or an identity (a
+/// run, Attempt, node, segment or span id), an exact counter, or an enumerated value. It is the
+/// one way a field earns the typed exemption of design §8; the constructors validate, so a value
+/// that is not one of these kinds never becomes one.
+///
+/// ```text
+/// let run = Typed::identity(run_id).expect("a kernel run id");
+/// tracing::info_span!("af.run", af.run_id = run.field());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Typed(TypedValue);
 
-/// How the field `name` is written: by af's schema, never by what the value looks like.
-pub fn typed_kind(name: &str) -> FieldKind {
-    let decimal = (name.starts_with("af.usage.") && name.ends_with("_tokens"))
+impl Typed {
+    /// A digest or identity that validates as one ([`redact::is_identity`]).
+    pub fn identity(value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        redact::is_identity(&value).then_some(Self(TypedValue::Identity(value)))
+    }
+
+    /// An exact counter as a canonical decimal string ([`redact::is_canonical_decimal`]).
+    pub fn decimal(value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        redact::is_canonical_decimal(&value).then_some(Self(TypedValue::Decimal(value)))
+    }
+
+    /// A value from one of af's closed enumerations.
+    pub fn enumerated(value: &'static str) -> Self {
+        Self(TypedValue::Enumerated(value))
+    }
+
+    /// The value as a `tracing` field value. `tracing`'s `Value` is sealed, so the value
+    /// travels as an error object the subscriber recognises by its type.
+    pub fn field(&self) -> &(dyn std::error::Error + 'static) {
+        self
+    }
+
+    fn attr(&self) -> Attr {
+        match &self.0 {
+            TypedValue::Identity(value) => Attr::Id(value.clone()),
+            TypedValue::Decimal(value) => Attr::Decimal(value.clone()),
+            TypedValue::Enumerated(value) => Attr::Enum(value),
+        }
+    }
+
+    fn text(&self) -> &str {
+        match &self.0 {
+            TypedValue::Identity(value) | TypedValue::Decimal(value) => value,
+            TypedValue::Enumerated(value) => value,
+        }
+    }
+}
+
+impl Display for Typed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.text())
+    }
+}
+
+impl std::error::Error for Typed {}
+
+/// Whether an integer field is an exact counter, written as a canonical decimal string. This
+/// decides only the spelling of a number, never an exemption for text.
+pub fn decimal_counter(name: &str) -> bool {
+    (name.starts_with("af.usage.") && name.ends_with("_tokens"))
         || name.starts_with("gen_ai.usage.")
-        || name.starts_with("af.charge");
-    if decimal || name == "af.store.sequence_at_start" {
-        return FieldKind::Decimal;
-    }
-    let identity = name.ends_with("_id")
-        || name.ends_with(".id")
-        || name.ends_with("digest")
-        || name.ends_with(".manifest")
-        || name.ends_with(".fingerprint")
-        || matches!(
-            name,
-            "af.snapshot"
-                | "af.policy_rev"
-                | "af.worker"
-                | "af.provider"
-                | "af.corr"
-                | "af.phase"
-                | "af.pipeline"
-                | "af.campaign"
-                | "gen_ai.request.model"
-                | "gen_ai.response.model"
-        );
-    if identity || ENUMERATED.contains(&name) {
-        FieldKind::Typed
-    } else {
-        FieldKind::Text
-    }
-}
-
-fn attr(name: &str, text: String) -> Attr {
-    match typed_kind(name) {
-        FieldKind::Typed => Attr::Id(text),
-        FieldKind::Decimal => Attr::Decimal(text),
-        FieldKind::Text => Attr::Text(text),
-    }
+        || name.starts_with("af.charge")
+        || name == "af.store.sequence_at_start"
 }
 
 /// Collects one span's or event's fields.
@@ -134,7 +142,7 @@ impl Fields {
             }
             EVENT_FIELD => self.event = Some(text),
             MESSAGE_FIELD => self.message = Some(text),
-            name => self.attrs.0.push((name.to_string(), attr(name, text))),
+            name => self.attrs.0.push((name.to_string(), Attr::Text(text))),
         }
     }
 }
@@ -148,9 +156,24 @@ impl Visit for Fields {
         self.text(field, format!("{value:?}"));
     }
 
+    fn record_error(&mut self, field: &Field, value: &(dyn std::error::Error + 'static)) {
+        match value.downcast_ref::<Typed>() {
+            Some(typed)
+                if !matches!(
+                    field.name(),
+                    KIND_FIELD | STATUS_FIELD | EVENT_FIELD | MESSAGE_FIELD
+                ) =>
+            {
+                self.attrs.0.push((field.name().to_string(), typed.attr()));
+            }
+            Some(typed) => self.text(field, typed.to_string()),
+            None => self.text(field, value.to_string()),
+        }
+    }
+
     fn record_i64(&mut self, field: &Field, value: i64) {
-        match typed_kind(field.name()) {
-            FieldKind::Decimal => self.text(field, value.to_string()),
+        match u64::try_from(value) {
+            Ok(value) if decimal_counter(field.name()) => self.record_u64(field, value),
             _ => self
                 .attrs
                 .0
@@ -159,16 +182,15 @@ impl Visit for Fields {
     }
 
     fn record_u64(&mut self, field: &Field, value: u64) {
-        match (typed_kind(field.name()), i64::try_from(value)) {
-            (FieldKind::Decimal, _) | (_, Err(_)) => {
-                self.attrs
-                    .0
-                    .push((field.name().to_string(), Attr::Decimal(value.to_string())));
-            }
-            (_, Ok(value)) => self
+        match i64::try_from(value) {
+            Ok(value) if !decimal_counter(field.name()) => self
                 .attrs
                 .0
                 .push((field.name().to_string(), Attr::Int(value))),
+            _ => self
+                .attrs
+                .0
+                .push((field.name().to_string(), Attr::Decimal(value.to_string()))),
         }
     }
 
@@ -416,13 +438,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn field_names_decide_their_kind() {
-        assert_eq!(typed_kind("af.run_id"), FieldKind::Typed);
-        assert_eq!(typed_kind("af.context.manifest"), FieldKind::Typed);
-        assert_eq!(typed_kind("af.pipeline.digest"), FieldKind::Typed);
-        assert_eq!(typed_kind("af.failure.class"), FieldKind::Typed);
-        assert_eq!(typed_kind("af.usage.input_tokens"), FieldKind::Decimal);
-        assert_eq!(typed_kind("af.failure.reason"), FieldKind::Text);
-        assert_eq!(typed_kind("process.command"), FieldKind::Text);
+    fn typed_values_validate_and_names_only_spell_numbers() {
+        assert!(Typed::identity("run-1").is_some());
+        assert!(Typed::identity(format!("sha256:{}", "ab".repeat(32))).is_some());
+        assert!(Typed::identity("has space").is_none());
+        assert!(Typed::decimal("18446744073709551616").is_some());
+        assert!(Typed::decimal("01").is_none());
+        assert_eq!(Typed::enumerated("failed").to_string(), "failed");
+        assert!(decimal_counter("af.usage.input_tokens"));
+        assert!(decimal_counter("gen_ai.usage.output_tokens"));
+        assert!(!decimal_counter("af.run_id"));
+        assert!(!decimal_counter("af.failure.reason"));
     }
 }
