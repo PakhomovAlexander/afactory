@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 18 after review rounds 1 to 17 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 19 after review rounds 1 to 18 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -210,8 +210,9 @@ the lock lives exactly as long as the plugin. There is no launcher left for a si
 backlog` forwards them to its Task child, §3.17), and the shell sees the plugin's own exit
 status (128 plus the signal number for a signal). The rest of the command line are its
 arguments, stdin, stdout and stderr are inherited, and the working directory is the caller's.
-Background invocations, hooks, pane loads and the runner, are supervised children in groups
-of their own (§3.8, §3.12, §3.14), never an `exec`. `af <word> --help` is the plugin's help; `af help
+The outer background invocations, a hook, a pane load and the runner, are supervised children
+in groups of their own (§3.8, §3.12, §3.14); a plugin one of them dispatches through `$AF_BIN`
+is `exec`ed inside that same group (§3.8). `af <word> --help` is the plugin's help; `af help
 <word>` runs `<plugin> --help`. Clap gains one `external_subcommand` variant; nothing else in
 `cli.rs` changes for any later plugin.
 
@@ -222,8 +223,12 @@ exactly the six invocation-owned variables (`AF_PLUGIN_PROTOCOL`, `AF_PLUGIN_NAM
 `AF_PLUGIN_DIR`, `AF_PLUGIN_STATE`, `AF_PLUGIN_CACHE`, `AF_REPO`) an enclosing invocation may
 have left, so that a plugin which leaves its repository and calls another never hands it a
 stale `AF_REPO`; `AF_REPO` is set again only from the new invocation's own resolution. That
-resolution happens once: the kernel-owned `--repo` before the plugin name, else the working
-directory's toplevel, exactly as `task_execution::state_path` resolves it; and its one result
+resolution happens once, by a plugin-context resolver of its own: the kernel-owned `--repo`
+before the plugin name, canonicalized, else the working directory, either taken to its Git
+toplevel with `config::git_toplevel` as `load_rooted` and `selfmgmt::pinned` do, so that
+`/repo/subdir` names `/repo` on both routes (`task_execution::state_path` only canonicalizes
+the directory it is given and registers a Task Store, which plugin resolution never does);
+and its one result
 selects the bundle (§3.13), the `enabled` filter (§3.10), the configuration the plugin then
 reads with `--repo "$AF_REPO"` (`load_rooted` loads the repository it is handed) and `AF_REPO`
 itself, so a plugin is never selected by one repository and configured by another.
@@ -543,7 +548,11 @@ command hands its document to the hook site.
 
 A hook runs only what a pane may run. While `AF_PLUGIN_BACKGROUND` is set, the kernel runs
 only the commands of its declared read-only table (§3.12) and the dispatch of another plugin
-(`af <plugin>`, which inherits the marker and is bound by the same rule), and refuses every
+(`af <plugin>`, which inherits the marker and is bound by the same rule, and which under the
+marker `exec`s the selected plugin in the inherited process group after validation and the
+lock, never in a supervised group of its own: only the outer hook or pane owns a group,
+`review-process` kills exactly that one group, and so killing it kills every nested plugin
+and descendant with it), and refuses every
 other command with the reason before any Store is opened for writing, any source is captured
 or any subprocess is created. That covers what starts a Worker (`runs_task_work`'s list: `task
 run`, `task start --execute`, `review run`, bare `af review` and `provider doctor`, whose
@@ -570,8 +579,8 @@ The document on stdin is `af/plugin-hook@1`: `schema`, `hook`, `af_version`, `re
 `AF_PLUGIN_BACKGROUND=hook:<name>`.
 
 A hook's context is the command's, not the shell's: the repository the command resolved
-(`--repo`, or the working directory's toplevel, exactly as `task_execution::state_path`
-resolves it; a command run from repository A with `--repo /B` is B's) decides `AF_REPO`, the
+(`--repo`, or the working directory's toplevel, by the plugin-context resolver of §3.3; a
+command run from repository A with `--repo /B` is B's) decides `AF_REPO`, the
 effective configuration (`enabled`, `[plugin.<name>]`), the pin of §3.13 and therefore the
 bundle that runs; the kernel resolves all of that once, before it spawns anything, and
 `hook-run` receives the result as arguments, never re-deriving it from a working directory.
@@ -631,12 +640,12 @@ sit inside admission or an Attempt. Whatever remains is the operator's with
 
 Nothing in use is evicted (ADR-0144). Every plugin process the kernel starts, a command, a hook
 supervisor, a pane load or a runner adapter, holds a shared lock on
-`<runtime root>/af/plugins/<name>.lock` for its whole lifetime, where the runtime root comes
-from one resolver in `config.rs` beside the XDG resolvers, shared by invocation, install,
-remove and the sweep: `$XDG_RUNTIME_DIR` when it is set, which must then be absolute, owned
-by the user and mode `0700`, or the operation is refused with the reason; the fallback
-`$XDG_STATE_HOME/af/runtime/`, created `0700` and verified the same way, only when the
-variable is unset; a root that cannot be established refuses rather than running unlocked; the hook supervisor holds it
+`$XDG_DATA_HOME/af/plugins/<name>/.lock`, in the directory it protects, for its whole
+lifetime, as `hold_running` anchors a Task's protection to the Store directory it protects:
+every process that sees the same installed bundle sees the same lock object, whatever else its
+environment says, and no runtime directory is involved. The file is created at install, at
+`--link` and at the first start of a `PATH` plugin, is never evicted, and a lock that cannot
+be taken refuses the operation with the reason rather than running unlocked; the hook supervisor holds it
 while the plugin's process group lives. The sweep takes the exclusive lock without blocking
 before it evicts any entry of that plugin, skips the plugin and says so when it cannot, and
 re-reads the entry's identity and protection under the lock before removing it, as
@@ -938,9 +947,19 @@ command, `task start --file`, `help <plugin>` and `onboard --refresh-lock` among
 rejected before anything spawns and recorded as a boundary violation, since the plugin's
 syscall trace cannot see what a host-side `af` reads or writes. Denial alone proves nothing, because a plugin can swallow the error and exit 0, so the
 harness also audits: inside the container the plugin runs under a file-syscall tracer
-(`strace -f -e trace=%file`, the container is Linux on every host, with the ptrace capability
-the harness requests for this check only), and the trace, not the plugin's output, is the
-record. Any path-naming syscall outside the plugin's bundle, its declared directories, the
+(`strace -f -y -s 4096 -e trace=%file,fchdir,dup,dup2,dup3,fcntl,close,%process`, the
+container is Linux on every host, with the ptrace capability the harness requests for this
+check only), and the trace, not the plugin's output, is the record. The auditor resolves every
+access to an absolute path before classifying it: a descriptor-relative call through the path
+`-y` decodes for the descriptor, a relative path against the process's working directory,
+which the auditor tracks per PID from the container's initial directory through `chdir` and
+`fchdir` and which a child inherits at `clone`, `fork` and `vfork`; the result is normalized
+lexically, which is sound because the bundle carries no symlink (§3.4), the mounts start
+without one, and a symlink the plugin creates in its writable directories is itself a
+violation, found by scanning them after the run. An access the auditor cannot resolve (an
+undecoded descriptor, a truncated string, a PID it never saw created), a `strace:` diagnostic,
+or a process the trace does not see exit makes the check `unresolved`, which fails like a
+violation: the record is complete or the check claims nothing. Any path-naming syscall outside the plugin's bundle, its declared directories, the
 mounted export (reads only), the fixture repository (reads, and `init`'s one destination), the
 broker FIFO, the system paths the image provides and a private scratch directory is a
 violation whatever its result, `ENOENT` and `EACCES` included. This harness policy is the
@@ -996,7 +1015,7 @@ Call sites in existing files, the complete list: `cli.rs` (the `external_subcomm
 the `plugin` and `store` namespaces); `main.rs` (one arm each for the two namespaces, one call
 to `plugins::after_command`); `topics.rs` (one topic, rendered from the surface table);
 `layout.rs` (one entry); `config.rs` (the `[plugin.*]` passthrough, manifest-declared
-machine-only names and the runtime-root resolver); `project.rs` (one opaque field, one table); `storage.rs` (three kinds);
+machine-only names); `project.rs` (one opaque field, one table); `storage.rs` (three kinds);
 `selfmgmt.rs` (the machine-management `plugin` commands in `exempt_from_dispatch`, the stop
 at the external command name in `exempt_from_dispatch` and `repo_from_argv`, and the pre-exec
 refusal of `plugin pin` under a release that predates plugins); `lock.rs` (one table);
@@ -1132,10 +1151,14 @@ install, `--link`, `check` and invocation);
 original `af` PID while the echo fixture owns a command-backed Task started through `$AF_BIN`:
 the plugin is that PID, it cancels the child, no Worker and no descendant stays alive, and the
 lock is released; a hook and a pane load remain children);
-`plugin_lock_root_is_one_resolver` (`XDG_RUNTIME_DIR` unset: a concurrent invocation and
-sweep share the fallback's one lock; set but relative, not owned by the user, or not mode
-`0700`: the invocation, the install and the sweep each refuse with the reason through the one
-resolver, and the fallback is never used);
+`plugin_lock_is_anchored_to_the_protected_directory` (identical `XDG_DATA_HOME`,
+`XDG_STATE_HOME` and `XDG_CACHE_HOME`, `XDG_RUNTIME_DIR` set in one process and unset in the
+other: a running invocation blocks a concurrent `remove`, a reinstall of the same version and
+the sweep's eviction of its aged cache, each contending on the one lock; a `PATH` plugin gets
+its lock file at first start);
+`plugin_context_resolves_the_git_toplevel` (invoked from `/repo/subdir`, and with
+`--repo /repo/subdir`: the bundle, `enabled`, the configuration and `AF_REPO` are `/repo`'s,
+and no Task Store is created or registered);
 `plugin_table_merges_with_origins_and_machine_only_is_honoured`;
 `existing_machine_only_tables_are_preserved` (`[self]` and `[storage]` stay machine-only with
 plugins installed, beside plugin-declared filtering; the `[telemetry]` variant, the table with
@@ -1184,6 +1207,11 @@ freshly installed plugin, and the sweep record's next version names them);
 `--link` named; a `DirSource` directory installs with a receipt whose digest equals the
 archive's pin digest);
 `plugin_check_boundary_records_a_direct_store_open_and_an_outside_write`;
+`plugin_check_audit_resolves_relative_and_descriptor_relative_accesses` (an `openat` through a
+numeric dirfd into a permitted directory and into a forbidden one, a relative open after
+`fchdir` into each, a symlink created in the cache, and a denied outside write followed by
+exit 0: the permitted ones pass and every other is a recorded violation; a trace with a lost
+process is `unresolved` and fails);
 `plugin_check_without_a_container_reports_not_run`;
 `plugin_check_binds_its_result_to_the_content_digest_and_target` (a native Darwin bundle is
 `not_run`, `--target` checks the Linux bundle and claims nothing for the other; two archives
@@ -1282,6 +1310,8 @@ refused before the Store opens writable and the plan unchanged; `catalog sync` w
 Git transport, refused before the subprocess exists, a hook timeout leaving nothing alive; a
 hook calling a second plugin that calls `task refresh`, refused);
 `a_hook_calling_a_second_plugin_cannot_start_task_work` (the marker survives `$AF_BIN`);
+`nested_plugins_die_with_the_outer_group` (a hook whose nested plugin and its grandchild sleep
+past the wall: none survives the kill);
 `hook_run_receives_the_exact_document_on_a_pipe` (byte-identical transfer, malformed input, a
 supervisor that never reads); `hook_target_names_what_the_invocation_recorded` (a Task, a
 Campaign, a `review run --file` Task, and the `none` variant for a malformed Task file, an
@@ -1332,7 +1362,7 @@ amendment to ADR-0119 and ADR-0123.
 Acceptance: `plugin_pane_paints_only_what_the_document_carries`;
 `plugin_pane_loads_off_the_key_loop_and_a_slow_plugin_shows_the_spinner`;
 `oversized_malformed_and_timed_out_pane_documents_are_one_error_row`;
-`reload_cancels_and_reaps_the_superseded_load`;
+`reload_cancels_and_reaps_the_superseded_load` (a nested plugin and its grandchild included);
 `pane_action_prefills_and_never_submits` (a word with a space and a quote round-trips through
 the prefill); `pane_action_with_confirm_is_refused` (`--confirm X` and `--confirm=X`);
 `pane_action_keys_never_shadow_the_browser` (a document binding `q`, `R`, `g` or `r` is one
