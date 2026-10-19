@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 14 after review rounds 1 to 13 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 15 after review rounds 1 to 14 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -311,9 +311,12 @@ packages = ["packages/*"]         # Worker, Pipeline and kind packages shipped f
 `min_af` is checked against the running release before the plugin runs; `af <name>` under an
 older release prints the manifest's requirement and the install command. `bin` is a canonical
 relative path (no empty, `.` or `..` component) that must resolve to a regular executable file
-inside the installed version directory; a symlink anywhere in a bundle, and an archive entry
-that would land outside it, are refused at install before any receipt is written, so the bytes
-a pin verifies are the bytes that run. The schema is `schemas/plugin-v1.json` with the parity
+inside the installed version directory and never to the root `receipt.toml`, which is the
+kernel's and is outside the content digest (§3.15): a manifest naming it is refused at
+install, at `--link`, by `af plugin check` and before every private invocation, so the
+resolved executable always has an entry in the content manifest. A symlink anywhere in a
+bundle, and an archive entry that would land outside it, are refused at install before any
+receipt is written, so the bytes a pin verifies are the bytes that run. The schema is `schemas/plugin-v1.json` with the parity
 tests every shape gets; unknown keys are refused.
 
 ### 3.5 Installing, removing, pinning
@@ -594,7 +597,11 @@ sit inside admission or an Attempt. Whatever remains is the operator's with
 
 Nothing in use is evicted (ADR-0144). Every plugin process the kernel starts, a command, a hook
 supervisor, a pane load or a runner adapter, holds a shared lock on
-`$XDG_RUNTIME_DIR/af/plugins/<name>.lock` for its whole lifetime; the hook supervisor holds it
+`<runtime root>/af/plugins/<name>.lock` for its whole lifetime, where the runtime root comes
+from one resolver in `config.rs` beside the XDG resolvers, shared by invocation, install,
+remove and the sweep: `$XDG_RUNTIME_DIR` when it is set, absolute, owned by the user and mode
+`0700`, else `$XDG_STATE_HOME/af/runtime/`, created `0700` and verified the same way; a root
+that cannot be established refuses the operation with the reason rather than running unlocked; the hook supervisor holds it
 while the plugin's process group lives. The sweep takes the exclusive lock without blocking
 before it evicts any entry of that plugin, skips the plugin and says so when it cannot, and
 re-reads the entry's identity and protection under the lock before removing it, as
@@ -642,12 +649,19 @@ and the packages they ship, one directory per plugin". A plugin keeps whatever i
 a project under `.af/plugins/<name>/`, and writes there only the way `af onboard` writes:
 absent-only, previewed, never credentials, never state (ADR-0032). A plugin that writes there
 declares `init = true` and implements one verb with `onboard`'s shape: `<bin> init --repo PATH`
-previews, writes nothing, and prints `af/plugin-init@1` (the paths under `.af/plugins/<name>/`
-it would create and their bytes); `<bin> init --repo PATH --apply` creates exactly those files,
-absent-only, refusing when any exists, within 60 seconds. The kernel cannot enforce that on a
-plugin; `af plugin check` runs the preview in a fixture repository and fails on any write, then
-the apply with only the absent destination writable, and fails on any other write under
-`.af/`, any write outside it, or a file the preview did not name.
+previews, writes nothing, and prints `af/plugin-init@1`, a closed document: `schema`,
+`plugin`, `repo`, and `files`, an array of `{ path, mode, content }` sorted by the bytes of
+`path`, where `path` is a canonical relative path beneath `.af/plugins/<name>/` (`/`
+separators, UTF-8 in NFC, no empty, `.` or `..` component), `mode` is `"x"` or `"-"` as the
+content manifest of §3.15 writes it, and `content` is the file's bytes in base64; at most 64
+files, 256 KiB per file decoded, 1 MiB for the document, and a duplicate or invalid path
+refuses the preview before anything is applied. `<bin> init --repo PATH --apply` creates
+exactly those files, absent-only, refusing when any exists, within 60 seconds. The kernel
+cannot enforce that on a plugin; `af plugin check` runs the preview in a fixture repository
+and fails on any write, then the apply with only the absent destination writable, and
+compares the complete manifest of `.af/plugins/<name>/` afterwards, paths, bytes and modes,
+with the preview, failing on a missing, extra or changed file, on any other write under `.af/`
+and on any write outside it.
 
 Worker, Pipeline and kind packages a plugin ships are pinned by a project exactly as the
 kernel's own are: a `path` under `.af/plugins/<name>/packages/` in `task-catalog.toml` or a
@@ -716,7 +730,9 @@ plugin whose manifest declares `runner = "gemini"` (one kind per plugin) and who
 speaks `af.runner/1` through four verbs, so the Provider registry's `kind` may name it. A kind
 resolves to exactly one installed plugin: the native kinds (`claude`, `codex`) are reserved, a
 second plugin declaring a kind another installed plugin declares is refused at install, and a
-`PATH` plugin never supplies a runner. The runner is captured authority, not a lookup: at plan
+`PATH` plugin never supplies a runner; a `--link` runner may, verified by the same content
+digest, so a development edit refuses the next Attempt until a plan is approved under the new
+bytes. The runner is captured authority, not a lookup: at plan
 time the kernel records the selected runner's plugin name, version, protocol, target and
 content digest (§3.15, the digest of the bytes that run) in the Task's execution binding beside the Provider binding (ADR-0046), recomputes the content digest of the selected version directory (§3.15) and compares it with
 that record before the binding is written and before every private invocation, so an
@@ -819,11 +835,13 @@ regular file in the unpacked bundle, where `path` is the relative path with `/` 
 UTF-8 in NFC, no `.` or `..` component, `mode` is `"x"` when the owner's executable bit is set
 and `"-"` otherwise, and `sha256` is the lower-case hex SHA-256 of the file's bytes; entries
 are sorted by the bytes of `path`; directories are not entries and an empty one is ignored;
-`receipt.toml` is excluded; a symlink, FIFO, device or other non-regular entry is refused. The
+the root `receipt.toml` is excluded, and since `bin` may never name it (§3.4) the executable
+always has an entry; a symlink, FIFO, device or other non-regular entry is refused. The
 array is serialized as canonical JSON (the kernel's own rules, no whitespace, sorted keys
 being moot for arrays) and the digest is the SHA-256 of the bytes `af.plugin-digest/1\n`
 followed by that serialization; fixed expected-digest fixtures pin path escaping, a Unicode
-path, an executable-bit change, and two archives with different bytes and the same files,
+path, an executable-bit change, one changed byte in the executable, and two archives with
+different bytes and the same files,
 which share one content digest. Install records both in the
 receipt; `af plugin check` prints the content digest and the target, and a conformance result
 is bound to that pair; the runner binding of §3.14 names the content digest. The boundary check runs the bundle inside a Linux container, so it checks a bundle
@@ -915,13 +933,14 @@ The whole kernel surface toward plugins, which `af help plugins` renders:
 | plugin writes | a Task file | `af.task-file/2` |
 | plugin writes | a file-bound root input | the `file` form of `inputs` |
 | plugin answers | a pane | `af/plugin-pane@1` |
+| plugin answers | an `init` preview | `af/plugin-init@1` |
 | project declares | `[plugins] required`, `[plugin.<name>]`, `.af/plugins/<name>/`, `[plugins.<name>]` in the lock | TOML, as every declaration |
 
 Call sites in existing files, the complete list: `cli.rs` (the `external_subcommand` variant,
 the `plugin` and `store` namespaces); `main.rs` (one arm each for the two namespaces, one call
 to `plugins::after_command`); `topics.rs` (one topic, rendered from the surface table);
-`layout.rs` (one entry); `config.rs` (the `[plugin.*]` passthrough and manifest-declared
-machine-only names); `project.rs` (one opaque field, one table); `storage.rs` (three kinds);
+`layout.rs` (one entry); `config.rs` (the `[plugin.*]` passthrough, manifest-declared
+machine-only names and the runtime-root resolver); `project.rs` (one opaque field, one table); `storage.rs` (three kinds);
 `selfmgmt.rs` (the machine-management `plugin` commands in `exempt_from_dispatch`, the stop
 at the external command name in `exempt_from_dispatch` and `repo_from_argv`, and the pre-exec
 refusal of `plugin pin` under a release that predates plugins); `lock.rs` (one table);
@@ -1050,17 +1069,26 @@ above); `reserved_names_are_refused` (the set is derived from the command and to
 neither an installed manifest nor `PATH` can shadow a help topic); `manifest_protocol_and_min_af_are_checked_before_exec`;
 `manifest_reads_are_bounded_and_never_hang` (a 64 KiB-plus manifest and a FIFO behind a
 `--link`, each listed `invalid` by `af --help` within its bound);
-`bin_escaping_the_bundle_or_a_symlink_is_refused_at_install`;
+`bin_escaping_the_bundle_or_a_symlink_is_refused_at_install` (and `bin = "receipt.toml"`, at
+install, `--link`, `check` and invocation);
+`plugin_lock_root_is_one_resolver` (`XDG_RUNTIME_DIR` unset: a concurrent invocation and
+sweep share the fallback's one lock; relative, or a root not owned by the user: the
+invocation, the install and the sweep each refuse with the reason);
 `plugin_table_merges_with_origins_and_machine_only_is_honoured`;
-`kernel_capture_tables_stay_machine_only_without_the_reader_plugin` (`[telemetry]` with the
-reader absent, disabled and replaced by a manifest without `machine_only`);
+`existing_machine_only_tables_are_preserved` (`[self]` and `[storage]` stay machine-only with
+plugins installed, beside plugin-declared filtering; the `[telemetry]` variant, the table with
+its reader absent, disabled and replaced by a manifest without `machine_only`, is telemetry
+T1's acceptance, which ships that table as built-in machine-only configuration (§3.10), with
+P1 as its prerequisite);
 `project_and_local_enabled_cannot_override_a_machine_disable`;
 `env_override_reaches_plugin_backlog_enabled_with_its_origin`;
 `layout_declares_plugins_directory_and_drift_test_passes`;
 `surface_table_matches_the_code` (every `AF_PLUGIN_*` variable in `plugins/` is in the table
 and nothing else is set); `plugin_check_verifies_the_manifest_and_each_declared_verb_within_its_bound`;
-`plugin_check_runs_init_preview_then_apply_inside_the_destination_only` (a file the preview did
-not name, a write under a neighbouring `.af/` path);
+`plugin_check_runs_init_preview_then_apply_inside_the_destination_only` (the applied manifest
+equals the preview in paths, bytes and modes; a file the preview did not name, a missing file,
+a changed byte, a changed mode, a write under a neighbouring `.af/` path, a duplicate path, a
+path with `..`, a 65th file and a 257 KiB file are each failures);
 `plugin_check_broker_admits_every_declared_reader_and_rejects_the_rest` (`task report` and
 `task explain` pass, `af store` coverage joins in P2; `onboard --refresh-lock`, `task plan`, and an escaping `--repo` through
 `AF_BIN` are recorded as violations; `task start --file` is refused for every invocation; `help <plugin>` is refused before the
