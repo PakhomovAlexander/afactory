@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 15 after review rounds 1 to 14 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 16 after review rounds 1 to 15 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -132,7 +132,9 @@ The clauses proposed for the ADR. Each is pinned by a test named in §5.
 2. **A plugin reads the kernel only through `af` and its declared exports.** Its reader is the
    command line's versioned `--json` documents, the `af store` read commands of §3.6, and the
    kernel exports of §3.6: directories the kernel writes in a versioned, documented format for
-   readers and never reads back for any decision, listed one by one in the surface table. It
+   readers and never consults for an execution, replay, acceptance, admission or Worker-input
+   decision, reading them only to recover their integrity and for the Storage Budget's
+   housekeeping (§3.6), listed one by one in the surface table. It
    never opens `events.sqlite`, the `attempt_wall` sidecar, the CAS, a Warm Workspace or a
    Worker sandbox. The runner adapter
    of §3.14 is the one exception: it receives exactly one Attempt's sandbox and exact inputs from
@@ -389,7 +391,13 @@ the telemetry note's segments and blobs under `$XDG_STATE_HOME/af/telemetry/v1/`
 first. An export is a directory the kernel writes in a versioned, self-describing format
 (`af/TelemetrySegment@1`, `af/TelemetrySpan@1`, `af/TelemetryBlob@1` and the other records that
 note versions), documented as a contract, listed by root and format in the surface table, and
-never read back by the kernel for any decision (the telemetry note's own rule). A plugin reads
+never consulted by the kernel for an execution, replay, acceptance, admission or Worker-input
+decision (the telemetry note's own rule). The kernel reads it for two maintenance purposes and
+no other: the bounded writer recovery below, which inspects an abandoned segment to find its
+valid prefix, and the housekeeping of ADR-0144, which reads the structural metadata the
+telemetry note enumerates (sizes and times, lock state, `segment` headers, `seal` records, the
+`.refs` manifest of a sealed segment and the `blob` references of a live one) to count and to
+protect what it keeps, and never a span, an event, a blob or an analytic. A plugin reads
 an export directly and strictly read-only: it never seals, recovers, compresses, renames or
 indexes inside the export (a sealed `.jsonl.gz` segment is immutable, a live `.jsonl` segment is
 the writer's, a `.corrupt` segment is excluded), and it validates every record it reads by its
@@ -435,6 +443,14 @@ whose declared cardinality is `one` and whose `affinity` is `{ kind = "unbound" 
 (`PortAffinityV1`). A `many` port, a `same_as` or `derived_from` port, and a port already
 bound by another form are refused by name before capture (ADR-0134 forbids implicit
 cardinality conversion, and a file carries no Snapshot to be the same as or derived from). The
+admission is decided where ADR-0134 decides port shape, before selection and before capture,
+because selection consumes the revision the inputs construct: a Task naming its pipeline must
+find the port declared `one` and unbound there; a Task naming none consults every captured
+Pipeline accepting its kind, as `DeclaredPorts` does for type and cardinality today, and
+`DeclaredPorts` gains the affinity, so that a port declared with one type and cardinality but
+differing affinities across those Pipelines refuses the binding with the request to name a
+pipeline, rather than selecting the unbound one or deferring to compilation; the refusal
+precedes any read of the file and any publication. The
 file's top level must be a canonical JSON object, because the artifact envelope admits nothing
 else (`ArtifactEnvelope::validate`); an array or a scalar at the top level is refused before
 publication, and arrays live inside the object. A list-of-files form is deferred (§6).
@@ -795,11 +811,17 @@ reply, aggregate stdout at most 16 MiB, stderr retained up to 1 MiB with the ove
 and dropped, and `identity`, `status` and `models` answer within 256 KiB and 15 seconds each.
 Crossing any bound, an unterminated frame included, kills and reaps the process group, refuses
 the Attempt's business output, and settles the usage floors observed so far. A frame that
-is present but fails validation is malformed billing, not absence, and is treated as
+is present as `af/RunnerUsage@1` but fails validation is malformed billing, not absence, and is treated as
 `add_usage` treats a malformed native report (ADR-0088): the counters it carries unambiguously
 are retained, the observation is recorded with `charge_complete = false`, cumulative floors are
 kept, and the Attempt's business output is refused. Only an invocation that wrote no usage
-frame at all is the wholly absent case, settled at zero and marked unknown (ADR-0143).
+frame at all is the wholly absent case, settled at zero and marked unknown (ADR-0143). A
+malformed terminal `af/RunnerResult@1` frame is malformed output, not malformed billing
+(ADR-0088 leaves billing completeness untouched by malformed non-billing metadata, as the
+Codex adapter's `add_usage` does): the business output is refused and the usage settles from
+the accumulator as it stands, counters and completeness unchanged, so a complete usage frame
+followed by an invalid result keeps its known charge, and an invalid result with no usage
+frame before it settles at ADR-0143's zero marked unknown.
 
 The kernel keeps what it keeps for the native adapters: it composes the input, materializes the
 sandbox, reserves the budget, supervises the process through `review-process` with the deadline
@@ -944,7 +966,8 @@ machine-only names and the runtime-root resolver); `project.rs` (one opaque fiel
 `selfmgmt.rs` (the machine-management `plugin` commands in `exempt_from_dispatch`, the stop
 at the external command name in `exempt_from_dispatch` and `repo_from_argv`, and the pre-exec
 refusal of `plugin pin` under a release that predates plugins); `lock.rs` (one table);
-`tui/mod.rs` (one folder, one pane); the Task-file adapter (one binding form, `af.task-file/2`);
+`tui/mod.rs` (one folder, one pane); the Task-file adapter (one binding form, `af.task-file/2`, and the affinity kept in
+`DeclaredPorts`);
 `storage_sweep.rs` (the sweep record's next version with plugin kinds); `review-process` (a
 retention limit and an overflow policy per stream, a reader-raised cancellation, for P7). New
 code, by
@@ -1150,7 +1173,10 @@ refused);
 `export_reader_writes_nothing` (an immutable fixture export with an abandoned segment: the
 conformance plugin reads it and the export's bytes are unchanged). The writer's side, recovery
 of that segment by the next kernel writer within its bound, is telemetry T1's acceptance, with
-P2 as its prerequisite.
+P2 as its prerequisite, together with `export_reads_by_the_kernel_are_maintenance_only` (a
+fixture export under a file trace: the recovery of an abandoned segment and the sweep's
+structural reads are the only kernel opens, and a Task's planning, execution, replay and
+acceptance open none).
 
 ### P3 — File-bound inputs
 
@@ -1173,6 +1199,10 @@ cross-port constraint, two consuming Workers);
 `file_bound_input_replays_after_the_file_is_deleted`;
 `file_bound_input_cannot_cover_an_obligation` (a pipeline wiring it into `coverage` is refused
 at load); `refused_ports_stay_refused` (`requirements`, `base`, `continuation`);
+`file_binding_affinity_is_admitted_before_selection` (two Pipelines accepting the kind
+declare the port with one type and cardinality, one unbound and one `same_as`: an unnamed Task
+is refused with the request to name a pipeline before the file is read; naming the unbound one
+admits, naming the other refuses by name);
 `file_bound_many_same_as_and_derived_from_ports_are_refused_by_name` (declared with
 `PortAffinityV1`); `file_with_an_array_or_scalar_top_level_is_refused_before_publication`;
 `plugin_check_broker_rejects_task_creation` (a brokered `task start --file`, with and without
@@ -1283,7 +1313,9 @@ all, settled at zero and marked unknown, ADR-0143; a valid frame followed by one
 frame carrying one valid counter, retained with `charge_complete = false` and the output
 refused; a valid frame then a truncated terminal frame; a valid frame then cancellation;
 decreasing cumulative counters that keep the earlier floor; `charge_complete = false` followed
-by `true` that stays incomplete);
+by `true` that stays incomplete; a complete usage frame then a malformed terminal result, the
+charge kept complete and the output refused; a malformed terminal result with no usage frame,
+zero marked unknown);
 `runner_verbs_are_refused_on_the_public_seam` (`af <runner> identity --json` executes nothing
 and prints no identity; `af provider status` shows the sanitized projection);
 `runner_transport_bounds_are_enforced_while_reading` (an oversized unterminated frame, a
