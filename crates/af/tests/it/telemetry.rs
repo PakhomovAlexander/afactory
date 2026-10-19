@@ -1,4 +1,4 @@
-//! `af telemetry status` and `af telemetry reindex` end to end (ADR-0151), each over a private
+//! `af telemetry status` and `af telemetry reindex` end to end (ADR-0153), each over a private
 //! HOME and private XDG roots, against directories the telemetry crate's own writer filled.
 
 use std::path::{Path, PathBuf};

@@ -246,6 +246,19 @@ pub(crate) fn write_output(
                 );
             }
         }
+        // A derived presentation of the recorded Document, never a recorded or reviewed
+        // artifact itself (ADR-0151).
+        review_pipeline::task::human_document::HUMAN_MARKDOWN => {
+            let revision: review_core::task::TaskRevisionV1 = super::artifact(
+                &cas,
+                &result.task_revision_id,
+                review_core::task::TASK_REVISION_V1,
+            )?;
+            review_pipeline::task::human_document::human_markdown(
+                &cas, id, port, &result, &revision,
+            )?
+            .into_bytes()
+        }
         _ => return Err("Unsupported output format".into()),
     };
     let parent = output

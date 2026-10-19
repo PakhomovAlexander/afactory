@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:telemetry-reindex:1",
   "title": "af/telemetry-reindex@1",
-  "description": "`af telemetry reindex --json` (ADR-0151): every unsealed segment whose lock could be taken was recovered (sealed with `exit = recovered`, or renamed corrupt on interior corruption); the index was replaced under `index.lock` and rebuilt from every segment, and every blob file's digest verified. Counts are rows of the rebuilt index; `records` the segment records it read.",
+  "description": "`af telemetry reindex --json` (ADR-0153): every unsealed segment whose lock could be taken was recovered (sealed with `exit = recovered`, or renamed corrupt on interior corruption); the index was replaced under `index.lock` and rebuilt from every segment, and every blob file's digest verified. Counts are rows of the rebuilt index; `records` the segment records it read.",
   "type": "object",
   "additionalProperties": false,
   "required": [

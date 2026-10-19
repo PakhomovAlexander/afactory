@@ -6,4 +6,4 @@
   `af telemetry reindex` (`--json`: `af/telemetry-status@1`, `af/telemetry-reindex@1`) show and
   rebuild the store. The credential rules for Provider-authored text moved into the crate
   unchanged, with key-aware JSON redaction added. No command records spans yet
-  ([ADR-0151](docs/adr/0151-record-telemetry-in-its-own-store-and-never-let-it-steer.md)).
+  ([ADR-0153](docs/adr/0153-record-telemetry-in-its-own-store-and-never-let-it-steer.md)).

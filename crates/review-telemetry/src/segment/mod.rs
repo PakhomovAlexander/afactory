@@ -3,7 +3,7 @@
 //!
 //! [`writer`] is the write side, linked by every crate that records. [`reader`] is the read
 //! side — recovery, sealed and live reads — and with [`crate::index`] and [`crate::status`] it
-//! is the reader module only `af telemetry`, `af storage` and the TUI link (ADR-0151 clause 1).
+//! is the reader module only `af telemetry`, `af storage` and the TUI link (ADR-0153 clause 1).
 
 pub mod reader;
 pub mod writer;

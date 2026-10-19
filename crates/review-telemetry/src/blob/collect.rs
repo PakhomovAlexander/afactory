@@ -4,7 +4,7 @@
 //! the valid prefix of any retained `.jsonl` segment references it, locked or not. Before it
 //! collects anything it recovers every unsealed segment whose lock it can take and reads the
 //! flushed prefix of every segment it cannot lock, in that order. It reads only that structural
-//! metadata (ADR-0151 clause 1).
+//! metadata (ADR-0153 clause 1).
 //!
 //! The storage sweep (package P2) runs this after its own decisions; fixtures run it directly.
 

@@ -1,6 +1,6 @@
 [package]
 name = "review-telemetry"
-description = "Telemetry: per-process segments, blobs, structured redaction, the tracing subscriber and the rebuildable index (ADR-0151)"
+description = "Telemetry: per-process segments, blobs, structured redaction, the tracing subscriber and the rebuildable index (ADR-0153)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

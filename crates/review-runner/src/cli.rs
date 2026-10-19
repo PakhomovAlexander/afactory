@@ -16,7 +16,7 @@
 use std::collections::BTreeSet;
 
 // The credential rules moved to the telemetry leaf crate, the one redaction implementation
-// (ADR-0151); review-runner keeps its names.
+// (ADR-0153); review-runner keeps its names.
 pub use review_telemetry::redact::{
     MAX_CLI_LINE_CHARS, WITHHELD_LINE, bounded_cli_line, looks_like_credential,
 };

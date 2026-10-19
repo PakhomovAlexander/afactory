@@ -7,6 +7,7 @@ The author reads this committed tree in a clone that seals nothing back and writ
 citing `README.md`, its last line and `report.json`. The kernel renders it, resolves every
 citation against the exact source Snapshot, and dispatches the independent verifier only when
 those checks pass; the verifier reads the same Snapshot. A report Task is never delivered.
-Save the report with
-`af task output starter-report --port report --format markdown --output report.md --json`.
+Save a readable copy with
+`af task output starter-report --port report --format human-markdown --output report.md`;
+`--format markdown` writes the canonical text the checks and the verifier judged.
 The Python command substitutes support exactly the supplied tutorial goal; no model runs.

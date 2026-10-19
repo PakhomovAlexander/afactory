@@ -1,4 +1,4 @@
-# ADR-0151: Record telemetry in its own store, and never let it steer
+# ADR-0153: Record telemetry in its own store, and never let it steer
 
 **Status:** accepted (2026-10-19).
 

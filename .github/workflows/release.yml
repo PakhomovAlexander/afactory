@@ -239,19 +239,22 @@ jobs:
 
   # The repository runs its newest release (ADR-0138): once published, pin it in .af/af.lock on
   # main. The release PR cannot carry the pin, because the digests exist only once SHA256SUMS
-  # does. A push with this token starts no workflow; the next pull request's `make check` covers
-  # the commit, and fails if this job ever leaves the pin more than one release behind.
+  # does. main's ruleset requires pull requests and lets only deploy keys bypass it, so the push
+  # goes through the PIN_DEPLOY_KEY write deploy key (ADR-0152). That push starts this workflow
+  # on main like any merge, so the pin commit gets main CI; `make check` also fails if this job
+  # ever leaves the pin more than one release behind.
   pin:
     name: pin the release in .af/af.lock
     needs: [resolve, publish]
     if: needs.resolve.outputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
-      contents: write # to push the pin commit to main
+      contents: read # the push uses the deploy key, not this token
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
+          ssh-key: ${{ secrets.PIN_DEPLOY_KEY }} # kept for the push in scripts/pin-release.sh
       - name: Install the published release
         shell: bash
         env:

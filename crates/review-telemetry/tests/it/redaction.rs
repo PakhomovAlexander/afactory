@@ -1,4 +1,4 @@
-//! Structured redaction (design §8, ADR-0151 clause 6): credentials withheld on every path,
+//! Structured redaction (design §8, ADR-0153 clause 6): credentials withheld on every path,
 //! before any truncation; identities and counters intact; every JSON document still parses.
 
 use review_telemetry::blob::{self, Media};

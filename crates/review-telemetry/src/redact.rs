@@ -1,4 +1,4 @@
-//! The one redaction implementation (ADR-0151 clause 6): the credential rules review-runner
+//! The one redaction implementation (ADR-0153 clause 6): the credential rules review-runner
 //! applied to Provider-authored text, moved here unchanged and re-exported there, and the
 //! structured rules Telemetry adds on top of them.
 //!

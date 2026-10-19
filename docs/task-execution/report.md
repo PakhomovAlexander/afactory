@@ -45,7 +45,7 @@ git commit -m 'Configure the report Task starter'
 af catalog test --source . --json
 af task start --execute --file report.json --json
 af task show starter-report
-af task output starter-report --port report --format markdown --output report.md --json
+af task output starter-report --port report --format human-markdown --output report.md
 ```
 
 The starter runs three command Attempts — author, checks, verifier — with no credential. Its
@@ -142,14 +142,43 @@ report `incomplete`.
 
 ## Output
 
+Give a person the human presentation; keep the other two for audit:
+
 ```sh
-af task output starter-report --port report --format markdown --output report.md --json
+af task output starter-report --port report --format human-markdown --output report.md
+af task output starter-report --port report --format markdown --output report-canonical.md --json
 af task output starter-report --port verification --format json --output verification.json --json
 ```
 
-The report renders as the Document profile renders it, followed by a `Repository citations`
-section with one `path` or `path:line` code span per citation. `af task deliver` refuses a
-report Task before any Git mutation and names `af task output`.
+| Format | What it writes | For |
+|---|---|---|
+| `human-markdown` | a readable presentation: the sections with lists and examples, sources, repository citations, the result in words and the reviewer's summary | a person |
+| `markdown` | the canonical Document text the checks and the verifier judged, every punctuation character escaped | audit, exact bytes |
+| `json` | the recorded artifact envelope | machines and audit |
+
+The canonical report renders as the Document profile renders it, followed by a `Repository
+citations` section with one `path` or `path:line` code span per citation.
+
+The human presentation is derived, never recorded or reviewed
+([ADR-0151](../adr/0151-export-a-human-presentation-of-a-report-beside-its-canonical-markdown.md)).
+It is written only when the recorded draft and sources still render to the canonical text byte
+for byte. It opens with `Result: accepted`, `changes requested` or `incomplete` and the reason.
+Its `Review` section is shown only from an acceptance receipt, check receipt and evaluation that
+name this exact report, its Snapshot and the Task's requirements, recorded under a plan of the
+Task's own revision for a verifier policy that revision names, with the Manifest of the Task's
+source Snapshot and every input those receipts retain. When the Task captured sources, the
+evaluation must retain them, because only the empty set may go unbound at the verifier. Other or
+stale evidence is never attached; an inconsistent chain refuses the export. The closing note
+says what judged the canonical report: the checks and the reviewer, only the checks when the
+checks failed or no review was recorded, or nothing when no receipt judges the output.
+Authored Markdown, HTML, links and headings stay text. Only a captured `https://` source the
+canonical renderer would link becomes a link, and its destination writes each `&` as `&amp;`,
+so a parser reads back exactly the captured location: `?q=&copy;` stays `&copy;`. Ordinary punctuation, paths and non-ASCII text
+read as written. Only ASCII spaces and tabs are layout: a no-break, em or ideographic space is
+text wherever it stands, including after the indentation of an indented example. Another output
+type is refused, and an existing file is never overwritten.
+
+`af task deliver` refuses a report Task before any Git mutation and names `af task output`.
 
 This repository's `kernel/report` Pipeline, with `kernel/analyst` (Claude Opus 5.5) and
 `kernel/report-verifier` (GPT-6 Sol), is staged under

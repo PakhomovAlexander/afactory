@@ -9,7 +9,7 @@ resources each step used, and every failure with its cause. It is direction for 
 shipped behaviour. Repository snapshot: `bf027de6` (`origin/main`, af 0.12.0-rc.4; Claude Code
 2.1.303 and codex-cli 0.162.1 are the harness versions the facts below were read against). Where
 this note and an accepted ADR disagree, the ADR wins; the boundaries of §3 are proposed as
-ADR-0151.
+ADR-0153.
 
 ## 1. Decision in brief
 
@@ -74,7 +74,7 @@ answer it:
 
 ## 3. Boundaries
 
-These are the clauses proposed for ADR-0151. Each is pinned by a test named in §16.
+These are the clauses proposed for ADR-0153. Each is pinned by a test named in §16.
 
 1. **The kernel's execution authority never reads Telemetry.** No code path that decides a
    state transition, an identity, a replay, a Ledger entry, a budget reservation, an admission
@@ -1235,7 +1235,7 @@ the evaluator, with follow-up rounds as needed and one `kernel/verification-revi
 before each pull request (ADR-0142). The six packages of the first revisions are cut into ten
 so that each fits one Attempt; the order is binding, and each package's acceptance assumes the
 earlier ones. The change note `changelog.d/telemetry.md` is created by P1 and extended by every
-later package; ADR-0151 lands with P1 and no package adds another ADR.
+later package; ADR-0153 lands with P1 and no package adds another ADR.
 
 **P1 — the crate: records, segments, blobs, redaction, levels, index, status.** A new leaf
 workspace crate `review-telemetry` (depending on `serde`, `serde_json`, `tracing-core`, `flate2`
@@ -1247,7 +1247,7 @@ recovery, blob objects and occurrences with retained-bytes identity, redaction b
 and the publication protocol, structured redaction moved from review-runner (which re-exports
 it), the `tracing` subscriber, the trace and execution identities, the directory registry with
 its overlap rule, the index with its lifecycle lock, the `[telemetry]` table with
-`af help telemetry`, `af telemetry status` and `reindex`, ADR-0151, `docs/telemetry.md`.
+`af help telemetry`, `af telemetry status` and `reindex`, ADR-0153, `docs/telemetry.md`.
 Acceptance: `telemetry_segment_recovery_keeps_complete_prefix`,
 `telemetry_segment_recovery_refuses_interior_corruption`,
 `telemetry_writer_lock_survives_pid_reuse`, `telemetry_segment_limit_bounds_every_record_kind`,

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:telemetry-record:1",
   "title": "af/Telemetry*@1 segment records",
-  "description": "One line of a telemetry segment under `v1/segments/` (design \u00a75, ADR-0151): `seq` (1 for the header, one more per appended record; a derived segment keeps it with gaps), `t` (the record kind) and `schema` (its versioned type). One encoded record is at most 16 KiB; attributes are at most 64, keys 128 bytes, strings 1 KiB, arrays 32 elements and 4 KiB. Timestamps are unix nanoseconds as decimal strings; exact counters are canonical decimal strings. A record of another schema version is refused by the reader, never migrated (ADR-0145).",
+  "description": "One line of a telemetry segment under `v1/segments/` (design \u00a75, ADR-0153): `seq` (1 for the header, one more per appended record; a derived segment keeps it with gaps), `t` (the record kind) and `schema` (its versioned type). One encoded record is at most 16 KiB; attributes are at most 64, keys 128 bytes, strings 1 KiB, arrays 32 elements and 4 KiB. Timestamps are unix nanoseconds as decimal strings; exact counters are canonical decimal strings. A record of another schema version is refused by the reader, never migrated (ADR-0145).",
   "oneOf": [
     {
       "type": "object",

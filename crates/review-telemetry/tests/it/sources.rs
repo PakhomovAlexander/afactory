@@ -1,4 +1,4 @@
-//! ADR-0151 clause 1 and ADR-0026 in the source: no crate but `af` links the reader module
+//! ADR-0153 clause 1 and ADR-0026 in the source: no crate but `af` links the reader module
 //! (`segment::reader`, `index`, `status`, `blob::reader`, `blob::collect`), `review-process`
 //! links nothing of Telemetry, and Telemetry links nothing in the workspace.
 

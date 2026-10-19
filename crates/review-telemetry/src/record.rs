@@ -13,7 +13,7 @@
 //! values and `af.dropped_fields` dropped ones, and [`COUNTER_RESERVE_BYTES`] of every record
 //! are reserved for the counters so they are never dropped themselves.
 //!
-//! Untrusted text is redacted whole before it is bounded (ADR-0151 clause 6); typed values
+//! Untrusted text is redacted whole before it is bounded (ADR-0153 clause 6); typed values
 //! (identities, digests, decimals, numbers, booleans, enumerations) never pass the heuristic.
 
 use serde::{Deserialize, Serialize};

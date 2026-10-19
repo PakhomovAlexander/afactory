@@ -186,7 +186,7 @@ cleaned up yet is never collected. The sweep that ends `af task run` is recorded
 
 const TELEMETRY: &str = "\
 Telemetry records what af does while it works, in its own store, never in a Task or Campaign
-Store (ADR-0151). The kernel's execution authority never reads it: identity, replay, the Ledger,
+Store (ADR-0153). The kernel's execution authority never reads it: identity, replay, the Ledger,
 budgets, admission and every Worker input are the same whether it is on, off or deleted, and
 nothing it captures reaches a prompt. Nothing leaves the machine unless `sink = \"otlp\"` is set.
 

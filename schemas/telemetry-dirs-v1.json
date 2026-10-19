@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:telemetry-dirs:1",
   "title": "af/TelemetryDirs@1",
-  "description": "`$XDG_STATE_HOME/af/telemetry-dirs.v1.json` (ADR-0151 clause 8): every telemetry directory a process wrote on this machine, by canonical absolute path, deduplicated, so the storage inventory reaches each one whatever the current level or `dir`. A directory is registered before its first write; one that overlaps another telemetry root or a directory the inventory accounts on its own is refused and never listed.",
+  "description": "`$XDG_STATE_HOME/af/telemetry-dirs.v1.json` (ADR-0153 clause 8): every telemetry directory a process wrote on this machine, by canonical absolute path, deduplicated, so the storage inventory reaches each one whatever the current level or `dir`. A directory is registered before its first write; one that overlaps another telemetry root or a directory the inventory accounts on its own is refused and never listed.",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -134,7 +134,7 @@ impl NativeFailureKind {
 }
 
 /// Whether native output carries credential or login-challenge material, so that no part of it
-/// may be quoted in a diagnostic. The rule lives in the one redaction implementation (ADR-0151).
+/// may be quoted in a diagnostic. The rule lives in the one redaction implementation (ADR-0153).
 pub use review_telemetry::redact::carries_auth_material;
 
 fn auth_material(bytes: &[u8]) -> bool {

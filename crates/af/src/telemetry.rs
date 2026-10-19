@@ -1,4 +1,4 @@
-//! `af telemetry status` and `af telemetry reindex` (ADR-0151): the reader side of Telemetry,
+//! `af telemetry status` and `af telemetry reindex` (ADR-0153): the reader side of Telemetry,
 //! which only `af telemetry`, `af storage` and the TUI link.
 //!
 //! The `[telemetry]` table is read from machine layers only. A refused key exits 2, an

@@ -2,7 +2,9 @@
 
 **Status:** accepted (2026-10-04). Extends
 [ADR-0045](0045-one-release-train-and-a-pin-that-binds-bytes.md): the release train ends by
-pinning the release it published in this repository's own `.af/af.lock`.
+pinning the release it published in this repository's own `.af/af.lock`. Partially superseded by
+[ADR-0152](0152-push-the-release-pin-with-a-deploy-key-that-bypasses-mains-ruleset.md), which
+replaces the workflow token with a deploy key for the push to `main`.
 
 ## Context
 

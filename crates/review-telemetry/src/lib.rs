@@ -1,4 +1,4 @@
-//! Telemetry (ADR-0151): what `af` does while it works, recorded in its own store under the
+//! Telemetry (ADR-0153): what `af` does while it works, recorded in its own store under the
 //! state root's `telemetry/`, never in a Task or Campaign Store, and never read by the kernel's
 //! execution authority.
 //!

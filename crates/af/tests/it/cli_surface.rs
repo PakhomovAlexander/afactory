@@ -265,7 +265,7 @@ fn provider_models_help_and_man_page_describe_the_command() {
 
 /// `af telemetry`, its two commands and `af help telemetry` say what they print, what they never
 /// do, their options and their exit codes, in `--help`, in `af help` and in the man pages
-/// (ADR-0151, ADR-0146).
+/// (ADR-0153, ADR-0146).
 #[test]
 fn telemetry_help_and_man_pages_describe_the_commands() {
     let namespace = out(&af(&["telemetry", "--help"]));
@@ -277,7 +277,7 @@ fn telemetry_help_and_man_pages_describe_the_commands() {
             "{namespace}"
         );
     }
-    assert!(namespace.contains("ADR-0151"), "{namespace}");
+    assert!(namespace.contains("ADR-0153"), "{namespace}");
     let bare = af(&["telemetry"]);
     assert_eq!(bare.status.code(), Some(2));
     for (command, schema) in [

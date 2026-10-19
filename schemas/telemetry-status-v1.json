@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:telemetry-status:1",
   "title": "af/telemetry-status@1",
-  "description": "`af telemetry status --json` (ADR-0151): the configured level, the telemetry directory read, its allocated bytes in total and per entry against `[telemetry] max_bytes`, its segments by state (`live`: a writer holds the lock; `unsealed`: nobody does, recoverable; `sealed`; `corrupt`: interior corruption, never read), the runs and withheld Attempts the index knows, stored occurrences whose blob file is missing, the index's state after this command ingested every new segment byte, the distinct problems recorded, what could not be read (another version's directory such as `v0/`, a segment of another shape), and every telemetry directory registered on this machine. Telemetry ids carry no authority; nothing here is evidence.",
+  "description": "`af telemetry status --json` (ADR-0153): the configured level, the telemetry directory read, its allocated bytes in total and per entry against `[telemetry] max_bytes`, its segments by state (`live`: a writer holds the lock; `unsealed`: nobody does, recoverable; `sealed`; `corrupt`: interior corruption, never read), the runs and withheld Attempts the index knows, stored occurrences whose blob file is missing, the index's state after this command ingested every new segment byte, the distinct problems recorded, what could not be read (another version's directory such as `v0/`, a segment of another shape), and every telemetry directory registered on this machine. Telemetry ids carry no authority; nothing here is evidence.",
   "type": "object",
   "additionalProperties": false,
   "required": [

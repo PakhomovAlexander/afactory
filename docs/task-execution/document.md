@@ -95,7 +95,9 @@ af task output release-notes --port verification --format json --output verifica
 
 Finished replay spends no further Attempts. `task output` writes one recorded output to an absent
 file, leaving Task state unchanged. Markdown requires a Document artifact; JSON preserves an
-artifact envelope. The command reports the Task's acceptance, so saving an incomplete or rejected
+artifact envelope. `--format human-markdown` writes a readable presentation of a Document for a
+person, with the Task's result and the matching review in words; it is derived from the exact
+draft, never recorded or reviewed itself (see [Report Tasks](report.md#output)). The command reports the Task's acceptance, so saving an incomplete or rejected
 result does not promote its status. It never overwrites a file.
 
 The real CLI tests cover successful capture, planning, execution, Markdown output and exact replay

@@ -38,14 +38,14 @@ keep_gate_pull_requests = false
 "#;
 
 /// The built-in layer: [`BUILT_IN`] and the `[telemetry]` table with every default, which the
-/// telemetry crate owns with its bounds (ADR-0151).
+/// telemetry crate owns with its bounds (ADR-0153).
 fn built_in() -> String {
     format!("{BUILT_IN}\n{}", review_telemetry::level::built_in_table())
 }
 
 /// The tables only machine layers may set: a repository's `.af/af.toml` can steer neither what
 /// af downloads (`[self]`), nor what it keeps or removes on this machine (`[storage]`), nor what
-/// it records about its own work there (`[telemetry]`, ADR-0151).
+/// it records about its own work there (`[telemetry]`, ADR-0153).
 const MACHINE_ONLY: [(&str, &str); 3] = [
     ("self", "self"),
     ("storage", "storage"),
@@ -247,7 +247,7 @@ impl Config {
 }
 
 impl Config {
-    /// The `[telemetry]` table, typed and bounded (ADR-0151): a value outside its bound, an
+    /// The `[telemetry]` table, typed and bounded (ADR-0153): a value outside its bound, an
     /// unknown key, or `sink = "otlp"` without `sink_endpoint` refuses the load, naming the key.
     /// Only machine layers set it; `max_bytes` is bounded by `[storage] max_bytes`.
     pub(crate) fn telemetry_policy(&self) -> Result<review_telemetry::level::Settings, String> {
@@ -984,7 +984,7 @@ mod tests {
         assert_eq!(config.origins["storage.keep_days"].layer, "environment");
     }
 
-    /// ADR-0151 clause 4: `[telemetry]` is machine-only like `[self]` and `[storage]`. A
+    /// ADR-0153 clause 4: `[telemetry]` is machine-only like `[self]` and `[storage]`. A
     /// project, directory or local layer that carries it is reported and ignored; the
     /// environment form `AF_TELEMETRY__<KEY>` is a machine layer and is honoured; a value
     /// outside its bound refuses the load naming the key.

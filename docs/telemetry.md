@@ -3,7 +3,7 @@
 Telemetry records what `af` does while it works, in a store of its own under the state root,
 never in a Task or Campaign Store. It is for the operator: where the wall time of a run went,
 what failed and why, what a Worker saw and did. The boundaries are
-[ADR-0151](adr/0151-record-telemetry-in-its-own-store-and-never-let-it-steer.md); the full
+[ADR-0153](adr/0153-record-telemetry-in-its-own-store-and-never-let-it-steer.md); the full
 direction, with the packages still to come, is the design note
 [`design/telemetry.md`](design/telemetry.md).
 
