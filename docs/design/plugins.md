@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 6 after review rounds 1 to 5 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 7 after review rounds 1 to 6 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -214,8 +214,8 @@ exactly the six invocation-owned variables (`AF_PLUGIN_PROTOCOL`, `AF_PLUGIN_NAM
 `AF_PLUGIN_DIR`, `AF_PLUGIN_STATE`, `AF_PLUGIN_CACHE`, `AF_REPO`) an enclosing invocation may
 have left, so that a plugin which leaves its repository and calls another never hands it a
 stale `AF_REPO`; `AF_REPO` is set again only from the new invocation's own working directory.
-Nothing else is removed, and `AF_PLUGIN_HOOK` in particular is inherited and never cleared
-(§3.8):
+Nothing else is removed, and `AF_PLUGIN_BACKGROUND` in particular is inherited and never
+cleared (§3.8):
 
 | Variable | Holds |
 |---|---|
@@ -228,6 +228,7 @@ Nothing else is removed, and `AF_PLUGIN_HOOK` in particular is inherited and nev
 | `AF_VERSION` | the running release |
 | `AF_REPO` | the git toplevel the command was run in, absent outside a repository |
 | `AF_DISPATCHED_FROM` | set as the browser's hand-off sets it, so the plugin's own `af` calls run this binary and never dispatch again |
+| `AF_PLUGIN_BACKGROUND` | only for a background invocation: `hook:<name>` for a hook, `pane` for a pane load; inherited by every child and never cleared, and while it is set the kernel starts no Worker (§3.8) |
 
 The plugin reads its configuration with `"$AF_BIN" config show --json`, adding
 `--repo "$AF_REPO"` only when `AF_REPO` is set, and takes `plugin.<name>`; origins come with
@@ -244,7 +245,12 @@ and an `af-<word>` on `PATH` with a reserved word is ignored and reported by `af
 
 `af --help` lists installed plugins under `Plugins:` with their summaries, read from the
 manifests at `$XDG_DATA_HOME/af/plugins/*/current/plugin.toml`; the filesystem is the record,
-as it is for `af self`, and there is no registry file. `af --help` keeps its 50 ms bound (value
+as it is for `af self`, and there is no registry file. A manifest is read the way a Task file
+is read (§3.7): a non-blocking open, a check that the opened object is a regular file, and a
+bounded read with a ceiling of 64 KiB, at install, at `--link`, and at every discovery, so a
+FIFO behind a development link or an oversized file can hang nothing. A manifest that fails
+that read or does not parse makes `af --help` list the plugin as `invalid` on one line and
+skip it; help never fails for a plugin's sake. `af --help` keeps its 50 ms bound (value
 3) with twenty plugins installed, and P1 measures it against the baseline before it ships (§5).
 `PATH` is never scanned for help.
 
@@ -269,13 +275,14 @@ protocol = 1
 min_af = "0.13.0"
 bin = "bin/af-backlog"            # canonical relative path to a regular file in the bundle
 
-# Optional. Omitted means: no hooks, no table, no storage, no pane, no packages.
+# Optional. Omitted means: no hooks, no table, no storage, no pane, no init, no packages.
 hooks = ["task.run.ended", "task.delivered"]
 hook_mode = "detached"            # or "sync"
 hook_wall_ms = 600000             # detached: default 600000, at most 3600000; sync: default 60000, at most 60000
 config = "backlog"                # the [plugin.backlog] table; machine_only = true allowed
 storage = "state"                 # none | cache | state (state implies cache)
 pane = true                       # `af backlog pane --json` exists
+init = true                       # `af backlog init --repo PATH [--apply]` exists (§3.11)
 packages = ["packages/*"]         # Worker, Pipeline and kind packages shipped for projects
 ```
 
@@ -472,7 +479,7 @@ and a resumed run never lists a Round twice. An interrupted command runs no hook
 exits as ADR-0129 requires, and the plugin sees the run next time through `af store runs`. No
 command hands its document to the hook site.
 
-A hook never runs Task work. While `AF_PLUGIN_HOOK` is set, the kernel refuses every command
+A hook never runs Task work. While `AF_PLUGIN_BACKGROUND` is set, the kernel refuses every command
 that starts Workers with the reason: `runs_task_work`'s list (`task run`, `task start
 --execute`, `review run`, bare `af review` and `provider doctor`, whose admission Attempts are
 paid Workers too, ADR-0129) extended by `self optimize --execute`, which reaches
@@ -480,20 +487,28 @@ paid Workers too, ADR-0129) extended by `self optimize --execute`, which reaches
 entry point as well as in the classification, so no command route bypasses it. A hook is
 killed at its wall with its process group while Workers live in groups of their own
 (`review-process` places them there): killing a nested `af` would leave paid Workers running
-without the kernel that settles them. `AF_PLUGIN_HOOK` is inherited by
+without the kernel that settles them. `AF_PLUGIN_BACKGROUND` is inherited by
 every process a hook starts, a plugin called through `$AF_BIN` included, and the kernel never
 clears it, so a hook cannot launder Task work through a second plugin. A plugin that starts Tasks does so from a
 foreground command of its own that owns, waits for and cancels them (§3.17, `af backlog`).
 
 The document on stdin is `af/plugin-hook@1`: `schema`, `hook`, `af_version`, `repo`, `argv`,
-`exit_code`, `occurred_unix_ms`, `target`, and the members the table names. The environment is §3.3's plus
-`AF_PLUGIN_HOOK`.
+`exit_code`, `occurred_unix_ms`, `target`, and the members the table names. The environment is §3.3's with
+`AF_PLUGIN_BACKGROUND=hook:<name>`.
+
+A hook's context is the command's, not the shell's: the repository the command resolved
+(`--repo`, or the working directory's toplevel, exactly as `task_execution::state_path`
+resolves it; a command run from repository A with `--repo /B` is B's) decides `AF_REPO`, the
+effective configuration (`enabled`, `[plugin.<name>]`), the pin of §3.13 and therefore the
+bundle that runs; the kernel resolves all of that once, before it spawns anything, and
+`hook-run` receives the result as arguments, never re-deriving it from a working directory.
 
 Hooks run after the command's result is written and flushed, after the post-command Storage
 Budget sweep, and before the update check's detached child, in plugin-name order. In both
 modes the plugin is invoked as `<bin> hook <name>`, receives the document on stdin, which is
 then closed, and is killed with its process group at `hook_wall_ms`. `detached` (the default)
-spawns `$AF_BIN plugin hook-run <name> --wall-ms N` as a child in its own process group with
+spawns `$AF_BIN plugin hook-run <name> --wall-ms N --repo PATH --bundle DIR` as a child in its
+own process group with
 stdout and stderr null and stdin a pipe, into which the kernel writes the one document (at most
 64 KiB) and closes it, never blocking on a supervisor that does not read (a write that fails or
 stalls is the hook's failure line, and the child is killed); that supervisor reads the document,
@@ -575,9 +590,14 @@ required = ["backlog", "analytics"]   # af plugin list and af onboard say what i
 `LAYOUT` gains one directory entry: `plugins/`, writer human, versioned, "plugin declarations
 and the packages they ship, one directory per plugin". A plugin keeps whatever it declares for
 a project under `.af/plugins/<name>/`, and writes there only the way `af onboard` writes:
-absent-only, previewed, never credentials, never state (ADR-0032). The kernel cannot enforce
-that on a plugin; `af plugin check` runs the plugin's `init`, when it has one, in a fixture
-repository and fails on any other write under `.af/` or any write outside it.
+absent-only, previewed, never credentials, never state (ADR-0032). A plugin that writes there
+declares `init = true` and implements one verb with `onboard`'s shape: `<bin> init --repo PATH`
+previews, writes nothing, and prints `af/plugin-init@1` (the paths under `.af/plugins/<name>/`
+it would create and their bytes); `<bin> init --repo PATH --apply` creates exactly those files,
+absent-only, refusing when any exists, within 60 seconds. The kernel cannot enforce that on a
+plugin; `af plugin check` runs the preview in a fixture repository and fails on any write, then
+the apply with only the absent destination writable, and fails on any other write under
+`.af/`, any write outside it, or a file the preview did not name.
 
 Worker, Pipeline and kind packages a plugin ships are pinned by a project exactly as the
 kernel's own are: a `path` under `.af/plugins/<name>/packages/` in `task-catalog.toml` or a
@@ -595,7 +615,9 @@ bar gets one folder `plugins/` with a child per such plugin; one generic rendere
 plugin pane, loads it on a thread like the other panes, reloads on `R`, and shows nothing a
 document does not carry; a superseded load is cancelled and its process reaped on reload, on
 closing the pane and on quit, and a malformed, oversized or timed-out document is one error
-row. An action prefills the `:` line and never submits it: the operator reads the line and
+row. A pane load runs with `AF_PLUGIN_BACKGROUND=pane`, so the refusal of §3.8 applies to it
+and to every `af` it calls: a load that is killed on timeout, reload or close can orphan no
+Worker, and loading a pane writes no Store (ADR-0119). An action prefills the `:` line and never submits it: the operator reads the line and
 presses Enter or `Esc`, exactly as the Tasks pane's `r` and `D` work (ADR-0123, Prefills). A
 document whose action carries `--confirm` is refused as malformed, so a plugin cannot reduce
 delivery's typed Task-ID confirmation to a keypress. The plugin's pane is a projection of its
@@ -656,9 +678,13 @@ authentication method from `identity`, records only the derived principal, and r
 
 `invoke`'s stdout is framed, one JSON document per line: zero or more `af/RunnerUsage@1`
 frames, each a cumulative usage observation in `TaskUsageObservationV1`'s shape, then one
-terminal `af/RunnerResult@1`. The kernel validates each frame as it arrives and keeps the last
-valid usage frame; a run that is cancelled, times out or ends with a missing or malformed
-terminal frame settles on that frame through the existing cumulative accounting. A frame that
+terminal `af/RunnerResult@1`. The kernel validates each frame as it arrives and folds it into one
+accumulator with `merge_previous` semantics (`review-core/src/task/usage.rs`): a counter never
+decreases below a floor an earlier frame set, and `charge_complete = false` once seen stays
+false, so a later complete frame cannot erase earlier uncertainty and a decreasing cumulative
+counter cannot lower the charge; a run that is cancelled, times out or ends with a missing or
+malformed terminal frame settles from that accumulator, which is what the adapter returns as
+its one `ModelWorkerReturn`. A frame that
 is present but fails validation is malformed billing, not absence, and is treated as
 `add_usage` treats a malformed native report (ADR-0088): the counters it carries unambiguously
 are retained, the observation is recorded with `charge_complete = false`, cumulative floors are
@@ -707,8 +733,15 @@ cache directories writable; the fixture kernel export (§3.6) read-only; the fix
 read-only, except that for the plugin's `init` the absent `.af/plugins/<name>/` destination
 alone is writable (§3.11); `AF_BIN` inside the container is a broker shim that sends each
 command line over a mounted FIFO to the harness, which runs the real `af` against the fixture
-Store outside and returns stdout and the exit code. The harness lives only for the check and records every brokered
-call. Denial alone proves nothing, because a plugin can swallow the error and exit 0, so the
+Store outside and returns stdout and the exit code. The harness lives only for the check, records every brokered call, and executes none without
+checking it first against a typed allowlist: the reading commands (`config show`, `task list`,
+`task show`, `review report`, `review ledger`, `review campaigns`, `store *`, `storage`,
+`plugin list`, `plugin show`, `help`, `--version`) and the one write form a plugin owns,
+`task start --file` without `--execute`, each only against the fixture's own Store and
+repository; the brokered `af` runs with the fixture's `HOME` and XDG tree, and a selector that
+escapes it (`--repo`, `--state`, `--file` outside the fixture) is rejected before execution.
+Any other command, `onboard --refresh-lock` among them, is rejected and recorded as a boundary
+violation, since the plugin's syscall trace cannot see what a host-side `af` writes. Denial alone proves nothing, because a plugin can swallow the error and exit 0, so the
 harness also audits: inside the container the plugin runs under a file-syscall tracer
 (`strace -f -e trace=%file`, the container is Linux on every host, with the ptrace capability
 the harness requests for this check only), and the trace, not the plugin's output, is the
@@ -882,6 +915,8 @@ without `AF_REPO`); `plugin_on_path_runs_as_dev_and_off_under_path_false`;
 set to a directory that would fail if read); `help_latency_with_twenty_manifests` (the protocol
 above); `reserved_names_are_refused` (the set is derived from the command and topic declarations;
 neither an installed manifest nor `PATH` can shadow a help topic); `manifest_protocol_and_min_af_are_checked_before_exec`;
+`manifest_reads_are_bounded_and_never_hang` (a 64 KiB-plus manifest and a FIFO behind a
+`--link`, each listed `invalid` by `af --help` within its bound);
 `bin_escaping_the_bundle_or_a_symlink_is_refused_at_install`;
 `plugin_table_merges_with_origins_and_machine_only_is_honoured`;
 `kernel_capture_tables_stay_machine_only_without_the_reader_plugin` (`[telemetry]` with the
@@ -891,6 +926,10 @@ reader absent, disabled and replaced by a manifest without `machine_only`);
 `layout_declares_plugins_directory_and_drift_test_passes`;
 `surface_table_matches_the_code` (every `AF_PLUGIN_*` variable in `plugins/` is in the table
 and nothing else is set); `plugin_check_verifies_the_manifest_and_each_declared_verb_within_its_bound`;
+`plugin_check_runs_init_preview_then_apply_inside_the_destination_only` (a file the preview did
+not name, a write under a neighbouring `.af/` path);
+`plugin_check_broker_rejects_commands_outside_the_allowlist` (`onboard --refresh-lock` and an
+escaping `--repo` through `AF_BIN`, recorded as violations);
 `plugin_check_boundary_records_a_direct_store_open_and_an_outside_write`;
 `plugin_check_without_a_container_reports_not_run`;
 `plugin_check_binds_its_result_to_the_bundle_digest_and_target` (a native Darwin bundle is
@@ -951,14 +990,16 @@ Acceptance: `hook_runs_after_the_result_and_changes_no_output` (stdout, `--json`
 exit code byte-identical with and without a failing hook); `interrupted_command_runs_no_hook`;
 `review_run_ended_lists_the_rounds_the_run_closed` (one for a Campaign `--heavy` invocation,
 several for a Task-file review pipeline, the published Round for a run that failed after its
-conclusion, none twice on resume); `task_work_is_refused_inside_a_hook` (every `runs_task_work` command under `AF_PLUGIN_HOOK`,
+conclusion, none twice on resume); `task_work_is_refused_inside_a_hook` (every `runs_task_work` command under `AF_PLUGIN_BACKGROUND`,
 `provider doctor` with a credential-free admission fixture and `self optimize --execute` among
 them, refused before any Attempt starts, and at `task_execution::start` itself);
 `a_hook_calling_a_second_plugin_cannot_start_task_work` (the marker survives `$AF_BIN`);
 `hook_run_receives_the_exact_document_on_a_pipe` (byte-identical transfer, malformed input, a
 supervisor that never reads); `hook_target_names_what_the_invocation_recorded` (a Task, a
 Campaign, a `review run --file` Task, and the `none` variant for a malformed Task file, an
-unknown Task ID and an unopenable Store);
+unknown Task ID and an unopenable Store); `hook_context_is_the_commands_repository` (from
+repository A and from outside Git with `--repo B`, B's configuration, pin and bundle are used
+and `AF_REPO` is B);
 `storage_sweep_hook_never_runs_at_the_free_disk_floor_or_before_a_warm_key`;
 `hooks_run_in_name_order_and_a_sync_hook_is_killed_at_its_wall`;
 `detached_hook_receives_the_document_is_killed_at_its_wall_and_is_reaped` (a plugin that never
@@ -994,7 +1035,9 @@ Acceptance: `plugin_pane_paints_only_what_the_document_carries`;
 `plugin_pane_loads_off_the_key_loop_and_a_slow_plugin_shows_the_spinner`;
 `oversized_malformed_and_timed_out_pane_documents_are_one_error_row`;
 `reload_cancels_and_reaps_the_superseded_load`;
-`pane_action_prefills_and_never_submits`; `pane_action_with_confirm_is_refused`; the existing
+`pane_action_prefills_and_never_submits`; `pane_action_with_confirm_is_refused`;
+`pane_load_cannot_start_task_work` (a pane calling `task start --execute` is refused before any
+Attempt, and its cancellation leaves no Worker); the existing
 `terminal_data_is_printable_ascii` and the TUI's timing tests unchanged.
 
 ### P7 — The runner seam
@@ -1013,7 +1056,9 @@ Acceptance: `two_providers_of_one_runner_kind_use_their_own_auth_directories`;
 all, settled at zero and marked unknown, ADR-0143; a valid frame followed by one with
 `charge_complete = false`, retaining the counters and the floor, ADR-0088; a malformed first
 frame carrying one valid counter, retained with `charge_complete = false` and the output
-refused; a valid frame then a truncated terminal frame; a valid frame then cancellation);
+refused; a valid frame then a truncated terminal frame; a valid frame then cancellation;
+decreasing cumulative counters that keep the earlier floor; `charge_complete = false` followed
+by `true` that stays incomplete);
 `runner_binding_is_captured_verified_and_never_substituted` (a second plugin declaring the
 kind is refused at install; `current` moved to other bytes refuses the Attempt; resume under a
 changed bundle is refused; replay validates the record with the plugin removed);
@@ -1074,7 +1119,7 @@ Provider kind is wanted.
   pin; the command Worker already runs a pinned program in a sandbox. Rejected.
 - **Tasks started from hooks.** A hook is killed with its process group at its wall; a Task's
   Workers are in their own groups and would outlive the kernel that settles them. Refused by
-  the kernel while `AF_PLUGIN_HOOK` is set.
+  the kernel while `AF_PLUGIN_BACKGROUND` is set.
 - **A hook on interruption.** The interrupted path exits as ADR-0129 requires; a plugin that
   must know reads `af store runs` next time. Rejected.
 - **Proving the conformance boundary with file permissions.** The plugin and its `af` child run
