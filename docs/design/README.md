@@ -43,6 +43,7 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   contributors, decisions and af activity recorded by a token-free **Surveyor** at onboarding and
   after runs, and bounded **Project Briefs** that a pipeline carries to chosen Workers on a
   declared port; all behind `af project`. Proposed 2026-10-19; package PJ1 (Project and
-  Workspace) accepted as
+  Workspace) implemented on branch `design/project` with
   [ADR-0151](../adr/0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
-  and documented in [`../project.md`](../project.md); packages PJ2–PJ5 not started.
+  and [`../project.md`](../project.md), verified by af Tasks and awaiting merge; PJ2 and the
+  design review in progress, PJ3–PJ5 not started.
