@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 24 after review rounds 1 to 23 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 25 after review rounds 1 to 24 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -205,7 +205,12 @@ listed in §3.16.
 
 A foreground invocation replaces the `af` process with the plugin's: a Unix `exec`, after the
 overlay is set and the shared locks of §3.9 are taken on descriptors without close-on-exec,
-so the locks live exactly as long as the plugin. There is no launcher left for a signal to miss:
+the release lease among them: the plugin will call `AF_BIN` for its whole life, so the
+invoking `af` takes a shared lock on `$XDG_DATA_HOME/af/leases/<version>.lock`, a stable
+file per installed release that `self remove`, `self prune` and the Storage Budget's version
+eviction take exclusively, without blocking, and skip when held (`protection` covers the
+default, the recorded pins and the sweeping binary itself today, and nothing a running plugin
+depends on); so the locks live exactly as long as the plugin. There is no launcher left for a signal to miss:
 `SIGINT` and `SIGTERM` from the terminal reach the plugin and its children directly (`af
 backlog` forwards them to its Task child, §3.17), and the shell sees the plugin's own exit
 status (128 plus the signal number for a signal). The rest of the command line are its
@@ -356,7 +361,7 @@ $XDG_CACHE_HOME/af/plugins/<name>/                          cache (§3.9)
 |---|---|
 | `af plugin install SOURCE [--version V] [--key FILE]` | installs from a release source: `owner/repo` (GitHub through `gh`, as `af self` does), a local archive, or a release-source directory in `DirSource`'s layout (the versioned per-target archives beside their `SHA256SUMS`, never an unpacked bundle, which is what `--link` is for); verifies the archive the same way whatever the source, so the receipt's digest is the digest a pin names; writes `origin.toml` (`af.plugin-origin/1`: the source and the key) on a first install, and refuses a later install from another source unless `--origin` replaces it; makes it current |
 | `af plugin install --link DIR` | a development install: `current` links the directory, no receipt, reported `dev` |
-| `af plugin remove NAME [--purge]` | removes every installed version; `--purge` also removes state and cache; refuses a version a project seen on this machine pins unless `--force` |
+| `af plugin remove NAME [--purge]` | removes every installed version; `--purge` also removes the state and cache payloads (the control directories stay, §3.9); refuses a version a project seen on this machine pins unless `--force` |
 | `af plugin list [--json]` | installed plugins with version, source and receipt; `dev` plugins on `PATH`; what the project requires and pins |
 | `af plugin show NAME [--json]` | the manifest, the receipt with both digests (§3.15), the directories and their bytes |
 | `af plugin check [DIR] [--peer DIR]...` | the conformance checks of §3.15 against a directory, before publishing; `--peer` provisions a plugin the subject calls |
@@ -665,17 +670,23 @@ with different data roots and one cache root contend on that cache's lock, and n
 directory is involved. The control directories and their lock files are created at install, at `--link` and at
 the first start of a `PATH` plugin, and no sweep removes them: the sweep evicts the `data/`
 payload beneath, never the control directory, so an open lock and its path never part. A
-start takes the shared lock, checks with `fstat` that the file it holds is still linked at
-its path (a link count above zero), retrying once and refusing otherwise, and creates `data/`
-when it is absent; a lock that cannot be taken refuses the operation with the reason rather
-than running unlocked; the hook supervisor holds them while the plugin's process group lives.
+start takes the shared lock and then checks identity, not a link count: it opens the lock
+again through its anchored path and compares device and inode with the descriptor it holds,
+retrying once and refusing when they differ (a link count alone passes a lock whose directory
+`remove_tree_at` claimed under a private name and left behind after an interrupted removal,
+while a fresh control directory and lock sit at the path), and creates `data/` when it is
+absent; a lock that cannot be taken refuses the operation with the reason rather than running
+unlocked; the hook supervisor, the pane loader and the runner adapter hold them, the release
+lease of §3.3 included, while the plugin's process group lives.
 The sweep takes the exclusive lock of the root it is about to evict, without blocking, skips
 it and says so when it cannot, re-reads the payload's identity (device and inode) and
 protection under that lock before removing it, as `campaign_in_use` guards a Campaign today,
 and releases it before any start proceeds to recreate the payload. `remove --purge` takes
-every exclusive lock, removes the payloads and the versions, and removes the control
-directories last while still holding the descriptors, so a start racing it finds an unlinked
-lock and refuses. Every start records the plugin's last use.
+every exclusive lock and removes the payloads and the versions; the control directories and
+their lock files are stable across it, as across every sweep, so the lock object at a path
+never changes identity, and a start racing the purge either waits on the exclusive lock or
+finds an empty plugin and refuses with the install command; a stale control directory costs a
+few bytes. Every start records the plugin's last use.
 
 A plugin never reads or writes another plugin's directories; composition between plugins is
 through their command lines, like everything else.
@@ -1091,10 +1102,12 @@ Call sites in existing files, the complete list: `cli.rs` (the `external_subcomm
 the `plugin` and `store` namespaces); `main.rs` (one arm each for the two namespaces, one call
 to `plugins::after_command`); `topics.rs` (one topic, rendered from the surface table);
 `layout.rs` (one entry); `config.rs` (the `[plugin.*]` passthrough, manifest-declared
-machine-only names); `project.rs` (one opaque field, one table); `storage.rs` (three kinds, `af/storage@2`, `af/storage-prune@2`);
+machine-only names); `project.rs` (one opaque field, one table); `storage.rs` (three kinds, `af/storage@2`, `af/storage-prune@2`, the release lease in version
+eviction);
 `selfmgmt.rs` (the machine-management `plugin` commands in `exempt_from_dispatch`, the stop
 at the external command name in `exempt_from_dispatch` and `repo_from_argv`, and the pre-exec
-refusal of `plugin pin` under a release that predates plugins); `lock.rs` (one table);
+refusal of `plugin pin` under a release that predates plugins, and the release lease honoured
+by `protection`, `self remove` and `self prune`); `lock.rs` (one table);
 `tui/mod.rs` (one folder, one pane); the Task-file adapter (one binding form, `af.task-file/2`, and the affinity kept in
 `DeclaredPorts`);
 `storage_sweep.rs` (the sweep record's next version with plugin kinds); `review-sandbox` (a duplex execution path with the provider's container lifecycle, for P1);
@@ -1228,7 +1241,11 @@ install, `--link`, `check` and invocation);
 `foreground_plugin_replaces_af_and_owns_its_signals` (`SIGINT`, then `SIGTERM`, sent to the
 original `af` PID while the echo fixture owns a command-backed Task started through `$AF_BIN`:
 the plugin is that PID, it cancels the child, no Worker and no descendant stays alive, and the
-lock is released; a hook and a pane load remain children);
+locks, the release lease included, are released; a hook and a pane load remain children);
+`release_lease_protects_af_bin_for_the_plugins_lifetime` (a plugin waiting under release A
+outside a pinned repository, the default switched to B, `af storage prune --apply` and
+`af self prune` run under B: A stays, the plugin's `AF_BIN` call succeeds, and A is eligible
+once the plugin exits);
 `plugin_locks_are_anchored_to_the_protected_roots` (identical roots, `XDG_RUNTIME_DIR` set
 in one process and unset in the other: a running invocation blocks a concurrent `remove`, a
 reinstall of the same version and the sweep's eviction of its aged cache; two invocations with
@@ -1236,7 +1253,9 @@ different `XDG_DATA_HOME` and one `XDG_CACHE_HOME`: the aged shared cache of the
 plugin is not evicted by the other's sweep, which skips it and says so; a `PATH` plugin gets
 its lock files at first start; a start racing the eviction and recreation of its cache
 payload keeps one lock object and recreates `data/` once; a `remove --purge` racing a start
-leaves the start refused on the unlinked lock);
+leaves the start refused on the empty plugin with the control directory intact; an
+interrupted removal that left a claimed control directory beside a recreated one, with a
+start that opened the old lock before it: the identity check refuses the old descriptor);
 `plugin_context_resolves_the_git_toplevel` (invoked from `/repo/subdir`, and with
 `--repo /repo/subdir`: the bundle, `enabled`, the configuration and `AF_REPO` are `/repo`'s,
 and no Task Store is created or registered);
