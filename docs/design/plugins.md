@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 13 after review rounds 1 to 12 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 14 after review rounds 1 to 13 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -213,7 +213,12 @@ A plugin inherits the operator's environment, so `HOME`, the XDG variables, `PAT
 exactly the six invocation-owned variables (`AF_PLUGIN_PROTOCOL`, `AF_PLUGIN_NAME`,
 `AF_PLUGIN_DIR`, `AF_PLUGIN_STATE`, `AF_PLUGIN_CACHE`, `AF_REPO`) an enclosing invocation may
 have left, so that a plugin which leaves its repository and calls another never hands it a
-stale `AF_REPO`; `AF_REPO` is set again only from the new invocation's own working directory.
+stale `AF_REPO`; `AF_REPO` is set again only from the new invocation's own resolution. That
+resolution happens once: the kernel-owned `--repo` before the plugin name, else the working
+directory's toplevel, exactly as `task_execution::state_path` resolves it; and its one result
+selects the bundle (§3.13), the `enabled` filter (§3.10), the configuration the plugin then
+reads with `--repo "$AF_REPO"` (`load_rooted` loads the repository it is handed) and `AF_REPO`
+itself, so a plugin is never selected by one repository and configured by another.
 Nothing else is removed, and `AF_PLUGIN_BACKGROUND` in particular is inherited and never
 cleared (§3.8):
 
@@ -226,7 +231,7 @@ cleared (§3.8):
 | `AF_PLUGIN_CACHE` | `$XDG_CACHE_HOME/af/plugins/<name>`, likewise for `"cache"` or `"state"` |
 | `AF_BIN` | the absolute path of the running `af`: the plugin calls this, never `af` from `PATH` (ADR-0123) |
 | `AF_VERSION` | the running release |
-| `AF_REPO` | the git toplevel the command was run in, absent outside a repository |
+| `AF_REPO` | the repository the invocation resolved: the kernel-owned `--repo` before the plugin name, else the git toplevel the command was run in; absent outside a repository when no `--repo` was given |
 | `AF_DISPATCHED_FROM` | set as the browser's hand-off sets it, so the plugin's own `af` calls run this binary and never dispatch again |
 | `AF_PLUGIN_BACKGROUND` | only for a background invocation: `hook:<name>` for a hook, `pane` for a pane load; inherited by every child and never cleared, and while it is set the kernel runs only its read-only table (§3.8, §3.12) |
 
@@ -270,7 +275,8 @@ and `repo_from_argv` scans it for `--repo`, so `af echo --help` would skip the p
 and a plugin-owned `--repo` would select another repository's release and hand that binary on
 through `AF_BIN`. Once the external command name is reached the remaining words are opaque to
 the browser; only kernel-owned selectors, `--repo` before the plugin name and `AF_VERSION`,
-choose the repository and the release. With that, `af <plugin>` inside a pinned project first
+choose the repository and the release, and the repository they choose is the one `AF_REPO`
+carries. With that, `af <plugin>` inside a pinned project first
 execs the release the lock pins, which then runs the plugin (ADR-0044). The machine-management commands `af plugin
 install|remove|list|show|check|hook-run` are exempt, like the binary-management `self`
 commands (ADR-0105); `af plugin pin` writes repository authority and dispatches like
@@ -330,7 +336,7 @@ $XDG_CACHE_HOME/af/plugins/<name>/                          cache (§3.9)
 | `af plugin remove NAME [--purge]` | removes every installed version; `--purge` also removes state and cache; refuses a version a project seen on this machine pins unless `--force` |
 | `af plugin list [--json]` | installed plugins with version, source and receipt; `dev` plugins on `PATH`; what the project requires and pins |
 | `af plugin show NAME [--json]` | the manifest, the receipt with both digests (§3.15), the directories and their bytes |
-| `af plugin check [DIR]` | the conformance checks of §3.15 against a directory, before publishing |
+| `af plugin check [DIR] [--peer DIR]...` | the conformance checks of §3.15 against a directory, before publishing; `--peer` provisions a plugin the subject calls |
 | `af plugin pin NAME [--version V]` | writes `[plugins.NAME]` with every published target's digest into `.af/af.lock` (P5) |
 
 A release is `af-<name>-<version>-<target>.tar.gz` per target, beside `SHA256SUMS` and,
@@ -846,7 +852,14 @@ commands) with its flags, each only against the fixture's own Store and reposito
 nothing that writes: the check exercises only the declared verbs (`--help`, `hook`, `pane`,
 `init`), none of which may create, plan or run a Task (§3.8), so the broker admits no
 `task start` in any form. The brokered `af` runs with the fixture's `HOME` and XDG tree, and a
-selector that escapes it (`--repo`, `--state`) is rejected before execution. Any other
+selector that escapes it (`--repo`, `--state`) is rejected before execution. A nested plugin
+call, `"$AF_BIN" <peer> ...` (§3.8, the composition §3.9 allows), never runs on the host:
+`af plugin check DIR --peer PEER_DIR` provisions each named peer bundle, a Linux bundle like
+the subject, inside the container, and when the shim's command names a provisioned peer the
+harness answers with the peer's path and overlay and the shim execs it there, under the same
+tracer, the same bounds and the inherited background marker, the peer's own `af` calls
+returning through the broker; a nested call naming a peer that is not provisioned is reported
+`not_run` with the reason, and `--require-boundary` then fails. Any other
 command, `task start --file`, `help <plugin>` and `onboard --refresh-lock` among them, is
 rejected before anything spawns and recorded as a boundary violation, since the plugin's
 syscall trace cannot see what a host-side `af` reads or writes. Denial alone proves nothing, because a plugin can swallow the error and exit 0, so the
@@ -1053,12 +1066,22 @@ not name, a write under a neighbouring `.af/` path);
 `AF_BIN` are recorded as violations; `task start --file` is refused for every invocation; `help <plugin>` is refused before the
 plugin's executable starts, proven by a fixture plugin whose help writes a file that never
 appears, through the broker and in pane mode);
+`plugin_check_runs_a_provisioned_peer_inside_the_container` (the echo fixture provisioned as
+its own peer: a hook of the subject calling the peer's `--json` read command through `$AF_BIN`
+passes, one trace covering both; the peer calling `task start --file` is refused and recorded;
+a nested call to a peer that is not provisioned reports `not_run` and fails
+`--require-boundary`);
 `config_filtering_uses_the_selected_bundles_manifest` (two installed versions whose
 `machine_only` differ: `current` governs, and an unreadable manifest fails closed; the pinned
-and override variants are P5's); `plugin_arguments_never_steer_dispatch` (a cross-release
-fixture under a pinned release that predates plugins: `af echo --help`, `af echo -V` and
-`af echo --repo /elsewhere` each dispatch to the pinned release and hand the words to the
-plugin untouched, while `af --repo /B echo` selects B);
+and override variants are P5's); `plugin_arguments_never_steer_dispatch` (under a
+plugin-capable pinned release, `af echo --help`, `af echo -V` and `af echo --repo /elsewhere`
+each dispatch to the pinned release, which hands the words to the plugin untouched);
+`a_release_predating_plugins_receives_argv_unchanged` (the cross-release fixture: `af echo
+--help` under a pinned release older than this design dispatches to that release with the
+argv unchanged, which answers with its usage error and starts no plugin);
+`kernel_owned_repo_selects_the_invocation_repository` (from repository A and from outside
+Git, `af --repo /B echo` resolves B for the bundle, `enabled`, the configuration and
+`AF_REPO`, and a stale inherited `AF_REPO` is replaced);
 `plugin_cache_is_evicted_whole_and_state_never_by_the_kernel`;
 `an_aged_running_plugin_is_not_evicted_by_a_concurrent_sweep`;
 `plugin_bytes_are_counted_from_the_first_install` (`af storage` lists the three kinds for a
