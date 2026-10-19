@@ -10,7 +10,10 @@
 //! undone `workspace new` deletes only the administrative entries whose `gitdir` names its path. `workspace new` fills its
 //! worktree without a checkout, so a configured smudge filter never runs; it refuses a path inside
 //! the checkout, another Workspace or af's state with exit 2, and every refusal leaves worktrees,
-//! refs and directories as they were. A git that outlives its deadline fails the command and
+//! refs and directories as they were. An undo deletes the worktree's directory only while its
+//! `.git` names this add's entry and the branch only at the commit it was created at, and reports
+//! each entry it leaves alone, also when its final check fails. A `--delete-worktree` whose entry
+//! cannot go says exactly that, and a rerun finishes it. A git that outlives its deadline fails the command and
 //! leaves no child. The first `af task plan --workspace <checkout>` finds the checkout it
 //! registers. No command writes inside a checkout, the Surveyor's (ADR-0152) included, and the
 //! help answers in under 50 ms.
@@ -1125,6 +1128,95 @@ fn workspace_remove_delete_worktree_compares_through_the_capture_and_runs_no_cle
 }
 
 #[test]
+fn a_delete_worktree_whose_entry_cannot_go_keeps_the_workspace_and_a_rerun_finishes_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "workspace", "new", "spike"], 0);
+    let spike = machine.root().join("fixture-wt-spike");
+    let worktrees = repo.join(".git/worktrees");
+    let entry = worktrees.join("fixture-wt-spike");
+    let remove = [
+        "project",
+        "workspace",
+        "remove",
+        "spike",
+        "--delete-worktree",
+    ];
+    let mode = |mode: u32| {
+        std::fs::set_permissions(&worktrees, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+
+    // The worktree is clean, so its directory goes; its entry cannot once `worktrees/` is
+    // read-only, and the message says exactly that.
+    mode(0o555);
+    let partial = machine.af(&repo, &remove);
+    let (_, stderr) = text(&partial);
+    assert_eq!(partial.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "removed the worktree {}; its administrative entry {} remains: Permission denied (os \
+             error 13); fix it and run the command again",
+            spike.display(),
+            entry.display()
+        )),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("nothing was changed"), "{stderr}");
+    assert!(!spike.exists());
+    assert_eq!(administrative_entries(&repo), ["fixture-wt-spike"]);
+    assert!(entry.join("gitdir").is_file());
+    let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+    assert!(labels(&listed).contains(&"spike".to_string()), "{listed}");
+
+    // Once fixed, the same command removes the entry that still names the checkout and
+    // unregisters.
+    mode(0o755);
+    let finished = machine.expect(&repo, &remove, 0);
+    assert!(finished.contains("removed Workspace spike"), "{finished}");
+    assert!(
+        finished.contains(&format!(
+            "the worktree {} was already gone; removed its administrative entry {}; its branch \
+             is kept",
+            spike.display(),
+            entry.display()
+        )),
+        "{finished}"
+    );
+    assert!(administrative_entries(&repo).is_empty());
+    assert!(!git(&repo, &["worktree", "list", "--porcelain"]).contains("fixture-wt-spike"));
+    let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+    assert_eq!(labels(&listed), ["fixture"]);
+    git(&repo, &["rev-parse", "--verify", "refs/heads/af/spike"]);
+
+    // A checkout gone without an entry naming it is unregistered and reported gone.
+    machine.expect(&repo, &["project", "workspace", "new", "gone"], 0);
+    let gone = machine.root().join("fixture-wt-gone");
+    std::fs::remove_dir_all(&gone).unwrap();
+    git(&repo, &["worktree", "prune"]);
+    let removed = machine.expect(
+        &repo,
+        &[
+            "project",
+            "workspace",
+            "remove",
+            "gone",
+            "--delete-worktree",
+        ],
+        0,
+    );
+    assert!(
+        removed.contains(&format!(
+            "the worktree {} is already gone; its branch is kept",
+            gone.display()
+        )),
+        "{removed}"
+    );
+    let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+    assert_eq!(labels(&listed), ["fixture"]);
+}
+
+#[test]
 fn workspace_new_refuses_a_path_inside_the_checkout_a_workspace_or_afs_state() {
     let machine = Machine::new();
     let repo = repository(&machine.root());
@@ -1249,6 +1341,12 @@ fn partial_worktree_git(bin: &Path, repo: &Path, then: &str) -> PathBuf {
 /// shell `creates` (with `$target`, the worktree path, and `$entry`, its administrative entry
 /// under `<gitdir>/worktrees/`) and then `then`.
 fn worktree_add_git(bin: &Path, repo: &Path, creates: &str, then: &str) -> PathBuf {
+    hooked_git(bin, repo, ":", creates, then)
+}
+
+/// [`worktree_add_git`] that first runs the shell `hook` on every command, with `$real`, the real
+/// git, and the arguments in `$*`.
+fn hooked_git(bin: &Path, repo: &Path, hook: &str, creates: &str, then: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     // Baked in by its absolute path: af's isolated git inherits only `PATH`, which names the fake.
     let real = Command::new("sh")
@@ -1263,12 +1361,12 @@ fn worktree_add_git(bin: &Path, repo: &Path, creates: &str, then: &str) -> PathB
     std::fs::write(
         &fake,
         format!(
-            "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\nprevious=\nadding=\ntarget=\nfor argument in \
-             \"$@\"; do\n  if [ \"$adding\" = after ]; then target=$argument; break; fi\n  [ \
+            "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\nreal='{real}'\n{hook}\nprevious=\nadding=\n\
+             target=\nfor argument in \"$@\"; do\n  if [ \"$adding\" = after ]; then target=$argument; break; fi\n  [ \
              \"$previous\" = worktree ] && [ \"$argument\" = add ] && adding=yes\n  [ \"$adding\" \
              = yes ] && [ \"$argument\" = -- ] && adding=after\n  previous=$argument\ndone\nif [ \
              -n \"$target\" ]; then\n  entry='{admin}'/$(basename \"$target\")\n  \
-             {creates}\n  {then}\nfi\nexec '{real}' \"$@\"\n",
+             {creates}\n  {then}\nfi\nexec \"$real\" \"$@\"\n",
             admin = admin.display(),
             real = real,
         ),
@@ -1381,10 +1479,11 @@ fn administrative_entries(repo: &Path) -> Vec<String> {
     names
 }
 
-/// What the undo says of a locked entry without a `gitdir` that it leaves where it is.
+/// What the undo says of a locked entry without a `gitdir` that it leaves where it is, the
+/// recovery line of ADR-0151 word for word.
 fn locked_left_behind(repo: &Path, name: &str) -> String {
     format!(
-        "{}: a locked entry without a gitdir, created during this add and possibly another add's",
+        "{}: a locked entry without a gitdir, created during this add and possibly another add's; delete that directory once no add is running (git worktree prune keeps a locked entry)",
         repo.join(".git/worktrees").join(name).display()
     )
 }
@@ -1566,6 +1665,212 @@ fn an_undo_leaves_and_reports_entries_another_add_may_own() {
     );
     let worktree = machine.root().join("fixture-wt-spike");
     assert_eq!(git(&worktree, &["status", "--porcelain"]), "");
+}
+
+#[test]
+fn a_failing_final_check_still_reports_each_entry_the_undo_left_alone() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "show"], 0);
+    let added = machine.root().join("added");
+    let bin = machine.root().join("bin");
+    // `worktree add` leaves a new locked entry without a `gitdir` and fails; from then on
+    // `worktree list` fails too, so the undo's final check cannot pass.
+    hooked_git(
+        &bin,
+        &repo,
+        &format!(
+            "case \" $* \" in *\" worktree list \"*) [ -e '{added}' ] && {{ echo 'fatal: the \
+             fixture refuses to list' >&2; exit 1; }};; esac",
+            added = added.display()
+        ),
+        &format!(
+            "mkdir -p \"$entry\"\n  echo initializing > \"$entry/locked\"\n  touch '{}'",
+            added.display()
+        ),
+        "exit 128",
+    );
+    let output = new_with_fake_git(&machine, &repo, &bin, "spike");
+    let (stdout, stderr) = text(&output);
+    assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains("git worktree list --porcelain: fatal: the fixture refuses to list"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&locked_left_behind(&repo, "fixture-wt-spike")),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("nothing was left behind"), "{stderr}");
+    assert!(
+        stderr.contains("deleted the branch refs/heads/af/spike"),
+        "{stderr}"
+    );
+    assert_eq!(administrative_entries(&repo), ["fixture-wt-spike"]);
+    assert!(
+        repo.join(".git/worktrees/fixture-wt-spike/locked")
+            .is_file()
+    );
+}
+
+#[test]
+fn a_destination_that_appears_after_the_checks_is_refused_and_nothing_of_it_is_deleted() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "show"], 0);
+    let store = machine
+        .projects()
+        .join(expected_project_id(&repo).trim_start_matches("sha256:"));
+    let before = repository_state(&machine, &repo);
+    let worktree = machine.root().join("fixture-wt-spike");
+    let bin = machine.root().join("bin");
+    // Another process makes the destination after the checks passed, while af creates the
+    // branch.
+    hooked_git(
+        &bin,
+        &repo,
+        &format!(
+            "case \" $* \" in *\" update-ref --stdin \"*) mkdir -p '{path}' && echo theirs > \
+             '{path}/keep.txt';; esac",
+            path = worktree.display()
+        ),
+        ":",
+        ":",
+    );
+    let output = new_with_fake_git(&machine, &repo, &bin, "spike");
+    let (stdout, stderr) = text(&output);
+    assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "{} appeared after the checks passed, so it is not this command's and nothing of it \
+             was deleted",
+            worktree.display()
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("deleted the branch refs/heads/af/spike"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("removed the worktree"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("keep.txt")).unwrap(),
+        "theirs\n"
+    );
+    assert_eq!(repository_state(&machine, &repo), before);
+    assert!(administrative_entries(&repo).is_empty());
+    assert!(!store.join("workspaces/spike").exists());
+}
+
+#[test]
+fn an_undo_keeps_a_directory_whose_git_file_names_another_adds_entry() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "show"], 0);
+    let store = machine
+        .projects()
+        .join(expected_project_id(&repo).trim_start_matches("sha256:"));
+    let before = repository_state(&machine, &repo);
+    let worktree = machine.root().join("fixture-wt-spike");
+    let entry = repo.join(".git/worktrees/fixture-wt-spike");
+    // A concurrent add of another path with the same basename made the entry, and the `.git`
+    // file in this add's directory names it.
+    let other = machine.root().join("elsewhere/fixture-wt-spike/.git");
+    let bin = machine.root().join("bin");
+    worktree_add_git(
+        &bin,
+        &repo,
+        &format!(
+            "mkdir -p \"$entry\"\n  echo initializing > \"$entry/locked\"\n  echo '{}' > \
+             \"$entry/gitdir\"\n  echo \"gitdir: $entry\" > \"$target/.git\"",
+            other.display()
+        ),
+        "exit 128",
+    );
+    let output = new_with_fake_git(&machine, &repo, &bin, "spike");
+    let (stdout, stderr) = text(&output);
+    assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "the directory {}, kept because its .git names {}, not an entry of this add; delete \
+             it once no add uses it",
+            worktree.display(),
+            entry.display()
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "{}: an entry created during this add whose gitdir names {}, another add's",
+            entry.display(),
+            other.display()
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("deleted the branch refs/heads/af/spike"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("removed the worktree"), "{stderr}");
+    assert!(!stderr.contains("nothing was left behind"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(worktree.join(".git")).unwrap(),
+        format!("gitdir: {}\n", entry.display())
+    );
+    assert_eq!(administrative_entries(&repo), ["fixture-wt-spike"]);
+    assert_eq!(repository_state(&machine, &repo).refs, before.refs);
+    assert!(!store.join("workspaces/spike").exists());
+}
+
+#[test]
+fn an_undo_keeps_a_branch_that_moved_since_the_add_created_it() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "show"], 0);
+    let store = machine
+        .projects()
+        .join(expected_project_id(&repo).trim_start_matches("sha256:"));
+    let before = repository_state(&machine, &repo);
+    let worktree = machine.root().join("fixture-wt-spike");
+    let earlier = git(&repo, &["rev-parse", "HEAD~1"]);
+    let bin = machine.root().join("bin");
+    // Someone moves the new branch while the add runs, which then fails.
+    worktree_add_git(
+        &bin,
+        &repo,
+        &format!("\"$real\" update-ref refs/heads/af/spike {earlier}"),
+        "exit 128",
+    );
+    let output = new_with_fake_git(&machine, &repo, &bin, "spike");
+    let (stdout, stderr) = text(&output);
+    assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains(&format!("removed the worktree {}", worktree.display())),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "removed {}",
+            store.join("workspaces/spike").display()
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "left behind: the branch refs/heads/af/spike moved since this add created it and is \
+             kept"
+        ),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("deleted the branch"), "{stderr}");
+    assert_eq!(git(&repo, &["rev-parse", "refs/heads/af/spike"]), earlier);
+    assert!(!worktree.exists());
+    assert!(administrative_entries(&repo).is_empty());
+    assert_eq!(
+        git(&repo, &["worktree", "list", "--porcelain"]),
+        before.worktrees
+    );
+    assert!(!store.join("workspaces/spike").exists());
 }
 
 #[test]

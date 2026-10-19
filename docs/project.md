@@ -171,28 +171,44 @@ the invoking checkout (such as `.af/research`), inside another registered Worksp
 of the repository, or inside `$XDG_STATE_HOME/af` is a usage error, exit 2; the other refusals
 exit 1. A refusal leaves no branch, worktree or directory behind, and the same command succeeds
 once its cause is gone. When a step fails after an earlier one succeeded, what was made is
-undone newest first (the registration, the worktree, the directories git created above it, the
-branch, the Workspace directory), and the message says what was undone or, when an undo fails,
-exactly what remains. The worktree counts as made from the moment `git worktree add` starts: an
-add that fails or reaches its deadline after creating the worktree's directory, its `.git` file
-or its entry under the repository's `worktrees/` is undone like every other step. The command
-notes the entries under `worktrees/` before the add; the undo deletes the worktree's directory
-and each new entry whose `gitdir` names that worktree's `.git`, directly, and reports it as
-`removed the administrative entry worktrees/<name>`. Only such an entry is provably this add's.
+undone newest first (the registration, the worktree, the directories made above it, the branch,
+the Workspace directory), and the message says what was undone or, when an undo fails, exactly
+what remains.
+
+The undo deletes only what it can prove this command made
+([ADR-0031](adr/0031-deliver-verified-tasks-to-new-local-worktrees.md)):
+
+- **The worktree's directory.** The command makes it itself, empty, and `git worktree add` adds
+  into it; it counts as made only when that `create_dir` succeeded on a path that did not exist.
+  A path that appears between the checks and the add is refused, and nothing of it is deleted.
+  The undo deletes the directory only while its `.git` is absent or is a file naming an entry
+  this add owns; otherwise it keeps the directory and reports why, such as
+  `the directory <path>, kept because its .git names <entry>, not an entry of this add; delete it once no add uses it`.
+- **The branch.** It is deleted with `git update-ref -d <ref> <oid>`, giving the commit it was
+  created at, so a branch that moved meanwhile is kept and reported as
+  `the branch refs/heads/<name> moved since this add created it and is kept`.
+- **Administrative entries.** The command notes the entries under the repository's `worktrees/`
+  before the add, so an add that fails or reaches its deadline after creating the worktree's
+  `.git` file or its entry is undone too. The undo deletes, directly, each new entry whose
+  `gitdir` names the worktree's `.git`, and reports it as
+  `removed the administrative entry worktrees/<name>`. Only such an entry is provably this add's.
+
 Git creates an entry, locked, before it writes its `gitdir`, and a concurrent `git worktree add`
-of another path with the same directory name creates one too, so a new locked entry named after
-the worktree's directory without a `gitdir` is left where it is and reported as left behind:
+of another path with the same directory name creates one too, so any other new entry named after
+the worktree's directory is left where it is and reported as left behind with exactly one of
+these lines:
 
 ```text
-left behind: /src/fixture/.git/worktrees/fixture-wt-spike: a locked entry without a gitdir,
-created during this add and possibly another add's; remove it once no add is running by
-deleting that directory, since `git worktree prune` keeps a locked entry
+<common dir>/worktrees/<name>: a locked entry without a gitdir, created during this add and possibly another add's; delete that directory once no add is running (git worktree prune keeps a locked entry)
+<common dir>/worktrees/<name>: an entry without a gitdir, created during this add and possibly another add's; run git worktree prune once no add is running
+<common dir>/worktrees/<name>: an entry created during this add whose gitdir names <that path>, another add's
 ```
 
-A new entry of that name whose `gitdir` names another path is reported and left alone too, and
-the report never says nothing was left behind while such an entry exists. The undo never runs
-`git worktree prune`, which would also remove stale entries of other worktrees, beyond what this
-command made. Entries of other worktrees are left alone.
+These lines are part of the report even when the undo's final `git worktree list --porcelain`
+check fails or git still lists the path, and the report never says nothing was left behind while
+such an entry exists. The undo never runs `git worktree prune`, which would also remove stale
+entries of other worktrees, beyond what this command made. Entries of other worktrees are left
+alone.
 
 The command makes no commit and no push, the same local-only boundary delivery keeps.
 
@@ -229,8 +245,19 @@ own `.git`. The comparison reads the commit through the same committed capture `
 fills a worktree from, against the files on disk, so no filter, hook, diff driver or other
 program the repository configures runs; it never calls `git worktree remove`, whose cleanliness
 check runs the repository's clean filters. A clean worktree is removed by deleting its directory
-and its own entry under the repository's `worktrees/`, nothing else. A dirty one is refused with
-the first differing path, and nothing changes. The branch stays either way.
+and then its own entry under the repository's `worktrees/`, nothing else; the entry goes whole or
+stays whole. When the entry cannot be removed once the directory is gone, the command fails with
+
+```text
+removed the worktree <path>; its administrative entry <common dir>/worktrees/<name> remains: <os error>; fix it and run the command again
+```
+
+and the Workspace stays registered. Run the same command again once the cause is fixed: a
+registered checkout that no longer exists has the entries whose `gitdir` still names it removed
+(a locked one is refused), is unregistered, and both are reported; without such an entry it is
+unregistered and reported as already gone. A dirty worktree is refused with the first differing
+path and nothing changes; so are an unknown checkout and the checkout the command runs in. The
+branch stays either way.
 
 ```sh
 af project workspace remove research

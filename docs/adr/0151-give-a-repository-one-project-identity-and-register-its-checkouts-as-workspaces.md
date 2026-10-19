@@ -1,6 +1,7 @@
 # ADR-0151: Give a repository one Project identity and register its checkouts as Workspaces
 
-**Status:** accepted (2026-10-19); clauses 4, 5 and 8 amended (2026-10-20) by PJ1b. Package PJ1 of the
+**Status:** accepted (2026-10-19); clauses 4, 5 and 8 amended (2026-10-20) by PJ1b, clause 5
+again (2026-10-20) by its second round. Package PJ1 of the
 [Project design note](../design/project.md). Builds on
 [ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md) (delivery makes only a local
 branch and worktree), [ADR-0032](0032-generate-review-authority-with-af-onboard.md),
@@ -103,44 +104,68 @@ directories.
    Workspace directory is absent. A `--path` at or beneath the invoking checkout's top level,
    beneath a registered Workspace or worktree of the repository, or beneath `$XDG_STATE_HOME/af`
    is a usage error (exit 2) with nothing created. A step that fails after an earlier one
-   succeeded undoes the earlier ones newest first (registration, worktree, the directories git
-   created above it, branch ref, Workspace directory) and reports what it undid, or exactly what
-   remains when an undo fails; so every refusal leaves nothing of its own behind and the same
-   command succeeds once its cause is gone. The worktree is recorded as made before `git
-   worktree add` runs, with the names under `<common dir>/worktrees/` noted then, so an add that
-   fails or reaches its deadline after creating the worktree's directory, its `.git` file or its
-   administrative entry is undone too. The undo deletes the worktree's directory when it exists
-   and only the new administrative entries positively attributable to this add: an entry is this
-   add's only when its `gitdir` names `<path>/.git`. Each is deleted directly and reported as
-   `removed the administrative entry worktrees/<name>`, or as remaining while git still lists
-   the path or such an entry survives. Git creates an entry, locked, before it writes the entry's
-   `gitdir`, and a concurrent `git worktree add` of another path with the same basename creates
-   one too, so a new locked entry named after the path (its basename, alone or followed by
-   digits) without a `gitdir` is never deleted: the undo reports it as left behind
-   (`<common dir>/worktrees/<name>: a locked entry without a gitdir, created during this add and
-   possibly another add's`, and how to remove it once no add is running), as it reports a new
-   entry of that name whose `gitdir` names another path, and never says nothing was left behind
-   while such an entry exists. `git worktree prune` never runs during an undo: it would also
-   remove stale entries of other worktrees, beyond this add's ownership (ADR-0031). Since prune
-   keeps a locked entry, the report tells the operator to delete such a directory once no add is
-   running; an unlocked one without a `gitdir` prune does remove. The final `git worktree list
-   --porcelain` check stays: the path must no longer be listed. A step of which nothing exists
-   is not reported. It makes no commit and no push. `workspace add PATH` adopts an existing
-   checkout of the same Project, refusing one of another Project with both IDs. `workspace
-   remove LABEL` unregisters; it never removes a Store, and when the Store holds a Task that is
-   not collected it says so and names `af task gc`. `--delete-worktree` never runs `git worktree
-   remove`, whose cleanliness check hashes the worktree's files through the repository's clean
-   filters (ADR-0001). It removes only a linked worktree that is not locked and whose `.git`
-   file names an entry under `<common dir>/worktrees/` whose `gitdir` names the worktree. The
-   worktree is clean when its files equal its `HEAD` commit's tree in content and mode, compared
-   through the committed capture `workspace new` materializes from (`review_source_git`)
-   against the files on disk, any file the tree lacks, ignored or not, other than git's own
-   `.git` making it dirty; no filter, hook, diff driver or other program the repository
-   configures runs, and every git call runs under the supervision below. A clean worktree is
-   removed by deleting its directory and then that worktree's own administrative entry, nothing
-   else; its branch is kept. A dirty one is refused with the first differing path, and nothing
-   changes. Exit codes are 0, 1
-   (with `af/error@1` under `--json` and the next action in the message) and 2 for usage. Every
+   succeeded undoes the earlier ones newest first (registration, worktree, the directories made
+   above it, branch ref, Workspace directory) and reports what it undid, or exactly what remains
+   when an undo fails; so every refusal leaves nothing of its own behind and the same command
+   succeeds once its cause is gone. Every deletion of an undo rests on ownership evidence
+   (ADR-0031), by three rules. First, the destination directory is recorded as made only when
+   this command's own `create_dir` succeeded on a path that did not exist, and `git worktree add`
+   then adds into that empty directory; a path that appears between the checks and the add is a
+   refusal with nothing of it deleted. Second, the undo deletes that directory only when
+   `<path>/.git` is absent or is a file naming an entry this add owns (one whose `gitdir` names
+   `<path>/.git`); otherwise it keeps the directory and reports it as left behind with its reason, such as
+   `the directory <path>, kept because its .git names <entry>, not an entry of this add; delete it once no add uses it`. Third, the branch this add created is deleted with
+   `git update-ref -d <ref> <oid>`, giving the OID it was created at, so a branch that moved
+   meanwhile is kept and reported as
+   `the branch refs/heads/<name> moved since this add created it and is kept`. The
+   worktree is recorded as made before `git worktree add` runs, with the names under `<common
+   dir>/worktrees/` noted then, so an add that fails or reaches its deadline after creating the
+   worktree's `.git` file or its administrative entry is undone too. The undo deletes only the
+   new administrative entries positively attributable to this add: an entry is this add's only
+   when its `gitdir` names `<path>/.git`. Each is deleted directly and reported as `removed the
+   administrative entry worktrees/<name>`, or as remaining while git still lists the path or such
+   an entry survives. Git creates an entry, locked, before it writes the entry's `gitdir`, and a
+   concurrent `git worktree add` of another path with the same basename creates one too, so a new
+   entry named after the path (its basename, alone or followed by digits) that is not this add's
+   is never deleted. The undo reports each such entry as left behind with exactly one of these
+   recovery lines:
+
+   - `<common dir>/worktrees/<name>: a locked entry without a gitdir, created during this add and possibly another add's; delete that directory once no add is running (git worktree prune keeps a locked entry)`
+   - `<common dir>/worktrees/<name>: an entry without a gitdir, created during this add and possibly another add's; run git worktree prune once no add is running`
+   - `<common dir>/worktrees/<name>: an entry created during this add whose gitdir names <that path>, another add's`
+
+   These reports belong to the undo's report whether the worktree's undo succeeds or fails, also
+   when the final `git worktree list --porcelain` check fails or git still lists the path, so the
+   operator always sees each surviving entry's path and its recovery line; the report never says
+   nothing was left behind while such an entry exists. `git worktree prune` never runs during an
+   undo: it would also remove stale entries of other worktrees, beyond this add's ownership
+   (ADR-0031). The final `git worktree list --porcelain` check stays: the path must no longer be
+   listed. A step of which nothing exists is not reported. It makes no commit and no push.
+
+   `workspace add PATH` adopts an existing checkout of the same Project, refusing one of another
+   Project with both IDs. `workspace remove LABEL` unregisters; it never removes a Store, and
+   when the Store holds a Task that is not collected it says so and names `af task gc`.
+   `--delete-worktree` never runs `git worktree remove`, whose cleanliness check hashes the
+   worktree's files through the repository's clean filters (ADR-0001). It removes only a linked
+   worktree that is not locked and whose `.git` file names an entry under `<common
+   dir>/worktrees/` whose `gitdir` names the worktree. The worktree is clean when its files equal
+   its `HEAD` commit's tree in content and mode, compared through the committed capture
+   `workspace new` materializes from (`review_source_git`) against the files on disk, any file the
+   tree lacks, ignored or not, other than git's own `.git` making it dirty; no filter, hook, diff
+   driver or other program the repository configures runs, and every git call runs under the
+   supervision below. A clean worktree is removed by deleting its directory and then that
+   worktree's own administrative entry, nothing else; its branch is kept. The entry is renamed
+   beside itself before it is deleted, so it goes whole or stays whole. When the entry cannot be
+   removed once the directory is gone, the command fails with
+
+   `removed the worktree <path>; its administrative entry <common dir>/worktrees/<name> remains: <os error>; fix it and run the command again`
+
+   and the Workspace stays registered. A rerun whose registered checkout path no
+   longer exists removes each entry whose `gitdir` names `<path>/.git` (refusing a locked one),
+   unregisters and reports both; without such an entry it unregisters and says the checkout is
+   already gone. Only a refusal that changed nothing says "nothing was changed": a dirty worktree,
+   refused with the first differing path, an unknown checkout, and the running checkout. Exit
+   codes are 0, 1 (with `af/error@1` under `--json` and the next action in the message) and 2 for usage. Every
    git process of the Project modules runs through `review_process` with a deadline (30 s for
    plumbing, capture's own for a committed capture) that stops its whole process group, in
    delivery's isolated command: a cleared environment, a private `HOME`, no user or system
@@ -200,13 +225,20 @@ directories.
   another path, one without a `gitdir`), after which the operator's `git worktree prune` and the
   same label succeed; removes a clean worktree and its administrative entry with
   `--delete-worktree` and refuses a changed, re-moded or untracked file untouched, while a clean
-  filter the repository configures never runs; fails within the deadline, leaving no child,
+  filter the repository configures never runs; with a read-only `worktrees/`, reports a
+  `--delete-worktree` that removed the directory but not the entry with the exact message, keeps
+  the Workspace, and finishes it on the rerun once the permission is back, and unregisters a
+  checkout already gone; reports the locked entry with its recovery line when the undo's final
+  `git worktree list` fails; refuses a destination that appears after the checks with nothing of
+  it deleted; keeps and reports a directory whose `.git` file names another add's entry, and a
+  branch that moved during the add, undoing the rest; fails within the deadline, leaving no child,
   when a fake `git` sleeps; succeeds on the first `af task plan --workspace <checkout directory
   name>`; and keeps `git status --porcelain --ignored` empty and the checkout's files unchanged
   after every `af project` command and `af task plan --workspace`. Unit tests undo every kind of
   step in reverse order, including a partial worktree whose entry a stopped add left locked,
-  delete only the entry whose `gitdir` names the path, report a locked entry without one and
-  never prune; test which administrative entries belong to an add; give the stated automatic
+  delete only the entry whose `gitdir` names the path, report a locked and an unlocked entry
+  without one with their exact recovery lines, keep and report a branch that moved, and never
+  prune; test which administrative entries belong to an add; give the stated automatic
   label for `repo.v2`, a name with spaces, a Unicode name, a leading-punctuation name, a 200-byte
   name and a collision with an explicit label, none over 128 bytes; refuse a version-1
   `stores.toml` with its recovery and write version 2, keeping every entry and kind; and find no
