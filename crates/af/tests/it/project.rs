@@ -1116,12 +1116,15 @@ fn a_git_that_outlives_its_deadline_fails_the_command_and_leaves_no_child() {
     std::fs::write(
         &fake,
         format!(
-            "#!/bin/sh\nsleep 120 &\necho $$ $! >> '{}'\nwait\n",
+            "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\nsleep 120 &\necho $$ $! >> '{}'\nwait\n",
             pids.display()
         ),
     )
     .unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The first exec of a script just written can take as long as the deadline (macOS scans it),
+    // so the fake could be stopped before it records its processes: start it once beforehand.
+    assert!(Command::new(&fake).arg("warm").status().unwrap().success());
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -1134,14 +1137,14 @@ fn a_git_that_outlives_its_deadline_fails_the_command_and_leaves_no_child() {
         .env("AF_SELF_OFFLINE", "1")
         .env("NO_COLOR", "1")
         .env("PATH", path)
-        .env("AF_TEST_PROJECT_GIT_DEADLINE_MS", "500")
+        .env("AF_TEST_PROJECT_GIT_DEADLINE_MS", "2000")
         .args(["project", "show"])
         .output()
         .unwrap();
     let elapsed = started.elapsed();
     let (stdout, stderr) = text(&output);
     assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
-    assert!(stderr.contains("deadline of 500ms"), "{stderr}");
+    assert!(stderr.contains("deadline of 2s"), "{stderr}");
     // The fake git holds for two minutes; only the deadline ends the command sooner. The bound
     // leaves room for a loaded machine's first launch of a freshly linked `af`.
     assert!(
