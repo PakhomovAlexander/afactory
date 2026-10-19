@@ -1,6 +1,6 @@
 # Plugins: every feature that is not the kernel, as an executable af finds, runs and pins
 
-**Status:** proposed 2026-10-19; revision 11 after review rounds 1 to 10 (Codex gpt-6-astra, xhigh).
+**Status:** proposed 2026-10-19; revision 12 after review rounds 1 to 11 (Codex gpt-6-astra, xhigh).
 **Baseline:** kernel `main` bf027de6 (v0.12.0-rc.4).
 **Vocabulary:** [`CONTEXT.md`](../../CONTEXT.md). **Values:** [`../values.md`](../values.md).
 This note is direction, not shipped behaviour; where it and an accepted ADR disagree, the ADR
@@ -232,8 +232,13 @@ cleared (§3.8):
 
 The plugin reads its configuration with `"$AF_BIN" config show --json`, adding
 `--repo "$AF_REPO"` only when `AF_REPO` is set, and takes `plugin.<name>`; origins come with
-`--origin`. The kernel passes no configuration itself,
-so a plugin's keys are its own and `af config show` prints them like every other table.
+`--origin`. The kernel passes no configuration itself, so a plugin's keys are its own and
+`af config show` prints them like every other table. The manifest that governs a plugin's
+table (`machine_only`, §3.10) is the one in the bundle the selection rule of §3.13 picks for
+the repository in question, the pin first, then `AF_PLUGIN_VERSION_<NAME>`, then `current`;
+`config show` applies the same selection for the repository it is run for, reads that manifest
+with the bounded read, and fails closed, treating the table as machine-only, when it cannot be
+read, so one invocation never sees values another version's manifest would have filtered.
 
 Names are two to thirty-two characters: a letter first, then alphanumeric segments joined
 by single hyphens, no hyphen at either end and none doubled (`[a-z][a-z0-9]*(-[a-z0-9]+)*`),
@@ -491,15 +496,18 @@ and a resumed run never lists a Round twice. An interrupted command runs no hook
 exits as ADR-0129 requires, and the plugin sees the run next time through `af store runs`. No
 command hands its document to the hook site.
 
-A hook never runs Task work. While `AF_PLUGIN_BACKGROUND` is set, the kernel refuses every command
-that starts Workers with the reason: `runs_task_work`'s list (`task run`, `task start
---execute`, `review run`, bare `af review` and `provider doctor`, whose admission Attempts are
-paid Workers too, ADR-0129) extended by `self optimize --execute`, which reaches
-`task_execution::start` by its own route today; and the refusal is applied at that shared
-entry point as well as in the classification, so no command route bypasses it. A hook is
-killed at its wall with its process group while Workers live in groups of their own
-(`review-process` places them there): killing a nested `af` would leave paid Workers running
-without the kernel that settles them. `AF_PLUGIN_BACKGROUND` is inherited by
+A hook never runs Task work, and never creates or plans a Task. While `AF_PLUGIN_BACKGROUND`
+is set, the kernel refuses with the reason every command that starts a Worker (`runs_task_work`'s
+list: `task run`, `task start --execute`, `review run`, bare `af review` and `provider doctor`,
+whose admission Attempts are paid Workers too, ADR-0129; extended by `self optimize --execute`)
+and every command that creates or plans a Task (`task start` in any form, `task plan`, `review
+plan --file`, `self optimize`), at the shared entry point `task_execution::start` before source
+capture as well as in the classification, so no command route bypasses it. The reason is one:
+a hook is killed at its wall with its process group, while everything the kernel supervises
+through `review-process` lives in a group of its own, Workers and the Git capture `start_kind`
+runs first among them; killing a nested `af` would leave them running without the kernel that
+settles or reaps them. The admission of planning from a background invocation waits for a
+nested cancellation that can stop and reap those children. `AF_PLUGIN_BACKGROUND` is inherited by
 every process a hook starts, a plugin called through `$AF_BIN` included, and the kernel never
 clears it, so a hook cannot launder Task work through a second plugin. A plugin that starts Tasks does so from a
 foreground command of its own that owns, waits for and cancels them (§3.17, `af backlog`).
@@ -638,8 +646,9 @@ row. A pane load runs with `AF_PLUGIN_BACKGROUND=pane`, and in that mode the ker
 the commands of its declared read-only table (`READ_ONLY_COMMANDS` in `main.rs`, beside
 `runs_task_work`: `config show`, `task list|show|report|explain`, `review
 report|ledger|show|campaigns`, `store *`, `storage` without `prune --apply`, `plugin
-list|show`, `help`, `--version`), each entry a predicate over the parsed command and its
-flags, not a name: `review plan` is outside the table because it starts a review Task through
+list|show`, `help` when it resolves to a kernel topic or a kernel command, `--version`), each
+entry a predicate over the parsed command and its flags, not a name: `help <plugin>` runs the
+plugin's own executable (§3.3) and is refused before anything spawns; `review plan` is outside the table because it starts a review Task through
 `start_review` with `--file` and probes Providers without it, `storage prune --apply` is
 outside because it writes, and `provider status` and `provider models` are outside because
 they start Provider processes in groups of their own (`run_probe_before`, `claude_catalog`)
@@ -771,10 +780,18 @@ contract of its own and is not in v1.
 
 A bundle has two digests. The archive digest is the SHA-256 of the release archive, what
 `SHA256SUMS` lists and a pin names per target (§3.13), and an unpacked directory cannot
-recover it. The content digest (`af.plugin-digest/1`) is the SHA-256 of a canonical manifest
-of the unpacked bundle: its sorted canonical relative paths, each with its executable bit and
-the SHA-256 of its content, `receipt.toml` excluded and a symlink refused; two archives with
-different bytes and the same files have the same content digest. Install records both in the
+recover it. The content digest (`af.plugin-digest/1`) is execution authority (§3.14), so its
+bytes are frozen: the manifest is a JSON array of entries `[path, mode, sha256]`, one per
+regular file in the unpacked bundle, where `path` is the relative path with `/` separators,
+UTF-8 in NFC, no `.` or `..` component, `mode` is `"x"` when the owner's executable bit is set
+and `"-"` otherwise, and `sha256` is the lower-case hex SHA-256 of the file's bytes; entries
+are sorted by the bytes of `path`; directories are not entries and an empty one is ignored;
+`receipt.toml` is excluded; a symlink, FIFO, device or other non-regular entry is refused. The
+array is serialized as canonical JSON (the kernel's own rules, no whitespace, sorted keys
+being moot for arrays) and the digest is the SHA-256 of the bytes `af.plugin-digest/1\n`
+followed by that serialization; fixed expected-digest fixtures pin path escaping, a Unicode
+path, an executable-bit change, and two archives with different bytes and the same files,
+which share one content digest. Install records both in the
 receipt; `af plugin check` prints the content digest and the target, and a conformance result
 is bound to that pair; the runner binding of §3.14 names the content digest. The boundary check runs the bundle inside a Linux container, so it checks a bundle
 the container can execute: a Linux target matching the container's architecture, or a bundle
@@ -797,21 +814,15 @@ supervised through `review-process`), runs the real `af` against the fixture Sto
 answers with stdout and the exit code. A mounted FIFO would not do: on macOS the container is
 a separate Linux virtual machine and a FIFO's endpoints do not cross that boundary. The harness lives only for the check, records every brokered call, and executes none without
 checking it first against a typed allowlist: the kernel's declared read-only table (§3.12,
-`task report` and `task explain` among its entries) with its flags, and, for a command or hook
-invocation but never a pane load, the one write form a plugin owns, `task start --file`
-without `--execute`, each only against the fixture's own Store and repository; the brokered `af` runs with the fixture's `HOME` and XDG tree, and a selector that
-escapes it (`--repo`, `--state`, `--file` outside the fixture) is rejected before execution.
-A brokered `task start --file` admits no `--source-bindings` and no Task file whose `issue`
-selector names a Jira source (`capture_selected` would read the bindings' `token_file` on the
-host, outside the fixture and the trace, and start a network process), only credential-free
-local issue fixtures; it is executed only after staging: the harness reads the Task
-file, resolves every `inputs.<port>.file` it names beneath the fixture roots without following
-a symlink out of them, copies the admitted bytes into a host-private immutable staging
-directory, rewrites the Task file to name the staged copies, and runs the staged request; a
-reference outside the roots, or a symlink that leaves them, is rejected before capture and
-recorded, since the container's trace sees no host-side read.
-Any other command, `onboard --refresh-lock` among them, is rejected and recorded as a boundary
-violation, since the plugin's syscall trace cannot see what a host-side `af` writes. Denial alone proves nothing, because a plugin can swallow the error and exit 0, so the
+`task report` and `task explain` among its entries, `help` only for kernel topics and
+commands) with its flags, each only against the fixture's own Store and repository, and
+nothing that writes: the check exercises only the declared verbs (`--help`, `hook`, `pane`,
+`init`), none of which may create, plan or run a Task (§3.8), so the broker admits no
+`task start` in any form. The brokered `af` runs with the fixture's `HOME` and XDG tree, and a
+selector that escapes it (`--repo`, `--state`) is rejected before execution. Any other
+command, `task start --file`, `help <plugin>` and `onboard --refresh-lock` among them, is
+rejected before anything spawns and recorded as a boundary violation, since the plugin's
+syscall trace cannot see what a host-side `af` reads or writes. Denial alone proves nothing, because a plugin can swallow the error and exit 0, so the
 harness also audits: inside the container the plugin runs under a file-syscall tracer
 (`strace -f -e trace=%file`, the container is Linux on every host, with the ptrace capability
 the harness requests for this check only), and the trace, not the plugin's output, is the
@@ -1005,8 +1016,12 @@ and nothing else is set); `plugin_check_verifies_the_manifest_and_each_declared_
 not name, a write under a neighbouring `.af/` path);
 `plugin_check_broker_admits_every_declared_reader_and_rejects_the_rest` (`task report` and
 `task explain` pass, `af store` coverage joins in P2; `onboard --refresh-lock`, `task plan`, and an escaping `--repo` through
-`AF_BIN` are recorded as violations; `task start --file` passes for a command and is refused for
-a pane load);
+`AF_BIN` are recorded as violations; `task start --file` is refused for every invocation; `help <plugin>` is refused before the
+plugin's executable starts, proven by a fixture plugin whose help writes a file that never
+appears, through the broker and in pane mode);
+`config_filtering_uses_the_selected_bundles_manifest` (two installed versions whose
+`machine_only` differ: the pinned one governs under a pin, the override under
+`AF_PLUGIN_VERSION_<NAME>`, `current` otherwise; an unreadable manifest fails closed);
 `read_only_table_matches_the_code` (every command in the table opens no Store for writing;
 `review plan --file` and `storage prune --apply` are outside it, and a refused `review plan
 --file` under `pane` creates no Task and no CAS object; `review show` reads through
@@ -1018,8 +1033,8 @@ archive's pin digest);
 `plugin_check_without_a_container_reports_not_run`;
 `plugin_check_binds_its_result_to_the_content_digest_and_target` (a native Darwin bundle is
 `not_run`, `--target` checks the Linux bundle and claims nothing for the other; two archives
-with different bytes and identical files share one content digest, and the receipt records
-both digests); `broker_round_trip_from_a_macos_host_into_the_linux_container` (a brokered
+with different bytes and identical files share one content digest, the fixed expected-digest
+fixtures of §3.15 hold, and the receipt records both digests); `broker_round_trip_from_a_macos_host_into_the_linux_container` (a brokered
 `config show` answered through the relay's stdio; a provider that cannot attach stdio reports
 `not_run` and fails `--require-boundary`).
 
@@ -1068,11 +1083,9 @@ cross-port constraint, two consuming Workers);
 at load); `refused_ports_stay_refused` (`requirements`, `base`, `continuation`);
 `file_bound_many_same_as_and_derived_from_ports_are_refused_by_name` (declared with
 `PortAffinityV1`); `file_with_an_array_or_scalar_top_level_is_refused_before_publication`;
-`plugin_check_broker_stages_task_files_and_rejects_outside_inputs` (a permitted Task file
-binding a JSON file outside the fixture roots, and a symlink variant, both rejected before
-capture; `--source-bindings` with an in-fixture bindings file naming an outside sentinel
-`token_file`, rejected before any host read or network process, the sentinel unread);
-`file_binding_requires_an_absolute_path_and_a_regular_file` (a relative path, an oversized
+`plugin_check_broker_rejects_task_creation` (a brokered `task start --file`, with and without
+`--execute`, whose Task file binds an outside sentinel file: rejected before any host read, the
+sentinel unread); `file_binding_requires_an_absolute_path_and_a_regular_file` (a relative path, an oversized
 file at the 8 MiB raw ceiling, a FIFO and a symlink to a FIFO, none of which blocks planning);
 `file_bound_envelope_over_8mib_is_refused_before_publication` (payload plus envelope overhead
 at the bound); `file_bound_static_request_over_1mib_is_refused_at_plan_time`;
@@ -1095,6 +1108,9 @@ conclusion, none twice on resume; each entry `{ round, sequence }` matching the 
 closure events, for a Campaign target and for a `review run --file` Task target); `task_work_is_refused_inside_a_hook` (every `runs_task_work` command under `AF_PLUGIN_BACKGROUND`,
 `provider doctor` with a credential-free admission fixture and `self optimize --execute` among
 them, refused before any Attempt starts, and at `task_execution::start` itself);
+`task_creation_is_refused_inside_a_hook_before_capture` (`task start --file` without
+`--execute`, `task plan` and `review plan --file` refused before source capture; a hanging-Git
+fixture under a hook timeout leaves no nested process alive);
 `a_hook_calling_a_second_plugin_cannot_start_task_work` (the marker survives `$AF_BIN`);
 `hook_run_receives_the_exact_document_on_a_pipe` (byte-identical transfer, malformed input, a
 supervisor that never reads); `hook_target_names_what_the_invocation_recorded` (a Task, a
