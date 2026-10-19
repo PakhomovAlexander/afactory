@@ -57,8 +57,11 @@ remain are repository roles and deploy keys.
 - No workflow but the `pin` job reads `PIN_DEPLOY_KEY`. GitHub withholds secrets from workflows
   run for pull requests from forks, and `pr-report.yml`, which runs as the base branch under
   `pull_request_target`, does not reference it.
-- If the key or the secret is removed, the job's push fails and `scripts/pin-release.sh` says to
-  pin by hand: run it without `--push` and open a pull request, as ADR-0138 already allows. To
-  rotate the key, replace the deploy key and the secret together.
+- If the deploy key is removed while the secret still holds it, the job's checkout fails on SSH
+  authentication before `scripts/pin-release.sh` runs, and nothing is pushed. If the secret is
+  removed, the checkout falls back to the job's read-only token, `main` refuses the push, and the
+  script says to pin by hand. Either way, pin by hand: run the script without `--push` and open a
+  pull request, as ADR-0138 already allows. To rotate the key, replace the deploy key and the
+  secret together.
 - The ruleset lives in repository settings, not in the tree. A change to its target, rules or
   bypass list is recorded by a new ADR, as this one records the first.
