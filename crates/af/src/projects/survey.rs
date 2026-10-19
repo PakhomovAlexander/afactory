@@ -9,11 +9,13 @@
 //! through the supervised plumbing of `projects/git.rs`, runs no hook or project code and writes
 //! nothing inside the checkout.
 //!
-//! It runs synchronously at `af onboard --apply` and on `af project refresh`. A head whose
-//! commit, policy digest and Surveyor version equal the newest Survey's is not surveyed again:
-//! nothing past `rev-parse HEAD`, the policy and the log is read, and nothing is recorded.
+//! It runs synchronously at `af onboard --apply` and on `af project refresh`. A complete newest
+//! Survey is reused while its survey key is unchanged: the head commit, the digest of the refs
+//! (`refs/heads` and `refs/tags`, names and targets), the policy digest and the Surveyor version.
+//! Then nothing past `rev-parse HEAD`, `for-each-ref`, the policy and the log is read, and
+//! nothing is recorded; a `partial` or `unavailable` newest Survey is measured again, and
+//! `--force` records regardless of the key.
 
-mod glob;
 mod measure;
 pub(crate) mod policy;
 #[cfg(test)]
@@ -35,8 +37,9 @@ use policy::Policy;
 use super::{Checkout, Git, Log, ProjectStore};
 
 /// The Surveyor's measurement rules. Bumped whenever a rule changes, so a head measured under
-/// the old rules is surveyed again.
-pub(crate) const SURVEYOR_VERSION: u64 = 1;
+/// the old rules is surveyed again. 2: the survey key's refs, the fixed maxima, one pattern
+/// grammar, the stated measurement policy and the agent-assisted partition.
+pub(crate) const SURVEYOR_VERSION: u64 = 2;
 
 /// A debug build's fixture may fix the cutoff, so a fixture repository's Survey is
 /// byte-identical across runs. Release binaries never read it.
@@ -105,8 +108,45 @@ pub(crate) struct Recorded {
 #[derive(Debug)]
 pub(crate) enum Refreshed {
     Recorded(Recorded),
-    /// The newest Survey already measured this head under this policy and Surveyor.
+    /// The newest Survey is complete and its survey key is the current one.
     Unchanged(Recorded),
+}
+
+/// The survey key: what a complete Survey is reused for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Key {
+    head: String,
+    refs_digest: String,
+    policy_digest: String,
+    surveyor_version: u64,
+}
+
+impl Key {
+    /// Whether `recorded` is complete and was measured under this key.
+    fn reuses(&self, recorded: &SurveyRecordedPayloadV1) -> bool {
+        recorded.completeness == SurveyCompletenessV1::Complete
+            && recorded.head == self.head
+            && recorded.refs_digest == self.refs_digest
+            && recorded.policy_digest == self.policy_digest
+            && recorded.surveyor_version.get() == self.surveyor_version
+    }
+}
+
+/// The 16 hex digits after `sha256:` of a digest.
+fn hex16(digest: &str) -> &str {
+    let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
+    &hex[..hex.len().min(16)]
+}
+
+/// One line naming the survey key a reused Survey was measured under.
+pub(crate) fn unchanged_line(recorded: &SurveyRecordedPayloadV1) -> String {
+    format!(
+        "unchanged: head {}, refs {}, policy {}, surveyor {}",
+        short(&recorded.head),
+        hex16(&recorded.refs_digest),
+        hex16(&recorded.policy_digest),
+        recorded.surveyor_version.get()
+    )
 }
 
 /// What the log records about Surveys, in order.
@@ -165,8 +205,11 @@ impl ProjectStore {
         })
     }
 
-    fn record_survey(&mut self, survey: &ProjectSurveyV1) -> Result<Recorded, String> {
-        let bytes = record_bytes(survey)?;
+    fn record_survey(
+        &mut self,
+        survey: &ProjectSurveyV1,
+        bytes: Vec<u8>,
+    ) -> Result<Recorded, String> {
         let survey_id = self.cas.put(&bytes).map_err(|error| error.to_string())?;
         let identity = survey
             .identity
@@ -180,6 +223,7 @@ impl ProjectStore {
             completeness: survey.completeness,
             policy_digest: identity.policy_digest.clone(),
             surveyor_version: identity.surveyor_version,
+            refs_digest: identity.refs_digest.clone(),
             previous_survey_id: survey.previous_survey_id.clone(),
             recorded_unix_ms: crate::storage::now_unix_ms().into(),
         };
@@ -239,8 +283,7 @@ fn public_reason(reason: &str) -> String {
 }
 
 /// The head commit of the checkout.
-fn head(checkout: &Checkout) -> Result<String, String> {
-    let git = Git::open(&checkout.toplevel)?;
+fn head(git: &Git) -> Result<String, String> {
     git.require(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], None)
 }
 
@@ -252,17 +295,13 @@ fn open(checkout: &Checkout) -> Result<ProjectStore, String> {
     Ok(store)
 }
 
-/// Whether `recorded` already measured `head` under `policy_digest` and this Surveyor.
-fn unchanged(recorded: &SurveyRecordedPayloadV1, head: &str, policy_digest: &str) -> bool {
-    recorded.head == head
-        && recorded.policy_digest == policy_digest
-        && recorded.surveyor_version.get() == SURVEYOR_VERSION
-}
-
-/// Record a Survey of the checkout's head now, synchronously, unless the newest Survey already
-/// measured it. A Survey that cannot be taken records `SurveyFailed@1` and is the error.
-pub(crate) fn refresh(checkout: &Checkout) -> Result<Refreshed, String> {
-    let head = head(checkout)?;
+/// Record a Survey of the checkout's head now, synchronously, unless the newest Survey is
+/// complete under the current survey key and `force` is not asked. A Survey that cannot be
+/// taken, or whose record is over `max_survey_bytes`, records `SurveyFailed@1` and is the error.
+pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, String> {
+    let git = Git::open(&checkout.toplevel)?;
+    let head = head(&git)?;
+    let refs_digest = measure::refs_digest(&git)?;
     let policy = Policy::load(&checkout.toplevel);
     let mut store = open(checkout)?;
     let policy = match policy {
@@ -274,25 +313,41 @@ pub(crate) fn refresh(checkout: &Checkout) -> Result<Refreshed, String> {
             ));
         }
     };
-    let policy_digest = policy.digest()?;
-    if let Some(newest) = store.log()?.newest_survey()
-        && unchanged(newest, &head, &policy_digest)
+    let key = Key {
+        head: head.clone(),
+        refs_digest: refs_digest.clone(),
+        policy_digest: policy.digest()?,
+        surveyor_version: SURVEYOR_VERSION,
+    };
+    if !force
+        && let Some(newest) = store.log()?.newest_survey()
+        && key.reuses(newest)
     {
         return Ok(Refreshed::Unchanged(store.survey(newest)?));
     }
     // The Store is not held while the head is measured.
     drop(store);
     let started = Instant::now();
+    let git_version = match git.require(["--version"], None) {
+        Ok(version) => version,
+        Err(detail) => {
+            let reason = "git --version failed; run `af project refresh` again";
+            open(checkout)?.record_failure(&head, reason)?;
+            return Err(format!("{reason}: {detail}"));
+        }
+    };
     let basis = measure::Basis {
         project_id: &checkout.project_id,
         repository_id: &checkout.repository_id,
         head: &head,
+        refs_digest: &refs_digest,
         policy: &policy,
-        policy_digest: &policy_digest,
+        policy_digest: &key.policy_digest,
         cutoff: cutoff_now(),
         surveyor_version: SURVEYOR_VERSION,
+        git_version: &git_version,
     };
-    let measured = measure::measure(&Git::open(&checkout.toplevel)?, &basis, started);
+    let measured = measure::measure(&git, &basis, started);
     let mut store = open(checkout)?;
     let sections = match measured {
         Ok(sections) => sections,
@@ -303,8 +358,9 @@ pub(crate) fn refresh(checkout: &Checkout) -> Result<Refreshed, String> {
     };
     let log = store.log()?;
     let newest = log.newest_survey();
-    if let Some(newest) = newest
-        && unchanged(newest, &head, &policy_digest)
+    if !force
+        && let Some(newest) = newest
+        && key.reuses(newest)
     {
         // Another refresh recorded this head while this one measured it.
         return Ok(Refreshed::Unchanged(store.survey(newest)?));
@@ -330,7 +386,18 @@ pub(crate) fn refresh(checkout: &Checkout) -> Result<Refreshed, String> {
         vocabulary: sections.vocabulary,
         checks: sections.checks,
     };
-    store.record_survey(&survey).map(Refreshed::Recorded)
+    let bytes = record_bytes(&survey)?;
+    if bytes.len() as u64 > policy.max_survey_bytes {
+        let reason = format!(
+            "the Survey needs {} bytes, more than [survey] max_survey_bytes = {}; raise it or \
+             exclude paths, and run `af project refresh` again",
+            bytes.len(),
+            policy.max_survey_bytes
+        );
+        store.record_failure(&head, &reason)?;
+        return Err(reason);
+    }
+    store.record_survey(&survey, bytes).map(Refreshed::Recorded)
 }
 
 /// The newest recorded Survey of the Project, if any.
@@ -394,7 +461,12 @@ pub(crate) fn summary(recorded: &Recorded) -> Vec<String> {
             format!(
                 "{}, tree {}",
                 identity.name.as_deref().unwrap_or("(no name)"),
-                identity.tree_digest.as_deref().unwrap_or("-")
+                identity.tree_digest.clone().unwrap_or_else(|| format!(
+                    "digest unavailable ({})",
+                    identity
+                        .tree_digest_reason
+                        .map_or("-", review_core::project::SurveyReasonV1::as_str)
+                ))
             )
         }),
         survey.identity.completeness,
@@ -461,8 +533,10 @@ pub(crate) fn summary(recorded: &Recorded) -> Vec<String> {
     lines.push(line(
         "vocabulary",
         survey.vocabulary.body.as_ref().map(|vocabulary| {
-            if vocabulary.present {
-                format!("{} terms in {}", vocabulary.count.get(), vocabulary.file)
+            if let (true, Some(count)) = (vocabulary.present, vocabulary.count) {
+                format!("{} terms in {}", count.get(), vocabulary.file)
+            } else if vocabulary.present {
+                format!("{}, not read", vocabulary.file)
             } else {
                 format!("no {}", vocabulary.file)
             }
@@ -500,12 +574,13 @@ pub(crate) fn after_onboard(repo: &Path, json: bool) {
             println!("{line}");
         }
     };
-    match refresh(&checkout) {
+    match refresh(&checkout, false) {
         Ok(Refreshed::Recorded(recorded)) => {
             say(format!("af onboard: recorded {}", summary_line(&recorded)))
         }
         Ok(Refreshed::Unchanged(recorded)) => say(format!(
-            "af onboard: unchanged, {}",
+            "af onboard: {}; {}",
+            unchanged_line(&recorded.event),
             summary_line(&recorded)
         )),
         Err(error) => eprintln!("af onboard: no Survey was recorded: {error}"),

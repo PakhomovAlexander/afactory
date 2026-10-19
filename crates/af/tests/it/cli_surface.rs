@@ -369,7 +369,8 @@ fn project_survey_refresh_and_history_describe_the_surveyor() {
         "af/ProjectSurvey@1",
         "af/project-history@1",
         "`af onboard --apply` and on `af project refresh`",
-        "never stores an email",
+        "never stores an author email",
+        "survey key (head, refs, policy digest, Surveyor version) is unchanged",
         "af project refresh",
     ] {
         assert!(project.contains(needle), "`{needle}` missing:\n{project}");
@@ -377,8 +378,11 @@ fn project_survey_refresh_and_history_describe_the_surveyor() {
     let refresh = out(&af(&["project", "refresh", "--help"]));
     let refresh = refresh.split_whitespace().collect::<Vec<_>>().join(" ");
     for needle in [
-        "prints `unchanged`",
-        "`[survey] max_wall_ms`",
+        "unchanged survey key",
+        "prints `unchanged: head …, refs …, policy …, surveyor …`",
+        "--force",
+        "`[survey] max_wall_ms`, checked at every item",
+        "`max_survey_bytes`",
         "calls no Provider, runs no hook or project code and writes nothing inside the checkout",
         "first 16 hex digits of SHA-256 of the lowercased, trimmed email",
         "SurveyFailed@1",

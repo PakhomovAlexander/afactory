@@ -156,15 +156,16 @@ One immutable, kernel-measured description of a Project at one exact head, `af/P
 in its Project Store: identity, tree, history, contributors, decisions, vocabulary and checks,
 every number decimal text, each section bounded by the `[survey]` policy and marked complete,
 partial or unavailable with the bound it reached. A model never writes one, it never holds an
-email, and a head already surveyed under the same policy and Surveyor version is not recorded
-twice.
+author email, and a complete one is reused, nothing recorded, while its survey key (head
+commit, refs digest, policy digest, Surveyor version) is unchanged and no `--force` asks for
+another.
 _Avoid_: **Measurement**, one declared command run against one Snapshot; **History Capture**,
 the optimizer's economics observations; **Report**, one reviewer's claim; and the README.
 
 **Surveyor**:
 The kernel-installed, token-free operator that records Surveys: synchronously at
 `af onboard --apply` and on `af project refresh`, reading the head only through supervised git
-plumbing under one `max_wall_ms` deadline, and never when the head is unchanged.
+plumbing under one `max_wall_ms` deadline, and never while the survey key is unchanged.
 _Avoid_: a daemon — it is one call that reads, writes one record and returns; and a Worker — it
 has no Provider, no Attempt and no budget.
 

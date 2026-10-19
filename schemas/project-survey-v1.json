@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:project-survey:1",
   "title": "af/ProjectSurvey@1",
-  "description": "One kernel-measured description of a Project at one head (ADR-0152), recorded in the Project Store's CAS. Canonical JSON, every number decimal text, every map sorted by key; byte-identical for the same head, policy, cutoff and Surveyor version. No host path, Provider ID or email.",
+  "description": "One kernel-measured description of a Project at one head (ADR-0152), recorded in the Project Store's CAS. Canonical JSON, every number decimal text, every map sorted by key; byte-identical for the same head, refs, policy, cutoff and Surveyor version. Display strings are at most 256 bytes and marked `truncated` when cut; identity strings and paths are exact. No host path, Provider ID or author email.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -81,9 +81,17 @@
         "head": {
           "$ref": "#/$defs/commit"
         },
-        "tree_digest": {
-          "description": "The Tree Digest of the head tree, from its committed capture.",
+        "refs_digest": {
+          "description": "`sha256:` + hex(SHA-256 of the exact stdout of `git for-each-ref --format=%(refname)%09%(objectname) refs/heads refs/tags`): the refs of the survey key.",
           "$ref": "#/$defs/digest"
+        },
+        "tree_digest": {
+          "description": "The Tree Digest of the whole head tree, from its committed capture, independent of exclude and every maximum.",
+          "$ref": "#/$defs/digest"
+        },
+        "tree_digest_reason": {
+          "description": "Why the Tree Digest is absent: the capture did not finish before the deadline. Never the digest of a part.",
+          "$ref": "#/$defs/reason"
         },
         "cutoff_unix_s": {
           "description": "The clock when the Survey started, in Unix seconds.",
@@ -96,6 +104,12 @@
         "surveyor_version": {
           "description": "The Surveyor's measurement rules; bumped whenever one changes.",
           "$ref": "#/$defs/decimal"
+        },
+        "git_version": {
+          "description": "The exact `git --version` stdout, trimmed.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\s\\x00-\\x1f\\x7f-\\x9f]([^\\x00-\\x1f\\x7f-\\x9f]*[^\\s\\x00-\\x1f\\x7f-\\x9f])?$"
         }
       },
       "allOf": [
@@ -118,16 +132,30 @@
               "project_id",
               "repository_id",
               "head",
+              "refs_digest",
               "cutoff_unix_s",
               "policy_digest",
-              "surveyor_version"
+              "surveyor_version",
+              "git_version"
+            ],
+            "oneOf": [
+              {
+                "required": [
+                  "tree_digest"
+                ]
+              },
+              {
+                "required": [
+                  "tree_digest_reason"
+                ]
+              }
             ]
           }
         }
       ]
     },
     "tree": {
-      "description": "The head tree after `[survey] exclude`: files, bytes and lines.",
+      "description": "The head tree after `[survey] exclude`, at most max_paths entries: files, bytes and lines.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -236,6 +264,22 @@
               "$ref": "#/$defs/decimal"
             }
           }
+        },
+        "seen": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/seen"
+            },
+            {
+              "propertyNames": {
+                "enum": [
+                  "paths",
+                  "directories",
+                  "languages"
+                ]
+              }
+            }
+          ]
         }
       },
       "allOf": [
@@ -268,7 +312,7 @@
       ]
     },
     "history": {
-      "description": "The commits reachable from the head, newest first up to max_commits.",
+      "description": "The commits reachable from the head in `git rev-list --date-order` order, newest first, up to max_commits; a merge counts as a commit and contributes no churn.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -292,7 +336,7 @@
           "$ref": "#/$defs/decimal"
         },
         "windows": {
-          "description": "Commits whose committer time is at or after the cutoff minus the window.",
+          "description": "Commits whose committer time is after the cutoff minus the window and at or before the cutoff.",
           "type": "object",
           "additionalProperties": false,
           "required": [
@@ -436,13 +480,29 @@
               "type": "array",
               "maxItems": 5,
               "items": {
-                "$ref": "#/$defs/text"
+                "$ref": "#/$defs/name"
               }
             }
           }
         },
         "local_branches": {
           "$ref": "#/$defs/decimal"
+        },
+        "seen": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/seen"
+            },
+            {
+              "propertyNames": {
+                "enum": [
+                  "churn_90d",
+                  "hot_paths",
+                  "tags"
+                ]
+              }
+            }
+          ]
         }
       },
       "allOf": [
@@ -476,7 +536,7 @@
       ]
     },
     "contributors": {
-      "description": "Who authored the commits reached, and how many were agents'. Never an email.",
+      "description": "Who authored the commits reached, and how many were agent-assisted: each commit counts once in the partition and once for its author. Never an author email.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -517,11 +577,29 @@
           "$ref": "#/$defs/basis_points"
         },
         "by_identity": {
-          "description": "By author name without `@`, or by the first 16 hex digits of SHA-256 of the lowercased, trimmed email.",
+          "description": "The identities with the most commits, at most max_entries: by author name, `h:` and 16 hex digits for a name that is an email address, or under email_hash by the first 16 hex digits of SHA-256 of the lowercased, trimmed email.",
           "type": "object",
           "propertyNames": {
-            "maxLength": 512,
-            "pattern": "^[^@\\x00-\\x1f\\x7f-\\x9f]+$"
+            "anyOf": [
+              {
+                "pattern": "^h:[0-9a-f]{16}$"
+              },
+              {
+                "allOf": [
+                  {
+                    "$ref": "#/$defs/text"
+                  },
+                  {
+                    "pattern": "^\\S(.*\\S)?$"
+                  },
+                  {
+                    "not": {
+                      "pattern": "^\\S+@\\S+$"
+                    }
+                  }
+                ]
+              }
+            ]
           },
           "additionalProperties": {
             "type": "object",
@@ -552,9 +630,26 @@
               },
               "active_90d": {
                 "type": "boolean"
+              },
+              "truncated": {
+                "$ref": "#/$defs/truncated"
               }
             }
           }
+        },
+        "seen": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/seen"
+            },
+            {
+              "propertyNames": {
+                "enum": [
+                  "by_identity"
+                ]
+              }
+            }
+          ]
         }
       },
       "allOf": [
@@ -610,7 +705,7 @@
       ]
     },
     "decisions": {
-      "description": "The decision records the `decisions` glob matches.",
+      "description": "The files the `decisions` pattern matches whose name starts with four ASCII digits and a dash.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -627,7 +722,7 @@
           "$ref": "#/$defs/decimal"
         },
         "by_status": {
-          "description": "Counts by status; `unknown` for a record that names none.",
+          "description": "Counts by status; `unknown` for a record that names none, `unreadable` for one over max_file_bytes or not text.",
           "type": "object",
           "propertyNames": {
             "enum": [
@@ -636,17 +731,17 @@
               "superseded",
               "deprecated",
               "rejected",
-              "unknown"
+              "unknown",
+              "unreadable"
             ]
           },
           "additionalProperties": {
             "$ref": "#/$defs/decimal"
           }
         },
-        "newest": {
-          "description": "The newest 12 by number, highest first, ties by path.",
+        "records": {
+          "description": "Every record up to max_entries, by number, then path.",
           "type": "array",
-          "maxItems": 12,
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -656,8 +751,9 @@
             ],
             "properties": {
               "number": {
+                "description": "The four leading digits of the file name.",
                 "type": "string",
-                "pattern": "^[0-9]{1,20}$"
+                "pattern": "^[0-9]{4}$"
               },
               "path": {
                 "$ref": "#/$defs/repo_path"
@@ -665,13 +761,17 @@
               "title": {
                 "$ref": "#/$defs/text"
               },
+              "truncated": {
+                "$ref": "#/$defs/truncated"
+              },
               "status": {
                 "enum": [
                   "accepted",
                   "proposed",
                   "superseded",
                   "deprecated",
-                  "rejected"
+                  "rejected",
+                  "unreadable"
                 ]
               },
               "date": {
@@ -680,6 +780,20 @@
               }
             }
           }
+        },
+        "seen": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/seen"
+            },
+            {
+              "propertyNames": {
+                "enum": [
+                  "records"
+                ]
+              }
+            }
+          ]
         }
       },
       "allOf": [
@@ -701,7 +815,7 @@
             "required": [
               "count",
               "by_status",
-              "newest"
+              "records"
             ]
           }
         }
@@ -728,14 +842,29 @@
           "type": "boolean"
         },
         "count": {
-          "$ref": "#/$defs/decimal"
+          "$ref": "#/$defs/decimal",
+          "description": "The terms defined; absent with terms when the file is over max_file_bytes or not text."
         },
         "terms": {
-          "description": "In file order, each once.",
+          "description": "The first max_entries terms in file order, each once.",
           "type": "array",
           "items": {
-            "$ref": "#/$defs/text"
+            "$ref": "#/$defs/name"
           }
+        },
+        "seen": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/seen"
+            },
+            {
+              "propertyNames": {
+                "enum": [
+                  "terms"
+                ]
+              }
+            }
+          ]
         }
       },
       "allOf": [
@@ -756,10 +885,16 @@
           "else": {
             "required": [
               "file",
-              "present",
-              "count",
-              "terms"
-            ]
+              "present"
+            ],
+            "dependentRequired": {
+              "count": [
+                "terms"
+              ],
+              "terms": [
+                "count"
+              ]
+            }
           }
         }
       ]
@@ -805,6 +940,9 @@
                     "pattern": "^[^/]"
                   }
                 ]
+              },
+              "truncated": {
+                "$ref": "#/$defs/truncated"
               }
             }
           }
@@ -819,6 +957,27 @@
         "ci_workflows": {
           "description": "`.github/workflows/*.yml` and `*.yaml` files.",
           "$ref": "#/$defs/decimal"
+        },
+        "unreadable": {
+          "description": "Declarations over max_file_bytes or not text, sorted.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/repo_path"
+          }
+        },
+        "seen": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/seen"
+            },
+            {
+              "propertyNames": {
+                "enum": [
+                  "declared"
+                ]
+              }
+            }
+          ]
         }
       },
       "allOf": [
@@ -878,7 +1037,10 @@
       "description": "The bound a section reached.",
       "enum": [
         "max_wall_ms",
-        "max_commits"
+        "max_commits",
+        "max_paths",
+        "max_entries",
+        "max_file_bytes"
       ]
     },
     "section_shape": {
@@ -910,10 +1072,10 @@
       "pattern": "^[^/\\s](.*[^\\s])?$"
     },
     "text": {
-      "description": "Text copied from the tree: non-blank, at most 512 bytes, no control character.",
+      "description": "A display string: non-blank, at most 256 bytes (cut at a character boundary and marked `truncated` when longer), no control character. `@` is permitted: repository text is recorded as committed.",
       "type": "string",
       "minLength": 1,
-      "maxLength": 512,
+      "maxLength": 256,
       "allOf": [
         {
           "pattern": "\\S"
@@ -926,6 +1088,33 @@
     "language": {
       "type": "string",
       "pattern": "^[a-z0-9+#._-]{1,64}$"
+    },
+    "truncated": {
+      "description": "The display string beside it was cut to 256 bytes.",
+      "const": true
+    },
+    "name": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/text"
+        },
+        "truncated": {
+          "$ref": "#/$defs/truncated"
+        }
+      }
+    },
+    "seen": {
+      "description": "For each list the section cut at max_entries (or the tree's entries at max_paths, under `paths`), how many items it saw.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/decimal"
+      }
     }
   }
 }
