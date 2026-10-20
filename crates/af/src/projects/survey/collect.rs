@@ -861,41 +861,62 @@ fn take(
                 Ok(bytes) if bytes.len() as u64 > MAX_SURVEY_BYTES => {
                     return Err(oversize(bytes.len() as u64));
                 }
-                Ok(bytes) => totals(survey_id, &bytes),
                 Err(error) => {
                     return Err(format!(
                         "refused: its record cannot be read, so it is kept: {error}"
                     ));
                 }
+                Ok(bytes) => totals(survey_id, &bytes).and_then(|totals| {
+                    super::TombstoneIdentity::of_record(recorded, &bytes)
+                        .map(|identity| (identity, totals))
+                }),
             }
         }
     };
     let bytes = record.as_ref().map_or(0, |record| record.bytes);
-    let (tree, history, unreadable) = match read {
-        Ok((tree, history)) => (tree, history, None),
-        Err(why) => (None, None, Some(why)),
-    };
-    let object = object_path(directory, survey_id);
-    let Some(store) = store else {
-        return Ok(Taken {
-            object,
-            bytes,
-            unreadable,
-        });
+    // The tombstone binds the record's identity, copied after the event was verified against
+    // the record; an event that disagrees with its record is refused and the Survey kept. A
+    // record that is no Survey vouches for nothing, and its tombstone says `unreadable`.
+    let (identity, tree, history, unreadable) = match read {
+        Ok((Ok(identity), (tree, history))) => (identity, tree, history, None),
+        Ok((Err(field), _)) => {
+            return Err(format!(
+                "refused: its SurveyRecorded@1 names a {field} its record does not record, so \
+                 it is kept"
+            ));
+        }
+        Err(why) => (
+            super::TombstoneIdentity::of_event(recorded),
+            None,
+            None,
+            Some(why),
+        ),
     };
     let tombstone = SurveyCollectedPayloadV1 {
         survey_id: survey_id.to_string(),
-        head: recorded.head.clone(),
-        cutoff_unix_s: recorded.cutoff_unix_s,
-        completeness: recorded.completeness,
         tree,
         history,
         unreadable: unreadable.clone(),
+        head: identity.head,
+        cutoff_unix_s: identity.cutoff_unix_s,
+        completeness: identity.completeness,
+        refs_digest: identity.refs_digest,
+        policy_digest: identity.policy_digest,
+        surveyor_version: identity.surveyor_version,
+        previous_survey_id: identity.previous_survey_id,
         collected_unix_ms: crate::storage::now_unix_ms().into(),
     };
     tombstone
         .validate()
         .map_err(|why| format!("refused: {why}"))?;
+    let object = object_path(directory, survey_id);
+    let Some(store) = store else {
+        return Ok(Taken {
+            object,
+            bytes,
+            unreadable: tombstone.unreadable,
+        });
+    };
     let event = NewEvent::new(
         EventType::SurveyCollectedV1,
         serde_json::to_value(&tombstone).map_err(|error| format!("refused: {error}"))?,

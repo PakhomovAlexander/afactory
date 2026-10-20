@@ -616,7 +616,7 @@ fn the_fixture_repository_yields_the_checked_in_survey_byte_for_byte() {
     assert_eq!(identity["name"], "survey-fixture");
     assert_eq!(identity["head"], git(&repo, &["rev-parse", "HEAD"]));
     assert_eq!(identity["cutoff_unix_s"], CUTOFF.to_string());
-    assert_eq!(identity["surveyor_version"], "4");
+    assert_eq!(identity["surveyor_version"], "5");
     assert_eq!(identity["git_version"], git_version().as_str());
     assert_eq!(identity["refs_digest"], refs_digest(&repo));
     // The Tree Digest is the committed capture's, from the digest-only path: the blob over
@@ -681,7 +681,7 @@ fn an_unchanged_survey_key_records_nothing_and_prints_the_key() {
     let identity = &survey["identity"];
     let hex16 = |digest: &Value| digest.as_str().unwrap()["sha256:".len()..][..16].to_string();
     let key = format!(
-        "unchanged: head {}, refs {}, policy {}, surveyor 4",
+        "unchanged: head {}, refs {}, policy {}, surveyor 5",
         &identity["head"].as_str().unwrap()[..12],
         hex16(&identity["refs_digest"]),
         hex16(&identity["policy_digest"])
@@ -2229,9 +2229,11 @@ fn an_impossible_calendar_date_is_unknown() {
 
 #[test]
 fn a_blank_or_control_character_name_is_its_hash_under_both_identity_policies() {
-    // Names git's porcelain refuses, written with fast-import: blank twice, by two emails, and
-    // one holding a bell.
-    let authors = ["", " ", "Bell\u{7}Name"];
+    // Names git's porcelain refuses, written with fast-import: blank twice, by two emails, one
+    // holding a bell, and 256 printable bytes followed by one, which the check over the whole
+    // name finds past the display bound.
+    let long = format!("{}\u{7}", "n".repeat(256));
+    let authors = ["", " ", "Bell\u{7}Name", long.as_str()];
     for identity in ["name", "email_hash"] {
         let machine = Machine::new();
         let repo = machine.root().join("blank");
@@ -2242,11 +2244,12 @@ fn a_blank_or_control_character_name_is_its_hash_under_both_identity_policies() 
             (authors[0], "first@fixture.invalid"),
             (authors[1], "second@fixture.invalid"),
             (authors[2], "bell@fixture.invalid"),
+            (authors[3], "long@fixture.invalid"),
         ]
         .into_iter()
         .enumerate()
         {
-            let time = CUTOFF - (3 - index as u64) * DAY;
+            let time = CUTOFF - (4 - index as u64) * DAY;
             let message = format!("Commit {index}");
             let file = format!("f{index}.txt");
             let author = if name.is_empty() {
@@ -2288,19 +2291,20 @@ fn a_blank_or_control_character_name_is_its_hash_under_both_identity_policies() 
         let contributors = &survey["contributors"];
         // Both blank names are one identity, by the hash of the name, never by either email.
         assert_eq!(
-            contributors["identities"], "2",
+            contributors["identities"], "3",
             "{identity}: {contributors}"
         );
         let blank = name_hash("");
         assert_eq!(name_hash(" "), blank);
-        assert_eq!(
-            keys(contributors),
-            [blank.clone(), name_hash(authors[2])],
-            "{identity}"
-        );
+        // One commit and one line each: ranked by key.
+        let mut singles = [name_hash(authors[2]), name_hash(authors[3])];
+        singles.sort();
+        let expected = [blank.clone(), singles[0].clone(), singles[1].clone()];
+        assert_eq!(keys(contributors), expected, "{identity}");
         assert_eq!(contributors["by_identity"][0]["commits"], "2", "{identity}");
         if identity == "name" {
-            assert_eq!(names(contributors), [blank, name_hash(authors[2])]);
+            assert_eq!(names(contributors), expected);
+            assert!(!said.contains(&"n".repeat(256)), "{identity}");
         } else {
             assert!(contributors["by_identity"][0].get("name").is_none());
         }
@@ -2309,6 +2313,7 @@ fn a_blank_or_control_character_name_is_its_hash_under_both_identity_policies() 
             "first@fixture.invalid",
             "second@fixture.invalid",
             "bell@fixture.invalid",
+            "long@fixture.invalid",
         ] {
             assert!(
                 !kept.contains(email) && !said.contains(email),
@@ -2613,4 +2618,346 @@ fn a_tag_created_between_the_key_and_history_is_in_neither() {
     let next = machine.json(&repo, &[], &["project", "survey", "--json"]);
     assert_eq!(next["identity"]["refs_digest"], refs_digest(&repo).as_str());
     assert_eq!(next["history"]["tags"]["count"], "3");
+}
+
+/// Every `SurveyRecorded@1` of the Project Store: its sequence and payload, oldest first.
+fn recorded_events(machine: &Machine) -> Vec<(i64, Value)> {
+    let log = rusqlite::Connection::open(machine.store().join("events.sqlite")).unwrap();
+    log.prepare(
+        "SELECT sequence, payload FROM events WHERE type = 'SurveyRecorded@1' ORDER BY sequence",
+    )
+    .unwrap()
+    .query_map([], |row| Ok((row.get(0)?, row.get::<_, String>(1)?)))
+    .unwrap()
+    .map(|row| {
+        let (sequence, payload) = row.unwrap();
+        (sequence, serde_json::from_str(&payload).unwrap())
+    })
+    .collect()
+}
+
+/// Every `SurveyCollected@1` payload of the Project Store, in order.
+fn tombstones(machine: &Machine) -> Vec<Value> {
+    let log = rusqlite::Connection::open(machine.store().join("events.sqlite")).unwrap();
+    log.prepare("SELECT payload FROM events WHERE type = 'SurveyCollected@1' ORDER BY sequence")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|payload| serde_json::from_str(&payload.unwrap()).unwrap())
+        .collect()
+}
+
+/// Set `field` of the `SurveyRecorded@1` at `sequence` to `value`: an otherwise valid event.
+fn rewrite_event(machine: &Machine, sequence: i64, field: &str, value: &Value) {
+    let log = rusqlite::Connection::open(machine.store().join("events.sqlite")).unwrap();
+    let payload: String = log
+        .query_row(
+            "SELECT payload FROM events WHERE sequence = ?1 AND type = 'SurveyRecorded@1'",
+            [sequence],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut payload: Value = serde_json::from_str(&payload).unwrap();
+    payload[field] = value.clone();
+    log.execute(
+        "UPDATE events SET payload = ?1 WHERE sequence = ?2 AND type = 'SurveyRecorded@1'",
+        rusqlite::params![payload.to_string(), sequence],
+    )
+    .unwrap();
+}
+
+/// The CAS file of `survey_id`, made writable.
+fn survey_object(machine: &Machine, survey_id: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let hex = survey_id.trim_start_matches("sha256:");
+    let object = machine
+        .store()
+        .join("cas/objects")
+        .join(&hex[..2])
+        .join(&hex[2..]);
+    std::fs::set_permissions(&object, std::fs::Permissions::from_mode(0o644)).unwrap();
+    object
+}
+
+/// What `af` said refusing `args` with exit 1: stderr, or under `--json` the `af/error@1`
+/// document's error, the only thing on stdout.
+fn refusal(machine: &Machine, repo: &Path, env: &[(&str, &str)], args: &[&str]) -> String {
+    let (stdout, stderr) = machine.expect(repo, env, args, 1);
+    if args.contains(&"--json") {
+        let error: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(error["schema"], "af/error@1", "{args:?}: {stdout}");
+        error["error"].as_str().unwrap().to_string()
+    } else {
+        assert!(stdout.is_empty(), "{args:?}: {stdout}");
+        stderr
+    }
+}
+
+/// Thirty days before now, in Unix seconds: a cutoff the Storage Budget may collect.
+fn collectable_cutoff() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        - 30 * DAY
+}
+
+/// `af storage prune` in `machine`'s own home and XDG directories, keeping `keep` Surveys:
+/// applied, or previewed. The JSON document it prints.
+fn prune_surveys(machine: &Machine, repo: &Path, keep: &str, apply: bool) -> Value {
+    let root = machine.root();
+    let mut env: Vec<(&str, String)> = ["home", "cache", "data", "config", "bin"]
+        .into_iter()
+        .map(|directory| {
+            std::fs::create_dir_all(root.join(directory)).unwrap();
+            (
+                directory,
+                root.join(directory).to_string_lossy().into_owned(),
+            )
+        })
+        .map(|(directory, path)| {
+            let name = match directory {
+                "home" => "HOME",
+                "cache" => "XDG_CACHE_HOME",
+                "data" => "XDG_DATA_HOME",
+                "config" => "XDG_CONFIG_HOME",
+                _ => "XDG_BIN_HOME",
+            };
+            (name, path)
+        })
+        .collect();
+    env.push(("AF_STORAGE__KEEP_SURVEYS", keep.to_string()));
+    let env: Vec<(&str, &str)> = env
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    let mut args = vec!["storage", "prune", "--json"];
+    if apply {
+        args.push("--apply");
+    }
+    machine.json(repo, &env, &args)
+}
+
+#[test]
+fn an_unreadable_or_corrupt_record_refuses_replay_naming_the_sequence_and_the_error() {
+    let machine = Machine::new();
+    let repo = fixture(&machine.root());
+    machine.expect(&repo, &[], &["project", "refresh"], 0);
+    machine.expect(&repo, &[], &["project", "refresh", "--force"], 0);
+    let events = recorded_events(&machine);
+    let [(older_at, older), (newest_at, newest)] = &events[..] else {
+        panic!("two Surveys: {events:?}");
+    };
+    let id = |event: &Value| event["survey_id"].as_str().unwrap().to_string();
+    let head = newest["head"].as_str().unwrap()[..12].to_string();
+
+    // Neither collected: the newest record's bytes corrupt, the older one's gone.
+    let corrupt = survey_object(&machine, &id(newest));
+    let bytes = std::fs::read(&corrupt).unwrap();
+    std::fs::write(&corrupt, b"{\"schema\":\"af/ProjectSurvey@1\"}").unwrap();
+    std::fs::remove_file(survey_object(&machine, &id(older))).unwrap();
+    let named = format!(
+        "SurveyRecorded@1 at sequence {newest_at} names Survey {}, whose record cannot be read: \
+         its bytes do not match its digest",
+        id(newest)
+    );
+    for args in [
+        &["project", "history"][..],
+        &["project", "history", "--json"],
+        &["project", "survey"],
+        &["project", "survey", "--json"],
+        &["project", "survey", "--section", "tree"],
+        &["project", "refresh"],
+    ] {
+        let said = refusal(&machine, &repo, &[], args);
+        assert!(said.contains(&named), "{args:?}: {said}");
+        assert!(
+            !said.contains(&head),
+            "no event field is printed: {args:?}: {said}"
+        );
+    }
+
+    // The newest readable again: the history refuses the older one, gone from the CAS, and the
+    // newest Survey is read.
+    std::fs::write(&corrupt, &bytes).unwrap();
+    for args in [
+        &["project", "history"][..],
+        &["project", "history", "--json"],
+    ] {
+        let said = refusal(&machine, &repo, &[], args);
+        assert!(
+            said.contains(&format!(
+                "SurveyRecorded@1 at sequence {older_at} names Survey {}, whose record cannot \
+                 be read: it is not in the CAS",
+                id(older)
+            )),
+            "{args:?}: {said}"
+        );
+    }
+    machine.expect(&repo, &[], &["project", "survey"], 0);
+}
+
+#[test]
+fn a_collected_event_is_bound_to_every_identity_field_its_tombstone_copied_from_the_record() {
+    let machine = Machine::new();
+    let repo = fixture(&machine.root());
+    let old = collectable_cutoff();
+    let at = |seconds: u64| (old + seconds).to_string();
+    let (first, second) = (at(0), at(1));
+    machine.expect(
+        &repo,
+        &[("AF_TEST_SURVEY_CUTOFF_UNIX_S", first.as_str())],
+        &["project", "refresh"],
+        0,
+    );
+    // The newest Survey partial, so the newest complete one is the older and the newest goes.
+    machine.expect(
+        &repo,
+        &[
+            ("AF_TEST_SURVEY_CUTOFF_UNIX_S", second.as_str()),
+            ("AF_SURVEY__MAX_COMMITS", "1"),
+        ],
+        &["project", "refresh", "--force"],
+        0,
+    );
+    let events = recorded_events(&machine);
+    let [(_, older), (newest_at, newest)] = &events[..] else {
+        panic!("two Surveys: {events:?}");
+    };
+    assert_eq!(newest["completeness"], "partial");
+    let newest_id = newest["survey_id"].as_str().unwrap().to_string();
+    let record: Value =
+        serde_json::from_slice(&std::fs::read(survey_object(&machine, &newest_id)).unwrap())
+            .unwrap();
+
+    let pruned = prune_surveys(&machine, &repo, "0", true);
+    let collected = tombstones(&machine);
+    assert_eq!(collected.len(), 1, "{pruned}");
+    let tombstone = &collected[0];
+    schemas::valid(
+        &schemas::validator("project-survey-collected-v1.json"),
+        tombstone,
+    );
+    // Every identity field is the record's.
+    let identity = &record["identity"];
+    for (field, expected) in [
+        ("survey_id", &newest["survey_id"]),
+        ("head", &identity["head"]),
+        ("cutoff_unix_s", &identity["cutoff_unix_s"]),
+        ("completeness", &record["completeness"]),
+        ("refs_digest", &identity["refs_digest"]),
+        ("policy_digest", &identity["policy_digest"]),
+        ("surveyor_version", &identity["surveyor_version"]),
+        ("previous_survey_id", &older["survey_id"]),
+    ] {
+        assert_eq!(&tombstone[field], expected, "{field}: {tombstone}");
+    }
+    assert_eq!(
+        tombstone["previous_survey_id"],
+        record["previous_survey_id"]
+    );
+    assert!(tombstone.get("unreadable").is_none());
+    machine.expect(&repo, &[], &["project", "history"], 0);
+
+    // The collected newest event's head changed to another commit of the repository: no command
+    // uses it, in an error message included, before checking it against the tombstone.
+    let other = git(&repo, &["rev-list", "--max-parents=0", "HEAD"]);
+    let original = newest["head"].clone();
+    assert_ne!(Value::String(other.clone()), original);
+    rewrite_event(&machine, *newest_at, "head", &Value::String(other.clone()));
+    let named = |field: &str| {
+        format!(
+            "SurveyRecorded@1 at sequence {newest_at} names a {field} its tombstone SurveyCollected@1 at sequence"
+        )
+    };
+    for args in [
+        &["project", "survey", "--section", "tree"][..],
+        &["project", "survey"],
+        &["project", "survey", "--json"],
+        &["project", "refresh"],
+        &["project", "history"],
+        &["project", "history", "--json"],
+    ] {
+        let said = refusal(&machine, &repo, &[], args);
+        assert!(said.contains(&named("head")), "{args:?}: {said}");
+        assert!(!said.contains(&other[..12]), "{args:?}: {said}");
+    }
+    rewrite_event(&machine, *newest_at, "head", &original);
+    machine.expect(&repo, &[], &["project", "survey"], 1);
+
+    // Its refs digest changed: the history refuses it, naming the field.
+    let original = newest["refs_digest"].clone();
+    rewrite_event(
+        &machine,
+        *newest_at,
+        "refs_digest",
+        &Value::String(format!("sha256:{}", "0".repeat(64))),
+    );
+    for args in [
+        &["project", "history"][..],
+        &["project", "history", "--json"],
+    ] {
+        let said = refusal(&machine, &repo, &[], args);
+        assert!(said.contains(&named("refs_digest")), "{args:?}: {said}");
+    }
+    rewrite_event(&machine, *newest_at, "refs_digest", &original);
+    machine.expect(&repo, &[], &["project", "history", "--json"], 0);
+}
+
+#[test]
+fn collection_refuses_and_reports_a_survey_whose_event_disagrees_with_its_record() {
+    let machine = Machine::new();
+    let repo = fixture(&machine.root());
+    let old = collectable_cutoff();
+    for seconds in 0..3_u64 {
+        let cutoff = (old + seconds).to_string();
+        machine.expect(
+            &repo,
+            &[("AF_TEST_SURVEY_CUTOFF_UNIX_S", cutoff.as_str())],
+            &["project", "refresh", "--force"],
+            0,
+        );
+    }
+    let events = recorded_events(&machine);
+    let id = |index: usize| events[index].1["survey_id"].as_str().unwrap().to_string();
+    let object = survey_object(&machine, &id(0));
+    rewrite_event(
+        &machine,
+        events[0].0,
+        "refs_digest",
+        &Value::String(format!("sha256:{}", "0".repeat(64))),
+    );
+    let refused = format!(
+        "Survey {} is refused: its SurveyRecorded@1 names a refs_digest its record does not \
+         record, so it is kept",
+        id(0)
+    );
+    // Preview and pass alike report it, and the pass takes the other Survey beyond the limit.
+    for apply in [false, true] {
+        let pruned = prune_surveys(&machine, &repo, "1", apply);
+        let failures: Vec<&str> = pruned["failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|failure| failure.contains(&refused))
+            .collect();
+        assert_eq!(failures.len(), 1, "apply {apply}: {pruned}");
+    }
+    let collected: Vec<Value> = tombstones(&machine)
+        .into_iter()
+        .map(|tombstone| tombstone["survey_id"].clone())
+        .collect();
+    assert_eq!(collected, [Value::String(id(1))], "no tombstone for it");
+    assert!(object.is_file(), "its record is left in place");
+    // Uncollected and unbound, it is refused at replay too.
+    let said = refusal(&machine, &repo, &[], &["project", "history"]);
+    assert!(
+        said.contains(&format!(
+            "SurveyRecorded@1 at sequence {} names a refs_digest its Survey {} does not record",
+            events[0].0,
+            id(0)
+        )),
+        "{said}"
+    );
 }

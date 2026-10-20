@@ -86,19 +86,31 @@ email first of all.
    `previous_survey_id` differs from the record's `identity` and chain, and the survey key is
    taken from the verified record, never from the event alone. `af project history` verifies
    every event it prints before it prints any, newest first: a collected Survey's against the
-   tombstone that bound its `head`, `cutoff_unix_s` and `completeness` at collection (clause 13),
-   every other one against its record, so `--json` never emits a mismatched event, an older one
-   included. Each refusal is the typed replay error `SurveyRecorded@1 at sequence <n> names a
-   <field> its Survey <id> (or its tombstone SurveyCollected@1 at sequence <m>) does not record`,
-   on the first mismatch. A record the CAS cannot hand over (gone, unreadable, corrupt) is no
-   evidence against its event and the Storage Budget's to collect: the history lists it, and
-   every reader of the record refuses it. The fold of the log stays cheap: it reads no record;
-   the reads above happen where a field is used. The post-run preflight (PJ4) and the Brief
-   (PJ3) read a record through the same `ProjectStore::survey` and refuse the same way.
+   tombstone that bound every identity field of its record at collection (`head`,
+   `refs_digest`, `cutoff_unix_s`, `completeness`, `policy_digest`, `surveyor_version` and
+   `previous_survey_id`, clause 13), every other one against its record, so `--json` never
+   emits a mismatched event, an older one included. Each refusal is the typed replay error
+   `SurveyRecorded@1 at sequence <n> names a <field> its Survey <id> (or its tombstone
+   SurveyCollected@1 at sequence <m>) does not record`, on the first mismatch. The fold refuses
+   before it reads: a record of an uncollected Survey that the CAS cannot hand over (gone,
+   unreadable, corrupt, or no valid Survey) is a verification failure, the typed replay error
+   `SurveyRecorded@1 at sequence <n> names Survey <id>, whose record cannot be read: <error>`,
+   in af's own words and naming no other field of the event; `af project history` (text and
+   `--json`) refuses it wherever it stands in the chain, and every reader of the newest record
+   refuses it for the newest. No command uses a collected event before checking it against its
+   tombstone: `newest`, through which `af project survey` with and without `--section`, `af
+   project show` and a refresh's reuse check read the newest Survey, and the collected answer
+   of `af project survey`, bind the newest event to its tombstone first, the head an error
+   message names included. A corrupt record is still the Storage Budget's to collect (clause
+   13), and `af project refresh --force` records a new newest Survey without reading the old
+   one. The reads happen where a field is used: `af project history` reads every uncollected
+   record, the other commands the newest. The post-run preflight (PJ4) and the Brief (PJ3) read
+   the newest Survey through the same `newest` and `ProjectStore::survey` and refuse the same
+   way.
 3. **Reuse on an unchanged survey key.** The survey key is the head commit, `refs_digest` =
    `sha256:` + hex(SHA-256 of the exact stdout of the one ref observation, `git for-each-ref
    --format=%(refname)%09%(objectname)%09%(objecttype)%09%(creatordate:unix) refs/heads
-   refs/tags`), the `policy_digest` and the `surveyor_version` (now 4); `activity`'s watermark
+   refs/tags`), the `policy_digest` and the `surveyor_version` (now 5); `activity`'s watermark
    joins it in PJ5. That observation is the Survey's only read of ref names: its lines, each a
    name, a target, the target's object type and the creator date git resolves through that
    target (an annotated tag's tagger time, a commit's committer time, none for another object),
@@ -112,7 +124,7 @@ email first of all.
    answer, since the event names a head). Before any work beyond `rev-parse HEAD`, that `for-each-ref`,
    reading the policy and reading the log, a newest uncollected Survey whose record is
    `complete` and carries an unchanged survey key is reused: the command prints one line,
-   `unchanged: head <12 hex>, refs <16 hex>, policy <16 hex>, surveyor 4`, with that Survey's
+   `unchanged: head <12 hex>, refs <16 hex>, policy <16 hex>, surveyor 5`, with that Survey's
    summary and records nothing. A new commit, tag or branch, a policy
    change or a newer Surveyor records a new Survey; a newest Survey that is `partial` or
    `unavailable` is measured again; `af project refresh --force` records one regardless of the
@@ -163,8 +175,9 @@ email first of all.
    text: the author name, cut at a character boundary to 256 bytes and marked `truncated` when
    longer, so two names sharing a 256-byte prefix are two identities with equal names. An author
    name any whitespace-separated token of which is an email address (an `@` between non-empty
-   parts), or that is blank or holds a control character, is replaced whole, before any cut and
-   under both policies, by `h:` and the first 16 hex digits of SHA-256 of the lowercased,
+   parts), or that is blank or holds a control character anywhere in the whole name (a control
+   character past the 256-byte cut included), is replaced whole, before any cut and under both
+   policies, by `h:` and the first 16 hex digits of SHA-256 of the lowercased,
    trimmed name, as its key and, under `name`, its name, and is grouped by that key under
    `email_hash` too, never by the email hash; the email is not used for it.
    `identity = "email_hash"` keys one by the first 16 hex digits of SHA-256 of the lowercased,
@@ -350,10 +363,17 @@ email first of all.
     operator files are never reclaimed, and the Project Store is still never evicted whole. A
     collection takes the lock without waiting, so a held Store is left for the next pass, reads
     the protections again under it, and for each Survey appends `SurveyCollected@1`
-    {`survey_id`, `head`, `cutoff_unix_s`, `completeness`, the `tree` totals `files`, `bytes` and
+    {`survey_id`, `head`, `cutoff_unix_s`, `completeness`, `refs_digest`, `policy_digest`,
+    `surveyor_version`, `previous_survey_id` when any, the `tree` totals `files`, `bytes` and
     `lines` and the `history` totals `commits` and `merges` when the record holds them,
     `collected_unix_ms`} ([schema](../../schemas/project-survey-collected-v1.json), in
-    `run-event-v1.json`) before it deletes the record from the CAS. A record is reached, read
+    `run-event-v1.json`) before it deletes the record from the CAS. The tombstone binds the
+    event: every field but `survey_id` and `collected_unix_ms` is copied from the record after
+    the event was verified against it on every field clause 2 compares, never from the event,
+    so replay refuses a collected event that differs from its tombstone on any of them, naming
+    the field. A Survey whose event disagrees with its record is refused, preview and pass
+    alike, and reported `refused: its SurveyRecorded@1 names a <field> its record does not
+    record, so it is kept`: no tombstone is appended and its record stays. A record is reached, read
     and deleted only through directory descriptors, ADR-0144's removal boundary: the Project
     Store from `/`, then `cas`, `objects` and the digest-prefix directory, each opened
     `O_NOFOLLOW | O_DIRECTORY`, and the record stated without following it (its device and
@@ -378,7 +398,8 @@ email first of all.
     were read but are no Survey (they do not match its digest or do not parse), or that is gone
     from the CAS, is collected all the same, since reclaiming corrupt bytes is the budget's job:
     its tombstone carries `unreadable`, af's own sentence of at most 256 bytes and never the
-    record's content, in place of the totals, and the sweep and `af project history` show it as
+    record's content, in place of the totals, and, since no record vouches for them, the
+    event's identity fields as collection read them, and the sweep and `af project history` show it as
     `collected (unreadable)`. Inventory, a preview (`af storage prune` without `--apply`) and the
     applied pass decide that a Project Store's Surveys are held by one predicate,
     `lock_available`: `project.lock` opened with the flags the applied pass holds it with and
@@ -479,12 +500,21 @@ is 4,572 bytes plus the length of `git --version` less 11 (4,595 bytes with
   fake git never answers the key's `for-each-ref` with `SurveyFailed@1` within `max_wall_ms` +
   2 s; refuses at replay a hand-written `SurveyRecorded@1` whose `refs_digest` differs from its
   record's, in `af project history` (text and `--json`), `survey` and `refresh`, naming the
-  sequence and the field, and an older one in `history`; leaves each section partial, every
+  sequence and the field, and an older one in `history`; refuses replay in `history` (text and
+  `--json`), `survey` (with and without `--section`) and `refresh` when the newest record of
+  two uncollected Surveys is corrupt, naming its sequence and the read error and none of the
+  event's fields, and in `history` when the older one is gone; binds a collected Survey's
+  tombstone to every identity field of its record, refuses `survey` with and without
+  `--section`, `refresh` and `history` once the collected newest event's head names another
+  commit, and `history` once its `refs_digest` changed, naming the field; and refuses to
+  collect, preview and pass alike, a Survey whose event disagrees with its record, leaving its
+  record and appending no tombstone; leaves each section partial, every
   earlier one complete and every later one unavailable, when `AF_TEST_SURVEY_SLOW_FINISH` makes
   its finishing step outlast the deadline; stops forty oversized declarations ahead of a
   readable one within one item each; leaves `2026-02-31` and `2025-02-29` unknown and keeps
-  `2024-02-29`; keys blank and control-character author names by the hash of the name under
-  both identity policies, two emails one identity; ends a silent fake git's process group at a
+  `2024-02-29`; keys blank and control-character author names, 256 printable bytes followed by
+  a control character included, by the hash of the name under both identity policies, two
+  emails one identity; ends a silent fake git's process group at a
   2-second deadline with the Survey partial and the refresh within 2 s more; digests a blob
   over `max_file_bytes`, a tree beyond `max_paths` and spilled manifest runs equal to the
   committed capture's digest, and leaves the digest absent with `manifest_bytes` or
@@ -520,8 +550,11 @@ is 4,572 bytes plus the length of `git --version` less 11 (4,595 bytes with
   over `max_paths`, stop the ranking, the terms and the checks at a passed deadline, and fold
   windows, the partition, shares, rankings, status lines, languages, cut lists, decisions,
   terms and checks, stop language matching within one pattern of a passed deadline, refuse a
-  65-pattern language map, hash blank and control-character names under both policies, fold the
-  ref observation into tags and branches, and check the clock after a finishing step.
+  65-pattern language map, hash blank and control-character names under both policies, a
+  control character past the 256-byte cut included, refuse an unreadable record naming the
+  sequence and the error, bind a tombstone to every identity field of its record and refuse an
+  event that differs, fold the ref observation into tags and branches, and check the clock
+  after a finishing step.
   `crates/review-source-git/tests/it/tree_digest.rs` proves the digest-only path equal to the
   committed capture held and spilled, its typed stops with nothing left in temporary storage,
   and the private object repository reading `2 0` where the checkout reads `- -`.

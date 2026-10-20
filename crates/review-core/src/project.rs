@@ -1671,12 +1671,17 @@ pub struct SurveyCollectedHistoryV1 {
 }
 
 /// Payload of `SurveyCollected@1` (ADR-0152 clause 13): the tombstone of a Survey the Storage
-/// Budget collected, appended before the record leaves the Project Store's CAS. It keeps what
-/// `af project history` answers for the Survey once its record is gone: the head, the cutoff,
-/// the completeness and the totals of `tree` and `history`, each absent when the record held no
-/// such section. A record whose bytes were read but are corrupt is collected all the same, its
-/// totals replaced by `unreadable`, af's own sentence of why, at most [`MAX_SURVEY_TEXT_BYTES`];
-/// a record that could not be read is never collected. Like every Project Store event, no path
+/// Budget collected, appended before the record leaves the Project Store's CAS. It binds the
+/// Survey's `SurveyRecorded@1` once the record is gone: `head`, `cutoff_unix_s`, `completeness`,
+/// `refs_digest`, `policy_digest`, `surveyor_version` and `previous_survey_id`, copied from the
+/// record after the event was verified against it, never from the event, so replay refuses an
+/// event that differs from its tombstone on any of them; and it keeps what `af project history`
+/// answers for the Survey, the totals of `tree` and `history`, each absent when the record held
+/// no such section. A record whose bytes were read but are no Survey, or that is gone from the
+/// CAS, vouches for nothing: it is collected all the same, its totals replaced by `unreadable`,
+/// af's own sentence of why, at most [`MAX_SURVEY_TEXT_BYTES`], and its tombstone keeps the
+/// event's fields as collection read them, which `unreadable` marks as bound by no record. A
+/// record that could not be read is never collected. Like every Project Store event, no path
 /// and no email.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1686,6 +1691,15 @@ pub struct SurveyCollectedPayloadV1 {
     pub head: String,
     pub cutoff_unix_s: DecimalU64,
     pub completeness: SurveyCompletenessV1,
+    /// The record's `identity.refs_digest`.
+    pub refs_digest: String,
+    /// The record's `identity.policy_digest`.
+    pub policy_digest: String,
+    /// The record's `identity.surveyor_version`.
+    pub surveyor_version: DecimalU64,
+    /// The record's `previous_survey_id`, when it names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_survey_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tree: Option<SurveyCollectedTreeV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1698,11 +1712,24 @@ pub struct SurveyCollectedPayloadV1 {
 
 impl SurveyCollectedPayloadV1 {
     pub fn validate(&self) -> Result<(), String> {
-        if !crate::is_digest(&self.survey_id) {
-            return Err("SurveyCollected@1 names its Survey by digest".into());
+        if !crate::is_digest(&self.survey_id)
+            || !crate::is_digest(&self.refs_digest)
+            || !crate::is_digest(&self.policy_digest)
+            || self
+                .previous_survey_id
+                .as_deref()
+                .is_some_and(|id| !crate::is_digest(id))
+        {
+            return Err(
+                "SurveyCollected@1 names its Survey, refs, policy and previous Survey by digest"
+                    .into(),
+            );
         }
         if !is_commit_id(&self.head) {
             return Err("SurveyCollected@1 has an invalid head commit".into());
+        }
+        if self.surveyor_version.get() == 0 {
+            return Err("SurveyCollected@1 has an invalid Surveyor version".into());
         }
         if self
             .history
@@ -1730,12 +1757,16 @@ mod collected_tests {
     use super::*;
 
     #[test]
-    fn a_tombstone_names_its_survey_by_digest_and_keeps_only_totals() {
+    fn a_tombstone_binds_the_records_identity_and_keeps_only_totals() {
         let tombstone = SurveyCollectedPayloadV1 {
             survey_id: format!("sha256:{}", "a".repeat(64)),
             head: "1".repeat(40),
             cutoff_unix_s: 1_800_000_000.into(),
             completeness: SurveyCompletenessV1::Partial,
+            refs_digest: format!("sha256:{}", "b".repeat(64)),
+            policy_digest: format!("sha256:{}", "c".repeat(64)),
+            surveyor_version: 5.into(),
+            previous_survey_id: Some(format!("sha256:{}", "d".repeat(64))),
             tree: Some(SurveyCollectedTreeV1 {
                 files: 16.into(),
                 bytes: 1496.into(),
@@ -1751,6 +1782,11 @@ mod collected_tests {
         tombstone.validate().unwrap();
         let value = serde_json::to_value(&tombstone).unwrap();
         assert_eq!(value["tree"]["files"], "16");
+        assert_eq!(value["surveyor_version"], "5");
+        assert_eq!(
+            value["previous_survey_id"],
+            format!("sha256:{}", "d".repeat(64))
+        );
         assert!(value.get("unreadable").is_none());
         assert_eq!(value["collected_unix_ms"], "1800000000123");
         let bare = SurveyCollectedPayloadV1 {
@@ -1776,6 +1812,23 @@ mod collected_tests {
             },
             SurveyCollectedPayloadV1 {
                 head: "HEAD".into(),
+                ..tombstone.clone()
+            },
+            // Every identity field the tombstone binds is the record's, by digest.
+            SurveyCollectedPayloadV1 {
+                refs_digest: "refs".into(),
+                ..tombstone.clone()
+            },
+            SurveyCollectedPayloadV1 {
+                policy_digest: "policy".into(),
+                ..tombstone.clone()
+            },
+            SurveyCollectedPayloadV1 {
+                previous_survey_id: Some("survey-0".into()),
+                ..tombstone.clone()
+            },
+            SurveyCollectedPayloadV1 {
+                surveyor_version: 0.into(),
                 ..tombstone.clone()
             },
             SurveyCollectedPayloadV1 {

@@ -555,9 +555,12 @@ Storage Budget inventories one by one under ADR-0144's own rules, as PJ1 impleme
 explicit `af storage` collection with `--apply`, or the automatic pass when `auto_gc = true`),
 under ADR-0144's retention age and recent-use protections, so `keep_surveys` is a target that
 protected Surveys may exceed; `af project refresh` collects nothing itself. Collection appends `SurveyCollected@1` (the collected
-Survey's ID, head, cutoff, completeness and the totals of `tree` and `history`) and then deletes
+Survey's ID, its head, cutoff, completeness, refs digest, policy digest, Surveyor version and
+previous Survey, copied from the record once the event was verified against it, and the totals
+of `tree` and `history`; a Survey whose event disagrees with its record is refused and kept)
+and then deletes
 the record from the CAS; replay treats a `SurveyRecorded@1` whose Survey a tombstone names as
-collected, so `af project history` answers from the tombstone and `af project survey` reports the
+collected once the event matches the tombstone on every field it binds, so `af project history` answers from the tombstone and `af project survey` reports the
 newest Survey only while it is uncollected; `previous_survey_id` is a name, never a reachability
 edge, so a collected predecessor keeps nothing alive and a chain that reaches a collected Survey
 ends at its tombstone. The tombstone is appended before the bytes go, so an interruption between

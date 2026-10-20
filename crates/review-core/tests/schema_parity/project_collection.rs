@@ -1,7 +1,8 @@
 //! Survey collection (ADR-0152 clause 13): `SurveyCollected@1`, the tombstone a collected
-//! Survey leaves in its Project Store's log, against its own schema, inside `run-event-v1.json`
-//! and through the Rust validator alike; and `af/TaskStorageSweep@1`, whose kind set Survey
-//! collection leaves unchanged, so a Survey's removal is counted and never listed.
+//! Survey leaves in its Project Store's log and that binds every identity field of its record,
+//! against its own schema, inside `run-event-v1.json` and through the Rust validator alike; and
+//! `af/TaskStorageSweep@1`, whose kind set Survey collection leaves unchanged, so a Survey's
+//! removal is counted and never listed.
 
 use super::{assert_invalid, assert_valid};
 use review_core::EventType;
@@ -39,12 +40,16 @@ fn without(base: &Value, key: &str) -> Value {
 }
 
 #[test]
-fn a_survey_tombstone_keeps_its_totals_and_never_a_path() {
+fn a_survey_tombstone_binds_the_records_identity_keeps_its_totals_and_never_a_path() {
     let tombstone = SurveyCollectedPayloadV1 {
         survey_id: format!("sha256:{}", "a".repeat(64)),
         head: HEAD.into(),
         cutoff_unix_s: 1_800_000_000.into(),
         completeness: SurveyCompletenessV1::Complete,
+        refs_digest: format!("sha256:{}", "b".repeat(64)),
+        policy_digest: format!("sha256:{}", "c".repeat(64)),
+        surveyor_version: 5.into(),
+        previous_survey_id: Some(format!("sha256:{}", "d".repeat(64))),
         tree: Some(SurveyCollectedTreeV1 {
             files: 16.into(),
             bytes: 1496.into(),
@@ -60,12 +65,13 @@ fn a_survey_tombstone_keeps_its_totals_and_never_a_path() {
     tombstone.validate().unwrap();
     let value = serde_json::to_value(&tombstone).unwrap();
     let bare = without(&without(&value, "tree"), "history");
+    let first = without(&value, "previous_survey_id");
     let unreadable = with(
         &bare,
         "unreadable",
         json!("its bytes are not a Survey record: syntax error at line 1, column 1"),
     );
-    for accepted in [&value, &bare, &unreadable] {
+    for accepted in [&value, &bare, &unreadable, &first] {
         assert_valid(SCHEMA, accepted);
         assert_valid("run-event-v1.json", &event(accepted.clone()));
         validate_event_payload(EventType::SurveyCollectedV1, accepted).unwrap();
@@ -80,6 +86,34 @@ fn a_survey_tombstone_keeps_its_totals_and_never_a_path() {
             "a Survey is named by its digest",
         ),
         (with(&value, "head", json!("main")), "the head is a commit"),
+        (
+            without(&value, "refs_digest"),
+            "a tombstone binds the record's refs",
+        ),
+        (
+            without(&value, "policy_digest"),
+            "a tombstone binds the record's policy",
+        ),
+        (
+            without(&value, "surveyor_version"),
+            "a tombstone binds the record's Surveyor version",
+        ),
+        (
+            with(&value, "refs_digest", json!("refs")),
+            "the refs are a digest",
+        ),
+        (
+            with(&value, "policy_digest", json!("policy")),
+            "the policy is a digest",
+        ),
+        (
+            with(&value, "previous_survey_id", json!("survey-0")),
+            "the previous Survey is named by its digest",
+        ),
+        (
+            with(&value, "surveyor_version", json!(5)),
+            "the Surveyor version is decimal text",
+        ),
         (
             with(&value, "cutoff_unix_s", json!(1_800_000_000_u64)),
             "times are decimal text",

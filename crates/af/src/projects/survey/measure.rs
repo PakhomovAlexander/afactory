@@ -848,28 +848,29 @@ fn hex16_of(bytes: &[u8]) -> String {
 
 /// A contributor as a record holds one: its key, its display name under `identity = "name"`, and
 /// whether the name was cut. An author name any whitespace-separated token of which is an email
-/// address, or that is blank or holds a control character (a name a record cannot hold as
-/// text), is under either policy `h:` and the 16-hex hash of the lowercased, trimmed name as its
-/// key and, under `name`, its name, decided before any cut and without the email, so it is
-/// grouped by that key under both policies. Otherwise, under `name`, the key is the 16-hex hash
-/// of the exact author-name bytes and the name is cut to [`MAX_SURVEY_TEXT_BYTES`]; under
-/// `email_hash`, the key is the 16-hex hash of the email and there is no name. An email never
-/// enters a record.
+/// address, or that is blank or holds a control character anywhere (a name a record cannot hold
+/// as text), is under either policy `h:` and the 16-hex hash of the lowercased, trimmed name as
+/// its key and, under `name`, its name, decided on the whole name before any cut and without the
+/// email, so it is grouped by that key under both policies: a control character past the
+/// display bound hashes the name as one inside it does. Otherwise, under `name`, the key is the
+/// 16-hex hash of the exact author-name bytes and the name is cut to [`MAX_SURVEY_TEXT_BYTES`];
+/// under `email_hash`, the key is the 16-hex hash of the email and there is no name. An email
+/// never enters a record.
 pub(super) fn identity_of(
     name: &[u8],
     email: &str,
     policy: SurveyIdentityPolicyV1,
 ) -> (String, Option<String>, bool) {
     let text = String::from_utf8_lossy(name);
-    let shown = display(&text).filter(|(kept, _)| !is_email_shaped(kept));
+    let holdable =
+        !text.trim().is_empty() && !text.chars().any(char::is_control) && !is_email_shaped(&text);
+    let shown = display(&text)
+        .filter(|(kept, _)| holdable && !is_email_shaped(kept))
+        .map(|(kept, truncated)| (hex16_of(name), kept, truncated));
     let hashed = format!("{SURVEY_NAME_HASH_PREFIX}{}", hash16(&text));
     match (policy, shown) {
-        (_, _) if is_email_shaped(&text) => match policy {
-            SurveyIdentityPolicyV1::Name => (hashed.clone(), Some(hashed), false),
-            SurveyIdentityPolicyV1::EmailHash => (hashed, None, false),
-        },
-        (SurveyIdentityPolicyV1::Name, Some((kept, truncated))) => {
-            (hex16_of(name), Some(kept), truncated)
+        (SurveyIdentityPolicyV1::Name, Some((key, kept, truncated))) => {
+            (key, Some(kept), truncated)
         }
         (SurveyIdentityPolicyV1::Name, None) => (hashed.clone(), Some(hashed), false),
         (SurveyIdentityPolicyV1::EmailHash, Some(_)) => (hash16(email), None, false),
