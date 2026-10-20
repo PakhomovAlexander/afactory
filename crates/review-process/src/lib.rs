@@ -8,12 +8,14 @@ mod capture;
 mod control;
 mod drain;
 mod live;
+mod reaper;
 mod spawn;
 
-use capture::run_supervised_inner;
+use capture::{Caps, captured_inner, run_supervised_inner};
 pub use capture::{
-    SupervisedCapture, run_supervised_captured, run_supervised_captured_cancellable,
-    run_supervised_captured_cancellable_with_policy, run_supervised_captured_with_policy,
+    SupervisedCapture, run_supervised_captured, run_supervised_captured_bounded,
+    run_supervised_captured_cancellable, run_supervised_captured_cancellable_with_policy,
+    run_supervised_captured_streaming, run_supervised_captured_with_policy,
 };
 use drain::{collect_after_kill, collect_stderr, drain_async};
 pub use live::{kill_live_process_groups, live_process_groups};
@@ -21,6 +23,79 @@ pub use spawn::spawn;
 
 const STDIN_EXIT_GRACE: Duration = Duration::from_millis(500);
 const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(5);
+
+/// The most bytes of one drained stdout or stderr stream supervision keeps resident: 64 MiB.
+/// Past it a drain keeps reading and discards, so the child never blocks on a full pipe, and
+/// counts what it discarded ([`Truncation`]). Every `run_supervised_captured*` call caps both
+/// streams here unless it names a smaller cap ([`run_supervised_captured_bounded`]); a check's
+/// or a Worker's output is evidence, and a stream without end must not grow the kernel until it
+/// is killed for memory. The buffered `run_supervised*` calls whose stdout is a trusted tool's
+/// whole answer, parsed as one document (git plumbing), cap only stderr.
+pub const MAX_CAPTURED_STREAM_BYTES: usize = 64 * 1024 * 1024;
+
+/// The streams a supervised process wrote more to than their cap kept. Each `Some` is the
+/// stream's total byte count, of which only the first `cap` bytes were kept.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Truncation {
+    pub stdout: Option<u64>,
+    pub stderr: Option<u64>,
+    /// The cap that applied to the truncated stream.
+    pub cap: usize,
+}
+
+impl Truncation {
+    pub fn is_truncated(&self) -> bool {
+        self.stdout.is_some() || self.stderr.is_some()
+    }
+
+    /// One clause per truncated stream, naming its total and the cap; `None` when nothing was
+    /// truncated.
+    pub fn reason(&self) -> Option<String> {
+        let cap = size_text(self.cap);
+        let streams: Vec<String> = [("stdout", self.stdout), ("stderr", self.stderr)]
+            .into_iter()
+            .filter_map(|(stream, total)| {
+                total.map(|total| {
+                    format!(
+                        "{stream} was truncated at the {cap} output cap: it wrote {total} bytes, \
+                         of which only the first {cap} were kept"
+                    )
+                })
+            })
+            .collect();
+        (!streams.is_empty()).then(|| streams.join("; "))
+    }
+}
+
+/// A cap as a person reads it: whole MiB or KiB when it is one, bytes otherwise.
+fn size_text(bytes: usize) -> String {
+    const MIB: usize = 1024 * 1024;
+    if bytes >= MIB && bytes % MIB == 0 {
+        format!("{} MiB", bytes / MIB)
+    } else if bytes >= 1024 && bytes % 1024 == 0 {
+        format!("{} KiB", bytes / 1024)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+/// The parent's `PATH` with every entry that is not an existing absolute directory removed,
+/// each kept entry canonical: no empty entry and no relative one, so a child never resolves a
+/// program against its working directory, which for a Worker or a check is the candidate tree.
+/// Attempts, local checks and Provider probes all start from it.
+pub fn sanitized_path() -> std::ffi::OsString {
+    sanitize_path(std::env::var_os("PATH"))
+}
+
+fn sanitize_path(path: Option<std::ffi::OsString>) -> std::ffi::OsString {
+    let directories = path
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .filter(|path| path.is_absolute())
+        .filter_map(|path| std::fs::canonicalize(path).ok())
+        .filter(|path| path.is_dir());
+    std::env::join_paths(directories).unwrap_or_default()
+}
 
 #[derive(Debug)]
 pub enum SupervisedError {
@@ -66,6 +141,8 @@ pub struct SupervisedOutput {
     /// A descendant kept stderr open after the leader exited. Stdout remains complete evidence;
     /// callers may surface this flag as a diagnostic without discarding the answer.
     pub stderr_held: bool,
+    /// The streams that wrote more than their cap kept.
+    pub truncation: Truncation,
 }
 
 #[derive(Debug)]
@@ -80,6 +157,8 @@ pub struct SupervisedDuplexOutput<I, R> {
     pub output: R,
     pub stderr: Vec<u8>,
     pub stderr_held: bool,
+    /// Whether stderr wrote more than [`MAX_CAPTURED_STREAM_BYTES`]; stdout is the caller's.
+    pub truncation: Truncation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +167,19 @@ pub enum ExitPolicy {
     PreserveProcessGroup,
     /// End the entire process group when the leader exits, closing pipes held by background work.
     KillProcessGroup,
+    /// [`ExitPolicy::KillProcessGroup`], and also end every descendant that left the group, a
+    /// `setsid` child included, before the leader is reaped: for a run whose working tree is
+    /// sealed afterwards (a shell Attempt, a local check). On Linux the supervisor is a child
+    /// subreaper, so an orphaned descendant becomes its child and is killed and reaped; on other
+    /// platforms this is the group kill alone, and a descendant in another session or group can
+    /// outlive the run.
+    KillDescendants,
+}
+
+impl ExitPolicy {
+    fn kills_group(self) -> bool {
+        matches!(self, Self::KillProcessGroup | Self::KillDescendants)
+    }
 }
 
 /// Run one command in its own process group with an exact deadline and bounded pipe lifetimes.
@@ -105,7 +197,7 @@ pub fn run_supervised_with_policy(
     timeout: Duration,
     exit_policy: ExitPolicy,
 ) -> Result<SupervisedOutput, SupervisedError> {
-    run_supervised_captured_with_policy(command, input, timeout, exit_policy).into_result()
+    captured_inner(command, input, timeout, exit_policy, None, Caps::PROTOCOL).into_result()
 }
 
 /// Run a bounded process while a caller streams its stdin without first materializing one large
@@ -215,11 +307,10 @@ where
             let _ = output_send.send(result);
         });
 
-        let stderr = drain_async(stderr_pipe);
+        let stderr = drain_async(stderr_pipe, MAX_CAPTURED_STREAM_BYTES);
         let deadline = Instant::now() + timeout;
-        let kill_group_on_exit = exit_policy == ExitPolicy::KillProcessGroup;
         let outcome = (|| {
-            wait_exact_cancellable(deadline, cancellation, &leader, kill_group_on_exit)?;
+            wait_exact_cancellable(deadline, cancellation, &leader, exit_policy.kills_group())?;
 
             let input = match input_receive.recv_timeout(stdin_writer_wait(deadline)) {
                 Ok(Ok(result)) => result,
@@ -260,18 +351,19 @@ where
                     });
                 }
             };
-            let (stderr, stderr_held) = collect_stderr(stderr, &leader)?;
-            Ok((input, output, stderr, stderr_held))
+            let (stderr, total, stderr_held) = collect_stderr(stderr, &leader)?;
+            Ok((input, output, stderr, total, stderr_held))
         })();
         // Reaping is the final operation: every kill above ran while the pid was reserved.
         let status = leader.reap();
-        let (input, output, stderr, stderr_held) = outcome?;
+        let (input, output, stderr, total, stderr_held) = outcome?;
         Ok(SupervisedDuplexOutput {
             status: status.map_err(SupervisedError::Wait)?,
             input,
             output,
             stderr,
             stderr_held,
+            truncation: Caps::PROTOCOL.truncation(0, total),
         })
     })
 }
@@ -675,6 +767,58 @@ mod tests {
     /// A test whose subject is the deadline keeps its own short wall. The drain tests whose
     /// subject is a read failure or cancellation use it as their readiness and grace windows too.
     pub(crate) const LOAD_SAFE_WALL: Duration = Duration::from_secs(120);
+
+    #[test]
+    fn a_sanitized_path_keeps_only_existing_absolute_directories_canonically() {
+        let root = std::env::temp_dir().canonicalize().unwrap();
+        let file = root.join(format!("af-path-file-{}", std::process::id()));
+        std::fs::write(&file, b"").unwrap();
+        let raw = std::env::join_paths([
+            std::path::PathBuf::new(),
+            ".".into(),
+            "relative/bin".into(),
+            root.join("."),
+            "/nonexistent/af-path".into(),
+            file.clone(),
+            "/".into(),
+        ])
+        .unwrap();
+        let kept = sanitize_path(Some(raw));
+        std::fs::remove_file(&file).unwrap();
+        let kept: Vec<_> = std::env::split_paths(&kept).collect();
+        assert_eq!(kept, [root, std::path::PathBuf::from("/")]);
+        assert!(sanitize_path(None).is_empty());
+    }
+
+    #[test]
+    fn a_truncation_names_each_stream_its_total_and_the_cap() {
+        let none = Truncation::default();
+        assert!(!none.is_truncated());
+        assert_eq!(none.reason(), None);
+        let stdout = Truncation {
+            stdout: Some(209_715_200),
+            stderr: None,
+            cap: MAX_CAPTURED_STREAM_BYTES,
+        };
+        assert!(stdout.is_truncated());
+        assert_eq!(
+            stdout.reason().unwrap(),
+            "stdout was truncated at the 64 MiB output cap: it wrote 209715200 bytes, of which \
+             only the first 64 MiB were kept"
+        );
+        let both = Truncation {
+            stdout: Some(5000),
+            stderr: Some(4097),
+            cap: 4096,
+        };
+        assert_eq!(
+            both.reason().unwrap(),
+            "stdout was truncated at the 4 KiB output cap: it wrote 5000 bytes, of which only \
+             the first 4 KiB were kept; stderr was truncated at the 4 KiB output cap: it wrote \
+             4097 bytes, of which only the first 4 KiB were kept"
+        );
+        assert_eq!(size_text(1000), "1000 bytes");
+    }
 
     #[test]
     fn an_expired_child_deadline_still_gets_stdin_writer_grace() {

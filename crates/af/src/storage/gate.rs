@@ -94,6 +94,7 @@ pub(crate) fn pending(cas: &Cas, state: &TaskProjection) -> Result<Option<Leftov
     pull_requests.sort_unstable();
     pull_requests.dedup();
     let leftovers = Leftovers {
+        repository_id: github_pr::repository_of(cas, &first.snapshot_id)?,
         github: first.github.clone(),
         base_commit: latest(|evidence| &evidence.base_commit),
         head_commit: latest(|evidence| &evidence.head_commit),
@@ -109,13 +110,16 @@ pub(crate) fn pending(cas: &Cas, state: &TaskProjection) -> Result<Option<Leftov
     Ok(Some(leftovers))
 }
 
-/// The push target the mapping names for `github` now, if any.
-fn target(github: &str) -> Result<Option<(GithubPrTarget, Option<std::path::PathBuf>)>, String> {
+/// The push target the mapping names for the Task's repository now, if any: the entry the
+/// branches were pushed through, never merely the first that names the same GitHub repository.
+fn target(
+    repository_id: &str,
+) -> Result<Option<(GithubPrTarget, Option<std::path::PathBuf>)>, String> {
     let Some(path) = crate::task_execution::domain::remote_check_mapping()? else {
         return Ok(None);
     };
     Ok(RemoteCheckMapping::read(&path)?
-        .and_then(|mapping| mapping.target_for_github(github).cloned())
+        .and_then(|mapping| mapping.target(repository_id).cloned())
         .map(|target| (target, Some(path))))
 }
 
@@ -128,7 +132,7 @@ fn clean(
     leftovers: &Leftovers,
 ) -> Result<TaskGateCleanupV1, String> {
     let task_id = lease.task_id();
-    let cleanup = match target(&leftovers.github) {
+    let cleanup = match target(&leftovers.repository_id) {
         Ok(Some((target, mapping))) => github_pr::cleanup(
             task_id,
             &target,
@@ -141,9 +145,9 @@ fn clean(
             task_id,
             leftovers,
             format!(
-                "{MAPPING_KNOB} no longer names github:{}; its gate pull requests and \
-                 branches were left, and a later sweep removes them once it does",
-                leftovers.github
+                "{MAPPING_KNOB} no longer names repository {} (github:{}); its gate pull \
+                 requests and branches were left, and a later sweep removes them once it does",
+                leftovers.repository_id, leftovers.github
             ),
         ),
         Err(error) => failed(
@@ -365,7 +369,7 @@ fn retry_one(
     let state = store.task_projection(cas, task_id).ok().flatten()?;
     let leftovers = pending(cas, &state).ok().flatten()?;
     // A retry needs the mapping to still name the repository; collection records why not.
-    if !without_target && !matches!(target(&leftovers.github), Ok(Some(_))) {
+    if !without_target && !matches!(target(&leftovers.repository_id), Ok(Some(_))) {
         return None;
     }
     let lease = store
@@ -464,6 +468,7 @@ mod tests {
     #[test]
     fn a_done_cleanup_covers_only_the_pull_requests_it_closed() {
         let leftovers = Leftovers {
+            repository_id: "sha256:".to_string() + &"c".repeat(64),
             github: "owner/repo".into(),
             base_commit: Some("a".repeat(40)),
             head_commit: Some("b".repeat(40)),

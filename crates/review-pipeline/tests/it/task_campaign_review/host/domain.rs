@@ -1218,22 +1218,34 @@ fn a_usable_container_gate_runs_its_check_through_the_container_runtime() {
         .collect::<Vec<_>>();
     assert_eq!(
         argv.len(),
-        38,
+        43,
         "unexpected container runtime argv: {argv:?}"
     );
     assert_eq!(&argv[..3], ["run", "--rm", "--name"]);
     assert!(argv[3].starts_with("af-gate-"), "{:?}", argv[3]);
+    // No network, no host environment, a process ceiling, no capabilities, no privilege gain
+    // and an init that reaps; no memory or CPU ceiling, which this binding does not name.
     assert_eq!(
-        &argv[4..8],
-        ["--network=none", "--env-file", "/dev/null", "--user"]
+        &argv[4..13],
+        [
+            "--network=none",
+            "--env-file",
+            "/dev/null",
+            "--pids-limit",
+            "4096",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            "--init",
+            "--user"
+        ]
     );
-    let (uid, gid) = argv[8].split_once(':').expect("numeric uid:gid");
+    let (uid, gid) = argv[13].split_once(':').expect("numeric uid:gid");
     assert!(!uid.is_empty() && uid.bytes().all(|byte| byte.is_ascii_digit()));
     assert!(!gid.is_empty() && gid.bytes().all(|byte| byte.is_ascii_digit()));
     // The check's runtime directories are container-local mounts (ADR-0144); the host's
     // rustup home never crosses in, and the sandbox stays the only bind.
     assert_eq!(
-        &argv[9..34],
+        &argv[14..39],
         [
             "-e",
             "LC_ALL=C",
@@ -1262,11 +1274,61 @@ fn a_usable_container_gate_runs_its_check_through_the_container_runtime() {
             "--volume"
         ]
     );
-    assert!(argv[34].ends_with(":/work:rw"), "{:?}", argv[34]);
-    assert_eq!(argv[35], review_sandbox::container::DEFAULT_IMAGE);
-    assert_eq!(&argv[36..], ["/bin/sh", "./build.sh"]);
+    assert!(argv[39].ends_with(":/work:rw"), "{:?}", argv[39]);
+    assert_eq!(argv[40], review_sandbox::container::DEFAULT_IMAGE);
+    assert_eq!(&argv[41..], ["/bin/sh", "./build.sh"]);
     assert_eq!(argv.iter().filter(|arg| *arg == "--volume").count(), 1);
     assert!(!argv.iter().any(|arg| arg.starts_with("RUSTUP_HOME=")));
+}
+
+/// M3: the `[gate]` binding's `memory` and `cpus` reach the container runtime as
+/// `--memory`/`--memory-swap` (equal) and `--cpus`, before the image.
+#[test]
+fn a_container_gate_binding_caps_memory_and_cpus() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let reader = clean_reader();
+    let binding = format!(
+        "{}\nmemory = \"512m\"\ncpus = \"1.5\"",
+        container_binding("none")
+    );
+    let definition = gated_review(&reader, &reader, Some(&binding));
+    let (compiler, lease) = admit_source(
+        &cas,
+        &mut store,
+        &definition,
+        source(),
+        &["architecture", "performance"],
+        false,
+    );
+    let (runtime, runtime_log) = recording_container_runtime(directory.path());
+    let shared = SharedEventStore::new(&mut store);
+    hosted(
+        &cas,
+        &shared,
+        &compiler,
+        &lease,
+        |host| {
+            host.with_container_provider(review_sandbox::ContainerProvider::with_runtime(&runtime))
+        },
+        |_, _, report| assert!(report.complete(), "{report:?}"),
+    );
+    let argv: Vec<String> = std::fs::read_to_string(runtime_log)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let image = argv
+        .iter()
+        .position(|arg| arg == review_sandbox::container::DEFAULT_IMAGE)
+        .unwrap();
+    let limits: Vec<&str> = argv[..image]
+        .windows(2)
+        .filter(|pair| ["--memory", "--memory-swap", "--cpus"].contains(&pair[0].as_str()))
+        .map(|pair| pair[1].as_str())
+        .collect();
+    assert_eq!(limits, ["512m", "512m", "1.5"], "{argv:?}");
 }
 
 /// ADR-0144 D4: a review gate check gets the Task check's environment contract — a private

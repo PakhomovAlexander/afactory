@@ -40,12 +40,17 @@ advisory is published when the fixed release is available.
 `git`, `gh` — against copies of your code. What it guarantees, and what it does not:
 
 **Child processes start from an empty environment.** Every reviewer, gate, and provider
-process is spawned with `env_clear()` and an explicit allowlist, so API keys and other
-variables in your shell never reach a child process unless the allowlist names them.
-Provider authentication directories (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`) are handed to the
-reviewer CLI as *paths*. Those granted path values are redacted from captured stdout and
-stderr before anything is stored. That redaction covers the granted paths only — it does not
-recognise arbitrary token contents, and it is not a substitute for the environment isolation.
+process, and every `git` and `gh` of a Remote Check gate, is spawned with `env_clear()` and an
+explicit allowlist, so API keys and other variables in your shell never reach a child process
+unless the allowlist names them. A Worker's or a local check's `PATH` holds no empty or
+relative entry. Provider authentication directories (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`)
+are handed to the reviewer CLI as *paths*. Both granted path values are redacted from captured
+stdout and stderr before anything is stored, as granted and in their canonical spelling. A
+Claude Worker also receives your real `HOME` and `USER`, which Claude Code needs to find its
+Keychain login; those are not redacted. A Codex Worker's `HOME` is an empty directory af creates
+for the Attempt, never the code under review. That redaction covers the granted paths only — it
+does not recognise arbitrary token contents, and it is not a substitute for the environment
+isolation.
 
 **Private-host login is an explicit capability.** On Linux, `af provider auth` consumes two
 validated anonymous pipes separate from ordinary streams, binds one action-time host permission
@@ -75,10 +80,15 @@ review.
 sandbox is a materialised copy of a snapshot in a temporary directory. It keeps the input
 immutable and captures every mutation; it does not stop a process running as your user from
 reading what you can read, writing to absolute paths, or opening sockets. The README says
-the same.
+the same. On Linux a shell Attempt or a local check ends, besides its process group, every
+descendant that left the group with `setsid` before its tree is sealed; on macOS such a
+descendant can outlive it and write into its tree.
 
 **`container` is the isolation boundary.** The `container` sandbox runs
-`--rm --network=none --env-file /dev/null --user uid:gid` with only the sandbox root mounted.
+`--rm --network=none --env-file /dev/null --pids-limit 4096 --cap-drop=ALL
+--security-opt=no-new-privileges --init --user uid:gid` with only the sandbox root mounted.
+`--env-file /dev/null` keeps your environment out; it does not clear the `ENV` the pinned image
+declares. Memory and CPU are unlimited unless the `[gate]` binding sets `memory` and `cpus`.
 A runtime that is installed but unusable reports no isolation and refuses to run rather than
 falling back to the host. Pipelines that require `container` isolation are refused otherwise.
 

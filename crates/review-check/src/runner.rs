@@ -1,6 +1,9 @@
 //! Executing a check and recording what happened.
 
-use review_process::{ExitPolicy, SupervisedError, run_supervised_with_policy};
+use review_process::{
+    ExitPolicy, MAX_CAPTURED_STREAM_BYTES, SupervisedError, run_supervised_captured_bounded,
+    sanitized_path,
+};
 use review_store::{Cas, NewEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -185,6 +188,9 @@ pub struct CheckRunner<'a> {
     /// is legitimately long); a pipeline may tighten it.
     timeout: std::time::Duration,
     cancellation: Option<&'a std::sync::atomic::AtomicBool>,
+    /// The bytes kept of each output stream of a host-local check; a check that writes more
+    /// fails, naming the cap.
+    output_cap: usize,
 }
 
 impl<'a> CheckRunner<'a> {
@@ -193,9 +199,11 @@ impl<'a> CheckRunner<'a> {
             cas,
             workdir: workdir.as_ref().to_path_buf(),
             local_env: vec![
+                // Existing absolute directories only: an empty or relative entry would resolve
+                // a program against the candidate tree the check runs in.
                 (
                     "PATH".to_string(),
-                    std::env::var("PATH").unwrap_or_default(),
+                    sanitized_path().into_string().unwrap_or_default(),
                 ),
                 ("LC_ALL".to_string(), "C".to_string()),
                 ("TZ".to_string(), "UTC".to_string()),
@@ -206,7 +214,15 @@ impl<'a> CheckRunner<'a> {
             ],
             timeout: std::time::Duration::from_secs(3600),
             cancellation: None,
+            output_cap: MAX_CAPTURED_STREAM_BYTES,
         }
+    }
+
+    /// Keep at most `cap` bytes of each stream of a host-local check instead of
+    /// [`MAX_CAPTURED_STREAM_BYTES`].
+    pub fn with_output_cap(mut self, cap: usize) -> Self {
+        self.output_cap = cap;
+        self
     }
 
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
@@ -279,11 +295,12 @@ impl<'a> CheckRunner<'a> {
         for (key, value) in &self.local_env {
             cmd.env(key, value);
         }
-        let (output, stderr_held) = match self.run_with_deadline(&mut cmd) {
+        let (output, stderr_held, truncated) = match self.run_with_deadline(&mut cmd) {
             RunResult::Completed {
                 output,
                 stderr_held,
-            } => (output, stderr_held),
+                truncated,
+            } => (output, stderr_held, truncated),
             RunResult::Interrupted {
                 reason,
                 stdout,
@@ -331,7 +348,7 @@ impl<'a> CheckRunner<'a> {
         } else {
             CheckEnding::Signaled
         };
-        (self.finish(base, output, stderr_held), ending)
+        (self.finish(base, output, stderr_held, truncated), ending)
     }
 
     /// Execute through the normal shared runner and retain the actual AF-observed host interval.
@@ -382,7 +399,7 @@ impl<'a> CheckRunner<'a> {
             &self.portable_env,
             self.timeout,
         ) {
-            Ok((output, stderr_held)) => self.finish(base, output, stderr_held),
+            Ok((output, stderr_held)) => self.finish(base, output, stderr_held, None),
             Err(error) => CheckResult {
                 reason: Some(format!("execution provider refused or failed: {error}")),
                 ..base
@@ -421,11 +438,13 @@ impl<'a> CheckRunner<'a> {
         }
     }
 
+    /// `truncated` is the reason when a stream wrote more than its cap kept.
     fn finish(
         &self,
         base: CheckResult,
         output: std::process::Output,
         stderr_held: bool,
+        truncated: Option<String>,
     ) -> CheckResult {
         let stdout = self.cas.put(&output.stdout);
         let stderr = self.cas.put(&output.stderr);
@@ -452,6 +471,19 @@ impl<'a> CheckRunner<'a> {
             };
         }
         let (stdout, stderr) = (stdout.ok(), stderr.ok());
+
+        // Output past the cap is not whole evidence: whatever the exit code, the check failed,
+        // and its reason names the cap. The kept prefix is still recorded.
+        if let Some(reason) = truncated {
+            return CheckResult {
+                status: CheckStatus::Failed,
+                exit_code: Some(code.unwrap_or(-1)),
+                reason: Some(format!("output over the cap fails the check: {reason}")),
+                stdout,
+                stderr,
+                ..base
+            };
+        }
 
         if let Some(reason) = stderr_held_reason(stderr_held) {
             return CheckResult {
@@ -540,6 +572,8 @@ enum RunResult {
     Completed {
         output: std::process::Output,
         stderr_held: bool,
+        /// Why the output is only a prefix, when a stream wrote more than its cap.
+        truncated: Option<String>,
     },
     TimedOut,
     CouldNotStart(std::io::Error),
@@ -547,17 +581,20 @@ enum RunResult {
 
 impl CheckRunner<'_> {
     /// Use the shared process supervisor with the check-specific exit policy: a successful check
-    /// is over when its leader exits, so background descendants are reaped immediately rather
-    /// than being allowed to hold evidence pipes open.
+    /// is over when its leader exits, so background descendants, a `setsid` one included on
+    /// Linux, are ended before the tree it ran in is sealed rather than being allowed to hold
+    /// evidence pipes open or write after the check.
     fn run_with_deadline(&self, cmd: &mut std::process::Command) -> RunResult {
-        if let Some(flag) = self.cancellation {
-            let captured = review_process::run_supervised_captured_cancellable_with_policy(
-                cmd,
-                None,
-                self.timeout,
-                ExitPolicy::KillProcessGroup,
-                flag,
-            );
+        let captured = run_supervised_captured_bounded(
+            cmd,
+            None,
+            self.timeout,
+            ExitPolicy::KillDescendants,
+            self.cancellation,
+            self.output_cap,
+        );
+        let truncated = captured.truncation.reason();
+        if self.cancellation.is_some() {
             return match captured.status {
                 Ok(status) => RunResult::Completed {
                     output: std::process::Output {
@@ -566,6 +603,7 @@ impl CheckRunner<'_> {
                         stderr: captured.stderr,
                     },
                     stderr_held: captured.stderr_held,
+                    truncated,
                 },
                 Err(error) => RunResult::Interrupted {
                     ending: match &error {
@@ -581,14 +619,15 @@ impl CheckRunner<'_> {
             };
         }
 
-        match run_supervised_with_policy(cmd, None, self.timeout, ExitPolicy::KillProcessGroup) {
-            Ok(output) => RunResult::Completed {
-                stderr_held: output.stderr_held,
+        match captured.status {
+            Ok(status) => RunResult::Completed {
+                stderr_held: captured.stderr_held,
                 output: std::process::Output {
-                    status: output.status,
-                    stdout: output.stdout,
-                    stderr: output.stderr,
+                    status,
+                    stdout: captured.stdout,
+                    stderr: captured.stderr,
                 },
+                truncated,
             },
             Err(SupervisedError::TimedOut { .. }) => RunResult::TimedOut,
             Err(SupervisedError::Spawn(error)) => RunResult::CouldNotStart(error),

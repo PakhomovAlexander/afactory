@@ -153,17 +153,13 @@ impl RemoteCheckMapping {
         Ok(Self { entries })
     }
 
-    /// The push target for `repository_id`, `None` when the mapping does not name it.
+    /// The push target for `repository_id`, `None` when the mapping does not name it. A
+    /// finished Task's gate branches are deleted from the same target (ADR-0144), found by the
+    /// same key: several entries may name one GitHub repository.
     pub fn target(&self, repository_id: &str) -> Option<&GithubPrTarget> {
         self.entries
             .iter()
             .find(|entry| entry.repository_id == repository_id)
-    }
-
-    /// The first target whose GitHub repository is `github`: where a finished Task's gate
-    /// branches are deleted from (ADR-0144). `None` once the mapping no longer names it.
-    pub fn target_for_github(&self, github: &str) -> Option<&GithubPrTarget> {
-        self.entries.iter().find(|entry| entry.github == github)
     }
 }
 
@@ -277,6 +273,26 @@ mod tests {
         assert_eq!(parsed.target(&"6".repeat(40)), None);
         let empty = RemoteCheckMapping::parse("version = 1\n").unwrap();
         assert!(empty.entries.is_empty());
+    }
+
+    /// Two repositories may push to one GitHub repository through different URLs; the cleanup
+    /// of one finds its own entry by repository identity, never the first that names the same
+    /// `github` (I4).
+    #[test]
+    fn a_cleanup_target_is_the_entry_of_its_repository_not_the_first_naming_its_github() {
+        let other = "6".repeat(40);
+        let text = format!(
+            "version = 1\n[[github_pr]]\nrepository_id = \"{other}\"\ngithub = \"o/r\"\n\
+             push_url = \"/srv/git/first.git\"\n\n{}",
+            mapping("/srv/git/second.git").replace("version = 1\n", "")
+        );
+        let parsed = RemoteCheckMapping::parse(&text).unwrap();
+        assert_eq!(parsed.target(ROOT).unwrap().push_url, "/srv/git/second.git");
+        assert_eq!(
+            parsed.target(&other).unwrap().push_url,
+            "/srv/git/first.git"
+        );
+        assert_eq!(parsed.target(&"7".repeat(40)), None);
     }
 
     #[test]

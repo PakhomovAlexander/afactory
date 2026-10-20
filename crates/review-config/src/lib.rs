@@ -1058,6 +1058,28 @@ pub enum CacheKindSpec {
     Cargo,
 }
 
+/// A container memory size as the runtimes take it: a positive whole number with an optional
+/// `b`, `k`, `m` or `g` unit.
+fn is_container_memory(value: &str) -> bool {
+    let digits = value.trim_end_matches(['b', 'k', 'm', 'g']);
+    value.len() <= 16
+        && value.len() - digits.len() <= 1
+        && !digits.is_empty()
+        && !digits.starts_with('0')
+        && digits.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// A container CPU count: a positive decimal number such as `2` or `1.5`.
+fn is_container_cpus(value: &str) -> bool {
+    let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
+    value.len() <= 8
+        && !whole.is_empty()
+        && whole.bytes().all(|byte| byte.is_ascii_digit())
+        && fraction.bytes().all(|byte| byte.is_ascii_digit())
+        && (!value.contains('.') || !fraction.is_empty())
+        && value.bytes().any(|byte| (b'1'..=b'9').contains(&byte))
+}
+
 fn is_pinned_container_image(image: &str) -> bool {
     let Some((name, digest)) = image.rsplit_once("@sha256:") else {
         return false;
@@ -1100,6 +1122,14 @@ pub struct GateExecutionSpec {
     /// kernel default when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_cache_max_entries: Option<u64>,
+    /// A container check's memory ceiling, `--memory` and `--memory-swap` alike (`8g`); no
+    /// limit when absent. Container bindings only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<String>,
+    /// A container check's CPU ceiling, `--cpus` (`4`, `1.5`); no limit when absent. Container
+    /// bindings only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpus: Option<String>,
 }
 
 impl GateExecutionSpec {
@@ -1384,6 +1414,12 @@ impl Definition {
                                 .to_string(),
                         ));
                     }
+                    if binding.memory.is_some() || binding.cpus.is_some() {
+                        return Err(ConfigError::Binding(
+                            "`trusted_local` Gate bindings cannot declare container `memory` or `cpus` limits"
+                                .to_string(),
+                        ));
+                    }
                 }
                 SandboxProviderSpec::Container => {
                     let image = binding.image.as_deref().ok_or_else(|| {
@@ -1395,6 +1431,20 @@ impl Definition {
                     if !is_pinned_container_image(image) {
                         return Err(ConfigError::Binding(format!(
                             "container Gate image `{image}` must be a non-option OCI reference pinned as `name@sha256:<64 lowercase hex>`"
+                        )));
+                    }
+                    if let Some(memory) = binding.memory.as_deref()
+                        && !is_container_memory(memory)
+                    {
+                        return Err(ConfigError::Binding(format!(
+                            "container Gate `memory = {memory:?}` must be a positive whole number with an optional b, k, m or g unit, such as \"8g\""
+                        )));
+                    }
+                    if let Some(cpus) = binding.cpus.as_deref()
+                        && !is_container_cpus(cpus)
+                    {
+                        return Err(ConfigError::Binding(format!(
+                            "container Gate `cpus = {cpus:?}` must be a positive decimal number, such as \"4\" or \"1.5\""
                         )));
                     }
                 }

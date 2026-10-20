@@ -877,6 +877,8 @@ fn build_definition(gates: &[Gate]) -> Definition {
             build_caches: Vec::new(),
             build_cache_max_bytes: None,
             build_cache_max_entries: None,
+            memory: None,
+            cpus: None,
         }),
         nodes,
         edges,

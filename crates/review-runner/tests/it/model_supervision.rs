@@ -307,3 +307,98 @@ fn settled_held_output_retains_redacted_bytes_without_admitting_a_message() {
         assert_eq!(cas.get(&id).unwrap(), b"[redacted]");
     }
 }
+
+/// Output past the cap is not evidence the kernel can keep whole: the Attempt fails, naming
+/// the cap and what was written, and keeps the capped prefix (M2).
+#[test]
+fn a_worker_writing_past_its_output_cap_fails_its_attempt() {
+    let (dir, cas) = workdir();
+    let runner = ModelRunner::new(dir.path(), LOAD_SAFE_WALL).with_output_cap(4096);
+    let capture = runner.capture(&cas, &sh("head -c 10000 /dev/zero; exit 0"), vec![], None);
+    match capture.status {
+        Err(RunnerError::Failed {
+            exit_code,
+            stderr_excerpt,
+        }) => {
+            assert_eq!(exit_code, 0);
+            assert!(
+                stderr_excerpt
+                    .contains("stdout was truncated at the 4 KiB output cap: it wrote 10000 bytes"),
+                "{stderr_excerpt}"
+            );
+        }
+        other => panic!("an over-cap Attempt must fail: {other:?}"),
+    }
+    assert_eq!(capture.stdout.len(), 4096);
+    assert_eq!(cas.get(&capture.raw_artifact_ids[0]).unwrap().len(), 4096);
+
+    // Under the cap, the same Worker is an ordinary success.
+    let capture = runner.capture(&cas, &sh("head -c 4096 /dev/zero"), vec![], None);
+    assert!(capture.status.unwrap().success());
+}
+
+/// A granted path is redacted however the CLI spells it: as granted, and canonical (a symbolic
+/// link resolved, `/var` as `/private/var` on macOS).
+#[test]
+fn a_granted_path_is_redacted_in_its_canonical_spelling_too() {
+    let (dir, cas) = workdir();
+    let real = dir.path().join("real-config");
+    std::fs::create_dir(&real).unwrap();
+    let link = dir.path().join("config-link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let granted = link.display().to_string();
+    let runner = ModelRunner::new(dir.path(), LOAD_SAFE_WALL).with_grant("FIXTURE_DIR", &granted);
+    let capture = runner.capture(
+        &cas,
+        &sh("printf '%s\\n' \"$FIXTURE_DIR\"; cd \"$FIXTURE_DIR\" && pwd -P"),
+        vec![],
+        None,
+    );
+    assert_eq!(capture.stdout, b"[redacted]\n[redacted]\n");
+    let canonical = real.canonicalize().unwrap().display().to_string();
+    let stored = String::from_utf8(cas.get(&capture.raw_artifact_ids[0]).unwrap()).unwrap();
+    assert!(!stored.contains(&canonical) && !stored.contains(&granted));
+}
+
+/// An Attempt's `PATH` is the parent's with every empty, relative or missing entry removed, so
+/// a Worker never resolves a program against the candidate tree it runs in (I6). The parent
+/// runs this test again in a child whose own `PATH` carries such entries.
+#[test]
+fn an_attempt_path_holds_only_absolute_directories() {
+    const PROBE: &str = "AF_FIXTURE_ATTEMPT_PATH_PROBE";
+    let (dir, cas) = workdir();
+    let runner = ModelRunner::new(dir.path(), LOAD_SAFE_WALL);
+    let capture = runner.capture(&cas, &sh("printf '%s' \"$PATH\""), vec![], None);
+    let path = String::from_utf8(capture.stdout).unwrap();
+    assert_eq!(
+        std::ffi::OsString::from(&path),
+        review_process::sanitized_path()
+    );
+    assert!(
+        path.split(':')
+            .all(|entry| entry.starts_with('/') && std::path::Path::new(entry).is_dir()),
+        "{path}"
+    );
+    if std::env::var_os(PROBE).is_some() {
+        assert!(path.contains("/bin"), "{path}");
+        return;
+    }
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "model_supervision::an_attempt_path_holds_only_absolute_directories",
+            "--test-threads=1",
+        ])
+        .env(PROBE, "1")
+        .env(
+            "PATH",
+            "::.:relative/bin:/nonexistent/af-bin:/usr/bin:/bin:",
+        )
+        .output()
+        .unwrap();
+    assert!(
+        child.status.success() && String::from_utf8_lossy(&child.stdout).contains("1 passed"),
+        "{}",
+        String::from_utf8_lossy(&child.stdout)
+    );
+}

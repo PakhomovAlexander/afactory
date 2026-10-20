@@ -107,8 +107,10 @@ What `execute-checks` grants a review Worker:
 - A shell. Claude gets `Bash` in the adapter-owned `--tools` and `--allowedTools` lists, still
   under `--safe-mode --restricted --permission-mode dontAsk --strict-mcp-config`. Codex runs
   `-s workspace-write`. Both are rooted at the sandbox root, which is also the working directory.
-- Anything it adds: build output, its own harness, the dotfiles the tools it runs write into
-  `HOME` (the sandbox root). All of it is discarded with the clone.
+- Anything it adds to the clone: build output, its own harness, the files the tools it runs
+  write there. All of it is discarded with the clone. Codex's `HOME` is a private, empty
+  directory of the Attempt, so a dotfile in the candidate never configures its shell; Claude's
+  is the real home its login needs.
 
 What it never grants:
 
