@@ -369,6 +369,13 @@ impl ProjectStore {
         Ok(store)
     }
 
+    /// An existing Project Store opened to be read and nothing else: no Store registry entry is
+    /// written and its last use is not moved, so a preview (`af project brief`) records nothing.
+    pub(crate) fn open_unregistered(state_home: &Path, project_id: &str) -> Result<Self, String> {
+        Self::open_unrecorded_waiting(state_home, project_id, Wait::Blocking)
+            .map_err(Unopened::message)
+    }
+
     /// [`ProjectStore::open`] without the registry, which lives in the machine's own state home.
     #[cfg(test)]
     fn open_unrecorded(state_home: &Path, project_id: &str) -> Result<Self, String> {

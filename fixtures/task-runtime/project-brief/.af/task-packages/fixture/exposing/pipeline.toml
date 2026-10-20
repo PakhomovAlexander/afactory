@@ -1,4 +1,4 @@
-schema = "af.pipeline/1"
+schema = "af.pipeline/2"
 name = "fixture/exposing"
 version = "1.0.0"
 max_attempts = 3

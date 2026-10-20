@@ -380,7 +380,7 @@ fn a_preview_carries_the_brief_unchanged_or_the_none_outcome() {
 fn a_project_brief_port_is_one_optional_unbound_brief_naming_its_variant() {
     let definition = |port: Value| {
         json!({
-            "schema": "af.pipeline/1", "name": "fixture/oriented", "version": "1.0.0",
+            "schema": "af.pipeline/2", "name": "fixture/oriented", "version": "1.0.0",
             "contract": {
                 "inputs": {"project": port},
                 "outputs": {"out": {"artifact_type": "af/Document@1", "cardinality": "one",
@@ -429,16 +429,88 @@ fn a_project_brief_port_is_one_optional_unbound_brief_naming_its_variant() {
     ] {
         let value = definition(port.clone());
         if valid {
-            assert_valid("pipeline-definition-v1.json", &value);
+            assert_valid(PIPELINE_V2, &value);
         } else {
-            assert_invalid(
-                "pipeline-definition-v1.json",
-                &value,
-                "project_brief port shape",
-            );
+            assert_invalid(PIPELINE_V2, &value, "project_brief port shape");
         }
         let typed = serde_json::from_value::<review_core::task::pipeline::PipelinePortV1>(port)
             .is_ok_and(|port| port.validate().is_ok());
         assert_eq!(typed, valid, "{value}");
     }
+}
+
+const PIPELINE_V1: &str = "pipeline-definition-v1.json";
+const PIPELINE_V2: &str = "pipeline-definition-v2.json";
+
+/// The v2 parity fixture: `fixtures/task-contracts/v2/pipeline-definition.json`.
+fn pipeline_v2() -> Value {
+    let path = super::workspace_root().join("fixtures/task-contracts/v2/pipeline-definition.json");
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
+/// Rust admission of a pipeline: the typed round trip and its validation.
+fn admitted(value: &Value) -> Result<(), String> {
+    let definition: review_core::task::pipeline::PipelineDefinitionV1 =
+        serde_json::from_value(value.clone()).map_err(|error| error.to_string())?;
+    definition.validate()?;
+    assert_eq!(&serde_json::to_value(&definition).unwrap(), value);
+    Ok(())
+}
+
+/// ADR-0145 clause 2 applied to the Brief port (ADR-0159): the port declaration is
+/// `af.pipeline/2`'s, so an `af.pipeline/1` pipeline carrying it is refused by its schema and by
+/// Rust, and `af.pipeline/2` is the shape of a pipeline that declares it: one without the port
+/// is `af.pipeline/1`, never a second spelling of it.
+#[test]
+fn the_brief_port_is_af_pipeline_2_and_a_version_1_pipeline_carrying_it_is_refused() {
+    let v2 = pipeline_v2();
+    assert_valid(PIPELINE_V2, &v2);
+    admitted(&v2).unwrap();
+
+    // The old version carrying the new port: refused by both version schemas and by Rust.
+    let old = changed(&v2, "", "schema", Some(json!("af.pipeline/1")));
+    assert_invalid(PIPELINE_V1, &old, "af.pipeline/1 carries no Brief port");
+    assert_invalid(PIPELINE_V2, &old, "af.pipeline/2 is its own label");
+    let refused = admitted(&old).unwrap_err();
+    assert!(
+        refused.contains("under af.pipeline/1") && refused.contains("af.pipeline/2"),
+        "{refused}"
+    );
+    // Its parts alone, too: a `brief` key, or the `project_brief` default, in version 1.
+    let mut defaulted = old.clone();
+    defaulted["contract"]["inputs"]["project"]
+        .as_object_mut()
+        .unwrap()
+        .remove("brief");
+    assert_invalid(
+        PIPELINE_V1,
+        &defaulted,
+        "project_brief is no version-1 default",
+    );
+    assert!(admitted(&defaulted).is_err());
+
+    // Without the port the pipeline is version 1, which reads as it always did.
+    let mut plain = v2.clone();
+    plain["contract"]["inputs"]
+        .as_object_mut()
+        .unwrap()
+        .remove("project");
+    plain["nodes"][0]["inputs"]
+        .as_object_mut()
+        .unwrap()
+        .remove("project");
+    assert_invalid(PIPELINE_V2, &plain, "af.pipeline/2 declares a Brief port");
+    let refused = admitted(&plain).unwrap_err();
+    assert!(
+        refused.contains("declares no `project_brief` port"),
+        "{refused}"
+    );
+    let plain = changed(&plain, "", "schema", Some(json!("af.pipeline/1")));
+    assert_valid(PIPELINE_V1, &plain);
+    admitted(&plain).unwrap();
+    assert_invalid(
+        PIPELINE_V1,
+        &changed(&plain, "", "schema", Some(json!("af.pipeline/3"))),
+        "unknown version",
+    );
 }

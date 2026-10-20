@@ -1590,6 +1590,17 @@ impl Compiler<'_> {
                                 .ok_or_else(|| format!("Unsupported {signature_name}"))?,
                         };
                         signature.contract.validate()?;
+                        if signature
+                            .contract
+                            .inputs
+                            .values()
+                            .any(PipelinePortV1::declares_brief)
+                        {
+                            return Err(format!(
+                                "{signature_name} declares a Project Brief root default; only \
+                                 an af.pipeline/2 root port names one"
+                            ));
+                        }
                         if signature.retains.iter().any(|(output, inputs)| {
                             !signature.contract.outputs.contains_key(output)
                                 || inputs

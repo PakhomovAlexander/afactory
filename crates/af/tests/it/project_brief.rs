@@ -45,15 +45,7 @@ impl Fixture {
         let root = tempfile::tempdir().unwrap();
         let (repo, state) = task_cli::fixture_named(root.path(), "project-brief");
         edit(&repo);
-        let path = repo.join(".af/task-catalog.toml");
-        let mut catalog: toml::Value =
-            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
-            let package = repo.join(pin["path"].as_str().unwrap());
-            let digest = review_config::lock::package_digest(name, &package).unwrap();
-            pin["digest"] = toml::Value::String(digest);
-        }
-        std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
+        pin_packages(&repo);
         git(&repo, &["add", "-A"]);
         git(&repo, &["commit", "-qm", "pin packages"]);
         std::fs::create_dir_all(root.path().join("tasks")).unwrap();
@@ -171,6 +163,19 @@ impl Fixture {
         git(&self.repo, &["add", "-A"]);
         git(&self.repo, &["commit", "-qm", "brief policy"]);
     }
+}
+
+/// Pin every package digest of the catalog at `repo` from its tree.
+fn pin_packages(repo: &Path) {
+    let path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    for (name, pin) in catalog["packages"].as_table_mut().unwrap() {
+        let package = repo.join(pin["path"].as_str().unwrap());
+        let digest = review_config::lock::package_digest(name, &package).unwrap();
+        pin["digest"] = toml::Value::String(digest);
+    }
+    std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
 }
 
 fn shown(output: &Output) -> String {
@@ -712,6 +717,177 @@ fn a_bound_brief_carries_the_recorded_one_and_is_receipted_per_task() {
     );
 }
 
+impl Fixture {
+    /// A second repository beside the fixture's: the same packages under its own root commit,
+    /// so its own Project, sharing this fixture's state home and Task Store.
+    fn other_repository(&self) -> PathBuf {
+        let (repo, _) = task_cli::fixture_named(&self.root.path().join("other"), "project-brief");
+        std::fs::remove_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join("other.txt"), "another repository\n").unwrap();
+        pin_packages(&repo);
+        git(&repo, &["init", "-q", "-b", "main"]);
+        git(&repo, &["config", "user.name", "Other"]);
+        git(&repo, &["config", "user.email", "other@example.invalid"]);
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-qm", "other"]);
+        repo
+    }
+}
+
+/// The automatic Brief is the Project's of the resolved source Snapshot (ADR-0159 clause 4): a
+/// Task planned in repository A whose `source` is bound to a tree of repository B never carries
+/// A's Survey. The port is empty while B has no complete Survey, although A has one, and once B
+/// is surveyed it carries B's Brief, whose staleness is unknown: the re-rooted tree is no commit.
+#[test]
+fn a_bound_source_of_another_repository_pins_that_repositorys_survey_or_nothing() {
+    let a = Fixture::new();
+    a.refresh();
+    let ours = a.preview(&[]);
+    let b = a.other_repository();
+    let state = a.state.to_str().unwrap().to_owned();
+    let in_b = a.task_file("in-b", "fixture/oriented", None);
+    let ran = a.af_in(
+        &b,
+        &[
+            "task",
+            "start",
+            "--execute",
+            "--file",
+            &in_b,
+            "--json",
+            "--state",
+            &state,
+        ],
+    );
+    assert_eq!(ran.status.code(), Some(0), "{}", shown(&ran));
+    let ran: Value = serde_json::from_slice(&ran.stdout).unwrap();
+    assert_eq!(ran["result"]["acceptance"], "satisfied", "{ran}");
+    assert_eq!(a.port(&ran), None, "B has no Survey yet");
+
+    let bound = json!({"source": {"task": "in-b", "port": "snapshot"}});
+    let file = a.task_file("from-b", "fixture/oriented", Some(bound.clone()));
+    let planned = a.task(&["task", "plan", "--file", &file], 0);
+    assert_eq!(a.port(&planned), None, "A's Survey is never selected");
+    let explained = a.task_text(&["task", "explain", "from-b"]);
+    assert!(
+        explained.contains("source <- task in-b/snapshot"),
+        "{explained}"
+    );
+    assert_eq!(
+        port_line(&explained),
+        "project: none (no Survey recorded; run af project refresh)"
+    );
+    let receipt = receipts(&a.cas(), planned["revision_id"].as_str().unwrap()).remove(0);
+    assert_eq!(receipt["outcome"], "none");
+    assert_eq!(receipt["reason"], "no_survey");
+
+    let surveyed = a.af_in(&b, &["project", "refresh"]);
+    assert_eq!(surveyed.status.code(), Some(0), "{}", shown(&surveyed));
+    let theirs = a.af_in(&b, &["project", "brief", "--json"]);
+    assert_eq!(theirs.status.code(), Some(0), "{}", shown(&theirs));
+    let theirs: Value = serde_json::from_slice(&theirs.stdout).unwrap();
+    assert_ne!(theirs["brief"]["project_id"], ours["brief"]["project_id"]);
+
+    let file = a.task_file("from-b-surveyed", "fixture/oriented", Some(bound));
+    let planned = a.task(&["task", "plan", "--file", &file], 0);
+    let carried = a.port(&planned).unwrap();
+    assert_eq!(theirs["brief_id"], carried.as_str());
+    assert_ne!(ours["brief_id"], carried.as_str());
+    let brief = a.cas().get_json(&carried).unwrap();
+    assert_eq!(
+        brief["payload"]["project_id"],
+        theirs["brief"]["project_id"]
+    );
+    let receipt = receipts(&a.cas(), planned["revision_id"].as_str().unwrap()).remove(0);
+    assert_eq!(receipt["outcome"], "constructed");
+    assert_eq!(
+        receipt["staleness"],
+        json!({"kind":"unknown","reason":"no_committed_revision"})
+    );
+    let explained = a.task_text(&["task", "explain", "from-b-surveyed"]);
+    assert!(
+        port_line(&explained).ends_with("behind unknown)"),
+        "{explained}"
+    );
+}
+
+/// ADR-0158 clause 6 holds in a Brief: an author's email never enters it, while repository text
+/// enters verbatim, `@` included. Under both identity policies the decision title keeps the
+/// address it was committed with, the author whose name is an email address is the sanitized
+/// identity `h:` and the hash of that name, and neither author's email appears.
+#[test]
+fn a_brief_keeps_an_email_in_a_decision_title_and_sanitizes_an_email_shaped_author() {
+    use sha2::Digest as _;
+    const TITLE: &str = "ADR-0001: Send key requests to keys@example.com";
+    let f = Fixture::with(|repo| {
+        let adr = repo.join("docs/adr");
+        std::fs::create_dir_all(&adr).unwrap();
+        std::fs::write(
+            adr.join("0001-key-requests.md"),
+            format!("# {TITLE}\n\nStatus: accepted on 2026-10-01.\n"),
+        )
+        .unwrap();
+        let path = repo.join(".af/task-packages/fixture/oriented/pipeline.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            &path,
+            text.replace("brief = \"orient\"", "brief = \"people\""),
+        )
+        .unwrap();
+    });
+    let author = "maintainer@example.net";
+    f.commit_by(author, author, "one.txt");
+    f.commit_by("Ada", "ada@example.org", "two.txt");
+    let hashed = format!(
+        "h:{}",
+        &review_core::hex::encode(&sha2::Sha256::digest(author.as_bytes()))[..16]
+    );
+    for identity in ["name", "email_hash"] {
+        f.write_policy(&format!(
+            "[survey]\nidentity = \"{identity}\"\n\n[brief.people]\nsections = \
+             [\"contributors\", \"decisions\"]\nmax_bytes = 262144\n"
+        ));
+        f.refresh();
+        let preview = f.preview(&["--variant", "people"]);
+        let brief = &preview["brief"];
+        let titles: Vec<&str> = brief["sections"]["decisions"]["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|record| record["title"].as_str())
+            .collect();
+        assert_eq!(titles, [TITLE], "{identity}: {brief}");
+        let contributors = brief["sections"]["contributors"]["by_identity"]
+            .as_array()
+            .unwrap();
+        let sanitized = contributors
+            .iter()
+            .find(|contributor| contributor["key"] == hashed.as_str())
+            .unwrap_or_else(|| panic!("{identity}: no {hashed} in {contributors:?}"));
+        if identity == "name" {
+            assert_eq!(sanitized["name"], hashed.as_str(), "{sanitized}");
+        } else {
+            assert!(sanitized.get("name").is_none(), "{sanitized}");
+        }
+        // The Brief the plan binds is the preview's, byte for byte.
+        let file = f.task_file(&format!("people-{identity}"), "fixture/oriented", None);
+        let planned = f.task(&["task", "plan", "--file", &file], 0);
+        let bound = f.port(&planned).unwrap();
+        assert_eq!(preview["brief_id"], bound.as_str());
+        let stored = f.cas().get_json(&bound).unwrap()["payload"].to_string();
+        let text = brief.to_string();
+        for document in [&text, &stored] {
+            assert!(document.contains("keys@example.com"), "{identity}");
+            for email in [author, "ada@example.org", "example.invalid"] {
+                assert!(
+                    !document.contains(email),
+                    "{identity}: {email} in {document}"
+                );
+            }
+        }
+    }
+}
+
 /// (j): `af project brief` and a plan with the port leave nothing in the checkout.
 #[test]
 fn the_brief_writes_nothing_inside_the_checkout() {
@@ -1042,6 +1218,67 @@ fn a_node_over_the_request_cap_with_its_brief_is_refused_at_plan_time() {
     );
 }
 
+/// The plan-time cap is the renderer's own accounting (ADR-0159 clause 7): the serialized Worker
+/// request, its JSON escaping, value wrappers and output schemas included. Here the instructions
+/// and the root inputs with the Brief sum to well under 1 MiB, but the instructions are quotes,
+/// each escaped to two bytes, and the report schema carries a long description, so the request
+/// the runner would render is over the cap and the plan fails before any dispatch.
+#[test]
+fn a_known_request_over_the_cap_only_once_serialized_fails_planning() {
+    let quotes = 200_000;
+    let description = 700_000;
+    let f = Fixture::with(|repo| {
+        let package = repo.join(".af/task-packages/fixture/implementer");
+        std::fs::write(package.join("instructions.md"), "\"".repeat(quotes)).unwrap();
+        let path = package.join("outputs/report.schema.json");
+        let mut schema: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        schema["description"] = json!("d".repeat(description));
+        std::fs::write(&path, schema.to_string()).unwrap();
+    });
+    // Without a Brief the node is not checked at plan time.
+    let file = f.task_file("unbriefed", "fixture/oriented", None);
+    f.task_text(&["task", "plan", "--file", &file]);
+    f.refresh();
+    let brief = f.preview(&[]);
+    let brief_bytes: usize = brief["manifest"]["rendered_bytes"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    // The payload sum: the raw instructions and the Brief's value, with a generous allowance
+    // for the requirements and source values, fits the cap with room to spare.
+    let cap = review_runner::task::MAX_WORKER_BYTES;
+    assert!(quotes + brief_bytes + 64 * 1024 < cap);
+    // Serialized, the quotes and the schema alone are over it.
+    assert!(2 * quotes + description > cap);
+    let file = f.task_file("briefed", "fixture/oriented", None);
+    let refused = f.af(&[
+        "task",
+        "plan",
+        "--file",
+        &file,
+        "--json",
+        "--state",
+        f.state.to_str().unwrap(),
+    ]);
+    assert_eq!(refused.status.code(), Some(1), "{}", shown(&refused));
+    let said = shown(&refused);
+    assert!(
+        said.contains("Worker node root.nodes.implement would receive a request of at least")
+            && said.contains("output schemas as the renderer serializes them")
+            && said.contains("over the Worker request cap of 1048576 bytes"),
+        "{said}"
+    );
+    let bytes: usize = said
+        .split("at least ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|count| count.parse().ok())
+        .unwrap();
+    assert!(bytes > 2 * quotes + description, "{said}");
+}
+
 impl Fixture {
     /// The fixture's one Project Store directory, once a command registered it.
     fn project_store(&self) -> PathBuf {
@@ -1099,7 +1336,9 @@ fn listing(directory: &Path) -> Vec<(PathBuf, u64)> {
 }
 
 /// `af project brief` reads and records nothing: run before any Survey it registers no Project
-/// and creates no Project Store, and after one it appends no event and writes no file there.
+/// and creates no Project Store, and after one it appends no event, writes no file there, and
+/// leaves the Store registry `af/stores.toml`, the Project Store's entry and its last use, as it
+/// found them.
 #[test]
 fn af_project_brief_registers_and_records_nothing() {
     let f = Fixture::new();
@@ -1114,11 +1353,33 @@ fn af_project_brief_registers_and_records_nothing() {
     f.refresh();
     let events = f.project_events();
     let before = listing(&f.project_store());
+    let registry = f.state_home().join("af/stores.toml");
+    let registered = std::fs::read(&registry).unwrap();
+    let last_use = |text: &[u8]| -> Vec<(String, i64)> {
+        let parsed: toml::Value = toml::from_str(std::str::from_utf8(text).unwrap()).unwrap();
+        parsed["store"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["kind"].as_str() == Some("project"))
+            .map(|entry| {
+                let path = entry["path"].as_str().unwrap().to_owned();
+                (path, entry["last_use_unix_ms"].as_integer().unwrap())
+            })
+            .collect()
+    };
+    let used = last_use(&registered);
+    assert_eq!(used.len(), 1, "{used:?}");
+    // A later use would be a later millisecond.
+    std::thread::sleep(std::time::Duration::from_millis(20));
     f.ok(&["project", "brief"]);
     f.preview(&["--variant", "orient"]);
     f.preview(&["--variant", "none"]);
     assert_eq!(f.project_events(), events);
     assert_eq!(listing(&f.project_store()), before);
+    let after = std::fs::read(&registry).unwrap();
+    assert_eq!(last_use(&after), used);
+    assert_eq!(after, registered, "af project brief rewrote af/stores.toml");
 }
 
 /// No Brief document (the Brief, its pin, the capture, the receipt, the preview) holds an author
@@ -1198,11 +1459,14 @@ fn no_brief_document_holds_an_email_or_a_host_path_under_either_identity_policy(
     }
 }
 
-/// A Survey record of the superseded `af/ProjectSurvey@1` (ADR-0145) never feeds a Brief:
-/// `af project brief` refuses it naming the version, a plan pins nothing and previews the empty
-/// port, and the next refresh records a Survey of this release that renders again.
+/// A refusal test, so it names the superseded label it refuses, as the Survey's own tests do:
+/// a Survey record relabelled to the superseded version (ADR-0145) never feeds a Brief. `af
+/// project brief` refuses it naming that version, a plan pins nothing and previews the empty
+/// port, and the next refresh records a Survey of this release that renders again. The label
+/// comes from the Survey's refusal constant; the Brief's live code never names it.
 #[test]
-fn a_superseded_survey_record_never_feeds_a_brief() {
+fn a_survey_record_of_the_superseded_project_survey_1_label_is_refused_and_feeds_no_brief() {
+    use review_core::project::{PROJECT_SURVEY_V1_SUPERSEDED, PROJECT_SURVEY_V2};
     use std::os::unix::fs::PermissionsExt;
     let f = Fixture::new();
     f.refresh();
@@ -1222,8 +1486,9 @@ fn a_superseded_survey_record_never_feeds_a_brief() {
     };
     let current = object(payload["survey_id"].as_str().unwrap());
     let text = std::fs::read_to_string(&current).unwrap();
-    assert!(text.contains("\"schema\":\"af/ProjectSurvey@2\""), "{text}");
-    let old = text.replace("af/ProjectSurvey@2", "af/ProjectSurvey@1");
+    let current_label = format!("\"schema\":\"{PROJECT_SURVEY_V2}\"");
+    assert!(text.contains(&current_label), "{text}");
+    let old = text.replace(PROJECT_SURVEY_V2, PROJECT_SURVEY_V1_SUPERSEDED);
     let old_id = review_store::canonical::blob_content_id(old.as_bytes());
     std::fs::create_dir_all(object(&old_id).parent().unwrap()).unwrap();
     std::fs::write(object(&old_id), &old).unwrap();
@@ -1240,7 +1505,9 @@ fn a_superseded_survey_record_never_feeds_a_brief() {
     let refused = f.af(&["project", "brief"]);
     assert_eq!(refused.status.code(), Some(1), "{}", shown(&refused));
     assert!(
-        shown(&refused).contains("it is af/ProjectSurvey@1, a superseded version"),
+        shown(&refused).contains(&format!(
+            "it is {PROJECT_SURVEY_V1_SUPERSEDED}, a superseded version"
+        )),
         "{}",
         shown(&refused)
     );
@@ -1260,7 +1527,7 @@ fn a_superseded_survey_record_never_feeds_a_brief() {
         "project: none (no Survey recorded; run af project refresh)"
     );
     assert!(
-        String::from_utf8_lossy(&planned.stderr).contains("af/ProjectSurvey@1"),
+        String::from_utf8_lossy(&planned.stderr).contains(PROJECT_SURVEY_V1_SUPERSEDED),
         "{}",
         shown(&planned)
     );

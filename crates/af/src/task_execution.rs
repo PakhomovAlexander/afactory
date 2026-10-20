@@ -1602,12 +1602,21 @@ fn start_captured(
     }
     // The Project Brief's initial capture, before any pipeline is selected: the pinned Survey,
     // the `[brief]` policy and the ancestry of every Survey head against the source commit, so
-    // every later normalization renders from them alone (ADR-0159).
+    // every later normalization renders from them alone (ADR-0159). The Survey is the Project's
+    // of the resolved source: a bound `source` names its own repository, which need not be the
+    // invoking checkout's.
     let constructs = crate::project_brief::constructs(&compiler, authority.planner.is_some());
+    let source_origin = match bound_ports.get("source") {
+        Some(port) => input_bindings::bound_source_origin(&cas, port)?,
+        None => crate::project_brief::SourceOrigin {
+            repository_id: source.repository_id.clone(),
+            commit: source.source_revision.clone(),
+        },
+    };
     if let Some(id) = crate::project_brief::capture(
         &cas,
         &options.repo,
-        source.source_revision.as_deref(),
+        &source_origin,
         constructs,
         &bound_ports,
     )? {

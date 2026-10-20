@@ -1,8 +1,10 @@
 //! Project Briefs (ADR-0159): the bounded selection of one Survey a pipeline's declared
 //! `project` port carries into the Workers it is wired to.
 //!
-//! A Task's initial capture, before any pipeline is selected, pins the newest complete Survey of
-//! the checkout's Project as `af/ProjectSurveyPin@1` in the Task Store and records an
+//! A Task's initial capture, before any pipeline is selected and once its `source` binding is
+//! resolved, pins the newest complete Survey of the Project of the source Snapshot's origin (never
+//! of the invoking checkout, which a bound `source` need not belong to) as
+//! `af/ProjectSurveyPin@1` in the Task Store and records an
 //! `af/ProjectBriefCapture@1` in the revision's provenance: the pin, the project's
 //! `[brief.<name>]` variants and the ancestry of every Survey head against the source commit.
 //! Every `normalize_root_inputs` site then renders a `project_brief` port from that record alone
@@ -252,21 +254,53 @@ fn identities(
     Ok((pin_id, brief_id))
 }
 
-/// The Project Store of `checkout`, when one exists: opening it otherwise would create it.
-fn existing_store(checkout: &Checkout) -> Result<Option<crate::projects::ProjectStore>, String> {
+/// The repository a Task's source Snapshot came from, as its origin records it, and the
+/// committed revision the Snapshot is, when it is one: what selects the Project whose Survey the
+/// Task pins and the commit staleness is counted to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SourceOrigin {
+    pub(crate) repository_id: String,
+    pub(crate) commit: Option<String>,
+}
+
+/// How a reader uses the Project Store: a Task's capture records that it used it, as every
+/// command that opens a Store does; `af project brief` is a preview and records nothing, so it
+/// neither registers the Store nor moves its last use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StoreUse {
+    Capture,
+    Preview,
+}
+
+/// The Project Store of `project_id`, when one exists: opening it otherwise would create it.
+fn existing_store(
+    project_id: &str,
+    reader: StoreUse,
+) -> Result<Option<crate::projects::ProjectStore>, String> {
     let state_home = crate::xdg_state_root()?;
-    let directory = crate::projects::store_directory(&state_home, &checkout.project_id);
+    let directory = crate::projects::store_directory(&state_home, project_id);
     if std::fs::symlink_metadata(directory.join("events.sqlite")).is_err() {
         return Ok(None);
     }
-    crate::projects::ProjectStore::open(&state_home, &checkout.project_id).map(Some)
+    match reader {
+        StoreUse::Capture => crate::projects::ProjectStore::open(&state_home, project_id),
+        StoreUse::Preview => {
+            crate::projects::ProjectStore::open_unregistered(&state_home, project_id)
+        }
+    }
+    .map(Some)
 }
 
-/// The pin of the newest complete, uncollected Survey of `checkout`'s Project whose
-/// `repository_id` is the checkout's, or of the Survey `named`; `None` without a Project Store or
-/// such a Survey. Every record is read through the Project Store's own replay checks.
-fn pin_of(checkout: &Checkout, named: Option<&str>) -> Result<Option<ProjectSurveyPinV1>, String> {
-    let Some(store) = existing_store(checkout)? else {
+/// The pin of the newest complete, uncollected Survey of the Project of `repository_id` whose own
+/// `repository_id` is that one, or of the Survey `named`; `None` without a Project Store or such a
+/// Survey. Every record is read through the Project Store's own replay checks.
+fn pin_of(
+    repository_id: &str,
+    named: Option<&str>,
+    reader: StoreUse,
+) -> Result<Option<ProjectSurveyPinV1>, String> {
+    let project_id = crate::projects::project_id(repository_id);
+    let Some(store) = existing_store(&project_id, reader)? else {
         return Ok(None);
     };
     let log = store.log()?;
@@ -300,7 +334,7 @@ fn pin_of(checkout: &Checkout, named: Option<&str>) -> Result<Option<ProjectSurv
             .identity
             .body
             .as_ref()
-            .is_some_and(|identity| identity.repository_id == checkout.repository_id);
+            .is_some_and(|identity| identity.repository_id == repository_id);
         if ours {
             return ProjectSurveyPinV1::of(&recorded.survey_id, &read.survey).map(Some);
         }
@@ -314,7 +348,8 @@ fn pin_of(checkout: &Checkout, named: Option<&str>) -> Result<Option<ProjectSurv
 }
 
 /// One Survey head against `source`, by `git merge-base --is-ancestor` and `git rev-list
-/// --count` in the planning checkout; a typed `unknown` when either cannot answer.
+/// --count` in `checkout`, a checkout of the source's repository; a typed `unknown` when there
+/// is none or git cannot answer.
 fn ancestry(
     checkout: Option<&Checkout>,
     head: &str,
@@ -383,15 +418,21 @@ pub(crate) fn constructs(compiler: &TaskPlanCompiler, planner: bool) -> bool {
 /// Brief of this Task describes (the pin's, each Brief the Task file binds), recorded as one
 /// `af/ProjectBriefCapture@1` whose ID the caller keeps in the revision's provenance. `None` when
 /// the record would say nothing, so a Task that can carry no Brief keeps its revision identity.
-/// A Project Store that cannot be read is reported on stderr and pins nothing: a Survey never
-/// fails a Task.
+///
+/// The pin is the Survey of the Project of `source`, the resolved source Snapshot's origin: a
+/// Task invoked in one repository with a `source` bound from another pins the other's Survey or
+/// nothing, never the invoking checkout's. The variants are the planning checkout's policy, like
+/// the pipelines that name them, and ancestry is observed in the planning checkout only when it
+/// is a checkout of the source's repository. A Project Store that cannot be read is reported on
+/// stderr and pins nothing: a Survey never fails a Task.
 pub(crate) fn capture(
     cas: &Cas,
     repo: &Path,
-    source_commit: Option<&str>,
+    source: &SourceOrigin,
     constructs: bool,
     bound: &BTreeMap<String, ArtifactInputV1>,
 ) -> Result<Option<String>, String> {
+    let source_commit = source.commit.as_deref();
     let bound_briefs: Vec<&String> = bound
         .values()
         .filter(|port| port.artifact_type == PROJECT_BRIEF_V1)
@@ -414,8 +455,8 @@ pub(crate) fn capture(
         ..Default::default()
     };
     let mut heads = Vec::new();
-    if constructs && let Some(checkout) = &checkout {
-        match pin_of(checkout, None) {
+    if constructs {
+        match pin_of(&source.repository_id, None, StoreUse::Capture) {
             Ok(Some(pin)) => {
                 let (pin_id, _) = cas
                     .put_artifact(
@@ -438,8 +479,11 @@ pub(crate) fn capture(
     for id in bound_briefs {
         heads.push(read_brief(cas, id)?.head.commit);
     }
+    let of_source = checkout
+        .as_ref()
+        .filter(|checkout| checkout.repository_id == source.repository_id);
     for head in heads {
-        let observed = ancestry(checkout.as_ref(), &head, source_commit);
+        let observed = ancestry(of_source, &head, source_commit);
         record.ancestry.insert(head, observed);
     }
     if record.is_empty() {
@@ -797,16 +841,27 @@ pub(crate) fn preview_lines(cas: &Cas, revision: &TaskRevisionV1) -> Result<Vec<
     Ok(lines.into_values().collect())
 }
 
-/// Refuse, before any dispatch, a Worker node wired to a Brief whose known request (its
-/// instructions and every root artifact wired to it, the Brief included) is over the Worker
-/// request renderer's cap.
+/// Refuse, before any dispatch, a Worker node wired to a Brief whose known request is over the
+/// Worker request renderer's cap.
+///
+/// The known request is the [`review_runner::task::WorkerRequest`] the runner renders for the
+/// node's first Attempt, serialized by the renderer itself: its protocol fields, the Worker's
+/// instructions, every root artifact wired to the node (the Brief among them) in its value
+/// wrapper, and the output schemas it carries, all JSON-escaped. What is not known at plan time
+/// counts as absent: an input another node produces leaves its port out, retry feedback is
+/// empty, and an output the kernel may produce itself (a source implementer's `candidate`)
+/// carries no schema. Each of those can only add bytes, so a known request over the cap is one
+/// dispatch would refuse, and the runner's own check at dispatch still applies to the rest. A
+/// node whose request the generic renderer does not render (a derived Worker, a domain's own
+/// context) is checked at dispatch only.
 pub(crate) fn check_request_cap(
     cas: &Cas,
     compiler: &TaskPlanCompiler,
     graph: &CompiledTask,
     revision: &TaskRevisionV1,
 ) -> Result<(), String> {
-    use review_runner::task::MAX_WORKER_BYTES;
+    use review_pipeline::task::host::TaskEnvironment;
+    use review_runner::task::{MAX_WORKER_BYTES, WorkerRequest, WorkerValue};
     let briefs: BTreeSet<&str> = revision
         .inputs
         .iter()
@@ -816,56 +871,76 @@ pub(crate) fn check_request_cap(
     if briefs.is_empty() {
         return Ok(());
     }
+    let environment = review_pipeline::task::source::SnapshotTaskEnvironment {
+        policy: review_sandbox::Policy::trusted_local(),
+    };
     for (id, node) in &graph.nodes {
         let CompiledOperator::Primitive {
             operator:
                 TaskOperatorV1::Worker { slot }
                 | TaskOperatorV1::Verify { slot }
                 | TaskOperatorV1::FixVerify { slot },
-            ..
+            signature,
         } = &node.operator
         else {
             continue;
         };
-        let roots: Vec<&str> = node
+        let wired: BTreeMap<&str, &str> = node
             .inputs
-            .values()
-            .filter(|address| address.node == "root.inputs")
-            .map(|address| address.port.as_str())
+            .iter()
+            .filter(|(_, address)| address.node == "root.inputs")
+            .map(|(name, address)| (name.as_str(), address.port.as_str()))
             .collect();
-        if !roots.iter().any(|port| briefs.contains(port)) {
+        if !wired.values().any(|port| briefs.contains(port)) {
             continue;
         }
-        let instructions = graph
-            .slots
-            .get(slot)
-            .and_then(|declaration| compiler.package_files(&declaration.worker))
-            .and_then(|files| files.get("instructions.md"))
-            .map_or(0, Vec::len);
-        let mut bytes = instructions;
-        for port in roots {
+        let Some(worker) = graph.slots.get(slot).map(|slot| slot.worker.as_str()) else {
+            continue;
+        };
+        if *signature != format!("worker/{worker}") {
+            continue;
+        }
+        let Some(manifest) = compiler.worker(worker) else {
+            continue;
+        };
+        let Some(files) = compiler.package_files(worker) else {
+            continue;
+        };
+        // The host refuses a package whose instructions are no UTF-8 text before any Attempt.
+        let Ok(instructions) =
+            std::str::from_utf8(files.get("instructions.md").map_or(&[][..], Vec::as_slice))
+        else {
+            continue;
+        };
+        let kernel = environment.kernel_outputs(&manifest.signature);
+        let schemas = compiler.worker_output_schemas(worker, &kernel)?;
+        let mut inputs = BTreeMap::new();
+        for (name, port) in wired {
             let Some(input) = revision.inputs.get(port) else {
                 continue;
             };
+            let mut values = Vec::new();
             for artifact in &input.artifact_ids {
                 let envelope = cas
                     .get_artifact(artifact)
                     .map_err(|error| error.to_string())?;
-                let value = review_runner::task::WorkerValue {
+                values.push(WorkerValue {
                     artifact_id: artifact.clone(),
                     artifact_type: envelope.artifact_type,
                     snapshot_id: envelope.subject_snapshot_id,
                     payload: envelope.payload,
-                };
-                bytes += serde_json::to_vec(&value)
-                    .map_err(|error| error.to_string())?
-                    .len();
+                });
             }
+            inputs.insert(name.to_string(), values);
         }
+        let bytes = WorkerRequest::new(instructions, inputs, Vec::new(), schemas)
+            .rendered()?
+            .len();
         if bytes > MAX_WORKER_BYTES {
             return Err(format!(
-                "Worker node {id} would receive {bytes} bytes of instructions and root inputs \
-                 with its Project Brief, over the Worker request cap of {MAX_WORKER_BYTES} bytes; \
+                "Worker node {id} would receive a request of at least {bytes} bytes with its \
+                 Project Brief (instructions, root inputs and output schemas as the renderer \
+                 serializes them), over the Worker request cap of {MAX_WORKER_BYTES} bytes; \
                  lower the Brief's max_bytes or wire the port to fewer nodes"
             ));
         }
@@ -920,7 +995,12 @@ pub(crate) fn command(
         Some(RequestedBriefV1::Nothing) => return none(ProjectBriefNoneReasonV1::VariantNone),
         Some(RequestedBriefV1::Render(definition)) => definition,
     };
-    let Some(pin) = pin_of(&checkout, survey.as_deref())? else {
+    let Some(pin) = pin_of(
+        &checkout.repository_id,
+        survey.as_deref(),
+        StoreUse::Preview,
+    )?
+    else {
         return none(ProjectBriefNoneReasonV1::NoSurvey);
     };
     let (brief, bytes) = render(&pin, &name, &definition)?;

@@ -888,6 +888,7 @@ fn a_project_brief_port_is_constructed_only_by_the_installed_resolver() {
     }
     let pipeline = f.compiler.pipelines.get_mut("builtin/document").unwrap();
     pipeline.contract.inputs.insert("project".into(), port);
+    pipeline.schema = review_core::task::pipeline::PipelineSchema::V2;
     let wired: Vec<String> = pipeline
         .nodes
         .iter_mut()
@@ -936,6 +937,90 @@ fn a_project_brief_port_is_constructed_only_by_the_installed_resolver() {
         .unwrap();
     assert_eq!(bound, inputs);
     assert_eq!(built.1.lock().unwrap().len(), 1);
+}
+
+/// A pipeline with a Project Brief port is `af.pipeline/2` (ADR-0159), so the containers that
+/// carry version-1 contracts without a version label never carry it: the Planner's request
+/// leaves it out, a shared catalog neither exports nor admits it, and a Worker manifest that
+/// declares the root default on its own port is refused when it loads.
+#[test]
+fn a_brief_pipeline_stays_out_of_version_1_containers_and_worker_ports_name_no_variant() {
+    use review_core::task::pipeline::{PipelineSchema, RootDefaultV1};
+    use review_core::task::project_brief::PROJECT_BRIEF_V1;
+    let mut f = Fixture::new();
+    let request = f.compiler.planning_request(&f.task).unwrap();
+    assert!(request["pipelines"].get("builtin/document").is_some());
+    let port = PipelinePortV1 {
+        artifact_type: PROJECT_BRIEF_V1.into(),
+        cardinality: review_core::PortCardinality::One,
+        optional: true,
+        affinity: PortAffinityV1::Unbound {},
+        root_default: Some(RootDefaultV1::ProjectBrief),
+        brief: Some("orient".into()),
+        covers: BTreeSet::new(),
+    };
+    let exported = f
+        .compiler
+        .export_catalog("builtin/document", "team/document")
+        .unwrap();
+    let pipeline = f.compiler.pipelines.get_mut("builtin/document").unwrap();
+    pipeline
+        .contract
+        .inputs
+        .insert("project".into(), port.clone());
+    pipeline.schema = PipelineSchema::V2;
+    pipeline.validate().unwrap();
+    let request = f.compiler.planning_request(&f.task).unwrap();
+    assert!(
+        request["pipelines"].get("builtin/document").is_none(),
+        "{request}"
+    );
+    let refused = f
+        .compiler
+        .export_catalog("builtin/document", "team/document")
+        .unwrap_err();
+    assert!(
+        refused.contains("Cannot share builtin/document"),
+        "{refused}"
+    );
+    let refused = f
+        .compiler
+        .check_contract_fixtures(&exported.contracts)
+        .unwrap_err();
+    assert!(
+        refused.contains("af.catalog-contract-fixtures/1"),
+        "{refused}"
+    );
+
+    let name = "fixture/briefed-worker";
+    let mut worker = f.compiler.workers["builtin/document-author"].clone();
+    worker.name = name.into();
+    worker
+        .signature
+        .contract
+        .inputs
+        .insert("project".into(), port);
+    let files = BTreeMap::from([(
+        "worker.toml".to_string(),
+        toml::to_string(&worker).unwrap().into_bytes(),
+    )]);
+    let pin = TaskPackagePin {
+        version: worker.version.clone(),
+        digest: package_digest_from_files(&files),
+        path: "packages/briefed-worker".into(),
+    };
+    let project = files
+        .iter()
+        .map(|(path, bytes)| (format!("{}/{path}", pin.path), bytes.clone()))
+        .collect();
+    let refused = f
+        .compiler
+        .capture_package(&f.cas, name, &pin, &project)
+        .unwrap_err();
+    assert!(
+        refused.contains("declares port project with a Project Brief root default"),
+        "{refused}"
+    );
 }
 
 #[test]

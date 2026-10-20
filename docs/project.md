@@ -1013,6 +1013,11 @@ that Survey's verbatim, except `decisions`, whose records are the variant's newe
 descending, undated last, then number descending, then path), and `hot_paths`, the first N of
 `history.hot_paths`. `rendered_bytes` is the byte length of the record's own canonical JSON.
 
+A Brief holds no host path, Provider ID or author email, and keeps repository text as committed,
+under the Survey's own rule ([Contributors and email](#contributors-and-email)): an author name
+that holds an email address is the sanitized identity `h:…` there and so here, while a decision
+title, path, term, check name or hot path that holds an `@` address enters the Brief unchanged.
+
 ### Variants
 
 A variant is a `[brief.<name>]` table of `.af/af.toml`, in the project layer beside `[survey]`,
@@ -1053,9 +1058,14 @@ counts.
 ### The port
 
 A pipeline that wants a Brief declares the root port and wires it only to the nodes that should
-see the Project:
+see the Project. The port is version 2 of the pipeline shape: a pipeline that declares it says
+`schema = "af.pipeline/2"`, and every other pipeline stays `af.pipeline/1`
+([schema](../schemas/pipeline-definition-v2.json)):
 
 ```toml
+schema = "af.pipeline/2"
+# name, version, …
+
 [contract.inputs.project]
 artifact_type = "af/ProjectBrief@1"
 cardinality = "one"
@@ -1083,13 +1093,31 @@ context manifest entry: name `project`, `required_by` `port:project`, the Brief'
 type, its bytes and the runner's token estimate. A Worker output of type `af/ProjectBrief@1` is
 refused at output admission: only the kernel constructs a Brief.
 
-The Task's initial capture, before any pipeline is selected, pins the newest complete Survey as
-`af/ProjectSurveyPin@1` in the Task Store, and every later normalization renders the Brief from
+An `af.pipeline/1` pipeline that declares `brief` or `root_default = "project_brief"` is refused
+when it loads, naming `af.pipeline/2`, and so is an `af.pipeline/2` pipeline without the port. A
+Worker manifest declares the port as a plain optional input, never with a root default or `brief`.
+The Planner is not offered an `af.pipeline/2` pipeline to compose, and `af task export` refuses to
+share one, as a shared catalog refuses to admit one: neither the planning request nor a shared
+catalog's contract fixtures carry a pipeline's version yet.
+
+A plan is refused before any dispatch when a Worker node wired to the Brief would receive a
+request over the renderer's 1 MiB cap. The plan measures the request the runner would render for
+the node's first Attempt, serialized as dispatch serializes it: the protocol fields, the
+instructions, every root input wired to the node in its value wrapper, the output schemas and
+the JSON escaping all count. Inputs from other nodes, retry feedback and outputs the kernel
+produces itself are not known yet and count as absent, so dispatch still checks the full
+request.
+
+The Task's initial capture, before any pipeline is selected, pins the newest complete Survey of the
+Project the Task's source belongs to as `af/ProjectSurveyPin@1` in the Task Store. That is the
+Project of the source Snapshot's origin, not of the checkout the Task is planned in: a Task file
+that binds `source` to a tree of another repository gets that repository's Survey, or an empty port
+when it has none, never the invoking checkout's. Every later normalization renders the Brief from
 that pin alone: a refresh, a removed Project Store or a deleted checkout between planning and
 running changes nothing, and run, resume, retry and replay use the Brief the plan pinned. A Task
 file may bind the port like any other root input, to a recorded Task result output of type
-`af/ProjectBrief@1` (ADR-0134); the binding suppresses construction, and a Brief the kernel did
-not construct is refused (`not_kernel_constructed`).
+`af/ProjectBrief@1` (ADR-0134); the binding suppresses construction, and a Brief the kernel did not
+construct is refused (`not_kernel_constructed`).
 
 ### In the preview
 
@@ -1101,8 +1129,9 @@ IN    project, requirements, source
 ```
 
 `behind` counts the commits from the Survey's head to the Task's source commit, observed once
-when the Task was planned; it is `unknown` when the head is no ancestor of it, the checkout
-lacked the objects, git did not answer in time or the source has no commit. Staleness is
+when the Task was planned; it is `unknown` when the head is no ancestor of it, the planning
+checkout is not one of the source's repository or lacked the objects, git did not answer in
+time or the source has no commit (a source bound from another Task's output has none). Staleness is
 reported, never refused. A bound Brief reads `(bound, orient, …)`. An empty port reads
 `project: none (no Survey recorded; run af project refresh)` or `project: none (variant none)`,
 and the Task still runs.
@@ -1119,7 +1148,8 @@ Collecting a Task releases its pin and Briefs, while a later Task keeps its own.
 
 Prints exactly the canonical bytes a plan would bind for a variant (default `orient`) of the
 newest complete Survey, or of the complete Survey `--survey ID` names, before any token is spent.
-It reads the Project Store only and records nothing. `--json` prints `af/project-brief-preview@1`
+It reads the Project Store only and records nothing: it registers no Store, so neither
+`af/stores.toml` nor the Store's last use changes. `--json` prints `af/project-brief-preview@1`
 ([schema](../schemas/project-brief-preview-v1.json)): `brief_id`, the Brief byte for byte as the
 text form, and `manifest`, the entry a Worker would see; or `outcome: none` with the reason
 `variant_none` or `no_survey`, exit 0. The text form exits 1 without a Survey.

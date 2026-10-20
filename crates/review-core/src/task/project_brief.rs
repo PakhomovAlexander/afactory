@@ -458,7 +458,8 @@ pub struct ProjectBriefDropV1 {
 }
 
 /// `af/ProjectBrief@1`: one variant of one pinned Survey. Canonical JSON, numbers decimal
-/// text; no host path, Provider ID or email.
+/// text; no host path, Provider ID or author email, while repository text is the Survey's
+/// verbatim, `@` included (ADR-0158 clause 6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectBriefV1 {

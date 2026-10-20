@@ -94,7 +94,9 @@ impl TaskPlanCompiler {
             .map(|(name, worker)| (name, serde_json::json!({"version":worker.version, "digest":self.packages[name].bytes.digest, "signature":worker.signature})))
             .collect();
         let pipelines: BTreeMap<_, _> = self.pipelines.iter()
-            .filter(|(name, _)| !self.preparation_roots.contains(*name) && !self.generated.contains_key(*name))
+            // `af.planning-request/1` lists `af.pipeline/1` contracts, so a pipeline with a
+            // Project Brief port (`af.pipeline/2`) is not offered for composition (ADR-0159).
+            .filter(|(name, pipeline)| !self.preparation_roots.contains(*name) && !self.generated.contains_key(*name) && !pipeline.declares_brief())
             .map(|(name, pipeline)| (name, serde_json::json!({"version":pipeline.version, "digest":self.packages[name].bytes.digest, "contract":pipeline.contract, "accepts":pipeline.accepts, "slots":pipeline.slots, "max_attempts":pipeline.max_attempts, "max_parallel":pipeline.max_parallel})))
             .collect();
         let request = serde_json::json!({
@@ -331,7 +333,7 @@ impl TaskPlanCompiler {
         }
         let provider_attempt = u32::from(matches!(worker.runner, TaskWorkerRunner::Model { .. }));
         let definition = PipelineDefinitionV1 {
-            schema: PipelineSchemaV1::V1,
+            schema: PipelineSchema::V1,
             name: PLANNER_PIPELINE.into(),
             version: "1.0.0".into(),
             contract: PipelineContractV1 {

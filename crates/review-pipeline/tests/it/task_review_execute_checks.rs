@@ -273,7 +273,7 @@ fn run(case: &'static str) -> Outcome {
         outcome: ReceiptOutcomeV1::Passed,
     });
     let pipeline = PipelineDefinitionV1 {
-        schema: PipelineSchemaV1::V1,
+        schema: PipelineSchema::V1,
         name: "fixture/review".into(),
         version: "1.0.0".into(),
         contract: PipelineContractV1 {

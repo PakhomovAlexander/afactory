@@ -659,6 +659,23 @@ impl TaskPlanCompiler {
                     return Err("Worker manifest has incompatible identity or protocol".into());
                 }
                 worker.signature.contract.validate()?;
+                // A root default and its `brief` variant are a pipeline root port's, and the
+                // Brief port is `af.pipeline/2`'s alone (ADR-0159): `af.worker/1` keeps its shape.
+                if let Some(port) = worker
+                    .signature
+                    .contract
+                    .inputs
+                    .iter()
+                    .find(|(_, port)| port.declares_brief())
+                    .map(|(name, _)| name)
+                {
+                    return Err(format!(
+                        "Worker {} declares port {port} with a Project Brief root default or \
+                         `brief` variant; a Worker admits a Brief as a plain optional input, and \
+                         only an af.pipeline/2 root port names its variant",
+                        worker.name
+                    ));
+                }
                 validate_notes_ports(&worker.signature.contract)?;
                 let cost = worker
                     .signature
@@ -820,34 +837,44 @@ impl TaskPlanCompiler {
         name: &str,
         kernel_outputs: &BTreeSet<String>,
     ) -> Result<review_runner::task::WorkerContract, String> {
+        let outputs = self.worker_output_schemas(name, kernel_outputs)?;
+        let input = self.worker_schema(name, "input.schema.json")?;
+        review_runner::task::WorkerContract::capture(cas, input, outputs)
+    }
+
+    /// The output schemas the Worker request of `name` carries: one per declared output the
+    /// kernel does not produce itself. Read from the captured package, writing nothing.
+    pub fn worker_output_schemas(
+        &self,
+        name: &str,
+        kernel_outputs: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, serde_json::Value>, String> {
         let worker = self
             .worker(name)
             .ok_or("Missing captured Worker manifest")?;
-        let files = self
-            .package_files(name)
-            .ok_or("Missing captured Worker files")?;
-        let schema = |path: &str| -> Result<serde_json::Value, String> {
-            serde_json::from_slice(
-                files
-                    .get(path)
-                    .ok_or_else(|| format!("Worker {name} lacks {path}"))?,
-            )
-            .map_err(|e| e.to_string())
-        };
-        let outputs = worker
+        worker
             .signature
             .contract
             .outputs
             .keys()
             .filter(|port| !kernel_outputs.contains(*port))
             .map(|port| {
-                Ok((
-                    port.clone(),
-                    schema(&format!("outputs/{port}.schema.json"))?,
-                ))
+                let schema = self.worker_schema(name, &format!("outputs/{port}.schema.json"))?;
+                Ok((port.clone(), schema))
             })
-            .collect::<Result<_, String>>()?;
-        review_runner::task::WorkerContract::capture(cas, schema("input.schema.json")?, outputs)
+            .collect()
+    }
+
+    fn worker_schema(&self, name: &str, path: &str) -> Result<serde_json::Value, String> {
+        let files = self
+            .package_files(name)
+            .ok_or("Missing captured Worker files")?;
+        serde_json::from_slice(
+            files
+                .get(path)
+                .ok_or_else(|| format!("Worker {name} lacks {path}"))?,
+        )
+        .map_err(|e| e.to_string())
     }
     pub fn package_files(&self, name: &str) -> Option<&BTreeMap<String, Vec<u8>>> {
         self.packages.get(name).map(|package| &package.bytes.files)
