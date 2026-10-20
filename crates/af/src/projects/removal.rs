@@ -19,6 +19,12 @@
 //! directory is deleted, through descriptors, before the container goes with `rmdir`. A
 //! container holding anything else keeps it and is reported with the first such path; a
 //! replacement at the registered path is never touched and is reported.
+//!
+//! A recorded step proves nothing by itself: a rerun re-establishes its precondition from the
+//! file system and the record together before it acts. A directory that is neither in its
+//! container nor gone is found by its identity at its path and claimed again from inspection,
+//! and an administrative entry is claimed or deleted only while what it holds now, its `gitdir`
+//! and its lock, still makes it this checkout's (`entry_unproven`).
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
@@ -642,6 +648,55 @@ fn locked(entry: &Path) -> bool {
     std::fs::symlink_metadata(entry.join("locked")).is_ok()
 }
 
+/// What the administrative entry now at `at`, inspected at `recorded`, holds that keeps a removal
+/// of the checkout whose `.git` is `own` from claiming or deleting it; `None` when nothing does.
+/// Read from the file system every time, whatever step the record holds: its `gitdir` must name
+/// `own` as git reads it from `recorded`, and it may not be locked. A missing `gitdir` proves
+/// nothing, so it keeps the entry, unless the entry's deletion has begun (`deleting`): that
+/// deletion removes its files in name order, `gitdir` among the first, so then only a `gitdir`
+/// still there must name `own`. A `gitdir` that cannot be read may name the checkout: it keeps
+/// the entry too, with the read error.
+pub(super) fn entry_unproven(
+    at: &Path,
+    recorded: &Path,
+    own: &Path,
+    deleting: bool,
+) -> Option<String> {
+    let shown = at.display();
+    match read_gitdir(at) {
+        Err(error) => return Some(error),
+        Ok(None) if !deleting => {
+            return Some(format!(
+                "its administrative entry {shown} is kept: its gitdir is missing, so it is not \
+                 known to name this checkout"
+            ));
+        }
+        Ok(Some(gitdir)) if !names_checkout(recorded, &gitdir, own) => {
+            return Some(format!(
+                "its administrative entry {shown} is kept: its gitdir names {} now, not this \
+                 worktree",
+                String::from_utf8_lossy(&gitdir)
+            ));
+        }
+        Ok(_) => {}
+    }
+    if !locked(at) {
+        return None;
+    }
+    Some(if at == recorded {
+        format!(
+            "its administrative entry {shown} is locked, so it is kept; unlock it with `git \
+             worktree unlock` first"
+        )
+    } else {
+        format!(
+            "its administrative entry {shown} is locked, so it is kept; delete {} once nothing \
+             holds the lock",
+            at.join("locked").display()
+        )
+    })
+}
+
 fn inspected(path: &Path, identity: Identity) -> Claim {
     Claim {
         path: path.to_path_buf(),
@@ -884,6 +939,9 @@ enum Fail {
     Foreign { container: PathBuf, first: PathBuf },
     /// Its container is not the one this removal made.
     ContainerReplaced { container: PathBuf },
+    /// What it holds now does not prove it is this removal's to claim or delete: it stays where
+    /// it is and the step stays where it was, for the reason given.
+    Kept(String),
     /// Anything else, whole.
     Other(String),
 }
@@ -915,7 +973,7 @@ impl Fail {
                  since, so it is kept and nothing more is moved",
                 container.display()
             ),
-            Fail::Other(message) => message.clone(),
+            Fail::Kept(message) | Fail::Other(message) => message.clone(),
         }
     }
 }
@@ -1096,6 +1154,11 @@ impl Removal<'_> {
         match self.claim_directory(Which::Checkout) {
             Ok(Claimed::Held(held)) => {
                 if self.claim(Which::Checkout).step == Step::Contained {
+                    // Its entry is read again before it is judged: a run that moved it may be
+                    // an earlier one.
+                    if let Some(reason) = self.unproven(Which::Checkout, &path, false) {
+                        return Err(self.restore(&held, &reason, false));
+                    }
                     // Captured before the claim, unless the checkout came back out of its
                     // container since an earlier run judged it.
                     let verdict = match &snapshot {
@@ -1107,7 +1170,7 @@ impl Removal<'_> {
                             .and_then(|snapshot| judge(git, &entry, &held, &snapshot, &path)),
                     };
                     if let Some(reason) = verdict.unwrap_or_else(Some) {
-                        return Err(self.restore(&held, &reason));
+                        return Err(self.restore(&held, &reason, true));
                     }
                     self.reach(Which::Checkout, Step::Deleting, None)
                         .map_err(|fail| self.checkout_failure(&fail, &entry))?;
@@ -1118,9 +1181,9 @@ impl Removal<'_> {
             Ok(Claimed::Deleted) => {}
             Ok(Claimed::Vanished) => self.gone_before = true,
             Ok(Claimed::Replaced) => {
-                // Never claimed: its empty container goes, and the claim is only inspected.
-                let _ = self.remove_container(Which::Checkout);
-                let _ = self.reach(Which::Checkout, Step::Inspected, None);
+                // Neither in its container nor at its path: its empty container goes, and the
+                // claim is only inspected, never done.
+                let _ = self.remove_container(Which::Checkout, Step::Inspected);
                 return Err(self.abandon(
                     &format!(
                         "the worktree {} was replaced since this removal inspected it: the \
@@ -1132,7 +1195,7 @@ impl Removal<'_> {
             }
             Err(fail) => return Err(self.checkout_failure(&fail, &entry)),
         }
-        self.remove_container(Which::Checkout)
+        self.remove_container(Which::Checkout, Step::Done)
             .map_err(|fail| self.checkout_failure(&fail, &entry))?;
         if std::fs::symlink_metadata(&path).is_ok() {
             self.notes.push(format!(
@@ -1167,6 +1230,8 @@ impl Removal<'_> {
                 at.display(),
                 entry.display()
             ),
+            // It stays where it is, and the record holds the step it had.
+            Fail::Kept(reason) => self.abandon(reason, false),
             Fail::Foreign { .. } | Fail::ContainerReplaced { .. } | Fail::Other(_) => {
                 let reason = fail.describe("the worktree", self.path());
                 let deleted = self.claim(Which::Checkout).step >= Step::Deleted;
@@ -1187,14 +1252,16 @@ impl Removal<'_> {
         }
     }
 
-    /// Put a refused checkout back at its path, never over one that is taken, and say why.
-    fn restore(&mut self, held: &Held, reason: &str) -> String {
+    /// Put a refused checkout back at its path, never over one that is taken, and say why, with
+    /// the ways on when its changes are the reason (`advice`).
+    fn restore(&mut self, held: &Held, reason: &str, advice: bool) -> String {
         match rename_free(&held.container, &held.name, &held.parent, &held.name) {
             Ok(()) => {
                 self.changed = false;
-                let left = self.remove_container(Which::Checkout).err();
-                let _ = self.reach(Which::Checkout, Step::Inspected, None);
-                let mut message = self.abandon(reason, true);
+                let left = self
+                    .remove_container(Which::Checkout, Step::Inspected)
+                    .err();
+                let mut message = self.abandon(reason, advice);
                 if let Some(left) = left {
                     message.push('\n');
                     message.push_str(&left.describe("the worktree", self.path()));
@@ -1224,37 +1291,15 @@ impl Removal<'_> {
             let (device, inode) = super::commands::identity(&metadata);
             Identity { device, inode }
         });
-        let in_place = at_path == Some(identity) && claim.step <= Step::Contained;
+        // Where it is found decides only where it is reported deleted from; whether it may be
+        // claimed or deleted is read from it wherever it is (`claim_directory`).
+        let in_place = at_path == Some(identity);
         let shown = match (&claim.container, in_place, claim.step) {
             (Some(container), false, Step::Contained | Step::Deleting) => {
                 container.join(claim.path.file_name().unwrap_or_default())
             }
             _ => claim.path.clone(),
         };
-        if in_place {
-            // Still at its own path: it must still name the checkout, and not be locked.
-            let own = self.path().join(".git");
-            match read_gitdir(&claim.path) {
-                Err(error) => return Err(self.entry_refusal(&error)),
-                Ok(Some(gitdir)) if !names_checkout(&claim.path, &gitdir, &own) => {
-                    self.notes.push(format!(
-                        "kept the administrative entry {}: its gitdir names {} now, not this \
-                         worktree",
-                        claim.path.display(),
-                        String::from_utf8_lossy(&gitdir)
-                    ));
-                    return self.settle(which).map(|()| None);
-                }
-                Ok(_) => {}
-            }
-            if locked(&claim.path) {
-                return Err(self.entry_refusal(&format!(
-                    "its administrative entry {} is locked; unlock it with `git worktree unlock` \
-                     first",
-                    claim.path.display()
-                )));
-            }
-        }
         match self.claim_directory(which) {
             Ok(Claimed::Held(held)) => {
                 if self.claim(which).step == Step::Contained {
@@ -1273,9 +1318,11 @@ impl Removal<'_> {
                 ));
                 return self.settle(which).map(|()| None);
             }
+            // Left where it is, and the Workspace stays registered until an operator clears it.
+            Err(Fail::Kept(reason)) => return Err(self.entry_refusal(&reason)),
             Err(fail) => return Err(self.entry_failure(&fail, &claim.path)),
         }
-        self.remove_container(which)
+        self.remove_container(which, Step::Done)
             .map_err(|fail| self.entry_failure(&fail, &claim.path))?;
         Ok(Some(shown))
     }
@@ -1283,7 +1330,7 @@ impl Removal<'_> {
     /// Finish `which` without deleting it: its empty container goes, and it is done.
     fn settle(&mut self, which: Which) -> Result<(), String> {
         let entry = self.claim(which).path.clone();
-        self.remove_container(which)
+        self.remove_container(which, Step::Done)
             .map_err(|fail| self.entry_failure(&fail, &entry))
     }
 
@@ -1298,14 +1345,38 @@ impl Removal<'_> {
     fn entry_refusal(&self, reason: &str) -> String {
         if self.gone_before && !self.changed {
             format!(
-                "{}, but {reason}; fix it and run the command again; nothing was changed",
+                "{}, but {reason}; the Workspace stays registered; fix it and run the command \
+                 again; nothing was changed",
                 self.prefix()
             )
         } else {
             format!(
-                "{}, but {reason}; fix it and run the command again",
+                "{}, but {reason}; the Workspace stays registered; fix it and run the command \
+                 again",
                 self.prefix()
             )
+        }
+    }
+
+    /// What keeps `which`, now at `at`, from being claimed or deleted, read from the file system
+    /// whatever step the record holds; `None` when nothing does. An entry is read where it is
+    /// (`entry_unproven`); the checkout is claimed only while its entry, at its own path then,
+    /// still names it and is not locked.
+    fn unproven(&self, which: Which, at: &Path, deleting: bool) -> Option<String> {
+        let own = self.path().join(".git");
+        match which {
+            Which::Entry(index) => {
+                entry_unproven(at, &self.record.entries[index].path, &own, deleting)
+            }
+            Which::Checkout => {
+                let entry = &self.record.entries.first()?.path;
+                entry_unproven(entry, entry, &own, false).map(|reason| {
+                    format!(
+                        "the worktree {} is not claimed, because {reason}",
+                        self.path().display()
+                    )
+                })
+            }
         }
     }
 
@@ -1343,6 +1414,11 @@ impl Removal<'_> {
                         None => return Ok(Claimed::Vanished),
                         Some(found) if found != identity => return Ok(Claimed::Replaced),
                         Some(_) => {}
+                    }
+                    // Read again whatever an earlier run found: what no longer proves it is this
+                    // removal's stays where it is, and no container is named for it.
+                    if let Some(reason) = self.unproven(which, &claim.path, false) {
+                        return Err(Fail::Kept(reason));
                     }
                     // Named before it is made, so no container of this removal goes unrecorded.
                     let container = container_name(&name);
@@ -1399,18 +1475,20 @@ impl Removal<'_> {
                     let container = match open_directory(&parent, &container_name) {
                         Ok(container) => container,
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                            if claim.step == Step::Contained
-                                && identity_at(&parent, &name)? == Some(identity)
-                            {
-                                // Its container is gone, it is not: claim it afresh.
-                                self.reach(which, Step::Inspected, None)?;
-                                continue;
+                            // Its container is gone: what is at its path decides, never the step.
+                            match identity_at(&parent, &name)? {
+                                Some(found) if found == identity => {
+                                    // Back at its path: claimed again from inspection, and the
+                                    // checkout judged again.
+                                    self.reach(which, Step::Inspected, None)?;
+                                    continue;
+                                }
+                                Some(_) => return Ok(Claimed::Replaced),
+                                None if claim.step == Step::Deleting => {
+                                    return Ok(Claimed::Deleted);
+                                }
+                                None => return Ok(Claimed::Vanished),
                             }
-                            return Ok(if claim.step == Step::Deleting {
-                                Claimed::Deleted
-                            } else {
-                                Claimed::Vanished
-                            });
                         }
                         Err(error) => {
                             return Err(Fail::Other(format!(
@@ -1434,6 +1512,9 @@ impl Removal<'_> {
                     }
                     let at_path = identity_at(&parent, &name)?;
                     if claim.step == Step::Contained && at_path == Some(identity) && !moved_now {
+                        if let Some(reason) = self.unproven(which, &claim.path, false) {
+                            return Err(Fail::Kept(reason));
+                        }
                         // Made empty by this removal: anything in it now is somebody else's,
                         // and the directory stays where it is.
                         if let Some(first) = names(&container)?.into_iter().next() {
@@ -1445,10 +1526,10 @@ impl Removal<'_> {
                         }
                         if let Err(error) = claim_into(&parent, &name, &container) {
                             // Empty and made by this removal: removed while it is still that.
-                            let left = self.remove_container(which).err().map(|_| container_path);
-                            if left.is_none() {
-                                self.reach(which, Step::Inspected, None)?;
-                            }
+                            let left = self
+                                .remove_container(which, Step::Inspected)
+                                .err()
+                                .map(|_| container_path);
                             return Err(Fail::Stays {
                                 error,
                                 container: left,
@@ -1460,6 +1541,17 @@ impl Removal<'_> {
                     }
                     match identity_at(&container, &name)? {
                         Some(found) if found == identity => {
+                            // An entry found there is read there before it is deleted; the
+                            // checkout is judged there (`checkout`).
+                            if matches!(which, Which::Entry(_))
+                                && let Some(reason) = self.unproven(
+                                    which,
+                                    &container_path.join(&name),
+                                    claim.step == Step::Deleting,
+                                )
+                            {
+                                return Err(Fail::Kept(reason));
+                            }
                             return Ok(Claimed::Held(Held {
                                 parent,
                                 container,
@@ -1499,9 +1591,11 @@ impl Removal<'_> {
                         self.reach(which, Step::Contained, None)?;
                         continue;
                     }
+                    // Neither in its container nor at its path: another directory there is a
+                    // replacement, kept; only when nothing holds its identity is it deleted.
                     return Ok(match at_path {
-                        _ if claim.step == Step::Deleting => Claimed::Deleted,
                         Some(found) if found != identity => Claimed::Replaced,
+                        _ if claim.step == Step::Deleting => Claimed::Deleted,
                         _ => Claimed::Vanished,
                     });
                 }
@@ -1520,15 +1614,15 @@ impl Removal<'_> {
     }
 
     /// Remove the container of `which` with `rmdir`, only while it is still the one this removal
-    /// made and empty, and record `which` done. Anything in it is somebody else's: kept, and the
-    /// first such path is the failure.
-    fn remove_container(&mut self, which: Which) -> Result<(), Fail> {
+    /// made and empty, and record `which` at `after`: done, or only inspected when it was never
+    /// deleted. Anything in it is somebody else's: kept, and the first such path is the failure.
+    fn remove_container(&mut self, which: Which, after: Step) -> Result<(), Fail> {
         let claim = self.claim(which).clone();
         let (Some(container_path), Some(expected)) = (
             claim.container.clone(),
             claim.container_identity.as_deref().and_then(decode),
         ) else {
-            return self.reach(which, Step::Done, None);
+            return self.reach(which, after, None);
         };
         let (Some(parent_path), Some(container_name)) =
             (container_path.parent(), container_path.file_name())
@@ -1540,13 +1634,13 @@ impl Removal<'_> {
         };
         let parent = open_anchor(parent_path)?;
         match identity_at(&parent, container_name)? {
-            None => return self.reach(which, Step::Done, None),
+            None => return self.reach(which, after, None),
             Some(found) if found != expected => {
                 self.notes.push(format!(
                     "left {}: it is not the directory this removal made there",
                     container_path.display()
                 ));
-                return self.reach(which, Step::Done, None);
+                return self.reach(which, after, None);
             }
             Some(_) => {}
         }
@@ -1585,7 +1679,7 @@ impl Removal<'_> {
                 )));
             }
         }
-        self.reach(which, Step::Done, None)
+        self.reach(which, after, None)
     }
 }
 
