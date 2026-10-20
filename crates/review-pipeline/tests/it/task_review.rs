@@ -262,7 +262,7 @@ fn run_case(case: &str) {
             }),
         };
         let mut pipeline = PipelineDefinitionV1 {
-            schema: PipelineSchemaV1::V1,
+            schema: PipelineSchema::V1,
             name: "fixture/review".into(),
             version: "1.0.0".into(),
             contract: PipelineContractV1 {

@@ -1268,3 +1268,53 @@ fn undo_removes_an_ancestor_only_while_it_is_still_the_directory_it_created() {
     );
     assert!(low.is_dir());
 }
+
+/// Every file beneath `directory` with its bytes.
+fn bytes_beneath(directory: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut found = Vec::new();
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in std::fs::read_dir(&next).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(entry.path());
+            } else {
+                found.push((entry.path(), std::fs::read(entry.path()).unwrap()));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// A read-only opening creates nothing where there is no Store, changes no byte of one that
+/// exists, and holds its lock shared: readers share it, a writer waits for them.
+#[test]
+fn a_read_only_store_creates_nothing_changes_no_byte_and_excludes_writers() {
+    let root = tempfile::tempdir().unwrap();
+    let state = root.path().join("state");
+    let id = project_id(ROOTS);
+    assert!(ProjectStore::open_read_only(&state, &id).is_err());
+    assert!(
+        !state.exists(),
+        "a read-only opening created the state root"
+    );
+    drop(ProjectStore::open_unrecorded(&state, &id).unwrap());
+    let directory = store_directory(&state, &id);
+    let before = bytes_beneath(&directory);
+    {
+        let reader = ProjectStore::open_read_only(&state, &id).unwrap();
+        let other = ProjectStore::open_read_only(&state, &id).unwrap();
+        assert_eq!(reader.log().unwrap(), Log::default());
+        assert_eq!(other.log().unwrap(), Log::default());
+        let soon = std::time::Instant::now() + std::time::Duration::from_millis(50);
+        assert!(matches!(
+            ProjectStore::open_unrecorded_waiting(&state, &id, Wait::Until(soon)),
+            Err(Unopened::Locked)
+        ));
+    }
+    assert_eq!(bytes_beneath(&directory), before);
+    std::fs::remove_file(directory.join("project.lock")).unwrap();
+    assert!(ProjectStore::open_read_only(&state, &id).is_err());
+    assert!(!directory.join("project.lock").exists());
+}

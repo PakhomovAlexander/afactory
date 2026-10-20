@@ -400,3 +400,113 @@ fn a_worker_output_of_the_brief_type_is_refused_by_its_type_alone() {
     assert!(refused.starts_with(NOT_KERNEL_CONSTRUCTED), "{refused}");
     assert_eq!(refuse_worker_authored("af/ImplementationReport@1"), Ok(()));
 }
+
+/// Construction is decided over the Task file's bindings and the pipelines selection may
+/// choose: a bound Brief port constructs nothing, a named pipeline that refuses a fallback is the
+/// only one consulted, and a Planner counts only where a no-fit may ask for generation.
+#[test]
+fn a_bound_brief_port_constructs_nothing_and_only_selectable_pipelines_count() {
+    use review_core::task::pipeline::RootDefaultV1;
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let text = std::fs::read(root.join("fixtures/task-contracts/v2/pipeline-definition.json"));
+    let oriented: PipelineDefinitionV1 = serde_json::from_slice(&text.unwrap()).unwrap();
+    assert_eq!(
+        oriented.contract.inputs["project"].root_default,
+        Some(RootDefaultV1::ProjectBrief)
+    );
+    let mut plain = oriented.clone();
+    plain.name = "builtin/plain".into();
+    plain.contract.inputs.remove("project");
+    let pipelines = BTreeMap::from([
+        (oriented.name.clone(), oriented.clone()),
+        (plain.name.clone(), plain.clone()),
+    ]);
+    let choice = |name: &str, fallback| PipelineChoiceV1 {
+        name: name.into(),
+        fallback,
+    };
+    let brief = ArtifactInputV1 {
+        artifact_ids: vec![format!("sha256:{}", "b".repeat(64))],
+        artifact_type: PROJECT_BRIEF_V1.into(),
+        cardinality: PortCardinality::One,
+        snapshot_id: None,
+    };
+    let bound = BTreeMap::from([("project".to_string(), brief)]);
+    let unbound = BTreeMap::new();
+    let refuse = choice(&oriented.name, PipelineFallbackV1::Refuse);
+    let refuse_plain = choice(&plain.name, PipelineFallbackV1::Refuse);
+    let select_plain = choice(&plain.name, PipelineFallbackV1::Select);
+    let generate_plain = choice(&plain.name, PipelineFallbackV1::Generate);
+    let refused = NoMatchPolicy::Refuse;
+    // The named pipeline's one Brief port, bound: nothing is constructed, Planner or not.
+    assert!(!constructs(
+        &pipelines,
+        Some(&refuse),
+        refused,
+        false,
+        &bound
+    ));
+    assert!(!constructs(
+        &pipelines,
+        Some(&refuse),
+        refused,
+        true,
+        &bound
+    ));
+    assert!(constructs(
+        &pipelines,
+        Some(&refuse),
+        refused,
+        false,
+        &unbound
+    ));
+    // A pipeline without the port that refuses a fallback consults no other.
+    assert!(!constructs(
+        &pipelines,
+        Some(&refuse_plain),
+        refused,
+        false,
+        &unbound
+    ));
+    // A fallback may select the pipeline that declares it, unless the binding covers it.
+    assert!(constructs(
+        &pipelines,
+        Some(&select_plain),
+        refused,
+        false,
+        &unbound
+    ));
+    assert!(!constructs(
+        &pipelines,
+        Some(&select_plain),
+        refused,
+        false,
+        &bound
+    ));
+    assert!(constructs(&pipelines, None, refused, false, &unbound));
+    // A Planner counts only where a no-fit may ask it for a root.
+    assert!(constructs(
+        &pipelines,
+        Some(&generate_plain),
+        refused,
+        true,
+        &bound
+    ));
+    assert!(!constructs(
+        &pipelines,
+        Some(&generate_plain),
+        refused,
+        false,
+        &bound
+    ));
+    assert!(!constructs(&pipelines, None, refused, true, &bound));
+    assert!(constructs(
+        &pipelines,
+        None,
+        NoMatchPolicy::Generate,
+        true,
+        &bound
+    ));
+}

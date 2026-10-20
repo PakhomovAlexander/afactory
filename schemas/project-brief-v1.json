@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:project-brief:1",
   "title": "af/ProjectBrief@1",
-  "description": "One variant of one pinned Survey (ADR-0159), in the Task Store's CAS: what a pipeline's declared `project_brief` port carries into the Workers it is wired to. Canonical JSON, every number decimal text, at most its variant's `max_bytes`. Every section is the pinned Survey's verbatim, except `decisions` (its records the variant's newest N, by date descending, undated last, then number descending, then path) and `hot_paths` (the first N of `history.hot_paths`). No host path, Provider ID or email.",
+  "description": "One variant of one pinned Survey (ADR-0159), in the Task Store's CAS: what a pipeline's declared `project_brief` port carries into the Workers it is wired to. Canonical JSON, every number decimal text, at most its variant's `max_bytes`. Every section is the pinned Survey's verbatim, except `decisions` (its records the variant's newest N, by date descending, undated last, then number descending, then path) and `hot_paths` (the first N of `history.hot_paths`). No host path, Provider ID or author email, while repository text (decision titles, paths, terms, check names, hot paths) stays verbatim, `@` included (ADR-0158 clause 6).",
   "type": "object",
   "additionalProperties": false,
   "required": [

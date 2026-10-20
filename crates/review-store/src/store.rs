@@ -332,6 +332,22 @@ impl From<ReplayCeiling> for Bounded {
     }
 }
 
+/// The SQLite URI that opens the database at `path` immutable: every byte of the path that is not
+/// unreserved, `/` aside, percent-encoded, so `?`, `#` and `%` in a directory name stay path.
+fn immutable_uri(path: &Path) -> String {
+    let mut uri = String::from("file:");
+    for byte in path.as_os_str().as_encoded_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                uri.push(char::from(*byte));
+            }
+            other => uri.push_str(&format!("%{other:02X}")),
+        }
+    }
+    uri.push_str("?immutable=1");
+    uri
+}
+
 impl EventStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let conn = Connection::open(path)?;
@@ -340,6 +356,40 @@ impl EventStore {
 
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        Ok(Self {
+            conn,
+            task_cache: std::cell::RefCell::new(None),
+            validated_change_sets: std::collections::BTreeMap::new(),
+        })
+    }
+
+    /// Open an existing database to read it and change nothing: no file is created, no schema is
+    /// initialized and no journal mode is set. A plain read-only connection to a write-ahead-log
+    /// database creates its `-wal` and `-shm` files beside it and fails where it cannot, so a
+    /// database whose `-wal` is absent or empty, which holds every committed event in the file
+    /// itself, is opened `immutable`: SQLite then takes no lock and writes nothing at all. One whose
+    /// `-wal` still holds frames (its writer is open or stopped before a checkpoint) is opened
+    /// read-only instead, so those events are read, through the `-shm` index SQLite keeps.
+    ///
+    /// An immutable reader does not see a write made while it is open: the caller excludes
+    /// writers for the life of the value, as a Project Store's lock does.
+    pub fn open_unchanged(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        let path = path.as_ref();
+        let mut wal = path.as_os_str().to_owned();
+        wal.push("-wal");
+        if std::fs::metadata(&wal).is_ok_and(|log| log.len() > 0) {
+            return Self::open_read_only(path);
+        }
+        if !std::fs::metadata(path).is_ok_and(|database| database.is_file()) {
+            return Err(StoreError::Conflict(format!(
+                "no database file at {}",
+                path.display()
+            )));
+        }
+        let conn = Connection::open_with_flags(
+            immutable_uri(path),
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+        )?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),
@@ -4947,6 +4997,78 @@ mod tests {
                 if message.contains("unknown review-kernel event type: RunReport@5")),
             "{error}"
         );
+    }
+
+    /// Every file beneath `directory` and its bytes.
+    fn files(directory: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut found: Vec<_> = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                let name = entry.file_name().into_string().unwrap();
+                (name, std::fs::read(entry.path()).unwrap())
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// A reader that changes nothing reads every committed event and leaves the directory byte
+    /// for byte as it found it: no `-wal`, no `-shm`, no schema, even where it may write, and it
+    /// still reads where neither the directory nor the database is writable. A directory name
+    /// that holds URI syntax stays a path.
+    #[test]
+    fn an_unchanged_reader_writes_nothing_and_reads_an_unwritable_database() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("a?b#c%d e");
+        std::fs::create_dir(&directory).unwrap();
+        let path = directory.join("events.sqlite");
+        {
+            let mut store = EventStore::open(&path).unwrap();
+            let cas = Cas::open(root.path().join("cas")).unwrap();
+            store
+                .append(
+                    "run",
+                    &cas,
+                    NewEvent::new(EventType::SourceCapturedV1, json!({ "i": 1 })),
+                )
+                .unwrap();
+        }
+        let before = files(&directory);
+        assert_eq!(before.len(), 1, "a closed writer leaves its database alone");
+        {
+            let reader = EventStore::open_unchanged(&path).unwrap();
+            assert_eq!(reader.replay("run").unwrap().len(), 1);
+            assert!(reader.replay("other").unwrap().is_empty());
+        }
+        assert_eq!(files(&directory), before);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let read = EventStore::open_unchanged(&path).and_then(|reader| reader.replay("run"));
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(read.unwrap().len(), 1);
+        assert_eq!(files(&directory), before);
+        assert!(EventStore::open_unchanged(directory.join("absent.sqlite")).is_err());
+        assert_eq!(files(&directory), before);
+    }
+
+    /// While a writer's log still holds frames the reader reads them, events the database file
+    /// does not hold yet.
+    #[test]
+    fn an_unchanged_reader_reads_the_frames_of_an_open_log() {
+        let (dir, mut store, cas) = fixture();
+        store
+            .append(
+                "run",
+                &cas,
+                NewEvent::new(EventType::SourceCapturedV1, json!({ "i": 1 })),
+            )
+            .unwrap();
+        let wal = dir.path().join("events.sqlite-wal");
+        assert!(std::fs::metadata(&wal).unwrap().len() > 0);
+        let reader = EventStore::open_unchanged(dir.path().join("events.sqlite")).unwrap();
+        assert_eq!(reader.replay("run").unwrap(), store.replay("run").unwrap());
     }
 
     /// One bounded read over the runs of a Store charges every row before it is decoded: the

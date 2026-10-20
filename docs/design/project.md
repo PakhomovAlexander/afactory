@@ -343,7 +343,11 @@ later feed a Brief section without changing this rule.
 `af/ProjectBrief@1` holds the Survey ID and Project ID it was rendered from, the variant name,
 the Survey head (commit, and Tree Digest when the Survey has one; preview and explain say
 `tree digest unavailable` otherwise), the rendered
-sections, the sections dropped with their reasons, and `rendered_bytes`.
+sections, the sections dropped with their reasons, and `rendered_bytes`. Its sections are the
+pinned Survey's, so it follows the Survey's rule for email (§3.3, ADR-0158 clause 6): no author
+email enters it, an author name that holds one being the sanitized `h:` identity, while
+repository text (decision titles, paths, terms, check names, hot paths) is verbatim, `@`
+included; a decision title that holds an address enters `orient` unchanged.
 
 Variants are project policy in `.af/af.toml`. Two are built in: `orient`, shown here as a
 project would write it, and `none`, which suppresses construction: no Brief artifact, no
@@ -371,9 +375,17 @@ Brief's `decisions` holds the variant's newest N records: by date descending, un
 number descending, then path. `contributors` and `activity` are never part of `orient`: an
 implementer does not need names or bills.
 
-A pipeline that wants a Brief declares the root port and wires it only where it is wanted:
+A pipeline that wants a Brief declares the root port and wires it only where it is wanted. The
+declaration is a new version of the pipeline shape (ADR-0145 clause 2): a pipeline with the port
+is `af.pipeline/2`, an `af.pipeline/1` pipeline carrying `brief` or `project_brief` is refused,
+and a pipeline without the port stays `af.pipeline/1`, bytes and digest unchanged. The
+containers that list contracts without a version label (`af.planning-request/1`,
+`af.catalog-contract-fixtures/1`) carry no `af.pipeline/2` pipeline, and a Worker manifest never
+declares the root default:
 
 ```toml
+schema = "af.pipeline/2"
+
 [contract.inputs.project]
 artifact_type = "af/ProjectBrief@1"
 cardinality = "one"
@@ -400,23 +412,34 @@ provenance in the payload; the Snapshot checks of every other port are untouched
 and pinned in the lock like every other Worker input, decides which Workers see the project.
 That is the "not for all of them, configurable" requirement, and it uses no new mechanism.
 
-The Task's initial capture pins the newest complete Survey of the Project whose `repository_id`
-equals the captured source's as a separately typed, immutable record of Brief-rendering inputs
+The Task's initial capture, once the Task file's `source` binding is resolved, pins the newest
+complete Survey of the Project whose `repository_id` equals the resolved source Snapshot's origin's
+(a bound `source` keeps the repository identity of the Snapshot it names, which need not be the
+invoking checkout's, ADR-0117; the invoking checkout's Survey is never pinned for another
+repository's source, and the automatic port is empty when the source's Project has no complete
+Survey) as a separately typed, immutable record of Brief-rendering inputs
 in the Task Store's CAS (`af/ProjectSurveyPin@1`: the Survey's sections and identity, with the
 Survey ID as provenance and no `previous_survey_id` or other digest link, so ADR-0135's collector
 reaches nothing beyond it and collecting earlier Tasks releases their pins while a later Task
 stays replayable), or records that there is none, with the effective `[brief]` policy as part of
 the captured policy, before any pipeline is selected; full Survey records live only in the
-Project Store. Resolution is then a pure function of that pinned data wherever
+Project Store. Whether it pins is decided once the Task file's bindings are resolved: only a
+`project_brief` port the Task file leaves unbound, on a pipeline selection may choose, or a
+Planner that may generate a root, reads a Survey, so a Task whose every Brief port is bound
+writes no pin; and a capture that resolved the source commit is kept, so a `no_survey` receipt
+names it. Resolution is then a pure function of that pinned data wherever
 `empty_review_history` is filled today (`normalize_root_inputs`: the Task-file adapter, proposal
 validation and a generated pipeline's handoff): render the variant; drop whole sections, last-declared first, until the
 Brief's exact serialized bytes, metadata and drop reasons included, fit `max_bytes`, recording
 each drop (a section is never cut mid-way, as Worker Notes are dropped whole with a reason); a
 variant whose `max_bytes` is below 1,024 or above 262,144 (a Brief with its envelope is context,
 never a dump, and the Worker request renderer caps the whole request at 1 MiB) is refused when
-the policy loads; at plan time, when the Brief plus the node's inputs known then (instructions
-and bound artifacts) exceed that renderer cap, the plan is refused naming the node and the
-bytes, before any dispatch; and a Brief whose
+the policy loads; at plan time, when the Worker request the renderer would serialize for a node wired to the
+Brief, from what is known then (protocol fields, instructions, the root inputs wired to it in
+their value wrappers, output schemas and JSON escaping; inputs from other nodes, retry feedback
+and kernel-produced outputs counted as absent), exceeds that renderer cap, the plan is refused
+naming the node and the bytes, before any dispatch, and the renderer's own check at dispatch
+stays; and a Brief whose
 mandatory fields alone exceed `max_bytes` is a plan-time error naming the variant and the bytes,
 never an oversized Brief and never a silently empty port; publish the Brief into the Task Store's CAS; pin its
 artifact ID in the compiled plan. `af task run`, resume, retry and replay never resolve again
@@ -436,8 +459,9 @@ commit, with `behind_commits` the number of commits from the Survey head to the 
 when the former is an ancestor of the latter, and `unknown` otherwise or without a committed
 revision, derived solely from an ancestry observation the initial capture records beside the
 pinned Survey (whether the Survey head, and the head of each explicitly bound Brief, is an
-ancestor of the source commit, with the commit count, or a typed `unknown` reason: no checkout,
-missing objects, deadline), so a generated pipeline that introduces the port later needs no live
+ancestor of the source commit, with the commit count, observed in the planning checkout when it
+is one of the source's repository, or a typed `unknown` reason: no checkout, missing objects,
+deadline), so a generated pipeline that introduces the port later needs no live
 git; computed alike for a constructed and an explicitly bound Brief without rewriting the bound
 artifact; `af task plan` and `af task explain` print it beside the port.
 
@@ -752,13 +776,20 @@ the exact-artifact form is refused; one Brief bound into two Tasks at different 
 gets two staleness receipts; a generated pipeline that introduces the port after capture builds
 its Brief from the pinned Survey, a refresh or a removed Project Store in between changing
 nothing, and a handoff after the original checkout is gone still reports the captured
-staleness; `af project brief --json` prints the preview document byte-equal in its payload to
-the text form; collecting earlier Tasks
+staleness; with the Project Store and a complete Survey present, a named pipeline's Brief port
+bound to a recorded Brief writes no pin and a refresh after planning leaves the captured
+provenance unchanged; a `no_survey` receipt carries the resolved source commit; `af project
+brief` reads a Store whose directory and `events.sqlite` are unwritable and changes no byte
+under the Store, the registry or the state root; `af project brief --json` prints the preview
+document byte-equal in its payload to the text form; collecting earlier Tasks
 releases their pinned Survey data while a later Task remains replayable; a variant with
 `max_bytes` 262,145 is refused at policy load, as are an unknown or repeated section, a `[brief.none]`
 table and `contributors` in `orient`, an unknown requested variant is a plan-time error, a schema-valid Worker-authored Brief is
 refused at admission and at binding while a forwarded constructed one binds, and a node whose
-known inputs plus the Brief exceed the renderer cap is refused at plan time; a pipeline wiring the port to one of two Workers delivers the Brief to that Worker's
+serialized known request exceeds the renderer cap is refused at plan time, even when its
+payloads alone would fit; a pipeline carrying the port under `af.pipeline/1` is refused; a Task
+invoked in one repository with `source` bound to another never receives the invoking
+repository's Survey; a pipeline wiring the port to one of two Workers delivers the Brief to that Worker's
 manifest and not the other's; replay after a refresh renders the pinned Brief, not the newer
 Survey; a variant over `max_bytes` drops the last section and records the reason; without a
 Survey the plan previews the empty port and runs; a `max_bytes` below 1,024 is refused at policy

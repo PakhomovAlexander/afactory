@@ -115,6 +115,39 @@ pub fn semantic_fit(task: &TaskRevisionV1, pipeline: &PipelineDefinitionV1) -> C
     }
 }
 
+/// What selection does when no candidate fits: the requested Pipeline's own fallback, or the
+/// trusted no-match policy's when the Task names none.
+pub fn effective_fallback(
+    requested: Option<&PipelineChoiceV1>,
+    no_match: NoMatchPolicy,
+) -> PipelineFallbackV1 {
+    requested
+        .map(|choice| choice.fallback)
+        .unwrap_or(match no_match {
+            NoMatchPolicy::Refuse => PipelineFallbackV1::Select,
+            NoMatchPolicy::Generate => PipelineFallbackV1::Generate,
+        })
+}
+
+/// Every Pipeline name selection assesses: the requested one, and every captured one unless the
+/// request refuses a fallback. A capture made before selection covers exactly these.
+pub fn candidate_names(
+    requested: Option<&PipelineChoiceV1>,
+    pipelines: &BTreeMap<String, PipelineDefinitionV1>,
+    no_match: NoMatchPolicy,
+) -> BTreeSet<String> {
+    let mut names: BTreeSet<_> =
+        if effective_fallback(requested, no_match) == PipelineFallbackV1::Refuse {
+            BTreeSet::new()
+        } else {
+            pipelines.keys().cloned().collect()
+        };
+    if let Some(choice) = requested {
+        names.insert(choice.name.clone());
+    }
+    names
+}
+
 /// Admission is supplied by the trusted host: exact structural compilation, captured
 /// capability checks and resource feasibility. It cannot turn a semantic no-fit into a fit.
 pub fn select_with_policy(
@@ -137,22 +170,9 @@ pub fn select_with_policy(
             "Selection requires bounded captured Pipelines and valid trusted priorities".into(),
         );
     }
-    let fallback = requested
-        .map(|choice| choice.fallback)
-        .unwrap_or(match no_match {
-            NoMatchPolicy::Refuse => PipelineFallbackV1::Select,
-            NoMatchPolicy::Generate => PipelineFallbackV1::Generate,
-        });
+    let fallback = effective_fallback(requested, no_match);
     let mut candidates = Vec::new();
-    let mut names: BTreeSet<_> = if fallback == PipelineFallbackV1::Refuse {
-        BTreeSet::new()
-    } else {
-        pipelines.keys().cloned().collect()
-    };
-    if let Some(choice) = requested {
-        names.insert(choice.name.clone());
-    }
-    for name in names {
+    for name in candidate_names(requested, pipelines, no_match) {
         let state = match pipelines.get(&name) {
             None => CandidateState::Unavailable {
                 reason: "Requested Pipeline package is not captured".into(),
@@ -496,6 +516,40 @@ mod tests {
             assert_eq!(result.decision, decision);
         }
     }
+    /// The names selection assesses: the requested one alone when it refuses a fallback, every
+    /// captured one otherwise; the fallback is the request's, or the no-match policy's.
+    #[test]
+    fn candidates_and_the_fallback_follow_the_request_and_the_policy() {
+        let (_, pipelines) = fixtures();
+        let all: BTreeSet<String> = pipelines.keys().cloned().collect();
+        let refuse = request(PipelineFallbackV1::Refuse);
+        assert_eq!(
+            candidate_names(Some(&refuse), &pipelines, NoMatchPolicy::Generate),
+            BTreeSet::from(["project/small".to_string()])
+        );
+        let select = request(PipelineFallbackV1::Select);
+        assert_eq!(
+            candidate_names(Some(&select), &pipelines, NoMatchPolicy::Refuse),
+            all
+        );
+        assert_eq!(
+            candidate_names(None, &pipelines, NoMatchPolicy::Refuse),
+            all
+        );
+        assert_eq!(
+            effective_fallback(None, NoMatchPolicy::Refuse),
+            PipelineFallbackV1::Select
+        );
+        assert_eq!(
+            effective_fallback(None, NoMatchPolicy::Generate),
+            PipelineFallbackV1::Generate
+        );
+        assert_eq!(
+            effective_fallback(Some(&refuse), NoMatchPolicy::Generate),
+            PipelineFallbackV1::Refuse
+        );
+    }
+
     #[test]
     fn only_permitted_semantic_no_fit_requests_generation() {
         let (mut task, mut pipelines) = fixtures();

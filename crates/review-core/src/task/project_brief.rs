@@ -458,7 +458,8 @@ pub struct ProjectBriefDropV1 {
 }
 
 /// `af/ProjectBrief@1`: one variant of one pinned Survey. Canonical JSON, numbers decimal
-/// text; no host path, Provider ID or email.
+/// text; no host path, Provider ID or author email, while repository text is the Survey's
+/// verbatim, `@` included (ADR-0158 clause 6).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProjectBriefV1 {
@@ -604,9 +605,13 @@ impl ProjectBriefCaptureV1 {
         Ok(())
     }
 
-    /// Whether the record says anything an absent one would not.
+    /// Whether the record says anything an absent one would not: a resolved source commit is
+    /// something, which every receipt of the Task carries, `no_survey` ones included.
     pub fn is_empty(&self) -> bool {
-        self.pin_id.is_none() && self.variants.is_empty() && self.ancestry.is_empty()
+        self.pin_id.is_none()
+            && self.source_commit.is_none()
+            && self.variants.is_empty()
+            && self.ancestry.is_empty()
     }
 }
 
@@ -942,5 +947,19 @@ mod tests {
         assert!(receipt.validate().is_err());
         receipt.reason = Some(ProjectBriefNoneReasonV1::NoSurvey);
         assert_eq!(receipt.validate(), Ok(()));
+    }
+
+    /// A capture that resolved nothing but its source commit still says something: the
+    /// `no_survey` receipt of its Task carries that commit, so the capture is kept.
+    #[test]
+    fn a_capture_holding_only_its_source_commit_is_not_empty() {
+        let mut capture = ProjectBriefCaptureV1 {
+            schema: PROJECT_BRIEF_CAPTURE_V1.into(),
+            ..Default::default()
+        };
+        assert!(capture.is_empty());
+        capture.source_commit = Some("b".repeat(40));
+        assert!(!capture.is_empty());
+        assert_eq!(capture.validate(), Ok(()));
     }
 }

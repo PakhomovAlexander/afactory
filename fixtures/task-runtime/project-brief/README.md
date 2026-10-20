@@ -5,7 +5,9 @@ Project Briefs on a declared port, for
 `crates/af/tests/it/project_brief.rs`:
 
 - `fixture/oriented` declares the root port `project` (`root_default = "project_brief"`,
-  `brief = "orient"`) and wires it to its implementer only; the evaluator does not see it.
+  `brief = "orient"`) and wires it to its implementer only; the evaluator does not see it. Like
+  every pipeline here it is `af.pipeline/2`, the version of the pipeline shape that carries the
+  Brief port.
 - `fixture/exposing` is `fixture/oriented` with the port also exposed as the public output
   `brief`, forwarded unchanged, so a later Task can bind `project` to it. A public output read
   from an optional root input that is absent is unavailable to the compiler, so it is planned
