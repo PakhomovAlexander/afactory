@@ -1604,8 +1604,15 @@ fn start_captured(
     // the `[brief]` policy and the ancestry of every Survey head against the source commit, so
     // every later normalization renders from them alone (ADR-0159). The Survey is the Project's
     // of the resolved source: a bound `source` names its own repository, which need not be the
-    // invoking checkout's.
-    let constructs = crate::project_brief::constructs(&compiler, authority.planner.is_some());
+    // invoking checkout's. Construction is decided over the bound ports, so a Brief port the
+    // Task file binds reads no Survey and writes no pin.
+    let constructs = crate::project_brief::constructs(
+        compiler.pipelines(),
+        revision.pipeline.as_ref(),
+        authority.no_match,
+        authority.planner.is_some(),
+        &bound_ports,
+    );
     let source_origin = match bound_ports.get("source") {
         Some(port) => input_bindings::bound_source_origin(&cas, port)?,
         None => crate::project_brief::SourceOrigin {

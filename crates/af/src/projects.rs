@@ -369,11 +369,35 @@ impl ProjectStore {
         Ok(store)
     }
 
-    /// An existing Project Store opened to be read and nothing else: no Store registry entry is
-    /// written and its last use is not moved, so a preview (`af project brief`) records nothing.
-    pub(crate) fn open_unregistered(state_home: &Path, project_id: &str) -> Result<Self, String> {
-        Self::open_unrecorded_waiting(state_home, project_id, Wait::Blocking)
-            .map_err(Unopened::message)
+    /// An existing Project Store opened to be read and nothing else, so a preview (`af project
+    /// brief`) changes no byte of the Store, the Store registry or the state root: no directory
+    /// or file is created, `project.lock` is opened read-only and held shared (every writer
+    /// holds it exclusively, so none of them writes while it is read), the CAS is opened as it
+    /// is, and the log is read through a connection that initializes no schema and writes no
+    /// journal ([`EventStore::open_unchanged`]). No registry entry is written and the Store's
+    /// last use is not moved. A Store directory and log nobody may write are read all the same.
+    /// The one append made without the lock, the `SurveyFailed@1` of a refresh that could not
+    /// take it, is not seen by a read already open; at worst that read fails and is run again.
+    pub(crate) fn open_read_only(state_home: &Path, project_id: &str) -> Result<Self, String> {
+        use nix::fcntl::{Flock, FlockArg};
+        let directory = store_directory(state_home, project_id);
+        let unreadable =
+            |error: String| format!("the Project Store {}: {error}", directory.display());
+        let lock = std::fs::File::open(directory.join("project.lock"))
+            .map_err(|error| unreadable(format!("project.lock: {error}")))?;
+        let lock = Flock::lock(lock, FlockArg::LockShared)
+            .map_err(|(_, errno)| unreadable(format!("locking it to read: {errno}")))?;
+        let cas = Cas::open_existing(directory.join("cas"))
+            .map_err(|error| unreadable(error.to_string()))?;
+        let events = EventStore::open_unchanged(directory.join("events.sqlite"))
+            .map_err(|error| unreadable(error.to_string()))?;
+        Ok(Self {
+            directory,
+            project_id: project_id.to_string(),
+            cas,
+            events,
+            _lock: lock,
+        })
     }
 
     /// [`ProjectStore::open`] without the registry, which lives in the machine's own state home.

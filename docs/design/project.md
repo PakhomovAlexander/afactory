@@ -419,7 +419,11 @@ Survey ID as provenance and no `previous_survey_id` or other digest link, so ADR
 reaches nothing beyond it and collecting earlier Tasks releases their pins while a later Task
 stays replayable), or records that there is none, with the effective `[brief]` policy as part of
 the captured policy, before any pipeline is selected; full Survey records live only in the
-Project Store. Resolution is then a pure function of that pinned data wherever
+Project Store. Whether it pins is decided once the Task file's bindings are resolved: only a
+`project_brief` port the Task file leaves unbound, on a pipeline selection may choose, or a
+Planner that may generate a root, reads a Survey, so a Task whose every Brief port is bound
+writes no pin; and a capture that resolved the source commit is kept, so a `no_survey` receipt
+names it. Resolution is then a pure function of that pinned data wherever
 `empty_review_history` is filled today (`normalize_root_inputs`: the Task-file adapter, proposal
 validation and a generated pipeline's handoff): render the variant; drop whole sections, last-declared first, until the
 Brief's exact serialized bytes, metadata and drop reasons included, fit `max_bytes`, recording
@@ -759,8 +763,12 @@ the exact-artifact form is refused; one Brief bound into two Tasks at different 
 gets two staleness receipts; a generated pipeline that introduces the port after capture builds
 its Brief from the pinned Survey, a refresh or a removed Project Store in between changing
 nothing, and a handoff after the original checkout is gone still reports the captured
-staleness; `af project brief --json` prints the preview document byte-equal in its payload to
-the text form; collecting earlier Tasks
+staleness; with the Project Store and a complete Survey present, a named pipeline's Brief port
+bound to a recorded Brief writes no pin and a refresh after planning leaves the captured
+provenance unchanged; a `no_survey` receipt carries the resolved source commit; `af project
+brief` reads a Store whose directory and `events.sqlite` are unwritable and changes no byte
+under the Store, the registry or the state root; `af project brief --json` prints the preview
+document byte-equal in its payload to the text form; collecting earlier Tasks
 releases their pinned Survey data while a later Task remains replayable; a variant with
 `max_bytes` 262,145 is refused at policy load, as are an unknown or repeated section, a `[brief.none]`
 table and `contributors` in `orient`, an unknown requested variant is a plan-time error, a schema-valid Worker-authored Brief is

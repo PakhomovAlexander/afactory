@@ -22,8 +22,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use review_config::task::catalog::{ProjectBriefResolver, TaskPlanCompiler};
+use review_config::task::selection::NoMatchPolicy;
 use review_core::project::SurveyCompletenessV1;
-use review_core::task::pipeline::{PipelineContractV1, TaskOperatorV1};
+use review_core::task::pipeline::{PipelineContractV1, PipelineDefinitionV1, TaskOperatorV1};
 use review_core::task::project_brief::{
     NOT_KERNEL_CONSTRUCTED, ORIENT, PORT_REQUIRED_BY_PREFIX, PROJECT_BRIEF_CAPTURE_V1,
     PROJECT_BRIEF_PREVIEW_V1, PROJECT_BRIEF_RECEIPT_V1, PROJECT_BRIEF_V1, PROJECT_SURVEY_PIN_V1,
@@ -34,7 +35,7 @@ use review_core::task::project_brief::{
     ProjectBriefVariantV1, ProjectSurveyPinV1, RequestedBriefV1, newest_decisions,
     requested_variant,
 };
-use review_core::task::{ArtifactInputV1, TaskRevisionV1};
+use review_core::task::{ArtifactInputV1, PipelineChoiceV1, PipelineFallbackV1, TaskRevisionV1};
 use review_core::{ArtifactEnvelope, PortCardinality, Producer};
 use review_graph::task::{CompiledOperator, CompiledTask};
 use review_store::Cas;
@@ -265,7 +266,9 @@ pub(crate) struct SourceOrigin {
 
 /// How a reader uses the Project Store: a Task's capture records that it used it, as every
 /// command that opens a Store does; `af project brief` is a preview and records nothing, so it
-/// neither registers the Store nor moves its last use.
+/// opens the Store strictly read-only ([`crate::projects::ProjectStore::open_read_only`]): no
+/// path is created, no schema initialized, the Store is not registered and its last use does not
+/// move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StoreUse {
     Capture,
@@ -284,9 +287,7 @@ fn existing_store(
     }
     match reader {
         StoreUse::Capture => crate::projects::ProjectStore::open(&state_home, project_id),
-        StoreUse::Preview => {
-            crate::projects::ProjectStore::open_unregistered(&state_home, project_id)
-        }
+        StoreUse::Preview => crate::projects::ProjectStore::open_read_only(&state_home, project_id),
     }
     .map(Some)
 }
@@ -400,24 +401,40 @@ fn ancestry(
     }
 }
 
-/// Whether a Task whose captured catalog holds `compiler`'s pipelines can carry a constructed
-/// Brief: one of them declares a `project_brief` root port, or a Planner may generate one.
-pub(crate) fn constructs(compiler: &TaskPlanCompiler, planner: bool) -> bool {
+/// Whether a Task can carry a constructed Brief, decided once its Task file's bindings are
+/// resolved: a pipeline selection may choose for `requested` (the named one alone when it
+/// refuses a fallback) declares a `project_brief` root port that `bound` leaves unbound, or a
+/// Planner may generate a root (a fallback of `generate`). A port the Task file binds is never
+/// constructed (ADR-0159 clause 6), so a Task whose every Brief port is bound reads no Survey
+/// and pins none.
+pub(crate) fn constructs(
+    pipelines: &BTreeMap<String, PipelineDefinitionV1>,
+    requested: Option<&PipelineChoiceV1>,
+    no_match: NoMatchPolicy,
+    planner: bool,
+    bound: &BTreeMap<String, ArtifactInputV1>,
+) -> bool {
+    use review_config::task::selection::{candidate_names, effective_fallback};
     use review_core::task::pipeline::RootDefaultV1;
-    planner
-        || compiler.pipelines().values().any(|pipeline| {
-            pipeline
-                .contract
-                .inputs
-                .values()
-                .any(|port| port.root_default == Some(RootDefaultV1::ProjectBrief))
-        })
+    let generates =
+        planner && effective_fallback(requested, no_match) == PipelineFallbackV1::Generate;
+    generates
+        || candidate_names(requested, pipelines, no_match)
+            .iter()
+            .filter_map(|name| pipelines.get(name))
+            .any(|pipeline| {
+                pipeline.contract.inputs.iter().any(|(name, port)| {
+                    port.root_default == Some(RootDefaultV1::ProjectBrief)
+                        && !bound.contains_key(name)
+                })
+            })
 }
 
 /// The initial capture: the pin, the project's variants and the ancestry of every Survey head a
 /// Brief of this Task describes (the pin's, each Brief the Task file binds), recorded as one
 /// `af/ProjectBriefCapture@1` whose ID the caller keeps in the revision's provenance. `None` when
-/// the record would say nothing, so a Task that can carry no Brief keeps its revision identity.
+/// the record would say nothing, so a Task that can carry no Brief keeps its revision identity; a
+/// resolved source commit is something, so a `no_survey` receipt still names it.
 ///
 /// The pin is the Survey of the Project of `source`, the resolved source Snapshot's origin: a
 /// Task invoked in one repository with a `source` bound from another pins the other's Survey or

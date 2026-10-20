@@ -3,7 +3,10 @@
 **Status:** accepted (2026-10-20); clauses 1, 3, 4, 5, 7 and 9 amended (2026-10-21) by the PJ3
 close-out, before release: the Brief port is `af.pipeline/2`, the Survey is the resolved
 source's Project's, author emails are excluded while repository text stays verbatim, the
-plan-time cap uses the serialized request, and the preview registers nothing. Package PJ3 of the
+plan-time cap uses the serialized request, and the preview registers nothing; clauses 4, 5, 6
+and 9 amended again (2026-10-21) by the close-out's second round, before release: construction is
+decided over the Task file's bindings, a capture that resolved the source commit is kept, and the
+preview opens the Project Store strictly read-only. Package PJ3 of the
 [Project design note](../design/project.md). Builds on
 [ADR-0157](0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
 (the Project and its Project Store),
@@ -133,10 +136,16 @@ the Task is planned so a later Survey can never change what an admitted plan agr
    other link, so ADR-0135's collector reaches nothing beyond it. It records an
    `af/ProjectBriefCapture@1` in the revision's provenance (kept there like the bindings record):
    the pin, the project's own variants (the planning checkout's policy, like the pipelines that
-   name them) and the ancestry observation of clause 5. It does so only
-   when the captured catalog can carry a Brief (a captured pipeline declares a `project_brief`
-   port, or a Planner may generate one) or the Task file binds one, and records nothing at all
-   when the capture would be empty, so every other Task keeps its revision identity. Full Survey
+   name them) and the ancestry observation of clause 5. Whether it constructs is decided once
+   the Task file's bindings are resolved: it reads the Project Store and pins only when a
+   pipeline selection may choose (the named one alone when it refuses a fallback, every captured
+   one otherwise) declares a `project_brief` port the Task file leaves unbound, or a Planner may
+   generate a root (the effective fallback is `generate`); a Task file that binds every such
+   port reads no Survey and writes no pin (clause 6). It records a capture only when it
+   constructs or the Task file binds a Brief, and records nothing at all when the capture would
+   be empty (no pin, no source commit, no variant, no ancestry), so every other Task keeps its
+   revision identity; a capture that resolved the source commit alone is kept, so the
+   `no_survey` receipt names it. Full Survey
    records stay in the Project Store; a Project Store that cannot be read is reported on stderr
    and pins nothing, since a Survey never fails a Task. The `af` crate supplies the constructor
    to `review-config` as a `ProjectBriefResolver`, and every `normalize_root_inputs` site (the
@@ -162,7 +171,8 @@ the Task is planned so a later Survey can never change what an admitted plan agr
    `no_committed_revision`. After each normalization the revision records one
    `af/ProjectBriefReceipt@1` per Brief port of the selected root: the Brief's ID, the source
    commit and the observed staleness, or why the port carries none (`variant_none`,
-   `no_survey`); the compiled plan pins that revision. Later compilation, a generated
+   `no_survey`, which carry the source commit too when there is one); the compiled plan pins
+   that revision. Later compilation, a generated
    pipeline's handoff (whose new revision's receipts the Store admits beside its new inputs) and
    `af task explain` read the observation and never live git, so the receipt survives a deleted
    checkout. It is computed alike for a constructed and a bound Brief, never rewrites a Brief,
@@ -172,7 +182,9 @@ the Task is planned so a later Survey can never change what an admitted plan agr
    result output of type `af/ProjectBrief@1` (a pipeline that exposes its constructed port as a
    public output records one, forwarded unchanged), never in the exact-artifact form, which is
    refused with ADR-0134's message; an explicit binding suppresses construction and no Survey is
-   read for it. Because ADR-0134 grants provenance, not verification, a bound Brief is admitted
+   read for it: construction is decided after the bindings (clause 4), so a Task whose every
+   Brief port is bound opens no Project Store and writes no pin, and a later refresh cannot
+   change its capture. Because ADR-0134 grants provenance, not verification, a bound Brief is admitted
    only when the kernel's constructor produced it from one valid pin and its sections are that
    pin's rendering; anything else is refused with the typed reason `not_kernel_constructed`. A
    Worker output of that type is refused at output admission with the same reason (the generic
@@ -203,8 +215,13 @@ the Task is planned so a later Survey can never change what an admitted plan agr
 9. **`af project brief [--variant NAME] [--survey ID] [--json]`** renders a variant (default
    `orient`) of the newest complete Survey, or of the complete one named, and prints exactly the
    canonical bytes a plan would bind, recording and registering nothing: it opens the Project
-   Store to read only, so the Store registry (`af/stores.toml`) and the Store's last use are as
-   they were. `--json` prints `af/project-brief-preview@1` (schema
+   Store strictly read-only. No path is created; `project.lock` is opened read-only and held
+   shared, so no writer appends while it reads; the CAS is opened as it is; and the log is read
+   through a connection that initializes no schema and, while the write-ahead log holds no
+   frames, opens the database immutable, so SQLite writes no journal file. A Store whose
+   directory and `events.sqlite` nobody may write is read all the same, and no byte under the
+   Store, the Store registry (`af/stores.toml`, the Store's last use included) or the state root
+   changes. `--json` prints `af/project-brief-preview@1` (schema
    `project-brief-preview-v1.json`): the Brief's artifact
    ID, the Brief byte for byte as the text form, and the manifest entry; or `outcome: none` with
    `variant_none` or `no_survey`, exit 0. The text form exits 1 without a Survey, with the

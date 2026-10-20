@@ -1139,17 +1139,23 @@ and the Task still runs.
 ### Where Briefs live
 
 A Brief, its pin, the capture and the receipts are records of the Task Store's `cas/`, written by
-`af task plan` and `af task start` only when the captured catalog can carry a Brief (a pipeline
-declares a `project_brief` port or a Planner may generate one) or the Task file binds one; a
-Task whose capture would record nothing writes none of them. The Project Store is only read.
+`af task plan` and `af task start` only when the Task can carry a Brief: a pipeline selection
+may choose declares a `project_brief` port the Task file does not bind, a Planner may generate
+one, or the Task file binds one. A port the Task file binds is never constructed, so a Task
+whose every Brief port is bound reads no Survey, writes no pin, and a later refresh cannot change
+what it captured. A Task whose capture would record nothing writes none of them; one that
+resolved its source commit keeps it, so an empty port's `no_survey` receipt names that commit.
+The Project Store is only read.
 Collecting a Task releases its pin and Briefs, while a later Task keeps its own.
 
 ### `af project brief`
 
 Prints exactly the canonical bytes a plan would bind for a variant (default `orient`) of the
 newest complete Survey, or of the complete Survey `--survey ID` names, before any token is spent.
-It reads the Project Store only and records nothing: it registers no Store, so neither
-`af/stores.toml` nor the Store's last use changes. `--json` prints `af/project-brief-preview@1`
+It opens the Project Store strictly read-only and records nothing: it creates no path,
+initializes no schema, writes no SQLite journal file and registers no Store, so no byte of the
+Store, of `af/stores.toml` (the Store's last use included) or of the state root changes, and a
+Store whose directory and `events.sqlite` are not writable is read all the same. `--json` prints `af/project-brief-preview@1`
 ([schema](../schemas/project-brief-preview-v1.json)): `brief_id`, the Brief byte for byte as the
 text form, and `manifest`, the entry a Worker would see; or `outcome: none` with the reason
 `variant_none` or `no_survey`, exit 0. The text form exits 1 without a Survey.

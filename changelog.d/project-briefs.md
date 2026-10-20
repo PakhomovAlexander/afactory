@@ -15,8 +15,10 @@
   `af task explain` print. A plan whose Worker request, serialized as the runner renders it, would
   exceed the 1 MiB cap with the Brief is refused before dispatch. No author email enters a Brief,
   while repository text such as a decision title stays verbatim. A Task file may bind the port to a
-  recorded Brief output; a Brief the kernel did not construct, a Worker output among them, is
-  refused (`not_kernel_constructed`). `af project brief [--variant NAME] [--survey ID] [--json]`
-  prints the exact bytes a plan would bind (`af/project-brief-preview@1`), recording and
-  registering nothing
+  recorded Brief output, which reads no Survey and pins none; a Brief the kernel did not
+  construct, a Worker output among them, is refused (`not_kernel_constructed`). An empty port's
+  `no_survey` receipt names the source commit. `af project brief [--variant NAME] [--survey ID]
+  [--json]` prints the exact bytes a plan would bind (`af/project-brief-preview@1`), recording and
+  registering nothing: it opens the Project Store strictly read-only, so it changes no byte there
+  and reads a Store nobody may write
   ([ADR-0159](docs/adr/0159-carry-a-bounded-project-brief-on-a-declared-port.md)).

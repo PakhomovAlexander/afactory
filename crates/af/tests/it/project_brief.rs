@@ -1537,3 +1537,246 @@ fn a_survey_record_of_the_superseded_project_survey_1_label_is_refused_and_feeds
     assert_eq!(preview["outcome"], "brief", "{preview}");
     assert_ne!(preview["brief"]["survey_id"], old_id.as_str());
 }
+
+/// Every directory and file beneath `directory`, each file with its bytes: what a command that
+/// changes nothing leaves byte for byte as it found it.
+fn contents(directory: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    let mut found = Vec::new();
+    let mut pending = vec![directory.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in std::fs::read_dir(&next).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                pending.push(entry.path());
+                found.push((entry.path(), None));
+            } else {
+                found.push((entry.path(), Some(std::fs::read(entry.path()).unwrap())));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Paths made read-only, files `0444` and directories `0555`, until the value drops, which gives
+/// each its own mode back.
+struct Unwritable(Vec<(PathBuf, u32)>);
+
+impl Unwritable {
+    fn hold(paths: &[PathBuf]) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let mut held = Vec::new();
+        for path in paths {
+            let metadata = std::fs::metadata(path).unwrap();
+            let mode = if metadata.is_dir() { 0o555 } else { 0o444 };
+            held.push((path.clone(), metadata.permissions().mode()));
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+        Self(held)
+    }
+}
+
+impl Drop for Unwritable {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        for (path, mode) in self.0.iter().rev() {
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(*mode));
+        }
+    }
+}
+
+/// `af project brief` opens the Project Store strictly read-only (ADR-0159 clause 9): with the
+/// Store directory and its `events.sqlite` unwritable every preview form still renders, and no
+/// byte beneath the state root changes and nothing appears there: the Store's lock, log and
+/// CAS, its journal files, and the Store registry `af/stores.toml` with its last use included.
+#[test]
+fn af_project_brief_reads_an_unwritable_project_store_and_changes_no_byte() {
+    let f = Fixture::new();
+    f.refresh();
+    let store = f.project_store();
+    let before = contents(&f.state_home());
+    assert!(
+        before
+            .iter()
+            .any(|(path, _)| path.ends_with("af/stores.toml")),
+        "{before:?}"
+    );
+    {
+        let _held = Unwritable::hold(&[store.join("events.sqlite"), store.clone()]);
+        let text = f.ok(&["project", "brief"]);
+        let preview = f.preview(&[]);
+        assert_eq!(preview["outcome"], "brief", "{preview}");
+        let canonical = review_store::canonicalize(&preview["brief"]).unwrap();
+        assert_eq!(format!("{}\n", String::from_utf8(canonical).unwrap()), text);
+        let survey = preview["brief"]["survey_id"].as_str().unwrap().to_owned();
+        let named = f.preview(&["--survey", &survey]);
+        assert_eq!(named, preview);
+        assert_eq!(f.preview(&["--variant", "none"])["reason"], "variant_none");
+    }
+    assert_eq!(contents(&f.state_home()), before);
+}
+
+impl Fixture {
+    /// The IDs of every typed record of `kind` in the Task Store's CAS.
+    fn records(&self, kind: &str) -> Vec<String> {
+        let cas = self.cas();
+        cas.filed_objects()
+            .unwrap()
+            .into_iter()
+            .filter(|object| {
+                cas.get_optional_artifact(&object.digest)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|envelope| envelope.artifact_type == kind)
+            })
+            .map(|object| object.digest)
+            .collect()
+    }
+
+    /// The CAS object of the Project Store's one recorded Survey.
+    fn survey_object(&self) -> PathBuf {
+        let store = self.project_store();
+        let log = rusqlite::Connection::open(store.join("events.sqlite")).unwrap();
+        let payload: String = log
+            .query_row(
+                "SELECT payload FROM events WHERE type = 'SurveyRecorded@1' \
+                 ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        let hex = payload["survey_id"]
+            .as_str()
+            .unwrap()
+            .trim_start_matches("sha256:")
+            .to_owned();
+        store.join("cas/objects").join(&hex[..2]).join(&hex[2..])
+    }
+}
+
+/// The `af/ProjectBriefCapture@1` payload a revision's provenance holds, if any.
+fn capture_of(cas: &Cas, revision_id: &str) -> Option<Value> {
+    let revision = cas.get_json(revision_id).unwrap();
+    revision["payload"]["provenance"]["input_artifact_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|id| cas.get_json(id.as_str().unwrap()).ok())
+        .find(|envelope| envelope["type"] == "af/ProjectBriefCapture@1")
+        .map(|envelope| envelope["payload"].clone())
+}
+
+/// An explicit binding suppresses construction without reading a Survey (ADR-0159 clause 6).
+/// The Project Store keeps its complete Survey, and a named pipeline's one Brief port is bound
+/// to a recorded Brief: planning reads no Survey (its record is set aside while the Task is
+/// planned, and nothing misses it), writes no `af/ProjectSurveyPin@1`, and records a capture
+/// that names no pin. A Survey refresh after planning leaves the revision the run executes, its
+/// provenance, capture and receipt as planned.
+#[test]
+fn a_bound_brief_port_reads_no_survey_and_a_later_refresh_changes_nothing() {
+    let f = Fixture::new();
+    f.refresh();
+    let file = f.task_file("recorded", "fixture/exposing", None);
+    let recorded = f.task(&["task", "start", "--execute", "--file", &file], 0);
+    assert_eq!(recorded["result"]["acceptance"], "satisfied", "{recorded}");
+    let brief = recorded["result"]["outputs"]["brief"]["artifact_ids"][0]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let pins = f.records("af/ProjectSurveyPin@1");
+    assert_eq!(pins.len(), 1, "{pins:?}");
+
+    let survey = f.survey_object();
+    let aside = survey.with_extension("aside");
+    std::fs::rename(&survey, &aside).unwrap();
+    let bound = json!({"project": {"task": "recorded", "port": "brief"}});
+    let file = f.task_file("bound", "fixture/oriented", Some(bound));
+    let planned = f.af(&[
+        "task",
+        "plan",
+        "--file",
+        &file,
+        "--state",
+        f.state.to_str().unwrap(),
+    ]);
+    std::fs::rename(&aside, &survey).unwrap();
+    assert_eq!(planned.status.code(), Some(0), "{}", shown(&planned));
+    assert!(
+        !String::from_utf8_lossy(&planned.stderr).contains("Project Brief"),
+        "planning a bound port read the Project Store: {}",
+        shown(&planned)
+    );
+    let planned = String::from_utf8(planned.stdout).unwrap();
+    let line = port_line(&planned);
+    assert!(
+        line.starts_with(&format!(
+            "project: af/ProjectBrief@1 {brief} (bound, orient, "
+        )),
+        "{line}"
+    );
+    assert_eq!(f.records("af/ProjectSurveyPin@1"), pins);
+    let shown_plan = f.task(&["task", "show", "bound"], 0);
+    let revision_id = shown_plan["revision_id"].as_str().unwrap().to_owned();
+    let cas = f.cas();
+    let capture = capture_of(&cas, &revision_id).unwrap();
+    assert!(capture.get("pin_id").is_none(), "{capture}");
+    let head = git(&f.repo, &["rev-parse", "HEAD"]);
+    assert_eq!(capture["source_commit"], head.as_str());
+    assert_eq!(
+        capture["ancestry"],
+        json!({ head.clone(): {"kind": "behind", "behind_commits": "0"} })
+    );
+    let provenance = cas.get_json(&revision_id).unwrap()["payload"]["provenance"].clone();
+    let receipt = receipts(&cas, &revision_id);
+
+    // A newer Survey after planning.
+    f.commit("later.txt");
+    f.refresh();
+    assert_ne!(f.preview(&[])["brief_id"], brief.as_str());
+    let done = f.task(
+        &["task", "run", "bound", "--confirm-plan", &plan_id(&planned)],
+        0,
+    );
+    assert_eq!(done["result"]["acceptance"], "satisfied", "{done}");
+    assert_eq!(done["revision_id"], revision_id.as_str());
+    assert_eq!(f.port(&done).as_deref(), Some(brief.as_str()));
+    let cas = f.cas();
+    assert_eq!(
+        cas.get_json(&revision_id).unwrap()["payload"]["provenance"],
+        provenance
+    );
+    assert_eq!(capture_of(&cas, &revision_id).unwrap(), capture);
+    assert_eq!(receipts(&cas, &revision_id), receipt);
+    assert_eq!(receipt[0]["outcome"], "bound");
+    assert_eq!(f.records("af/ProjectSurveyPin@1"), pins);
+    assert_eq!(port_line(&f.task_text(&["task", "explain", "bound"])), line);
+}
+
+/// A `no_survey` receipt names the resolved source commit (ADR-0159 clause 5): a Task over a
+/// committed checkout with a Brief port, no complete Survey and no variant of the project's own
+/// keeps its capture, which holds that commit alone, and its receipt carries it.
+#[test]
+fn a_no_survey_receipt_carries_the_resolved_source_commit() {
+    let f = Fixture::new();
+    let head = git(&f.repo, &["rev-parse", "HEAD"]);
+    let file = f.task_file("unsurveyed", "fixture/oriented", None);
+    let planned = f.task(&["task", "plan", "--file", &file], 0);
+    let revision_id = planned["revision_id"].as_str().unwrap();
+    let cas = f.cas();
+    assert_eq!(
+        capture_of(&cas, revision_id),
+        Some(json!({"schema": "af/ProjectBriefCapture@1", "source_commit": head}))
+    );
+    assert_eq!(
+        receipts(&cas, revision_id),
+        vec![json!({
+            "schema": "af/ProjectBriefReceipt@1",
+            "port": "project",
+            "outcome": "none",
+            "variant": "orient",
+            "reason": "no_survey",
+            "source_commit": head,
+        })]
+    );
+}
