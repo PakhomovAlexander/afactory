@@ -6,14 +6,17 @@
 //! `--workspace` plans exactly what the explicit `--state` and `--bindings` plan.
 //! `af project workspace new|remove` create and retire Workspaces without a commit and without
 //! removing a Store, and delivery registers the worktree it made. `--delete-worktree` compares a
-//! worktree with its commit through the committed capture, so a clean filter never runs, and an
+//! worktree's index with its commit the way delivery does, refusing a staged or unmerged entry,
+//! and its files through the committed capture, so a clean filter never runs, and an
 //! undone `workspace new` deletes only the administrative entries whose `gitdir` names its path. `workspace new` fills its
 //! worktree without a checkout, so a configured smudge filter never runs; it refuses a path inside
 //! the checkout, another Workspace or af's state with exit 2, and every refusal leaves worktrees,
-//! refs and directories as they were. An undo deletes the worktree's directory only while its
-//! `.git` names this add's entry and the branch only at the commit it was created at, and reports
-//! each entry it leaves alone, also when its final check fails. A `--delete-worktree` whose entry
-//! cannot go says exactly that, and a rerun finishes it. A git that outlives its deadline fails the command and
+//! refs and directories as they were. An undo deletes the worktree's directory only while it
+//! keeps its identity, holds only what the add wrote, its `.git` names this add's entry and its
+//! index is unchanged, only the parents the command created, and the branch only at the commit it
+//! was created at, and reports each entry it leaves alone, also when its final check fails. A
+//! `--delete-worktree` whose entry cannot go says where it remains, renamed or not, and a rerun
+//! finishes it, refusing while a `gitdir` cannot be read. A git that outlives its deadline fails the command and
 //! leaves no child. The first `af task plan --workspace <checkout>` finds the checkout it
 //! registers. No command writes inside a checkout, the Surveyor's (ADR-0152) included, and the
 //! help answers in under 50 ms.
@@ -1449,6 +1452,11 @@ fn a_worktree_add_that_fails_or_is_stopped_midway_is_undone_and_the_same_command
 
 /// Run `af project workspace new LABEL` in `repo` with the fake git of `bin` first on `PATH`.
 fn new_with_fake_git(machine: &Machine, repo: &Path, bin: &Path, label: &str) -> Output {
+    af_with_fake_git(machine, repo, bin, &["project", "workspace", "new", label])
+}
+
+/// Run `af ARGS` in `repo` with the fake git of `bin` first on `PATH`.
+fn af_with_fake_git(machine: &Machine, repo: &Path, bin: &Path, args: &[&str]) -> Output {
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -1461,7 +1469,7 @@ fn new_with_fake_git(machine: &Machine, repo: &Path, bin: &Path, label: &str) ->
         .env("NO_COLOR", "1")
         .env("PATH", path)
         .env("AF_TEST_PROJECT_GIT_DEADLINE_MS", "3000")
-        .args(["project", "workspace", "new", label])
+        .args(args)
         .output()
         .unwrap()
 }
@@ -2058,4 +2066,442 @@ fn no_project_command_and_no_workspace_plan_writes_inside_the_checkout() {
     }
     assert!(!machine.root().join("repo-wt-spike").exists());
     assert!(machine.root().join("repo-wt-research").is_dir());
+}
+
+/// Feed `input` to `git update-index --index-info` in `worktree`.
+fn index_info(worktree: &Path, input: &str) {
+    use std::io::Write as _;
+    let mut child = Command::new("git")
+        .current_dir(worktree)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args(["update-index", "--index-info"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn delete_worktree_refuses_a_staged_change_or_an_unmerged_entry_and_deletes_nothing() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "workspace", "new", "spike"], 0);
+    let worktree = machine.root().join("fixture-wt-spike");
+    let index = repo.join(".git/worktrees/fixture-wt-spike/index");
+    let head = git(&worktree, &["rev-parse", "HEAD"]);
+    let ours = git(&worktree, &["rev-parse", "HEAD:README.md"]);
+    let theirs = git(&worktree, &["rev-parse", "HEAD~1:README.md"]);
+    let remove = [
+        "project",
+        "workspace",
+        "remove",
+        "spike",
+        "--delete-worktree",
+    ];
+    let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+    for case in ["staged", "unmerged"] {
+        // The files keep equal to HEAD; only the index differs from it.
+        if case == "staged" {
+            git(
+                &worktree,
+                &[
+                    "update-index",
+                    "--cacheinfo",
+                    &format!("100644,{theirs},README.md"),
+                ],
+            );
+        } else {
+            index_info(
+                &worktree,
+                &format!(
+                    "0 {zero}\tREADME.md\n100644 {ours} 1\tREADME.md\n100644 {theirs} 2\tREADME.md\n\
+                     100644 {ours} 3\tREADME.md\n",
+                    zero = "0".repeat(40)
+                ),
+            );
+            assert!(git(&worktree, &["ls-files", "-u"]).contains("README.md"));
+        }
+        let (files_before, index_before) = (files(&worktree), std::fs::read(&index).unwrap());
+        let refused = machine.af(&repo, &remove);
+        let (_, stderr) = text(&refused);
+        assert_eq!(refused.status.code(), Some(1), "{case}: {stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "the index of the worktree {} differs from its commit {head} at `README.md`",
+                worktree.display()
+            )),
+            "{case}: {stderr}"
+        );
+        assert!(stderr.contains("nothing was changed"), "{case}: {stderr}");
+        assert_eq!(files(&worktree), files_before, "{case}");
+        assert_eq!(std::fs::read(&index).unwrap(), index_before, "{case}");
+        assert_eq!(
+            administrative_entries(&repo),
+            ["fixture-wt-spike"],
+            "{case}"
+        );
+        assert_eq!(
+            machine.json(&repo, &["project", "workspaces", "--json"]),
+            listed,
+            "{case}"
+        );
+        git(&worktree, &["read-tree", "HEAD"]);
+    }
+
+    // Index and files equal HEAD again: the worktree goes.
+    machine.expect(&repo, &remove, 0);
+    assert!(!worktree.exists());
+    assert!(administrative_entries(&repo).is_empty());
+}
+
+#[test]
+fn an_undo_keeps_a_destination_another_writer_wrote_into_or_replaced() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "show"], 0);
+    let store = machine
+        .projects()
+        .join(expected_project_id(&repo).trim_start_matches("sha256:"));
+    let before = repository_state(&machine, &repo);
+    for (case, creates, reason) in [
+        // Another writer's file in the directory this command made.
+        (
+            "sentinel",
+            "echo theirs > \"$target/sentinel.txt\"",
+            "it holds `sentinel.txt`, which this add did not write",
+        ),
+        // The directory this command made, moved away and replaced by another, empty one.
+        (
+            "replaced",
+            "mv \"$target\" \"$target.moved\" && mkdir \"$target\"",
+            "it was replaced since this add created it",
+        ),
+    ] {
+        let label = format!("spike-{case}");
+        let worktree = machine.root().join(format!("fixture-wt-{label}"));
+        let bin = machine.root().join(format!("bin-{case}"));
+        worktree_add_git(&bin, &repo, creates, "exit 128");
+        let output = new_with_fake_git(&machine, &repo, &bin, &label);
+        let (stdout, stderr) = text(&output);
+        assert_eq!(output.status.code(), Some(1), "{case}\n{stdout}\n{stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "left behind: the directory {}, kept because {reason}; delete it once no add uses \
+                 it",
+                worktree.display()
+            )),
+            "{case}: {stderr}"
+        );
+        assert!(!stderr.contains("removed the worktree"), "{case}: {stderr}");
+        assert!(
+            !stderr.contains("nothing was left behind"),
+            "{case}: {stderr}"
+        );
+        assert!(
+            stderr.contains(&format!("deleted the branch refs/heads/af/{label}")),
+            "{case}: {stderr}"
+        );
+        assert!(worktree.is_dir(), "{case}");
+        if case == "sentinel" {
+            assert_eq!(
+                std::fs::read_to_string(worktree.join("sentinel.txt")).unwrap(),
+                "theirs\n"
+            );
+        } else {
+            assert!(
+                machine
+                    .root()
+                    .join(format!("{}.moved", worktree.display()))
+                    .is_dir()
+            );
+        }
+        assert!(administrative_entries(&repo).is_empty(), "{case}");
+        assert_eq!(
+            repository_state(&machine, &repo).refs,
+            before.refs,
+            "{case}"
+        );
+        assert!(!store.join("workspaces").join(&label).exists(), "{case}");
+    }
+}
+
+#[test]
+fn an_undo_keeps_a_worktree_whose_files_or_index_are_not_what_the_add_wrote() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "show"], 0);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+
+    // A tracked path of the commit, in the directory this command made, with other bytes.
+    let modified = machine.root().join("fixture-wt-modified");
+    let bin = machine.root().join("bin-modified");
+    worktree_add_git(
+        &bin,
+        &repo,
+        "echo theirs > \"$target/README.md\"",
+        "exit 128",
+    );
+    let output = new_with_fake_git(&machine, &repo, &bin, "modified");
+    let (stdout, stderr) = text(&output);
+    assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "the directory {}, kept because `README.md` differs from what this add wrote; delete \
+             it once no add uses it",
+            modified.display()
+        )),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("removed the worktree"), "{stderr}");
+    assert_eq!(
+        std::fs::read_to_string(modified.join("README.md")).unwrap(),
+        "theirs\n"
+    );
+
+    // The add made the worktree and its index, then a change was staged into that index.
+    let staged = machine.root().join("fixture-wt-staged");
+    let bin = machine.root().join("bin-staged");
+    worktree_add_git(
+        &bin,
+        &repo,
+        "\"$real\" worktree add --no-checkout -- \"$target\" af/staged\n  \"$real\" -C \
+         \"$target\" read-tree HEAD\n  blob=$(echo staged | \"$real\" -C \"$target\" hash-object \
+         -w --stdin)\n  \"$real\" -C \"$target\" update-index --add --cacheinfo \
+         \"100644,$blob,staged.txt\"",
+        "exit 128",
+    );
+    let output = new_with_fake_git(&machine, &repo, &bin, "staged");
+    let (stdout, stderr) = text(&output);
+    assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "the worktree {}, kept with its administrative entry worktrees/fixture-wt-staged \
+             because its index differs from {head} at `staged.txt`",
+            staged.display()
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "the branch refs/heads/af/staged, kept because the worktree {} kept above is on it",
+            staged.display()
+        )),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("removed the worktree"), "{stderr}");
+    assert!(
+        !stderr.contains("removed the administrative entry"),
+        "{stderr}"
+    );
+    assert!(staged.join(".git").is_file());
+    assert_eq!(administrative_entries(&repo), ["fixture-wt-staged"]);
+    assert!(git(&staged, &["ls-files"]).contains("staged.txt"));
+    assert!(git(&repo, &["worktree", "list", "--porcelain"]).contains("fixture-wt-staged"));
+    git(&repo, &["rev-parse", "--verify", "refs/heads/af/staged"]);
+}
+
+#[test]
+fn an_undo_removes_only_the_parents_this_command_created() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "show"], 0);
+    let theirs = machine.root().join("parents/theirs");
+    let ours = theirs.join("ours");
+    let worktree = ours.join("spike");
+    let bin = machine.root().join("bin");
+    // Another process creates the missing parent once the checks passed, before the add.
+    hooked_git(
+        &bin,
+        &repo,
+        &format!(
+            "case \" $* \" in *\" update-ref --stdin \"*) mkdir -p '{}';; esac",
+            theirs.display()
+        ),
+        ":",
+        "exit 128",
+    );
+    let output = af_with_fake_git(
+        &machine,
+        &repo,
+        &bin,
+        &[
+            "project",
+            "workspace",
+            "new",
+            "spike",
+            "--path",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let (stdout, stderr) = text(&output);
+    assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains(&format!("removed the directory {}", ours.display())),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains(&format!("removed the directory {},", theirs.display())),
+        "{stderr}"
+    );
+    assert!(stderr.contains("nothing was left behind"), "{stderr}");
+    assert!(
+        theirs.is_dir(),
+        "the parent another process made was removed"
+    );
+    assert!(!ours.exists());
+}
+
+/// The one entry under `<repo>/.git/worktrees` that `--delete-worktree` renamed from `name`.
+fn renamed_entry(repo: &Path, name: &str) -> PathBuf {
+    let renamed: Vec<String> = administrative_entries(repo)
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .strip_prefix(&format!("{name}.af-removing-"))
+                .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()))
+        })
+        .collect();
+    assert_eq!(renamed.len(), 1, "{:?}", administrative_entries(repo));
+    repo.join(".git/worktrees").join(&renamed[0])
+}
+
+#[test]
+fn a_failed_entry_deletion_names_the_renamed_entry_and_a_rerun_finishes_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    let mode = |path: &Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+    for label in ["spike", "bare"] {
+        machine.expect(&repo, &["project", "workspace", "new", label], 0);
+        let worktree = machine.root().join(format!("fixture-wt-{label}"));
+        let entry = repo
+            .join(".git/worktrees")
+            .join(format!("fixture-wt-{label}"));
+        let remove = ["project", "workspace", "remove", label, "--delete-worktree"];
+
+        // `worktrees/` stays writable, so the rename succeeds; the entry is read-only, so the
+        // deletion after it fails, and the message names where the entry now is.
+        mode(&entry, 0o555);
+        let partial = machine.af(&repo, &remove);
+        let (_, stderr) = text(&partial);
+        assert_eq!(partial.status.code(), Some(1), "{label}: {stderr}");
+        let renamed = renamed_entry(&repo, &format!("fixture-wt-{label}"));
+        let message = format!(
+            "its administrative entry remains at {}: Permission denied (os error 13); fix it and \
+             run the command again",
+            renamed.display()
+        );
+        assert!(
+            stderr.contains(&format!(
+                "removed the worktree {}; {message}",
+                worktree.display()
+            )),
+            "{label}: {stderr}"
+        );
+        assert!(
+            !stderr.contains(&format!("{} remains", entry.display())),
+            "{label}: {stderr}"
+        );
+        assert!(!worktree.exists() && !entry.exists(), "{label}");
+        let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+        assert!(labels(&listed).contains(&label.to_string()), "{listed}");
+
+        // A rerun before the fix fails the same way and still unregisters nothing.
+        let again = machine.af(&repo, &remove);
+        let (_, stderr) = text(&again);
+        assert_eq!(again.status.code(), Some(1), "{label}: {stderr}");
+        assert!(
+            stderr.contains(&format!(
+                "the worktree {} is already gone; {message}",
+                worktree.display()
+            )),
+            "{label}: {stderr}"
+        );
+        let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+        assert!(labels(&listed).contains(&label.to_string()), "{listed}");
+
+        // Once fixed, the rerun finds the renamed entry by its `gitdir`, or, when a deletion got
+        // as far as removing that `gitdir`, by the name recorded at the first run.
+        mode(&renamed, 0o755);
+        if label == "bare" {
+            std::fs::remove_file(renamed.join("gitdir")).unwrap();
+        }
+        let finished = machine.expect(&repo, &remove, 0);
+        assert!(
+            finished.contains(&format!(
+                "the worktree {} was already gone; removed its administrative entry {}; its \
+                 branch is kept",
+                worktree.display(),
+                renamed.display()
+            )),
+            "{label}: {finished}"
+        );
+        assert!(administrative_entries(&repo).is_empty(), "{label}");
+        let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+        assert_eq!(labels(&listed), ["fixture"], "{label}");
+    }
+}
+
+#[test]
+fn an_unreadable_gitdir_makes_the_rerun_refuse_without_unregistering() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let repo = repository(&machine.root());
+    machine.expect(&repo, &["project", "workspace", "new", "spike"], 0);
+    let worktree = machine.root().join("fixture-wt-spike");
+    let worktrees = repo.join(".git/worktrees");
+    let gitdir = worktrees.join("fixture-wt-spike/gitdir");
+    let remove = [
+        "project",
+        "workspace",
+        "remove",
+        "spike",
+        "--delete-worktree",
+    ];
+    let mode = |path: &Path, mode: u32| {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    };
+
+    // A partial removal: the directory went, the entry could not.
+    mode(&worktrees, 0o555);
+    let partial = machine.af(&repo, &remove);
+    assert_eq!(partial.status.code(), Some(1), "{}", text(&partial).1);
+    mode(&worktrees, 0o755);
+    assert!(!worktree.exists());
+
+    // An entry whose `gitdir` cannot be read may name the checkout: never "no entry".
+    mode(&gitdir, 0o000);
+    let refused = machine.af(&repo, &remove);
+    mode(&gitdir, 0o644);
+    let (_, stderr) = text(&refused);
+    assert_eq!(refused.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "the worktree {} is already gone, but {} could not be read (Permission denied (os \
+             error 13)), so its entry may name the checkout; fix it and run the command again; \
+             nothing was changed",
+            worktree.display(),
+            gitdir.display()
+        )),
+        "{stderr}"
+    );
+    assert_eq!(administrative_entries(&repo), ["fixture-wt-spike"]);
+    let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+    assert!(labels(&listed).contains(&"spike".to_string()), "{listed}");
+
+    // Readable again, the rerun finishes.
+    let finished = machine.expect(&repo, &remove, 0);
+    assert!(finished.contains("removed Workspace spike"), "{finished}");
+    assert!(administrative_entries(&repo).is_empty());
+    let listed = machine.json(&repo, &["project", "workspaces", "--json"]);
+    assert_eq!(labels(&listed), ["fixture"]);
 }
