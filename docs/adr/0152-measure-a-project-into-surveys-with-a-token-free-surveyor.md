@@ -230,7 +230,7 @@ email first of all.
     warm key, at the free-disk floor, on request) may take any Survey, least recently used first
     among every entry, while af holds more than `max_bytes`, even below `keep_surveys`. Neither takes the newest complete Survey, a Survey of a Project Store whose
     lock (`project.lock`, which a refresh holds while it reads and records and a plan while it
-    builds a Brief) is held, or one used within the hour, so `keep_surveys` is a target the
+    builds a Brief) cannot be taken now, or one used within the hour, so `keep_surveys` is a target the
     protected Surveys may exceed; the Project's log, `workspaces.toml`, `project.lock` and
     operator files are never reclaimed, and the Project Store is still never evicted whole. A
     collection takes the lock without waiting, so a held Store is left for the next pass, reads
@@ -241,25 +241,48 @@ email first of all.
     `run-event-v1.json`) before it deletes the record from the CAS. A record is reached, read
     and deleted only through directory descriptors, ADR-0144's removal boundary: the Project
     Store from `/`, then `cas`, `objects` and the digest-prefix directory, each opened
-    `O_NOFOLLOW | O_DIRECTORY`, and the record opened `O_NOFOLLOW` and removed by `unlinkat`
-    relative to its prefix directory, only while that name still holds the file that was found.
-    A symbolic link on that way or in place of the record, a directory on another device than
-    the Store's, or a record the file system will not let af read (permission denied, an I/O
-    error) refuses the Survey: inventory measures nothing through a link and lists it in use,
-    and the pass reports it with its reason, appends no tombstone and deletes nothing. A record
-    whose bytes were read but are no Survey (they do not match its digest, exceed the largest
-    record or do not parse), or that is gone from the CAS, is collected all the same, since
-    reclaiming corrupt bytes is the budget's job: its tombstone carries `unreadable`, af's own
-    sentence of at most 256 bytes and never the record's content, in place of the totals, and
-    the sweep and `af project history` show it as `collected (unreadable)`. A preview, `af
-    storage prune` without `--apply`, applies the same `project.lock` check as the pass: the
-    Surveys it would take from a held Project Store are listed under `held`, never as removals,
-    exactly as the applied pass lists them. The tombstones are the run
+    `O_NOFOLLOW | O_DIRECTORY`, and the record stated without following it (its device and
+    inode, the identity read before the tombstone) and opened `O_NOFOLLOW` relative to its
+    prefix directory. The deletion names the inode it checks, rename-then-verify: the record is
+    moved with `renameat`, never over a taken name, into `cas/removing/<survey-id>` of the same
+    Store (created without following a link, on the Store's device), opened there `O_NOFOLLOW`
+    and `fstat`ed; on a device and inode match it is unlinked there, and the bytes reported are
+    the allocated bytes of the file deleted, from that `fstat`. On a mismatch the file is moved
+    back to its name, or, when the name is taken again, left under `removing` and said, nothing
+    is deleted, and the Survey is reported `refused (replaced during collection)`; its tombstone,
+    appended before the rename, stays, so the next pass deletes what its name holds. A symbolic
+    link on that way or in place of the record, a directory on another device than the Store's,
+    or a record the file system will not let af read (permission denied, an I/O error) refuses
+    the Survey: inventory measures nothing through a link and lists it in use, and the pass
+    reports it with its reason, appends no tombstone and deletes nothing. The Surveyor's writer,
+    the reader of a Survey and collection share one ceiling, `MAX_SURVEY_BYTES` (1 MiB, the
+    ceiling of `max_survey_bytes`): collection reads a record up to it and one byte more, and a
+    record over it, by its stated length or its bytes, is never taken for corrupt: it is refused
+    and reported `refused (oversize, <bytes> bytes)`, inventory lists it in use for that reason,
+    and it keeps its record and its place in the log. A record within the ceiling whose bytes
+    were read but are no Survey (they do not match its digest or do not parse), or that is gone
+    from the CAS, is collected all the same, since reclaiming corrupt bytes is the budget's job:
+    its tombstone carries `unreadable`, af's own sentence of at most 256 bytes and never the
+    record's content, in place of the totals, and the sweep and `af project history` show it as
+    `collected (unreadable)`. Inventory, a preview (`af storage prune` without `--apply`) and the
+    applied pass decide that a Project Store's Surveys are held by one predicate,
+    `lock_available`: `project.lock` opened with the flags the applied pass holds it with and
+    locked without waiting, then released at once. While a refresh or a plan holds it their
+    reason is that; while af cannot open or lock the file (it is unreadable or unwritable) it is
+    `lock unavailable: <error>`; either way preview and pass list every Survey they would take
+    from that Store under `held` with that same reason, never as removals, inventory lists them
+    in use, and nothing is collected. The tombstones are the run
     `survey-collection` of the Project Store's log, beside the run `project` that holds the
     chain, so the chain's own sequence is only ever the Surveyor's. Every applied sweep first
-    deletes the record of any tombstoned Survey still in a CAS, reported with the rule
-    `recovery`, so an interruption between a tombstone and its deletion is finished by the next
-    pass; a debug build reads `AF_TEST_SURVEY_STOP_AFTER_TOMBSTONES=1` to stop there. Replay
+    finishes what an interruption left: each file under `cas/removing` goes back to its name
+    when the name is free, is deleted when the name is taken again and it holds a collected
+    Survey's record, and is otherwise left and reported; then the record of any tombstoned
+    Survey still in a CAS is deleted as above. Each deletion is reported with the rule
+    `recovery`, and the preview lists exactly those entries under `recovery` with the bytes the
+    applied pass frees, so preview and pass agree entry for entry. A debug build reads
+    `AF_TEST_SURVEY_STOP_AFTER_TOMBSTONES=1` to stop after the tombstones, and
+    `AF_TEST_SURVEY_REPLACE_BEFORE_RENAME=<directory>` to replace a record by a byte-identical
+    copy between its identity read and its rename. Replay
     treats a `SurveyRecorded@1` whose Survey a tombstone names as collected: `af project history`
     answers for it from the tombstone and marks it `collected` in text (`af/project-history@1`
     is unchanged, since a marked entry would be `@2`), and `af project survey` shows the newest

@@ -26,8 +26,8 @@ use std::time::Instant;
 
 use review_core::EventType;
 use review_core::project::{
-    PROJECT_SURVEY_V1, ProjectSurveyV1, SurveyCompletenessV1, SurveyFailedPayloadV1,
-    SurveyRecordedPayloadV1,
+    MAX_SURVEY_BYTES, PROJECT_SURVEY_V1, ProjectSurveyV1, SurveyCompletenessV1,
+    SurveyFailedPayloadV1, SurveyRecordedPayloadV1,
 };
 use review_store::NewEvent;
 use serde_json::Value;
@@ -189,12 +189,16 @@ impl Log {
 impl ProjectStore {
     /// The record `recorded` names, read back from the CAS and checked against the event.
     pub(crate) fn survey(&self, recorded: &SurveyRecordedPayloadV1) -> Result<Recorded, String> {
-        let bytes = self.cas.get(&recorded.survey_id).map_err(|error| {
-            format!(
-                "the Project Store does not hold Survey {}: {error}",
-                recorded.survey_id
-            )
-        })?;
+        // Never more than a Survey can hold: the ceiling the writer and collection share.
+        let bytes = self
+            .cas
+            .get_bounded(&recorded.survey_id, MAX_SURVEY_BYTES)
+            .map_err(|error| {
+                format!(
+                    "the Project Store does not hold Survey {}: {error}",
+                    recorded.survey_id
+                )
+            })?;
         let survey: ProjectSurveyV1 = serde_json::from_slice(&bytes)
             .map_err(|error| format!("Survey {}: {error}", recorded.survey_id))?;
         survey.validate()?;
@@ -387,7 +391,7 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
         checks: sections.checks,
     };
     let bytes = record_bytes(&survey)?;
-    if bytes.len() as u64 > policy.max_survey_bytes {
+    if bytes.len() as u64 > policy.max_survey_bytes.min(MAX_SURVEY_BYTES) {
         let reason = format!(
             "the Survey needs {} bytes, more than [survey] max_survey_bytes = {}; raise it or \
              exclude paths, and run `af project refresh` again",

@@ -9,15 +9,22 @@
   neither takes the newest complete Survey, one the Project Store's lock holds or one used within
   the hour, and `af project refresh` collects nothing. Collection appends a `SurveyCollected@1`
   tombstone with the Survey's head, cutoff, completeness and tree and history totals before it
-  deletes the record, and the next sweep finishes a deletion an interruption left. A record is
-  reached, read and unlinked only through directory descriptors that follow no link, so a CAS
-  prefix directory replaced by a symbolic link refuses its Survey, which is reported and keeps its
-  record and its place in the log; a record whose bytes are corrupt is collected with an
-  `unreadable` tombstone in place of its totals and its bytes freed, shown as
-  `collected (unreadable)` by the sweep and `af project history`, while one the file system will
-  not let af read is refused and left as it was. `af storage prune` without `--apply` applies the
-  same `project.lock` check as the sweep and lists the Surveys of a held Project Store under
-  `held`, as the applied sweep does. `af project history` marks a collected Survey `collected`
+  deletes the record, and the next sweep finishes a deletion an interruption left, which
+  `af storage prune` without `--apply` lists under `recovery` with the bytes it frees, entry for
+  entry as the applied sweep does. A record is reached and read only through directory
+  descriptors that follow no link, and deleted by rename-then-verify: moved into
+  `cas/removing/<survey-id>` of its Store and unlinked only when that is the inode found before
+  the tombstone, so a record replaced in between is moved back, nothing is deleted, the Survey is
+  reported `refused (replaced during collection)` and the next sweep collects it. A CAS prefix
+  directory replaced by a symbolic link refuses its Survey, which is reported and keeps its record
+  and its place in the log; the Surveyor, the reader of a Survey and collection share one 1 MiB
+  ceiling, and a record over it is refused as `oversize` with its size and left, while a corrupt
+  record within it is collected with an `unreadable` tombstone in place of its totals and its
+  bytes freed, shown as `collected (unreadable)` by the sweep and `af project history`; one the
+  file system will not let af read is refused and left as it was. The preview and the sweep decide
+  `held` by one predicate, `project.lock` taken as the sweep takes it: the Surveys of a Project
+  Store a refresh or a plan holds, or whose lock af cannot open (`lock unavailable: <error>`),
+  are listed under `held` with the same reason by both, and nothing is collected. `af project history` marks a collected Survey `collected`
   from its tombstone, and `af project survey` says that a collected newest Survey was collected
   and names `af project refresh`. `.af/af.toml` patterns, the routes' and the Surveyor's alike,
   now match by dynamic programming with the same grammar, `?` one byte of the canonical encoded

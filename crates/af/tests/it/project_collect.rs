@@ -8,16 +8,21 @@
 //! `af project survey` answer from the tombstones. Budget pressure below `keep_surveys` takes the
 //! oldest Survey first and never the newest complete one, a Survey the Project Store's lock
 //! holds or the Project's own files. A refresh and a collection at once leave one consistent
-//! log, and a collection interrupted between its tombstones and its deletions is finished by the
-//! next sweep. The adversarial pattern `*a` thirty times then `b` neither hangs the Surveyor's
+//! log, and a collection interrupted between its tombstones and its deletions, or after it moved
+//! a record into `cas/removing`, is finished by the next sweep, which its preview lists under
+//! `recovery` entry for entry with the bytes it frees. The adversarial pattern `*a` thirty times then `b` neither hangs the Surveyor's
 //! `exclude` nor matches, its matching form does, and a 257-byte pattern and a 65-entry list are
 //! refused naming the key.
 //!
 //! A record is reached and deleted only through descriptors: a prefix directory replaced by a
 //! link to a directory outside the Store refuses its Survey, touches nothing outside and adds no
 //! tombstone. A corrupt record is collected `unreadable` and its bytes freed, while one the file
-//! system will not let af read is refused and keeps its record and its place in the log. The
-//! preview lists the Surveys of a held Project Store as held, exactly as the applied sweep does.
+//! system will not let af read is refused and keeps its record and its place in the log, and so
+//! does one a byte over the shared ceiling, reported `oversize`. A record replaced between its
+//! identity read and its rename is `refused (replaced during collection)`: nothing else is
+//! deleted and a rerun collects it. The preview lists the Surveys of a held Project Store as
+//! held, exactly as the applied sweep does, and a `project.lock` af cannot open for writing holds
+//! them in both with the same reason.
 //! `?` is one byte of the canonical encoded spelling in the Surveyor's `exclude`, and the
 //! superseded `af/storage@2` and `af/storage-prune@1` are refused.
 
@@ -625,13 +630,46 @@ fn a_collection_interrupted_after_its_tombstones_is_finished_by_the_next_sweep()
     assert_eq!(history.matches("  collected ").count(), 3, "{history}");
     let (_, entries) = survey_entries(&machine, &repo);
     assert_eq!(entries.len(), 4);
+    // The oldest was interrupted later still, after its rename into `cas/removing`.
+    let removing = machine.store().join("cas/removing");
+    std::fs::create_dir_all(&removing).unwrap();
+    std::fs::rename(machine.object(&surveys[0]), removing.join(&surveys[0])).unwrap();
+    let moved_bytes = allocated(&removing.join(&surveys[0]));
 
-    let pruned = prune(&machine, &repo, &[keep]);
+    // The preview lists every pending deletion under `recovery` with the bytes it frees.
     let finished: Vec<String> = surveys[..3]
         .iter()
         .map(|id| path_of(&machine, id))
         .collect();
+    let preview = machine.json(&repo, &[keep], &["storage", "prune", "--json"]);
+    schemas::valid(&schemas::validator("storage-prune-v2.json"), &preview);
+    assert_eq!(removed(&preview, "recovery"), finished, "{preview}");
+    let recovery = |document: &Value| -> Vec<Value> {
+        document["removals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|removal| removal["kind"] == "survey")
+            .cloned()
+            .collect()
+    };
+    for removal in recovery(&preview) {
+        assert!(removal["bytes"].as_u64().unwrap() > 0, "{removal}");
+    }
+    assert_eq!(
+        recovery(&preview)[0]["bytes"].as_u64().unwrap(),
+        moved_bytes
+    );
+    assert!(
+        removing.join(&surveys[0]).is_file(),
+        "a preview moves nothing"
+    );
+
+    let pruned = prune(&machine, &repo, &[keep]);
     assert_eq!(removed(&pruned, "recovery"), finished, "{pruned}");
+    assert_eq!(recovery(&pruned), recovery(&preview), "entry for entry");
+    assert_eq!(pruned["held"], preview["held"]);
+    assert!(std::fs::read_dir(&removing).unwrap().next().is_none());
     assert!(removed(&pruned, "collection").is_empty());
     assert_eq!(machine.collected().len(), 3, "no tombstone twice");
     for survey_id in &surveys[..3] {
@@ -1142,4 +1180,227 @@ fn superseded_storage_documents_are_refused() {
     ] {
         assert!(!schemas.join(superseded).exists(), "{superseded}");
     }
+}
+
+/// A Survey's record replaced between its identity read and its rename, by the debug build's
+/// hook: a byte-identical copy, another inode, takes its name and the original moves aside.
+#[test]
+fn a_record_replaced_before_its_rename_is_refused_and_a_rerun_collects_it() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..4)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    let target = &surveys[0];
+    let object = machine.object(target);
+    let original = std::fs::read(&object).unwrap();
+    let aside = machine.root().join("aside");
+    std::fs::create_dir_all(&aside).unwrap();
+    let keep = ("AF_STORAGE__KEEP_SURVEYS", "3");
+    let pruned = prune(
+        &machine,
+        &repo,
+        &[
+            keep,
+            (
+                "AF_TEST_SURVEY_REPLACE_BEFORE_RENAME",
+                aside.to_str().unwrap(),
+            ),
+        ],
+    );
+    let refused = failures_naming(&pruned, &path_of(&machine, target));
+    assert_eq!(refused.len(), 1, "{pruned}");
+    assert!(
+        refused[0].contains(&format!(
+            "Survey {target} is refused (replaced during collection)"
+        )),
+        "{}",
+        refused[0]
+    );
+    assert!(removed(&pruned, "collection").is_empty(), "{pruned}");
+    // Nothing is deleted: the original is where the replacement put it, and its name holds the
+    // copy, the Survey's record still.
+    let moved = aside.join(object.file_name().unwrap());
+    assert_eq!(std::fs::read(&moved).unwrap(), original);
+    assert_eq!(std::fs::read(&object).unwrap(), original);
+    assert!(
+        std::fs::read_dir(machine.store().join("cas/removing"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+    // Its tombstone was appended before the rename, so the history answers from it.
+    assert_eq!(machine.collected(), vec![target.clone()]);
+    for survey_id in &surveys[1..] {
+        assert!(machine.held(survey_id));
+    }
+
+    // A rerun deletes the record its name holds, and only that.
+    let pruned = prune(&machine, &repo, &[keep]);
+    assert_eq!(
+        removed(&pruned, "recovery"),
+        vec![path_of(&machine, target)],
+        "{pruned}"
+    );
+    assert!(
+        pruned["failures"].as_array().unwrap().is_empty(),
+        "{pruned}"
+    );
+    assert!(!machine.held(target));
+    assert_eq!(
+        std::fs::read(&moved).unwrap(),
+        original,
+        "nothing unrelated"
+    );
+    assert_eq!(machine.collected(), vec![target.clone()]);
+    assert_consistent(&machine);
+}
+
+/// The one ceiling the Surveyor writes within: `max_survey_bytes`, 1 MiB.
+const MAX_SURVEY_BYTES: usize = 1_048_576;
+
+#[test]
+fn an_oversize_survey_is_refused_and_a_corrupt_one_within_the_ceiling_is_unreadable() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..4)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    // Written by the test, not the Surveyor: one byte over the ceiling, and corrupt bytes at it.
+    let oversize = machine.object(&surveys[0]);
+    std::fs::set_permissions(&oversize, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::write(&oversize, vec![b'x'; MAX_SURVEY_BYTES + 1]).unwrap();
+    let corrupt = machine.object(&surveys[1]);
+    std::fs::set_permissions(&corrupt, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::write(&corrupt, vec![b'x'; MAX_SURVEY_BYTES]).unwrap();
+    let events_before = machine.events();
+
+    let (_, entries) = survey_entries(&machine, &repo);
+    let entry = &entries[&path_of(&machine, &surveys[0])];
+    assert!(
+        entry["in_use"]
+            .as_str()
+            .unwrap()
+            .starts_with("refused (oversize, 1048577 bytes)"),
+        "{entry}"
+    );
+
+    let keep = [("AF_STORAGE__KEEP_SURVEYS", "2")];
+    let preview = machine.json(&repo, &keep, &["storage", "prune", "--json"]);
+    let pruned = prune(&machine, &repo, &keep);
+    for document in [&preview, &pruned] {
+        let refused = failures_naming(document, &path_of(&machine, &surveys[0]));
+        assert_eq!(refused.len(), 1, "{document}");
+        assert!(
+            refused[0].contains(&format!(
+                "Survey {} is refused (oversize, 1048577 bytes)",
+                surveys[0]
+            )),
+            "{}",
+            refused[0]
+        );
+        assert_eq!(
+            removed(document, "collection"),
+            vec![path_of(&machine, &surveys[1])],
+            "{document}"
+        );
+    }
+    assert_eq!(preview["removals"], pruned["removals"]);
+    // Left in place, its place in the log unchanged.
+    assert_eq!(
+        std::fs::metadata(&oversize).unwrap().len(),
+        MAX_SURVEY_BYTES as u64 + 1
+    );
+    assert_eq!(machine.collected(), vec![surveys[1].clone()]);
+    let events_after: Vec<_> = machine
+        .events()
+        .into_iter()
+        .filter(|(_, kind, _)| kind != "SurveyCollected@1")
+        .collect();
+    assert_eq!(events_after, events_before);
+    // The corrupt one within the ceiling is collected `unreadable`.
+    let tombstone = machine
+        .events()
+        .into_iter()
+        .find(|(_, kind, _)| kind == "SurveyCollected@1")
+        .unwrap()
+        .2;
+    assert_eq!(tombstone["unreadable"], "its bytes do not match its digest");
+    assert!(!corrupt.exists());
+}
+
+#[test]
+fn an_unwritable_project_lock_holds_every_survey_in_preview_and_apply_alike() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..4)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    let lock = machine.store().join("project.lock");
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o444)).unwrap();
+    if std::fs::OpenOptions::new().write(true).open(&lock).is_ok() {
+        // A user the file mode does not bind (root): nothing to see.
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+        return;
+    }
+    let keep = [("AF_STORAGE__KEEP_SURVEYS", "1")];
+    let held_of = |document: &Value| -> Vec<Value> {
+        document["held"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["kind"] == "survey")
+            .cloned()
+            .collect()
+    };
+    let preview = machine.json(&repo, &keep, &["storage", "prune", "--json"]);
+    schemas::valid(&schemas::validator("storage-prune-v2.json"), &preview);
+    let held = held_of(&preview);
+    let expected: Vec<String> = surveys[..3]
+        .iter()
+        .map(|id| path_of(&machine, id))
+        .collect();
+    assert_eq!(
+        held.iter()
+            .map(|entry| entry["path"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        expected,
+        "{preview}"
+    );
+    let reason = held[0]["reason"].as_str().unwrap().to_string();
+    assert!(reason.starts_with("lock unavailable: "), "{reason}");
+    for entry in &held {
+        assert_eq!(entry["reason"], reason.as_str());
+        assert!(entry["bytes"].as_u64().unwrap() > 0, "{entry}");
+    }
+    assert!(removed(&preview, "collection").is_empty(), "{preview}");
+    let (text, _) = machine.expect(&repo, &keep, &["storage", "prune"], 0);
+    assert_eq!(text.matches("held survey ").count(), 3, "{text}");
+    assert!(text.contains("lock unavailable: "), "{text}");
+
+    let applied = prune(&machine, &repo, &keep);
+    assert_eq!(held_of(&applied), held, "entry for entry, same reason");
+    assert!(removed(&applied, "collection").is_empty(), "{applied}");
+    assert!(machine.collected().is_empty());
+    assert!(surveys.iter().all(|id| machine.held(id)));
+    // Inventory names the same reason, so the budget takes none of them either.
+    let (_, entries) = survey_entries(&machine, &repo);
+    for survey_id in &surveys {
+        assert!(
+            entries[&path_of(&machine, survey_id)]["in_use"]
+                .as_str()
+                .unwrap()
+                .starts_with("lock unavailable: ")
+        );
+    }
+    let tiny = prune(&machine, &repo, &[keep[0], ("AF_STORAGE__MAX_BYTES", "1")]);
+    assert!(removed(&tiny, "budget").is_empty(), "{tiny}");
+    assert!(machine.collected().is_empty());
+
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let applied = prune(&machine, &repo, &keep);
+    assert_eq!(removed(&applied, "collection"), expected);
+    assert_consistent(&machine);
 }
