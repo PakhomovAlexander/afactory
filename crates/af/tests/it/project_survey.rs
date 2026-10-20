@@ -142,6 +142,9 @@ fn git_dated(
     args: &[&str],
 ) -> String {
     let mut command = Command::new("git");
+    // No background maintenance: its transient `.git/objects/maintenance.lock` would show up in
+    // a before/after listing of the checkout (seen on CI once).
+    command.args(["-c", "gc.auto=0", "-c", "maintenance.auto=false"]);
     command
         .current_dir(repo)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
