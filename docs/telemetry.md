@@ -342,12 +342,17 @@ Like `tail -f`: every live segment (with `RUN`, those that carry that run) is re
 and followed, and each span end (with its duration and status) and each event is printed as its
 writer writes it. It exits once every followed segment is sealed — its sealed file published
 and readable, not merely the seal line written to the live file while the writer still
-compresses or publishes — or recovered; with no live segment it waits for one. A `.jsonl`
+compresses or publishes — or recovered; with no live segment it waits for one. With `RUN`, a run
+whose every execution was sealed before tail started is printed from its sealed files, as the
+follow would have printed it, and tail exits 0 at once: nobody is writing it. A `.jsonl`
 segment no writer holds (a writer that crashed before its seal, or abandoned its publication)
 is recovered by tail as by any reader able to lock it, and its recovered sealed file read; tail
 never waits on a prefix that cannot change. A followed segment that cannot be read — a sealed
 file, or live bytes with an invalid line before a valid one (interior corruption) — fails tail,
-naming the file, with nothing of that read printed (exit 1). `--json` prints one
+naming the file, with nothing of that read printed (exit 1). So does a followed segment that is
+gone without a sealed file tail could validate or a recovery tail itself completed: when another
+reader's recovery renamed it `.corrupt`, tail names that `.corrupt` file; it is never taken as
+sealed. `--json` prints one
 `af/telemetry-tail@1` object per line
 ([`schemas/telemetry-tail-v1.json`](../schemas/telemetry-tail-v1.json)). With `RUN` tail first
 looks the run up, within `--store ID` when given: a run no Store records there exits 1 naming

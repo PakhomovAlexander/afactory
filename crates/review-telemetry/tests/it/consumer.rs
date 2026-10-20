@@ -210,6 +210,7 @@ fn telemetry_tail_binds_the_store_of_the_run_it_follows() {
             store_id: named.then(|| first.clone()),
             store_named: named,
             sealed_baseline: None,
+            sealed_run: None,
         };
         let tail = std::thread::spawn(move || {
             view::tail(

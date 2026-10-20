@@ -1561,9 +1561,13 @@ Like `tail -f`: every live segment (or, with RUN, those that carry that run) is 
 start and followed; each span end (with its duration and status) and each event is printed as \
 the writer writes it, within `[telemetry] flush_latency_ms` of its creation while a run is open. \
 It exits when every followed segment is sealed — its sealed file published and readable, not \
-merely its seal line written — or recovered; with no live segment it waits for one. A segment \
+merely its seal line written — or recovered; with no live segment it waits for one. With RUN, \
+a run whose every execution was sealed before tail started is printed from its sealed files and \
+tail exits at once. A segment \
 no writer holds any more (a crashed writer's, or one whose publication was abandoned) is \
-recovered as any reader able to lock it would, then read sealed. With `--json` each line is one \
+recovered as any reader able to lock it would, then read sealed. A followed segment gone \
+without a sealed file or a recovery of tail's own (renamed `.corrupt` by another reader's \
+recovery) is never a seal: tail names it and fails. With `--json` each line is one \
 `af/telemetry-tail@1` object. With RUN the run is looked up first, within `--store` when given, \
 and followed in one Store for its whole lifetime: the one `--store` names, else the one that \
 records it at the start. When two Stores record the run id, at the start or once a second one \
@@ -1571,7 +1575,7 @@ starts it or seals a segment of it, it asks for `--store ID` before printing any
 second.\n\n\
 Never: reads a Store, records telemetry, removes a segment, or contacts a network.\n\n\
 Exit codes: 0 success, 1 the telemetry directory or a followed segment cannot be read (a \
-segment with interior corruption included) or RUN is unknown (never said while a segment is \
+segment with interior corruption, or one gone without a seal, included) or RUN is unknown (never said while a segment is \
 unreadable: tail then names that segment), 2 a wrong command line, a run \
 two Stores share without `--store`, or a refused `[telemetry]` key.",
         after_long_help = "Examples:\n  af telemetry tail\n  af telemetry tail RUN_ID\n  af telemetry tail RUN_ID --json | jq -c 'select(.record == \"span_end\")'"

@@ -596,6 +596,7 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         path: PathBuf::from(format!("/state/store-{index}")),
         task_id: Some(format!("task-{index}")),
         segment_id: None,
+        directory: None,
         bytes: 10,
         rule: Rule::Collection,
     };
@@ -692,12 +693,18 @@ fn a_removal_a_dead_process_left_claimed_is_finished_and_reported_by_the_sweep()
 
 /// A sealed telemetry segment in `root`, its files last modified `old` ago; its id.
 fn telemetry_segment(root: &Path, old: Duration) -> String {
+    telemetry_segment_as(root, old, None)
+}
+
+/// [`telemetry_segment`] with the segment id `id` when given.
+fn telemetry_segment_as(root: &Path, old: Duration, id: Option<&str>) -> String {
     use review_telemetry::record::{Attrs, SealExit, SpanKind, SpanStatus};
     let mut options = review_telemetry::segment::writer::WriterOptions::new(
         root,
         review_telemetry::level::Level::Spans,
     );
     options.redactor = review_telemetry::redact::Redactor::new();
+    options.segment_id = id.map(str::to_string);
     // Sealed `old` ago on the writer's clock: a sealed segment's last use is its seal time.
     let when = SystemTime::now() - old;
     let at = when
@@ -851,6 +858,108 @@ fn telemetry_eviction_follows_storage_rules() {
     );
     assert!(layout_t.sealed_segment(&recent).exists());
     live.finish(review_telemetry::record::SealExit::Ok).unwrap();
+}
+
+/// Two registered telemetry directories hold a segment of the same id: the copy in the
+/// configured directory is idle past `keep_days`, the other one only two days old. A prune
+/// preview collects the first copy by age and takes it out of its own directory's model only:
+/// the other directory's model keeps its copy, so the telemetry total and the cap evaluation
+/// see it, and the cap evicts it by the budget rule — as the applied prune does. A workspace
+/// older than the second copy keeps the preview over the whole budget after the collection (so
+/// it inventories again) and is what the whole budget evicts, leaving the copy to the cap.
+#[test]
+fn telemetry_prune_preview_removes_a_segment_from_one_directory_only() {
+    let mut layout = layout();
+    let first = layout.roots.telemetry.current.clone().unwrap();
+    let second = layout.root.join("elsewhere/telemetry");
+    let id = "1700000000000-4242-0a1b2c3d";
+    telemetry_segment_as(&first, 30 * DAY, Some(id));
+    telemetry_segment_as(&second, 2 * DAY, Some(id));
+    review_telemetry::dirs::register(&layout.roots.telemetry.registry, &first, &[]).unwrap();
+    review_telemetry::dirs::register(&layout.roots.telemetry.registry, &second, &[]).unwrap();
+    let canonical = |path: &Path| path.canonicalize().unwrap();
+    let (first, second) = (canonical(&first), canonical(&second));
+    let workspace = workspace(&layout, 'a', 10 * DAY);
+
+    let stock = inventory(&layout.roots, Detail::Stores);
+    let model = |root: &Path| stock.telemetry[root].clone().unwrap();
+    let copy = |root: &Path| {
+        stock
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.directory.as_deref() == Some(root) && entry.segment_id.as_deref() == Some(id)
+            })
+            .unwrap_or_else(|| panic!("{}: {:?}", root.display(), stock.entries))
+            .bytes
+    };
+    let (first_total, second_total) = (model(&first).total, model(&second).total);
+    let (first_copy, second_copy) = (copy(&first), copy(&second));
+    assert!(first_copy > 0 && second_copy > 0);
+    // Telemetry without the collected copy stays one byte over the cap while the second copy is
+    // counted, and fits once it is not: the cap evicts it only if its model still holds it.
+    let rest = first_total - first_copy + second_total;
+    layout.roots.telemetry.max_bytes = Some(rest - 1);
+    // One byte over the whole budget once the collected copy is out of the count, so the
+    // preview inventories again and the whole budget evicts the workspace, least recently used.
+    let mut prune = policy(stock.total() - first_copy - 1);
+    prune.auto_gc = false;
+
+    let preview = sweep(&layout.roots, &prune, true, false);
+    assert!(preview.failures.is_empty(), "{:?}", preview.failures);
+    let removed = |report: &SweepReport| -> Vec<(PathBuf, String, Rule)> {
+        report
+            .removals
+            .iter()
+            .filter(|removal| removal.kind == Kind::Telemetry)
+            .map(|removal| {
+                (
+                    removal.directory.clone().unwrap(),
+                    removal.segment_id.clone().unwrap(),
+                    removal.rule,
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        removed(&preview),
+        [
+            (first.clone(), id.to_string(), Rule::Collection),
+            (second.clone(), id.to_string(), Rule::Budget),
+        ],
+        "{preview:?}"
+    );
+    let bytes: Vec<u64> = preview
+        .removals
+        .iter()
+        .filter(|removal| removal.kind == Kind::Telemetry)
+        .map(|removal| removal.bytes)
+        .collect();
+    assert_eq!(bytes, [first_copy, second_copy]);
+    let others: Vec<(PathBuf, Rule)> = preview
+        .removals
+        .iter()
+        .filter(|removal| removal.kind != Kind::Telemetry)
+        .map(|removal| (removal.path.clone(), removal.rule))
+        .collect();
+    assert_eq!(others, [(workspace.clone(), Rule::Budget)], "{preview:?}");
+    assert_eq!(preview.telemetry.total_before, first_total + second_total);
+    assert_eq!(
+        preview.telemetry.total_after,
+        first_total - first_copy + second_total - second_copy
+    );
+    assert_eq!(preview.telemetry.stop, Stop::Fits);
+    for root in [&first, &second] {
+        assert!(
+            review_telemetry::layout::Layout::new(root)
+                .sealed_segment(id)
+                .exists(),
+            "a preview removes nothing"
+        );
+    }
+
+    let applied = sweep(&layout.roots, &prune, true, true);
+    assert_eq!(removed(&applied), removed(&preview), "{applied:?}");
 }
 
 /// An inventory of only old corrupt segments, orphan temporaries and free index pages is

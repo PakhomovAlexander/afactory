@@ -1028,6 +1028,10 @@ pub(crate) struct Removal {
     /// For a telemetry segment: its id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) segment_id: Option<String>,
+    /// For a telemetry segment: the telemetry directory whose model it was taken from (two
+    /// directories can hold a segment of the same id).
+    #[serde(skip)]
+    pub(crate) directory: Option<PathBuf>,
     pub(crate) bytes: u64,
     pub(crate) rule: Rule,
 }
@@ -1167,6 +1171,7 @@ pub(crate) fn sweep(
                 path,
                 task_id: None,
                 segment_id: None,
+                directory: None,
                 bytes,
                 rule: Rule::Recovery,
             });
@@ -1225,7 +1230,8 @@ pub(crate) fn sweep(
             }
         }
         if !apply {
-            // A preview keeps what its collection would have taken out of the count.
+            // A preview keeps what its collection would have taken out of the count: each
+            // telemetry segment out of the model of the directory it was taken from only.
             stock
                 .entries
                 .retain(|entry| !removed.contains(&(entry.path.clone(), entry.task_id.clone())));
@@ -1234,10 +1240,10 @@ pub(crate) fn sweep(
                 .iter()
                 .filter(|removal| removal.kind == Kind::Telemetry)
             {
-                if let Some(id) = &taken.segment_id {
-                    for model in stock.telemetry.values_mut().flatten() {
-                        model.remove(id);
-                    }
+                if let (Some(directory), Some(id)) = (&taken.directory, &taken.segment_id)
+                    && let Some(Some(model)) = stock.telemetry.get_mut(directory)
+                {
+                    model.remove(id);
                 }
             }
         }
@@ -1411,6 +1417,7 @@ fn removal(entry: &Entry, bytes: u64, rule: Rule) -> Removal {
         path: entry.path.clone(),
         task_id: entry.task_id.clone(),
         segment_id: entry.segment_id.clone(),
+        directory: entry.directory.clone(),
         bytes,
         rule,
     }
@@ -1804,6 +1811,7 @@ fn collect(
                         path: state.clone(),
                         task_id: Some(task_id.clone()),
                         segment_id: None,
+                        directory: None,
                         bytes,
                         rule: Rule::Collection,
                     });
