@@ -26,5 +26,5 @@ v hub  (project)            |layer      file                                 sta
                             |keep_campaigns = 20                     built-in
                             |keep_days = 14                          built-in
                             |keep_gate_pull_requests = false         built-in
-                            |keep_tasks = 20                         built-in
+                            |keep_surveys = 50                       built-in
 NORMAL  hub                                 j/k move  Enter open  zo/zc fold  / search  :cmd  q quit

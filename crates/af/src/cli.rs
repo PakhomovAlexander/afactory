@@ -248,7 +248,7 @@ or activates a release older than 0.8.0 (the oldest supported release).",
         long_about = "Show what af keeps on this machine against its storage budget, and reclaim it.\n\n\
 af keeps at most `[storage] max_bytes` (20 GiB by default) between runs: warm build keys, warm \
 Workspaces, review campaign Stores, Task Stores (in the state root and registered elsewhere), \
-Project Stores (counted, never evicted) and installed versions. `af storage` prints, per kind, the entries, their bytes and their oldest and \
+Project Stores (counted, never evicted), each Survey a Project Store holds (collected one at a time behind a tombstone, never the newest complete one) and installed versions. `af storage` prints, per kind, the entries, their bytes and their oldest and \
 newest use; the Stores this release cannot read, with the reason; the total against the budget; \
 and the free bytes against `[storage] min_free_bytes`, the floor below which af refuses to start a \
 check or a Worker Attempt. It reads only; `af storage prune` previews the sweep that runs after \
@@ -258,7 +258,7 @@ repository's `.af/af.toml` cannot change it. See `af help storage`.",
         after_long_help = "Examples:\n  af storage\n  af storage --json | jq .total_bytes\n  af storage prune\n  af storage prune --apply\n  AF_STORAGE__MAX_BYTES=10GiB af storage prune --apply"
     )]
     Storage {
-        /// Machine-readable af/storage@2
+        /// Machine-readable af/storage@3
         #[arg(long)]
         json: bool,
         #[command(subcommand)]
@@ -1436,7 +1436,8 @@ description of the head (`af/ProjectSurvey@1`) with the sections identity, tree,
 contributors, decisions, vocabulary and checks, each complete, partial or unavailable with the \
 bound it reached. Text is one line per section; --json prints the record's canonical bytes, \
 every number decimal text.\n\nRecords nothing. Fails (exit 1) when the Project has no Survey \
-yet; `af project refresh` records one.",
+yet, or when the Storage Budget collected its newest one, and says which; `af project refresh` \
+records one.",
         after_long_help = "Examples:\n  af project survey\n  af project survey --json | jq '.history.hot_paths[].path'"
     )]
     Survey {
@@ -1474,8 +1475,9 @@ is over `max_survey_bytes`, records SurveyFailed@1, which `af project show` prin
     /// List the Project's Surveys, newest first
     #[command(
         long_about = "List the Survey chain of this checkout's Project, newest first: each \
-Survey's ID, when it was recorded, its head, its cutoff and its completeness. --json prints \
-`af/project-history@1`. Records nothing.",
+Survey's ID, when it was recorded, its head, its cutoff and its completeness; a Survey the \
+Storage Budget collected is answered from its SurveyCollected@1 tombstone and marked \
+`collected`. --json prints `af/project-history@1`. Records nothing.",
         after_long_help = "Examples:\n  af project history\n  af project history --json | jq -r '.surveys[0].survey_id'"
     )]
     History {
@@ -1624,8 +1626,8 @@ pub(crate) enum StorageCommand {
     #[command(
         long_about = "Preview, and with --apply perform, the sweep that runs after every `af task \
 run` and `af review run`.\n\nCollection first: finished Tasks beyond the newest `keep_tasks` of \
-each Store, review campaigns beyond the newest `keep_campaigns`, and Stores this release cannot \
-read, each idle at least `keep_days`; and the gate pull requests and branches finished Tasks \
+each Store, review campaigns beyond the newest `keep_campaigns`, the Surveys of each Project beyond \
+the newest `keep_surveys`, and Stores this release cannot read, each idle at least `keep_days`; and the gate pull requests and branches finished Tasks \
 left. Then the budget: while af holds more than `max_bytes`, the least recently used entry goes \
 first. Nothing in use is ever removed — a held lock, a live writer lease, a running campaign, the \
 default or a pinned version, the running binary — nor anything used within the last hour. \
@@ -1636,7 +1638,7 @@ Finished Tasks go through the Store's own collection, so each keeps its tombston
         /// Remove what the preview names (default: preview only)
         #[arg(long)]
         apply: bool,
-        /// Machine-readable af/storage-prune@1
+        /// Machine-readable af/storage-prune@2
         #[arg(long)]
         json: bool,
     },

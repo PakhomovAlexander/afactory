@@ -210,6 +210,58 @@ email first of all.
     `[survey] refresh` (PJ4); and the `activity` section (PJ5). PJ4 also adds collection: until
     then every Survey stays in the Project Store, which ADR-0151 already never evicts, and
     `[storage] keep_surveys` and `SurveyCollected@1` do not exist.
+13. **Collection and the budget.** This clause replaces the collection sentence of clause 12.
+    Every Survey is an entry of kind `survey` of the machine budget (ADR-0144 clause 4): its
+    record's allocated CAS bytes, taken out of the Project Store entry's, last used at its
+    cutoff, its `path` the CAS object. `af storage` lists it, and its documents become
+    `af/storage@3` ([schema](../../schemas/storage-v3.json)) and `af/storage-prune@2`
+    ([schema](../../schemas/storage-prune-v2.json)), each gaining the kind `survey`; a sweep's
+    `af/TaskStorageSweep@1` counts a Survey's removal without listing it. Surveys are collected
+    only in the Storage Budget's own passes, under ADR-0144's protections, and `af project
+    refresh` collects nothing. The collection pass (`af storage prune --apply`, or the sweep after
+    a run when `auto_gc = true`) takes, per Project, the Surveys beyond the newest `[storage]
+    keep_surveys = 50` (machine layers only, `AF_STORAGE__KEEP_SURVEYS`), oldest first, each idle
+    at least `keep_days`; the budget step of every sweep ADR-0144 runs (after a run, before a new
+    warm key, at the free-disk floor, on request) may take any Survey, least recently used first
+    among every entry, while af holds more than `max_bytes`, even below `keep_surveys`. Neither takes the newest complete Survey, a Survey of a Project Store whose
+    lock (`project.lock`, which a refresh holds while it reads and records and a plan while it
+    builds a Brief) is held, or one used within the hour, so `keep_surveys` is a target the
+    protected Surveys may exceed; the Project's log, `workspaces.toml`, `project.lock` and
+    operator files are never reclaimed, and the Project Store is still never evicted whole. A
+    collection takes the lock without waiting, so a held Store is left for the next pass, reads
+    the protections again under it, and for each Survey appends `SurveyCollected@1`
+    {`survey_id`, `head`, `cutoff_unix_s`, `completeness`, the `tree` totals `files`, `bytes` and
+    `lines` and the `history` totals `commits` and `merges` when the record holds them,
+    `collected_unix_ms`} ([schema](../../schemas/project-survey-collected-v1.json), in
+    `run-event-v1.json`) before it deletes the record from the CAS. The tombstones are the run
+    `survey-collection` of the Project Store's log, beside the run `project` that holds the
+    chain, so the chain's own sequence is only ever the Surveyor's. Every applied sweep first
+    deletes the record of any tombstoned Survey still in a CAS, reported with the rule
+    `recovery`, so an interruption between a tombstone and its deletion is finished by the next
+    pass; a debug build reads `AF_TEST_SURVEY_STOP_AFTER_TOMBSTONES=1` to stop there. Replay
+    treats a `SurveyRecorded@1` whose Survey a tombstone names as collected: `af project history`
+    answers for it from the tombstone and marks it `collected` in text (`af/project-history@1`
+    is unchanged, since a marked entry would be `@2`), and `af project survey` shows the newest
+    Survey only while it is uncollected and otherwise exits 1 saying it was collected and naming
+    `af project refresh`; `af project show` then prints no Survey. `previous_survey_id` is a
+    name, never a reachability edge: a collected predecessor keeps nothing alive, and a chain that
+    reaches one ends at its tombstone.
+14. **Patterns.** `crate::project::glob_matches`, the matcher of the routes of `.af/af.toml` and
+    of every `[survey]` pattern, matches by dynamic programming with the semantics of clause 5
+    unchanged (segment-wise, `**` spans segments, `*` a run inside one, `?` one byte, every other
+    byte literal, brackets included): over pattern segments and path segments, then over pattern
+    bytes and text bytes inside one pair, visiting only what a prefix reached. A match evaluates
+    at most (pattern length + 1) × (path length + 1) cells and never backtracks. The recursive
+    form took billions of steps to refuse `*a` thirty times followed by `b` against thirty `a`s,
+    a pattern inside every string limit whose failure no deadline interrupted; the matcher
+    refuses it in 961 cells, under its 61 × 30 = 1,830, through routing and the Surveyor's
+    `exclude` alike, and its matching form, `*a` thirty times against thirty `a`s, matches. Where
+    the Surveyor loads its policy, a `[survey]` pattern is at most 256 bytes and each pattern list
+    (`exclude`, `tests`, `agent_authors`, `agent_trailers`) at most 64 patterns, beyond which the
+    policy is refused naming the key and the refresh records `SurveyFailed@1`. The loop that
+    applies a pattern list checks the Survey's Clock before each match, so one match is the most
+    a deadline can be overrun by; the measurement adopts that loop, `any_match_within`, in its
+    next round.
 
 ## Measured on this repository
 

@@ -1216,7 +1216,9 @@ fn main() {
                 .map(|()| 0),
         ),
         cli::Command::Task { command } => ("af task", task_command(command)),
-        cli::Command::Project { command } => ("af project", projects::commands::run(command)),
+        cli::Command::Project { command } => {
+            ("af project", projects::survey::collect::run(command))
+        }
         cli::Command::Config { command } => (
             "af config",
             match command {

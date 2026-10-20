@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:storage-prune:1",
-  "title": "af/storage-prune@1",
-  "description": "`af storage prune --json` (ADR-0144): what one sweep removed, or without --apply would remove. Collection first (rule `collection`), then the budget, least recently used first (rule `budget`), until the total fits `max_bytes` or nothing else may be removed (`stop`). Gate cleanups of finished Tasks are those the sweep tried; registry entries whose path holds no Store any more are dropped; a failed removal is listed and tried again by the next sweep.",
+  "$id": "urn:af:schema:storage-prune:2",
+  "title": "af/storage-prune@2",
+  "description": "`af storage prune --json` (ADR-0144): what one sweep removed, or without --apply would remove. Collection first (rule `collection`), then the budget, least recently used first (rule `budget`), until the total fits `max_bytes` or nothing else may be removed (`stop`). Gate cleanups of finished Tasks are those the sweep tried; registry entries whose path holds no Store any more are dropped; a failed removal is listed and tried again by the next sweep. Version 2 adds the removal kind `survey` (ADR-0152 clause 13): a Survey's record in its Project Store's CAS, its `path` the CAS object, taken behind a `SurveyCollected@1` tombstone by collection beyond `[storage] keep_surveys`, by the budget, or, rule `recovery`, by a sweep that finishes what an interruption left between a tombstone and its deletion.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -20,7 +20,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "af/storage-prune@1"
+      "const": "af/storage-prune@2"
     },
     "applied": {
       "type": "boolean"
@@ -61,6 +61,7 @@
               "workspace",
               "campaign",
               "task",
+              "survey",
               "unreadable_store",
               "version",
               "claim"

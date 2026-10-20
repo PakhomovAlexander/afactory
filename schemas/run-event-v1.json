@@ -77,7 +77,8 @@
         "WorkspaceRegistered@1",
         "WorkspaceRemoved@1",
         "SurveyRecorded@1",
-        "SurveyFailed@1"
+        "SurveyFailed@1",
+        "SurveyCollected@1"
       ]
     },
     "occurred_at": {
@@ -589,6 +590,25 @@
         "properties": {
           "payload": {
             "$ref": "urn:af:schema:project-survey-failed:1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "SurveyCollected@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "urn:af:schema:project-survey-collected:1"
           }
         }
       }

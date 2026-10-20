@@ -168,6 +168,7 @@ repository's .af/af.toml cannot set it:
   keep_days = 14               collection never takes anything used in the last keep_days
   keep_tasks = 20              newest finished Tasks kept per Store
   keep_campaigns = 20          newest review campaigns kept
+  keep_surveys = 50            newest Surveys kept per Project; protected ones may exceed it
   keep_worker_transcripts = false   keep the history each Claude Worker Attempt and provider
                                     probe leaves in its config dir
   keep_gate_pull_requests = false   leave a finished Task's gate pull request and branches open

@@ -106,10 +106,12 @@ pub enum EventType {
     SurveyRecordedV1,
     #[serde(rename = "SurveyFailed@1")]
     SurveyFailedV1,
+    #[serde(rename = "SurveyCollected@1")]
+    SurveyCollectedV1,
 }
 
 impl EventType {
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 48] = [
         Self::TaskTransitionV5,
         Self::TaskReviewResultSelectedV1,
         Self::CheckCompletedV1,
@@ -157,6 +159,7 @@ impl EventType {
         Self::WorkspaceRemovedV1,
         Self::SurveyRecordedV1,
         Self::SurveyFailedV1,
+        Self::SurveyCollectedV1,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -208,6 +211,7 @@ impl EventType {
             Self::WorkspaceRemovedV1 => "WorkspaceRemoved@1",
             Self::SurveyRecordedV1 => "SurveyRecorded@1",
             Self::SurveyFailedV1 => "SurveyFailed@1",
+            Self::SurveyCollectedV1 => "SurveyCollected@1",
         }
     }
 
@@ -265,6 +269,7 @@ impl EventType {
             Self::WorkspaceRemovedV1 => ("WorkspaceRemoved", 1),
             Self::SurveyRecordedV1 => ("SurveyRecorded", 1),
             Self::SurveyFailedV1 => ("SurveyFailed", 1),
+            Self::SurveyCollectedV1 => ("SurveyCollected", 1),
         }
     }
 }
@@ -358,6 +363,7 @@ impl std::str::FromStr for EventType {
             "WorkspaceRemoved@1" => Ok(Self::WorkspaceRemovedV1),
             "SurveyRecorded@1" => Ok(Self::SurveyRecordedV1),
             "SurveyFailed@1" => Ok(Self::SurveyFailedV1),
+            "SurveyCollected@1" => Ok(Self::SurveyCollectedV1),
             other => Err(UnknownEventType(other.to_string())),
         }
     }
@@ -913,6 +919,11 @@ pub fn validate_event_payload(
         EventType::SurveyFailedV1 => {
             serde_json::from_value::<crate::SurveyFailedPayloadV1>(payload.clone())
                 .map_err(|error| format!("SurveyFailed@1: {error}"))?
+                .validate()
+        }
+        EventType::SurveyCollectedV1 => {
+            serde_json::from_value::<crate::project::SurveyCollectedPayloadV1>(payload.clone())
+                .map_err(|error| format!("SurveyCollected@1: {error}"))?
                 .validate()
         }
     }
