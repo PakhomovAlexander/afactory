@@ -193,7 +193,7 @@ for one third, `0` for an empty population), with these sections. Every section 
 | Section | Holds | Source | Bound or policy |
 |---|---|---|---|
 | `identity` | Project ID, `repository_id`, `[project] name` and `min_af`, the af release `.af/af.lock` pins, head commit, Tree Digest, cutoff, policy digest, Surveyor version, git version | `.af/af.toml`, `.af/af.lock`, git | the Tree Digest is the kernel's capture digest of the whole head tree, independent of `exclude` and of every maximum, computed by a digest-only path (no blob written to any CAS, no listing buffered: fixed-size blob buffers through the hash, at most 16 MiB of manifest buffering and 256 MiB of temporary manifest data beneath a process-owned temporary root the crash sweeper reaps (`af-tree-digest-<pid>-*`, with the sweeper's liveness and preservation rules), fixed ceilings no project may raise, under the Survey deadline) that equals the committed capture's digest of the same tree: absent with reason `deadline` when it did not finish or a typed resource reason (`max_record_bytes`, `manifest_bytes`, `temp_bytes`) when a ceiling stopped it, with nothing left in temporary storage, never the digest of a part |
-| `tree` | files and bytes in total; per top-level directory files, lines and bytes; per language files and lines; the `tests` split | `git ls-tree -l`, blob reads | lines only for text blobs: regular or executable blobs at or under `max_file_bytes` (1 MiB) whose first 8 KiB hold no NUL, UTF-8 validity irrelevant (the rule ADR-0133's citations use); symlinks and gitlinks contribute no lines; a declaration (a decision, the vocabulary file, a check file) is parsed only when it is such a text blob and valid UTF-8, else unreadable; `[survey] exclude` globs; `[survey] tests` globs; `[survey.languages]` extends the built-in extension map (the one docs/project.md lists): each file counts for exactly one language, a configured pattern overrides a built-in extension, among configured patterns the bytewise-first matching one wins, and a file nothing matches is `other` like a symlink or submodule |
+| `tree` | files and bytes in total; per top-level directory files, lines and bytes; per language files and lines; the `tests` split | `git ls-tree -l`, blob reads | lines only for text blobs: regular or executable blobs at or under `max_file_bytes` (1 MiB) whose first 8 KiB hold no NUL, UTF-8 validity irrelevant (the rule ADR-0133's citations use); symlinks contribute no lines; a gitlink is one file of zero bytes and zero lines, counted in `files_without_lines`, language `other`, its target never resolved or fetched; a declaration (a decision, the vocabulary file, a check file) is parsed only when it is such a text blob and valid UTF-8, else unreadable; `[survey] exclude` globs; `[survey] tests` globs; `[survey.languages]` extends the built-in extension map (the one docs/project.md lists): each file counts for exactly one language, a configured pattern overrides a built-in extension, among configured patterns the bytewise-first matching one wins, and a file nothing matches is `other` like a symlink or submodule |
 | `history` | commits and merges in total and in the last 30, 90 and 365 days; first and last commit time; churn (commits, lines added, removed) per top-level directory over 90 days; hot paths; tags in total and the newest five matching `release_tags`; local branch count | `git log --numstat`, `rev-list`, `tag`, each through a private bare repository attached to the object database alone (ADR-0001's administrative directory), so no checkout, index, local configuration, attribute file, diff driver or replacement ref changes a count | `max_commits` (100,000; beyond it `partial`, oldest commit reached recorded); `hot_paths` (20) |
 | `contributors` | per identity, keyed by `key` (under `name` the first 16 hex digits of SHA-256 of the exact author-name bytes, under `email_hash` the 16-hex email hash) with `name` the bounded display text, grouped and ranked by `key` so two names sharing a 256-byte prefix stay distinct: commits, lines added and removed, first and last time, active in 90 days; the top identity's share; human and agent-assisted commit counts and shares | `git log` | `[survey] identity = "name"` (default) or `"email_hash"`: an email is hashed or absent, never stored, and an author name any whitespace-separated token of which is an email address (an `@` between non-empty parts) is replaced whole, before any truncation and under both policies, by `h:` and the first 16 hex digits of its hash; `agent_authors` (`*[bot]`) and `agent_trailers` (`Co-Authored-By` matching `*Claude*`, `*Codex*`, `*GPT*`): a commit is agent-assisted when its author or any `Co-Authored-By` name matches, otherwise human; each commit counts once in that partition and its author keeps the per-identity totals; an empty window makes every share `0` |
 | `decisions` | per decision record: number, title, status, date; counts by status | the `decisions` pattern, default `docs/adr/*.md`, then the name rule (four ASCII digits and a dash): title from the first H1; status and date from the first line that starts with `**Status:**` or `Status:`: the status is the first of `proposed`, `accepted`, `superseded`, `deprecated`, `rejected` on that line (`accepted; superseded in part by` is `accepted`; `amended` becomes a flag when the line says so), the date the first `YYYY-MM-DD` on it, each `unknown` when absent or malformed | `max_entries`; a Brief variant picks the newest N (§3.5) |
@@ -223,7 +223,9 @@ never enters the key as complete; a captured prefix holding an event newer than 
 refresh counts that event's outcome and charge exactly once), plus the Workspace membership list. Discovery and replay are bounded: at most 1,000 Stores,
 100,000 event and sidecar rows per Store, 1 MiB per row and 16 MiB of buffered projection
 state, ceilings a project may only lower, read through cursors in canonical order with the
-deadline checked between rows and the SQLite read cancelled at it; each limit is a typed partial
+deadline checked between rows and the SQLite read cancelled at it; validated accounting reads
+the CAS objects events reference under a budget of 64 MiB per Store, the deadline checked
+between 64 KiB chunks and before each artifact is decoded; each limit is a typed partial
 reason, and an incomplete discovery or prefix never authorizes reuse. The instance ID is opaque, assigned by the Project Store in its machine-local
 `stores` table the first time it meets a Store's canonical path (symbolic links resolved), and
 recorded in the Survey in place of the path; the Task Store itself is never written. An alias of
@@ -282,7 +284,11 @@ Bounds come from `[survey]`: `max_wall_ms` (60,000; one deadline over the whole 
 git subprocess started under the minimum of its own limit and the remaining time and its process
 group terminated at the deadline, so a silent git never extends a refresh), `max_commits`,
 `max_file_bytes`. A bound
-hit makes the sections after it `partial` or `unavailable`; the Survey is still recorded. Fixed
+hit makes the sections after it `partial` or `unavailable`; the Survey is still recorded. A
+malformed log record, the first included, leaves `history` and `contributors` `partial` with
+reason `malformed_record`, zero counts when nothing was folded and the stopping commit named;
+`unavailable`, which holds nothing but completeness and reason, is for a missing repository or
+a refused walk. Fixed
 maxima bound everything else: `max_paths` (200,000) tree entries, `max_entries` (1,000) items in
 any list of a section (directories, languages, hot paths, tags, decisions, terms, contributors),
 256 bytes for any display string (a contributor name, a title, a term, a language or a tag
@@ -492,7 +498,7 @@ ADR-0145: a later shape change is a new version.
 | `SurveyRecorded@1`, `SurveyFailed@1`, `SurveyCollected@1` | Project Store | Survey artifact ID, head, cutoff, completeness; or the failure reason; or the tombstone summary |
 | `af/ProjectSurvey@1` | Project Store CAS | §3.3 |
 | `af/ProjectBrief@1` | Task Store CAS | §3.5 |
-| `af/project@N`, `af/project-workspaces@N`, `af/project-tasks@1` | `--json` documents | the projections `af project` prints; every package that changes a typed shape bumps its version (ADR-0145 clause 2), writers, readers, schemas and parity fixtures moving together and the superseded version refused: `af/project` when Survey fields enter it, `af/project-workspaces` to `@2` when PJ5 adds Tasks and spend, `af/ProjectSurvey` to `@2` when PJ5 adds `activity`, and `af/storage`, the prune document and the sweep record when PJ2 adds the `survey` entry kind |
+| `af/project@N`, `af/project-workspaces@N`, `af/project-tasks@1` | `--json` documents | the projections `af project` prints; every package that changes a typed shape bumps its version (ADR-0145 clause 2), writers, readers, schemas and parity fixtures moving together and the superseded version refused: `af/project` when Survey fields enter it, `af/project-workspaces` to `@2` when PJ5 adds Tasks and spend, `af/ProjectSurvey` to `@2` when PJ5 adds `activity`, and `af/storage` to `@3` and the prune document to `@2` when PJ2 adds the `survey` entry kind, while `af/TaskStorageSweep@1` keeps its kinds and counts Survey removals in `omitted_removals` (ADR-0152 clause 13) |
 | `workspaces.toml` | beside the Project Store | machine-local paths, best effort, like `stores.toml` |
 
 ### 3.8 Configuration
@@ -563,7 +569,10 @@ the record from the CAS; replay treats a `SurveyRecorded@1` whose Survey a tombs
 collected once the event matches the tombstone on every field it binds, so `af project history` answers from the tombstone and `af project survey` reports the
 newest Survey only while it is uncollected; `previous_survey_id` is a name, never a reachability
 edge, so a collected predecessor keeps nothing alive and a chain that reaches a collected Survey
-ends at its tombstone. The tombstone is appended before the bytes go, so an interruption between
+ends at its tombstone. Once a collected Survey's record has left the CAS, deleted at its name or
+settled from a dead pass's container, any later file at that name is foreign even when its bytes
+hash to the Survey ID: the settlement is recorded machine-locally and every later sweep reads it,
+so a byte-identical replacement survives sweep after sweep, listed `foreign`. The tombstone is appended before the bytes go, so an interruption between
 the two leaves a record the next sweep finishes. Both collection paths, the count and the budget, protect the newest complete Survey and any
 held one. Under the machine budget (ADR-0144 clause 4)
 every Survey is besides an inventoried entry of kind `survey`, sized by its CAS bytes and last
@@ -572,7 +581,12 @@ deletion even below `keep_surveys`; protected are the newest complete Survey, an
 refresh or Brief build holds under the Project Store lock, and the recent-use window ADR-0144
 grants every entry; the Project's log, `workspaces.toml` and operator files are never reclaimed.
 PJ2 ships the inventory, the byte accounting and the budget-driven tombstone and deletion with
-the first Survey writer; PJ4 adds only the detached refresh. Collection never breaks a Task: a plan pins a
+the first Survey writer, which records a machine-local pending-publication entry under the
+Project Store lock before a Survey's bytes enter the CAS and clears it once `SurveyRecorded@1`
+commits, so a crash between the two leaves an entry collection reads: inventory counts the
+pending bytes, and recovery either finds the event committed and clears the entry or reclaims
+only the recorded, identity-matching unreferenced object as a planned `recovery` entry; PJ4 adds
+only the detached refresh. Collection never breaks a Task: a plan pins a
 Brief in the Task Store, not the Survey in the Project Store.
 
 ## 4. Values check
@@ -637,7 +651,11 @@ fixed cutoff; a second run with an unchanged survey key records nothing, while a
 policy change, a partial newest Survey or `--force` records one, and an older complete Survey
 behind a partial newest one or behind another head's Survey prevents nothing; `max_commits` and `max_wall_ms`
 produce `partial` sections and a recorded Survey; a four-commit history with one merge at the
-`max_commits` boundary yields the stated commit, merge and contributor counts; two forced
+`max_commits` boundary yields the stated commit, merge and contributor counts; a gitlink whose
+target is absent locally counts one file of zero bytes and lines with digest parity to the
+committed Manifest; two sweeps over a moved original and a byte-identical replacement leave the
+replacement listed `foreign` both times; a crash after a Survey's bytes and before its event
+leaves a pending entry inventory counts and recovery settles; two forced
 complete refreshes at a fixed cutoff differ only in `previous_survey_id`; af killed after a
 manifest spill leaves a directory the next sweep removes while a live refresh's survives; an early deadline leaves the Tree Digest absent
 with its reason, never a partial digest, and a silent git process against a short deadline
@@ -737,8 +755,9 @@ Task settling between the cutoff and the Store read leaves `activity` partial wi
 after a Task finished change the next `activity` without changing Task spend; a malformed CAS
 directory and an invalid event ID holding a path and an email leave neither in the Survey or a
 Brief, the entry carrying only its reason code, instance ID and sequence; a Store beyond a
-ceiling (count, rows, row size, buffered state) makes `activity` partial with its reason in
-refresh and the preflight alike and never authorizes reuse.
+ceiling (count, rows, row size, buffered state, CAS bytes read) makes `activity` partial with
+its reason in refresh and the preflight alike, counts nothing unverified and never authorizes
+reuse.
 
 ## 6. Not in v1
 
