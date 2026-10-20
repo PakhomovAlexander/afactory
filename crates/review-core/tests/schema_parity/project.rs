@@ -644,7 +644,7 @@ fn the_superseded_survey_label_is_refused_by_type_and_schema() {
     assert!(!is_superseded_survey(b"not json"));
     let other = with(&value, "schema", json!("af/ProjectSurvey@3"));
     assert!(serde_json::from_value::<ProjectSurveyV2>(other).is_err());
-    let schemas = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas");
+    let schemas = super::workspace_root().join("schemas");
     assert!(schemas.join("project-survey-v2.json").is_file());
     assert!(!schemas.join("project-survey-v1.json").exists());
 }
@@ -1487,7 +1487,7 @@ fn the_history_document_lists_the_chain_newest_first() {
     ] {
         assert_invalid("project-history-v2.json", &broken, why);
     }
-    let schemas = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas");
+    let schemas = super::workspace_root().join("schemas");
     assert!(!schemas.join("project-history-v1.json").exists());
 }
 
