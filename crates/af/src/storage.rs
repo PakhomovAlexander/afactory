@@ -10,10 +10,13 @@
 //! lock, a live writer lease, a running campaign, the default or a pinned version, the running
 //! binary) or one used within the last hour, and it removes nothing without going through the
 //! rule that owns it: finished Tasks through the Store's own collection and Surveys behind their
-//! `SurveyCollected@1`, so tombstones stay; directories without following a link.
+//! `SurveyCollected@1`, so tombstones stay; directories without following a link. A sweep
+//! plans once over one inventory snapshot (`plan`): the preview prints that plan and the applied
+//! sweep runs it entry by entry, never choosing again.
 
 pub(crate) mod gate;
 mod hint;
+pub(crate) mod plan;
 pub(crate) mod registry;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -207,6 +210,9 @@ pub(crate) struct Inventory {
     /// Each Store's directory identity as inventory reached it, opened from `/` without
     /// following a link: what collection and gate cleanup check again before they touch it.
     pub(crate) store_identities: BTreeMap<PathBuf, (PathBuf, review_sandbox::Identity)>,
+    /// Each readable Project Store as its one read found it (ADR-0152 clause 13): what a
+    /// sweep's plan needs of its Surveys, in inventory order.
+    pub(crate) projects: Vec<(PathBuf, crate::projects::survey::collect::Look)>,
 }
 
 impl Inventory {
@@ -839,10 +845,25 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
 pub(crate) enum Rule {
     /// Idle at least `keep_days` beyond the newest `keep_*`.
     Collection,
+    /// A Survey idle at least `keep_days` beyond the newest `[storage] keep_surveys` of its
+    /// Project (ADR-0152 clause 13).
+    KeepSurveys,
     /// Least recently used while af held more than `max_bytes`.
     Budget,
-    /// The finish of a removal a process that died left claimed.
+    /// The finish of a removal a process that died left claimed, or of a Survey's deletion an
+    /// interruption left.
     Recovery,
+}
+
+impl Rule {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Rule::Collection => "collection",
+            Rule::KeepSurveys => "keep_surveys",
+            Rule::Budget => "budget",
+            Rule::Recovery => "recovery",
+        }
+    }
 }
 
 /// One entry a sweep removed, or would remove.
@@ -852,22 +873,58 @@ pub(crate) struct Removal {
     pub(crate) path: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) task_id: Option<String>,
+    /// What it frees: as planned in a preview, as freed by the applied sweep.
     pub(crate) bytes: u64,
     pub(crate) rule: Rule,
+    /// af's total after it, the same way.
+    pub(crate) total_after: u64,
     /// A Survey collected `unreadable` (ADR-0152 clause 13): why its record's bytes were no
     /// Survey, as its tombstone says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) unreadable: Option<String>,
+    /// The applied sweep only, a Survey only: what its job found that the plan did not (the lock
+    /// lost, its record replaced, gone or refused), so it freed nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) deviation: Option<String>,
 }
 
-/// One entry a sweep chose and left because a lock holds it: a Survey of a Project Store a
-/// refresh or a plan holds (ADR-0152 clause 13). A preview lists exactly what its pass would.
+/// One file or Survey a sweep's plan left where it is, with its reason (ADR-0152 clause 13). A
+/// preview lists exactly what its pass leaves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct Held {
+pub(crate) struct Left {
     pub(crate) kind: Kind,
-    pub(crate) path: PathBuf,
+    /// Its path as text: as it is when it is UTF-8, otherwise in `review_core::encode_path`'s
+    /// spelling with `path_encoded`.
+    pub(crate) path: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) path_encoded: bool,
     pub(crate) bytes: u64,
-    pub(crate) reason: String,
+    /// `held`, `foreign`, `oversize` or `unreadable_name`.
+    pub(crate) reason: &'static str,
+    pub(crate) detail: String,
+    /// The raw path, for the text output's lossy display.
+    #[serde(skip)]
+    pub(crate) raw: PathBuf,
+}
+
+impl Left {
+    fn of(left: plan::Left) -> Self {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = left.left.path;
+        let (path, path_encoded) = match raw.to_str() {
+            Some(text) => (text.to_string(), false),
+            None => (review_core::encode_path(raw.as_os_str().as_bytes()), true),
+        };
+        Self {
+            kind: left.kind,
+            path,
+            path_encoded,
+            bytes: left.left.bytes,
+            reason: left.left.reason.as_str(),
+            detail: left.left.detail,
+            raw,
+        }
+    }
 }
 
 /// Why the budget step stopped.
@@ -890,8 +947,8 @@ pub(crate) struct SweepReport {
     pub(crate) total_after: u64,
     pub(crate) stop: Stop,
     pub(crate) removals: Vec<Removal>,
-    /// Entries collection chose and left because a lock holds them.
-    pub(crate) held: Vec<Held>,
+    /// What the plan left where it is, with its reason.
+    pub(crate) left: Vec<Left>,
     /// Gate cleanups of finished Tasks this sweep tried (collection only).
     pub(crate) gate_cleanups: Vec<gate::Attempted>,
     /// Registry entries whose path no longer holds a Store.
@@ -900,8 +957,9 @@ pub(crate) struct SweepReport {
     pub(crate) failures: Vec<String>,
 }
 
-/// Run the sweep: collection first when `collection`, then the budget step. Without `apply`
-/// it only says what it would remove.
+/// Run the sweep over one snapshot: [`plan::make`] plans the recovery of interrupted Survey
+/// deletions, collection when `collection`, and the budget step, and without `apply` that plan
+/// is the report; with it, [`plan::run`] runs the same plan entry by entry.
 pub(crate) fn sweep(
     roots: &Roots,
     policy: &StoragePolicy,
@@ -922,14 +980,15 @@ pub(crate) fn sweep(
         total_after: 0,
         stop: Stop::Fits,
         removals: Vec::new(),
-        held: Vec::new(),
+        left: Vec::new(),
         gate_cleanups: Vec::new(),
         registry_dropped: Vec::new(),
         failures: Vec::new(),
     };
     if apply {
         // Removals a process that died left claimed under a private name are finished first,
-        // so their bytes are neither lost from the count nor left behind (ADR-0144).
+        // so their bytes are neither lost from the count nor left behind (ADR-0144). They are
+        // never inventoried, so the snapshot below is the same either way.
         let (finished, left) = finish_abandoned_claims(roots);
         // Bytes that were af's until this moment: counted, and said, like any removal.
         for (path, bytes) in finished {
@@ -940,32 +999,31 @@ pub(crate) fn sweep(
                 task_id: None,
                 bytes,
                 rule: Rule::Recovery,
+                total_after: 0,
                 unreadable: None,
+                deviation: None,
             });
         }
         report.failures.extend(left);
     }
-    // Surveys an interrupted collection left: finished when applied, and listed by a preview
-    // exactly as the applied pass lists them (ADR-0152 clause 13).
-    finish_collected_surveys(roots, &mut report, apply);
     match drop_gone_registrations(roots, apply) {
         Ok(dropped) => report.registry_dropped = dropped,
         Err(error) => report.failures.push(error),
     }
+    // The one snapshot: Task Stores are told apart into their finished Tasks only when it holds
+    // more than the budget, and nothing is measured twice.
     let mut stock = inventory(roots, Detail::Stores);
-    report.total_before = report.total_before.saturating_add(stock.total());
-    if !apply {
-        // The applied pass deletes them before it measures: out of the preview's count too.
-        without_recovered_surveys(&mut stock, &report.removals);
+    if stock.total() > policy.max_bytes {
+        refine_tasks(roots, &mut stock);
     }
     // What could not be measured is said with the result: a total that fits the budget is only
     // as complete as the inventory behind it.
-    report.failures.extend(
-        stock
-            .problems
-            .iter()
-            .map(|problem| format!("measuring {}: {}", problem.path.display(), problem.reason)),
-    );
+    for problem in &stock.problems {
+        let line = format!("measuring {}: {}", problem.path.display(), problem.reason);
+        if !report.failures.contains(&line) {
+            report.failures.push(line);
+        }
+    }
     // Gate leftovers of finished Tasks are retried by every applied sweep, whatever the budget
     // and whether age-based collection is on: the pull request and branches are GitHub's
     // clutter, not something the budget weighs (ADR-0144).
@@ -981,81 +1039,226 @@ pub(crate) fn sweep(
             retried.insert(state.clone(), tried);
         }
     }
-    if collection {
-        collect(roots, policy, &mut stock, now, apply, &retried, &mut report);
-        if apply {
-            stock = inventory(roots, Detail::Stores);
+    let picks = if collection {
+        task_picks(roots, policy, &stock, now, apply, &mut report)
+    } else {
+        Vec::new()
+    };
+    let mut entries = stock.entries.clone();
+    for entry in &mut entries {
+        // The sweep that ends a run never takes the Task the run executed.
+        if entry.in_use.is_none()
+            && entry
+                .task_id
+                .as_deref()
+                .is_some_and(|task_id| is_run_task(&entry.path, task_id))
+        {
+            entry.in_use = Some("the Task this run executed".into());
         }
     }
-    // Finished Tasks are told apart only when there is something to evict.
-    if stock.total() > policy.max_bytes {
-        let removed: BTreeSet<(PathBuf, Option<String>)> = report
-            .removals
-            .iter()
-            .map(|removal| (removal.path.clone(), removal.task_id.clone()))
-            .collect();
-        stock = inventory(roots, Detail::Tasks);
-        // Telling Tasks apart can meet problems the Store-level look did not: said too.
-        for problem in &stock.problems {
-            let line = format!("measuring {}: {}", problem.path.display(), problem.reason);
-            if !report.failures.contains(&line) {
-                report.failures.push(line);
-            }
-        }
-        if !apply {
-            // A preview keeps what its collection would have taken out of the count.
-            stock
-                .entries
-                .retain(|entry| !removed.contains(&(entry.path.clone(), entry.task_id.clone())));
-        }
+    let made = plan::make(
+        plan::Inputs {
+            entries,
+            projects: &stock.projects,
+            tasks: picks.clone(),
+            collection,
+            max_bytes: policy.max_bytes,
+            keep_campaigns: policy.keep_campaigns,
+            keep_surveys: policy.keep_surveys,
+            idle_ms: policy.keep_days.saturating_mul(DAY_MS),
+            now,
+        },
+        &mut crate::projects::survey::collect::judge,
+    );
+    let claims = report.total_before;
+    report.total_before = claims.saturating_add(made.total_before);
+    let mut total = report.total_before;
+    for claim in &mut report.removals {
+        total = total.saturating_sub(claim.bytes);
+        claim.total_after = total;
     }
-    let mut total = stock.total();
-    let mut candidates: Vec<&Entry> = stock
-        .entries
-        .iter()
-        .filter(|entry| {
-            !matches!(entry.kind, Kind::TaskStore | Kind::ProjectStore)
-                && entry.in_use.is_none()
-                && entry.last_use_unix_ms.saturating_add(HOUR_MS) <= now
-                && !entry
-                    .task_id
-                    .as_deref()
-                    .is_some_and(|task_id| is_run_task(&entry.path, task_id))
-        })
-        .collect();
-    candidates.sort_by(|a, b| {
-        a.last_use_unix_ms
-            .cmp(&b.last_use_unix_ms)
-            .then_with(|| a.path.cmp(&b.path))
-            .then_with(|| a.task_id.cmp(&b.task_id))
+    if !apply {
+        plan::preview(made, &mut report);
+        return report;
+    }
+    let mut collected = BTreeMap::new();
+    plan::run(made, &mut report, &mut |planned| {
+        execute_planned(
+            roots,
+            policy,
+            &stock,
+            (&picks, &retried, &mut collected),
+            planned,
+        )
     });
-    let mut candidates = candidates.into_iter();
-    while total > policy.max_bytes {
-        let Some(entry) = candidates.next() else {
-            report.stop = Stop::NothingEvictable;
-            break;
-        };
-        match evict_marked(roots, policy, &stock, entry, apply) {
-            // What the removal freed, measured: a Task's collection can free more than the
-            // Task's own bytes, and the loop stops as soon as af fits.
-            Ok((freed, unreadable)) => {
-                // At least what inventory measured is gone; a Task's collection may free more.
-                let freed = freed.max(entry.bytes);
-                total = total.saturating_sub(freed);
-                report.removals.push(Removal {
-                    kind: entry.kind,
-                    path: entry.path.clone(),
-                    task_id: entry.task_id.clone(),
-                    bytes: freed,
-                    rule: Rule::Budget,
-                    unreadable,
-                });
-            }
-            Err(error) => report.failures.push(error),
+    // Containers dead passes left empty go now; one that holds a file is listed as left.
+    for (store, look) in &stock.projects {
+        if look.held.is_none() && !look.empty_containers.is_empty() {
+            crate::projects::survey::collect::tidy(store, &look.empty_containers);
         }
     }
-    report.total_after = total;
     report
+}
+
+/// Tell the snapshot's readable Task Stores apart into their finished Tasks and the rest, in
+/// place: only their entries change, so what the snapshot says of every other entry, a Survey's
+/// pending recovery included, stays as it was read.
+fn refine_tasks(roots: &Roots, stock: &mut Inventory) {
+    for state in stock.task_stores.clone() {
+        let mut told = Inventory::default();
+        task_store(&mut told, roots, &state);
+        stock
+            .entries
+            .retain(|entry| !(entry.kind == Kind::TaskStore && entry.path == state));
+        stock.entries.extend(told.entries);
+        for problem in told.problems {
+            if !stock
+                .problems
+                .iter()
+                .any(|known| known.path == problem.path && known.reason == problem.reason)
+            {
+                stock.problems.push(problem);
+            }
+        }
+    }
+}
+
+/// What one Task collection did, per Task of one Store.
+type Collected = BTreeMap<PathBuf, BTreeMap<String, Result<u64, String>>>;
+
+/// Run one planned entry of an applied sweep: what it freed, and for a Survey why it was
+/// collected `unreadable`. The finished Tasks of one Store are collected together, at that
+/// Store's first planned Task.
+fn execute_planned(
+    roots: &Roots,
+    policy: &StoragePolicy,
+    stock: &Inventory,
+    (picks, retried, collected): (
+        &[plan::TaskPick],
+        &BTreeMap<PathBuf, Vec<gate::Attempted>>,
+        &mut Collected,
+    ),
+    planned: &plan::Planned,
+) -> plan::Outcome {
+    let removal = &planned.removal;
+    match &planned.job {
+        plan::Job::Survey(job) => {
+            let verb = match removal.rule {
+                Rule::Recovery => "finishing",
+                Rule::Budget => "removing",
+                Rule::Collection | Rule::KeepSurveys => "collecting",
+            };
+            let failed = |why: String| format!("{verb} {}: {why}", removal.path.display());
+            if let Some((store, _)) =
+                crate::projects::survey::collect::survey_of_object(&removal.path)
+            {
+                stock.still_the_store(&store).map_err(failed)?;
+            }
+            crate::projects::survey::collect::execute(job)
+                .map(|done| (done.bytes, done.unreadable))
+                .map_err(failed)
+        }
+        plan::Job::Evict(entry) => evict(roots, policy, stock, entry).map(|freed| {
+            // At least what inventory measured is gone; a Task's collection may free more.
+            if removal.rule == Rule::Budget {
+                (freed.max(entry.bytes), None)
+            } else {
+                (entry.bytes, None)
+            }
+        }),
+        plan::Job::Task => {
+            let state = &removal.path;
+            let task_id = removal.task_id.clone().unwrap_or_default();
+            if !collected.contains_key(state) {
+                let ids: Vec<String> = picks
+                    .iter()
+                    .filter(|pick| pick.state == *state)
+                    .map(|pick| pick.task_id.clone())
+                    .collect();
+                let tried = retried.get(state).cloned().unwrap_or_default();
+                let outcome = collect_tasks(stock, policy, state, &ids, &tried);
+                collected.insert(state.clone(), outcome);
+            }
+            collected
+                .get_mut(state)
+                .and_then(|outcome| outcome.remove(&task_id))
+                .unwrap_or_else(|| {
+                    Err(format!(
+                        "collecting {}: Task `{task_id}` was not collected",
+                        state.display()
+                    ))
+                })
+                .map(|bytes| (bytes, None))
+        }
+    }
+}
+
+/// Collect the planned finished Tasks `task_ids` of the Store at `state`: gate leftovers go
+/// first, so a Task whose cleanup does not end done stays and the next sweep tries again (one
+/// this sweep already tried and failed is not tried twice); then exactly the Tasks whose
+/// leftovers are gone, through the Store's own collection, each with the bytes only it reached.
+fn collect_tasks(
+    stock: &Inventory,
+    policy: &StoragePolicy,
+    state: &Path,
+    task_ids: &[String],
+    tried: &[gate::Attempted],
+) -> BTreeMap<String, Result<u64, String>> {
+    let failed = |why: String| format!("collecting {}: {why}", state.display());
+    let mut outcome = BTreeMap::new();
+    if let Err(why) = stock.still_the_store(state) {
+        for task_id in task_ids {
+            outcome.insert(task_id.clone(), Err(failed(why.clone())));
+        }
+        return outcome;
+    }
+    let mut cleared = BTreeSet::new();
+    for task_id in task_ids {
+        let failed_now = tried.iter().find(|attempted| {
+            attempted.task_id == *task_id
+                && attempted.outcome != review_core::task::remote_check::GateCleanupOutcomeV1::Done
+        });
+        let verdict = match failed_now {
+            Some(attempted) => Err(gate::stays(task_id, &attempted.summary)),
+            None => gate::before_collection(state, task_id, policy.keep_gate_pull_requests),
+        };
+        match verdict {
+            Ok(()) => {
+                cleared.insert(task_id.clone());
+            }
+            Err(why) => {
+                outcome.insert(task_id.clone(), Err(failed(why)));
+            }
+        }
+    }
+    if cleared.is_empty() {
+        return outcome;
+    }
+    // Exactly the planned Tasks whose leftovers are gone: the plan already applied the age and
+    // newest rules, so a cleanup recorded just now does not make one recent.
+    let applied = (|| -> Result<_, String> {
+        let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+        let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+        store
+            .apply_task_collection_of(&cas, &cleared)
+            .map_err(|e| e.to_string())
+    })();
+    for task_id in cleared {
+        let result = match &applied {
+            Err(error) => Err(failed(error.clone())),
+            Ok(done) if done.tombstoned.contains(&task_id) => Ok(done
+                .plan
+                .tasks
+                .iter()
+                .find(|task| task.task_id == task_id)
+                .map_or(0, |task| task.footprint.exclusive_bytes)),
+            Ok(_) => Err(failed(format!(
+                "Task `{task_id}` is protected now, so it is kept"
+            ))),
+        };
+        outcome.insert(task_id, result);
+    }
+    outcome
 }
 
 /// Finish the removals dead processes left claimed in every directory af removes entries from:
@@ -1125,25 +1328,24 @@ fn drop_gone_registrations(roots: &Roots, apply: bool) -> Result<Vec<PathBuf>, S
         .collect())
 }
 
-/// Collection: gate leftovers of finished Tasks, finished Tasks beyond the newest `keep_tasks`
-/// of each Store idle at least `keep_days`, campaigns beyond the newest `keep_campaigns` idle
-/// at least `keep_days`, and Stores this release cannot read idle at least `keep_days`.
-fn collect(
+/// The finished Tasks collection takes: per readable Task Store, those beyond the newest
+/// `keep_tasks` idle at least `keep_days`, as the Store's own read-only plan names them, never
+/// the Task the run executed. An unchanged Store whose last look found nothing to do until
+/// later is not read again, and an applied sweep that finds nothing writes that look down.
+fn task_picks(
     roots: &Roots,
     policy: &StoragePolicy,
-    stock: &mut Inventory,
+    stock: &Inventory,
     now: u64,
     apply: bool,
-    retried: &BTreeMap<PathBuf, Vec<gate::Attempted>>,
     report: &mut SweepReport,
-) {
+) -> Vec<plan::TaskPick> {
     let idle_ms = policy.keep_days.saturating_mul(DAY_MS);
-    let idle = |entry: &Entry| entry.last_use_unix_ms.saturating_add(idle_ms) <= now;
     // A Store that went away since inventory, or one still being created that has no CAS yet,
     // holds nothing to collect: neither is a failure.
     let gone = |state: &Path| !has_store(state) || !state.join("cas").is_dir();
-    let stores = stock.task_stores.clone();
-    for state in &stores {
+    let mut picks = Vec::new();
+    for state in &stock.task_stores {
         if gone(state) {
             continue;
         }
@@ -1153,7 +1355,6 @@ fn collect(
                 .push(format!("collecting {}: {why}", state.display()));
             continue;
         }
-        // An unchanged Store whose last look found nothing to do until later is not read again.
         let hint = hint::Hint::read(roots, state);
         if hint
             .as_ref()
@@ -1161,155 +1362,36 @@ fn collect(
         {
             continue;
         }
-        // This sweep already retried the Store's gate leftovers; a Task whose retry did not end
-        // done stays below.
-        let tried = retried.get(state).cloned().unwrap_or_default();
-        let mut kept = Vec::new();
-        let collected = (|| -> Result<Vec<(String, u64)>, String> {
+        let planned = (|| -> Result<Vec<plan::TaskPick>, String> {
             let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
-            // The plan reads only; the Store's writer lock is taken only when it names a Task.
             let plan = EventStore::open_read_only(state.join("events.sqlite"))
                 .and_then(|store| store.plan_task_collection(&cas, idle_ms, policy.keep_tasks))
                 .map_err(|e| e.to_string())?;
-            let planned: Vec<(String, u64)> = plan
+            let picked: Vec<plan::TaskPick> = plan
                 .tasks
                 .iter()
                 .filter(|task| task.disposition.collects() && !is_run_task(state, &task.task_id))
-                .map(|task| (task.task_id.clone(), task.footprint.exclusive_bytes))
+                .map(|task| plan::TaskPick {
+                    state: state.clone(),
+                    task_id: task.task_id.clone(),
+                    bytes: task.footprint.exclusive_bytes,
+                })
                 .collect();
-            if apply && planned.is_empty() {
+            if apply && picked.is_empty() {
                 hint::Hint::after(&plan, state, policy, gate::has_pending(state))
                     .write(roots, state);
             }
-            if !apply || planned.is_empty() {
-                return Ok(planned);
-            }
-            // Gate leftovers go first: a planned Task whose cleanup does not end done stays,
-            // and the next sweep tries again. One this sweep already tried and failed is not
-            // tried twice.
-            let mut cleared = BTreeSet::new();
-            for (task_id, _) in &planned {
-                let failed_now = tried.iter().find(|attempted| {
-                    attempted.task_id == *task_id
-                        && attempted.outcome
-                            != review_core::task::remote_check::GateCleanupOutcomeV1::Done
-                });
-                let verdict = match failed_now {
-                    Some(attempted) => Err(gate::stays(task_id, &attempted.summary)),
-                    None => gate::before_collection(state, task_id, policy.keep_gate_pull_requests),
-                };
-                match verdict {
-                    Ok(()) => {
-                        cleared.insert(task_id.clone());
-                    }
-                    Err(why) => kept.push(format!("collecting {}: {why}", state.display())),
-                }
-            }
-            if cleared.is_empty() {
-                return Ok(Vec::new());
-            }
-            // Exactly the planned Tasks whose leftovers are gone: the plan already applied the
-            // age and newest rules, so a cleanup recorded just now does not make one recent.
-            let mut store =
-                EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
-            let outcome = store
-                .apply_task_collection_of(&cas, &cleared)
-                .map_err(|e| e.to_string())?;
-            Ok(outcome
-                .plan
-                .tasks
-                .iter()
-                .filter(|task| outcome.tombstoned.contains(&task.task_id))
-                .map(|task| (task.task_id.clone(), task.footprint.exclusive_bytes))
-                .collect())
+            Ok(picked)
         })();
-        match collected {
-            Ok(tasks) => {
-                for (task_id, bytes) in tasks {
-                    report.removals.push(Removal {
-                        kind: Kind::Task,
-                        path: state.clone(),
-                        task_id: Some(task_id.clone()),
-                        bytes,
-                        rule: Rule::Collection,
-                        unreadable: None,
-                    });
-                    stock.entries.retain(|entry| {
-                        !(entry.kind == Kind::Task
-                            && entry.path == *state
-                            && entry.task_id.as_deref() == Some(task_id.as_str()))
-                    });
-                }
-            }
+        match planned {
+            Ok(picked) => picks.extend(picked),
             Err(_) if gone(state) => {}
             Err(error) => report
                 .failures
                 .push(format!("collecting {}: {error}", state.display())),
         }
-        report.failures.extend(kept);
     }
-    let mut campaigns: Vec<&Entry> = stock
-        .entries
-        .iter()
-        .filter(|entry| entry.kind == Kind::Campaign)
-        .collect();
-    campaigns.sort_by(|a, b| b.last_use_unix_ms.cmp(&a.last_use_unix_ms));
-    let mut taken: Vec<PathBuf> = Vec::new();
-    for entry in campaigns.into_iter().skip(policy.keep_campaigns) {
-        if entry.in_use.is_some() || !idle(entry) {
-            continue;
-        }
-        match if apply {
-            evict(roots, policy, stock, entry)
-        } else {
-            Ok(entry.bytes)
-        } {
-            Ok(_) => {
-                report.removals.push(Removal {
-                    kind: entry.kind,
-                    path: entry.path.clone(),
-                    task_id: None,
-                    bytes: entry.bytes,
-                    rule: Rule::Collection,
-                    unreadable: None,
-                });
-                taken.push(entry.path.clone());
-            }
-            Err(error) => report.failures.push(error),
-        }
-    }
-    for entry in stock
-        .entries
-        .iter()
-        .filter(|entry| entry.kind == Kind::UnreadableStore)
-    {
-        if entry.in_use.is_some() || !idle(entry) {
-            continue;
-        }
-        match if apply {
-            evict(roots, policy, stock, entry)
-        } else {
-            Ok(entry.bytes)
-        } {
-            Ok(_) => {
-                report.removals.push(Removal {
-                    kind: entry.kind,
-                    path: entry.path.clone(),
-                    task_id: None,
-                    bytes: entry.bytes,
-                    rule: Rule::Collection,
-                    unreadable: None,
-                });
-                taken.push(entry.path.clone());
-            }
-            Err(error) => report.failures.push(error),
-        }
-    }
-    stock.entries.retain(|entry| {
-        !(matches!(entry.kind, Kind::Campaign | Kind::UnreadableStore)
-            && taken.contains(&entry.path))
-    });
-    collect_surveys(policy, stock, now, apply, report);
+    picks
 }
 
 /// Remove one entry through the rule that owns it. Returns the bytes removed.
@@ -1429,30 +1511,12 @@ fn evict(
         }
         Kind::TaskStore => Err(failed("a Task Store is never removed whole".into())),
         Kind::ProjectStore => Err(failed("a Project Store is never evicted".into())),
-        Kind::Survey => evict_survey(stock, entry, true)
-            .map(|taken| taken.bytes)
-            .map_err(failed),
+        Kind::Survey => Err(failed(
+            "a Survey is collected by its planned job, behind its tombstone".into(),
+        )),
         Kind::Claim => Err(failed(
             "a claim is finished by recovery, never evicted".into(),
         )),
-    }
-}
-
-/// [`evict`] when `apply`, otherwise what it would free; for a Survey, taken or previewed through
-/// its record, also why it is collected `unreadable` when it is.
-fn evict_marked(
-    roots: &Roots,
-    policy: &StoragePolicy,
-    stock: &Inventory,
-    entry: &Entry,
-    apply: bool,
-) -> Result<(u64, Option<String>), String> {
-    match (entry.kind, apply) {
-        (Kind::Survey, _) => evict_survey(stock, entry, apply)
-            .map(|taken| (taken.bytes, taken.unreadable))
-            .map_err(|error| format!("removing {}: {error}", entry.path.display())),
-        (_, true) => evict(roots, policy, stock, entry).map(|freed| (freed, None)),
-        (_, false) => Ok((entry.bytes, None)),
     }
 }
 
@@ -1498,31 +1562,10 @@ fn remove_directory(
 /// Print a sweep's removals and problems to stderr, one line each.
 pub(crate) fn report_to_stderr(report: &SweepReport) {
     for removal in &report.removals {
-        eprintln!(
-            "af storage: {} {} {}{} ({}, {}){}",
-            if report.applied {
-                "removed"
-            } else {
-                "would remove"
-            },
-            removal.kind.as_str(),
-            removal.path.display(),
-            removal
-                .task_id
-                .as_deref()
-                .map(|task| format!(" Task {task}"))
-                .unwrap_or_default(),
-            human_bytes(removal.bytes),
-            match removal.rule {
-                Rule::Collection => "collection",
-                Rule::Budget => "budget",
-                Rule::Recovery => "recovery",
-            },
-            unreadable_note(removal)
-        );
+        eprintln!("af storage: {}", removal_line(removal, report.applied));
     }
-    for held in &report.held {
-        eprintln!("af storage: {}", held_line(held));
+    for left in &report.left {
+        eprintln!("af storage: {}", left_line(left));
     }
     for cleanup in &report.gate_cleanups {
         eprintln!(
@@ -1530,7 +1573,7 @@ pub(crate) fn report_to_stderr(report: &SweepReport) {
             cleanup.task_id, cleanup.summary
         );
     }
-    for failure in &report.failures {
+    for failure in unmarked_failures(report) {
         eprintln!("af storage: warning: {failure}");
     }
     if report.stop == Stop::NothingEvictable {
@@ -1584,11 +1627,16 @@ pub(crate) fn observation(
         StorageSweepKindV1, StorageSweepRemovalV1, StorageSweepRuleV1, StorageSweepStopV1,
         TASK_STORAGE_SWEEP_V1, TaskStorageSweepV1,
     };
-    if !report.applied || (report.removals.is_empty() && report.failures.is_empty()) {
+    // What freed nothing (a Survey's deviation) is a failure of the record, never a removal.
+    let removed: Vec<&Removal> = report
+        .removals
+        .iter()
+        .filter(|removal| removal.deviation.is_none())
+        .collect();
+    if !report.applied || (removed.is_empty() && report.failures.is_empty()) {
         return None;
     }
-    let listable: Vec<StorageSweepRemovalV1> = report
-        .removals
+    let listable: Vec<StorageSweepRemovalV1> = removed
         .iter()
         .filter_map(|removal| {
             let kind = match removal.kind {
@@ -1610,7 +1658,8 @@ pub(crate) fn observation(
                     task_id: removal.task_id.clone(),
                     bytes: removal.bytes,
                     rule: match removal.rule {
-                        Rule::Collection => StorageSweepRuleV1::Collection,
+                        // A Survey's rule: never listed, as its kind is not.
+                        Rule::Collection | Rule::KeepSurveys => StorageSweepRuleV1::Collection,
                         Rule::Budget => StorageSweepRuleV1::Budget,
                         Rule::Recovery => StorageSweepRuleV1::Recovery,
                     },
@@ -1620,7 +1669,7 @@ pub(crate) fn observation(
         .collect();
     let removals: Vec<_> = listable.into_iter().take(MAX_SWEEP_REMOVALS).collect();
     // Beyond the bound, or with a path no record can name: counted, not listed.
-    let omitted_removals = report.removals.len().saturating_sub(removals.len()) as u64;
+    let omitted_removals = removed.len().saturating_sub(removals.len()) as u64;
     let failures: Vec<String> = report
         .failures
         .iter()
@@ -2191,28 +2240,11 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
         );
         return Ok(0);
     }
-    let verb = if apply { "removed" } else { "would remove" };
     for removal in &report.removals {
-        println!(
-            "{verb} {} {}{} {} ({}){}",
-            removal.kind.as_str(),
-            removal.path.display(),
-            removal
-                .task_id
-                .as_deref()
-                .map(|task| format!(" Task {task}"))
-                .unwrap_or_default(),
-            human_bytes(removal.bytes),
-            match removal.rule {
-                Rule::Collection => "collection",
-                Rule::Budget => "budget",
-                Rule::Recovery => "recovery",
-            },
-            unreadable_note(removal)
-        );
+        println!("{}", removal_line(removal, apply));
     }
-    for held in &report.held {
-        println!("{}", held_line(held));
+    for left in &report.left {
+        println!("{}", left_line(left));
     }
     for path in &report.registry_dropped {
         println!(
@@ -2227,7 +2259,7 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
             cleanup.task_id, cleanup.summary
         );
     }
-    for failure in &report.failures {
+    for failure in unmarked_failures(&report) {
         println!("failed: {failure}");
     }
     println!(
@@ -2249,13 +2281,15 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
     Ok(0)
 }
 
-/// The Surveys of the readable Project Store at `path` (ADR-0152 clause 13): one entry of kind
-/// `survey` each, its record's CAS bytes, last used at its cutoff, taken out of the Project
-/// Store's own bytes. The Store's identity is recorded as a registered Task Store's is, so a
-/// Survey's collection reaches only the directory inventory measured.
+/// The Surveys of the readable Project Store at `path` (ADR-0152 clause 13), from its one look:
+/// one entry of kind `survey` each, its record's CAS bytes, last used at its cutoff and stated
+/// by device and inode, taken out of the Project Store's own bytes; a record an interruption
+/// moved under `cas/removing`, and a foreign file at a collected Survey's name, stay in the
+/// Project Store's bytes, never a Survey's. The Store's identity is recorded as a registered Task
+/// Store's is, so a Survey's collection reaches only the directory inventory measured.
 fn surveys_into(inventory: &mut Inventory, path: &Path) {
-    let surveys = match crate::projects::survey::collect::inventory(path) {
-        Ok(surveys) => surveys,
+    let look = match crate::projects::survey::collect::look(path) {
+        Ok(look) => look,
         Err(reason) => {
             inventory.problems.push(Problem {
                 path: path.to_path_buf(),
@@ -2276,7 +2310,8 @@ fn surveys_into(inventory: &mut Inventory, path: &Path) {
             reason: reason.clone(),
         }),
     }
-    let bytes = surveys
+    let bytes = look
+        .surveys
         .iter()
         .map(|survey| survey.bytes)
         .fold(0, u64::saturating_add);
@@ -2288,101 +2323,62 @@ fn surveys_into(inventory: &mut Inventory, path: &Path) {
     {
         entry.bytes = entry.bytes.saturating_sub(bytes);
     }
-    for survey in surveys {
+    for survey in &look.surveys {
         let in_use = match &reached {
-            Ok(_) => survey.in_use,
+            Ok(_) => survey.in_use.clone(),
             Err(_) => Some("its Project Store cannot be reached without a link".into()),
         };
         inventory.entries.push(Entry {
             kind: Kind::Survey,
-            path: survey.object,
+            path: survey.object.clone(),
             task_id: None,
             bytes: survey.bytes,
             last_use_unix_ms: survey.last_use_unix_ms,
             in_use,
             reason: None,
-            identity: None,
+            identity: survey.identity,
         });
     }
+    if reached.is_ok() {
+        inventory.projects.push((path.to_path_buf(), look));
+    }
 }
 
-/// The collection pass's Surveys: per Project, those beyond the newest `[storage]
-/// keep_surveys`, oldest first, idle at least `keep_days`, never the newest complete one or one
-/// its Project Store's lock holds (ADR-0152 clause 13).
-fn collect_surveys(
-    policy: &StoragePolicy,
-    stock: &mut Inventory,
-    now: u64,
-    apply: bool,
-    report: &mut SweepReport,
-) {
-    let idle_ms = policy.keep_days.saturating_mul(DAY_MS);
-    let projects: Vec<PathBuf> = stock
-        .entries
-        .iter()
-        .filter(|entry| entry.kind == Kind::ProjectStore)
-        .map(|entry| entry.path.clone())
-        .collect();
-    let mut taken = BTreeSet::new();
-    for project in projects {
-        if apply && let Err(why) = stock.still_the_store(&project) {
-            report.failures.push(format!(
-                "collecting the Surveys of {}: {why}",
-                project.display()
-            ));
-            continue;
-        }
-        match crate::projects::survey::collect::collect_beyond_limit(
-            &project,
-            policy.keep_surveys,
-            idle_ms,
-            now,
-            apply,
-        ) {
-            Ok(pass) => {
-                for collected in pass.taken {
-                    report.removals.push(Removal {
-                        kind: Kind::Survey,
-                        path: collected.object.clone(),
-                        task_id: None,
-                        bytes: collected.bytes,
-                        rule: Rule::Collection,
-                        unreadable: collected.unreadable,
-                    });
-                    taken.insert(collected.object);
-                }
-                held_surveys(report, pass.held);
-                for (object, why) in pass.refused {
-                    report
-                        .failures
-                        .push(format!("collecting {}: {why}", object.display()));
-                }
-            }
-            Err(error) => report.failures.push(format!(
-                "collecting the Surveys of {}: {error}",
-                project.display()
-            )),
-        }
+/// One removal as a line: what it freed, or would, its rule, and a Survey's note.
+fn removal_line(removal: &Removal, applied: bool) -> String {
+    let what = format!(
+        "{} {}{}",
+        removal.kind.as_str(),
+        removal.path.display(),
+        removal
+            .task_id
+            .as_deref()
+            .map(|task| format!(" Task {task}"))
+            .unwrap_or_default()
+    );
+    match &removal.deviation {
+        Some(deviation) => format!(
+            "planned {what} ({}) not removed: {deviation}",
+            removal.rule.as_str()
+        ),
+        None => format!(
+            "{} {what} ({}, {}){}",
+            if applied { "removed" } else { "would remove" },
+            human_bytes(removal.bytes),
+            removal.rule.as_str(),
+            unreadable_note(removal)
+        ),
     }
-    stock
-        .entries
-        .retain(|entry| !(entry.kind == Kind::Survey && taken.contains(&entry.path)));
 }
 
-/// The budget's eviction of one Survey, or its preview: only from the Project Store inventory
-/// reached, through its tombstone and its deletion through descriptors, its protection read
-/// again under the Store's lock.
-fn evict_survey(
-    stock: &Inventory,
-    entry: &Entry,
-    apply: bool,
-) -> Result<crate::projects::survey::collect::Taken, String> {
-    let (project, survey_id) = crate::projects::survey::collect::survey_of_object(&entry.path)
-        .ok_or("names no Survey of a Project Store")?;
-    if apply {
-        stock.still_the_store(&project)?;
-    }
-    crate::projects::survey::collect::collect_one(&project, &survey_id, apply)
+/// The failures a removal's line does not already say.
+fn unmarked_failures(report: &SweepReport) -> impl Iterator<Item = &String> {
+    report.failures.iter().filter(|failure| {
+        !report
+            .removals
+            .iter()
+            .any(|removal| removal.deviation.as_ref() == Some(*failure))
+    })
 }
 
 /// The note a removal line gives a Survey collected `unreadable`.
@@ -2394,101 +2390,23 @@ fn unreadable_note(removal: &Removal) -> String {
         .unwrap_or_default()
 }
 
-/// The line that says an entry was chosen and left because a lock holds it.
-fn held_line(held: &Held) -> String {
-    format!(
-        "held {} {} ({}): {}",
-        held.kind.as_str(),
-        held.path.display(),
-        human_bytes(held.bytes),
-        held.reason
-    )
-}
-
-/// The Surveys a collection chose and left because their Project Store's lock cannot be taken
-/// now, each with the reason preview and pass share.
-fn held_surveys(report: &mut SweepReport, held: Vec<crate::projects::survey::collect::Held>) {
-    for held in held {
-        report.held.push(Held {
-            kind: Kind::Survey,
-            path: held.object,
-            bytes: held.bytes,
-            reason: format!("{}; the next pass tries again", held.reason),
-        });
-    }
-}
-
-/// A preview's inventory without what its recovery would delete first: the entry of each such
-/// Survey, or, for a record an interruption left under `cas/removing`, its bytes out of its
-/// Project Store's entry.
-fn without_recovered_surveys(stock: &mut Inventory, removals: &[Removal]) {
-    for removal in removals
-        .iter()
-        .filter(|removal| removal.kind == Kind::Survey && removal.rule == Rule::Recovery)
-    {
-        let before = stock.entries.len();
-        stock
-            .entries
-            .retain(|entry| !(entry.kind == Kind::Survey && entry.path == removal.path));
-        if stock.entries.len() < before {
-            continue;
-        }
-        let Some((project, _)) = crate::projects::survey::collect::survey_of_object(&removal.path)
-        else {
-            continue;
-        };
-        if let Some(entry) = stock
-            .entries
-            .iter_mut()
-            .find(|entry| entry.kind == Kind::ProjectStore && entry.path == project)
-        {
-            entry.bytes = entry.bytes.saturating_sub(removal.bytes);
-        }
-    }
-}
-
-/// Finish the Survey collections an interruption left between a tombstone and its deletion, in
-/// every registered Project Store reached without a link: counted and reported like a claim's
-/// recovery. A preview lists what the applied pass would finish, entry for entry, and counts
-/// nothing: its inventory still holds those bytes.
-fn finish_collected_surveys(roots: &Roots, report: &mut SweepReport, apply: bool) {
-    let Ok(registered) = registry::read(&roots.registry) else {
-        return;
-    };
-    for entry in registered
-        .iter()
-        .filter(|entry| entry.kind == StoreKind::Project && has_store(&entry.path))
-    {
-        if plain_path(Path::new("/"), &entry.path).is_err() {
-            continue;
-        }
-        match crate::projects::survey::collect::finish_collected(&entry.path, apply) {
-            Ok(pass) => {
-                for finished in pass.taken {
-                    if apply {
-                        report.total_before = report.total_before.saturating_add(finished.bytes);
-                    }
-                    report.removals.push(Removal {
-                        kind: Kind::Survey,
-                        path: finished.object,
-                        task_id: None,
-                        bytes: finished.bytes,
-                        rule: Rule::Recovery,
-                        unreadable: None,
-                    });
-                }
-                held_surveys(report, pass.held);
-                for (object, why) in pass.refused {
-                    report
-                        .failures
-                        .push(format!("finishing {}: {why}", object.display()));
-                }
-            }
-            Err(error) => report.failures.push(format!(
-                "finishing the Survey collections of {}: {error}",
-                entry.path.display()
-            )),
-        }
+/// The line that says the plan left a file or a Survey, and why: `held survey …` while a lock
+/// holds it, `left survey …, <reason>` otherwise; a name that is not UTF-8 is shown lossily.
+fn left_line(left: &Left) -> String {
+    let what = format!(
+        "{} {} ({})",
+        left.kind.as_str(),
+        left.raw.display(),
+        human_bytes(left.bytes)
+    );
+    if left.reason == "held" {
+        format!("held {what}: {}", left.detail)
+    } else {
+        format!(
+            "left {what}, {}: {}",
+            left.reason.replace('_', " "),
+            left.detail
+        )
     }
 }
 

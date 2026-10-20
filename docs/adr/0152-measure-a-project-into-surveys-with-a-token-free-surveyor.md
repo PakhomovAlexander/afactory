@@ -353,48 +353,78 @@ email first of all.
     {`survey_id`, `head`, `cutoff_unix_s`, `completeness`, the `tree` totals `files`, `bytes` and
     `lines` and the `history` totals `commits` and `merges` when the record holds them,
     `collected_unix_ms`} ([schema](../../schemas/project-survey-collected-v1.json), in
-    `run-event-v1.json`) before it deletes the record from the CAS. A record is reached, read
-    and deleted only through directory descriptors, ADR-0144's removal boundary: the Project
-    Store from `/`, then `cas`, `objects` and the digest-prefix directory, each opened
-    `O_NOFOLLOW | O_DIRECTORY`, and the record stated without following it (its device and
-    inode, the identity read before the tombstone) and opened `O_NOFOLLOW` relative to its
-    prefix directory. The deletion names the inode it checks, rename-then-verify: the record is
-    moved with `renameat`, never over a taken name, into `cas/removing/<survey-id>` of the same
-    Store (created without following a link, on the Store's device), opened there `O_NOFOLLOW`
-    and `fstat`ed; on a device and inode match it is unlinked there, and the bytes reported are
-    the allocated bytes of the file deleted, from that `fstat`. On a mismatch the file is moved
-    back to its name, or, when the name is taken again, left under `removing` and said, nothing
-    is deleted, and the Survey is reported `refused (replaced during collection)`; its tombstone,
-    appended before the rename, stays, so the next pass deletes what its name holds. A symbolic
+    `run-event-v1.json`) before it deletes the record from the CAS. A sweep plans once: one
+    function takes one inventory snapshot and returns the plan, the ordered entries it removes,
+    each with the bytes it frees, its rule (`recovery` for what an interruption left, then
+    `collection` and, for Surveys beyond `keep_surveys`, `keep_surveys`, then `budget`) and the
+    total after it, and the entries it leaves with their reasons (`held`, `foreign`, `oversize`,
+    `unreadable_name`), computed over an in-memory model of the snapshot that its own removals
+    update and never over a second inventory, so the bytes of a record an interruption moved
+    under `cas/removing` are subtracted once, from the Project Store entry that holds them, and
+    never restored (Task Stores are told apart into their finished Tasks, in place, only when
+    the snapshot holds more than `max_bytes`). `af storage prune` prints that plan; `--apply`
+    runs the same plan entry by entry and reports what each entry did, the bytes it freed and the
+    total after it, and a Survey's job that finds what the plan did not (the lock lost, the
+    Survey protected or collected since, its record replaced, gone or refused) marks it on that
+    entry as `deviation` with nothing freed, and the sweep never plans again; the next one does.
+    A record is reached, read and deleted only through directory descriptors, ADR-0144's removal
+    boundary: the Project Store from `/`, then `cas`, `objects` and the digest-prefix directory,
+    each opened `O_NOFOLLOW | O_DIRECTORY`, and the record stated without following it (its
+    device and inode, the identity read before the tombstone) and opened `O_NOFOLLOW` relative
+    to its prefix directory. The deletion names the inode it checks: each job creates its own
+    container `cas/removing/<pass-id>/` exclusively (`mkdirat` with mode 0700 under 128 fresh
+    random bits, failing when the name exists) on the Store's device, renames the record into
+    it with `renameat`, never over a taken name, and immediately before `unlinkat` states it
+    again with `fstatat`, without following it, relative to the container's own descriptor; only
+    the device and inode stated before the tombstone is unlinked, and the bytes reported are the
+    allocated bytes of that inode. This is the Store's trust boundary: inside a container this
+    pass created, only a process of the same user can replace a file between that check and the
+    unlink, the boundary delivery's rollback already accepts (ADR-0031), and a replacement the
+    check observes is refused and reported: the file is moved back to its name, or, when the
+    name is taken again, renamed to `<survey-id>.replaced` in the container, a name no pass
+    deletes, nothing is deleted, and the Survey is reported `refused (replaced during
+    collection)`; its tombstone, appended before the rename, stays. A symbolic
     link on that way or in place of the record, a directory on another device than the Store's,
     or a record the file system will not let af read (permission denied, an I/O error) refuses
     the Survey: inventory measures nothing through a link and lists it in use, and the pass
     reports it with its reason, appends no tombstone and deletes nothing. The Surveyor's writer,
     the reader of a Survey and collection share one ceiling, `MAX_SURVEY_BYTES` (1 MiB, the
     ceiling of `max_survey_bytes`): collection reads a record up to it and one byte more, and a
-    record over it, by its stated length or its bytes, is never taken for corrupt: it is refused
-    and reported `refused (oversize, <bytes> bytes)`, inventory lists it in use for that reason,
-    and it keeps its record and its place in the log. A record within the ceiling whose bytes
-    were read but are no Survey (they do not match its digest or do not parse), or that is gone
-    from the CAS, is collected all the same, since reclaiming corrupt bytes is the budget's job:
+    record over it, by its stated length or its bytes, is never taken for corrupt: the plan
+    leaves it as `oversize` with `refused (oversize, <bytes> bytes)`, inventory lists it in use
+    for that reason, and it keeps its record and its place in the log. A record within the
+    ceiling whose bytes were read but are no Survey (they do not match its digest or do not
+    parse), or that is gone from the CAS, is collected all the same, since reclaiming corrupt
+    bytes is the budget's job:
     its tombstone carries `unreadable`, af's own sentence of at most 256 bytes and never the
     record's content, in place of the totals, and the sweep and `af project history` show it as
-    `collected (unreadable)`. Inventory, a preview (`af storage prune` without `--apply`) and the
-    applied pass decide that a Project Store's Surveys are held by one predicate,
+    `collected (unreadable)`. Inventory, the plan and each applied job decide that a Project
+    Store's Surveys are held by one predicate,
     `lock_available`: `project.lock` opened with the flags the applied pass holds it with and
     locked without waiting, then released at once. While a refresh or a plan holds it their
     reason is that; while af cannot open or lock the file (it is unreadable or unwritable) it is
-    `lock unavailable: <error>`; either way preview and pass list every Survey they would take
-    from that Store under `held` with that same reason, never as removals, inventory lists them
-    in use, and nothing is collected. The tombstones are the run
+    `lock unavailable: <error>`; either way the plan leaves every Survey it would take
+    from that Store, and every deletion it would finish there, as `held` with that same reason,
+    inventory lists them in use, and nothing is collected. The tombstones are the run
     `survey-collection` of the Project Store's log, beside the run `project` that holds the
-    chain, so the chain's own sequence is only ever the Surveyor's. Every applied sweep first
-    finishes what an interruption left: each file under `cas/removing` goes back to its name
-    when the name is free, is deleted when the name is taken again and it holds a collected
-    Survey's record, and is otherwise left and reported; then the record of any tombstoned
-    Survey still in a CAS is deleted as above. Each deletion is reported with the rule
-    `recovery`, and the preview lists exactly those entries under `recovery` with the bytes the
-    applied pass frees, so preview and pass agree entry for entry. A debug build reads
+    chain, so the chain's own sequence is only ever the Surveyor's. Every sweep's plan first
+    finishes what an interruption left, read without the lock, under each Store's lock when it
+    runs: `cas/removing` is walked with raw (`OsStr`) names end to end, `fstatat`, rename and
+    unlink taking the raw name. A regular file in a container of a dead pass (every pass holds
+    the Store's lock, so a container found under it is a dead one's) named by a tombstoned
+    Survey is that Survey's record, moved: its bytes are the Survey's, and it is settled by the
+    same sequence, renamed into the new pass's own container, checked there and unlinked, and
+    the dead container goes once it is empty. A file at that Survey's CAS name is then a foreign
+    object: it is left in place and listed as `foreign` with its bytes, counted in the Store's
+    total and never as the Survey's, and never deleted by any path. Without a moved record, the
+    file at a tombstoned Survey's name is its record, deleted as above, only when its bytes are
+    the record's (they hash to its ID); any other is `foreign` in the same way. Everything else
+    under `cas/removing` is left and listed: a name that is not UTF-8 as `unreadable_name`, its
+    display lossy only in the text output and its `--json` path in `review_core::encode_path`'s
+    spelling with `path_encoded`, and anything else (no pass container, not a regular file, no
+    tombstone naming it, a `.replaced` file) as `foreign`; a container of a dead pass that holds
+    nothing is removed. Each such deletion has the rule `recovery`, and the preview lists exactly
+    those entries, so preview and pass agree entry for entry. A debug build reads
     `AF_TEST_SURVEY_STOP_AFTER_TOMBSTONES=1` to stop after the tombstones, and
     `AF_TEST_SURVEY_REPLACE_BEFORE_RENAME=<directory>` to replace a record by a byte-identical
     copy between its identity read and its rename. Replay
