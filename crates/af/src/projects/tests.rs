@@ -245,6 +245,7 @@ fn paths(id: &str, label: &str) -> WorkspacePaths {
         state: PathBuf::from(format!("/state/{label}")),
         bindings: (label == "b").then(|| PathBuf::from("/state/b/bindings.toml")),
         tasks: None,
+        removing_entry: None,
     }
 }
 
@@ -288,6 +289,32 @@ fn the_workspaces_file_refuses_another_version_unknown_keys_and_relative_paths()
     let relative = "version = 1\n[[workspaces]]\nid = \"w-000000000000000a\"\nlabel = \"a\"\n\
                     path = \"src/a\"\nstate = \"/state/a\"\n";
     assert!(file::parse(relative).is_err());
+    let removing = "version = 1\n[[workspaces]]\nid = \"w-000000000000000a\"\nlabel = \"a\"\n\
+                    path = \"/src/a\"\nstate = \"/state/a\"\nremoving_entry = \"worktrees/a\"\n";
+    assert!(file::parse(removing).is_err());
+    let absolute = removing.replace("\"worktrees/a\"", "\"/src/.git/worktrees/a\"");
+    assert_eq!(
+        file::parse(&absolute).unwrap()[0].removing_entry,
+        Some(PathBuf::from("/src/.git/worktrees/a"))
+    );
+}
+
+#[test]
+fn an_entry_renamed_for_removal_is_known_by_its_name_and_pid() {
+    for (entry, name) in [
+        ("/repo/.git/worktrees/wt.af-removing-4242", Some("wt")),
+        ("/repo/.git/worktrees/wt.v2.af-removing-1", Some("wt.v2")),
+        ("/repo/.git/worktrees/wt", None),
+        ("/repo/.git/worktrees/wt.af-removing-", None),
+        ("/repo/.git/worktrees/wt.af-removing-12x", None),
+        ("/repo/.git/worktrees/.af-removing-12", None),
+    ] {
+        assert_eq!(
+            commands::renamed_name(Path::new(entry)),
+            name.map(str::as_bytes),
+            "{entry}"
+        );
+    }
 }
 
 #[test]
@@ -409,6 +436,26 @@ fn committed_repository(root: &Path) -> (Git, String) {
     (git, commit)
 }
 
+/// What `workspace new` records of the worktree it adds at `path`: the identity the directory has
+/// now, or none when it does not exist, and an empty manifest, as before materialization.
+fn adding(
+    path: &Path,
+    administrative: &Path,
+    before: BTreeSet<std::ffi::OsString>,
+    commit: &str,
+) -> commands::Adding {
+    commands::Adding {
+        path: path.to_path_buf(),
+        identity: std::fs::symlink_metadata(path)
+            .map(|metadata| commands::identity(&metadata))
+            .unwrap_or_default(),
+        administrative: administrative.to_path_buf(),
+        before,
+        commit: commit.to_string(),
+        manifest: review_source_git::Manifest::default(),
+    }
+}
+
 #[test]
 fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
     use commands::Made;
@@ -416,11 +463,8 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
     let root = std::fs::canonicalize(root.path()).unwrap();
     let (git, commit) = committed_repository(&root);
     let administrative = root.join("repo/.git/worktrees");
-    let worktree_made = |path: PathBuf| Made::Worktree {
-        path,
-        administrative: administrative.clone(),
-        before: BTreeSet::new(),
-    };
+    let worktree_made =
+        |path: PathBuf| Made::Worktree(adding(&path, &administrative, BTreeSet::new(), &commit));
     let directory = root.join("store/workspaces/spike");
     std::fs::create_dir_all(directory.join("state")).unwrap();
     let reference = "refs/heads/af/spike".to_string();
@@ -461,15 +505,8 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
                 reference: reference.clone(),
                 commit: commit.clone(),
             },
-            Made::Ancestors {
-                from: root.join("deep"),
-                to: root.join("deep/er"),
-            },
-            Made::Worktree {
-                path: worktree.clone(),
-                administrative: administrative.clone(),
-                before: BTreeSet::new(),
-            },
+            Made::Ancestors(vec![root.join("deep"), root.join("deep/er")]),
+            Made::Worktree(adding(&worktree, &administrative, BTreeSet::new(), &commit)),
             Made::Registration(id.clone()),
         ],
     );
@@ -477,9 +514,10 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
         report,
         format!(
             "undone, newest first: unregistered Workspace {id}, removed the worktree {}, removed \
-             the administrative entry worktrees/wt, removed the directory {}, deleted the branch \
-             {reference}, removed {}; nothing was left behind",
+             the administrative entry worktrees/wt, removed the directory {}, removed the \
+             directory {}, deleted the branch {reference}, removed {}; nothing was left behind",
             worktree.display(),
+            root.join("deep/er").display(),
             root.join("deep").display(),
             directory.display()
         )
@@ -501,10 +539,10 @@ fn undo_removes_what_workspace_new_made_newest_first_and_names_what_remains() {
         commands::undo(
             &git,
             &mut store,
-            vec![Made::Ancestors {
-                from: root.join("absent"),
-                to: root.join("absent/below"),
-            }],
+            vec![Made::Ancestors(vec![
+                root.join("absent"),
+                root.join("absent/below"),
+            ])],
         ),
         "nothing was created"
     );
@@ -629,7 +667,7 @@ fn undo_deletes_only_an_entry_whose_gitdir_names_the_path_and_reports_a_locked_o
     use commands::Made;
     let root = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(root.path()).unwrap();
-    let (git, _) = committed_repository(&root);
+    let (git, commit) = committed_repository(&root);
     let mut store = ProjectStore::open_unrecorded(&root.join("state"), &project_id(ROOTS)).unwrap();
     let administrative = root.join("repo/.git/worktrees");
     let worktree = root.join("wt");
@@ -668,11 +706,12 @@ fn undo_deletes_only_an_entry_whose_gitdir_names_the_path_and_reports_a_locked_o
     let report = commands::undo(
         &git,
         &mut store,
-        vec![Made::Worktree {
-            path: worktree.clone(),
-            administrative: administrative.clone(),
+        vec![Made::Worktree(adding(
+            &worktree,
+            &administrative,
             before,
-        }],
+            &commit,
+        ))],
     );
     assert_eq!(
         report,

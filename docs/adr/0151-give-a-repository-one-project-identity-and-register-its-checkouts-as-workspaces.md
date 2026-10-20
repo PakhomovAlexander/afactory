@@ -1,7 +1,7 @@
 # ADR-0151: Give a repository one Project identity and register its checkouts as Workspaces
 
 **Status:** accepted (2026-10-19); clauses 4, 5 and 8 amended (2026-10-20) by PJ1b, clause 5
-again (2026-10-20) by its second round. Package PJ1 of the
+again (2026-10-20) by its second round, and clauses 3 and 5 by its third. Package PJ1 of the
 [Project design note](../design/project.md). Builds on
 [ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md) (delivery makes only a local
 branch and worktree), [ADR-0032](0032-generate-review-authority-with-af-onboard.md),
@@ -67,7 +67,9 @@ directories.
    digits of SHA-256(`af/workspace-id@1\0` ‖ Project ID ‖ `\0` ‖ canonical checkout path); its
    label is unique within the Project and follows the safe-name rule of Task IDs; its origin is
    `adopted`, `created` or `delivered`. Its paths (checkout, Task Store, and optionally bindings
-   file and Task-file directory) live only in `workspaces.toml` beside the log, machine-written,
+   file, Task-file directory and `removing_entry`, the administrative entry an unfinished
+   `--delete-worktree` of it began removing) live only in `workspaces.toml` beside the log,
+   machine-written,
    replaced whole through a temporary file and a rename under the Project Store's lock. The
    projection `af/project@1` is a function of the log and that file.
 4. **Lazy, token-free registration.** `af onboard --apply`, `af task plan`, `af task start`,
@@ -108,16 +110,36 @@ directories.
    above it, branch ref, Workspace directory) and reports what it undid, or exactly what remains
    when an undo fails; so every refusal leaves nothing of its own behind and the same command
    succeeds once its cause is gone. Every deletion of an undo rests on ownership evidence
-   (ADR-0031), by three rules. First, the destination directory is recorded as made only when
-   this command's own `create_dir` succeeded on a path that did not exist, and `git worktree add`
-   then adds into that empty directory; a path that appears between the checks and the add is a
-   refusal with nothing of it deleted. Second, the undo deletes that directory only when
-   `<path>/.git` is absent or is a file naming an entry this add owns (one whose `gitdir` names
-   `<path>/.git`); otherwise it keeps the directory and reports it as left behind with its reason, such as
-   `the directory <path>, kept because its .git names <entry>, not an entry of this add; delete it once no add uses it`. Third, the branch this add created is deleted with
+   (ADR-0031), by four rules. First, the destination directory is recorded as made only when
+   this command's own `create_dir` succeeded on a path that did not exist, together with its
+   identity (device and inode), and `git worktree add` then adds into that empty directory; a
+   path that appears between the checks and the add is a refusal with nothing of it deleted. The
+   missing directories above it are created one at a time from the deepest existing ancestor,
+   and only those this command's own `create_dir` made are recorded, never one another process
+   made meanwhile; the undo removes only those, deepest first, each only while it is empty.
+   Second, directory identity and path membership never prove ownership of bytes: the undo
+   deletes the destination only when its identity is unchanged, every entry inside it equals the
+   captured manifest in path, kind, mode and content (the complete-entry comparison of
+   delivery's rollback, `manifest_is_subset`), besides `<path>/.git`, which is absent or a file
+   naming an entry this add owns (one whose `gitdir` names `<path>/.git`), and the index this add
+   wrote is unchanged: absent or empty, as `git worktree add --no-checkout` leaves it, or the
+   commit's tree through delivery's cached-index comparison. When `.git` names another entry the
+   directory is kept, this add's entries still go, and the report says
+   `the directory <path>, kept because its .git names <entry>, not an entry of this add; delete it once no add uses it`.
+   When any other comparison fails the worktree is kept whole, its directory, this add's entries
+   and the branch it is on, and reported as left behind with the first differing path, in one of
+   these lines:
+
+   - ``the directory <path>, kept because it holds `<file>`, which this add did not write; delete it once no add uses it``
+   - ``the directory <path>, kept because `<file>` differs from what this add wrote; delete it once no add uses it``
+   - `the directory <path>, kept because it was replaced since this add created it; delete it once no add uses it`
+   - ``the worktree <path>, kept with its administrative entry worktrees/<name> because its index differs from <commit> at `<file>`; remove it with `git worktree remove --force <path>` once nothing in it is needed``,
+     followed by `the branch refs/heads/<name>, kept because the worktree <path> kept above is on it`
+
+   Third, the branch this add created is deleted with
    `git update-ref -d <ref> <oid>`, giving the OID it was created at, so a branch that moved
    meanwhile is kept and reported as
-   `the branch refs/heads/<name> moved since this add created it and is kept`. The
+   `the branch refs/heads/<name> moved since this add created it and is kept`. Fourth, the
    worktree is recorded as made before `git worktree add` runs, with the names under `<common
    dir>/worktrees/` noted then, so an add that fails or reaches its deadline after creating the
    worktree's `.git` file or its administrative entry is undone too. The undo deletes only the
@@ -148,23 +170,40 @@ directories.
    `--delete-worktree` never runs `git worktree remove`, whose cleanliness check hashes the
    worktree's files through the repository's clean filters (ADR-0001). It removes only a linked
    worktree that is not locked and whose `.git` file names an entry under `<common
-   dir>/worktrees/` whose `gitdir` names the worktree. The worktree is clean when its files equal
-   its `HEAD` commit's tree in content and mode, compared through the committed capture
-   `workspace new` materializes from (`review_source_git`) against the files on disk, any file the
-   tree lacks, ignored or not, other than git's own `.git` making it dirty; no filter, hook, diff
-   driver or other program the repository configures runs, and every git call runs under the
-   supervision below. A clean worktree is removed by deleting its directory and then that
-   worktree's own administrative entry, nothing else; its branch is kept. The entry is renamed
-   beside itself before it is deleted, so it goes whole or stays whole. When the entry cannot be
-   removed once the directory is gone, the command fails with
+   dir>/worktrees/` whose `gitdir` names the worktree. The worktree is clean when its index and
+   its files both equal its `HEAD` commit. The index is compared through delivery's supervised,
+   filter-free cached-index comparison (`git diff-index --cached` with external diff and textconv
+   disabled, as `index_matches_head` makes it), so a staged addition, modification or deletion
+   and an unmerged entry each make it dirty. The files are compared with the commit's tree in
+   content and mode through the committed capture `workspace new` materializes from
+   (`review_source_git`) against the files on disk, any file the tree lacks, ignored or not,
+   other than git's own `.git` making it dirty; no filter, hook, diff driver or other program the
+   repository configures runs, and every git call runs under the supervision below. A dirty
+   worktree is refused without moving a byte, naming the first such path. A clean worktree is
+   removed by deleting its directory and then that worktree's own administrative entry, nothing
+   else; its branch is kept. Before anything is deleted the entry's path is recorded as the
+   Workspace's `removing_entry` in `workspaces.toml`; `workspaces.toml` stays version 1, since no
+   release has written it (ADR-0145). The entry is renamed to `<name>.af-removing-<pid>` beside
+   itself before it is deleted, so it goes whole or stays whole, and an error names where it
+   remains. When the rename fails once the directory is gone, the command fails with
 
    `removed the worktree <path>; its administrative entry <common dir>/worktrees/<name> remains: <os error>; fix it and run the command again`
 
-   and the Workspace stays registered. A rerun whose registered checkout path no
-   longer exists removes each entry whose `gitdir` names `<path>/.git` (refusing a locked one),
-   unregisters and reports both; without such an entry it unregisters and says the checkout is
-   already gone. Only a refusal that changed nothing says "nothing was changed": a dirty worktree,
-   refused with the first differing path, an unknown checkout, and the running checkout. Exit
+   and when the deletion after the rename fails, never naming the original path, with
+
+   `removed the worktree <path>; its administrative entry remains at <common dir>/worktrees/<name>.af-removing-<pid>: <os error>; fix it and run the command again`
+
+   and the Workspace stays registered. A rerun whose registered checkout path no longer exists
+   removes each entry whose `gitdir` names `<path>/.git`, renamed or not, and the
+   `<name>.af-removing-*` entry whose `gitdir` is gone while `<name>` is the recorded entry's
+   (refusing a locked one), and only then unregisters and reports both; without such an entry it
+   unregisters and says the checkout is already gone. A `gitdir` that cannot be read (permission,
+   or bytes that name no path) is never "no entry": it may name the checkout, so the rerun
+   refuses with that file and the read error, changes nothing and does not unregister. A
+   deletion that fails again is reported where the entry remains, as above, after `the worktree
+   <path> is already gone;`. Only a refusal that changed nothing says "nothing was changed": a
+   dirty worktree, refused with the first differing path, an unknown checkout, the running
+   checkout and a rerun that meets an unreadable `gitdir`. Exit
    codes are 0, 1 (with `af/error@1` under `--json` and the next action in the message) and 2 for usage. Every
    git process of the Project modules runs through `review_process` with a deadline (30 s for
    plumbing, capture's own for a committed capture) that stops its whole process group, in
@@ -234,7 +273,16 @@ directories.
   branch that moved during the add, undoing the rest; fails within the deadline, leaving no child,
   when a fake `git` sleeps; succeeds on the first `af task plan --workspace <checkout directory
   name>`; and keeps `git status --porcelain --ignored` empty and the checkout's files unchanged
-  after every `af project` command and `af task plan --workspace`. Unit tests undo every kind of
+  after every `af project` command and `af task plan --workspace`. It refuses
+  `--delete-worktree` of a worktree whose files equal `HEAD` while its index holds a staged
+  modification, or an unmerged entry, with nothing deleted; keeps and reports the destination of
+  a failed add that a fake `git` wrote a sentinel into, replaced, or changed a tracked path of,
+  and the whole worktree, entry and branch with it, of one that staged a change into the new
+  index; keeps a missing parent another process created before the add while removing the one
+  the command created; names the renamed entry `<name>.af-removing-<pid>` when a read-only entry
+  cannot be deleted and finishes it on the rerun, also once its `gitdir` is gone; and refuses,
+  still registered, a rerun that meets an unreadable `gitdir`, finishing once it is readable.
+  Unit tests undo every kind of
   step in reverse order, including a partial worktree whose entry a stopped add left locked,
   delete only the entry whose `gitdir` names the path, report a locked and an unlocked entry
   without one with their exact recovery lines, keep and report a branch that moved, and never

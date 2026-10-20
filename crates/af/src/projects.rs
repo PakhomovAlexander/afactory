@@ -441,6 +441,22 @@ impl ProjectStore {
         file::write(&self.workspaces_file(), known)
     }
 
+    /// Record that `--delete-worktree` begins removing `entry`, the administrative entry of one
+    /// Workspace's checkout, before it deletes anything.
+    pub(crate) fn record_removing(
+        &mut self,
+        workspace_id: &str,
+        entry: &Path,
+    ) -> Result<(), String> {
+        let mut known = self.paths()?;
+        let paths = known
+            .iter_mut()
+            .find(|paths| paths.id == workspace_id)
+            .ok_or_else(|| format!("this machine knows no paths of Workspace {workspace_id}"))?;
+        paths.removing_entry = Some(entry.to_path_buf());
+        file::write(&self.workspaces_file(), known)
+    }
+
     /// The directory `af project workspace new` makes for a Workspace's Store, Task files and
     /// bindings.
     pub(crate) fn workspace_directory(&self, label: &str) -> PathBuf {
@@ -581,6 +597,7 @@ pub(crate) fn adopt(
         state,
         bindings: None,
         tasks: None,
+        removing_entry: None,
     };
     register(checkout, WorkspaceOriginV1::Adopted, &label, false, paths)
 }
@@ -626,6 +643,7 @@ pub(crate) fn register_delivered(worktree: &Path, task_id: &str) {
             state: default_store(&checkout.toplevel)?,
             bindings: None,
             tasks: None,
+            removing_entry: None,
         };
         register(
             &checkout,
