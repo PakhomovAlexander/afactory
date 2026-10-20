@@ -167,7 +167,11 @@ Task; it names `af task gc`. `--delete-worktree` requires the worktree's index a
 commit, through delivery's supervised, filter-free cached-index comparison and the kernel's
 committed capture, refusing a staged, unmerged or differing entry without moving a byte; it never calls `git worktree remove`,
 whose cleanliness check runs the repository's clean filters (ADR-0001), and it deletes the
-directory and the worktree's own administrative entry itself.
+directory and the worktree's own administrative entry itself, bound to what it inspected: it
+records both identities, claims the checkout under an absent private name beside it, verifies
+identity and cleanliness there by descriptor-based, no-follow traversal, deletes only the claimed
+directory, preserves and reports a replacement found at the registered path, and persists enough
+machine-local state to finish an interrupted claim on rerun.
 
 `--workspace LABEL` on every `af task` subcommand that takes `--state` resolves `--state` (and,
 for `plan` and `start`, an absent `--bindings`) against the Workspace; `--workspace` together with
@@ -188,14 +192,14 @@ for one third, `0` for an empty population), with these sections. Every section 
 
 | Section | Holds | Source | Bound or policy |
 |---|---|---|---|
-| `identity` | Project ID, `repository_id`, `[project] name` and `min_af`, the af release `.af/af.lock` pins, head commit, Tree Digest, cutoff, policy digest, Surveyor version, git version | `.af/af.toml`, `.af/af.lock`, git | the Tree Digest is the kernel's capture digest of the whole head tree, independent of `exclude` and of every maximum, computed by a digest-only path (no blob written to any CAS, no listing buffered: fixed-size blob buffers through the hash, at most 16 MiB of manifest buffering and 256 MiB of temporary manifest data, fixed ceilings no project may raise, under the Survey deadline) that equals the committed capture's digest of the same tree: absent with reason `deadline` when it did not finish or a typed resource reason (`max_record_bytes`, `manifest_bytes`, `temp_bytes`) when a ceiling stopped it, with nothing left in temporary storage, never the digest of a part |
+| `identity` | Project ID, `repository_id`, `[project] name` and `min_af`, the af release `.af/af.lock` pins, head commit, Tree Digest, cutoff, policy digest, Surveyor version, git version | `.af/af.toml`, `.af/af.lock`, git | the Tree Digest is the kernel's capture digest of the whole head tree, independent of `exclude` and of every maximum, computed by a digest-only path (no blob written to any CAS, no listing buffered: fixed-size blob buffers through the hash, at most 16 MiB of manifest buffering and 256 MiB of temporary manifest data beneath a process-owned temporary root the crash sweeper reaps (`af-tree-digest-<pid>-*`, with the sweeper's liveness and preservation rules), fixed ceilings no project may raise, under the Survey deadline) that equals the committed capture's digest of the same tree: absent with reason `deadline` when it did not finish or a typed resource reason (`max_record_bytes`, `manifest_bytes`, `temp_bytes`) when a ceiling stopped it, with nothing left in temporary storage, never the digest of a part |
 | `tree` | files and bytes in total; per top-level directory files, lines and bytes; per language files and lines; the `tests` split | `git ls-tree -l`, blob reads | lines only for text blobs: regular or executable blobs at or under `max_file_bytes` (1 MiB) whose first 8 KiB hold no NUL, UTF-8 validity irrelevant (the rule ADR-0133's citations use); symlinks and gitlinks contribute no lines; a declaration (a decision, the vocabulary file, a check file) is parsed only when it is such a text blob and valid UTF-8, else unreadable; `[survey] exclude` globs; `[survey] tests` globs; `[survey.languages]` extends the built-in extension map (the one docs/project.md lists): each file counts for exactly one language, a configured pattern overrides a built-in extension, among configured patterns the bytewise-first matching one wins, and a file nothing matches is `other` like a symlink or submodule |
 | `history` | commits and merges in total and in the last 30, 90 and 365 days; first and last commit time; churn (commits, lines added, removed) per top-level directory over 90 days; hot paths; tags in total and the newest five matching `release_tags`; local branch count | `git log --numstat`, `rev-list`, `tag`, each through a private bare repository attached to the object database alone (ADR-0001's administrative directory), so no checkout, index, local configuration, attribute file, diff driver or replacement ref changes a count | `max_commits` (100,000; beyond it `partial`, oldest commit reached recorded); `hot_paths` (20) |
 | `contributors` | per identity, keyed by `key` (under `name` the first 16 hex digits of SHA-256 of the exact author-name bytes, under `email_hash` the 16-hex email hash) with `name` the bounded display text, grouped and ranked by `key` so two names sharing a 256-byte prefix stay distinct: commits, lines added and removed, first and last time, active in 90 days; the top identity's share; human and agent-assisted commit counts and shares | `git log` | `[survey] identity = "name"` (default) or `"email_hash"`: an email is hashed or absent, never stored, and an author name any whitespace-separated token of which is an email address (an `@` between non-empty parts) is replaced whole, before any truncation and under both policies, by `h:` and the first 16 hex digits of its hash; `agent_authors` (`*[bot]`) and `agent_trailers` (`Co-Authored-By` matching `*Claude*`, `*Codex*`, `*GPT*`): a commit is agent-assisted when its author or any `Co-Authored-By` name matches, otherwise human; each commit counts once in that partition and its author keeps the per-identity totals; an empty window makes every share `0` |
 | `decisions` | per decision record: number, title, status, date; counts by status | the `decisions` pattern, default `docs/adr/*.md`, then the name rule (four ASCII digits and a dash): title from the first H1; status and date from the first line that starts with `**Status:**` or `Status:`: the status is the first of `proposed`, `accepted`, `superseded`, `deprecated`, `rejected` on that line (`accepted; superseded in part by` is `accepted`; `amended` becomes a flag when the line says so), the date the first `YYYY-MM-DD` on it, each `unknown` when absent or malformed | `max_entries`; a Brief variant picks the newest N (§3.5) |
 | `vocabulary` | the defined term names and their count | the `vocabulary` file, default `CONTEXT.md`: bold-colon headings | names only; definitions stay in the tree |
 | `checks` | declared check names and programs; toolchain declarations present; CI workflow file count | `.af/code-policy.toml`; every `.af/pipelines/*.toml` in the head tree, routed or not, each `[[checks]]`; the toolchain files `rust-toolchain.toml`, `rust-toolchain`, `.tool-versions`, `.nvmrc`, `.node-version`, `.python-version`, `.ruby-version`, `.java-version`; `.github/workflows/*.yml` and `*.yaml` | names and programs only, no arguments; a check's identity is `<source>:<name>` with `code-policy` or the pipeline file's basename as the source, so equal names in two pipelines are two checks; an unreadable declaration is listed under `unreadable` and makes the section partial |
-| `activity` (PJ5) | per Workspace: Tasks by outcome, Attempts, chargeable tokens, active time; Campaigns, open and fixed Findings by severity; delivered Tasks; Developer Plan Decisions, Resolutions and Demand waivers; the window `cutoff - 30 days < t <= cutoff`, a Task counted by its completion event, an Attempt and its charge by its settlement event, a delivery and a decision by its recording event, active time as the run spans cut to the window, Finding counts as the current state beside the changes within the window, and `unknown` where a Store cannot say | every Store of the discovery set, read-only: the Workspaces' Task Stores, every Store under the default Task root (`$XDG_STATE_HOME/af/task/local`) and the default review roots (`review/local` and `review/campaigns`), none of which the registry lists, enumerated under the Survey's bounds, and every explicit Store and review-root entry of the registry, deduplicated by canonical path; work whose Store belongs to no Workspace forms the `unassigned` group, and a Store two or more Workspaces name forms a `shared` group keyed by its instance ID that lists their Workspace IDs, counted once in the Project's totals and referenced, never repeated, by each Workspace's line; through one aggregation projection PJ5 adds that joins each Store's validated Task accounting with its Campaign Ledger's current Resolutions and Demand waivers (`af task show --json` alone carries neither); Stores are deduplicated by their recorded identity, a Task counts for this Project only when its recorded source `repository_id` matches, Task IDs are qualified by Store, and a Task without retained source evidence counts as `unknown` | a Store this release cannot read makes its Workspace `unavailable` with the replay error (ADR-0145); Provider IDs and host paths never enter the section |
+| `activity` (PJ5) | per Workspace: Tasks by outcome, Attempts, chargeable tokens, active time; Campaigns, open and fixed Findings by severity; delivered Tasks; Developer Plan Decisions, Resolutions and Demand waivers; the window `cutoff - 30 days < t <= cutoff`, a Task counted by its completion event, an Attempt and its charge by its settlement event, a delivery and a decision by its recording event, active time as the run spans cut to the window, Finding counts as the current state beside the changes within the window, and `unknown` where a Store cannot say | every Store of the discovery set, read-only: the Workspaces' Task Stores, every Store under the default Task root (`$XDG_STATE_HOME/af/task/local`) and the default review roots (`review/local` and `review/campaigns`), none of which the registry lists, enumerated under the Survey's bounds, and every explicit Store and review-root entry of the registry, deduplicated by canonical path; work whose Store belongs to no Workspace forms the `unassigned` group, and a Store two or more Workspaces name forms a `shared` group keyed by its instance ID that lists their Workspace IDs, counted once in the Project's totals and referenced, never repeated, by each Workspace's line; through one aggregation projection PJ5 adds that joins each Store's validated Task accounting with its Campaign Ledger's current Resolutions and Demand waivers (`af task show --json` alone carries neither); Stores are deduplicated by their recorded identity, a Task counts for this Project only when its recorded source `repository_id` matches, Task IDs are qualified by Store, and a Task without retained source evidence counts as `unknown` | a Store this release cannot read makes its Workspace `unavailable` with the replay error (ADR-0145); Provider IDs and host paths never enter the section; an unreadable Store yields a closed failure record (reason code, Store instance ID and, when validated, the event sequence), never the diagnostic text: paths, IDs and emails stay in local stderr |
 
 Lines are newline counts: deterministic, no tokenizer. A hot path names the path the commits
 touched; one absent from the head tree is marked `removed` (on afactory today three of the ten
@@ -216,7 +220,11 @@ watermark come from the same captured bytes (a Store replaced at its path with d
 under equal counts changes the key; a read the Survey deadline cuts marks the Store `partial` and
 never enters the key as complete; a captured prefix holding an event newer than the cutoff marks
 `activity` partial with reason `post_cutoff_events` and the Survey is never reused, so the next
-refresh counts that event's outcome and charge exactly once), plus the Workspace membership list. The instance ID is opaque, assigned by the Project Store in its machine-local
+refresh counts that event's outcome and charge exactly once), plus the Workspace membership list. Discovery and replay are bounded: at most 1,000 Stores,
+100,000 event and sidecar rows per Store, 1 MiB per row and 16 MiB of buffered projection
+state, ceilings a project may only lower, read through cursors in canonical order with the
+deadline checked between rows and the SQLite read cancelled at it; each limit is a typed partial
+reason, and an incomplete discovery or prefix never authorizes reuse. The instance ID is opaque, assigned by the Project Store in its machine-local
 `stores` table the first time it meets a Store's canonical path (symbolic links resolved), and
 recorded in the Survey in place of the path; the Task Store itself is never written. An alias of
 a Store resolves to the same canonical path and counts once; a copy or a move is a new path and
@@ -227,10 +235,13 @@ often runs end. A newest Survey that is `partial` is measured again on the next 
 time; `af project show` prints the Survey's age, and `af project refresh --force` records
 regardless of the key.
 
-Measurement policy, so the same inputs give the same bytes (values §3): commits are walked from
+Measurement policy, so the same inputs (head, refs digest, policy digest, Surveyor and git
+versions, cutoff and `previous_survey_id`) give the same bytes for a complete Survey, and a
+partial one records its exact stopping point (section, item and reason) so replay reproduces it
+(values §3): commits are walked from
 HEAD in `git rev-list --date-order` order, newest first, and cut at `max_commits`; a window
 holds a commit when `cutoff - window < committer time <= cutoff`; a merge counts as a commit and
-a merge but contributes no churn (`--numstat` runs with `--no-merges`); renames are not detected
+a merge but contributes no churn (the walk includes merges and runs `--numstat` with `--diff-merges=off`, so a merge is counted and diffs nothing); renames are not detected
 (`--no-renames`), so a rename is a removal and an addition; a binary `numstat` entry counts one
 file touched and zero lines; ties break by path, then by commit ID. `identity` records the git
 version because git decides these numbers.
@@ -622,7 +633,10 @@ Acceptance: a fixture repository with known counts yields a byte-identical expec
 fixed cutoff; a second run with an unchanged survey key records nothing, while a new tag, a
 policy change, a partial newest Survey or `--force` records one, and an older complete Survey
 behind a partial newest one or behind another head's Survey prevents nothing; `max_commits` and `max_wall_ms`
-produce `partial` sections and a recorded Survey; an early deadline leaves the Tree Digest absent
+produce `partial` sections and a recorded Survey; a four-commit history with one merge at the
+`max_commits` boundary yields the stated commit, merge and contributor counts; two forced
+complete refreshes at a fixed cutoff differ only in `previous_survey_id`; af killed after a
+manifest spill leaves a directory the next sweep removes while a live refresh's survives; an early deadline leaves the Tree Digest absent
 with its reason, never a partial digest, and a silent git process against a short deadline
 leaves no process behind and a partial Survey within the deadline; a blob above `max_file_bytes`
 and a tree beyond `max_paths` still digest, equal to the committed capture's digest, an injected
@@ -717,7 +731,11 @@ Store replaced at its path with different events under equal counts changes the 
 settling after a running refresh captured its watermark is measured by the next refresher; a
 Task settling between the cutoff and the Store read leaves `activity` partial with reason
 `post_cutoff_events`, and the next refresh counts its outcome and charge exactly once; a Resolution and a waiver recorded
-after a Task finished change the next `activity` without changing Task spend.
+after a Task finished change the next `activity` without changing Task spend; a malformed CAS
+directory and an invalid event ID holding a path and an email leave neither in the Survey or a
+Brief, the entry carrying only its reason code, instance ID and sequence; a Store beyond a
+ceiling (count, rows, row size, buffered state) makes `activity` partial with its reason in
+refresh and the preflight alike and never authorizes reuse.
 
 ## 6. Not in v1
 
