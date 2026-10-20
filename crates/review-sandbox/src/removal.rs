@@ -217,22 +217,31 @@ fn claim_owner(name: &str) -> Option<u32> {
         .ok()
 }
 
-/// Finish the removals a process that has since died left claimed in `parent`: every
-/// `.af-removing-<pid>-…` directory whose process is gone is removed through
-/// [`remove_tree_at`]. A claim of a live process is its own business and stays. Returns the
-/// names it removed with the bytes each held, and why each other one was left.
-pub fn finish_abandoned_claims(parent: &Path) -> (Vec<(String, u64)>, Vec<String>) {
-    let mut removed = Vec::new();
-    let mut left = Vec::new();
+/// A removal a process that has since died left claimed, as one listing found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbandonedClaim {
+    /// Its private name in its parent, `.af-removing-<pid>-…`.
+    pub name: String,
+    /// The directory the listing stated, without following a link.
+    pub identity: Identity,
+    /// Its allocated bytes as the listing measured them.
+    pub bytes: u64,
+}
+
+/// List, reading only, the removals a process that has since died left claimed in `parent`:
+/// every `.af-removing-<pid>-…` directory whose process is gone, with its identity and bytes. A
+/// claim of a live process is its own business and is not listed.
+pub fn abandoned_claims(parent: &Path) -> Vec<AbandonedClaim> {
     let Ok(entries) = std::fs::read_dir(parent) else {
-        return (removed, left);
+        return Vec::new();
     };
-    let Ok(anchor) = open_anchor(parent) else {
-        return (removed, left);
-    };
+    let mut claims = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let Some(pid) = name.to_str().and_then(claim_owner) else {
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(pid) = claim_owner(name) else {
             continue;
         };
         if crate::stale::process_exists(pid) {
@@ -241,10 +250,34 @@ pub fn finish_abandoned_claims(parent: &Path) -> (Vec<(String, u64)>, Vec<String
         let Ok(identity) = Identity::of(&entry.path()) else {
             continue;
         };
-        let bytes = crate::storage::allocated_bytes(&entry.path()).unwrap_or(0);
-        match remove_tree_at(&anchor, &name, Some(identity)) {
-            Ok(()) => removed.push((name.to_string_lossy().into_owned(), bytes)),
-            Err(error) => left.push(format!("{}: {error}", name.to_string_lossy())),
+        claims.push(AbandonedClaim {
+            name: name.to_string(),
+            identity,
+            bytes: crate::storage::allocated_bytes(&entry.path()).unwrap_or(0),
+        });
+    }
+    claims.sort_by(|a, b| a.name.cmp(&b.name));
+    claims
+}
+
+/// Finish the removals a process that has since died left claimed in `parent`: every claim
+/// [`abandoned_claims`] lists is removed through [`remove_tree_at`], only while it is the
+/// directory that was listed. Returns the names it removed with the bytes each held, and why
+/// each other one was left.
+pub fn finish_abandoned_claims(parent: &Path) -> (Vec<(String, u64)>, Vec<String>) {
+    let mut removed = Vec::new();
+    let mut left = Vec::new();
+    let claims = abandoned_claims(parent);
+    if claims.is_empty() {
+        return (removed, left);
+    }
+    let Ok(anchor) = open_anchor(parent) else {
+        return (removed, left);
+    };
+    for claim in claims {
+        match remove_tree_at(&anchor, OsStr::new(&claim.name), Some(claim.identity)) {
+            Ok(()) => removed.push((claim.name, claim.bytes)),
+            Err(error) => left.push(format!("{}: {error}", claim.name)),
         }
     }
     (removed, left)
@@ -334,6 +367,15 @@ mod tests {
         // A claim whose process is gone is finished; one that is not a claim is never touched.
         std::fs::create_dir_all(parent.join(".af-removing-999999999-1-0/inner")).unwrap();
         std::fs::create_dir(parent.join("neighbour")).unwrap();
+        // Listing reads only: the dead owner's claim with what it is, and nothing else.
+        let listed = abandoned_claims(&parent);
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].name, ".af-removing-999999999-1-0");
+        assert_eq!(
+            listed[0].identity,
+            Identity::of(&parent.join(".af-removing-999999999-1-0")).unwrap()
+        );
+        assert!(parent.join(".af-removing-999999999-1-0/inner").is_dir());
         let (removed, _) = finish_abandoned_claims(&parent);
         assert_eq!(removed.len(), 1);
         assert_eq!(removed[0].0, ".af-removing-999999999-1-0");

@@ -14,7 +14,7 @@
 //! pattern `*a` thirty times then `b` neither hangs the Surveyor's `exclude` nor matches, its
 //! matching form does, and a 257-byte pattern and a 65-entry list are refused naming the key.
 //!
-//! Every applied sweep here (but those a debug hook makes deviate) is checked against the preview
+//! Every applied sweep here (but those a debug hook makes fail) is checked against the preview
 //! just before it: one plan, so the totals, every removal with its bytes and the total after it,
 //! and every entry left agree entry for entry. When a Survey's record was moved and a smaller file
 //! took its CAS name, the plan deletes the moved record under `recovery` and lists the other file
@@ -27,10 +27,17 @@
 //! tombstone. A corrupt record is collected `unreadable` and its bytes freed, while one the file
 //! system will not let af read is refused and keeps its record and its place in the log, and one
 //! a byte over the shared ceiling is left `oversize`. A record replaced between its identity read
-//! and its rename is `refused (replaced during collection)`, a deviation marked on its entry:
-//! nothing else is deleted and a rerun collects it. The preview leaves the Surveys of a held
-//! Project Store `held`, exactly as the applied sweep does, and a `project.lock` af cannot open
-//! for writing holds them in both with the same reason.
+//! and its rename is `refused (replaced during collection)`, its entry kept as `failed: …` with
+//! the running total unchanged: nothing else is deleted and a rerun collects it. One replaced
+//! between inventory and the plan's judgement is `refused (replaced since inventory)`: the plan
+//! takes nothing of it, and the totals the sweep reports are what the directory holds. The
+//! preview leaves the Surveys of a held Project Store `held`, exactly as the applied sweep does,
+//! and a `project.lock` af cannot open for writing holds them in both with the same reason.
+//!
+//! What an interruption left is in the one inventory: a removal a dead process left claimed is a
+//! `claim` entry under `recovery` that the preview and the applied sweep list alike, with the
+//! same bytes, and a Survey ID file in a container whose name is not UTF-8 is `unreadable_name`
+//! and left with its container.
 //! `?` is one byte of the canonical encoded spelling in the Surveyor's `exclude`, and the
 //! superseded `af/storage@2` and `af/storage-prune@1` are refused.
 
@@ -277,8 +284,8 @@ fn survey_entries(machine: &Machine, repo: &Path) -> (Value, BTreeMap<String, Va
 }
 
 /// `af storage prune --apply --json` under `env`, validated against `af/storage-prune@2`. Unless
-/// a debug hook makes the applied sweep deviate, the preview just before it is the same plan:
-/// every removal, with its bytes and the total after it, and every entry left agree.
+/// a debug hook makes an entry of the applied sweep fail, the preview just before it is the same
+/// plan: every removal, with its bytes and the total after it, and every entry left agree.
 fn prune(machine: &Machine, repo: &Path, env: &[(&str, &str)]) -> Value {
     let hooked = env.iter().any(|(name, _)| name.starts_with("AF_TEST_"));
     let preview = (!hooked).then(|| preview(machine, repo, env));
@@ -298,15 +305,15 @@ fn preview(machine: &Machine, repo: &Path, env: &[(&str, &str)]) -> Value {
     preview
 }
 
-/// A preview and the applied sweep that ran its plan: entry for entry, unless the applied one
-/// marked a deviation.
+/// A preview and the applied sweep that ran its plan: entry for entry, unless an entry of the
+/// applied one failed.
 fn assert_agree(preview: &Value, applied: &Value) {
-    let deviated = applied["removals"]
+    let failed = applied["removals"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|removal| removal.get("deviation").is_some());
-    if deviated {
+        .any(|removal| removal.get("outcome").is_some());
+    if failed {
         return;
     }
     for key in ["total_before", "total_after", "stop", "removals", "left"] {
@@ -317,7 +324,7 @@ fn assert_agree(preview: &Value, applied: &Value) {
     }
 }
 
-/// The paths a sweep removed under `rule`, of kind `survey`, a removal that deviated excluded.
+/// The paths a sweep removed under `rule`, of kind `survey`, a removal that failed excluded.
 fn removed(pruned: &Value, rule: &str) -> Vec<String> {
     pruned["removals"]
         .as_array()
@@ -326,7 +333,7 @@ fn removed(pruned: &Value, rule: &str) -> Vec<String> {
         .filter(|removal| {
             removal["kind"] == "survey"
                 && removal["rule"] == rule
-                && removal.get("deviation").is_none()
+                && removal.get("outcome").is_none()
         })
         .map(|removal| removal["path"].as_str().unwrap().to_string())
         .collect()
@@ -1434,7 +1441,8 @@ fn a_record_replaced_before_its_rename_is_refused_and_a_rerun_collects_it() {
         refused[0]
     );
     assert!(removed(&pruned, "keep_surveys").is_empty(), "{pruned}");
-    // The applied sweep ran the plan: the entry keeps its place, freed nothing and says why.
+    // The applied sweep ran the plan: the entry keeps its place as failed, freed nothing and
+    // left the running total as it was.
     let marked: Vec<&Value> = pruned["removals"]
         .as_array()
         .unwrap()
@@ -1444,7 +1452,12 @@ fn a_record_replaced_before_its_rename_is_refused_and_a_rerun_collects_it() {
     assert_eq!(marked.len(), 1, "{pruned}");
     assert_eq!(marked[0]["rule"], "keep_surveys");
     assert_eq!(marked[0]["bytes"], 0);
-    assert_eq!(marked[0]["deviation"].as_str(), Some(refused[0].as_str()));
+    assert_eq!(
+        marked[0]["outcome"].as_str(),
+        Some(format!("failed: {}", refused[0]).as_str())
+    );
+    assert_eq!(marked[0]["total_after"], pruned["total_before"]);
+    assert_eq!(pruned["total_after"], pruned["total_before"]);
     // Nothing is deleted: the original is where the replacement put it, and its name holds the
     // copy, the Survey's record still.
     let moved = aside.join(object.file_name().unwrap());
@@ -1627,4 +1640,205 @@ fn an_unwritable_project_lock_holds_every_survey_in_preview_and_apply_alike() {
     let applied = prune(&machine, &repo, &keep);
     assert_eq!(removed(&applied, "keep_surveys"), expected);
     assert_consistent(&machine);
+}
+
+/// A removal a process that died left claimed is part of the one inventory: `af storage prune
+/// --json` and `--apply --json` list the same `claim` entry under `recovery` with the bytes the
+/// inventory measured and agree entry for entry, and only the applied sweep removes it. A
+/// container a dead Survey collection left empty is planned the same way.
+#[test]
+fn an_abandoned_claim_is_planned_and_listed_alike_by_preview_and_apply() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    refresh(&machine, &repo, &at(0), true);
+    let claim = machine
+        .root()
+        .join("state/af/review/campaigns/.af-removing-999999999-7-0");
+    std::fs::create_dir_all(claim.join("cas")).unwrap();
+    std::fs::write(claim.join("cas/object"), vec![1_u8; 64 * 1024]).unwrap();
+    let claim_bytes = allocated(&claim);
+    let container = machine.store().join("cas/removing").join(EMPTY_PASS);
+    std::fs::create_dir_all(&container).unwrap();
+
+    let claims = |document: &Value| -> Vec<Value> {
+        document["removals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|removal| removal["kind"] == "claim")
+            .cloned()
+            .collect()
+    };
+    let previewed = preview(&machine, &repo, &[]);
+    let planned = claims(&previewed);
+    assert_eq!(planned.len(), 2, "{previewed}");
+    assert_eq!(planned[0]["path"], claim.to_str().unwrap());
+    assert_eq!(planned[0]["rule"], "recovery");
+    assert_eq!(planned[0]["bytes"].as_u64().unwrap(), claim_bytes);
+    let total_before = previewed["total_before"].as_u64().unwrap();
+    assert_eq!(
+        planned[0]["total_after"].as_u64().unwrap(),
+        total_before - claim_bytes,
+        "counted in the total it had"
+    );
+    assert_eq!(planned[1]["path"], container.to_str().unwrap());
+    assert_eq!(planned[1]["rule"], "recovery");
+    assert!(
+        claim.join("cas/object").is_file(),
+        "a preview removes nothing"
+    );
+    assert!(container.is_dir());
+    let (text, _) = machine.expect(&repo, &[], &["storage", "prune"], 0);
+    assert!(
+        text.contains(&format!("would remove claim {}", claim.display())),
+        "{text}"
+    );
+
+    // The applied sweep runs that plan: the same entries, the same bytes, entry for entry.
+    let applied = prune(&machine, &repo, &[]);
+    assert_eq!(claims(&applied), planned, "entry for entry");
+    assert_eq!(applied["total_before"], previewed["total_before"]);
+    assert!(!claim.exists(), "the claim is finished");
+    assert!(!container.exists(), "the empty container goes");
+    assert!(claims(&preview(&machine, &repo, &[])).is_empty());
+}
+
+/// A Survey's record replaced between inventory and the plan's judgement, by the debug build's
+/// hook: a byte-identical copy, another inode, takes its name. The plan refuses the entry
+/// (`replaced since inventory`) and never adopts the copy, the applied sweep deletes nothing of
+/// either file and appends no tombstone, and its totals are what the directory holds. A rerun
+/// measures the copy and collects it.
+#[test]
+fn a_record_replaced_between_inventory_and_judgement_is_refused_and_nothing_is_deleted() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..4)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    let target = &surveys[0];
+    let object = machine.object(target);
+    let original = std::fs::read(&object).unwrap();
+    let aside = machine.root().join("aside");
+    std::fs::create_dir_all(&aside).unwrap();
+    let keep = ("AF_STORAGE__KEEP_SURVEYS", "3");
+    let pruned = prune(
+        &machine,
+        &repo,
+        &[
+            keep,
+            (
+                "AF_TEST_SURVEY_REPLACE_BEFORE_JUDGE",
+                aside.to_str().unwrap(),
+            ),
+        ],
+    );
+    let refused = failures_naming(&pruned, &path_of(&machine, target));
+    assert_eq!(refused.len(), 1, "{pruned}");
+    assert!(
+        refused[0].contains(&format!(
+            "Survey {target} is refused (replaced since inventory)"
+        )),
+        "{}",
+        refused[0]
+    );
+    assert!(
+        pruned["removals"].as_array().unwrap().is_empty(),
+        "the plan takes nothing of it: {pruned}"
+    );
+    assert!(machine.collected().is_empty(), "no tombstone");
+    let moved = aside.join(object.file_name().unwrap());
+    assert_eq!(
+        std::fs::read(&moved).unwrap(),
+        original,
+        "the original is untouched"
+    );
+    assert_eq!(
+        std::fs::read(&object).unwrap(),
+        original,
+        "the copy is untouched"
+    );
+    assert!(!machine.store().join("cas/removing").exists());
+    assert_eq!(pruned["total_after"], pruned["total_before"]);
+    assert_eq!(
+        pruned["total_after"].as_u64().unwrap(),
+        storage_total(&machine, &repo),
+        "the totals are what the directory holds"
+    );
+
+    // The next pass measures the copy and collects it, and only it.
+    let pruned = prune(&machine, &repo, &[keep]);
+    assert_eq!(
+        removed(&pruned, "keep_surveys"),
+        vec![path_of(&machine, target)]
+    );
+    assert!(!machine.held(target));
+    assert_eq!(
+        std::fs::read(&moved).unwrap(),
+        original,
+        "nothing unrelated"
+    );
+    assert_consistent(&machine);
+}
+
+/// A tombstoned Survey's ID file inside a container whose own name is not UTF-8 is no dead
+/// pass's record: preview and apply both list it `unreadable_name`, its path in the encoded
+/// spelling, and leave it and its container in place. A file system that refuses such names
+/// (APFS) has nothing to show.
+#[test]
+fn a_survey_file_in_a_container_with_a_name_that_is_not_utf8_is_reported_and_left() {
+    use std::os::unix::ffi::OsStrExt;
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..3)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    let keep = ("AF_STORAGE__KEEP_SURVEYS", "2");
+    prune(
+        &machine,
+        &repo,
+        &[keep, ("AF_TEST_SURVEY_STOP_AFTER_TOMBSTONES", "1")],
+    );
+    let target = &surveys[0];
+    assert_eq!(machine.collected(), vec![target.clone()]);
+    let container = machine
+        .store()
+        .join("cas/removing")
+        .join(std::ffi::OsStr::from_bytes(
+            b"0f1e2d3c4b5a69788796a5b4c3d2e1\xe9",
+        ));
+    match std::fs::create_dir_all(&container) {
+        Ok(()) => {}
+        Err(error) if error.raw_os_error() == Some(nix::libc::EILSEQ) => return,
+        Err(error) => panic!("{error}"),
+    }
+    let leftover = container.join(target);
+    std::fs::rename(machine.object(target), &leftover).unwrap();
+    let expected = review_core::encode_path(leftover.as_os_str().as_bytes());
+    assert!(
+        expected.ends_with(&format!(
+            "/0f1e2d3c4b5a69788796a5b4c3d2e1%E9/sha256%3A{}",
+            target.trim_start_matches("sha256:")
+        )),
+        "{expected}"
+    );
+    for document in [
+        preview(&machine, &repo, &[keep]),
+        prune(&machine, &repo, &[keep]),
+    ] {
+        let unreadable = left(&document, "unreadable_name");
+        assert_eq!(unreadable.len(), 1, "{document}");
+        assert_eq!(unreadable[0]["path"], expected.as_str());
+        assert_eq!(unreadable[0]["path_encoded"], true);
+        assert!(unreadable[0]["bytes"].as_u64().unwrap() > 0);
+        assert!(
+            removed(&document, "recovery").is_empty(),
+            "never the Survey's record: {document}"
+        );
+        assert!(leftover.is_file(), "left in place");
+    }
+    assert_eq!(
+        machine.collected(),
+        vec![target.clone()],
+        "no tombstone twice"
+    );
 }

@@ -362,11 +362,22 @@ email first of all.
     update and never over a second inventory, so the bytes of a record an interruption moved
     under `cas/removing` are subtracted once, from the Project Store entry that holds them, and
     never restored (Task Stores are told apart into their finished Tasks, in place, only when
-    the snapshot holds more than `max_bytes`). `af storage prune` prints that plan; `--apply`
-    runs the same plan entry by entry and reports what each entry did, the bytes it freed and the
-    total after it, and a Survey's job that finds what the plan did not (the lock lost, the
-    Survey protected or collected since, its record replaced, gone or refused) marks it on that
-    entry as `deviation` with nothing freed, and the sweep never plans again; the next one does.
+    the snapshot holds more than `max_bytes`). The snapshot is the only source every step reads.
+    What an interruption left is in it: the removals dead processes left claimed under
+    `.af-removing-<pid>-…` (ADR-0144) and the containers dead passes left empty, each with the
+    identity and bytes the listing stated, are planned first as `recovery` entries of kind
+    `claim`, so the applied sweep removes nothing before the inventory and nothing the plan does
+    not list. Every object is recorded once with its identity (device and inode) and its bytes:
+    the plan's judgement of a Survey, the budget step and the applied job each compare the
+    identity they open with the inventory's and refuse the entry, `refused (replaced since
+    inventory)`, on a mismatch, never adopting an inode the inventory did not measure, so the
+    bytes the plan lists are always the measured inode's. `af storage prune` prints that plan;
+    `--apply` runs the same plan entry by entry and reports what each entry did, the bytes it
+    freed and the total after it. A planned entry of any kind whose execution fails (the lock
+    lost, the Survey protected or collected since, what it names replaced, gone or refused, an
+    I/O error) stays in the applied document's `removals` with `outcome` `failed: <reason>`,
+    nothing freed and the running total unchanged by it, so the document's totals are what the
+    directory holds, and the sweep never plans again; the next one does.
     A record is reached, read and deleted only through directory descriptors, ADR-0144's removal
     boundary: the Project Store from `/`, then `cas`, `objects` and the digest-prefix directory,
     each opened `O_NOFOLLOW | O_DIRECTORY`, and the record stated without following it (its
@@ -404,7 +415,8 @@ email first of all.
     locked without waiting, then released at once. While a refresh or a plan holds it their
     reason is that; while af cannot open or lock the file (it is unreadable or unwritable) it is
     `lock unavailable: <error>`; either way the plan leaves every Survey it would take
-    from that Store, and every deletion it would finish there, as `held` with that same reason,
+    from that Store, and every deletion of a record it would finish there, as `held` with that
+    same reason (an empty container there, which holds no record, waits for the next pass),
     inventory lists them in use, and nothing is collected. The tombstones are the run
     `survey-collection` of the Project Store's log, beside the run `project` that holds the
     chain, so the chain's own sequence is only ever the Surveyor's. Every sweep's plan first
@@ -418,16 +430,22 @@ email first of all.
     object: it is left in place and listed as `foreign` with its bytes, counted in the Store's
     total and never as the Survey's, and never deleted by any path. Without a moved record, the
     file at a tombstoned Survey's name is its record, deleted as above, only when its bytes are
-    the record's (they hash to its ID); any other is `foreign` in the same way. Everything else
-    under `cas/removing` is left and listed: a name that is not UTF-8 as `unreadable_name`, its
+    the record's (they hash to its ID); any other is `foreign` in the same way. A container's
+    own name is checked as the names inside it are: only a container named by a pass ID (32
+    lowercase hex digits) is a dead pass's. Everything else under `cas/removing` is left and
+    listed: a name that is not UTF-8, a file's or its container's, as `unreadable_name`, its
     display lossy only in the text output and its `--json` path in `review_core::encode_path`'s
-    spelling with `path_encoded`, and anything else (no pass container, not a regular file, no
-    tombstone naming it, a `.replaced` file) as `foreign`; a container of a dead pass that holds
-    nothing is removed. Each such deletion has the rule `recovery`, and the preview lists exactly
-    those entries, so preview and pass agree entry for entry. A debug build reads
+    spelling with `path_encoded`, and anything else (no pass container, a container whose name
+    is no pass ID, not a regular file, no tombstone naming it, a `.replaced` file) as `foreign`;
+    a container whose name is no pass ID stays with everything inside it, even empty, and a
+    container of a dead pass that holds nothing is removed, only while it is the empty directory
+    the inventory stated. Each such deletion has the rule `recovery`, and the preview lists
+    exactly those entries, so preview and pass agree entry for entry. A debug build reads
     `AF_TEST_SURVEY_STOP_AFTER_TOMBSTONES=1` to stop after the tombstones, and
-    `AF_TEST_SURVEY_REPLACE_BEFORE_RENAME=<directory>` to replace a record by a byte-identical
-    copy between its identity read and its rename. Replay
+    `AF_TEST_SURVEY_REPLACE_BEFORE_RENAME=<directory>` and
+    `AF_TEST_SURVEY_REPLACE_BEFORE_JUDGE=<directory>` to replace a record by a byte-identical
+    copy between its identity read and its rename, or between inventory and the plan's
+    judgement. Replay
     treats a `SurveyRecorded@1` whose Survey a tombstone names as collected: `af project history`
     answers for it from the tombstone and marks it `collected` in text (`af/project-history@1`
     is unchanged, since a marked entry would be `@2`), and `af project survey` shows the newest

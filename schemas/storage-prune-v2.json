@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:storage-prune:2",
   "title": "af/storage-prune@2",
-  "description": "`af storage prune --json` (ADR-0144): what one sweep removed, or without --apply would remove. A sweep plans once over one inventory snapshot and the applied sweep runs that plan entry by entry, never choosing again (ADR-0152 clause 13): first the deletions interruptions left (rule `recovery`), then collection (rule `collection`, and `keep_surveys` for the Surveys of a Project beyond `[storage] keep_surveys`), then the budget, least recently used first (rule `budget`), until the total fits `max_bytes` or nothing else may be removed (`stop`). Each removal says what it frees and af's total after it: as planned in a preview, as freed by the applied sweep. Gate cleanups of finished Tasks are those the sweep tried; registry entries whose path holds no Store any more are dropped; a failed removal is listed and tried again by the next sweep. Version 2 adds the removal kind `survey` (ADR-0152 clause 13): a Survey's record in its Project Store's CAS, its `path` the CAS object, taken behind a `SurveyCollected@1` tombstone. A Survey whose record's bytes were no Survey is removed with `unreadable`, the reason its tombstone carries; a Survey whose job found what the plan did not (the lock lost, its record replaced) keeps its place in the applied sweep's removals with nothing freed and `deviation`. What the plan leaves is listed under `left`, by the preview and the applied sweep alike, with its reason: `held` (its Project Store's `project.lock` cannot be taken now), `foreign` (a file at a collected Survey's CAS name after its record was moved, or anything under `cas/removing` that is no collected Survey's record; never deleted, and counted in its Project Store's bytes, never a Survey's), `oversize` (a record over 1 MiB) or `unreadable_name` (a name under `cas/removing` that is not UTF-8). A Survey whose record cannot be reached without a link or read is a failure, and keeps its record and its place in the log.",
+  "description": "`af storage prune --json` (ADR-0144): what one sweep removed, or without --apply would remove. A sweep plans once over one inventory snapshot and the applied sweep runs that plan entry by entry, never choosing again (ADR-0152 clause 13): first the deletions interruptions left (rule `recovery`), then collection (rule `collection`, and `keep_surveys` for the Surveys of a Project beyond `[storage] keep_surveys`), then the budget, least recently used first (rule `budget`), until the total fits `max_bytes` or nothing else may be removed (`stop`). Each removal says what it frees and af's total after it: as planned in a preview, as freed by the applied sweep. Gate cleanups of finished Tasks are those the sweep tried; registry entries whose path holds no Store any more are dropped; a failed removal is listed and tried again by the next sweep. Version 2 adds the removal kind `survey` (ADR-0152 clause 13): a Survey's record in its Project Store's CAS, its `path` the CAS object, taken behind a `SurveyCollected@1` tombstone. A Survey whose record's bytes were no Survey is removed with `unreadable`, the reason its tombstone carries. The removals dead processes left claimed and the empty containers of dead Survey collections are in the one inventory snapshot and planned first (kind `claim`, rule `recovery`), so the preview lists exactly what the applied sweep removes. A planned entry of any kind whose removal failed (the lock lost, what it names replaced since inventory, an I/O error) keeps its place in the applied sweep's removals with nothing freed (`bytes` 0), the total after it unchanged and `outcome` `failed: <reason>`. What the plan leaves is listed under `left`, by the preview and the applied sweep alike, with its reason: `held` (its Project Store's `project.lock` cannot be taken now), `foreign` (a file at a collected Survey's CAS name after its record was moved, or anything under `cas/removing` that is no collected Survey's record; never deleted, and counted in its Project Store's bytes, never a Survey's), `oversize` (a record over 1 MiB) or `unreadable_name` (a name under `cas/removing` that is not UTF-8, a file's or its container's). A Survey whose record cannot be reached without a link or read is a failure, and keeps its record and its place in the log.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -98,60 +98,56 @@
             "minLength": 1,
             "maxLength": 256
           },
-          "deviation": {
-            "description": "The applied sweep, a `survey` removal only: what its job found that the plan did not, so it freed nothing (`bytes` 0); the next sweep plans again.",
+          "outcome": {
+            "description": "The applied sweep, any kind: `failed: <reason>` when its removal failed, so it freed nothing (`bytes` 0) and `total_after` is the total before it; the next sweep plans again.",
             "type": "string",
+            "pattern": "^failed: .",
             "minLength": 1
           }
         },
         "if": {
-          "properties": {
-            "kind": {
-              "const": "survey"
-            }
-          }
-        },
-        "else": {
-          "allOf": [
-            {
-              "not": {
-                "required": [
-                  "unreadable"
-                ]
-              }
-            },
-            {
-              "not": {
-                "required": [
-                  "deviation"
-                ]
-              }
-            },
-            {
-              "properties": {
-                "rule": {
-                  "not": {
-                    "const": "keep_surveys"
-                  }
-                }
-              }
-            }
+          "required": [
+            "outcome"
           ]
         },
         "then": {
-          "if": {
-            "required": [
-              "deviation"
-            ]
-          },
-          "then": {
-            "properties": {
-              "bytes": {
-                "const": 0
-              }
+          "properties": {
+            "bytes": {
+              "const": 0
             }
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "survey"
+                }
+              }
+            },
+            "else": {
+              "allOf": [
+                {
+                  "not": {
+                    "required": [
+                      "unreadable"
+                    ]
+                  }
+                },
+                {
+                  "properties": {
+                    "rule": {
+                      "not": {
+                        "const": "keep_surveys"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
       }
     },
     "left": {

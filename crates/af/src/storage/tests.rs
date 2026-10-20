@@ -406,7 +406,16 @@ fn a_registered_store_behind_a_replaced_ancestor_is_never_followed_into_a_decoy(
     std::os::unix::fs::symlink(&decoy_root, layout.root.join("elsewhere/project")).unwrap();
 
     let report = sweep(&layout.roots, &policy(u64::MAX), true, true);
-    assert!(report.removals.is_empty(), "{report:?}");
+    // The planned entry stays in the document as failed, and freed nothing.
+    assert!(
+        report.removals.iter().all(|removal| removal.bytes == 0
+            && removal
+                .outcome
+                .as_deref()
+                .is_some_and(|outcome| outcome.starts_with("failed: "))),
+        "{report:?}"
+    );
+    assert_eq!(report.total_after, report.total_before);
     assert!(
         report.failures.iter().any(
             |failure| failure.contains(&registered.display().to_string())
@@ -594,7 +603,7 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         rule: Rule::Collection,
         total_after: 0,
         unreadable: None,
-        deviation: None,
+        outcome: None,
     };
     let report = |removals: Vec<Removal>, failures: Vec<String>, applied: bool| SweepReport {
         applied,
@@ -641,7 +650,7 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         rule: Rule::Budget,
         total_after: 0,
         unreadable: unreadable.map(str::to_string),
-        deviation: None,
+        outcome: None,
     };
     let sweep = observation(&report(
         vec![
@@ -684,7 +693,20 @@ fn a_removal_a_dead_process_left_claimed_is_finished_and_reported_by_the_sweep()
     let claim = layout.roots.campaigns.join(".af-removing-999999999-7-0");
     std::fs::create_dir_all(claim.join("cas")).unwrap();
     std::fs::write(claim.join("cas/object"), vec![1_u8; 64 * 1024]).unwrap();
+    // The claim is in the snapshot: the preview plans it, and touches nothing.
+    let previewed = sweep(&layout.roots, &policy(20 << 30), false, false);
+    assert!(
+        claim.join("cas/object").is_file(),
+        "a preview removes nothing"
+    );
     let report = sweep(&layout.roots, &policy(20 << 30), false, true);
+    assert_eq!(
+        serde_json::to_value(&previewed.removals).unwrap(),
+        serde_json::to_value(&report.removals).unwrap(),
+        "preview and apply list the same recovery entry with the same bytes"
+    );
+    assert_eq!(previewed.total_before, report.total_before);
+    assert_eq!(previewed.total_after, report.total_after);
     assert!(!claim.exists(), "the claim is finished");
     let [removal] = report.removals.as_slice() else {
         panic!("one removal: {:?}", report.removals);
@@ -699,5 +721,85 @@ fn a_removal_a_dead_process_left_claimed_is_finished_and_reported_by_the_sweep()
     );
     let recorded = observation(&report)
         .unwrap_or_else(|| panic!("a sweep that removed something is recorded: {report:?}"));
+    assert_eq!(recorded.removals.len(), 1);
+}
+
+/// A planned campaign whose directory is replaced between the plan and its removal, as another
+/// process could: the applied sweep refuses it, keeps it in its document as failed with nothing
+/// freed and the running total unchanged, deletes nothing of either directory, and the totals
+/// it reports are what af then holds.
+#[test]
+fn a_planned_campaign_replaced_before_its_removal_stays_as_failed_with_the_total_unchanged() {
+    let layout = layout();
+    let replaced = campaign(&layout, 'e', 30 * DAY);
+    let other = campaign(&layout, 'f', 31 * DAY);
+    let mut keep_none = policy(20 << 30);
+    keep_none.keep_campaigns = 0;
+    let previewed = sweep(&layout.roots, &keep_none, true, false);
+    assert_eq!(removed_paths(&previewed), [replaced.clone(), other.clone()]);
+
+    // Just before its removal the campaign's directory is replaced by a new one holding the
+    // same files: another directory, the same bytes.
+    let aside = layout.root.join("aside");
+    let target = replaced.clone();
+    let swapped = std::rc::Rc::new(std::cell::Cell::new(false));
+    let seen = std::rc::Rc::clone(&swapped);
+    BEFORE_EXECUTE.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |planned: &plan::Planned| {
+            if planned.removal.path != target {
+                return;
+            }
+            std::fs::rename(&target, &aside).unwrap();
+            std::fs::create_dir(&target).unwrap();
+            for entry in std::fs::read_dir(&aside).unwrap() {
+                let name = entry.unwrap().file_name();
+                std::fs::rename(aside.join(&name), target.join(&name)).unwrap();
+            }
+            std::fs::remove_dir(&aside).unwrap();
+            seen.set(true);
+        }));
+    });
+    let applied = sweep(&layout.roots, &keep_none, true, true);
+    BEFORE_EXECUTE.with(|hook| *hook.borrow_mut() = None);
+    assert!(swapped.get());
+
+    assert_eq!(
+        removed_paths(&applied),
+        removed_paths(&previewed),
+        "the same plan"
+    );
+    let [failed, done] = applied.removals.as_slice() else {
+        panic!("{applied:?}");
+    };
+    assert_eq!(failed.kind, Kind::Campaign);
+    assert_eq!(failed.bytes, 0);
+    let outcome = failed.outcome.as_deref().unwrap();
+    assert!(outcome.starts_with("failed: removing "), "{outcome}");
+    assert!(
+        outcome.contains("not the directory that was measured"),
+        "{outcome}"
+    );
+    assert_eq!(failed.total_after, applied.total_before, "unchanged by it");
+    assert!(
+        applied
+            .failures
+            .iter()
+            .any(|failure| outcome.ends_with(failure.as_str()))
+    );
+    assert_eq!(done.outcome, None);
+    assert_eq!(done.total_after, applied.total_before - done.bytes);
+    assert_eq!(applied.total_after, done.total_after);
+    assert!(
+        replaced.join("events.sqlite").is_file(),
+        "nothing of it is deleted"
+    );
+    assert!(!other.exists());
+    // What the document says is left is what af holds.
+    assert_eq!(
+        inventory(&layout.roots, Detail::Stores).total(),
+        applied.total_after
+    );
+    // Not recorded as a removal on a Task: it freed nothing.
+    let recorded = observation(&applied).unwrap();
     assert_eq!(recorded.removals.len(), 1);
 }

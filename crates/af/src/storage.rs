@@ -11,8 +11,9 @@
 //! binary) or one used within the last hour, and it removes nothing without going through the
 //! rule that owns it: finished Tasks through the Store's own collection and Surveys behind their
 //! `SurveyCollected@1`, so tombstones stay; directories without following a link. A sweep
-//! plans once over one inventory snapshot (`plan`): the preview prints that plan and the applied
-//! sweep runs it entry by entry, never choosing again.
+//! plans once over one inventory snapshot (`plan`), the claims dead processes left included:
+//! the preview prints that plan and the applied sweep runs it entry by entry, never choosing
+//! again and never removing what the plan does not list.
 
 pub(crate) mod gate;
 mod hint;
@@ -35,6 +36,8 @@ const HOUR_MS: u64 = 3_600_000;
 const DAY_MS: u64 = 86_400_000;
 /// The lock file `af review run` holds while it runs a campaign, so a sweep never removes it.
 pub(crate) const RUNNING_LOCK: &str = "af-running.lock";
+/// How the outcome of a planned removal that failed begins.
+pub(crate) const FAILED: &str = "failed: ";
 
 pub(crate) fn now_unix_ms() -> u64 {
     SystemTime::now()
@@ -122,8 +125,9 @@ pub(crate) enum Kind {
     Survey,
     UnreadableStore,
     Version,
-    /// A removal a process that died left claimed under a private name: never inventoried, only
-    /// finished and reported.
+    /// A removal a process that died left claimed under a private name, or a container a dead
+    /// Survey collection left empty: never an `af storage` entry, but in the sweep's snapshot
+    /// and finished by its plan under `recovery`.
     Claim,
 }
 
@@ -213,6 +217,10 @@ pub(crate) struct Inventory {
     /// Each readable Project Store as its one read found it (ADR-0152 clause 13): what a
     /// sweep's plan needs of its Surveys, in inventory order.
     pub(crate) projects: Vec<(PathBuf, crate::projects::survey::collect::Look)>,
+    /// The removals dead processes left claimed, entries of kind `claim` with the identity and
+    /// bytes listed: the sweep's plan finishes them first. Not in [`Inventory::total`], which is
+    /// what `af storage` shows.
+    pub(crate) claims: Vec<Entry>,
 }
 
 impl Inventory {
@@ -589,6 +597,7 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
             reason,
         }),
     }
+    abandoned_claims(roots, &registered, &mut inventory);
     inventory
 }
 
@@ -882,10 +891,11 @@ pub(crate) struct Removal {
     /// Survey, as its tombstone says.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) unreadable: Option<String>,
-    /// The applied sweep only, a Survey only: what its job found that the plan did not (the lock
-    /// lost, its record replaced, gone or refused), so it freed nothing.
+    /// The applied sweep only, any kind: `failed: <reason>` when running the planned entry
+    /// failed (the lock lost, what it names replaced since inventory, an I/O error), so it freed
+    /// nothing and the total after it is the one before it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) deviation: Option<String>,
+    pub(crate) outcome: Option<String>,
 }
 
 /// One file or Survey a sweep's plan left where it is, with its reason (ADR-0152 clause 13). A
@@ -985,33 +995,13 @@ pub(crate) fn sweep(
         registry_dropped: Vec::new(),
         failures: Vec::new(),
     };
-    if apply {
-        // Removals a process that died left claimed under a private name are finished first,
-        // so their bytes are neither lost from the count nor left behind (ADR-0144). They are
-        // never inventoried, so the snapshot below is the same either way.
-        let (finished, left) = finish_abandoned_claims(roots);
-        // Bytes that were af's until this moment: counted, and said, like any removal.
-        for (path, bytes) in finished {
-            report.total_before = report.total_before.saturating_add(bytes);
-            report.removals.push(Removal {
-                kind: Kind::Claim,
-                path,
-                task_id: None,
-                bytes,
-                rule: Rule::Recovery,
-                total_after: 0,
-                unreadable: None,
-                deviation: None,
-            });
-        }
-        report.failures.extend(left);
-    }
     match drop_gone_registrations(roots, apply) {
         Ok(dropped) => report.registry_dropped = dropped,
         Err(error) => report.failures.push(error),
     }
     // The one snapshot: Task Stores are told apart into their finished Tasks only when it holds
-    // more than the budget, and nothing is measured twice.
+    // more than the budget, and nothing is measured twice. Removals dead processes left claimed
+    // are in it, so they are planned like every other removal, never finished beside the plan.
     let mut stock = inventory(roots, Detail::Stores);
     if stock.total() > policy.max_bytes {
         refine_tasks(roots, &mut stock);
@@ -1059,6 +1049,7 @@ pub(crate) fn sweep(
     let made = plan::make(
         plan::Inputs {
             entries,
+            claims: stock.claims.clone(),
             projects: &stock.projects,
             tasks: picks.clone(),
             collection,
@@ -1070,19 +1061,14 @@ pub(crate) fn sweep(
         },
         &mut crate::projects::survey::collect::judge,
     );
-    let claims = report.total_before;
-    report.total_before = claims.saturating_add(made.total_before);
-    let mut total = report.total_before;
-    for claim in &mut report.removals {
-        total = total.saturating_sub(claim.bytes);
-        claim.total_after = total;
-    }
+    report.total_before = made.total_before;
     if !apply {
         plan::preview(made, &mut report);
         return report;
     }
     let mut collected = BTreeMap::new();
     plan::run(made, &mut report, &mut |planned| {
+        before_execute(planned);
         execute_planned(
             roots,
             policy,
@@ -1091,13 +1077,29 @@ pub(crate) fn sweep(
             planned,
         )
     });
-    // Containers dead passes left empty go now; one that holds a file is listed as left.
-    for (store, look) in &stock.projects {
-        if look.held.is_none() && !look.empty_containers.is_empty() {
-            crate::projects::survey::collect::tidy(store, &look.empty_containers);
-        }
-    }
     report
+}
+
+#[cfg(test)]
+type BeforeExecute = Box<dyn FnMut(&plan::Planned)>;
+
+#[cfg(test)]
+thread_local! {
+    /// A unit test's hook, run on the sweeping thread just before each planned entry of an
+    /// applied sweep: where a test changes what the plan measured, as another process could.
+    static BEFORE_EXECUTE: std::cell::RefCell<Option<BeforeExecute>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn before_execute(planned: &plan::Planned) {
+    #[cfg(test)]
+    BEFORE_EXECUTE.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().as_mut() {
+            hook(planned);
+        }
+    });
+    #[cfg(not(test))]
+    let _ = planned;
 }
 
 /// Tell the snapshot's readable Task Stores apart into their finished Tasks and the rest, in
@@ -1149,11 +1151,7 @@ fn execute_planned(
                 Rule::Collection | Rule::KeepSurveys => "collecting",
             };
             let failed = |why: String| format!("{verb} {}: {why}", removal.path.display());
-            if let Some((store, _)) =
-                crate::projects::survey::collect::survey_of_object(&removal.path)
-            {
-                stock.still_the_store(&store).map_err(failed)?;
-            }
+            stock.still_the_store(job.store()).map_err(failed)?;
             crate::projects::survey::collect::execute(job)
                 .map(|done| (done.bytes, done.unreadable))
                 .map_err(failed)
@@ -1261,11 +1259,12 @@ fn collect_tasks(
     outcome
 }
 
-/// Finish the removals dead processes left claimed in every directory af removes entries from:
-/// each warm project level, the Workspaces, campaigns, local reviews, Task Stores and installed
-/// versions, and the parent of every registered Store. Returns each claim it finished with its
-/// bytes, and why any claim was left.
-fn finish_abandoned_claims(roots: &Roots) -> (Vec<(PathBuf, u64)>, Vec<String>) {
+/// List, reading only, the removals dead processes left claimed in every directory af removes
+/// entries from: each warm project level, the Workspaces, campaigns, local reviews, Task Stores
+/// and installed versions, the parent of every registered Store and the Claude project
+/// directories. Each is an entry of kind `claim` with the identity and bytes the listing found,
+/// which its removal checks again (ADR-0144).
+fn abandoned_claims(roots: &Roots, registered: &[registry::Registered], inventory: &mut Inventory) {
     let mut parents: Vec<PathBuf> = real_directories(&roots.warm);
     parents.extend([
         roots.workspaces.clone(),
@@ -1274,13 +1273,11 @@ fn finish_abandoned_claims(roots: &Roots) -> (Vec<(PathBuf, u64)>, Vec<String>) 
         roots.tasks.clone(),
         roots.installs.versions.clone(),
     ]);
-    if let Ok(registered) = registry::read(&roots.registry) {
-        parents.extend(
-            registered
-                .iter()
-                .filter_map(|entry| entry.path.parent().map(Path::to_path_buf)),
-        );
-    }
+    parents.extend(
+        registered
+            .iter()
+            .filter_map(|entry| entry.path.parent().map(Path::to_path_buf)),
+    );
     // Claude Attempt and probe histories are removed through the same claim.
     parents.extend(
         crate::providers::registered_claude_config_dirs()
@@ -1289,22 +1286,20 @@ fn finish_abandoned_claims(roots: &Roots) -> (Vec<(PathBuf, u64)>, Vec<String>) 
     );
     parents.sort();
     parents.dedup();
-    let mut finished = Vec::new();
-    let mut left = Vec::new();
     for parent in parents {
-        let (removed, failures) = review_sandbox::finish_abandoned_claims(&parent);
-        finished.extend(
-            removed
-                .into_iter()
-                .map(|(name, bytes)| (parent.join(name), bytes)),
-        );
-        left.extend(
-            failures
-                .into_iter()
-                .map(|failure| format!("finishing a removal in {}: {failure}", parent.display())),
-        );
+        for claim in review_sandbox::abandoned_claims(&parent) {
+            inventory.claims.push(Entry {
+                kind: Kind::Claim,
+                path: parent.join(&claim.name),
+                task_id: None,
+                bytes: claim.bytes,
+                last_use_unix_ms: 0,
+                in_use: None,
+                reason: None,
+                identity: Some(claim.identity),
+            });
+        }
     }
-    (finished, left)
 }
 
 fn drop_gone_registrations(roots: &Roots, apply: bool) -> Result<Vec<PathBuf>, String> {
@@ -1514,9 +1509,17 @@ fn evict(
         Kind::Survey => Err(failed(
             "a Survey is collected by its planned job, behind its tombstone".into(),
         )),
-        Kind::Claim => Err(failed(
-            "a claim is finished by recovery, never evicted".into(),
-        )),
+        Kind::Claim => {
+            // The claim's parent is its anchor, as the listing opened it; only the directory the
+            // listing stated is removed.
+            let parent = entry
+                .path
+                .parent()
+                .ok_or_else(|| failed("names no claim".into()))?;
+            remove_directory(parent, &entry.path, entry.identity)
+                .map(|_| entry.bytes)
+                .map_err(failed)
+        }
     }
 }
 
@@ -1627,11 +1630,11 @@ pub(crate) fn observation(
         StorageSweepKindV1, StorageSweepRemovalV1, StorageSweepRuleV1, StorageSweepStopV1,
         TASK_STORAGE_SWEEP_V1, TaskStorageSweepV1,
     };
-    // What freed nothing (a Survey's deviation) is a failure of the record, never a removal.
+    // What failed freed nothing: a failure of the record, never a removal.
     let removed: Vec<&Removal> = report
         .removals
         .iter()
-        .filter(|removal| removal.deviation.is_none())
+        .filter(|removal| removal.outcome.is_none())
         .collect();
     if !report.applied || (removed.is_empty() && report.failures.is_empty()) {
         return None;
@@ -2356,9 +2359,9 @@ fn removal_line(removal: &Removal, applied: bool) -> String {
             .map(|task| format!(" Task {task}"))
             .unwrap_or_default()
     );
-    match &removal.deviation {
-        Some(deviation) => format!(
-            "planned {what} ({}) not removed: {deviation}",
+    match &removal.outcome {
+        Some(outcome) => format!(
+            "planned {what} ({}) not removed, {outcome}",
             removal.rule.as_str()
         ),
         None => format!(
@@ -2374,10 +2377,13 @@ fn removal_line(removal: &Removal, applied: bool) -> String {
 /// The failures a removal's line does not already say.
 fn unmarked_failures(report: &SweepReport) -> impl Iterator<Item = &String> {
     report.failures.iter().filter(|failure| {
-        !report
-            .removals
-            .iter()
-            .any(|removal| removal.deviation.as_ref() == Some(*failure))
+        !report.removals.iter().any(|removal| {
+            removal
+                .outcome
+                .as_deref()
+                .and_then(|outcome| outcome.strip_prefix(FAILED))
+                == Some(failure.as_str())
+        })
     })
 }
 

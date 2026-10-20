@@ -2,16 +2,19 @@
 //! returns, in order, every entry the sweep removes with the bytes it frees, its rule
 //! (`recovery`, `collection`, `keep_surveys`, `budget`) and the total after it, and every file
 //! or Survey it leaves with its reason (`held`, `foreign`, `oversize`, `unreadable_name`). It
-//! reads nothing itself: it works over an in-memory model of the snapshot that its own removals
-//! update, so the bytes of a record an interruption moved under `cas/removing` are subtracted
-//! once, from the Project Store's entry that holds them, and never counted again. The preview
-//! prints the plan; the applied sweep runs it entry by entry with [`run`] and reports what each
-//! entry actually did, a Survey's deviation (the lock lost, its record replaced) marked on that
-//! entry, and never plans again.
+//! reads nothing itself but the Surveys it picks, each compared with the identity the snapshot
+//! measured: it works over an in-memory model of the snapshot that its own removals update, so
+//! the bytes of a record an interruption moved under `cas/removing` are subtracted once, from
+//! the Project Store's entry that holds them, and never counted again. What an interruption
+//! left, the claims of dead processes and the deletions in Project Stores, is in the snapshot
+//! and planned first, so nothing is removed that the plan does not list. The preview prints the
+//! plan; the applied sweep runs it entry by entry with [`run`] and reports what each entry
+//! actually did, an entry that failed (the lock lost, what it names replaced) kept in its place
+//! as `failed: <reason>` with nothing freed, and never plans again.
 
 use std::path::{Path, PathBuf};
 
-use super::{Entry, HOUR_MS, Kind, Removal, Rule, Stop, SweepReport};
+use super::{Entry, FAILED, HOUR_MS, Kind, Removal, Rule, Stop, SweepReport};
 use crate::projects::survey::collect::{self, Judged, LeftReason};
 
 /// How the applied sweep removes one planned entry.
@@ -48,6 +51,9 @@ pub(crate) struct TaskPick {
 pub(crate) struct Inputs<'a> {
     /// The snapshot's entries; a Task the run executed is in use.
     pub(crate) entries: Vec<Entry>,
+    /// The removals dead processes left claimed, as the snapshot found them (kind `claim`):
+    /// counted in the total before, and finished first.
+    pub(crate) claims: Vec<Entry>,
     /// The snapshot's Project Stores, in inventory order.
     pub(crate) projects: &'a [(PathBuf, collect::Look)],
     /// The finished Tasks collection takes, in order.
@@ -124,12 +130,13 @@ impl Model {
         }
     }
 
-    /// The bytes of the Survey entry at `object`; 0 when the snapshot holds none.
-    fn survey_bytes(&self, object: &Path) -> u64 {
+    /// The bytes and the identity of the Survey entry at `object`, as the snapshot measured
+    /// them; nothing when the snapshot holds none.
+    fn survey(&self, object: &Path) -> (u64, Option<review_sandbox::Identity>) {
         self.entries
             .iter()
             .find(|entry| entry.kind == Kind::Survey && entry.path == object)
-            .map_or(0, |entry| entry.bytes)
+            .map_or((0, None), |entry| (entry.bytes, entry.identity))
     }
 }
 
@@ -169,20 +176,28 @@ fn removal(kind: Kind, path: PathBuf, task_id: Option<String>, bytes: u64, rule:
         rule,
         total_after: 0,
         unreadable: None,
-        deviation: None,
+        outcome: None,
     }
 }
 
-/// Plan one sweep over one snapshot: first the deletions interruptions left in Project Stores
-/// (`recovery`); then, when `collection`, the finished Tasks the Stores' rules take, the
-/// campaigns beyond `keep_campaigns` and the unreadable Stores idle at least `idle_ms`
-/// (`collection`) and the Surveys of each Project beyond `keep_surveys` (`keep_surveys`); then,
-/// while the model holds more than `max_bytes`, the least recently used entry not in use and not
-/// used within the hour (`budget`). `judge` reads a Survey the plan picks; nothing else is read.
-/// The Surveys of a Store whose lock is held are left `held`, a record over the ceiling
+/// What reads a Survey the plan picks: its Project Store, its ID and the identity the snapshot
+/// measured for its record.
+pub(crate) type Judge<'a> = dyn FnMut(&Path, &str, Option<review_sandbox::Identity>) -> Judged + 'a;
+
+/// Plan one sweep over one snapshot: first what interruptions left (`recovery`), the claims of
+/// dead processes and then the deletions in Project Stores; then, when `collection`, the
+/// finished Tasks the Stores' rules take, the campaigns beyond `keep_campaigns` and the
+/// unreadable Stores idle at least `idle_ms` (`collection`) and the Surveys of each Project
+/// beyond `keep_surveys` (`keep_surveys`); then, while the model holds more than `max_bytes`,
+/// the least recently used entry not in use and not used within the hour (`budget`). `judge`
+/// reads a Survey the plan picks against the identity the snapshot measured; nothing else is
+/// read. The Surveys of a Store whose lock is held are left `held`, a record over the ceiling
 /// `oversize`, and what a Store's look found foreign or unreadably named is left as it was found.
-pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut dyn FnMut(&Path, &str) -> Judged) -> Plan {
-    let mut model = Model::new(std::mem::take(&mut inputs.entries));
+pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut Judge<'_>) -> Plan {
+    let claims = std::mem::take(&mut inputs.claims);
+    let mut entries = std::mem::take(&mut inputs.entries);
+    entries.extend(claims.iter().cloned());
+    let mut model = Model::new(entries);
     let mut plan = Plan {
         total_before: model.total,
         steps: Vec::new(),
@@ -191,6 +206,23 @@ pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut dyn FnMut(&Path, &str) ->
         total_after: 0,
         stop: Stop::Fits,
     };
+    for claim in claims {
+        let step = removal(
+            Kind::Claim,
+            claim.path.clone(),
+            None,
+            claim.bytes,
+            Rule::Recovery,
+        );
+        let key = Some((Kind::Claim, claim.path.as_path(), None));
+        plan.push(
+            &mut model,
+            step,
+            Job::Evict(Box::new(claim.clone())),
+            key,
+            None,
+        );
+    }
     for (store, look) in inputs.projects {
         plan.failures.extend(
             look.refused
@@ -202,8 +234,17 @@ pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut dyn FnMut(&Path, &str) ->
             left,
         }));
         for pending in &look.recovery {
+            // A container a dead pass left empty is a claim; everything else a Survey's record.
+            let kind = match pending.job {
+                collect::Job::Container { .. } => Kind::Claim,
+                _ => Kind::Survey,
+            };
             if let Some(reason) = &look.held {
-                plan.held(pending.object.clone(), pending.bytes, reason);
+                // An empty container of a held Store holds no record to leave `held`; the next
+                // pass removes it.
+                if kind == Kind::Survey {
+                    plan.held(pending.object.clone(), pending.bytes, reason);
+                }
                 continue;
             }
             let (key, within) = match pending.counted {
@@ -215,7 +256,7 @@ pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut dyn FnMut(&Path, &str) ->
             plan.push(
                 &mut model,
                 removal(
-                    Kind::Survey,
+                    kind,
                     pending.object.clone(),
                     None,
                     pending.bytes,
@@ -235,8 +276,10 @@ pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut dyn FnMut(&Path, &str) ->
             .entries
             .iter()
             .filter(|entry| {
-                !matches!(entry.kind, Kind::TaskStore | Kind::ProjectStore)
-                    && entry.in_use.is_none()
+                !matches!(
+                    entry.kind,
+                    Kind::TaskStore | Kind::ProjectStore | Kind::Claim
+                ) && entry.in_use.is_none()
                     && entry.last_use_unix_ms.saturating_add(HOUR_MS) <= inputs.now
             })
             .cloned()
@@ -276,7 +319,7 @@ pub(crate) fn make(mut inputs: Inputs<'_>, judge: &mut dyn FnMut(&Path, &str) ->
                 ));
                 continue;
             };
-            match judge(&store, &survey_id) {
+            match judge(&store, &survey_id, entry.identity) {
                 Judged::Take {
                     unreadable,
                     identity,
@@ -326,12 +369,7 @@ fn stop(total: u64, max_bytes: u64) -> Stop {
 }
 
 /// The collection part of [`make`].
-fn collect_into(
-    plan: &mut Plan,
-    model: &mut Model,
-    inputs: &Inputs<'_>,
-    judge: &mut dyn FnMut(&Path, &str) -> Judged,
-) {
+fn collect_into(plan: &mut Plan, model: &mut Model, inputs: &Inputs<'_>, judge: &mut Judge<'_>) {
     let idle = |entry: &Entry| {
         entry.in_use.is_none()
             && entry.last_use_unix_ms.saturating_add(inputs.idle_ms) <= inputs.now
@@ -390,12 +428,12 @@ fn collect_into(
             collect::choose_beyond(&look.live, inputs.keep_surveys, inputs.idle_ms, inputs.now);
         for live in chosen {
             let object = collect::object_path(store, &live.survey_id);
-            let bytes = model.survey_bytes(&object);
+            let (bytes, identity) = model.survey(&object);
             if let Some(reason) = &look.held {
                 plan.held(object, bytes, reason);
                 continue;
             }
-            match judge(store, &live.survey_id) {
+            match judge(store, &live.survey_id, identity) {
                 Judged::Take {
                     unreadable,
                     identity,
@@ -432,9 +470,10 @@ fn collect_into(
 
 /// Run `plan` entry by entry with `execute`, never planning again, into `report`, whose
 /// `total_before` already holds the snapshot's total. Each entry reports what it actually freed
-/// and the total after it; one that failed is a failure, and a Survey's stays in its place with
-/// nothing freed and the deviation marked on it. The stop is what the total after the last entry
-/// says.
+/// and the total after it; one that failed, of any kind, is a failure and stays in its place
+/// with nothing freed, the running total unchanged by it and its outcome `failed: <reason>`, so
+/// the document's totals are what the directory holds. The stop is what the total after the
+/// last entry says.
 pub(crate) fn run(
     plan: Plan,
     report: &mut SweepReport,
@@ -456,14 +495,12 @@ pub(crate) fn run(
                 report.removals.push(removal);
             }
             Err(why) => {
-                report.failures.push(why.clone());
-                if removal.kind == Kind::Survey {
-                    removal.bytes = 0;
-                    removal.unreadable = None;
-                    removal.total_after = total;
-                    removal.deviation = Some(why);
-                    report.removals.push(removal);
-                }
+                removal.bytes = 0;
+                removal.unreadable = None;
+                removal.total_after = total;
+                removal.outcome = Some(format!("{FAILED}{why}"));
+                report.failures.push(why);
+                report.removals.push(removal);
             }
         }
     }
@@ -564,6 +601,7 @@ mod tests {
         ];
         let inputs = || Inputs {
             entries: entries.clone(),
+            claims: Vec::new(),
             projects: &projects,
             tasks: Vec::new(),
             collection: true,
@@ -573,7 +611,9 @@ mod tests {
             idle_ms: 14 * DAY,
             now: NOW,
         };
-        let mut judge = |_: &Path, _: &str| -> Judged { unreachable!("no Survey is picked") };
+        let mut judge = |_: &Path, _: &str, _: Option<review_sandbox::Identity>| -> Judged {
+            unreachable!("no Survey is picked")
+        };
         let plan = make(inputs(), &mut judge);
         assert_eq!(plan.total_before, 110);
         let steps: Vec<(Rule, u64, u64)> = plan
@@ -614,9 +654,9 @@ mod tests {
     }
 
     /// The applied sweep never chooses again: a Survey whose job finds its record replaced keeps
-    /// its place with nothing freed and the deviation marked, and no other entry takes its place.
+    /// its place as failed with nothing freed, and no other entry takes its place.
     #[test]
-    fn a_deviation_is_marked_on_its_entry_and_nothing_is_planned_again() {
+    fn a_failed_survey_is_kept_as_failed_and_nothing_is_planned_again() {
         let object = collect::object_path(Path::new(STORE), &survey_id(2));
         let mut store = entry(Kind::ProjectStore, STORE, 4, 1);
         store.in_use = Some("kept".into());
@@ -632,6 +672,7 @@ mod tests {
         let plan = make(
             Inputs {
                 entries,
+                claims: Vec::new(),
                 projects: &projects,
                 tasks: Vec::new(),
                 collection: false,
@@ -641,9 +682,12 @@ mod tests {
                 idle_ms: 14 * DAY,
                 now: NOW,
             },
-            &mut |_, _| Judged::Take {
-                unreadable: None,
-                identity: Some(identity(9)),
+            &mut |_, _, inventoried| {
+                assert_eq!(inventoried, Some(identity(9)), "the snapshot's identity");
+                Judged::Take {
+                    unreadable: None,
+                    identity: inventoried,
+                }
             },
         );
         let planned: Vec<&Path> = plan
@@ -664,7 +708,11 @@ mod tests {
         );
         assert_eq!(applied.removals.len(), 2, "{:?}", applied.removals);
         assert_eq!(applied.removals[0].bytes, 0);
-        assert!(applied.removals[0].deviation.is_some());
+        assert_eq!(
+            applied.removals[0].outcome.as_deref(),
+            Some("failed: Survey x is refused (replaced during collection)")
+        );
+        assert_eq!(applied.removals[0].total_after, 124, "unchanged by it");
         assert_eq!(applied.removals[1].total_after, 84);
         assert_eq!(applied.total_after, 84);
         assert_eq!(
@@ -716,6 +764,7 @@ mod tests {
         let plan = make(
             Inputs {
                 entries: Vec::new(),
+                claims: Vec::new(),
                 projects: &projects,
                 tasks: Vec::new(),
                 collection: true,
@@ -725,7 +774,7 @@ mod tests {
                 idle_ms: 0,
                 now: NOW,
             },
-            &mut |_, _| unreachable!("a held Store's Surveys are not read"),
+            &mut |_, _, _| unreachable!("a held Store's Surveys are not read"),
         );
         assert!(plan.steps.is_empty());
         let reasons: Vec<LeftReason> = plan.left.iter().map(|left| left.left.reason).collect();
@@ -740,5 +789,179 @@ mod tests {
         );
         assert_eq!(plan.left[0].left, foreign);
         assert!(plan.left[1].left.detail.starts_with(collect::HELD));
+    }
+
+    /// What an interruption left is in the snapshot and planned first: the claim of a dead
+    /// process with the bytes the listing measured, then an empty container a dead pass left,
+    /// counted in its Project Store's entry. The preview and the applied sweep list the same
+    /// recovery entries, entry for entry, and the claim is never a budget candidate.
+    #[test]
+    fn claims_and_empty_containers_are_planned_first_and_listed_alike() {
+        let claim = Entry {
+            identity: Some(identity(3)),
+            ..entry(
+                Kind::Claim,
+                "/state/af/review/campaigns/.af-removing-9-1-0",
+                64,
+                0,
+            )
+        };
+        let container = PathBuf::from(STORE).join("cas/removing/0123456789abcdef0123456789abcdef");
+        let projects = vec![(
+            PathBuf::from(STORE),
+            collect::Look {
+                recovery: vec![collect::Pending {
+                    object: container.clone(),
+                    bytes: 4,
+                    counted: collect::Counted::Store,
+                    job: collect::Job::Container {
+                        store: PathBuf::from(STORE),
+                        container: "0123456789abcdef0123456789abcdef".into(),
+                        identity: identity(5),
+                    },
+                }],
+                ..collect::Look::default()
+            },
+        )];
+        let mut store = entry(Kind::ProjectStore, STORE, 10, 1);
+        store.in_use = Some("kept".into());
+        let inputs = || Inputs {
+            entries: vec![
+                store.clone(),
+                entry(Kind::WarmKey, "/cache/af/warm/a/1", 20, 3),
+            ],
+            claims: vec![claim.clone()],
+            projects: &projects,
+            tasks: Vec::new(),
+            collection: true,
+            max_bytes: 0,
+            keep_campaigns: 10,
+            keep_surveys: 50,
+            idle_ms: 14 * DAY,
+            now: NOW,
+        };
+        let plan = make(inputs(), &mut |_, _, _| unreachable!("no Survey is picked"));
+        assert_eq!(plan.total_before, 94, "the claim is counted");
+        let steps: Vec<(Kind, Rule, u64, u64)> = plan
+            .steps
+            .iter()
+            .map(|planned| {
+                let removal = &planned.removal;
+                (
+                    removal.kind,
+                    removal.rule,
+                    removal.bytes,
+                    removal.total_after,
+                )
+            })
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                (Kind::Claim, Rule::Recovery, 64, 30),
+                (Kind::Claim, Rule::Recovery, 4, 26),
+                (Kind::WarmKey, Rule::Budget, 20, 6),
+            ]
+        );
+        assert_eq!(plan.steps[1].removal.path, container);
+        assert!(
+            matches!(&plan.steps[0].job, Job::Evict(entry) if entry.identity == Some(identity(3)))
+        );
+        let mut previewed = report(0, false);
+        previewed.total_before = plan.total_before;
+        preview(plan.clone(), &mut previewed);
+        let mut applied = report(0, true);
+        applied.total_before = plan.total_before;
+        run(plan, &mut applied, &mut |planned: &Planned| {
+            Ok((planned.removal.bytes, None))
+        });
+        let as_json = |document: &SweepReport| serde_json::to_value(&document.removals).unwrap();
+        assert_eq!(as_json(&previewed), as_json(&applied), "entry for entry");
+    }
+
+    /// Every kind of planned entry whose execution fails stays in the applied document as
+    /// `failed: <reason>` with nothing freed and the running total unchanged by it; every
+    /// failure is listed too, and the totals are what is left.
+    #[test]
+    fn a_failed_entry_of_every_kind_stays_as_failed_with_the_total_unchanged() {
+        let kinds = [
+            Kind::WarmKey,
+            Kind::Workspace,
+            Kind::Campaign,
+            Kind::Task,
+            Kind::UnreadableStore,
+            Kind::Version,
+            Kind::Survey,
+            Kind::Claim,
+        ];
+        let steps: Vec<Planned> = kinds
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| Planned {
+                removal: removal(
+                    *kind,
+                    PathBuf::from(format!("/af/{index}")),
+                    None,
+                    10,
+                    Rule::Budget,
+                ),
+                job: Job::Task,
+            })
+            .collect();
+        let plan = Plan {
+            total_before: 200,
+            steps,
+            left: Vec::new(),
+            failures: Vec::new(),
+            total_after: 120,
+            stop: Stop::Fits,
+        };
+        let mut applied = report(150, true);
+        applied.total_before = plan.total_before;
+        // Every other entry fails, whatever its kind.
+        run(plan, &mut applied, &mut |planned: &Planned| {
+            let index: usize = planned
+                .removal
+                .path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            if index % 2 == 0 {
+                Err(format!(
+                    "removing /af/{index}: it changed since it was measured"
+                ))
+            } else {
+                Ok((10, None))
+            }
+        });
+        assert_eq!(
+            applied.removals.len(),
+            kinds.len(),
+            "every planned entry stays"
+        );
+        let mut total = 200;
+        for (index, removal) in applied.removals.iter().enumerate() {
+            assert_eq!(removal.kind, kinds[index]);
+            if index % 2 == 0 {
+                assert_eq!(removal.bytes, 0);
+                assert_eq!(
+                    removal.outcome.as_deref(),
+                    Some(
+                        format!("failed: removing /af/{index}: it changed since it was measured")
+                            .as_str()
+                    )
+                );
+            } else {
+                total -= 10;
+                assert_eq!(removal.outcome, None);
+            }
+            assert_eq!(removal.total_after, total, "{removal:?}");
+        }
+        assert_eq!(applied.total_after, 160);
+        assert_eq!(applied.failures.len(), 4);
+        assert_eq!(applied.stop, Stop::NothingEvictable);
     }
 }
