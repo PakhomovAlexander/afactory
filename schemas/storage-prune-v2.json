@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:storage-prune:2",
   "title": "af/storage-prune@2",
-  "description": "`af storage prune --json` (ADR-0144): what one sweep removed, or without --apply would remove. Collection first (rule `collection`), then the budget, least recently used first (rule `budget`), until the total fits `max_bytes` or nothing else may be removed (`stop`). Gate cleanups of finished Tasks are those the sweep tried; registry entries whose path holds no Store any more are dropped; a failed removal is listed and tried again by the next sweep. Version 2 adds the removal kind `survey` (ADR-0152 clause 13): a Survey's record in its Project Store's CAS, its `path` the CAS object, taken behind a `SurveyCollected@1` tombstone by collection beyond `[storage] keep_surveys`, by the budget, or, rule `recovery`, by a sweep that finishes what an interruption left between a tombstone and its deletion.",
+  "description": "`af storage prune --json` (ADR-0144): what one sweep removed, or without --apply would remove. Collection first (rule `collection`), then the budget, least recently used first (rule `budget`), until the total fits `max_bytes` or nothing else may be removed (`stop`). Gate cleanups of finished Tasks are those the sweep tried; registry entries whose path holds no Store any more are dropped; a failed removal is listed and tried again by the next sweep. Version 2 adds the removal kind `survey` (ADR-0152 clause 13): a Survey's record in its Project Store's CAS, its `path` the CAS object, taken behind a `SurveyCollected@1` tombstone by collection beyond `[storage] keep_surveys`, by the budget, or, rule `recovery`, by a sweep that finishes what an interruption left between a tombstone and its deletion. A Survey whose record's bytes were no Survey is removed with `unreadable`, the reason its tombstone carries; a Survey collection chose in a Project Store whose `project.lock` a refresh or a plan holds is listed under `held`, by the preview and the applied sweep alike, and never removed; a Survey whose record cannot be reached without a link or read is a failure, and keeps its record and its place in the log.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,6 +14,7 @@
     "total_after",
     "stop",
     "removals",
+    "held",
     "gate_cleanups",
     "registry_dropped",
     "failures"
@@ -84,6 +85,58 @@
               "budget",
               "recovery"
             ]
+          },
+          "unreadable": {
+            "description": "A `survey` removal only: why its record's bytes were no Survey, as its `SurveyCollected@1` tombstone says.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "if": {
+          "properties": {
+            "kind": {
+              "const": "survey"
+            }
+          }
+        },
+        "else": {
+          "not": {
+            "required": [
+              "unreadable"
+            ]
+          }
+        }
+      }
+    },
+    "held": {
+      "description": "Entries collection chose and left because a lock holds them: the Surveys of a Project Store a refresh or a plan holds (ADR-0152 clause 13). The next pass tries again.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "path",
+          "bytes",
+          "reason"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "survey"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "bytes": {
+            "$ref": "#/$defs/bytes"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
           }
         }
       }

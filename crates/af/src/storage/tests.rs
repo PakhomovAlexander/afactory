@@ -592,6 +592,7 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         task_id: Some(format!("task-{index}")),
         bytes: 10,
         rule: Rule::Collection,
+        unreadable: None,
     };
     let report = |removals: Vec<Removal>, failures: Vec<String>, applied: bool| SweepReport {
         applied,
@@ -601,6 +602,7 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         total_after: 900,
         stop: Stop::NothingEvictable,
         removals,
+        held: Vec::new(),
         gate_cleanups: Vec::new(),
         registry_dropped: Vec::new(),
         failures,
@@ -628,6 +630,32 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
     let sweep = observation(&report(vec![removal(0), odd], vec![], true)).unwrap();
     assert_eq!(sweep.removals.len(), 1);
     assert_eq!(sweep.omitted_removals, 1);
+    // A Survey's removal, `unreadable` or not, has no kind in `af/TaskStorageSweep@1`: counted.
+    let survey = |unreadable: Option<&str>| Removal {
+        kind: Kind::Survey,
+        path: PathBuf::from("/state/af/project/ab/cas/objects/cd/ef"),
+        task_id: None,
+        bytes: 4096,
+        rule: Rule::Budget,
+        unreadable: unreadable.map(str::to_string),
+    };
+    let sweep = observation(&report(
+        vec![
+            removal(0),
+            survey(None),
+            survey(Some("its bytes do not match its digest")),
+        ],
+        vec![],
+        true,
+    ))
+    .unwrap();
+    sweep.validate().unwrap();
+    assert_eq!(sweep.removals.len(), 1);
+    assert_eq!(sweep.omitted_removals, 2);
+    let only = observation(&report(vec![survey(None)], vec![], true)).unwrap();
+    sweep.validate().unwrap();
+    assert!(only.removals.is_empty());
+    assert_eq!(only.omitted_removals, 1);
 }
 
 #[test]

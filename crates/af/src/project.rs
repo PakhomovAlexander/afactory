@@ -303,7 +303,9 @@ fn validate_pattern(pattern: &str, route: &str) -> Result<(), String> {
 }
 
 /// Segment-wise glob: `**` spans any number of segments, `*` any run within a segment, `?` one
-/// character. Anchored at the repository root; `path` is the canonical (encoded) form.
+/// byte of the canonical encoded spelling (`review_core::encode_path`'s: `é` is two bytes, a
+/// percent-encoded byte three). Anchored at the repository root; `path` is the canonical
+/// (encoded) form.
 ///
 /// Matched by dynamic programming, never by backtracking (ADR-0152 clause 14): a match costs at
 /// most (pattern length + 1) × (path length + 1) cells, so `*a` thirty times then `b` against
@@ -792,6 +794,37 @@ mod tests {
                     "`{pattern}` against `{path}`: {cells} > {bound}"
                 );
             }
+        }
+    }
+
+    /// `?` consumes one byte of the canonical encoded spelling (ADR-0152 clause 14), through a
+    /// route as through the Surveyor's `exclude` (`projects::survey::collect`'s tests and
+    /// `tests/it/project_collect.rs` run the same cases).
+    #[test]
+    fn a_question_mark_is_one_byte_of_the_encoded_spelling_in_a_route() {
+        for (pattern, raw, matches) in [
+            ("caf?.rs", "café.rs".as_bytes(), false),
+            ("caf??.rs", "café.rs".as_bytes(), true),
+            ("caf?.rs", b"caf\xe9.rs".as_slice(), false),
+            ("caf???.rs", b"caf\xe9.rs".as_slice(), true),
+            ("50?.txt", b"50%.txt".as_slice(), false),
+            ("50???.txt", b"50%.txt".as_slice(), true),
+            ("caf*.rs", "café.rs".as_bytes(), true),
+        ] {
+            let path = review_core::encode_path(raw);
+            let project = routed(
+                "",
+                &format!(
+                    "[[routes]]\nname = \"x\"\npaths = [\"{pattern}\"]\npipeline = \"docs\"\n"
+                ),
+            );
+            let decision = project.select_route(std::slice::from_ref(&path)).unwrap();
+            assert_eq!(
+                decision.name.is_some(),
+                matches,
+                "`{pattern}` against `{path}`"
+            );
+            assert_eq!(glob_matches(pattern, &path), matches);
         }
     }
 

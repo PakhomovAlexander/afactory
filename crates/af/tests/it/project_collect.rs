@@ -12,6 +12,14 @@
 //! next sweep. The adversarial pattern `*a` thirty times then `b` neither hangs the Surveyor's
 //! `exclude` nor matches, its matching form does, and a 257-byte pattern and a 65-entry list are
 //! refused naming the key.
+//!
+//! A record is reached and deleted only through descriptors: a prefix directory replaced by a
+//! link to a directory outside the Store refuses its Survey, touches nothing outside and adds no
+//! tombstone. A corrupt record is collected `unreadable` and its bytes freed, while one the file
+//! system will not let af read is refused and keeps its record and its place in the log. The
+//! preview lists the Surveys of a held Project Store as held, exactly as the applied sweep does.
+//! `?` is one byte of the canonical encoded spelling in the Surveyor's `exclude`, and the
+//! superseded `af/storage@2` and `af/storage-prune@1` are refused.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -733,4 +741,405 @@ fn a_pattern_over_256_bytes_and_a_list_over_64_are_refused_naming_the_key() {
     );
     machine.expect(&repo, &[], &["project", "refresh"], 0);
     assert_eq!(machine.recorded().len(), 1);
+}
+
+/// Every file below `root`, links not followed: its path and its bytes.
+fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    let mut files = BTreeMap::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            let metadata = std::fs::symlink_metadata(&path).unwrap();
+            if metadata.is_dir() {
+                pending.push(path);
+            } else {
+                files.insert(path.clone(), std::fs::read(&path).unwrap_or_default());
+            }
+        }
+    }
+    files
+}
+
+/// The failures of a sweep that name `object`.
+fn failures_naming(pruned: &Value, object: &str) -> Vec<String> {
+    pruned["failures"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|failure| failure.contains(object))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn a_prefix_directory_replaced_by_a_link_is_never_followed() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..3)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    // The oldest Survey's prefix directory moves outside the Store; a link takes its place.
+    let target = &surveys[0];
+    let object = machine.object(target);
+    let prefix = object.parent().unwrap().to_path_buf();
+    let outside = machine.root().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let moved = outside.join(prefix.file_name().unwrap());
+    std::fs::rename(&prefix, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &prefix).unwrap();
+    let before = snapshot(&outside);
+    assert!(!before.is_empty());
+    let behind_the_link: Vec<&String> = surveys
+        .iter()
+        .filter(|id| machine.object(id).parent() == Some(prefix.as_path()))
+        .collect();
+
+    // Inventory measures nothing through the link and lists the Survey in use.
+    let (_, entries) = survey_entries(&machine, &repo);
+    let entry = &entries[&path_of(&machine, target)];
+    assert_eq!(entry["bytes"], 0, "{entry}");
+    assert!(
+        entry["in_use"]
+            .as_str()
+            .unwrap()
+            .contains("prefix directory is refused"),
+        "{entry}"
+    );
+
+    // The Survey is eligible for collection and the budget presses: it is refused, reported
+    // with its reason, and nothing outside the Store changes.
+    let pruned = prune(
+        &machine,
+        &repo,
+        &[
+            ("AF_STORAGE__KEEP_SURVEYS", "0"),
+            ("AF_STORAGE__MAX_BYTES", "1"),
+        ],
+    );
+    let refused = failures_naming(&pruned, &path_of(&machine, target));
+    assert_eq!(refused.len(), 1, "{pruned}");
+    assert!(refused[0].contains("is refused"), "{}", refused[0]);
+    assert!(
+        refused[0].contains("prefix directory is refused"),
+        "{}",
+        refused[0]
+    );
+    for survey_id in &behind_the_link {
+        assert!(
+            !removed(&pruned, "collection").contains(&path_of(&machine, survey_id))
+                && !removed(&pruned, "budget").contains(&path_of(&machine, survey_id)),
+            "{pruned}"
+        );
+        assert!(
+            !machine.collected().contains(survey_id),
+            "no tombstone for a refused Survey"
+        );
+    }
+    assert_eq!(
+        snapshot(&outside),
+        before,
+        "nothing outside the Store is touched"
+    );
+    assert!(
+        std::fs::symlink_metadata(&prefix)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    // The other eligible Survey went, the newest complete one stays.
+    assert!(machine.collected().contains(&surveys[1]) || behind_the_link.contains(&&surveys[1]));
+    assert!(machine.held(&surveys[2]));
+    let (text, _) = machine.expect(
+        &repo,
+        &[("AF_STORAGE__KEEP_SURVEYS", "0")],
+        &["storage", "prune"],
+        0,
+    );
+    assert!(text.contains("failed: collecting"), "{text}");
+}
+
+#[test]
+fn a_corrupt_survey_is_collected_unreadable_and_an_unreadable_one_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..4)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    // The oldest record's bytes are corrupt and large enough that freeing them shows.
+    let corrupt = machine.object(&surveys[0]);
+    std::fs::set_permissions(&corrupt, std::fs::Permissions::from_mode(0o644)).unwrap();
+    std::fs::write(&corrupt, vec![b'x'; 256 * 1024]).unwrap();
+    let corrupt_bytes = allocated(&corrupt);
+    assert!(corrupt_bytes >= 256 * 1024);
+    // The next one af is not allowed to read.
+    let locked = machine.object(&surveys[1]);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let enforced = std::fs::read(&locked).is_err();
+
+    let keep = [("AF_STORAGE__KEEP_SURVEYS", "2")];
+    let cas = machine.store().join("cas");
+    let before = allocated(&cas);
+    let tombstones_before = machine.collected();
+    let pruned = prune(&machine, &repo, &keep);
+    let collected: Vec<&Value> = pruned["removals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|removal| removal["kind"] == "survey" && removal["rule"] == "collection")
+        .collect();
+    let corrupt_removal = collected
+        .iter()
+        .find(|removal| removal["path"] == path_of(&machine, &surveys[0]).as_str())
+        .unwrap_or_else(|| panic!("the corrupt Survey is collected: {pruned}"));
+    assert_eq!(
+        corrupt_removal["unreadable"], "its bytes do not match its digest",
+        "{corrupt_removal}"
+    );
+    assert_eq!(corrupt_removal["bytes"].as_u64().unwrap(), corrupt_bytes);
+    assert!(!corrupt.exists(), "its bytes are deleted");
+    assert!(
+        before - allocated(&cas) >= corrupt_bytes,
+        "the corrupt bytes are freed"
+    );
+    let tombstone = machine
+        .events()
+        .into_iter()
+        .find(|(_, kind, payload)| {
+            kind == "SurveyCollected@1" && payload["survey_id"] == surveys[0].as_str()
+        })
+        .unwrap()
+        .2;
+    schemas::valid(
+        &schemas::validator("project-survey-collected-v1.json"),
+        &tombstone,
+    );
+    assert_eq!(tombstone["unreadable"], "its bytes do not match its digest");
+    assert!(tombstone.get("tree").is_none() && tombstone.get("history").is_none());
+    let (history, _) = machine.expect(&repo, &[], &["project", "history"], 0);
+    let line = history
+        .lines()
+        .find(|line| line.starts_with(surveys[0].as_str()))
+        .unwrap();
+    assert!(line.contains("  collected (unreadable) "), "{line}");
+
+    if enforced {
+        // Refused and reported; its record and the log are as they were.
+        let refused = failures_naming(&pruned, &path_of(&machine, &surveys[1]));
+        assert_eq!(refused.len(), 1, "{pruned}");
+        assert!(refused[0].contains("cannot be read"), "{}", refused[0]);
+        assert!(
+            !collected
+                .iter()
+                .any(|removal| removal["path"] == path_of(&machine, &surveys[1]).as_str())
+        );
+        assert!(
+            std::fs::symlink_metadata(&locked).is_ok(),
+            "the record stays"
+        );
+        let mut expected = tombstones_before.clone();
+        expected.push(surveys[0].clone());
+        assert_eq!(machine.collected(), expected, "no tombstone for it");
+    }
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o444)).unwrap();
+    // Readable again, the next pass collects it with its totals.
+    let pruned = prune(&machine, &repo, &keep);
+    if enforced {
+        assert_eq!(
+            removed(&pruned, "collection"),
+            vec![path_of(&machine, &surveys[1])]
+        );
+    }
+    let (text, _) = machine.expect(&repo, &[], &["project", "history"], 0);
+    assert_eq!(
+        text.matches("  collected (unreadable) ").count(),
+        1,
+        "{text}"
+    );
+    assert_consistent(&machine);
+}
+
+#[test]
+fn the_preview_lists_held_surveys_as_held_and_agrees_with_the_sweep() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..4)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    let keep = [("AF_STORAGE__KEEP_SURVEYS", "1")];
+    let surveys_of = |document: &Value, list: &str| -> Vec<Value> {
+        document[list]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["kind"] == "survey")
+            .cloned()
+            .collect()
+    };
+    let preview_json = |machine: &Machine| {
+        let preview = machine.json(&repo, &keep, &["storage", "prune", "--json"]);
+        schemas::valid(&schemas::validator("storage-prune-v2.json"), &preview);
+        preview
+    };
+
+    let lock = std::fs::OpenOptions::new()
+        .write(true)
+        .open(machine.store().join("project.lock"))
+        .unwrap();
+    let lock = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive).unwrap();
+    let preview = preview_json(&machine);
+    let held = surveys_of(&preview, "held");
+    let expected: Vec<String> = surveys[..3]
+        .iter()
+        .map(|id| path_of(&machine, id))
+        .collect();
+    assert_eq!(
+        held.iter()
+            .map(|entry| entry["path"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        expected,
+        "{preview}"
+    );
+    for entry in &held {
+        assert!(entry["bytes"].as_u64().unwrap() > 0, "{entry}");
+        assert!(
+            entry["reason"]
+                .as_str()
+                .unwrap()
+                .contains("a refresh or a plan holds its Project Store"),
+            "{entry}"
+        );
+    }
+    assert!(surveys_of(&preview, "removals").is_empty(), "{preview}");
+    let (text, _) = machine.expect(&repo, &keep, &["storage", "prune"], 0);
+    assert_eq!(text.matches("held survey ").count(), 3, "{text}");
+    let applied = prune(&machine, &repo, &keep);
+    assert_eq!(surveys_of(&applied, "held"), held, "entry for entry");
+    assert_eq!(
+        surveys_of(&applied, "removals"),
+        surveys_of(&preview, "removals")
+    );
+    assert!(machine.collected().is_empty());
+    assert!(surveys.iter().all(|id| machine.held(id)));
+    drop(lock);
+
+    // Released, the preview and the sweep name the same removals, entry for entry.
+    let preview = preview_json(&machine);
+    assert!(surveys_of(&preview, "held").is_empty());
+    let applied = prune(&machine, &repo, &keep);
+    assert!(surveys_of(&applied, "held").is_empty());
+    assert_eq!(
+        surveys_of(&applied, "removals"),
+        surveys_of(&preview, "removals")
+    );
+    assert_eq!(removed(&applied, "collection"), expected);
+    assert_eq!(machine.collected(), surveys[..3].to_vec());
+    assert_consistent(&machine);
+}
+
+/// `git` with raw path bytes: a blob of `content` at `path` in the index.
+fn add_raw(repo: &Path, path: &[u8], content: &str) {
+    use std::io::Write;
+    use std::os::unix::ffi::OsStrExt;
+    let mut hashing = Command::new("git")
+        .current_dir(repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args(["hash-object", "-w", "--stdin"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    hashing
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(content.as_bytes())
+        .unwrap();
+    let blob = String::from_utf8(hashing.wait_with_output().unwrap().stdout).unwrap();
+    let mut info = format!("100644,{},", blob.trim()).into_bytes();
+    info.extend_from_slice(path);
+    let status = Command::new("git")
+        .current_dir(repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args(["update-index", "--add", "--cacheinfo"])
+        .arg(std::ffi::OsStr::from_bytes(&info))
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+/// `?` consumes one byte of the canonical encoded spelling in the Surveyor's `exclude`, as in
+/// the routes of `.af/af.toml` (`crate::project`'s tests run the same cases through routing):
+/// `café.rs` spells `é` in two bytes, a non-UTF-8 `caf\xe9.rs` is `caf%E9.rs` and `50%.txt` is
+/// `50%25.txt`.
+#[test]
+fn a_question_mark_is_one_byte_in_the_surveyors_exclude() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    add_raw(&repo, "café.rs".as_bytes(), "accent\n");
+    add_raw(&repo, b"caf\xe9.rs", "latin-1\n");
+    add_raw(&repo, b"50%.txt", "percent\n");
+    git(&repo, &["commit", "-q", "-m", "Spellings"]);
+    machine.expect(&repo, &[], &["project", "refresh"], 0);
+    let all = tree_files(&machine, &repo);
+    assert_eq!(all, 7);
+    for (pattern, excluded) in [
+        ("caf?.rs", 0),
+        ("caf??.rs", 1),
+        ("caf???.rs", 1),
+        ("50?.txt", 0),
+        ("50???.txt", 1),
+        ("caf*.rs", 2),
+    ] {
+        write(
+            &repo,
+            ".af/af.toml",
+            &format!(
+                "version = 1\n\n[project]\nname = \"collect-fixture\"\nmin_af = \"0.1\"\n\n\
+                 [defaults]\npipeline = \"review\"\n\n[survey]\nexclude = [\"{pattern}\"]\n"
+            ),
+        );
+        // Not `-a`: the index holds paths the working tree does not.
+        git(&repo, &["add", ".af/af.toml"]);
+        git(&repo, &["commit", "-q", "-m", pattern]);
+        machine.expect(&repo, &[], &["project", "refresh"], 0);
+        assert_eq!(
+            tree_files(&machine, &repo),
+            all - excluded,
+            "`{pattern}` excludes {excluded}"
+        );
+    }
+}
+
+/// ADR-0145 clause 2: the documents Survey collection changed are `af/storage@3` and
+/// `af/storage-prune@2`; their superseded versions are refused and no schema of them ships.
+#[test]
+fn superseded_storage_documents_are_refused() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let mut shown = machine.json(&repo, &[], &["storage", "--json"]);
+    let current = schemas::validator("storage-v3.json");
+    assert!(current.is_valid(&shown));
+    shown["schema"] = serde_json::json!("af/storage@2");
+    assert!(!current.is_valid(&shown));
+    let mut pruned = machine.json(&repo, &[], &["storage", "prune", "--json"]);
+    let current = schemas::validator("storage-prune-v2.json");
+    assert!(current.is_valid(&pruned));
+    pruned["schema"] = serde_json::json!("af/storage-prune@1");
+    assert!(!current.is_valid(&pruned));
+    let schemas = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .join("schemas");
+    for superseded in [
+        "storage-v1.json",
+        "storage-v2.json",
+        "storage-prune-v1.json",
+    ] {
+        assert!(!schemas.join(superseded).exists(), "{superseded}");
+    }
 }

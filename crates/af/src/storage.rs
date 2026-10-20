@@ -854,6 +854,20 @@ pub(crate) struct Removal {
     pub(crate) task_id: Option<String>,
     pub(crate) bytes: u64,
     pub(crate) rule: Rule,
+    /// A Survey collected `unreadable` (ADR-0152 clause 13): why its record's bytes were no
+    /// Survey, as its tombstone says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) unreadable: Option<String>,
+}
+
+/// One entry a sweep chose and left because a lock holds it: a Survey of a Project Store a
+/// refresh or a plan holds (ADR-0152 clause 13). A preview lists exactly what its pass would.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct Held {
+    pub(crate) kind: Kind,
+    pub(crate) path: PathBuf,
+    pub(crate) bytes: u64,
+    pub(crate) reason: String,
 }
 
 /// Why the budget step stopped.
@@ -876,6 +890,8 @@ pub(crate) struct SweepReport {
     pub(crate) total_after: u64,
     pub(crate) stop: Stop,
     pub(crate) removals: Vec<Removal>,
+    /// Entries collection chose and left because a lock holds them.
+    pub(crate) held: Vec<Held>,
     /// Gate cleanups of finished Tasks this sweep tried (collection only).
     pub(crate) gate_cleanups: Vec<gate::Attempted>,
     /// Registry entries whose path no longer holds a Store.
@@ -906,6 +922,7 @@ pub(crate) fn sweep(
         total_after: 0,
         stop: Stop::Fits,
         removals: Vec::new(),
+        held: Vec::new(),
         gate_cleanups: Vec::new(),
         registry_dropped: Vec::new(),
         failures: Vec::new(),
@@ -923,6 +940,7 @@ pub(crate) fn sweep(
                 task_id: None,
                 bytes,
                 rule: Rule::Recovery,
+                unreadable: None,
             });
         }
         report.failures.extend(left);
@@ -1011,15 +1029,10 @@ pub(crate) fn sweep(
             report.stop = Stop::NothingEvictable;
             break;
         };
-        let removed = if apply {
-            evict(roots, policy, &stock, entry)
-        } else {
-            Ok(entry.bytes)
-        };
-        match removed {
+        match evict_marked(roots, policy, &stock, entry, apply) {
             // What the removal freed, measured: a Task's collection can free more than the
             // Task's own bytes, and the loop stops as soon as af fits.
-            Ok(freed) => {
+            Ok((freed, unreadable)) => {
                 // At least what inventory measured is gone; a Task's collection may free more.
                 let freed = freed.max(entry.bytes);
                 total = total.saturating_sub(freed);
@@ -1029,6 +1042,7 @@ pub(crate) fn sweep(
                     task_id: entry.task_id.clone(),
                     bytes: freed,
                     rule: Rule::Budget,
+                    unreadable,
                 });
             }
             Err(error) => report.failures.push(error),
@@ -1212,6 +1226,7 @@ fn collect(
                         task_id: Some(task_id.clone()),
                         bytes,
                         rule: Rule::Collection,
+                        unreadable: None,
                     });
                     stock.entries.retain(|entry| {
                         !(entry.kind == Kind::Task
@@ -1250,6 +1265,7 @@ fn collect(
                     task_id: None,
                     bytes: entry.bytes,
                     rule: Rule::Collection,
+                    unreadable: None,
                 });
                 taken.push(entry.path.clone());
             }
@@ -1276,6 +1292,7 @@ fn collect(
                     task_id: None,
                     bytes: entry.bytes,
                     rule: Rule::Collection,
+                    unreadable: None,
                 });
                 taken.push(entry.path.clone());
             }
@@ -1406,10 +1423,30 @@ fn evict(
         }
         Kind::TaskStore => Err(failed("a Task Store is never removed whole".into())),
         Kind::ProjectStore => Err(failed("a Project Store is never evicted".into())),
-        Kind::Survey => evict_survey(stock, entry).map_err(failed),
+        Kind::Survey => evict_survey(stock, entry, true)
+            .map(|taken| taken.bytes)
+            .map_err(failed),
         Kind::Claim => Err(failed(
             "a claim is finished by recovery, never evicted".into(),
         )),
+    }
+}
+
+/// [`evict`] when `apply`, otherwise what it would free; for a Survey, taken or previewed through
+/// its record, also why it is collected `unreadable` when it is.
+fn evict_marked(
+    roots: &Roots,
+    policy: &StoragePolicy,
+    stock: &Inventory,
+    entry: &Entry,
+    apply: bool,
+) -> Result<(u64, Option<String>), String> {
+    match (entry.kind, apply) {
+        (Kind::Survey, _) => evict_survey(stock, entry, apply)
+            .map(|taken| (taken.bytes, taken.unreadable))
+            .map_err(|error| format!("removing {}: {error}", entry.path.display())),
+        (_, true) => evict(roots, policy, stock, entry).map(|freed| (freed, None)),
+        (_, false) => Ok((entry.bytes, None)),
     }
 }
 
@@ -1456,7 +1493,7 @@ fn remove_directory(
 pub(crate) fn report_to_stderr(report: &SweepReport) {
     for removal in &report.removals {
         eprintln!(
-            "af storage: {} {} {}{} ({}, {})",
+            "af storage: {} {} {}{} ({}, {}){}",
             if report.applied {
                 "removed"
             } else {
@@ -1474,8 +1511,12 @@ pub(crate) fn report_to_stderr(report: &SweepReport) {
                 Rule::Collection => "collection",
                 Rule::Budget => "budget",
                 Rule::Recovery => "recovery",
-            }
+            },
+            unreadable_note(removal)
         );
+    }
+    for held in &report.held {
+        eprintln!("af storage: {}", held_line(held));
     }
     for cleanup in &report.gate_cleanups {
         eprintln!(
@@ -2147,7 +2188,7 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
     let verb = if apply { "removed" } else { "would remove" };
     for removal in &report.removals {
         println!(
-            "{verb} {} {}{} {} ({})",
+            "{verb} {} {}{} {} ({}){}",
             removal.kind.as_str(),
             removal.path.display(),
             removal
@@ -2160,8 +2201,12 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
                 Rule::Collection => "collection",
                 Rule::Budget => "budget",
                 Rule::Recovery => "recovery",
-            }
+            },
+            unreadable_note(removal)
         );
+    }
+    for held in &report.held {
+        println!("{}", held_line(held));
     }
     for path in &report.registry_dropped {
         println!(
@@ -2288,16 +2333,33 @@ fn collect_surveys(
             now,
             apply,
         ) {
-            Ok(collected) => {
-                for (object, bytes) in collected {
+            Ok(pass) => {
+                for collected in pass.taken {
                     report.removals.push(Removal {
                         kind: Kind::Survey,
-                        path: object.clone(),
+                        path: collected.object.clone(),
                         task_id: None,
-                        bytes,
+                        bytes: collected.bytes,
                         rule: Rule::Collection,
+                        unreadable: collected.unreadable,
                     });
-                    taken.insert(object);
+                    taken.insert(collected.object);
+                }
+                for (object, bytes) in pass.held {
+                    report.held.push(Held {
+                        kind: Kind::Survey,
+                        path: object,
+                        bytes,
+                        reason: format!(
+                            "{}; the next pass tries again",
+                            crate::projects::survey::collect::HELD
+                        ),
+                    });
+                }
+                for (object, why) in pass.refused {
+                    report
+                        .failures
+                        .push(format!("collecting {}: {why}", object.display()));
                 }
             }
             Err(error) => report.failures.push(format!(
@@ -2311,13 +2373,40 @@ fn collect_surveys(
         .retain(|entry| !(entry.kind == Kind::Survey && taken.contains(&entry.path)));
 }
 
-/// The budget's eviction of one Survey: only from the Project Store inventory reached, through
-/// its tombstone and deletion, its protection read again under the Store's lock.
-fn evict_survey(stock: &Inventory, entry: &Entry) -> Result<u64, String> {
+/// The budget's eviction of one Survey, or its preview: only from the Project Store inventory
+/// reached, through its tombstone and its deletion through descriptors, its protection read
+/// again under the Store's lock.
+fn evict_survey(
+    stock: &Inventory,
+    entry: &Entry,
+    apply: bool,
+) -> Result<crate::projects::survey::collect::Taken, String> {
     let (project, survey_id) = crate::projects::survey::collect::survey_of_object(&entry.path)
         .ok_or("names no Survey of a Project Store")?;
-    stock.still_the_store(&project)?;
-    crate::projects::survey::collect::collect_one(&project, &survey_id)
+    if apply {
+        stock.still_the_store(&project)?;
+    }
+    crate::projects::survey::collect::collect_one(&project, &survey_id, apply)
+}
+
+/// The note a removal line gives a Survey collected `unreadable`.
+fn unreadable_note(removal: &Removal) -> String {
+    removal
+        .unreadable
+        .as_deref()
+        .map(|why| format!(": collected (unreadable), {why}"))
+        .unwrap_or_default()
+}
+
+/// The line that says an entry was chosen and left because a lock holds it.
+fn held_line(held: &Held) -> String {
+    format!(
+        "held {} {} ({}): {}",
+        held.kind.as_str(),
+        held.path.display(),
+        human_bytes(held.bytes),
+        held.reason
+    )
 }
 
 /// Finish the Survey collections an interruption left between a tombstone and its deletion, in
@@ -2335,16 +2424,22 @@ fn finish_collected_surveys(roots: &Roots, report: &mut SweepReport) {
             continue;
         }
         match crate::projects::survey::collect::finish_collected(&entry.path) {
-            Ok(finished) => {
-                for (object, bytes) in finished {
-                    report.total_before = report.total_before.saturating_add(bytes);
+            Ok(pass) => {
+                for finished in pass.taken {
+                    report.total_before = report.total_before.saturating_add(finished.bytes);
                     report.removals.push(Removal {
                         kind: Kind::Survey,
-                        path: object,
+                        path: finished.object,
                         task_id: None,
-                        bytes,
+                        bytes: finished.bytes,
                         rule: Rule::Recovery,
+                        unreadable: None,
                     });
+                }
+                for (object, why) in pass.refused {
+                    report
+                        .failures
+                        .push(format!("finishing {}: {why}", object.display()));
                 }
             }
             Err(error) => report.failures.push(format!(

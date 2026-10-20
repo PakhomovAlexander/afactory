@@ -12,22 +12,38 @@
 //! beside the run `project` the Surveyor appends its chain to: a `SurveyRecorded@1` a tombstone
 //! names replays as collected, and `previous_survey_id` is a name, never a reachability edge.
 //!
+//! A record is reached, read and deleted through directory descriptors, ADR-0144's removal
+//! boundary: the Project Store from `/`, then `cas`, `objects` and the digest-prefix directory,
+//! each opened without following a link, the object opened and unlinked relative to its prefix
+//! directory. A link anywhere on that way, or a directory on another device than the Store,
+//! refuses the Survey, which is reported and keeps its record and its place in the log. So does a
+//! record the file system will not let af read; a record whose bytes were read and are no Survey
+//! is collected with an `unreadable` tombstone, since reclaiming corrupt bytes is the budget's
+//! job.
+//!
 //! The pattern rules of clause 14 live here too: a `[survey]` pattern is at most
-//! [`MAX_PATTERN_BYTES`] and a list at most [`MAX_PATTERNS`], and the loop that applies patterns
-//! checks the Survey's Clock between matches.
+//! [`MAX_PATTERN_BYTES`] and a list at most [`MAX_PATTERNS`], and the measurement's one pattern
+//! loop checks the Survey's deadline before each match.
 
 use std::collections::BTreeSet;
+use std::io::Read;
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use review_core::EventType;
 use review_core::project::{
     ProjectSurveyV1, SurveyCollectedHistoryV1, SurveyCollectedPayloadV1, SurveyCollectedTreeV1,
-    SurveyCompletenessV1, SurveyRecordedPayloadV1,
+    SurveyCompletenessV1, SurveyReasonV1, SurveyRecordedPayloadV1,
 };
+use review_sandbox::Identity;
 use review_store::{Cas, EventStore, NewEvent};
 
-use super::super::{Log, ProjectStore, RUN_ID};
-use super::measure::Clock;
+use super::super::{Git, Log, ProjectStore, RUN_ID};
+use super::measure::{Basis, Failure, Sections};
+use super::policy::Policy;
 
 /// The run of a Project Store's log that holds its Surveys' tombstones.
 pub(crate) const COLLECTION_RUN: &str = "survey-collection";
@@ -40,9 +56,11 @@ pub(crate) const MAX_PATTERN_BYTES: usize = 256;
 /// Upper bound on the patterns of one `[survey]` list.
 pub(crate) const MAX_PATTERNS: usize = 64;
 /// Why a held Project Store's Surveys stay.
-const HELD: &str = "a refresh or a plan holds its Project Store";
+pub(crate) const HELD: &str = "a refresh or a plan holds its Project Store";
 /// Why the newest complete Survey stays.
 const NEWEST_COMPLETE: &str = "the newest complete Survey of its Project";
+/// Upper bound on the reason an `unreadable` tombstone carries.
+const MAX_UNREADABLE_BYTES: usize = review_core::project::MAX_SURVEY_TEXT_BYTES;
 
 /// Where the CAS of the Project Store at `store` keeps the record `survey_id`.
 pub(crate) fn object_path(store: &Path, survey_id: &str) -> PathBuf {
@@ -62,6 +80,188 @@ pub(crate) fn survey_of_object(object: &Path) -> Option<(PathBuf, String)> {
     let survey_id = format!("sha256:{prefix}{rest}");
     (review_core::is_digest(&survey_id) && object_path(store, &survey_id) == object)
         .then(|| (store.to_path_buf(), survey_id))
+}
+
+/// One Survey's record, reached through directory descriptors (ADR-0144 clause 3): the Project
+/// Store from `/` and `cas`, `objects` and the digest-prefix directory below it, each opened
+/// `O_NOFOLLOW | O_DIRECTORY`, and the object stated without following it. It is read and
+/// unlinked relative to `prefix`, never through a path.
+struct Record {
+    /// The digest-prefix directory.
+    prefix: OwnedFd,
+    /// The object's name in it.
+    name: String,
+    /// The object as it was stated.
+    identity: Identity,
+    /// Allocated bytes of the object.
+    bytes: u64,
+}
+
+/// The record `survey_id` of the Project Store at `store`; `None` when the CAS does not hold it.
+/// A symbolic link in place of the Store's path, `cas`, `objects`, the prefix directory or the
+/// object, a directory on another device than the Store's, or an object that is no regular file
+/// is the error: the record is never reached through it.
+fn locate(store: &Path, survey_id: &str) -> Result<Option<Record>, String> {
+    use nix::fcntl::AtFlags;
+    use nix::sys::stat::{SFlag, fstatat};
+    let hex = survey_id
+        .strip_prefix("sha256:")
+        .filter(|_| review_core::is_digest(survey_id))
+        .ok_or_else(|| format!("`{survey_id}` names no CAS object"))?;
+    let (prefix_name, name) = hex.split_at(2);
+    let relative = store
+        .strip_prefix("/")
+        .map_err(|_| "its Project Store is not named by an absolute path".to_string())?;
+    let root = review_sandbox::open_anchor(Path::new("/"))
+        .map_err(|error| format!("opening `/`: {error}"))?;
+    let directory = review_sandbox::open_beneath(&root, relative)
+        .map_err(|error| format!("its Project Store cannot be reached without a link: {error}"))?;
+    let objects = review_sandbox::open_beneath(&directory, Path::new("cas/objects"))
+        .map_err(|error| format!("its CAS objects directory is refused: {error}"))?;
+    let prefix = match review_sandbox::open_beneath(&objects, Path::new(prefix_name)) {
+        Ok(prefix) => prefix,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("its CAS prefix directory is refused: {error}")),
+    };
+    let device = |descriptor: &OwnedFd| {
+        Identity::of_descriptor(descriptor)
+            .map(|identity| identity.device)
+            .map_err(|error| format!("inspecting its CAS: {error}"))
+    };
+    let store_device = device(&directory)?;
+    if device(&objects)? != store_device || device(&prefix)? != store_device {
+        return Err(format!(
+            "its CAS prefix directory `{prefix_name}` resolves outside its Project Store"
+        ));
+    }
+    let stat = match fstatat(&prefix, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(stat) => stat,
+        Err(nix::errno::Errno::ENOENT) => return Ok(None),
+        Err(errno) => return Err(format!("inspecting its record: {errno}")),
+    };
+    let kind = SFlag::from_bits_truncate(stat.st_mode as nix::libc::mode_t) & SFlag::S_IFMT;
+    if kind == SFlag::S_IFLNK {
+        return Err("its record is a symbolic link; af never reads or removes through one".into());
+    }
+    if kind != SFlag::S_IFREG {
+        return Err("its record is not a regular file".into());
+    }
+    #[allow(clippy::unnecessary_cast)]
+    let bytes = (stat.st_blocks as u64).saturating_mul(512);
+    Ok(Some(Record {
+        prefix,
+        name: name.to_string(),
+        identity: Identity::of_stat(&stat),
+        bytes,
+    }))
+}
+
+impl Record {
+    /// The record's bytes, read from the object opened relative to its prefix directory without
+    /// following a link, the same file [`locate`] stated; at most one byte beyond the largest
+    /// record a Survey can be.
+    fn read(&self) -> std::io::Result<Vec<u8>> {
+        use nix::fcntl::{OFlag, openat};
+        let descriptor = openat(
+            &self.prefix,
+            self.name.as_str(),
+            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            nix::sys::stat::Mode::empty(),
+        )?;
+        let file = std::fs::File::from(descriptor);
+        if Identity::of_descriptor(&file)? != self.identity {
+            return Err(std::io::Error::other(
+                "the record changed since it was found",
+            ));
+        }
+        let mut bytes = Vec::new();
+        file.take(largest_record().saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    /// Unlink the object relative to its prefix directory, only while its name still holds the
+    /// file [`locate`] stated. Returns its allocated bytes.
+    fn unlink(self) -> Result<u64, String> {
+        use nix::fcntl::AtFlags;
+        use nix::unistd::{UnlinkatFlags, unlinkat};
+        let now = nix::sys::stat::fstatat(
+            &self.prefix,
+            self.name.as_str(),
+            AtFlags::AT_SYMLINK_NOFOLLOW,
+        )
+        .map_err(|errno| format!("inspecting its record: {errno}"))?;
+        if Identity::of_stat(&now) != self.identity {
+            return Err("its record changed since it was found, so it is left".into());
+        }
+        unlinkat(&self.prefix, self.name.as_str(), UnlinkatFlags::NoRemoveDir)
+            .map_err(|errno| format!("deleting its record: {errno}"))?;
+        Ok(self.bytes)
+    }
+}
+
+/// The most bytes a Survey's record can hold: the ceiling of `max_survey_bytes`.
+fn largest_record() -> u64 {
+    Policy::default().max_survey_bytes
+}
+
+/// `text` cut at a character boundary to what an `unreadable` tombstone holds.
+fn bounded(text: String) -> String {
+    let mut end = text.len().min(MAX_UNREADABLE_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
+/// What a Survey's record says for its tombstone: the totals of `tree` and `history`, or, when
+/// its bytes are no Survey, why, in af's own words, never the bytes themselves.
+fn totals(
+    survey_id: &str,
+    bytes: &[u8],
+) -> Result<
+    (
+        Option<SurveyCollectedTreeV1>,
+        Option<SurveyCollectedHistoryV1>,
+    ),
+    String,
+> {
+    if bytes.len() as u64 > largest_record() {
+        return Err(bounded(format!(
+            "its record holds more than {} bytes, more than any Survey",
+            largest_record()
+        )));
+    }
+    if review_store::canonical::blob_content_id(bytes) != survey_id {
+        return Err("its bytes do not match its digest".into());
+    }
+    let survey: ProjectSurveyV1 = serde_json::from_slice(bytes).map_err(|error| {
+        let category = match error.classify() {
+            serde_json::error::Category::Io => "a read",
+            serde_json::error::Category::Syntax => "a syntax",
+            serde_json::error::Category::Data => "a data",
+            serde_json::error::Category::Eof => "an end-of-input",
+        };
+        bounded(format!(
+            "its bytes are not a Survey record: {category} error at line {}, column {}",
+            error.line(),
+            error.column()
+        ))
+    })?;
+    let tree = survey.tree.body.as_ref().map(|tree| SurveyCollectedTreeV1 {
+        files: tree.files,
+        bytes: tree.bytes,
+        lines: tree.lines,
+    });
+    let history = survey
+        .history
+        .body
+        .as_ref()
+        .map(|history| SurveyCollectedHistoryV1 {
+            commits: history.commits,
+            merges: history.merges,
+        });
+    Ok((tree, history))
 }
 
 /// The tombstones of a Project Store's log, in order.
@@ -126,8 +326,9 @@ pub(crate) struct Inventoried {
 }
 
 /// The Surveys whose records the Project Store at `store` still holds, oldest first: a Survey
-/// a tombstone names is among them only while an interrupted collection left its bytes. Reads
-/// only.
+/// a tombstone names is among them only while an interrupted collection left its bytes. A
+/// record that cannot be reached without a link is listed in use, with nothing measured through
+/// the link. Reads only.
 pub(crate) fn inventory(store: &Path) -> Result<Vec<Inventoried>, String> {
     let events = EventStore::open_read_only(store.join("events.sqlite"))
         .map_err(|error| error.to_string())?;
@@ -137,13 +338,14 @@ pub(crate) fn inventory(store: &Path) -> Result<Vec<Inventoried>, String> {
     let protected = newest_complete(&log);
     let mut surveys = Vec::new();
     for recorded in oldest_first(&log) {
-        let object = object_path(store, &recorded.survey_id);
-        if std::fs::symlink_metadata(&object).is_err() {
-            continue;
-        }
-        let bytes = review_sandbox::storage::allocated_bytes(&object)
-            .map_err(|error| format!("measuring Survey {}: {error}", recorded.survey_id))?;
-        let in_use = if held {
+        let (bytes, refused) = match locate(store, &recorded.survey_id) {
+            Ok(None) => continue,
+            Ok(Some(record)) => (record.bytes, None),
+            Err(reason) => (0, Some(format!("its record is left: {reason}"))),
+        };
+        let in_use = if refused.is_some() {
+            refused
+        } else if held {
             Some(HELD.to_string())
         } else if !collected.contains(&recorded.survey_id)
             && protected == Some(recorded.survey_id.as_str())
@@ -153,7 +355,7 @@ pub(crate) fn inventory(store: &Path) -> Result<Vec<Inventoried>, String> {
             None
         };
         surveys.push(Inventoried {
-            object,
+            object: object_path(store, &recorded.survey_id),
             bytes,
             last_use_unix_ms: cutoff_ms(recorded),
             in_use,
@@ -188,17 +390,19 @@ fn beyond_limit<'a>(
         .collect()
 }
 
-/// The Project Store at `store`, held for collection without waiting: a Store a refresh or a
-/// plan holds is left for the next pass.
-fn hold(store: &Path) -> Result<ProjectStore, String> {
+/// The Project Store at `store`, held for collection without waiting; `None` while a refresh or
+/// a plan holds it, so it is left for the next pass.
+fn hold(store: &Path) -> Result<Option<ProjectStore>, String> {
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(store.join(LOCK))
         .map_err(|error| format!("opening its lock: {error}"))?;
-    let lock = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
-        .map_err(|_| format!("{HELD} now; the next pass tries again"))?;
+    let Ok(lock) = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
+    else {
+        return Ok(None);
+    };
     let cas = Cas::open_existing(store.join("cas")).map_err(|error| error.to_string())?;
     let events =
         EventStore::open(store.join("events.sqlite")).map_err(|error| error.to_string())?;
@@ -206,13 +410,13 @@ fn hold(store: &Path) -> Result<ProjectStore, String> {
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or("a Project Store is named by its hex")?;
-    Ok(ProjectStore {
+    Ok(Some(ProjectStore {
         directory: store.to_path_buf(),
         project_id: format!("sha256:{name}"),
         cas,
         events,
         _lock: lock,
-    })
+    }))
 }
 
 /// A debug build's fixture may stop a collection after its tombstones, as an interruption
@@ -228,87 +432,116 @@ fn stop_after_tombstones() -> bool {
     }
 }
 
-/// The tombstone of `recorded`, with the totals its record holds when it can be read.
-fn tombstone_of(
-    store: &ProjectStore,
+/// One Survey a collection took, or would take.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Taken {
+    /// The CAS object of its record.
+    pub(crate) object: PathBuf,
+    /// The allocated bytes its record held: what its deletion frees.
+    pub(crate) bytes: u64,
+    /// Why its record's bytes are no Survey, when it was collected `unreadable`.
+    pub(crate) unreadable: Option<String>,
+}
+
+/// What a collection did, or would do, with the Surveys it chose in one Project Store.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Pass {
+    pub(crate) taken: Vec<Taken>,
+    /// Chosen and left because a refresh or a plan holds the Store: each record's object and
+    /// its bytes. Nothing was written.
+    pub(crate) held: Vec<(PathBuf, u64)>,
+    /// Chosen and refused: each record's object and why. Its Survey keeps its record, and the
+    /// log gains no tombstone for it, unless the reason says one was recorded.
+    pub(crate) refused: Vec<(PathBuf, String)>,
+}
+
+/// Take one Survey of the Project Store at `directory`: its record found through descriptors and
+/// read for its tombstone, then, when `store` holds the Store (an applied pass), the tombstone
+/// appended and the record unlinked. A record that cannot be reached without a link, or that the
+/// file system will not let af read, refuses the Survey with nothing written; one whose bytes are
+/// no Survey, or that is gone from the CAS, is collected with `unreadable`.
+fn take(
+    directory: &Path,
+    store: Option<&mut ProjectStore>,
     recorded: &SurveyRecordedPayloadV1,
-) -> SurveyCollectedPayloadV1 {
-    let survey: Option<ProjectSurveyV1> = store
-        .cas
-        .get(&recorded.survey_id)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-    let tree = survey
-        .as_ref()
-        .and_then(|survey| survey.tree.body.as_ref())
-        .map(|tree| SurveyCollectedTreeV1 {
-            files: tree.files,
-            bytes: tree.bytes,
-            lines: tree.lines,
+) -> Result<Taken, String> {
+    let survey_id = recorded.survey_id.as_str();
+    let record = locate(directory, survey_id)?;
+    let read = match &record {
+        None => Err("its record is not in the CAS".to_string()),
+        Some(record) => match record.read() {
+            Ok(bytes) => totals(survey_id, &bytes),
+            Err(error) => {
+                return Err(format!("its record cannot be read, so it is kept: {error}"));
+            }
+        },
+    };
+    let bytes = record.as_ref().map_or(0, |record| record.bytes);
+    let (tree, history, unreadable) = match read {
+        Ok((tree, history)) => (tree, history, None),
+        Err(why) => (None, None, Some(why)),
+    };
+    let object = object_path(directory, survey_id);
+    let Some(store) = store else {
+        return Ok(Taken {
+            object,
+            bytes,
+            unreadable,
         });
-    let history = survey
-        .as_ref()
-        .and_then(|survey| survey.history.body.as_ref())
-        .map(|history| SurveyCollectedHistoryV1 {
-            commits: history.commits,
-            merges: history.merges,
-        });
-    SurveyCollectedPayloadV1 {
-        survey_id: recorded.survey_id.clone(),
+    };
+    let tombstone = SurveyCollectedPayloadV1 {
+        survey_id: survey_id.to_string(),
         head: recorded.head.clone(),
         cutoff_unix_s: recorded.cutoff_unix_s,
         completeness: recorded.completeness,
         tree,
         history,
+        unreadable: unreadable.clone(),
         collected_unix_ms: crate::storage::now_unix_ms().into(),
-    }
+    };
+    tombstone.validate()?;
+    let event = NewEvent::new(
+        EventType::SurveyCollectedV1,
+        serde_json::to_value(&tombstone).map_err(|error| error.to_string())?,
+    )
+    .at(review_core::task::collection::collected_time(
+        crate::storage::now_unix_ms(),
+    ));
+    store
+        .events
+        .append(COLLECTION_RUN, &store.cas, event)
+        .map_err(|error| format!("recording SurveyCollected@1: {error}"))?;
+    let bytes = match record {
+        Some(_) if stop_after_tombstones() => 0,
+        Some(record) => record.unlink().map_err(|error| {
+            format!("{error}; its tombstone is recorded, and the next pass deletes it")
+        })?,
+        None => 0,
+    };
+    Ok(Taken {
+        object,
+        bytes,
+        unreadable,
+    })
 }
 
-/// Delete the record `survey_id` from the CAS of a held Store; the bytes it held, 0 when it was
-/// gone already.
-fn delete(store: &ProjectStore, survey_id: &str) -> Result<u64, String> {
-    let object = object_path(&store.directory, survey_id);
-    let bytes = review_sandbox::storage::allocated_bytes(&object).unwrap_or(0);
-    match store.cas.remove_unreachable(survey_id) {
-        Ok(_) => Ok(bytes),
-        Err(review_store::CasError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            Ok(0)
-        }
-        Err(error) => Err(format!("deleting Survey {survey_id}: {error}")),
-    }
-}
-
-/// Tombstone, then delete, each of `chosen` in a held Store: the tombstone is in the log before
-/// the bytes go, so an interruption between the two leaves what the next pass finishes. Returns
-/// each record's object and the bytes deleted.
-fn collect_held(
-    store: &mut ProjectStore,
+/// [`take`] each of `chosen`, one at a time: a refused Survey is reported and the rest go on.
+fn take_each(
+    directory: &Path,
+    mut store: Option<&mut ProjectStore>,
     chosen: &[&SurveyRecordedPayloadV1],
-) -> Result<Vec<(PathBuf, u64)>, String> {
-    let mut taken = Vec::new();
+) -> Pass {
+    let mut pass = Pass::default();
     for recorded in chosen {
-        let tombstone = tombstone_of(store, recorded);
-        tombstone.validate()?;
-        let event = NewEvent::new(
-            EventType::SurveyCollectedV1,
-            serde_json::to_value(&tombstone).map_err(|error| error.to_string())?,
-        )
-        .at(review_core::task::collection::collected_time(
-            crate::storage::now_unix_ms(),
-        ));
-        store
-            .events
-            .append(COLLECTION_RUN, &store.cas, event)
-            .map_err(|error| format!("recording SurveyCollected@1: {error}"))?;
-        let object = object_path(&store.directory, &recorded.survey_id);
-        let bytes = if stop_after_tombstones() {
-            0
-        } else {
-            delete(store, &recorded.survey_id)?
-        };
-        taken.push((object, bytes));
+        match take(directory, store.as_deref_mut(), recorded) {
+            Ok(taken) => pass.taken.push(taken),
+            Err(why) => pass.refused.push((
+                object_path(directory, &recorded.survey_id),
+                format!("Survey {} is refused: {why}", recorded.survey_id),
+            )),
+        }
     }
-    Ok(taken)
+    pass
 }
 
 /// The log and tombstones of a held Store.
@@ -316,49 +549,89 @@ fn read_held(store: &ProjectStore) -> Result<(Log, BTreeSet<String>), String> {
     Ok((store.log()?, collected_ids(&store.events)?))
 }
 
-/// The collection pass's Surveys of the Project Store at `store`, as [`beyond_limit`] chooses
-/// them from a read-only look: previewed when `apply` is off, otherwise chosen again and
-/// collected under the Store's lock, which is taken only when the look chose any. Returns each
-/// record's object and its bytes.
+/// The collection pass in the Project Store at `store`: the Surveys [`beyond_limit`] chooses from
+/// a read-only look, previewed when `apply` is off, otherwise chosen again and taken under the
+/// Store's lock, which is taken only when the look chose any. Preview and pass apply the same
+/// lock check: while a refresh or a plan holds the Store, every Survey the look chose is listed
+/// held and nothing else is done.
 pub(crate) fn collect_beyond_limit(
     store: &Path,
     keep_surveys: usize,
     idle_ms: u64,
     now_ms: u64,
     apply: bool,
-) -> Result<Vec<(PathBuf, u64)>, String> {
-    let planned: Vec<(PathBuf, u64)> = {
+) -> Result<Pass, String> {
+    let chosen: Vec<SurveyRecordedPayloadV1> = {
         let events = EventStore::open_read_only(store.join("events.sqlite"))
             .map_err(|error| error.to_string())?;
         let log = Log::fold(&events.replay(RUN_ID).map_err(|error| error.to_string())?)?;
         let collected = collected_ids(&events)?;
         beyond_limit(&log, &collected, keep_surveys, idle_ms, now_ms)
             .into_iter()
-            .map(|recorded| {
-                let object = object_path(store, &recorded.survey_id);
-                let bytes = review_sandbox::storage::allocated_bytes(&object).unwrap_or(0);
-                (object, bytes)
-            })
+            .cloned()
             .collect()
     };
-    if !apply || planned.is_empty() {
-        return Ok(planned);
+    if chosen.is_empty() {
+        return Ok(Pass::default());
     }
-    let mut held = hold(store)?;
+    let all_held = || Pass {
+        held: chosen
+            .iter()
+            .map(|recorded| {
+                let bytes = locate(store, &recorded.survey_id)
+                    .ok()
+                    .flatten()
+                    .map_or(0, |record| record.bytes);
+                (object_path(store, &recorded.survey_id), bytes)
+            })
+            .collect(),
+        ..Pass::default()
+    };
+    if !apply {
+        if lock_held(store) {
+            return Ok(all_held());
+        }
+        return Ok(take_each(store, None, &chosen.iter().collect::<Vec<_>>()));
+    }
+    let Some(mut held) = hold(store)? else {
+        return Ok(all_held());
+    };
     let (log, collected) = read_held(&held)?;
     let chosen = beyond_limit(&log, &collected, keep_surveys, idle_ms, now_ms);
-    collect_held(&mut held, &chosen)
+    Ok(take_each(store, Some(&mut held), &chosen))
 }
 
-/// The budget's eviction of one Survey: under the Store's lock, its protection read again (a
-/// newer complete Survey may have been recorded since inventory, this one may have become the
-/// newest complete one), then tombstoned and deleted. A Survey already tombstoned has its
-/// bytes deleted. Returns the bytes deleted.
-pub(crate) fn collect_one(store: &Path, survey_id: &str) -> Result<u64, String> {
-    let mut held = hold(store)?;
+/// The budget's eviction of one Survey, or its preview when `apply` is off: under the Store's
+/// lock, its protection read again (a newer complete Survey may have been recorded since
+/// inventory, this one may have become the newest complete one), then [`take`]n. A Survey
+/// already tombstoned has its record deleted.
+pub(crate) fn collect_one(store: &Path, survey_id: &str, apply: bool) -> Result<Taken, String> {
+    if !apply {
+        let events = EventStore::open_read_only(store.join("events.sqlite"))
+            .map_err(|error| error.to_string())?;
+        let log = Log::fold(&events.replay(RUN_ID).map_err(|error| error.to_string())?)?;
+        let recorded = log
+            .chain()
+            .into_iter()
+            .find(|recorded| recorded.survey_id == survey_id)
+            .cloned()
+            .ok_or_else(|| format!("its Project Store records no Survey {survey_id}"))?;
+        return take(store, None, &recorded);
+    }
+    let Some(mut held) = hold(store)? else {
+        return Err(format!("{HELD} now; the next pass tries again"));
+    };
     let (log, collected) = read_held(&held)?;
     if collected.contains(survey_id) {
-        return delete(&held, survey_id);
+        let bytes = match locate(store, survey_id)? {
+            Some(record) => record.unlink()?,
+            None => 0,
+        };
+        return Ok(Taken {
+            object: object_path(store, survey_id),
+            bytes,
+            unreadable: None,
+        });
     }
     if newest_complete(&log) == Some(survey_id) {
         return Err(format!(
@@ -371,14 +644,14 @@ pub(crate) fn collect_one(store: &Path, survey_id: &str) -> Result<u64, String> 
         .find(|recorded| recorded.survey_id == survey_id)
         .cloned()
         .ok_or_else(|| format!("its Project Store records no Survey {survey_id}"))?;
-    let taken = collect_held(&mut held, &[&recorded])?;
-    Ok(taken.into_iter().map(|(_, bytes)| bytes).sum())
+    take(store, Some(&mut held), &recorded)
 }
 
 /// Finish what an interrupted collection left: the records of tombstoned Surveys still in the
-/// CAS of the Project Store at `store` are deleted. A Store a refresh or a plan holds is left
-/// for the next pass. Returns each record's object and the bytes deleted.
-pub(crate) fn finish_collected(store: &Path) -> Result<Vec<(PathBuf, u64)>, String> {
+/// CAS of the Project Store at `store` are deleted through descriptors, and one that cannot be
+/// reached without a link is refused. A Store a refresh or a plan holds is left for the next
+/// pass.
+pub(crate) fn finish_collected(store: &Path) -> Result<Pass, String> {
     let left: Vec<String> = {
         let events = EventStore::open_read_only(store.join("events.sqlite"))
             .map_err(|error| error.to_string())?;
@@ -386,28 +659,36 @@ pub(crate) fn finish_collected(store: &Path) -> Result<Vec<(PathBuf, u64)>, Stri
         tombstones(&events)?
             .into_iter()
             .map(|tombstone| tombstone.survey_id)
-            .filter(|survey_id| std::fs::symlink_metadata(object_path(store, survey_id)).is_ok())
+            .filter(|survey_id| !matches!(locate(store, survey_id), Ok(None)))
             .collect()
     };
     if left.is_empty() || lock_held(store) {
-        return Ok(Vec::new());
+        return Ok(Pass::default());
     }
-    let held = match hold(store) {
-        Ok(held) => held,
-        Err(_) => return Ok(Vec::new()),
+    let Some(held) = hold(store)? else {
+        return Ok(Pass::default());
     };
     let collected = collected_ids(&held.events)?;
-    let mut finished = Vec::new();
+    let mut pass = Pass::default();
     for survey_id in left
         .iter()
         .filter(|survey_id| collected.contains(*survey_id))
     {
-        let bytes = delete(&held, survey_id)?;
-        if bytes > 0 {
-            finished.push((object_path(store, survey_id), bytes));
+        let object = object_path(store, survey_id);
+        match locate(store, survey_id).and_then(|record| record.map(Record::unlink).transpose()) {
+            Ok(None) => {}
+            Ok(Some(bytes)) => pass.taken.push(Taken {
+                object,
+                bytes,
+                unreadable: None,
+            }),
+            Err(why) => pass.refused.push((
+                object,
+                format!("the record of collected Survey {survey_id} is left: {why}"),
+            )),
         }
     }
-    Ok(finished)
+    Ok(pass)
 }
 
 /// The log and the tombstones of the invoking checkout's Project Store, read-only; `None` when
@@ -474,7 +755,8 @@ pub(crate) fn run(command: crate::cli::ProjectCommand) -> Result<i32, String> {
 }
 
 /// `af project history` in text: the chain newest first, a collected Survey answered from its
-/// tombstone and marked `collected`.
+/// tombstone and marked `collected`, or `collected (unreadable)` when its record's bytes were no
+/// Survey.
 fn history_lines(log: &Log, tombstones: &[SurveyCollectedPayloadV1]) -> Vec<String> {
     let chain = log.chain();
     let mut lines = vec![format!(
@@ -507,12 +789,17 @@ fn history_lines(log: &Log, tombstones: &[SurveyCollectedPayloadV1]) -> Vec<Stri
                     )
                     .collect();
                 format!(
-                    "{}  {}  head {}  cutoff {}  {}  collected {}{}",
+                    "{}  {}  head {}  cutoff {}  {}  collected {}{}{}",
                     tombstone.survey_id,
                     time(recorded.recorded_unix_ms.get()),
                     short(&tombstone.head),
                     time(tombstone.cutoff_unix_s.get().saturating_mul(1000)),
                     tombstone.completeness.as_str(),
+                    if tombstone.unreadable.is_some() {
+                        "(unreadable) "
+                    } else {
+                        ""
+                    },
                     time(tombstone.collected_unix_ms.get()),
                     if totals.is_empty() {
                         String::new()
@@ -551,25 +838,184 @@ pub(crate) fn check_patterns(key: &str, patterns: &[String]) -> Result<(), Strin
     Ok(())
 }
 
-/// Whether any of `patterns` matches `text`, checking the Survey's Clock before each match:
-/// `None` when the deadline passed first. Each match is bounded by
+/// A test's hook, run as each match begins with how many have begun.
+#[cfg(test)]
+type BeforeMatch = Box<dyn FnMut(u64) + Send>;
+
+/// What the pattern matches of one Survey did: how many patterns were matched, and whether the
+/// deadline cut a list short.
+#[derive(Default)]
+pub(super) struct Matches {
+    matched: AtomicU64,
+    cut: AtomicBool,
+    #[cfg(test)]
+    before_match: Mutex<Option<BeforeMatch>>,
+}
+
+impl Matches {
+    fn begin(&self) {
+        let _begun = self.matched.fetch_add(1, Ordering::Relaxed) + 1;
+        #[cfg(test)]
+        if let Some(hook) = self
+            .before_match
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_mut()
+        {
+            hook(_begun);
+        }
+    }
+
+    /// Patterns matched so far.
+    #[cfg(test)]
+    fn matched(&self) -> u64 {
+        self.matched.load(Ordering::Relaxed)
+    }
+
+    /// Whether the deadline cut a pattern list short.
+    fn cut(&self) -> bool {
+        self.cut.load(Ordering::Relaxed)
+    }
+}
+
+/// Whether any of `patterns` matches `text`, checking `deadline`, the Survey's one deadline,
+/// before each match: `None` when it passed first. Each match is bounded by
 /// `crate::project::glob_matches`'s cells, so the wall time past the deadline is one match.
-/// The measurement's own pattern loop calls it once `measure.rs` is next changed; until then
-/// only its tests do, and the expectation below fails the build the day it is called.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "measure.rs adopts it in the next Surveyor round")
-)]
-pub(super) fn any_match_within(patterns: &[String], text: &str, clock: &Clock) -> Option<bool> {
+pub(super) fn any_match_within(
+    patterns: &[String],
+    text: &str,
+    deadline: Instant,
+    matches: &Matches,
+) -> Option<bool> {
     for pattern in patterns {
-        if clock.item() {
+        if Instant::now() >= deadline {
             return None;
         }
+        matches.begin();
         if crate::project::glob_matches(pattern, text) {
             return Some(true);
         }
     }
     Some(false)
+}
+
+/// One Survey being measured, known by the pattern lists of its policy: the measurement hands
+/// its one pattern loop a list and nothing else, and its streams are read on threads of their
+/// own, so the list is what names the Survey's deadline.
+struct Measuring {
+    /// The address of each non-empty pattern list of the policy.
+    lists: Vec<usize>,
+    deadline: Instant,
+    matches: Arc<Matches>,
+}
+
+/// Every Survey this process measures now.
+static MEASURING: Mutex<Vec<Measuring>> = Mutex::new(Vec::new());
+
+/// The pattern lists of one policy under a Survey's deadline, from now until the value drops.
+struct UnderDeadline<'a> {
+    matches: Arc<Matches>,
+    /// The lists are known by address: the policy is borrowed, so none moves meanwhile.
+    _policy: &'a Policy,
+}
+
+impl<'a> UnderDeadline<'a> {
+    fn new(policy: &'a Policy, deadline: Instant, matches: Arc<Matches>) -> Self {
+        let lists = [
+            &policy.exclude,
+            &policy.tests,
+            &policy.agent_authors,
+            &policy.agent_trailers,
+        ]
+        .into_iter()
+        .filter(|list| !list.is_empty())
+        .map(|list| list.as_ptr() as usize)
+        .collect();
+        MEASURING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(Measuring {
+                lists,
+                deadline,
+                matches: Arc::clone(&matches),
+            });
+        Self {
+            matches,
+            _policy: policy,
+        }
+    }
+}
+
+impl Drop for UnderDeadline<'_> {
+    fn drop(&mut self) {
+        MEASURING
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .retain(|measuring| !Arc::ptr_eq(&measuring.matches, &self.matches));
+    }
+}
+
+/// The measurement's one pattern loop (`measure.rs`'s `any_match` delegates here): whether any
+/// of `patterns` matches `text`. A list of a policy being measured is applied through
+/// [`any_match_within`] under its Survey's deadline; once the deadline has passed it matches
+/// nothing more and says so to the Survey, so a pattern list overruns the deadline by at most
+/// the one match in progress. Any other list, a test's, matches unbounded.
+pub(super) fn any_match(patterns: &[String], text: &str) -> bool {
+    if patterns.is_empty() {
+        return false;
+    }
+    let address = patterns.as_ptr() as usize;
+    let measuring = MEASURING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .find(|measuring| measuring.lists.contains(&address))
+        .map(|measuring| (measuring.deadline, Arc::clone(&measuring.matches)));
+    match measuring {
+        None => patterns
+            .iter()
+            .any(|pattern| crate::project::glob_matches(pattern, text)),
+        Some((deadline, matches)) => any_match_within(patterns, text, deadline, &matches)
+            .unwrap_or_else(|| {
+                matches.cut.store(true, Ordering::Relaxed);
+                false
+            }),
+    }
+}
+
+/// Measure the head under one deadline from `started` (ADR-0152 clause 14), every pattern list
+/// checking it before each match.
+pub(super) fn measure(git: &Git, basis: &Basis, started: Instant) -> Result<Sections, Failure> {
+    measure_counted(git, basis, started, Arc::default())
+}
+
+/// [`measure`], counting into `matches`. The listing stops at the item after a match the
+/// deadline cut, and `history` checks the deadline again before its later reads, so a section
+/// a cut list reached is partial already, except `tree` when the deadline passed while its
+/// `tests` were matched after its last read: then `history` and everything after it is
+/// unavailable, and a `tree` that says complete is partial with reason `max_wall_ms`. (A cut in
+/// the first commit of `history`, before any commit was counted, also leaves `history`
+/// unavailable; `tree` is then marked partial although it was whole, which only measures it
+/// again.)
+fn measure_counted(
+    git: &Git,
+    basis: &Basis,
+    started: Instant,
+    matches: Arc<Matches>,
+) -> Result<Sections, Failure> {
+    let deadline = started + Duration::from_millis(basis.policy.max_wall_ms);
+    let under = UnderDeadline::new(basis.policy, deadline, Arc::clone(&matches));
+    let measured = super::measure::measure(git, basis, started);
+    drop(under);
+    let mut sections = measured?;
+    if matches.cut()
+        && sections.tree.completeness == SurveyCompletenessV1::Complete
+        && sections.history.completeness == SurveyCompletenessV1::Unavailable
+    {
+        sections.tree.completeness = SurveyCompletenessV1::Partial;
+        sections.tree.reason = Some(SurveyReasonV1::MaxWallMs);
+    }
+    Ok(sections)
 }
 
 #[cfg(test)]
@@ -707,13 +1153,307 @@ mod tests {
     }
 
     #[test]
-    fn patterns_are_applied_between_clock_checks() {
+    fn patterns_are_applied_between_deadline_checks() {
         let (failing, text) = (format!("{}b", "*a".repeat(30)), "a".repeat(30));
         let patterns = vec![failing, "*a".repeat(30)];
-        let clock = Clock::new(Instant::now(), 60_000);
-        assert_eq!(any_match_within(&patterns[..1], &text, &clock), Some(false));
-        assert_eq!(any_match_within(&patterns, &text, &clock), Some(true));
-        let passed = Clock::new(Instant::now() - Duration::from_secs(2), 1);
-        assert_eq!(any_match_within(&patterns, &text, &passed), None);
+        let matches = Matches::default();
+        let later = Instant::now() + Duration::from_secs(60);
+        assert_eq!(
+            any_match_within(&patterns[..1], &text, later, &matches),
+            Some(false)
+        );
+        assert_eq!(
+            any_match_within(&patterns, &text, later, &matches),
+            Some(true)
+        );
+        assert_eq!(matches.matched(), 3);
+        let passed = Instant::now() - Duration::from_secs(2);
+        assert_eq!(any_match_within(&patterns, &text, passed, &matches), None);
+        assert_eq!(matches.matched(), 3, "nothing is matched past the deadline");
+    }
+
+    /// `?` is one byte of the canonical encoded spelling, `review_core::encode_path`'s: a
+    /// two-byte `é` takes two, a percent-encoded byte three. The same cases run through routing
+    /// in `crate::project`'s tests and through the Surveyor in `tests/it/project_collect.rs`.
+    const BYTE_CASES: &[(&str, &[u8], bool)] = &[
+        ("caf?.rs", "café.rs".as_bytes(), false),
+        ("caf??.rs", "café.rs".as_bytes(), true),
+        ("caf?.rs", b"caf\xe9.rs", false),
+        ("caf???.rs", b"caf\xe9.rs", true),
+        ("50?.txt", b"50%.txt", false),
+        ("50???.txt", b"50%.txt", true),
+        ("caf*.rs", "café.rs".as_bytes(), true),
+    ];
+
+    #[test]
+    fn a_question_mark_is_one_byte_of_the_encoded_spelling_in_the_surveyors_lists() {
+        let policy = Policy {
+            exclude: BYTE_CASES
+                .iter()
+                .map(|(pattern, _, _)| pattern.to_string())
+                .collect(),
+            ..Policy::default()
+        };
+        let _under = UnderDeadline::new(
+            &policy,
+            Instant::now() + Duration::from_secs(60),
+            Arc::default(),
+        );
+        for (index, (pattern, raw, matches)) in BYTE_CASES.iter().enumerate() {
+            let path = review_core::encode_path(raw);
+            assert_eq!(
+                any_match(&policy.exclude[index..=index], &path),
+                *matches,
+                "`{pattern}` against `{path}`"
+            );
+        }
+        assert_eq!(review_core::encode_path(b"caf\xe9.rs"), "caf%E9.rs");
+        assert_eq!(review_core::encode_path(b"50%.txt"), "50%25.txt");
+    }
+
+    #[test]
+    fn a_measured_list_matches_nothing_past_its_deadline_and_says_so() {
+        let policy = Policy {
+            exclude: vec!["vendor/**".into()],
+            ..Policy::default()
+        };
+        // A list no Survey measures matches unbounded.
+        assert!(any_match(&policy.exclude, "vendor/a.c"));
+        let matches = Arc::new(Matches::default());
+        {
+            let _under = UnderDeadline::new(
+                &policy,
+                Instant::now() - Duration::from_millis(1),
+                Arc::clone(&matches),
+            );
+            assert!(!any_match(&policy.exclude, "vendor/a.c"));
+            // An equal list of another policy is not this Survey's.
+            let other = policy.exclude.clone();
+            assert!(any_match(&other, "vendor/a.c"));
+        }
+        assert!(matches.cut());
+        assert_eq!(matches.matched(), 0);
+        assert!(
+            any_match(&policy.exclude, "vendor/a.c"),
+            "dropped, unbounded"
+        );
+    }
+
+    fn git(repo: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .current_dir(repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "Ada")
+            .env("GIT_AUTHOR_EMAIL", "ada@collect.invalid")
+            .env("GIT_COMMITTER_NAME", "Ada")
+            .env("GIT_COMMITTER_EMAIL", "ada@collect.invalid")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// A repository of eight files in one commit.
+    fn repository() -> tempfile::TempDir {
+        let repo = tempfile::tempdir().unwrap();
+        git(repo.path(), &["init", "-q", "-b", "main"]);
+        for n in 0..8 {
+            let path = repo.path().join(format!("src/f{n}.rs"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, format!("fn f{n}() {{}}\n")).unwrap();
+        }
+        git(repo.path(), &["add", "-A"]);
+        git(repo.path(), &["commit", "-q", "-m", "Eight"]);
+        repo
+    }
+
+    /// Measure `repo` under `policy` with a deadline `budget_ms` away, the deadline passing while
+    /// the first pattern is matched: the hook sleeps past it. `None` when the deadline passed
+    /// before any pattern was matched (a slow machine measured `identity` that long).
+    fn measured_past_the_first_match(
+        repo: &Path,
+        policy: &Policy,
+        budget_ms: u64,
+    ) -> Option<(Sections, Arc<Matches>)> {
+        let policy = &Policy {
+            max_wall_ms: budget_ms,
+            ..policy.clone()
+        };
+        let git = Git::open(repo).unwrap();
+        let head = String::from_utf8(
+            std::process::Command::new("git")
+                .current_dir(repo)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let basis = Basis {
+            project_id: &digest,
+            repository_id: "git:root:0000000000000000000000000000000000000000",
+            head: &head,
+            refs_digest: &digest,
+            policy,
+            policy_digest: &digest,
+            cutoff: 1_800_000_000,
+            surveyor_version: super::super::SURVEYOR_VERSION,
+            git_version: "git version 2",
+        };
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(budget_ms);
+        let matches = Arc::new(Matches::default());
+        *matches.before_match.lock().unwrap() = Some(Box::new(move |begun| {
+            if begun == 1 {
+                std::thread::sleep(
+                    deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(5),
+                );
+            }
+        }));
+        let sections = measure_counted(&git, &basis, started, Arc::clone(&matches)).unwrap();
+        (matches.matched() > 0).then_some((sections, matches))
+    }
+
+    /// The deadline passes during the first of 64 `exclude` patterns: the Surveyor matches no
+    /// other pattern after it, `tree` is partial with reason `max_wall_ms` and every later
+    /// section is unavailable.
+    #[test]
+    fn a_deadline_during_the_first_exclude_match_stops_the_list_and_leaves_tree_partial() {
+        let repo = repository();
+        let policy = Policy {
+            exclude: (0..64).map(|n| format!("nothing{n}/**")).collect(),
+            ..Policy::default()
+        };
+        let (sections, matches) = [1_500, 6_000, 30_000]
+            .into_iter()
+            .find_map(|budget| measured_past_the_first_match(repo.path(), &policy, budget))
+            .expect("a deadline that passes during a match");
+        assert_eq!(matches.matched(), 1, "one match in progress, none after");
+        assert!(matches.cut());
+        assert_eq!(sections.tree.completeness, SurveyCompletenessV1::Partial);
+        assert_eq!(sections.tree.reason, Some(SurveyReasonV1::MaxWallMs));
+        for (name, completeness) in [
+            ("history", sections.history.completeness),
+            ("contributors", sections.contributors.completeness),
+            ("decisions", sections.decisions.completeness),
+            ("vocabulary", sections.vocabulary.completeness),
+            ("checks", sections.checks.completeness),
+        ] {
+            assert_eq!(completeness, SurveyCompletenessV1::Unavailable, "{name}");
+        }
+    }
+
+    /// The deadline passes while `tests` are matched, after `tree` read its last item: `tree`
+    /// is partial, never complete with a test split the deadline cut.
+    #[test]
+    fn a_deadline_during_the_tests_split_leaves_tree_partial() {
+        let repo = repository();
+        let policy = Policy {
+            tests: (0..64).map(|n| format!("nothing{n}/**")).collect(),
+            ..Policy::default()
+        };
+        let (sections, matches) = [1_500, 6_000, 30_000]
+            .into_iter()
+            .find_map(|budget| measured_past_the_first_match(repo.path(), &policy, budget))
+            .expect("a deadline that passes during a match");
+        assert_eq!(matches.matched(), 1, "one match in progress, none after");
+        assert_eq!(sections.tree.completeness, SurveyCompletenessV1::Partial);
+        assert_eq!(sections.tree.reason, Some(SurveyReasonV1::MaxWallMs));
+        assert_eq!(
+            sections.history.completeness,
+            SurveyCompletenessV1::Unavailable
+        );
+    }
+
+    /// A Project Store's CAS holding `bytes` as one object: the Store and the object's digest.
+    fn store_with(bytes: &[u8]) -> (tempfile::TempDir, PathBuf, String) {
+        let root = tempfile::tempdir().unwrap();
+        let store = std::fs::canonicalize(root.path()).unwrap().join("store");
+        let survey_id = Cas::open(store.join("cas")).unwrap().put(bytes).unwrap();
+        (root, store, survey_id)
+    }
+
+    #[test]
+    fn a_record_is_reached_only_without_a_link() {
+        let (root, store, survey_id) = store_with(b"{}");
+        let record = locate(&store, &survey_id).unwrap().unwrap();
+        assert!(record.bytes > 0);
+        assert_eq!(record.read().unwrap(), b"{}");
+        assert!(
+            locate(&store, &format!("sha256:{}", "0".repeat(64)))
+                .unwrap()
+                .is_none()
+        );
+        // The prefix directory moved outside the Store, a link in its place.
+        let object = object_path(&store, &survey_id);
+        let prefix = object.parent().unwrap();
+        let outside = std::fs::canonicalize(root.path()).unwrap().join("outside");
+        std::fs::rename(prefix, &outside).unwrap();
+        std::os::unix::fs::symlink(&outside, prefix).unwrap();
+        let error = locate(&store, &survey_id).err().unwrap();
+        assert!(error.contains("prefix directory is refused"), "{error}");
+        std::fs::remove_file(prefix).unwrap();
+        std::fs::rename(&outside, prefix).unwrap();
+        // The object itself a link.
+        let moved = outside.with_extension("object");
+        std::fs::rename(&object, &moved).unwrap();
+        std::os::unix::fs::symlink(&moved, &object).unwrap();
+        let error = locate(&store, &survey_id).err().unwrap();
+        assert!(error.contains("symbolic link"), "{error}");
+        assert!(moved.is_file());
+        // `objects` a link.
+        std::fs::remove_file(&object).unwrap();
+        std::fs::rename(&moved, &object).unwrap();
+        let objects = store.join("cas/objects");
+        let away = outside.with_extension("objects");
+        std::fs::rename(&objects, &away).unwrap();
+        std::os::unix::fs::symlink(&away, &objects).unwrap();
+        let error = locate(&store, &survey_id).err().unwrap();
+        assert!(error.contains("objects directory is refused"), "{error}");
+    }
+
+    #[test]
+    fn an_unlink_takes_only_the_file_that_was_found() {
+        let (_root, store, survey_id) = store_with(b"one");
+        let object = object_path(&store, &survey_id);
+        let record = locate(&store, &survey_id).unwrap().unwrap();
+        // Another file took the name since.
+        std::fs::remove_file(&object).unwrap();
+        std::fs::write(&object, b"another").unwrap();
+        let error = record.unlink().unwrap_err();
+        assert!(error.contains("changed since"), "{error}");
+        assert!(object.is_file());
+        let record = locate(&store, &survey_id).unwrap().unwrap();
+        let bytes = record.bytes;
+        assert_eq!(record.unlink().unwrap(), bytes);
+        assert!(!object.exists());
+    }
+
+    #[test]
+    fn corrupt_bytes_are_unreadable_with_a_bounded_reason_and_a_record_keeps_its_totals() {
+        let digest = |bytes: &[u8]| review_store::canonical::blob_content_id(bytes);
+        let garbage = b"not json at all";
+        let error = totals(&digest(garbage), garbage).unwrap_err();
+        assert!(error.starts_with("its bytes are not a Survey record: a syntax error"));
+        assert!(error.len() <= MAX_UNREADABLE_BYTES);
+        let error = totals(&digest(b"{}"), b"{}").unwrap_err();
+        assert!(error.contains("a data error"), "{error}");
+        assert!(!error.contains('`'), "{error}: no content of the record");
+        let error = totals(&digest(b"{}"), b"{ }").unwrap_err();
+        assert_eq!(error, "its bytes do not match its digest");
+        let huge = vec![b' '; largest_record() as usize + 1];
+        let error = totals(&digest(&huge), &huge).unwrap_err();
+        assert!(error.contains("more than any Survey"), "{error}");
+        let long = "é".repeat(200);
+        let cut = bounded(long);
+        assert!(cut.len() <= MAX_UNREADABLE_BYTES && cut.chars().all(|c| c == 'é'));
     }
 }

@@ -1496,7 +1496,10 @@ pub struct SurveyCollectedHistoryV1 {
 /// Budget collected, appended before the record leaves the Project Store's CAS. It keeps what
 /// `af project history` answers for the Survey once its record is gone: the head, the cutoff,
 /// the completeness and the totals of `tree` and `history`, each absent when the record held no
-/// such section or could not be read. Like every Project Store event, no path and no email.
+/// such section. A record whose bytes were read but are corrupt is collected all the same, its
+/// totals replaced by `unreadable`, af's own sentence of why, at most [`MAX_SURVEY_TEXT_BYTES`];
+/// a record that could not be read is never collected. Like every Project Store event, no path
+/// and no email.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SurveyCollectedPayloadV1 {
@@ -1509,6 +1512,9 @@ pub struct SurveyCollectedPayloadV1 {
     pub tree: Option<SurveyCollectedTreeV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<SurveyCollectedHistoryV1>,
+    /// Why the record's bytes are no Survey: present only in place of `tree` and `history`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreadable: Option<String>,
     pub collected_unix_ms: DecimalU64,
 }
 
@@ -1525,6 +1531,17 @@ impl SurveyCollectedPayloadV1 {
             .is_some_and(|history| history.merges.get() > history.commits.get())
         {
             return Err("SurveyCollected@1 counts more merges than commits".into());
+        }
+        if let Some(unreadable) = &self.unreadable {
+            if !is_survey_text(unreadable) {
+                return Err(format!(
+                    "SurveyCollected@1 says why its record is unreadable in at most \
+                     {MAX_SURVEY_TEXT_BYTES} bytes of text"
+                ));
+            }
+            if self.tree.is_some() || self.history.is_some() {
+                return Err("SurveyCollected@1 keeps no totals of an unreadable record".into());
+            }
         }
         Ok(())
     }
@@ -1550,11 +1567,13 @@ mod collected_tests {
                 commits: 8.into(),
                 merges: 1.into(),
             }),
+            unreadable: None,
             collected_unix_ms: 1_800_000_000_123.into(),
         };
         tombstone.validate().unwrap();
         let value = serde_json::to_value(&tombstone).unwrap();
         assert_eq!(value["tree"]["files"], "16");
+        assert!(value.get("unreadable").is_none());
         assert_eq!(value["collected_unix_ms"], "1800000000123");
         let bare = SurveyCollectedPayloadV1 {
             tree: None,
@@ -1563,6 +1582,15 @@ mod collected_tests {
         };
         bare.validate().unwrap();
         assert!(serde_json::to_value(&bare).unwrap().get("tree").is_none());
+        let unreadable = SurveyCollectedPayloadV1 {
+            unreadable: Some("its bytes do not match its digest".into()),
+            ..bare.clone()
+        };
+        unreadable.validate().unwrap();
+        assert_eq!(
+            serde_json::to_value(&unreadable).unwrap()["unreadable"],
+            "its bytes do not match its digest"
+        );
         for broken in [
             SurveyCollectedPayloadV1 {
                 survey_id: "survey-1".into(),
@@ -1578,6 +1606,23 @@ mod collected_tests {
                     merges: 2.into(),
                 }),
                 ..tombstone.clone()
+            },
+            // An unreadable record has no totals, and its reason is bounded text.
+            SurveyCollectedPayloadV1 {
+                unreadable: Some("corrupt".into()),
+                ..tombstone.clone()
+            },
+            SurveyCollectedPayloadV1 {
+                unreadable: Some("x".repeat(MAX_SURVEY_TEXT_BYTES + 1)),
+                ..bare.clone()
+            },
+            SurveyCollectedPayloadV1 {
+                unreadable: Some(" ".into()),
+                ..bare.clone()
+            },
+            SurveyCollectedPayloadV1 {
+                unreadable: Some("line\nbreak".into()),
+                ..bare.clone()
             },
         ] {
             assert!(broken.validate().is_err(), "{broken:?}");

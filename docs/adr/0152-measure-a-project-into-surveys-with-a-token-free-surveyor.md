@@ -210,13 +210,18 @@ email first of all.
     `[survey] refresh` (PJ4); and the `activity` section (PJ5). PJ4 also adds collection: until
     then every Survey stays in the Project Store, which ADR-0151 already never evicts, and
     `[storage] keep_surveys` and `SurveyCollected@1` do not exist.
-13. **Collection and the budget.** This clause replaces the collection sentence of clause 12.
+13. **Collection and the budget.** This clause replaces the collection sentence of clause 12:
+    PJ2 ships Survey collection with the synchronous Surveyor, `SurveyCollected@1`, `[storage]
+    keep_surveys` retention, the allocated-byte inventory and budget-driven deletion, and PJ4
+    adds only the trigger after a run.
     Every Survey is an entry of kind `survey` of the machine budget (ADR-0144 clause 4): its
     record's allocated CAS bytes, taken out of the Project Store entry's, last used at its
     cutoff, its `path` the CAS object. `af storage` lists it, and its documents become
     `af/storage@3` ([schema](../../schemas/storage-v3.json)) and `af/storage-prune@2`
-    ([schema](../../schemas/storage-prune-v2.json)), each gaining the kind `survey`; a sweep's
-    `af/TaskStorageSweep@1` counts a Survey's removal without listing it. Surveys are collected
+    ([schema](../../schemas/storage-prune-v2.json)), each gaining the kind `survey`, and their
+    earlier versions are refused; a sweep's `af/TaskStorageSweep@1` counts a Survey's removal in
+    `omitted_removals` without listing it, so its shape and its kinds are unchanged and it keeps
+    its version. Surveys are collected
     only in the Storage Budget's own passes, under ADR-0144's protections, and `af project
     refresh` collects nothing. The collection pass (`af storage prune --apply`, or the sweep after
     a run when `auto_gc = true`) takes, per Project, the Surveys beyond the newest `[storage]
@@ -233,7 +238,23 @@ email first of all.
     {`survey_id`, `head`, `cutoff_unix_s`, `completeness`, the `tree` totals `files`, `bytes` and
     `lines` and the `history` totals `commits` and `merges` when the record holds them,
     `collected_unix_ms`} ([schema](../../schemas/project-survey-collected-v1.json), in
-    `run-event-v1.json`) before it deletes the record from the CAS. The tombstones are the run
+    `run-event-v1.json`) before it deletes the record from the CAS. A record is reached, read
+    and deleted only through directory descriptors, ADR-0144's removal boundary: the Project
+    Store from `/`, then `cas`, `objects` and the digest-prefix directory, each opened
+    `O_NOFOLLOW | O_DIRECTORY`, and the record opened `O_NOFOLLOW` and removed by `unlinkat`
+    relative to its prefix directory, only while that name still holds the file that was found.
+    A symbolic link on that way or in place of the record, a directory on another device than
+    the Store's, or a record the file system will not let af read (permission denied, an I/O
+    error) refuses the Survey: inventory measures nothing through a link and lists it in use,
+    and the pass reports it with its reason, appends no tombstone and deletes nothing. A record
+    whose bytes were read but are no Survey (they do not match its digest, exceed the largest
+    record or do not parse), or that is gone from the CAS, is collected all the same, since
+    reclaiming corrupt bytes is the budget's job: its tombstone carries `unreadable`, af's own
+    sentence of at most 256 bytes and never the record's content, in place of the totals, and
+    the sweep and `af project history` show it as `collected (unreadable)`. A preview, `af
+    storage prune` without `--apply`, applies the same `project.lock` check as the pass: the
+    Surveys it would take from a held Project Store are listed under `held`, never as removals,
+    exactly as the applied pass lists them. The tombstones are the run
     `survey-collection` of the Project Store's log, beside the run `project` that holds the
     chain, so the chain's own sequence is only ever the Surveyor's. Every applied sweep first
     deletes the record of any tombstoned Survey still in a CAS, reported with the rule
@@ -249,7 +270,11 @@ email first of all.
 14. **Patterns.** `crate::project::glob_matches`, the matcher of the routes of `.af/af.toml` and
     of every `[survey]` pattern, matches by dynamic programming with the semantics of clause 5
     unchanged (segment-wise, `**` spans segments, `*` a run inside one, `?` one byte, every other
-    byte literal, brackets included): over pattern segments and path segments, then over pattern
+    byte literal, brackets included). The "one character" of clause 5 is one byte of the path's
+    canonical encoded spelling (`review_core::encode_path`), as the byte matcher before it read
+    it: `caf?.rs` does not match `café.rs`, whose `é` is two bytes, and `caf??.rs` does, and a
+    byte that is not UTF-8 is spelled `%E9`, three bytes, the same through routing and the
+    Surveyor's `exclude`. The matcher runs over pattern segments and path segments, then over pattern
     bytes and text bytes inside one pair, visiting only what a prefix reached. A match evaluates
     at most (pattern length + 1) × (path length + 1) cells and never backtracks. The recursive
     form took billions of steps to refuse `*a` thirty times followed by `b` against thirty `a`s,
@@ -258,10 +283,13 @@ email first of all.
     `exclude` alike, and its matching form, `*a` thirty times against thirty `a`s, matches. Where
     the Surveyor loads its policy, a `[survey]` pattern is at most 256 bytes and each pattern list
     (`exclude`, `tests`, `agent_authors`, `agent_trailers`) at most 64 patterns, beyond which the
-    policy is refused naming the key and the refresh records `SurveyFailed@1`. The loop that
-    applies a pattern list checks the Survey's Clock before each match, so one match is the most
-    a deadline can be overrun by; the measurement adopts that loop, `any_match_within`, in its
-    next round.
+    policy is refused naming the key and the refresh records `SurveyFailed@1`. Every pattern
+    list the Surveyor applies (`exclude`, `tests`, `agent_authors`, `agent_trailers`) goes
+    through one loop, `any_match_within`, that checks the Survey's deadline before each match,
+    so one match is the most a deadline can be overrun by; a list cut by the deadline matches
+    nothing more, and the section it cut is partial with reason `max_wall_ms` and every later one
+    unavailable. A language is an exact lookup of a name or an extension, not a pattern match,
+    and `decisions` and `release_tags` are single patterns applied once per streamed item.
 
 ## Measured on this repository
 

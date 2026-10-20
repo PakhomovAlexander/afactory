@@ -50,7 +50,7 @@ and a rename, as it writes `stores.toml`.
 
 The Store registry (`$XDG_STATE_HOME/af/stores.toml`) records every Project Store with the kind
 `project`, so `af storage` counts it as a `project_store` entry
-([schema](../schemas/storage-v2.json)). A registry that can hold that kind is `version = 2`; a
+([schema](../schemas/storage-v3.json)). A registry that can hold that kind is `version = 2`; a
 version-1 file an earlier release wrote is refused with the way out: delete
 `$XDG_STATE_HOME/af/stores.toml`. Stores register again as commands use them, and the Stores
 under af's default roots were never in it. A Project Store is never evicted: it indexes the
@@ -513,8 +513,10 @@ under `--json`. A Survey that fails prints one line on stderr; onboarding's outp
 are its own. `af onboard` without `--apply` records nothing, and a second `af onboard --apply`
 with an unchanged survey key records nothing and prints its `unchanged:` line.
 
-Surveys stay in the Project Store; collecting old ones behind a tombstone comes with the detached
-after-run refresh in a later package.
+PJ2 ships Survey collection with this synchronous writer: `SurveyCollected@1`, `[storage]
+keep_surveys` retention, the allocated-byte inventory and budget-driven deletion; PJ4 adds only
+the trigger after a run. The tombstone a collected Survey leaves is described under
+[Collection](#collection).
 
 ### Collection
 
@@ -544,6 +546,25 @@ before. `af project survey` exits 1 when the newest Survey was collected, saying
 `af project refresh`, and `af project show` then prints no Survey. A Survey's
 `previous_survey_id` is a name: a collected predecessor keeps nothing alive.
 
+A record is reached, read and deleted only through directory descriptors, the removal boundary of
+[ADR-0144](adr/0144-hold-afs-disk-use-to-a-machine-budget.md): the Project Store from `/`, then
+`cas`, `objects` and the record's two-digit prefix directory, each opened without following a
+link, and the record opened and unlinked relative to its prefix directory. A symbolic link on that
+way, or a directory on another device than the Store's, refuses the Survey: inventory measures
+nothing through it and lists it in use, and a sweep reports it as a failure with the reason, adds
+no tombstone and touches nothing outside the Store. A record the file system will not let af read
+(permission denied, an I/O error) is refused the same way and keeps its place in the log. A record
+whose bytes were read and are no Survey (they do not match its digest, or do not parse) is
+collected all the same, since reclaiming corrupt bytes is the budget's job: its tombstone carries
+`unreadable`, af's reason in at most 256 bytes, in place of the totals, its bytes are freed, and
+the sweep and `af project history` show it as `collected (unreadable)`.
+
+`af storage prune` without `--apply` previews the same pass: it applies the same `project.lock`
+check, so the Surveys of a Project Store a refresh or a plan holds are listed under `held` in
+`af/storage-prune@2` ([schema](../schemas/storage-prune-v2.json)) and `held survey …` in text,
+never as removals, exactly as the applied sweep lists them. A Task's `af/TaskStorageSweep@1`
+counts a Survey's removal without listing it; its kinds are unchanged.
+
 ```sh
 af storage --json | jq '[.entries[] | select(.kind == "survey")] | length'
 AF_STORAGE__KEEP_SURVEYS=10 af storage prune --apply
@@ -553,7 +574,11 @@ af project history | grep collected
 Patterns match in bounded work: the matcher of `.af/af.toml`, the routes' and the Surveyor's alike,
 costs at most (pattern length + 1) × (path length + 1) steps and never backtracks, a `[survey]`
 pattern is at most 256 bytes and a pattern list at most 64 patterns, and a policy beyond either is
-refused naming the key
+refused naming the key. The Surveyor checks its deadline before each pattern it matches, so a
+pattern list overruns `max_wall_ms` by at most one match, and the section it cut is partial with
+reason `max_wall_ms`. `?` is one byte of a path's canonical encoded spelling: `caf?.rs` does not
+match `café.rs`, whose `é` is two bytes, and `caf??.rs` does; a byte that is not UTF-8 is spelled
+`%E9`, three bytes
 ([ADR-0152](adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md), clauses 13
 and 14).
 

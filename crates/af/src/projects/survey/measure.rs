@@ -464,7 +464,7 @@ fn basename(path: &str) -> &str {
 }
 
 fn any_match(patterns: &[String], text: &str) -> bool {
-    patterns.iter().any(|pattern| glob_matches(pattern, text))
+    super::collect::any_match(patterns, text)
 }
 
 /// A display string as a Survey holds it: trimmed, cut at a character boundary to

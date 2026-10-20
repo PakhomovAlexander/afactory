@@ -1,6 +1,7 @@
 //! Survey collection (ADR-0152 clause 13): `SurveyCollected@1`, the tombstone a collected
 //! Survey leaves in its Project Store's log, against its own schema, inside `run-event-v1.json`
-//! and through the Rust validator alike.
+//! and through the Rust validator alike; and `af/TaskStorageSweep@1`, whose kind set Survey
+//! collection leaves unchanged, so a Survey's removal is counted and never listed.
 
 use super::{assert_invalid, assert_valid};
 use review_core::EventType;
@@ -53,12 +54,18 @@ fn a_survey_tombstone_keeps_its_totals_and_never_a_path() {
             commits: 8.into(),
             merges: 1.into(),
         }),
+        unreadable: None,
         collected_unix_ms: 1_800_000_000_123.into(),
     };
     tombstone.validate().unwrap();
     let value = serde_json::to_value(&tombstone).unwrap();
     let bare = without(&without(&value, "tree"), "history");
-    for accepted in [&value, &bare] {
+    let unreadable = with(
+        &bare,
+        "unreadable",
+        json!("its bytes are not a Survey record: syntax error at line 1, column 1"),
+    );
+    for accepted in [&value, &bare, &unreadable] {
         assert_valid(SCHEMA, accepted);
         assert_valid("run-event-v1.json", &event(accepted.clone()));
         validate_event_payload(EventType::SurveyCollectedV1, accepted).unwrap();
@@ -101,6 +108,22 @@ fn a_survey_tombstone_keeps_its_totals_and_never_a_path() {
             without(&value, "collected_unix_ms"),
             "a tombstone says when",
         ),
+        (
+            with(&value, "unreadable", json!("corrupt")),
+            "an unreadable record keeps no totals",
+        ),
+        (
+            with(&bare, "unreadable", json!("x".repeat(257))),
+            "the reason is at most 256 bytes",
+        ),
+        (
+            with(&bare, "unreadable", json!("")),
+            "the reason is not empty",
+        ),
+        (
+            with(&bare, "unreadable", json!("two\nlines")),
+            "the reason holds no control character",
+        ),
     ] {
         assert_invalid(SCHEMA, &broken, why);
         assert_invalid("run-event-v1.json", &event(broken.clone()), why);
@@ -109,4 +132,54 @@ fn a_survey_tombstone_keeps_its_totals_and_never_a_path() {
             "the Rust validator accepted it ({why})"
         );
     }
+}
+
+/// ADR-0145 clause 2 for the sweep record: Survey collection adds no kind to
+/// `af/TaskStorageSweep@1`. A sweep that took a Survey counts it in `omitted_removals` and still
+/// validates; a removal of kind `survey` is a shape the record does not have, refused by its
+/// schema, inside `TaskTransition@5` and by the typed contract alike.
+#[test]
+fn the_sweep_record_counts_a_survey_and_has_no_survey_kind() {
+    use review_core::task::storage_sweep::{
+        StorageSweepStopV1, TASK_STORAGE_SWEEP_V1, TaskStorageSweepV1,
+    };
+    let counted = TaskStorageSweepV1 {
+        schema: TASK_STORAGE_SWEEP_V1.into(),
+        removals: Vec::new(),
+        omitted_removals: 1,
+        failures: Vec::new(),
+        omitted_failures: 0,
+        stop: StorageSweepStopV1::Fits,
+        max_bytes: 1 << 30,
+        total_before: 1 << 30,
+        total_after: (1 << 30) - 4096,
+    };
+    counted.validate().unwrap();
+    let value = serde_json::to_value(&counted).unwrap();
+    assert_valid("task-storage-sweep-v1.json", &value);
+    let mut listed = value.clone();
+    listed["removals"] = json!([{
+        "kind": "survey",
+        "path": "/home/me/.local/state/af/project/0123/cas/objects/ab/cdef",
+        "bytes": 4096,
+        "rule": "collection",
+    }]);
+    assert_invalid(
+        "task-storage-sweep-v1.json",
+        &listed,
+        "a Survey is no kind of the sweep record",
+    );
+    assert!(serde_json::from_value::<TaskStorageSweepV1>(listed.clone()).is_err());
+    let transition = json!({
+        "writer": "af-storage-sweep-1",
+        "epoch": 3,
+        "now_unix_ms": 100,
+        "change": {"kind": "storage_sweep", "sweep": listed},
+    });
+    assert_invalid(
+        "task-transition-v5.json",
+        &transition,
+        "a Survey is no kind of the sweep record",
+    );
+    assert!(validate_event_payload(EventType::TaskTransitionV5, &transition).is_err());
 }

@@ -347,7 +347,7 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
         surveyor_version: SURVEYOR_VERSION,
         git_version: &git_version,
     };
-    let measured = measure::measure(&git, &basis, started);
+    let measured = collect::measure(&git, &basis, started);
     let mut store = open(checkout)?;
     let sections = match measured {
         Ok(sections) => sections,
