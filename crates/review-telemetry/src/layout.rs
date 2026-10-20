@@ -37,6 +37,14 @@ pub const CORRUPT: &str = ".corrupt";
 pub const TEMP_PREFIX: &str = ".tmp-";
 /// How long a command waits for a lock it must have before it gives up or falls back.
 pub const LOCK_WAIT: Duration = Duration::from_secs(2);
+/// The lock file in `v1/` publishers and readers of blobs share and the sweep takes alone.
+pub const GC_LOCK: &str = "gc.lock";
+/// The lock file in `v1/` every index connection shares and a replacement takes alone.
+pub const INDEX_LOCK: &str = "index.lock";
+/// The lock file in `v1/` held while a connection or a replacement takes `index.lock`.
+pub const INDEX_INTENT: &str = "index.intent";
+/// The index database's file name in `v1/`.
+pub const INDEX: &str = "index.sqlite";
 
 /// One telemetry directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,21 +91,21 @@ impl Layout {
     }
 
     pub fn gc_lock(&self) -> PathBuf {
-        self.versioned().join("gc.lock")
+        self.versioned().join(GC_LOCK)
     }
 
     pub fn index_lock(&self) -> PathBuf {
-        self.versioned().join("index.lock")
+        self.versioned().join(INDEX_LOCK)
     }
 
     /// Taken shared for the moment a connection takes `index.lock`, and exclusively by a
     /// replacement for its whole duration, so a stream of readers cannot starve it.
     pub fn index_intent(&self) -> PathBuf {
-        self.versioned().join("index.intent")
+        self.versioned().join(INDEX_INTENT)
     }
 
     pub fn index(&self) -> PathBuf {
-        self.versioned().join("index.sqlite")
+        self.versioned().join(INDEX)
     }
 
     /// The database with its WAL and shared-memory files.
@@ -348,6 +356,69 @@ impl Confined {
             return Ok(None);
         };
         versioned.child_dir(name)
+    }
+
+    /// Another descriptor of the same opened directory, for a holder that outlives this one.
+    pub fn try_clone(&self) -> std::io::Result<Self> {
+        Ok(Self {
+            fd: self.fd.try_clone()?,
+            path: self.path.clone(),
+        })
+    }
+
+    /// The opened directory's own device and inode: what it is wherever its path now leads.
+    pub fn own_identity(&self) -> std::io::Result<(u64, u64)> {
+        let identity = FileIdentity::of(&nix::sys::stat::fstat(&self.fd)?);
+        Ok((identity.dev, identity.ino))
+    }
+
+    /// A path naming this opened directory itself, for a library that opens files only by
+    /// path (SQLite). On macOS it is the directory's inode path `/.vol/<dev>/<ino>`, which no
+    /// rename and no link put in its place can redirect, valid as long as this descriptor keeps
+    /// the directory alive. Elsewhere, or on a file system without one, it is the directory's
+    /// current path read back from the descriptor (`F_GETPATH`, `/proc/self/fd`), so a
+    /// directory renamed since it was opened is named where it now is. Either is checked to
+    /// name this directory before it is returned.
+    pub fn anchored_path(&self) -> std::io::Result<PathBuf> {
+        use std::os::unix::fs::MetadataExt as _;
+        let (dev, ino) = self.own_identity()?;
+        let names_this = |path: &Path| {
+            std::fs::symlink_metadata(path).is_ok_and(|metadata| {
+                metadata.is_dir() && metadata.dev() == dev && metadata.ino() == ino
+            })
+        };
+        #[cfg(target_vendor = "apple")]
+        {
+            let inode = PathBuf::from(format!("/.vol/{dev}/{ino}"));
+            if names_this(&inode) {
+                return Ok(inode);
+            }
+        }
+        let current = self.current_path()?;
+        if names_this(&current) {
+            Ok(current)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "{}: the opened directory has no path that names it",
+                    self.path.display()
+                ),
+            ))
+        }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    fn current_path(&self) -> std::io::Result<PathBuf> {
+        let mut path = PathBuf::new();
+        nix::fcntl::fcntl(&self.fd, nix::fcntl::FcntlArg::F_GETPATH(&mut path))?;
+        Ok(path)
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
+    fn current_path(&self) -> std::io::Result<PathBuf> {
+        use std::os::fd::AsRawFd as _;
+        std::fs::read_link(format!("/proc/self/fd/{}", self.fd.as_raw_fd()))
     }
 
     /// The directory's path, for messages and reports.
@@ -635,6 +706,18 @@ fn open_lock_file(path: &Path) -> std::io::Result<File> {
     Confined::create_root(parent)?.open_or_create(name)
 }
 
+/// Take the lock file `name` of the opened directory `directory` (created when absent, never
+/// through a link) with `arg`, trying until `wait` has passed: the lock is reached through the
+/// held descriptor, whatever has since become of the directory's path.
+pub fn lock_in(
+    directory: &Confined,
+    name: &str,
+    wait: Duration,
+    arg: FlockArg,
+) -> std::io::Result<Option<Held>> {
+    Ok(wait_for(directory.open_or_create(name)?, wait, arg))
+}
+
 /// Try `arg` once on `file`.
 pub fn try_lock(file: File, arg: FlockArg) -> Result<Held, File> {
     Flock::lock(file, arg).map_err(|(file, _)| file)
@@ -657,15 +740,19 @@ pub fn exclusive_within(path: &Path, wait: Duration) -> std::io::Result<Option<H
 }
 
 fn within(path: &Path, wait: Duration, arg: FlockArg) -> std::io::Result<Option<Held>> {
+    Ok(wait_for(open_lock_file(path)?, wait, arg))
+}
+
+/// Try `arg` on `file` until `wait` has passed.
+fn wait_for(mut file: File, wait: Duration, arg: FlockArg) -> Option<Held> {
     let deadline = Instant::now() + wait;
-    let mut file = open_lock_file(path)?;
     loop {
         match try_lock(file, arg) {
-            Ok(held) => return Ok(Some(held)),
+            Ok(held) => return Some(held),
             Err(back) => file = back,
         }
         if Instant::now() >= deadline {
-            return Ok(None);
+            return None;
         }
         std::thread::sleep(Duration::from_millis(10));
     }

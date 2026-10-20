@@ -68,9 +68,12 @@ Provider's own words, and before any bound can cut it:
   `segment_id:seq`, or a decimal ordinal. Every other value, an identity-shaped one included
   (`af.run_id = "sk-proj-…"`), is judged as untrusted text, so a credential is withheld there as
   anywhere; a digest outside an identity position is a long hex run and is withheld too.
-- Token and charge counters (`af.usage.*_tokens`, `af.charge*`, `gen_ai.usage.*`) are exact
-  decimal strings only: an integer, a negative, a float or a non-canonical decimal under such a
-  name is dropped and counted in `af.dropped_fields`, never written as a JSON number.
+- Token and charge counters (`af.usage.*_tokens`, `af.charge*`, `gen_ai.usage.*`,
+  `af.store.sequence_at_start`) are exact decimal strings only: any other value under such a
+  name (text, even `"42"`, an identity, an enumeration, a boolean, an integer, a negative, a
+  float, a list or a non-canonical decimal) is dropped and counted in `af.dropped_fields`
+  before any other rule runs, so it is never withheld under the secret-name rule and never
+  written as a JSON number.
   Timestamps are decimal strings too.
 - A configuration row whose key is named like a secret (`provider.password`, `sink.auth_token`)
   or passes for a credential itself (`sk-proj-…`, a JSON Web Token, a long secret run, an
@@ -233,9 +236,16 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
 - **Confinement.** Every file beneath the telemetry directory is opened, created, renamed,
   measured and removed relative to an opened descriptor of its directory, each directory
   opened from its parent without following a symbolic link (the telemetry directory itself may
-  be reached through one you chose). A writer seals its segment in the `segments/` directory it
-  opened, reading the live bytes back through its own descriptor, so a directory renamed or
-  replaced by a link while it runs changes nothing outside the telemetry directory; a blob
+  be reached through one you chose). A writer keeps the telemetry directory and its `v1/` open
+  from its first write on: it seals its segment in the `segments/` directory it opened, reading
+  the live bytes back through its own descriptor, and stages, places and locks for every blob
+  through the `blobs/` and prefix directories it derived from them, so a directory renamed or
+  replaced by a link while it runs, the telemetry directory itself included, changes nothing
+  outside the telemetry directory it opened. `status` and `reindex` open `v1/` once and keep
+  it open: the index locks are taken through it, and the database with its WAL and
+  shared-memory files is opened and created through a path that names that open directory
+  (its inode path `/.vol/<device>/<inode>` on macOS; elsewhere its current path read back from
+  the descriptor, refused where it meets a link) and checked to be its own; a blob
   whose prefix directory is a link reads as `content unavailable: missing blob` and `status`
   counts it missing.
 - **Registry.** Before its first write a process registers its telemetry directory

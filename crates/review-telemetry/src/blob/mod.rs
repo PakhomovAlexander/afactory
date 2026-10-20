@@ -304,17 +304,31 @@ impl Staged {
     }
 }
 
+/// The prefix directory name of a `sha256:` digest: its first two hex digits.
+pub fn prefix_of(digest: &str) -> &str {
+    let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
+    &hex[..2.min(hex.len())]
+}
+
 /// Write a prepared blob to a temporary file beside its final place. Every directory from the
 /// root down is opened without following a link: a prefix directory linked elsewhere refuses
 /// the blob.
 pub fn stage(layout: &Layout, prepared: &Prepared) -> std::io::Result<Staged> {
-    let path = layout.blob(&prepared.digest);
+    let directory =
+        layout::create_versioned(layout, "blobs")?.create_child_dir(prefix_of(&prepared.digest))?;
+    stage_in(directory, prepared)
+}
+
+/// Write a prepared blob to a temporary file in its opened prefix directory `directory`: the
+/// writer passes the prefix directory it derived from the descriptors it holds, so the blob is
+/// staged, placed and removed beneath the root it opened whatever has since become of the
+/// root's path.
+pub fn stage_in(directory: Confined, prepared: &Prepared) -> std::io::Result<Staged> {
     let hex = prepared
         .digest
         .strip_prefix("sha256:")
         .unwrap_or(&prepared.digest);
-    let directory =
-        layout::create_versioned(layout, "blobs")?.create_child_dir(&hex[..2.min(hex.len())])?;
+    let name = format!("{hex}.gz");
     let temp_name = layout::temp_name(layout::BLOB_TEMP_LABEL);
     let mut file = directory.create_file(&temp_name, false)?;
     if let Err(error) = file.write_all(&prepared.compressed) {
@@ -323,10 +337,10 @@ pub fn stage(layout: &Layout, prepared: &Prepared) -> std::io::Result<Staged> {
     }
     Ok(Staged {
         temp: directory.join(&temp_name),
+        path: directory.join(&name),
         directory,
         temp_name,
-        name: format!("{hex}.gz"),
-        path,
+        name,
         stored_bytes: prepared.compressed.len() as u64,
     })
 }

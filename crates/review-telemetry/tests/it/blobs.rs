@@ -1305,3 +1305,78 @@ fn telemetry_oversized_arrays_are_withheld_before_serialization() {
         );
     }
 }
+
+/// A writer reaches every blob through the root it opened: after its first write, the
+/// telemetry root is renamed and its path replaced by a link to an outside directory; content
+/// published afterwards is staged, placed and locked for beneath the root the writer opened, so
+/// nothing is written outside, and every reference of the sealed segment resolves to a blob that
+/// exists there.
+#[test]
+fn telemetry_blob_publication_stays_within_the_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("telemetry");
+    let moved = temp.path().join("telemetry.moved");
+    let outside = temp.path().join("outside");
+    let publisher = writer(&root, Level::Content);
+    let span = publisher
+        .span_start(None, None, "af.attempt", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    publisher.flush();
+    let segment_id = publisher.segment_id().unwrap();
+
+    std::fs::rename(&root, &moved).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &root).unwrap();
+
+    let sources: Vec<String> = (0..4)
+        .map(|n| format!("published content {n} after the swap\n"))
+        .collect();
+    for source in &sources {
+        publisher
+            .event_with_content(
+                &span,
+                "gen_ai.content.input",
+                Attrs::new(),
+                source.as_bytes(),
+                Media::Text,
+            )
+            .unwrap();
+    }
+    publisher.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    publisher.finish(SealExit::Ok).unwrap().unwrap();
+
+    let outside_entries: Vec<_> = std::fs::read_dir(&outside).unwrap().collect();
+    assert!(
+        outside_entries.is_empty(),
+        "nothing outside: {outside_entries:?}"
+    );
+    let layout = Layout::new(&moved);
+    let records = sealed_records(&layout.sealed_segment(&segment_id));
+    let stored: Vec<String> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::BlobRef(occurrence) if occurrence.state == BlobState::Stored => {
+                occurrence.digest.clone()
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(stored.len(), sources.len(), "{records:?}");
+    for (digest, source) in stored.iter().zip(&sources) {
+        assert!(layout.blob(digest).is_file(), "{digest}");
+        assert_eq!(
+            blob_reader::read(&layout, digest),
+            Content::Bytes(source.as_bytes().to_vec())
+        );
+    }
+    let manifest = std::fs::read_to_string(layout.refs(&segment_id)).unwrap();
+    for digest in manifest.lines() {
+        assert!(layout.blob(digest).is_file(), "{digest}");
+    }
+    assert_eq!(manifest.lines().count(), sources.len());
+    let leftovers: Vec<_> = walk(&layout.blobs())
+        .into_iter()
+        .filter(|path| path.to_string_lossy().contains(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}

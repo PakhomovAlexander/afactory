@@ -509,7 +509,8 @@ fn telemetry_credential_shaped_attribute_names_are_withheld() {
 
 /// The secret-name rule applies to every attribute key at every level: the key stays, its value
 /// is withheld whatever its shape (text, typed or array), and `af.redacted` counts it; the
-/// counters af's own schema types under a `token` name keep their values.
+/// counters af's own schema types under a `token` name keep their values, and any other shape
+/// under an exact counter name is dropped and counted in `af.dropped_fields` before the rule.
 #[test]
 fn telemetry_secret_named_attribute_keys_withhold_values() {
     for level in [Level::Metrics, Level::Spans, Level::Content] {
@@ -551,13 +552,17 @@ fn telemetry_secret_named_attribute_keys_withhold_values() {
                 "x-auth-mode",
                 "credentials",
                 "api_key_long",
-                "af.usage.output_tokens",
             ] {
                 assert_eq!(attributes[key], WITHHELD, "{level:?} {key}: {line}");
             }
+            assert!(
+                attributes.get("af.usage.output_tokens").is_none(),
+                "{level:?}: {line}"
+            );
             assert_eq!(attributes["af.usage.input_tokens"], "12", "{line}");
             assert_eq!(attributes["af.node_id"], "n1", "{line}");
-            assert_eq!(attributes["af.redacted"], 9, "{line}");
+            assert_eq!(attributes["af.redacted"], 8, "{line}");
+            assert_eq!(attributes["af.dropped_fields"], 1, "{line}");
             checked += 1;
         }
         assert_eq!(checked, 3, "{level:?}");
@@ -976,6 +981,68 @@ fn telemetry_usage_counters_are_canonical_decimal_strings() {
                     assert!(value.is_string(), "{level:?} {name}: {value}");
                 }
             }
+            checked += 1;
+        }
+        assert_eq!(checked, 3, "{level:?}");
+    }
+
+    // Under an exact counter name every shape but a canonical decimal is dropped and counted in
+    // `af.dropped_fields` before any other rule runs: text that reads as a number, text that
+    // does not, an identity, an enumeration, a boolean, an integer and an array persist
+    // nothing, and none is withheld under the secret-name rule (`af.redacted` stays absent).
+    let shapes = || {
+        Attrs::new()
+            .text("af.usage.input_tokens", "42")
+            .text("af.usage.output_tokens", "violet")
+            .id(
+                "af.usage.cache_read_tokens",
+                format!("sha256:{}", "ab".repeat(32)),
+            )
+            .enumerated("af.usage.cache_write_tokens", "ok")
+            .boolean("af.usage.reasoning_tokens", true)
+            .int("gen_ai.usage.input_tokens", 42)
+            .texts("gen_ai.usage.output_tokens", vec!["42".into(), "7".into()])
+            .text("af.charge.total", "12")
+            .text("af.store.sequence_at_start", "5")
+            .decimal("af.usage.chargeable_tokens", "42")
+    };
+    let shape_names = [
+        "af.usage.input_tokens",
+        "af.usage.output_tokens",
+        "af.usage.cache_read_tokens",
+        "af.usage.cache_write_tokens",
+        "af.usage.reasoning_tokens",
+        "gen_ai.usage.input_tokens",
+        "gen_ai.usage.output_tokens",
+        "af.charge.total",
+        "af.store.sequence_at_start",
+    ];
+    for level in [Level::Metrics, Level::Spans, Level::Content] {
+        let temp = tempfile::tempdir().unwrap();
+        let writer =
+            review_telemetry::segment::writer::Writer::new(options(temp.path(), level)).unwrap();
+        let span = writer
+            .span_start(None, None, "af.attempt", SpanKind::Internal, shapes())
+            .unwrap();
+        writer.event(&span, "af.usage", shapes());
+        writer.span_end(&span, SpanStatus::Ok, shapes(), 1);
+        let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+        let mut checked = 0;
+        for line in &sealed_lines(&sealed.path) {
+            let Some(attributes) = line.get("attributes").and_then(Value::as_object) else {
+                continue;
+            };
+            for name in shape_names {
+                assert!(!attributes.contains_key(name), "{level:?} {name}: {line}");
+            }
+            assert_eq!(attributes["af.usage.chargeable_tokens"], "42", "{level:?}");
+            assert_eq!(
+                attributes["af.dropped_fields"],
+                shape_names.len(),
+                "{level:?}: {line}"
+            );
+            assert!(attributes.get("af.redacted").is_none(), "{level:?}: {line}");
+            assert!(!line.to_string().contains("violet"), "{level:?}: {line}");
             checked += 1;
         }
         assert_eq!(checked, 3, "{level:?}");

@@ -449,7 +449,12 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
         "locks",
         in_versioned(&lock_names) + root_dir.allocated(layout::VERSION_DIR),
     ));
-    let mut index = Index::open(&layout)?;
+    let mut index = Index::open_in(
+        &layout,
+        versioned
+            .try_clone()
+            .map_err(|error| format!("{}: {error}", layout.versioned().display()))?,
+    )?;
     let (ingested, refused) = index.ingest()?;
     status.index = IndexState {
         state: match index.mode() {
@@ -752,9 +757,10 @@ pub fn reindex(root: &Path) -> Result<Reindex, String> {
             })
             .unwrap_or_default(),
     };
-    if !layout.has_versioned() {
+    // `v1/` is opened once: the index is replaced and read through this one descriptor.
+    let Some(versioned) = layout.open_versioned() else {
         return Ok(document);
-    }
+    };
     for recovery in reader::recover_all(&layout)? {
         match recovery {
             Recovery::Recovered {
@@ -770,11 +776,16 @@ pub fn reindex(root: &Path) -> Result<Reindex, String> {
             Recovery::Live | Recovery::AlreadySealed | Recovery::Empty => {}
         }
     }
-    let replaced = index::replace(&layout)?;
+    let replaced = index::replace_in(
+        &layout,
+        versioned
+            .try_clone()
+            .map_err(|error| format!("{}: {error}", layout.versioned().display()))?,
+    )?;
     for (path, reason) in replaced.refused {
         document.unreadable.push(Unreadable { path, reason });
     }
-    let index = Index::open(&layout)?;
+    let index = Index::open_in(&layout, versioned)?;
     document.segments = index.count("SELECT count(*) FROM segments")?;
     document.records = replaced.ingested.records;
     document.spans = index.count("SELECT count(*) FROM spans")?;

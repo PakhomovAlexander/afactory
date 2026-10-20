@@ -14,11 +14,22 @@
 //! sees a database replaced under it. A command that cannot have the shared lock within two
 //! seconds reads the segments directly ([`Index::open`] returns an in-memory index) and says
 //! so on stderr.
+//!
+//! **Confinement.** An index opens `v1/` once, without following a link, and keeps that
+//! descriptor for the connection's lifetime: `index.intent` and `index.lock` are taken, and the
+//! database with its WAL and shared-memory files opened, created and removed, through it. SQLite
+//! opens files only by path, so it is given a path that names the held directory itself
+//! ([`Confined::anchored_path`]: the directory's inode path on macOS) with
+//! `SQLITE_OPEN_NOFOLLOW`, and the database it opened is checked to be the held directory's
+//! `index.sqlite`; never `layout.index()` as a plain pathname after a separate check.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
+use nix::fcntl::FlockArg;
+use rusqlite::{Connection, OpenFlags, OptionalExtension as _, Transaction, params};
 use serde_json::Value;
 
 use crate::layout::{self, Confined, EntryKind, FileIdentity, Held, Layout};
@@ -197,6 +208,8 @@ pub struct Index {
     /// Why the shared index was not used, for stderr.
     pub note: Option<String>,
     _lock: Option<Held>,
+    /// The `v1/` the connection was opened through, held until after the connection closes.
+    versioned: Option<Confined>,
 }
 
 /// What one ingest read.
@@ -257,19 +270,35 @@ fn index_names(layout: &Layout) -> Vec<String> {
         .collect()
 }
 
-/// Open the index file, never through a link: `v1/` must be a real directory beneath the
-/// opened root, and a database, WAL or shared-memory file that is not a regular file in its
-/// place is refused (`reindex` removes the link itself, never what it points to). SQLite's own
-/// no-follow flag is not used: it refuses a link anywhere in the path, the user's own
-/// directories included.
-fn connect(layout: &Layout) -> Result<Connection, String> {
+thread_local! {
+    static CONNECT_HOOK: RefCell<Option<Box<dyn FnMut()>>> = const { RefCell::new(None) };
+}
+
+/// Run `body` with `hook` called on this thread between the checks of the held `v1/` and the
+/// open of the database, where a test renames and replaces the directory.
+#[doc(hidden)]
+pub fn with_connect_hook<R>(hook: impl FnMut() + 'static, body: impl FnOnce() -> R) -> R {
+    CONNECT_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    let result = body();
+    CONNECT_HOOK.with(|slot| *slot.borrow_mut() = None);
+    result
+}
+
+/// The telemetry root's `v1/`, created when absent, opened without following a link.
+fn open_versioned(layout: &Layout) -> Result<Confined, String> {
+    Confined::create_root(layout.root())
+        .and_then(|root| root.create_child_dir(layout::VERSION_DIR))
+        .map_err(|error| format!("{}: {error}", layout.versioned().display()))
+}
+
+/// Open the index file of the held `v1/` `versioned`, never through a link: a database, WAL or
+/// shared-memory file that is not a regular file in its place is refused (`reindex` removes the
+/// link itself, never what it points to). The path SQLite is given names the held directory
+/// itself, with `SQLITE_OPEN_NOFOLLOW`, so a `v1/` renamed and replaced by a link since it was
+/// opened leads SQLite nowhere outside it; the WAL and shared-memory files are opened at once,
+/// and the database SQLite opened is checked to be the held directory's own.
+fn connect(layout: &Layout, versioned: &Confined) -> Result<Connection, String> {
     let path = layout.index();
-    let versioned = layout.open_versioned().ok_or_else(|| {
-        format!(
-            "{}: not a real directory; the telemetry index is never opened through it",
-            layout.versioned().display()
-        )
-    })?;
     for name in index_names(layout) {
         if versioned
             .kind(&name)
@@ -281,18 +310,50 @@ fn connect(layout: &Layout) -> Result<Connection, String> {
             ));
         }
     }
-    Connection::open(&path).map_err(|error| format!("{}: {error}", path.display()))
+    let anchored: PathBuf = versioned
+        .anchored_path()
+        .map_err(|error| format!("{}: {error}", path.display()))?
+        .join(layout::INDEX);
+    CONNECT_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().as_mut() {
+            hook();
+        }
+    });
+    let connection = Connection::open_with_flags(
+        &anchored,
+        OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .map_err(|error| format!("{}: {error}", path.display()))?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(sql)?;
+    // The first read opens the WAL and shared-memory files of a WAL database, now, beside the
+    // database just opened.
+    connection
+        .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let opened = std::fs::symlink_metadata(&anchored).ok().map(|metadata| {
+        use std::os::unix::fs::MetadataExt as _;
+        (metadata.dev(), metadata.ino())
+    });
+    let held = versioned
+        .identity(layout::INDEX)
+        .map(|identity| (identity.dev, identity.ino));
+    if opened.is_none() || opened != held {
+        return Err(format!(
+            "{}: the opened database is not the telemetry directory's own; it is never used",
+            path.display()
+        ));
+    }
+    Ok(connection)
 }
 
 /// Open the index file, creating it when absent; refuse one of another shape or schema version
 /// (ADR-0145: refused, never migrated), naming the file, both schemas and the command that
 /// replaces it. A refused file is left as it was found.
-fn open_file(layout: &Layout) -> Result<Connection, String> {
+fn open_file(layout: &Layout, versioned: &Confined) -> Result<Connection, String> {
     let path = layout.index();
-    let connection = connect(layout)?;
-    connection
-        .busy_timeout(Duration::from_secs(5))
-        .map_err(sql)?;
+    let connection = connect(layout, versioned)?;
     let has_meta: bool = connection
         .query_row(
             "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
@@ -341,13 +402,23 @@ impl Index {
     /// with `Err`, never read around: the reader fails closed and `reindex` replaces it.
     /// Nothing is ingested yet.
     pub fn open(layout: &Layout) -> Result<Self, String> {
+        Self::open_in(layout, open_versioned(layout)?)
+    }
+
+    /// [`Self::open`] through `versioned`, the telemetry root's `v1/` the caller opened: the
+    /// locks are taken and the database opened through it, and it is held for the connection's
+    /// lifetime.
+    pub fn open_in(layout: &Layout, versioned: Confined) -> Result<Self, String> {
         let deadline = std::time::Instant::now() + layout::LOCK_WAIT;
-        let intent = layout::shared_within(&layout.index_intent(), layout::LOCK_WAIT)
+        let shared = FlockArg::LockSharedNonblock;
+        let intent = layout::lock_in(&versioned, layout::INDEX_INTENT, layout::LOCK_WAIT, shared)
             .map_err(|error| format!("{}: {error}", layout.index_intent().display()))?;
         let lock = match intent {
-            Some(_) => layout::shared_within(
-                &layout.index_lock(),
+            Some(_) => layout::lock_in(
+                &versioned,
+                layout::INDEX_LOCK,
                 deadline.saturating_duration_since(std::time::Instant::now()),
+                shared,
             )
             .map_err(|error| format!("{}: {error}", layout.index_lock().display()))?,
             None => None,
@@ -360,11 +431,12 @@ impl Index {
             );
         };
         Ok(Self {
-            connection: open_file(layout)?,
+            connection: open_file(layout, &versioned)?,
             layout: layout.clone(),
             mode: Mode::Shared,
             note: None,
             _lock: Some(lock),
+            versioned: Some(versioned),
         })
     }
 
@@ -378,6 +450,7 @@ impl Index {
             mode: Mode::Direct,
             note: Some(note.to_string()),
             _lock: None,
+            versioned: None,
         })
     }
 
@@ -399,8 +472,12 @@ impl Index {
     /// file replaced or rewritten since is read and validated again, its earlier rows
     /// forgotten, and on refusal it is listed unreadable, exactly as a rebuild would answer.
     pub fn ingest(&mut self) -> Result<(Ingested, Vec<(String, String)>), String> {
-        let directory = Confined::versioned(&self.layout, "segments")
-            .map_err(|error| format!("{}: {error}", self.layout.segments().display()))?;
+        // The segments of the `v1/` the connection was opened through, when it holds one.
+        let directory = match &self.versioned {
+            Some(versioned) => versioned.child_dir("segments"),
+            None => Confined::versioned(&self.layout, "segments"),
+        }
+        .map_err(|error| format!("{}: {error}", self.layout.segments().display()))?;
         let listing = match &directory {
             Some(directory) => reader::list_in(directory)?,
             None => reader::Listing::default(),
@@ -1199,22 +1276,28 @@ pub struct Replaced {
 /// unlink the database with its WAL and shared-memory files, recreate it and ingest every
 /// segment. `Err` names why, the lock among the reasons; the old index is then untouched.
 pub fn replace(layout: &Layout) -> Result<Replaced, String> {
+    replace_in(layout, open_versioned(layout)?)
+}
+
+/// [`replace`] through `versioned`, the telemetry root's `v1/` the caller opened: the locks are
+/// taken, the files removed and the database recreated and ingested through it.
+pub fn replace_in(layout: &Layout, versioned: Confined) -> Result<Replaced, String> {
+    let exclusive = FlockArg::LockExclusiveNonblock;
     // New connections wait while this replacement holds the intent; the ones open finish.
-    let _intent = layout::exclusive_within(&layout.index_intent(), layout::LOCK_WAIT)
-        .map_err(|error| format!("{}: {error}", layout.index_intent().display()))?
-        .ok_or("the telemetry index is in use by another command; try again")?;
-    let lock = layout::exclusive_within(&layout.index_lock(), layout::LOCK_WAIT)
+    let _intent = layout::lock_in(
+        &versioned,
+        layout::INDEX_INTENT,
+        layout::LOCK_WAIT,
+        exclusive,
+    )
+    .map_err(|error| format!("{}: {error}", layout.index_intent().display()))?
+    .ok_or("the telemetry index is in use by another command; try again")?;
+    let lock = layout::lock_in(&versioned, layout::INDEX_LOCK, layout::LOCK_WAIT, exclusive)
         .map_err(|error| format!("{}: {error}", layout.index_lock().display()))?
         .ok_or("the telemetry index is in use by another command; try again")?;
-    let versioned = layout.open_versioned().ok_or_else(|| {
-        format!(
-            "{}: not a real directory; the telemetry index is never replaced through it",
-            layout.versioned().display()
-        )
-    })?;
     let names = index_names(layout);
     if versioned.kind(&names[0]) == Some(EntryKind::File)
-        && let Ok(connection) = connect(layout)
+        && let Ok(connection) = connect(layout, &versioned)
     {
         let _ = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
         drop(connection);
@@ -1228,7 +1311,7 @@ pub fn replace(layout: &Layout) -> Result<Replaced, String> {
             Err(error) => return Err(format!("{}: {error}", versioned.join(name).display())),
         }
     }
-    let connection = connect(layout)?;
+    let connection = connect(layout, &versioned)?;
     configure(&connection)?;
     create(&connection)?;
     let mut index = Index {
@@ -1237,6 +1320,7 @@ pub fn replace(layout: &Layout) -> Result<Replaced, String> {
         mode: Mode::Shared,
         note: None,
         _lock: Some(lock),
+        versioned: Some(versioned),
     };
     let (ingested, refused) = index.ingest()?;
     Ok(Replaced { ingested, refused })

@@ -95,7 +95,8 @@ under the state root's `telemetry/`. These eight clauses bind every package of t
    `af.task_id`, `af.attempt_id`, `span_id`, `parent_span_id`, `trace_id`, the digest fields
    and the like); every other string, an identity-shaped one handed over as an identity
    included, is judged whole as untrusted text. Exact token and charge counters are canonical
-   decimal strings only, any other number under their names dropped and counted. Every other
+   decimal strings only, any other value under their names (a number, text, any other shape)
+   dropped and counted before any other rule. Every other
    field of every record kind is judged whole, and a JSON source longer than its bound, or a
    string array whose encoding is, is withheld before it is parsed or encoded; environment
    values are never recorded; Provider
@@ -125,7 +126,10 @@ under the state root's `telemetry/`. These eight clauses bind every package of t
    total byte limit of its own with a fixed terminal reserve for its seal. Collection never
    leaves the telemetry directory: it acts only on names of the layout's exact grammar that are
    real directories and regular files, relative to the opened directory, never through a
-   symbolic link, and readers never open a file through one. Every directory
+   symbolic link, and readers never open a file through one. A writer, `status` and `reindex`
+   hold the directories they opened for their lifetime and reach blobs, locks and the index
+   database (with its WAL and shared-memory files) through those descriptors, so a directory
+   renamed and replaced by a link after it was opened takes nothing outside it. Every directory
    Telemetry has written is registered (`af/TelemetryDirs@1`), and a directory that overlaps a
    Store, a cache, a release installation or another telemetry directory is refused before its
    first write; when the Store registry cannot be read the overlap is unknown, never assumed

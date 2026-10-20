@@ -989,6 +989,16 @@ pub fn bound_attributes(
     let mut out = Attributes::new();
     let room = MAX_ATTRIBUTES - COUNTERS.len();
     for (key, value) in attrs.0 {
+        // An exact counter is a validated canonical decimal string or nothing, judged before
+        // any other rule: every other shape (text, an identity, an enumeration, a boolean, an
+        // integer, a float, an array, a non-canonical decimal) is dropped and counted in
+        // `af.dropped_fields`, never withheld under the secret-name rule, never written.
+        if is_exact_counter(&key)
+            && !matches!(&value, Attr::Decimal(decimal) if redact::is_canonical_decimal(decimal))
+        {
+            counters.dropped += 1;
+            continue;
+        }
         // A name is untrusted text too, judged as a value is (an assignment such as
         // `API_KEY=hunter2`, a token prefix, a JWT, a long secret run): a credential-shaped one
         // is never written, at any level.
@@ -999,25 +1009,6 @@ pub fn bound_attributes(
         if key.len() > MAX_KEY_BYTES || COUNTERS.contains(&key.as_str()) || out.len() >= room {
             counters.dropped += 1;
             continue;
-        }
-        // An exact counter is a canonical decimal string or nothing: a number in any other
-        // form (an integer, a float, a negative, a non-canonical decimal) is dropped and
-        // counted, never written as a JSON number.
-        if is_exact_counter(&key) {
-            match &value {
-                Attr::Decimal(decimal) if redact::is_canonical_decimal(decimal) => {}
-                Attr::Decimal(_) | Attr::Int(_) | Attr::Float(_) => {
-                    counters.dropped += 1;
-                    continue;
-                }
-                // Text and every other shape: the secret-name rule below withholds it under a
-                // token name; under any other counter name it is no counter and is dropped.
-                _ if redact::secret_name(&key) => {}
-                _ => {
-                    counters.dropped += 1;
-                    continue;
-                }
-            }
         }
         // The secret-name rule, as for a JSON member or a configuration row: the key stays and
         // its value is withheld whole whatever its shape, unless af's own schema types the key

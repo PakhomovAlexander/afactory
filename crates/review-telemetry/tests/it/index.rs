@@ -266,3 +266,86 @@ fn telemetry_index_never_opens_through_a_link() {
     );
     assert!(!missing.exists(), "nothing created through the link");
 }
+
+/// The index is opened through the `v1/` descriptor the command holds: `v1/` is renamed and
+/// replaced by a link to an outside directory between the checks of the held directory and the
+/// open of the database. `status` and `reindex` then open and create nothing outside the
+/// original root, neither the database nor its WAL, shared-memory or lock files: either the
+/// database is opened in the original `v1/` (where the path naming the held directory leads, as
+/// on macOS) or the open is refused naming the index (where that path met the link), and a
+/// refusal changes nothing.
+#[test]
+fn telemetry_index_open_stays_within_the_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("telemetry");
+    let layout = Layout::new(&root);
+    let live = populated(&root);
+    live.finish(SealExit::Ok).unwrap();
+    let outside = temp.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let versioned = layout.versioned();
+    let moved = root.join("v1.moved");
+    let input = review_telemetry::status::StatusInput {
+        root: root.clone(),
+        level: Level::Spans,
+        max_bytes: 4 << 30,
+        registry: None,
+        accounted: Vec::new(),
+        accounted_unknown: None,
+    };
+    for operation in ["status", "reindex"] {
+        // The original `v1/` in place, with no index yet: the open has to create one.
+        if std::fs::symlink_metadata(&moved).is_ok() {
+            std::fs::remove_file(&versioned).unwrap();
+            std::fs::rename(&moved, &versioned).unwrap();
+        }
+        for file in layout.index_files() {
+            std::fs::remove_file(file).ok();
+        }
+        let swap = {
+            let (versioned, moved, outside) = (versioned.clone(), moved.clone(), outside.clone());
+            let mut swapped = false;
+            move || {
+                if !swapped {
+                    swapped = true;
+                    std::fs::rename(&versioned, &moved).unwrap();
+                    std::os::unix::fs::symlink(&outside, &versioned).unwrap();
+                }
+            }
+        };
+        let result = index::with_connect_hook(swap, || match operation {
+            "status" => review_telemetry::status::status(&input).map(|(status, _)| status.runs),
+            _ => review_telemetry::status::reindex(&root).map(|document| document.segments),
+        });
+        assert!(
+            std::fs::symlink_metadata(&versioned).is_ok_and(|metadata| metadata.is_symlink()),
+            "{operation}: the hook swapped v1/"
+        );
+        let outside_entries: Vec<_> = std::fs::read_dir(&outside).unwrap().collect();
+        assert!(
+            outside_entries.is_empty(),
+            "{operation}: nothing outside: {outside_entries:?}"
+        );
+        // macOS names the held directory by its inode: the open always reaches it.
+        #[cfg(target_vendor = "apple")]
+        assert!(result.is_ok(), "{operation}: {result:?}");
+        match result {
+            Ok(count) => {
+                assert!(count > 0, "{operation}: {count}");
+                let database = moved.join("index.sqlite");
+                assert!(
+                    std::fs::symlink_metadata(&database)
+                        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0),
+                    "{operation}: the index is in the original v1/"
+                );
+            }
+            Err(refusal) => {
+                assert!(refusal.contains("index.sqlite"), "{operation}: {refusal}");
+                assert!(
+                    !moved.join("index.sqlite-wal").exists(),
+                    "{operation}: {refusal}"
+                );
+            }
+        }
+    }
+}

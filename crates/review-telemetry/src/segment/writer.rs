@@ -23,10 +23,10 @@
 //! appended and the buffer flushed; the lock is released. When the lock is not free (a sweep
 //! holds it) the blob is dropped and counted, and the occurrence says `state = dropped`.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 
 use nix::fcntl::FlockArg;
 use serde_json::Value;
@@ -178,6 +178,42 @@ struct Consumer {
     segments: Option<Confined>,
 }
 
+/// The telemetry root and its `v1/` as the writer opened them at its first write, held for the
+/// writer's whole lifetime with the `blobs/` and prefix directories derived from them: every
+/// blob is staged, placed and removed, and `gc.lock` taken, relative to these descriptors with
+/// no link followed, so a root renamed and replaced by a link afterwards takes nothing outside
+/// the root the writer opened.
+struct Tree {
+    _root: Confined,
+    versioned: Confined,
+    blobs: Mutex<BlobDirs>,
+}
+
+/// `blobs/` and its prefix directories, each opened once from its parent and kept.
+#[derive(Default)]
+struct BlobDirs {
+    blobs: Option<Confined>,
+    prefixes: BTreeMap<String, Confined>,
+}
+
+impl Tree {
+    /// The prefix directory `blobs/<prefix>/`, created when absent, derived from the held
+    /// descriptors.
+    fn prefix(&self, prefix: &str) -> std::io::Result<Confined> {
+        let mut dirs = lock(&self.blobs);
+        let dirs = &mut *dirs;
+        let blobs = match &mut dirs.blobs {
+            Some(blobs) => blobs,
+            empty => empty.insert(self.versioned.create_child_dir("blobs")?),
+        };
+        if !dirs.prefixes.contains_key(prefix) {
+            let opened = blobs.create_child_dir(prefix)?;
+            dirs.prefixes.insert(prefix.to_string(), opened);
+        }
+        dirs.prefixes[prefix].try_clone()
+    }
+}
+
 /// Shared between every handle of one writer.
 pub struct Shared {
     options: WriterOptions,
@@ -186,6 +222,8 @@ pub struct Shared {
     /// Signalled on every append; the consumer thread of P2 waits on it.
     pub wake: Condvar,
     consumer: Mutex<Consumer>,
+    /// Set once, when the consumer opens the segment.
+    tree: OnceLock<Tree>,
 }
 
 /// A sealed segment.
@@ -504,6 +542,7 @@ impl Writer {
                     file: None,
                     segments: None,
                 }),
+                tree: OnceLock::new(),
                 options,
             }),
         })
@@ -814,18 +853,33 @@ impl Writer {
             )?;
         }
         // Every directory from the root down is created and opened without following a link,
-        // and the live file is created relative to the opened `segments/`.
-        let segments = layout::create_versioned(&options.layout, "segments").map_err(|error| {
-            format!("creating {}: {error}", options.layout.segments().display())
-        })?;
+        // and the live file is created relative to the opened `segments/`. The root and `v1/`
+        // stay open for the writer's lifetime: blobs and `gc.lock` are reached through them.
+        let creating = |path: PathBuf| {
+            move |error: std::io::Error| format!("creating {}: {error}", path.display())
+        };
+        let root = Confined::create_root(options.layout.root())
+            .map_err(creating(options.layout.root().to_path_buf()))?;
+        let versioned = root
+            .create_child_dir(layout::VERSION_DIR)
+            .map_err(creating(options.layout.versioned()))?;
+        let segments = versioned
+            .create_child_dir("segments")
+            .map_err(creating(options.layout.segments()))?;
         let name = format!("{segment_id}{}", layout::LIVE);
         let file = segments
             .create_file(&name, true)
-            .map_err(|error| format!("creating {}: {error}", segments.join(&name).display()))?;
+            .map_err(creating(segments.join(&name)))?;
         let held = layout::try_lock(file, FlockArg::LockExclusiveNonblock)
             .map_err(|_| format!("locking {}", segments.join(&name).display()))?;
         consumer.file = Some(held);
         consumer.segments = Some(segments);
+        // Opened once: a writer whose segment failed to open never opens another.
+        let _ = self.shared.tree.set(Tree {
+            _root: root,
+            versioned,
+            blobs: Mutex::new(BlobDirs::default()),
+        });
         Ok(())
     }
 
@@ -940,7 +994,11 @@ impl Writer {
                 return None;
             }
         }
-        let layout = self.shared.options.layout.clone();
+        // The segment is open, so the directories it was opened in are held.
+        let Some(tree) = self.shared.tree.get() else {
+            lock(&self.shared.pending).dropped += 1 + contents.len() as u64;
+            return None;
+        };
         let mut contents: Vec<Content> = contents
             .into_iter()
             .map(|prepared| Content {
@@ -950,7 +1008,10 @@ impl Writer {
             })
             .collect();
         for content in &mut contents {
-            match blob::stage(&layout, &content.prepared) {
+            let staged = tree
+                .prefix(blob::prefix_of(&content.prepared.digest))
+                .and_then(|directory| blob::stage_in(directory, &content.prepared));
+            match staged {
                 Ok(staged) => content.staged = Some(staged),
                 Err(error) => self.problem(
                     ProblemWhat::Blob,
@@ -962,7 +1023,14 @@ impl Writer {
             return None;
         }
         let gc = if contents.iter().any(|content| content.staged.is_some()) {
-            layout::shared_now(&layout.gc_lock()).ok().flatten()
+            layout::lock_in(
+                &tree.versioned,
+                layout::GC_LOCK,
+                std::time::Duration::ZERO,
+                FlockArg::LockSharedNonblock,
+            )
+            .ok()
+            .flatten()
         } else {
             None
         };
