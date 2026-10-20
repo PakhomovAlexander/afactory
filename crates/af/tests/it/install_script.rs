@@ -3,7 +3,7 @@
 //! checksum alone (said on stderr), and a re-run that verifies the installed binary again rather
 //! than trusting its receipt. Nothing here reaches the network.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Output;
 
 use crate::common;
@@ -20,7 +20,10 @@ fn install_host() -> Option<&'static str> {
 }
 
 fn install_script() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../install.sh")
+    std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .join("install.sh")
 }
 
 /// The tools `install.sh` and the fake `curl` run; `shasum` is a Perl script on macOS.
