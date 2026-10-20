@@ -57,7 +57,10 @@ enum TypedValue {
 pub struct Typed(TypedValue);
 
 impl Typed {
-    /// A digest or identity that validates as one ([`redact::is_identity`]).
+    /// A digest or identity that has the identity shape ([`redact::is_identity`]). It is kept
+    /// as given only in an identity position and when it is exactly a kernel identity
+    /// ([`crate::record::is_identity_position`], [`redact::is_kernel_identity`]); otherwise it
+    /// is judged as untrusted text.
     pub fn identity(value: impl Into<String>) -> Option<Self> {
         let value = value.into();
         redact::is_identity(&value).then_some(Self(TypedValue::Identity(value)))
@@ -107,10 +110,7 @@ impl std::error::Error for Typed {}
 /// Whether an integer field is an exact counter, written as a canonical decimal string. This
 /// decides only the spelling of a number, never an exemption for text.
 pub fn decimal_counter(name: &str) -> bool {
-    (name.starts_with("af.usage.") && name.ends_with("_tokens"))
-        || name.starts_with("gen_ai.usage.")
-        || name.starts_with("af.charge")
-        || name == "af.store.sequence_at_start"
+    crate::record::is_exact_counter(name)
 }
 
 /// Collects one span's or event's fields.

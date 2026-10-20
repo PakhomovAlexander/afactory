@@ -15,7 +15,8 @@
 //! The lock, never a PID, says whether a writer is alive: a PID is reused, an `flock` ends with
 //! the process that held it.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -60,39 +61,17 @@ impl Layout {
     /// Whether `v1/` is a real directory: a link in its place is never entered (it is what
     /// `status` reports as unrecognized).
     pub fn has_versioned(&self) -> bool {
-        std::fs::symlink_metadata(self.versioned()).is_ok_and(|metadata| metadata.is_dir())
+        self.open_versioned().is_some()
     }
 
-    /// Create `path`, a directory beneath the root, one component at a time, refusing any
-    /// existing component that is not a real directory: a writer never follows a link out of
-    /// the telemetry directory (the root itself may be reached through one the user chose).
-    pub fn create_dirs(&self, path: &Path) -> std::io::Result<()> {
-        let relative = path.strip_prefix(&self.root).map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("{} is not beneath {}", path.display(), self.root.display()),
-            )
-        })?;
-        std::fs::create_dir_all(&self.root)?;
-        let mut current = self.root.clone();
-        for component in relative.components() {
-            current.push(component);
-            match std::fs::create_dir(&current) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error),
-            }
-            if !std::fs::symlink_metadata(&current)?.is_dir() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!(
-                        "{} is not a real directory; telemetry never writes through a link",
-                        current.display()
-                    ),
-                ));
-            }
-        }
-        Ok(())
+    /// The opened root's `v1/`, when it is a real directory.
+    pub fn open_versioned(&self) -> Option<Confined> {
+        Confined::root(&self.root)
+            .ok()
+            .flatten()?
+            .child_dir(VERSION_DIR)
+            .ok()
+            .flatten()
     }
 
     pub fn segments(&self) -> PathBuf {
@@ -259,10 +238,12 @@ impl EntryKind {
 }
 
 /// A directory beneath a telemetry root opened without following a symbolic link: its entries
-/// are listed, judged and removed relative to the open descriptor, so a link swapped in for a
-/// directory or a file never takes a walk or a removal outside the root.
+/// are listed, judged, created, renamed and removed relative to the open descriptor, so a link
+/// swapped in for a directory or a file never takes a walk, a write or a removal outside the
+/// root, and a directory renamed or replaced after it was opened changes nothing outside it.
+#[derive(Debug)]
 pub struct Confined {
-    dir: nix::dir::Dir,
+    fd: OwnedFd,
     path: PathBuf,
 }
 
@@ -271,15 +252,71 @@ fn directory_flags() -> nix::fcntl::OFlag {
     OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC
 }
 
+/// Files under a telemetry root are created readable and writable by their owner.
+fn file_mode() -> nix::sys::stat::Mode {
+    nix::sys::stat::Mode::from_bits_truncate(0o644)
+}
+
+fn not_a_file(path: &Path) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!("{} is not a regular file", path.display()),
+    )
+}
+
+/// The allocated bytes a `stat` reports (what eviction would free), never the apparent length.
+fn stat_allocated(stat: &nix::sys::stat::FileStat) -> u64 {
+    u64::try_from(stat.st_blocks)
+        .unwrap_or(0)
+        .saturating_mul(512)
+}
+
+/// What identifies one file's contents under its name: device, inode, size and modification
+/// time. A file replaced or rewritten in place under the same name has another identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileIdentity {
+    pub dev: u64,
+    pub ino: u64,
+    pub size: u64,
+    pub mtime_ns: i128,
+}
+
+impl FileIdentity {
+    #[allow(clippy::useless_conversion)]
+    fn of(stat: &nix::sys::stat::FileStat) -> Self {
+        Self {
+            dev: u64::try_from(stat.st_dev).unwrap_or(0),
+            ino: u64::from(stat.st_ino),
+            size: u64::try_from(stat.st_size).unwrap_or(0),
+            mtime_ns: i128::from(stat.st_mtime) * 1_000_000_000 + i128::from(stat.st_mtime_nsec),
+        }
+    }
+
+    /// The identity of an open file.
+    pub fn of_file(file: &File) -> std::io::Result<Self> {
+        Ok(Self::of(&nix::sys::stat::fstat(file)?))
+    }
+
+    /// One text, for the index.
+    pub fn text(&self) -> String {
+        format!("{}:{}:{}:{}", self.dev, self.ino, self.size, self.mtime_ns)
+    }
+}
+
 impl Confined {
     /// Open the telemetry root `path` itself, which may be reached through a link the user
     /// chose; everything beneath it is opened with [`Self::child_dir`]. `None` when it is
     /// absent or not a directory.
     pub fn root(path: &Path) -> std::io::Result<Option<Self>> {
         let flags = directory_flags() & !nix::fcntl::OFlag::O_NOFOLLOW;
-        match nix::dir::Dir::open(path, flags, nix::sys::stat::Mode::empty()) {
-            Ok(dir) => Ok(Some(Self {
-                dir,
+        match nix::fcntl::openat(
+            nix::fcntl::AT_FDCWD,
+            path,
+            flags,
+            nix::sys::stat::Mode::empty(),
+        ) {
+            Ok(fd) => Ok(Some(Self {
+                fd,
                 path: path.to_path_buf(),
             })),
             Err(
@@ -287,6 +324,18 @@ impl Confined {
             ) => Ok(None),
             Err(errno) => Err(errno.into()),
         }
+    }
+
+    /// Create the telemetry root `path` when it is absent (through whatever the user's path
+    /// names) and open it.
+    pub fn create_root(path: &Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(path)?;
+        Self::root(path)?.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{} is not a directory", path.display()),
+            )
+        })
     }
 
     /// The telemetry root's `v1/<name>/` (`segments`, `blobs`), each component a real
@@ -316,14 +365,14 @@ impl Confined {
         if self.kind(name) != Some(EntryKind::Directory) {
             return Ok(None);
         }
-        match nix::dir::Dir::openat(
-            &self.dir,
+        match nix::fcntl::openat(
+            &self.fd,
             name,
             directory_flags(),
             nix::sys::stat::Mode::empty(),
         ) {
-            Ok(dir) => Ok(Some(Self {
-                dir,
+            Ok(fd) => Ok(Some(Self {
+                fd,
                 path: self.path.join(name),
             })),
             Err(
@@ -333,11 +382,40 @@ impl Confined {
         }
     }
 
+    /// The entry `name`, created as a directory when absent, opened relative to this one; an
+    /// existing entry that is not a real directory (a link included) is refused: a writer never
+    /// follows a link out of the telemetry directory.
+    pub fn create_child_dir(&self, name: &str) -> std::io::Result<Self> {
+        match nix::sys::stat::mkdirat(
+            &self.fd,
+            name,
+            nix::sys::stat::Mode::from_bits_truncate(0o755),
+        ) {
+            Ok(()) | Err(nix::errno::Errno::EEXIST) => {}
+            Err(errno) => return Err(errno.into()),
+        }
+        self.child_dir(name)?.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "{} is not a real directory; telemetry never writes through a link",
+                    self.join(name).display()
+                ),
+            )
+        })
+    }
+
     /// The names of the entries, `.` and `..` excluded; a name that is not UTF-8 is never one
     /// this layout gives, and is skipped.
-    pub fn names(&mut self) -> std::io::Result<Vec<String>> {
+    pub fn names(&self) -> std::io::Result<Vec<String>> {
+        let mut dir = nix::dir::Dir::openat(
+            &self.fd,
+            ".",
+            directory_flags(),
+            nix::sys::stat::Mode::empty(),
+        )?;
         let mut names = Vec::new();
-        for entry in self.dir.iter() {
+        for entry in dir.iter() {
             let entry = entry?;
             let Ok(name) = entry.file_name().to_str() else {
                 continue;
@@ -351,12 +429,48 @@ impl Confined {
     }
 
     fn stat(&self, name: &str) -> Option<nix::sys::stat::FileStat> {
-        nix::sys::stat::fstatat(&self.dir, name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW).ok()
+        nix::sys::stat::fstatat(&self.fd, name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW).ok()
     }
 
     /// What `name` is, without following a link; `None` when it is gone.
     pub fn kind(&self, name: &str) -> Option<EntryKind> {
         self.stat(name).map(|stat| EntryKind::of(&stat))
+    }
+
+    /// The allocated bytes of the entry `name` itself (a link's own, never its target's); 0
+    /// when it is gone.
+    pub fn allocated(&self, name: &str) -> u64 {
+        self.stat(name).map_or(0, |stat| stat_allocated(&stat))
+    }
+
+    /// The allocated bytes of this directory itself.
+    pub fn own_allocated(&self) -> u64 {
+        nix::sys::stat::fstat(&self.fd).map_or(0, |stat| stat_allocated(&stat))
+    }
+
+    /// The allocated bytes of the entry `name` with everything beneath it, walked relative to
+    /// this directory without following a link.
+    pub fn allocated_tree(&self, name: &str) -> u64 {
+        let own = self.allocated(name);
+        if self.kind(name) != Some(EntryKind::Directory) {
+            return own;
+        }
+        let Ok(Some(child)) = self.child_dir(name) else {
+            return own;
+        };
+        own + child
+            .names()
+            .unwrap_or_default()
+            .iter()
+            .map(|inner| child.allocated_tree(inner))
+            .sum::<u64>()
+    }
+
+    /// The identity of the regular file `name`, judged without following a link.
+    pub fn identity(&self, name: &str) -> Option<FileIdentity> {
+        self.stat(name)
+            .filter(|stat| EntryKind::of(stat) == EntryKind::File)
+            .map(|stat| FileIdentity::of(&stat))
     }
 
     /// Whether `name` is a regular file last modified at least `age` before `now`.
@@ -379,62 +493,146 @@ impl Confined {
     /// link, a device) is left in place and reported as an error.
     pub fn remove_file(&self, name: &str) -> std::io::Result<()> {
         if self.kind(name) != Some(EntryKind::File) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("{} is not a regular file", self.join(name).display()),
-            ));
+            return Err(not_a_file(&self.join(name)));
         }
-        nix::unistd::unlinkat(&self.dir, name, nix::unistd::UnlinkatFlags::NoRemoveDir)
+        self.unlink(name)
+    }
+
+    /// Unlink the entry `name`, whatever it is but a directory: a link is removed itself, never
+    /// what it points to.
+    pub fn unlink(&self, name: &str) -> std::io::Result<()> {
+        nix::unistd::unlinkat(&self.fd, name, nix::unistd::UnlinkatFlags::NoRemoveDir)
             .map_err(std::io::Error::from)
+    }
+
+    fn open_with(&self, name: &str, flags: nix::fcntl::OFlag) -> std::io::Result<File> {
+        use nix::fcntl::OFlag;
+        let fd = nix::fcntl::openat(
+            &self.fd,
+            name,
+            flags | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
+            file_mode(),
+        )?;
+        let file = File::from(fd);
+        if !file.metadata()?.is_file() {
+            return Err(not_a_file(&self.join(name)));
+        }
+        Ok(file)
     }
 
     /// Open the regular file `name` for reading relative to this directory, never through a
     /// link.
     pub fn open_file(&self, name: &str) -> std::io::Result<File> {
+        self.open_with(name, nix::fcntl::OFlag::O_RDONLY)
+    }
+
+    /// Open the regular file `name` for reading and writing, never through a link.
+    pub fn open_read_write(&self, name: &str) -> std::io::Result<File> {
+        self.open_with(name, nix::fcntl::OFlag::O_RDWR)
+    }
+
+    /// Create the file `name`, which must not exist, for reading and writing; `append` opens it
+    /// in append mode.
+    pub fn create_file(&self, name: &str, append: bool) -> std::io::Result<File> {
         use nix::fcntl::OFlag;
-        let fd = nix::fcntl::openat(
-            &self.dir,
-            name,
-            OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC,
-            nix::sys::stat::Mode::empty(),
-        )?;
-        let file = File::from(fd);
-        if !file.metadata()?.is_file() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("{} is not a regular file", self.join(name).display()),
-            ));
+        let mut flags = OFlag::O_RDWR | OFlag::O_CREAT | OFlag::O_EXCL;
+        if append {
+            flags |= OFlag::O_APPEND;
         }
-        Ok(file)
+        self.open_with(name, flags)
+    }
+
+    /// Open the regular file `name` for reading and writing, creating it when absent. The open
+    /// and the exclusive creation are tried in turn, so two processes creating it at once both
+    /// end with the one file (a plain `O_CREAT` open racing another creator can fail with
+    /// `ENOENT` on some systems).
+    pub fn open_or_create(&self, name: &str) -> std::io::Result<File> {
+        let mut last = None;
+        for _ in 0..16 {
+            match self.open_read_write(name) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                opened => return opened,
+            }
+            match self.create_file(name, false) {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotFound
+                    ) =>
+                {
+                    last = Some(error);
+                }
+                created => return created,
+            }
+        }
+        Err(last.unwrap_or_else(|| std::io::ErrorKind::NotFound.into()))
+    }
+
+    /// Rename the entry `from` to `to`, both in this directory.
+    pub fn rename(&self, from: &str, to: &str) -> std::io::Result<()> {
+        nix::fcntl::renameat(&self.fd, from, &self.fd, to).map_err(std::io::Error::from)
+    }
+
+    /// Write `contents` to a temporary file in this directory and rename it to `name`.
+    pub fn write_atomically(&self, name: &str, contents: &[u8]) -> std::io::Result<()> {
+        use std::io::Write as _;
+        let temp = temp_name(WRITE_TEMP_LABEL);
+        let written = self.create_file(&temp, false).and_then(|mut file| {
+            file.write_all(contents)?;
+            file.sync_all()
+        });
+        match written.and_then(|()| self.rename(&temp, name)) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let _ = self.unlink(&temp);
+                Err(error)
+            }
+        }
     }
 }
 
-/// Open the file at `path` for reading, refusing a symbolic link as its last component: a
-/// segment, manifest or blob file is only ever read where the layout put it.
-pub fn open_nofollow(path: &Path) -> std::io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    OpenOptions::new()
-        .read(true)
-        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-        .open(path)
+/// The opened telemetry root, its `v1/` and the directory `v1/<name>/`, created as needed,
+/// each component a real directory.
+pub fn create_versioned(layout: &Layout, name: &str) -> std::io::Result<Confined> {
+    Confined::create_root(layout.root())?
+        .create_child_dir(VERSION_DIR)?
+        .create_child_dir(name)
 }
 
 /// A held advisory lock; dropping it releases the lock.
 pub type Held = Flock<File>;
 
+/// Open the lock file at `path`, creating it when absent, never through a link. A layout's
+/// `<root>/v1/<name>` is opened relative to the opened root and its `v1/`, so a link anywhere
+/// beneath the root is never followed; any other lock file (the directory registry's, beside
+/// the registry) refuses a link as its last component.
 fn open_lock_file(path: &Path) -> std::io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+    let invalid = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is not a lock file", path.display()),
+        )
+    };
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(invalid)?;
+    let parent = path.parent().ok_or_else(invalid)?;
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    if parent.file_name() == Some(std::ffi::OsStr::new(VERSION_DIR)) {
+        let root = match parent.parent() {
+            Some(root) if !root.as_os_str().is_empty() => root,
+            _ => Path::new("."),
+        };
+        return Confined::create_root(root)?
+            .create_child_dir(VERSION_DIR)?
+            .open_or_create(name);
     }
-    // Never through a link: a lock file is created and held only where the layout puts it.
-    OpenOptions::new()
-        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .read(true)
-        .open(path)
+    Confined::create_root(parent)?.open_or_create(name)
 }
 
 /// Try `arg` once on `file`.
@@ -471,15 +669,6 @@ fn within(path: &Path, wait: Duration, arg: FlockArg) -> std::io::Result<Option<
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-}
-
-/// Whether some process holds a lock on the file at `path` (it is live). A file that cannot be
-/// opened is reported as not locked.
-pub fn is_locked(path: &Path) -> bool {
-    let Ok(file) = open_nofollow(path) else {
-        return false;
-    };
-    try_lock(file, FlockArg::LockSharedNonblock).is_err()
 }
 
 /// Unix nanoseconds now, from the system clock.

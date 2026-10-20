@@ -86,10 +86,19 @@ under the state root's `telemetry/`. These eight clauses bind every package of t
    document still parses. A record attribute's name is judged by the same rule: one that passes
    for a credential is never written, the attribute is omitted and counted in `af.redacted`, and
    the record's other attributes stay; one named like a secret keeps its name and loses its
-   value whatever its shape, as a JSON member does, and so does a command-line option's value.
-   Kernel-produced, validated identity fields and counters are typed fields the heuristic never
-   sees, every other field of every record kind is judged whole, and a JSON source longer than
-   its bound is withheld before it is parsed; environment values are never recorded; Provider
+   value whatever its shape, as a JSON member does, and so does a command-line option's value;
+   a configuration key named like a secret or passing for a credential withholds its whole
+   pair, value and origin. The identity exemption holds only for a value that is exactly one of
+   the kernel's identity grammars (a `sha256:` digest, a Task's `task:` run id, a lowercase-hex
+   id of 16, 32 or 64 digits, a segment id, an occurrence id `segment_id:seq`, a decimal
+   ordinal) in one of the closed set of identity positions the crate declares (`af.run_id`,
+   `af.task_id`, `af.attempt_id`, `span_id`, `parent_span_id`, `trace_id`, the digest fields
+   and the like); every other string, an identity-shaped one handed over as an identity
+   included, is judged whole as untrusted text. Exact token and charge counters are canonical
+   decimal strings only, any other number under their names dropped and counted. Every other
+   field of every record kind is judged whole, and a JSON source longer than its bound, or a
+   string array whose encoding is, is withheld before it is parsed or encoded; environment
+   values are never recorded; Provider
    grants and the home prefix are replaced by placeholders, and a home prefix the environment
    does not give is recorded as a problem, never silently skipped. An occurrence keeps the
    identity of its original source bytes, its media type and its redaction version; the shared

@@ -201,14 +201,17 @@ Levels
 
 Credential-looking material is withheld at every level, before any bound cuts it: a line that
 looks like a credential becomes `[line withheld: looks like credential material]`, a JSON member
-named like a secret keeps its key and loses its value (`[withheld]`), and so does a
-configuration row whose key is named like a secret, a line or document too long to judge whole
-is withheld whole, an attribute whose name itself looks like a credential is omitted and
-counted in `af.redacted`, and an attribute or a command-line option named like a secret keeps
-its name and loses its value whatever its shape. Identities and counters af produced are typed
-fields and stay intact; a HOME that gives no home prefix to replace by `~` is recorded as a
-problem. A telemetry-only failure (an unwritable directory, a full segment) is one problem
-and the run continues.
+named like a secret keeps its key and loses its value (`[withheld]`), a configuration row whose
+key is named like a secret or itself looks like a credential loses its value and origin (and
+such a key is withheld too), a line or document too long to judge whole is withheld whole, an
+attribute whose name itself looks like a credential is omitted and counted in `af.redacted`,
+and an attribute or a command-line option named like a secret keeps its name and loses its
+value whatever its shape. Only a kernel identity (a digest, a 16, 32 or 64 hex id, a segment or
+occurrence id, an ordinal) in an identity position (af.run_id, span_id, a digest field, ...)
+escapes these rules; any other value is judged as text. Token and charge counters are exact
+decimal strings: any other number under their names is dropped and counted. A HOME that gives
+no home prefix to replace by `~` is recorded as a problem. A telemetry-only failure (an
+unwritable directory, a full segment) is one problem and the run continues.
 
   af telemetry status           level, directory, bytes, segments, runs, index, problems
   af telemetry reindex          recover crashed writers' segments and rebuild the index

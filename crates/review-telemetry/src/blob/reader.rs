@@ -3,13 +3,14 @@
 //! collection holds it) the occurrence is reported as `content unavailable: collection in
 //! progress` and the file is never opened. A reference whose file is nevertheless missing (a
 //! hand-deleted file, a copied directory) is reported for that occurrence as `content
-//! unavailable: missing blob` and never fails the query.
+//! unavailable: missing blob` and never fails the query. Every directory from the root down is
+//! opened without following a link, so a linked prefix directory reads as a missing blob.
 
 use std::io::Read as _;
 
 use flate2::read::GzDecoder;
 
-use crate::layout::{self, Layout};
+use crate::layout::{self, Confined, EntryKind, Layout};
 use crate::record::{BlobRef, BlobState};
 use crate::trace::sha256_digest;
 
@@ -29,9 +30,31 @@ pub const DROPPED: &str = "content unavailable: dropped";
 /// The reason for an occurrence read while a collection holds `gc.lock`.
 pub const COLLECTING: &str = "content unavailable: collection in progress";
 
-/// Whether the blob file of `digest` exists.
+/// The prefix directory `blobs/<aa>/` of `digest` and the object's file name in it, every
+/// directory from the root down opened without following a link: a linked `v1/`, `blobs/` or
+/// prefix directory is no blob directory, and its objects are missing.
+fn object(layout: &Layout, digest: &str) -> std::io::Result<Option<(Confined, String)>> {
+    let Some(hex) = digest
+        .strip_prefix("sha256:")
+        .filter(|hex| hex.len() == 64 && crate::redact::is_lower_hex(hex))
+    else {
+        return Ok(None);
+    };
+    let Some(blobs) = Confined::versioned(layout, "blobs")? else {
+        return Ok(None);
+    };
+    Ok(blobs
+        .child_dir(&hex[..2])?
+        .map(|prefix| (prefix, format!("{hex}.gz"))))
+}
+
+/// Whether the blob file of `digest` exists: a regular file in a real prefix directory beneath
+/// the root, judged without following a link.
 pub fn exists(layout: &Layout, digest: &str) -> bool {
-    std::fs::symlink_metadata(layout.blob(digest)).is_ok_and(|metadata| metadata.is_file())
+    object(layout, digest)
+        .ok()
+        .flatten()
+        .is_some_and(|(prefix, name)| prefix.kind(&name) == Some(EntryKind::File))
 }
 
 /// The retained bytes of `digest`, verified against it, read under `gc.lock` shared. Without
@@ -44,9 +67,12 @@ pub fn read(layout: &Layout, digest: &str) -> Content {
             return Content::Unavailable(format!("content unavailable: gc.lock: {error}"));
         }
     };
-    let path = layout.blob(digest);
     // Never through a link: a blob file is read only where the layout put it.
-    let file = match layout::open_nofollow(&path) {
+    let opened = object(layout, digest).and_then(|found| match found {
+        Some((prefix, name)) => prefix.open_file(&name),
+        None => Err(std::io::ErrorKind::NotFound.into()),
+    });
+    let file = match opened {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Content::Unavailable(MISSING.into());

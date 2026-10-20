@@ -28,14 +28,23 @@ pub struct Collected {
 /// `.jsonl` segment, locked or not. Recovers the unsealed segments it can lock first.
 pub fn roots(layout: &Layout) -> Result<BTreeSet<String>, String> {
     reader::recover_all(layout)?;
-    let listing = reader::list(layout)?;
+    let failed = |error: std::io::Error| format!("{}: {error}", layout.segments().display());
     let mut roots = BTreeSet::new();
+    let Some(segments) = Confined::versioned(layout, "segments").map_err(failed)? else {
+        return Ok(roots);
+    };
+    let listing = reader::list_in(&segments)?;
     for id in &listing.sealed {
-        roots.extend(reader::manifest_digests(layout, id)?);
+        roots.extend(reader::manifest_digests_in(&segments, id)?);
     }
     for id in listing.live.iter().chain(&listing.unsealed) {
-        let prefix = reader::read_live(&layout.live_segment(id))?;
-        roots.extend(reader::referenced(&prefix.records));
+        let bytes = reader::read_live_in(&segments, id).map_err(|error| {
+            format!(
+                "{}: {error}",
+                segments.join(&format!("{id}{}", layout::LIVE)).display()
+            )
+        })?;
+        roots.extend(reader::referenced(&reader::scan(&bytes).records));
     }
     Ok(roots)
 }
@@ -65,7 +74,7 @@ pub fn collect(layout: &Layout, min_age: Duration, now: SystemTime) -> Result<Co
     let roots = roots(layout)?;
     let failed =
         |path: PathBuf| move |error: std::io::Error| format!("{}: {error}", path.display());
-    if let Some(mut segments) =
+    if let Some(segments) =
         Confined::versioned(layout, "segments").map_err(failed(layout.segments()))?
     {
         for name in segments.names().map_err(failed(layout.segments()))? {
@@ -77,15 +86,14 @@ pub fn collect(layout: &Layout, min_age: Duration, now: SystemTime) -> Result<Co
             }
         }
     }
-    let Some(mut blobs) = Confined::versioned(layout, "blobs").map_err(failed(layout.blobs()))?
-    else {
+    let Some(blobs) = Confined::versioned(layout, "blobs").map_err(failed(layout.blobs()))? else {
         return Ok(collected);
     };
     for prefix_name in blobs.names().map_err(failed(layout.blobs()))? {
         if !layout::is_blob_prefix(&prefix_name) {
             continue;
         }
-        let Ok(Some(mut prefix)) = blobs.child_dir(&prefix_name) else {
+        let Ok(Some(prefix)) = blobs.child_dir(&prefix_name) else {
             continue;
         };
         let Ok(names) = prefix.names() else {

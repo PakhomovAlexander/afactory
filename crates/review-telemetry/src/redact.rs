@@ -9,8 +9,10 @@
 //!
 //! - **Typed fields.** A digest, an id, a counter, a timestamp or an enumerated value the kernel
 //!   produced and validated is written as a typed field and never passes the heuristic, which
-//!   would otherwise withhold every digest as a 32-hex run. [`is_digest`], [`is_identity`] and
-//!   [`is_canonical_decimal`] are the validations; a value that fails one is untrusted text.
+//!   would otherwise withhold every digest as a 32-hex run. An identity is exempt only when it
+//!   is exactly one of the kernel's grammars ([`is_kernel_identity`]) in an identity position
+//!   the record declares; [`is_canonical_decimal`] validates counters. A value that fails is
+//!   untrusted text.
 //! - **Text, per line.** [`Redactor::text`] replaces every line that looks like a credential by
 //!   [`WITHHELD_LINE`], Provider grant values by `<grant:NAME>` and the home prefix by `~`.
 //! - **JSON, key-aware and recursive.** [`Redactor::json`] keeps a document parseable: a member
@@ -345,9 +347,11 @@ pub fn is_lower_hex(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-/// A kernel identity written as a typed field: a digest, or 1 to 256 characters of
+/// The shape of an identity-like value: a digest, or 1 to 256 characters of
 /// `A-Z a-z 0-9 . _ : @ / + -` starting with a letter or digit (run, Task, Attempt, node,
-/// segment and span ids, package names as `name@version`).
+/// segment and span ids, package names as `name@version`). The shape alone earns no exemption
+/// from the credential rules (`sk-proj-…` has it): only [`is_kernel_identity`] in an identity
+/// position does.
 pub fn is_identity(value: &str) -> bool {
     is_digest(value)
         || (!value.is_empty()
@@ -356,6 +360,52 @@ pub fn is_identity(value: &str) -> bool {
             && value
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b"._:@/+-".contains(&byte)))
+}
+
+/// The fixed lengths of the lowercase-hex ids the kernel and this crate produce: span ids and
+/// `af.corr` (16), trace ids (32), Store ids and bare SHA-256 digests (64).
+pub const KERNEL_HEX_LENGTHS: [usize; 3] = [16, 32, 64];
+
+/// Whether `value` is exactly one of the kernel's identity grammars, the only values the typed
+/// identity exemption keeps:
+///
+/// - a digest, `sha256:` and 64 lowercase hex digits, and a Task's run id, `task:` and a digest;
+/// - a lowercase-hex id of one of the [`KERNEL_HEX_LENGTHS`];
+/// - a segment (execution) id, `<started_unix_ms>-<pid>-<nonce>`: at most 20 and 10 decimal
+///   digits and 8 lowercase hex digits;
+/// - an occurrence id, `<segment_id>:<seq>`;
+/// - a decimal ordinal: a canonical decimal of at most `u64`.
+///
+/// Anything else, `sk-proj-…` and every other identity-shaped string included, is untrusted text
+/// and judged whole by the credential rules.
+pub fn is_kernel_identity(value: &str) -> bool {
+    is_digest(value)
+        || value.strip_prefix("task:").is_some_and(is_digest)
+        || (KERNEL_HEX_LENGTHS.contains(&value.len()) && is_lower_hex(value))
+        || is_kernel_segment_id(value)
+        || value
+            .rsplit_once(':')
+            .is_some_and(|(segment, seq)| is_kernel_segment_id(segment) && is_ordinal(seq))
+        || is_ordinal(value)
+}
+
+/// A segment id as the writer makes one: `<started_unix_ms>-<pid>-<nonce>`, at most 20 and 10
+/// decimal digits and exactly 8 lowercase hex digits.
+fn is_kernel_segment_id(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('-').collect();
+    let digits = |part: &str, max: usize| {
+        (1..=max).contains(&part.len()) && part.bytes().all(|byte| byte.is_ascii_digit())
+    };
+    parts.len() == 3
+        && digits(parts[0], 20)
+        && digits(parts[1], 10)
+        && parts[2].len() == 8
+        && is_lower_hex(parts[2])
+}
+
+/// A canonical decimal of at most `u64`.
+fn is_ordinal(value: &str) -> bool {
+    is_canonical_decimal(value) && value.parse::<u64>().is_ok()
 }
 
 /// A canonical unsigned decimal of at most `u128`: `0`, or digits without a leading zero
@@ -503,8 +553,9 @@ impl Redactor {
 
     /// A JSON document af itself produced: the positions `exempt` names (JSON pointers, `*`
     /// matching any member or index) are typed fields and skip the heuristic when their value
-    /// validates as an identity, a digest, a decimal, a number or a boolean; every other
-    /// position is redacted as [`Self::json`] does.
+    /// is exactly a kernel identity ([`is_kernel_identity`]), a canonical decimal, a number or
+    /// a boolean; every other position, and every other value in those positions, is redacted
+    /// as [`Self::json`] does.
     pub fn kernel_json(&self, value: &mut Value, exempt: &[&str]) -> u32 {
         self.json_at(value, "", &|pointer: &str| {
             exempt
@@ -572,11 +623,11 @@ fn split_line_end(line: &str) -> (&str, &str) {
     }
 }
 
-/// A value that validates as one of the typed kinds: a digest or identity string, a canonical
-/// decimal string, a number or a boolean.
+/// A value that validates as one of the typed kinds: a kernel identity, a canonical decimal
+/// string, a number or a boolean.
 fn typed_value(value: &Value) -> bool {
     match value {
-        Value::String(text) => is_identity(text) || is_canonical_decimal(text),
+        Value::String(text) => is_kernel_identity(text) || is_canonical_decimal(text),
         Value::Number(_) | Value::Bool(_) | Value::Null => true,
         Value::Array(_) | Value::Object(_) => false,
     }

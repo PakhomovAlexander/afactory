@@ -892,3 +892,142 @@ fn telemetry_reads_refuse_files_past_their_bound() {
     assert_eq!(refused.len(), 1, "{refused:?}");
     assert!(refused[0].1.contains("segment bound"), "{refused:?}");
 }
+
+/// Every step of sealing is relative to the `segments/` directory the writer opened: after the
+/// writer opened its live segment, `v1/segments` is renamed and a link to an outside directory
+/// holding a same-named live file put in its place; `finish` writes the manifest and the sealed
+/// segment and removes the live file in the directory it opened, and nothing outside the root
+/// is written or removed.
+#[test]
+fn telemetry_sealing_stays_within_the_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("telemetry");
+    let outside = temp.path().join("outside");
+    let layout = Layout::new(&root);
+    let writer = writer(&root, Level::Spans);
+    let span = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event(&span, "af.before", Attrs::new().int("af.n", 1));
+    writer.flush();
+    let segment_id = writer.segment_id().unwrap();
+    let live_name = format!("{segment_id}.jsonl");
+    assert!(layout.live_segment(&segment_id).is_file());
+
+    let moved = layout.versioned().join("segments.moved");
+    std::fs::rename(layout.segments(), &moved).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let decoy = b"outside: not this writer's segment\n";
+    std::fs::write(outside.join(&live_name), decoy).unwrap();
+    std::os::unix::fs::symlink(&outside, layout.segments()).unwrap();
+
+    writer.event(&span, "af.after", Attrs::new().int("af.n", 2));
+    writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    assert_eq!(sealed.segment_id, segment_id);
+
+    // Outside: exactly the decoy, untouched.
+    let mut names: Vec<String> = std::fs::read_dir(&outside)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    names.sort();
+    assert_eq!(names, [live_name.clone()]);
+    assert_eq!(std::fs::read(outside.join(&live_name)).unwrap(), decoy);
+    // Inside: the segment sealed where the writer opened it, every record kept.
+    assert!(!moved.join(&live_name).exists(), "the live file is removed");
+    assert!(moved.join(format!("{segment_id}.refs")).is_file());
+    let records = sealed_records(&moved.join(format!("{segment_id}.jsonl.gz")));
+    let events: Vec<&str> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::Event(event) => Some(event.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(events, ["af.before", "af.after"]);
+    assert!(matches!(records.last(), Some(Record::Seal(seal)) if seal.exit == SealExit::Ok));
+    let leftovers: Vec<String> = std::fs::read_dir(&moved)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+/// The index records each ingested sealed file's identity and compares it on every ingest: a
+/// sealed segment replaced under its name with other valid content is read again, and one
+/// corrupted under its name has its earlier rows forgotten and is listed unreadable, so
+/// `status` answers exactly as `reindex` does.
+#[test]
+fn telemetry_changed_sealed_segment_is_revalidated() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let layout = Layout::new(root);
+    let writer = writer(root, Level::Spans);
+    let span = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event(&span, "af.first", Attrs::new());
+    writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let kept = crate::writer(root, Level::Spans);
+    let other = kept
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    kept.span_end(&other, SpanStatus::Ok, Attrs::new(), 0);
+    kept.finish(SealExit::Ok).unwrap().unwrap();
+
+    let indexed = status_of(root);
+    assert!(indexed.unreadable.is_empty(), "{:?}", indexed.unreadable);
+    let event_names = |dump: &std::collections::BTreeMap<String, Vec<Vec<String>>>| {
+        dump["events"]
+            .iter()
+            .map(|row| row[4].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(event_names(&dump(&layout)), ["'af.first'"]);
+
+    // Replaced under its name (a new file renamed into place) with other valid records.
+    let text = String::from_utf8(crate::sealed_bytes(&sealed.path)).unwrap();
+    let changed = text.replace("\"af.first\"", "\"af.other\"");
+    assert_ne!(changed, text);
+    let staged = sealed.path.with_extension("staged");
+    std::fs::write(
+        &staged,
+        review_telemetry::blob::compress(changed.as_bytes()),
+    )
+    .unwrap();
+    std::fs::rename(&staged, &sealed.path).unwrap();
+    let revalidated = status_of(root);
+    assert!(revalidated.unreadable.is_empty());
+    let after_status = dump(&layout);
+    assert_eq!(event_names(&after_status), ["'af.other'"]);
+    review_telemetry::status::reindex(root).unwrap();
+    assert_eq!(dump(&layout), after_status, "status answers as reindex");
+
+    // Corrupted in place: its rows are forgotten and it is listed unreadable.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(&sealed.path)
+        .unwrap();
+    file.write_all(b"not a gzip stream at all").unwrap();
+    drop(file);
+    let refused = status_of(root);
+    let path = sealed.path.display().to_string();
+    assert!(
+        refused.unreadable.iter().any(|entry| entry.path == path),
+        "{:?}",
+        refused.unreadable
+    );
+    let after_status = dump(&layout);
+    assert!(event_names(&after_status).is_empty());
+    assert_eq!(after_status["segments"].len(), 1, "the other segment stays");
+    let reindexed = review_telemetry::status::reindex(root).unwrap();
+    assert!(reindexed.unreadable.iter().any(|entry| entry.path == path));
+    assert_eq!(dump(&layout), after_status, "status answers as reindex");
+    let again = status_of(root);
+    assert_eq!(again.unreadable, refused.unreadable);
+    assert_eq!(again.segments, refused.segments);
+}

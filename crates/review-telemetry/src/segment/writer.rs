@@ -24,8 +24,7 @@
 //! holds it) the blob is dropped and counted, and the occurrence says `state = dropped`.
 
 use std::collections::{BTreeSet, VecDeque};
-use std::fs::{File, OpenOptions};
-use std::io::{Read as _, Write as _};
+use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
@@ -35,7 +34,7 @@ use serde_json::Value;
 use super::{Clock, TERMINAL_RESERVE_BYTES, new_segment_id};
 use crate::blob::{self, Media, Prepared};
 use crate::dirs::{self, Accounted};
-use crate::layout::{self, Held, Layout};
+use crate::layout::{self, Confined, FileIdentity, Held, Layout};
 use crate::level::{Level, Settings};
 use crate::record::{
     self, Attributes, Attrs, BlobObject, BlobRef, BlobState, ConfigPart, ConfigRow, Counters,
@@ -171,10 +170,12 @@ struct Pending {
     referenced: BTreeSet<String>,
 }
 
-/// The consumer's own state: the open file and its lock.
+/// The consumer's own state: the open file and its lock, and the `segments/` directory it was
+/// created in, held open so the manifest, the seal, the compression, the rename and the removal
+/// of the live file happen relative to it whatever later becomes of the paths above it.
 struct Consumer {
     file: Option<Held>,
-    path: Option<PathBuf>,
+    segments: Option<Confined>,
 }
 
 /// Shared between every handle of one writer.
@@ -501,7 +502,7 @@ impl Writer {
                 wake: Condvar::new(),
                 consumer: Mutex::new(Consumer {
                     file: None,
-                    path: None,
+                    segments: None,
                 }),
                 options,
             }),
@@ -579,8 +580,12 @@ impl Writer {
             &redactor.value(&options.cwd.to_string_lossy()).0,
             MAX_STRING_BYTES,
         );
-        // The build's commit is an identity when it validates as one, and text otherwise.
-        let af_commit = if crate::redact::is_identity(&options.af_commit) {
+        // The build's commit is kept when it is a commit id (40 or 64 lowercase hex digits) or
+        // a kernel identity, and judged as text otherwise.
+        let commit = &options.af_commit;
+        let af_commit = if (matches!(commit.len(), 40 | 64) && redact::is_lower_hex(commit))
+            || redact::is_kernel_identity(commit)
+        {
             options.af_commit.clone()
         } else {
             redactor.value(&options.af_commit).0
@@ -808,22 +813,19 @@ impl Writer {
                 &registration.accounted,
             )?;
         }
-        let path = options.layout.live_segment(segment_id);
-        options
-            .layout
-            .create_dirs(&options.layout.segments())
-            .map_err(|error| {
-                format!("creating {}: {error}", options.layout.segments().display())
-            })?;
-        let file = OpenOptions::new()
-            .append(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|error| format!("creating {}: {error}", path.display()))?;
+        // Every directory from the root down is created and opened without following a link,
+        // and the live file is created relative to the opened `segments/`.
+        let segments = layout::create_versioned(&options.layout, "segments").map_err(|error| {
+            format!("creating {}: {error}", options.layout.segments().display())
+        })?;
+        let name = format!("{segment_id}{}", layout::LIVE);
+        let file = segments
+            .create_file(&name, true)
+            .map_err(|error| format!("creating {}: {error}", segments.join(&name).display()))?;
         let held = layout::try_lock(file, FlockArg::LockExclusiveNonblock)
-            .map_err(|_| format!("locking {}", path.display()))?;
+            .map_err(|_| format!("locking {}", segments.join(&name).display()))?;
         consumer.file = Some(held);
-        consumer.path = Some(path);
+        consumer.segments = Some(segments);
         Ok(())
     }
 
@@ -860,20 +862,21 @@ impl Writer {
                 }
                 // Both arrive as the writer gave them, so the occurrence's source identity is
                 // the original's: text is redacted per line before it is retained, an array as
-                // one JSON document.
-                let (bytes, media) = match value {
-                    Oversized::Text(text) => (text.as_bytes().to_vec(), Media::Text),
-                    Oversized::Texts(values) => (
-                        serde_json::to_vec(values).expect("strings serialize"),
-                        Media::Json,
+                // one JSON document, measured before it is encoded so an array over the blob
+                // bound is withheld before anything proportional to it is allocated.
+                contents.push(match value {
+                    Oversized::Text(text) => blob::prepare(
+                        text.as_bytes(),
+                        Media::Text,
+                        options.content_max_blob_bytes,
+                        &options.redactor,
                     ),
-                };
-                contents.push(blob::prepare(
-                    &bytes,
-                    media,
-                    options.content_max_blob_bytes,
-                    &options.redactor,
-                ));
+                    Oversized::Texts(values) => blob::prepare_texts(
+                        values,
+                        options.content_max_blob_bytes,
+                        &options.redactor,
+                    ),
+                });
                 named.push(key.to_string());
                 Some(String::new())
             });
@@ -975,7 +978,7 @@ impl Writer {
         if pending.state != State::Open {
             for content in &mut contents {
                 if let Some(staged) = content.staged.take() {
-                    let _ = std::fs::remove_file(&staged.temp);
+                    staged.discard();
                 }
             }
             pending.dropped += 1;
@@ -993,7 +996,7 @@ impl Writer {
         if !open || planned.is_none() || !self.fits(pending, false, &lines, slack) {
             for content in &mut contents {
                 if let Some(staged) = content.staged.take() {
-                    let _ = std::fs::remove_file(&staged.temp);
+                    staged.discard();
                 }
             }
             let refusal = if !open || planned.is_some() {
@@ -1012,16 +1015,16 @@ impl Writer {
                 continue;
             };
             if !content.stored {
-                let _ = std::fs::remove_file(&staged.temp);
+                staged.discard();
                 continue;
             }
             match blob::place(&staged) {
                 Ok(blob::Placed::Renamed) => {
-                    renamed.push((content.prepared.digest.clone(), staged.path));
+                    renamed.push((content.prepared.digest.clone(), staged));
                 }
                 Ok(blob::Placed::Reused) => {}
                 Err(_) => {
-                    let _ = std::fs::remove_file(&staged.temp);
+                    staged.discard();
                     content.stored = false;
                 }
             }
@@ -1030,9 +1033,9 @@ impl Writer {
         if value.is_none() || !self.fits(pending, false, &lines, 0) {
             // Refused after placement: the files it renamed go again, still under gc.lock,
             // except a digest a record of this segment already references.
-            for (digest, path) in renamed {
+            for (digest, staged) in renamed {
                 if !pending.referenced.contains(&digest) {
-                    let _ = std::fs::remove_file(path);
+                    staged.remove_placed();
                 }
             }
             let refusal = if value.is_some() {
@@ -1086,6 +1089,9 @@ impl Writer {
         } = self.bound(attrs);
         let start = ns(self.now_unix_ns());
         let name = self.name(name, &mut counters);
+        let trace_id = trace_id.map(|id| self.typed("trace_id", id, MAX_KEY_BYTES));
+        let parent_span_id =
+            parent_span_id.map(|id| self.typed("parent_span_id", id, MAX_KEY_BYTES));
         self.publish(contents, None, false, |batch, occurrences| {
             fill(&mut attributes, &named, occurrences);
             let span_id = trace::span_id(batch.segment_id(), batch.seq());
@@ -1093,9 +1099,9 @@ impl Writer {
                 Record::SpanStart(SpanStart {
                     seq: 0,
                     schema: schema::SPAN.into(),
-                    trace_id: trace_id.map(str::to_string),
+                    trace_id: trace_id.clone(),
                     span_id: span_id.clone(),
-                    parent_span_id: parent_span_id.map(str::to_string),
+                    parent_span_id: parent_span_id.clone(),
                     name: name.clone(),
                     kind,
                     start_unix_ns: start.clone(),
@@ -1236,30 +1242,43 @@ impl Writer {
     }
 
     /// An execution's configuration snapshot, split into as many `config` parts as the record
-    /// bound needs, in the rows' order. Each row is judged by its key first: a key the
-    /// secret-name rule matches (`key`, `token`, `secret`, `password`, …) has its value withheld
-    /// whatever its length or shape, as a secret-named JSON member's is. Keys, other values,
-    /// layers and origins are untrusted text, each judged whole and only then bounded; each
-    /// part counts its withheld values in `af.redacted`.
+    /// bound needs, in the rows' order. Each row is judged by its original key first: a key the
+    /// credential rule judges a credential (a token prefix, a JSON Web Token, a long secret
+    /// run, an assignment) or the secret-name rule matches (`key`, `token`, `secret`,
+    /// `password`, …) withholds the whole pair: the value and the origin become the withheld
+    /// marker whatever their length or shape, a credential-shaped key becomes it too, and the
+    /// pair counts once in `af.redacted`. Other keys, values, layers and origins are untrusted
+    /// text, each judged whole and only then bounded; each part counts its withheld values in
+    /// `af.redacted`.
     pub fn config(&self, execution_id: &str, rows: Vec<ConfigRow>) -> Option<u32> {
         let redactor = &self.shared.options.redactor;
         let rows: Vec<(ConfigRow, u32)> = rows
             .into_iter()
             .map(|row| {
-                let mut redacted = u32::from(redact::secret_name(&row.key));
+                let mut redacted = 0;
                 let mut judge = |text: &str| {
                     let (text, withheld) = redactor.value(text);
                     redacted += u32::from(withheld);
                     text
                 };
-                let key = judge(&row.key);
-                let value = if redact::secret_name(&row.key) {
-                    redact::WITHHELD.to_string()
+                let credential_key = redact::looks_like_credential(&row.key);
+                let pair_withheld = credential_key || redact::secret_name(&row.key);
+                let (key, value, origin) = if pair_withheld {
+                    let key = if credential_key {
+                        redact::WITHHELD.to_string()
+                    } else {
+                        redactor.replace(&row.key)
+                    };
+                    let withheld = row.origin.map(|_| redact::WITHHELD.to_string());
+                    (key, redact::WITHHELD.to_string(), withheld)
                 } else {
-                    judge(&row.value)
+                    let key = judge(&row.key);
+                    let value = judge(&row.value);
+                    let origin = row.origin.map(|origin| judge(&origin));
+                    (key, value, origin)
                 };
                 let layer = judge(&row.layer);
-                let origin = row.origin.map(|origin| judge(&origin));
+                redacted += u32::from(pair_withheld);
                 let row = ConfigRow {
                     key: record::cut(&key, MAX_KEY_BYTES),
                     value: record::cut(&value, MAX_STRING_BYTES),
@@ -1286,7 +1305,7 @@ impl Writer {
             size += bytes;
         }
         let count = u32::try_from(parts.len()).unwrap_or(u32::MAX);
-        let execution_id = self.typed(execution_id, MAX_KEY_BYTES);
+        let execution_id = self.typed("execution_id", execution_id, MAX_KEY_BYTES);
         self.commit(false, |batch| {
             for (index, (rows, redacted)) in parts.into_iter().enumerate() {
                 let part = u32::try_from(index).unwrap_or(u32::MAX) + 1;
@@ -1308,11 +1327,12 @@ impl Writer {
         })
     }
 
-    /// A field af's schema types as an identity or an enumeration: kept when it validates as
-    /// one, judged whole as untrusted text otherwise, so a credential in it leaves the withheld
-    /// marker; then cut to `max`.
-    fn typed(&self, value: &str, max: usize) -> String {
-        if redact::is_identity(value) {
+    /// A record field: kept as given only when `position` is an identity position
+    /// ([`record::is_identity_position`]) and the value is exactly a kernel identity
+    /// ([`redact::is_kernel_identity`]); judged whole as untrusted text otherwise, so a
+    /// credential in it leaves the withheld marker; then cut to `max`.
+    fn typed(&self, position: &str, value: &str, max: usize) -> String {
+        if record::is_identity_position(position) && redact::is_kernel_identity(value) {
             record::cut(value, max)
         } else {
             record::cut(&self.shared.options.redactor.value(value).0, max)
@@ -1320,19 +1340,19 @@ impl Writer {
     }
 
     /// One plan node of an execution. At most 64 `depends_on` ids are kept; every field is a
-    /// typed identity or judged whole.
+    /// kernel identity in its identity position or judged whole.
     pub fn node(&self, mut node: Node) -> Option<u64> {
         node.depends_on.truncate(64);
         for id in &mut node.depends_on {
-            *id = self.typed(id, MAX_KEY_BYTES);
+            *id = self.typed("depends_on", id, MAX_KEY_BYTES);
         }
-        node.execution_id = self.typed(&node.execution_id, MAX_KEY_BYTES);
-        node.plan_digest = self.typed(&node.plan_digest, MAX_KEY_BYTES);
-        node.node_id = self.typed(&node.node_id, MAX_KEY_BYTES);
-        node.kind = self.typed(&node.kind, MAX_KEY_BYTES);
+        node.execution_id = self.typed("execution_id", &node.execution_id, MAX_KEY_BYTES);
+        node.plan_digest = self.typed("plan_digest", &node.plan_digest, MAX_KEY_BYTES);
+        node.node_id = self.typed("node_id", &node.node_id, MAX_KEY_BYTES);
+        node.kind = self.typed("kind", &node.kind, MAX_KEY_BYTES);
         node.package = node
             .package
-            .map(|package| self.typed(&package, MAX_KEY_BYTES));
+            .map(|package| self.typed("package", &package, MAX_KEY_BYTES));
         node.schema = schema::NODE.into();
         self.commit(false, |batch| {
             batch.push(Record::Node(node), Counters::default())
@@ -1340,24 +1360,26 @@ impl Writer {
     }
 
     /// The bounded summary of a Finding; its free text (title, file) is judged and bounded,
-    /// and every other field is a typed identity or judged whole.
+    /// and every other field is a kernel identity in its identity position or judged whole.
     pub fn finding(&self, mut finding: Finding) -> Option<u64> {
         let redactor = &self.shared.options.redactor;
         finding.schema = schema::FINDING.into();
-        for field in [
-            &mut finding.span_id,
-            &mut finding.key,
-            &mut finding.severity,
-            &mut finding.effective_severity,
-            &mut finding.status,
-            &mut finding.scope,
-            &mut finding.report_artifact_id,
-            &mut finding.node_id,
-            &mut finding.worker,
+        for (position, field) in [
+            ("span_id", &mut finding.span_id),
+            ("key", &mut finding.key),
+            ("severity", &mut finding.severity),
+            ("effective_severity", &mut finding.effective_severity),
+            ("status", &mut finding.status),
+            ("scope", &mut finding.scope),
+            ("report_artifact_id", &mut finding.report_artifact_id),
+            ("node_id", &mut finding.node_id),
+            ("worker", &mut finding.worker),
         ] {
-            *field = self.typed(field, MAX_KEY_BYTES);
+            *field = self.typed(position, field, MAX_KEY_BYTES);
         }
-        finding.model = finding.model.map(|model| self.typed(&model, MAX_KEY_BYTES));
+        finding.model = finding
+            .model
+            .map(|model| self.typed("model", &model, MAX_KEY_BYTES));
         finding.title = record::cut(&redactor.value(&finding.title).0, MAX_STRING_BYTES);
         finding.file = finding
             .file
@@ -1367,18 +1389,18 @@ impl Writer {
         })
     }
 
-    /// The bounded summary of a Demand, keyed by its id; every field is a typed identity or
-    /// judged whole.
+    /// The bounded summary of a Demand, keyed by its id; every field is a kernel identity in
+    /// its identity position or judged whole.
     pub fn demand(&self, mut demand: Demand) -> Option<u64> {
-        for field in [
-            &mut demand.span_id,
-            &mut demand.demand_id,
-            &mut demand.kind,
-            &mut demand.subject_id,
-            &mut demand.snapshot_id,
-            &mut demand.status,
+        for (position, field) in [
+            ("span_id", &mut demand.span_id),
+            ("demand_id", &mut demand.demand_id),
+            ("kind", &mut demand.kind),
+            ("subject_id", &mut demand.subject_id),
+            ("snapshot_id", &mut demand.snapshot_id),
+            ("status", &mut demand.status),
         ] {
-            *field = self.typed(field, MAX_KEY_BYTES);
+            *field = self.typed(position, field, MAX_KEY_BYTES);
         }
         demand.schema = schema::DEMAND.into();
         self.commit(false, |batch| {
@@ -1438,8 +1460,7 @@ impl Writer {
             }
             (pending.segment_id.clone(), pending.referenced.clone())
         };
-        let layout = &self.shared.options.layout;
-        let result = seal_file(&mut consumer, layout, &segment_id, &referenced);
+        let result = seal_file(&mut consumer, &segment_id, &referenced);
         let mut pending = lock(&self.shared.pending);
         match result {
             Ok(sealed) => {
@@ -1455,19 +1476,6 @@ impl Writer {
     }
 }
 
-/// Write `contents` to a temporary file beside `path` and rename it into place.
-pub(crate) fn write_atomically(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
-    let parent = path.parent().expect("a file has a directory");
-    let temp = parent.join(layout::temp_name(layout::WRITE_TEMP_LABEL));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)?;
-    file.write_all(contents)?;
-    file.sync_all()?;
-    std::fs::rename(&temp, path)
-}
-
 /// The sorted digests, one per line.
 pub(crate) fn manifest(referenced: &BTreeSet<String>) -> Vec<u8> {
     let mut text = String::new();
@@ -1479,35 +1487,54 @@ pub(crate) fn manifest(referenced: &BTreeSet<String>) -> Vec<u8> {
 }
 
 /// Write the manifest, compress the segment to `.jsonl.gz` and remove the `.jsonl`, under the
-/// writer's lock, which ends when the file closes.
+/// writer's lock, which ends when the file closes. Every step is relative to the `segments/`
+/// directory the live file was created in, and the live bytes are read back through the held
+/// descriptor: a directory above it renamed or replaced by a link since changes nothing
+/// outside the root.
 fn seal_file(
     consumer: &mut Consumer,
-    layout: &Layout,
     segment_id: &str,
     referenced: &BTreeSet<String>,
 ) -> Result<Sealed, String> {
+    let segments = consumer
+        .segments
+        .as_ref()
+        .ok_or("the segment was never written")?;
     let held = consumer
         .file
         .as_mut()
         .ok_or("the segment was never written")?;
-    held.sync_all()
-        .map_err(|error| format!("syncing the segment: {error}"))?;
-    let refs = layout.refs(segment_id);
-    write_atomically(&refs, &manifest(referenced))
-        .map_err(|error| format!("writing {}: {error}", refs.display()))?;
-    let live = layout.live_segment(segment_id);
+    let live = format!("{segment_id}{}", layout::LIVE);
+    let refs = format!("{segment_id}{}", layout::REFS);
+    let sealed = format!("{segment_id}{}", layout::SEALED);
+    let failed = |name: &str| {
+        let path = segments.join(name);
+        move |error: std::io::Error| format!("{}: {error}", path.display())
+    };
+    held.sync_all().map_err(failed(&live))?;
+    segments
+        .write_atomically(&refs, &manifest(referenced))
+        .map_err(failed(&refs))?;
     let mut bytes = Vec::new();
-    File::open(&live)
-        .and_then(|mut file| file.read_to_end(&mut bytes))
-        .map_err(|error| format!("reading {}: {error}", live.display()))?;
-    let sealed = layout.sealed_segment(segment_id);
-    write_atomically(&sealed, &blob::compress(&bytes))
-        .map_err(|error| format!("writing {}: {error}", sealed.display()))?;
-    std::fs::remove_file(&live).map_err(|error| format!("removing {}: {error}", live.display()))?;
-    consumer.file = None;
-    Ok(Sealed {
+    held.seek(SeekFrom::Start(0))
+        .and_then(|_| held.read_to_end(&mut bytes))
+        .map_err(failed(&live))?;
+    segments
+        .write_atomically(&sealed, &blob::compress(&bytes))
+        .map_err(failed(&sealed))?;
+    // Only the file this writer created is removed: a name that no longer holds it is left.
+    let opened = FileIdentity::of_file(held).map_err(failed(&live))?;
+    if segments
+        .identity(&live)
+        .is_some_and(|current| current.dev == opened.dev && current.ino == opened.ino)
+    {
+        segments.unlink(&live).map_err(failed(&live))?;
+    }
+    let sealed = Sealed {
         segment_id: segment_id.to_string(),
-        path: sealed,
-        refs,
-    })
+        path: segments.join(&sealed),
+        refs: segments.join(&refs),
+    };
+    consumer.file = None;
+    Ok(sealed)
 }

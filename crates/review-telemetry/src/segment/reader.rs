@@ -16,13 +16,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
-use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
 use flate2::read::GzDecoder;
 use nix::fcntl::FlockArg;
 
-use crate::layout::{self, Confined, EntryKind, Layout, SegmentFile};
+use crate::layout::{self, Confined, EntryKind, FileIdentity, Layout, SegmentFile};
 use crate::level::SEGMENT_MAX_BYTES_BOUND;
 use crate::record::{Attributes, BlobState, Record, Seal, SealExit, SpanEnd, SpanStatus, schema};
 
@@ -139,11 +139,20 @@ fn read_at_most(reader: impl std::io::Read, limit: u64) -> std::io::Result<Vec<u
     Ok(bytes)
 }
 
-/// The bytes of a `.jsonl` segment, opened without following a link. Its length is judged
-/// before any byte is read: a file longer than any segment this release writes
-/// ([`SEGMENT_MAX_BYTES_BOUND`]) is refused, never loaded.
-pub fn read_live_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
-    let file = layout::open_nofollow(path)?;
+/// Open the file a caller names for reading, refusing a symbolic link as its last component.
+/// The layout's own readers open segments relative to the opened `segments/` directory
+/// ([`read_live_in`], [`read_sealed_in`]).
+fn open_path(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
+        .open(path)
+}
+
+/// The bytes of an opened `.jsonl` segment. Its length is judged before any byte is read: a
+/// file longer than any segment this release writes ([`SEGMENT_MAX_BYTES_BOUND`]) is refused,
+/// never loaded.
+fn live_bytes(file: File) -> std::io::Result<Vec<u8>> {
     if file.metadata()?.len() > SEGMENT_MAX_BYTES_BOUND {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -153,16 +162,24 @@ pub fn read_live_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
     read_at_most(file, SEGMENT_MAX_BYTES_BOUND)
 }
 
+/// The bytes of the `.jsonl` segment at `path`, opened without following a link.
+pub fn read_live_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    live_bytes(open_path(path)?)
+}
+
+/// The bytes of the `.jsonl` segment `segment_id`, opened relative to `segments`.
+pub fn read_live_in(segments: &Confined, segment_id: &str) -> std::io::Result<Vec<u8>> {
+    live_bytes(segments.open_file(&format!("{segment_id}{}", layout::LIVE))?)
+}
+
 /// The valid prefix of a live or unsealed segment, read without its lock.
 pub fn read_live(path: &Path) -> Result<Prefix, String> {
     let bytes = read_live_bytes(path).map_err(|error| format!("{}: {error}", path.display()))?;
     Ok(scan(&bytes))
 }
 
-/// Every record of a sealed segment. Any invalid line, or a missing seal, refuses it.
-pub fn read_sealed(path: &Path) -> Result<Vec<Record>, String> {
-    let file =
-        layout::open_nofollow(path).map_err(|error| format!("{}: {error}", path.display()))?;
+/// Every record of an opened sealed segment. Any invalid line, or a missing seal, refuses it.
+fn sealed_records(file: File, path: &Path) -> Result<Vec<Record>, String> {
     // Decompressed only up to the longest segment this release writes: a larger stream is
     // refused before it is held.
     let bytes = read_at_most(GzDecoder::new(file), SEGMENT_MAX_BYTES_BOUND)
@@ -181,6 +198,28 @@ pub fn read_sealed(path: &Path) -> Result<Vec<Record>, String> {
         ));
     }
     Ok(prefix.records)
+}
+
+/// Every record of the sealed segment at `path`. Any invalid line, or a missing seal, refuses
+/// it.
+pub fn read_sealed(path: &Path) -> Result<Vec<Record>, String> {
+    let file = open_path(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    sealed_records(file, path)
+}
+
+/// Every record of the sealed segment `segment_id`, opened relative to `segments`, with the
+/// identity of the file read (its device, inode, size and modification time).
+pub fn read_sealed_in(
+    segments: &Confined,
+    segment_id: &str,
+) -> Result<(Vec<Record>, FileIdentity), String> {
+    let path = segments.join(&format!("{segment_id}{}", layout::SEALED));
+    let failed = |error: std::io::Error| format!("{}: {error}", path.display());
+    let file = segments
+        .open_file(&format!("{segment_id}{}", layout::SEALED))
+        .map_err(failed)?;
+    let identity = FileIdentity::of_file(&file).map_err(failed)?;
+    Ok((sealed_records(file, &path)?, identity))
 }
 
 /// The digests of every stored occurrence in `records`, sorted.
@@ -217,10 +256,16 @@ pub struct Listing {
 pub fn list(layout: &Layout) -> Result<Listing, String> {
     let directory = layout.segments();
     let failed = |error: std::io::Error| format!("{}: {error}", directory.display());
+    match Confined::versioned(layout, "segments").map_err(failed)? {
+        Some(segments) => list_in(&segments),
+        None => Ok(Listing::default()),
+    }
+}
+
+/// [`list`] of the opened `segments/` directory.
+pub fn list_in(segments: &Confined) -> Result<Listing, String> {
+    let failed = |error: std::io::Error| format!("{}: {error}", segments.path().display());
     let mut listing = Listing::default();
-    let Some(mut segments) = Confined::versioned(layout, "segments").map_err(failed)? else {
-        return Ok(listing);
-    };
     for name in segments.names().map_err(failed)? {
         if segments.kind(&name) != Some(EntryKind::File) {
             continue;
@@ -292,55 +337,57 @@ fn record_time(record: &Record) -> Option<&str> {
 
 /// Recover the `.jsonl` segment `segment_id` if its lock can be taken now.
 pub fn recover(layout: &Layout, segment_id: &str) -> Result<Recovery, String> {
-    let live = layout.live_segment(segment_id);
-    let file = match OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
-        .open(&live)
-    {
+    let failed = |error: std::io::Error| format!("{}: {error}", layout.segments().display());
+    match Confined::versioned(layout, "segments").map_err(failed)? {
+        Some(segments) => recover_in(&segments, segment_id),
+        None => Ok(Recovery::AlreadySealed),
+    }
+}
+
+/// [`recover`] in the opened `segments/` directory: the segment is opened, judged, rewritten,
+/// renamed and removed relative to it, never through a path a link could redirect.
+pub fn recover_in(segments: &Confined, segment_id: &str) -> Result<Recovery, String> {
+    let name = format!("{segment_id}{}", layout::LIVE);
+    let sealed_name = format!("{segment_id}{}", layout::SEALED);
+    let live = segments.join(&name);
+    let io = |error: std::io::Error| format!("{}: {error}", live.display());
+    let file = match segments.open_read_write(&name) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Recovery::AlreadySealed);
         }
-        Err(error) => return Err(format!("{}: {error}", live.display())),
+        Err(error) => return Err(io(error)),
     };
     let Ok(mut held) = layout::try_lock(file, FlockArg::LockExclusiveNonblock) else {
         return Ok(Recovery::Live);
     };
-    // The lock is on what we opened; the path must still name it (a writer that sealed in the
+    // The lock is on what we opened; the name must still name it (a writer that sealed in the
     // meantime unlinked it).
-    let opened = held
-        .metadata()
-        .map_err(|error| format!("{}: {error}", live.display()))?;
-    match std::fs::metadata(&live) {
-        Ok(current) if current.ino() == opened.ino() && current.dev() == opened.dev() => {}
+    let opened = FileIdentity::of_file(&held).map_err(io)?;
+    match segments.identity(&name) {
+        Some(current) if current.ino == opened.ino && current.dev == opened.dev => {}
         _ => return Ok(Recovery::AlreadySealed),
     }
-    if layout.sealed_segment(segment_id).exists() {
-        std::fs::remove_file(&live).map_err(|error| format!("{}: {error}", live.display()))?;
+    if segments.kind(&sealed_name) == Some(EntryKind::File) {
+        segments.unlink(&name).map_err(io)?;
         return Ok(Recovery::AlreadySealed);
     }
-    let length = held
-        .metadata()
-        .map_err(|error| format!("{}: {error}", live.display()))?
-        .len();
-    if length > SEGMENT_MAX_BYTES_BOUND {
+    if opened.size > SEGMENT_MAX_BYTES_BOUND {
         return Err(format!(
             "{}: longer than the {SEGMENT_MAX_BYTES_BOUND}-byte segment bound; never read",
             live.display()
         ));
     }
-    let bytes = read_at_most(&mut *held, SEGMENT_MAX_BYTES_BOUND)
-        .map_err(|error| format!("{}: {error}", live.display()))?;
+    let bytes = read_at_most(&mut *held, SEGMENT_MAX_BYTES_BOUND).map_err(io)?;
     if bytes.is_empty() {
-        std::fs::remove_file(&live).map_err(|error| format!("{}: {error}", live.display()))?;
+        segments.unlink(&name).map_err(io)?;
         return Ok(Recovery::Empty);
     }
     let prefix = scan(&bytes);
     if prefix.interior_corruption || prefix.segment_id() != Some(segment_id) {
-        let corrupt = layout.corrupt_segment(segment_id);
-        std::fs::rename(&live, &corrupt).map_err(|error| format!("{}: {error}", live.display()))?;
+        segments
+            .rename(&name, &format!("{segment_id}{}", layout::CORRUPT))
+            .map_err(io)?;
         return Ok(Recovery::Corrupt {
             segment_id: segment_id.to_string(),
         });
@@ -422,20 +469,20 @@ pub fn recover(layout: &Layout, segment_id: &str) -> Result<Recovery, String> {
         tail.extend(serde_json::to_vec(record).expect("a record serializes"));
         tail.push(b'\n');
     }
-    let io = |error: std::io::Error| format!("{}: {error}", live.display());
     held.set_len(kept_bytes as u64).map_err(io)?;
     held.seek(SeekFrom::End(0)).map_err(io)?;
     held.write_all(&tail).map_err(io)?;
     held.sync_all().map_err(io)?;
     let mut kept = bytes[..kept_bytes].to_vec();
     kept.extend_from_slice(&tail);
-    let refs = layout.refs(segment_id);
-    super::writer::write_atomically(&refs, &super::writer::manifest(&referenced(records)))
-        .map_err(|error| format!("{}: {error}", refs.display()))?;
-    let sealed = layout.sealed_segment(segment_id);
-    super::writer::write_atomically(&sealed, &crate::blob::compress(&kept))
-        .map_err(|error| format!("{}: {error}", sealed.display()))?;
-    std::fs::remove_file(&live).map_err(io)?;
+    let refs = format!("{segment_id}{}", layout::REFS);
+    segments
+        .write_atomically(&refs, &super::writer::manifest(&referenced(records)))
+        .map_err(|error| format!("{}: {error}", segments.join(&refs).display()))?;
+    segments
+        .write_atomically(&sealed_name, &crate::blob::compress(&kept))
+        .map_err(|error| format!("{}: {error}", segments.join(&sealed_name).display()))?;
+    segments.unlink(&name).map_err(io)?;
     drop(held);
     Ok(Recovery::Recovered {
         segment_id: segment_id.to_string(),
@@ -446,30 +493,40 @@ pub fn recover(layout: &Layout, segment_id: &str) -> Result<Recovery, String> {
 
 /// Recover every unsealed segment whose lock can be taken; returns what happened to each.
 pub fn recover_all(layout: &Layout) -> Result<Vec<Recovery>, String> {
-    let listing = list(layout)?;
+    let failed = |error: std::io::Error| format!("{}: {error}", layout.segments().display());
+    let Some(segments) = Confined::versioned(layout, "segments").map_err(failed)? else {
+        return Ok(Vec::new());
+    };
+    let listing = list_in(&segments)?;
     listing
         .unsealed
         .iter()
         .chain(&listing.live)
-        .map(|id| recover(layout, id))
+        .map(|id| recover_in(&segments, id))
         .collect()
 }
 
-/// The digests a sealed segment's `.refs` manifest names; a missing manifest falls back to the
-/// segment's `blob_ref` records.
-pub fn manifest_digests(layout: &Layout, segment_id: &str) -> Result<BTreeSet<String>, String> {
-    let path = layout.refs(segment_id);
+/// The digests a sealed segment's `.refs` manifest names, read relative to the opened
+/// `segments/` directory; a missing manifest falls back to the segment's `blob_ref` records.
+pub fn manifest_digests_in(
+    segments: &Confined,
+    segment_id: &str,
+) -> Result<BTreeSet<String>, String> {
+    let name = format!("{segment_id}{}", layout::REFS);
     let mut text = String::new();
-    match layout::open_nofollow(&path).and_then(|mut file| file.read_to_string(&mut text)) {
+    match segments
+        .open_file(&name)
+        .and_then(|mut file| file.read_to_string(&mut text))
+    {
         Ok(_) => Ok(text
             .lines()
             .filter(|line| !line.is_empty())
             .map(str::to_string)
             .collect()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(referenced(&read_sealed(
-            &layout.sealed_segment(segment_id),
-        )?)),
-        Err(error) => Err(format!("{}: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(referenced(&read_sealed_in(segments, segment_id)?.0))
+        }
+        Err(error) => Err(format!("{}: {error}", segments.join(&name).display())),
     }
 }
 
@@ -481,26 +538,12 @@ pub fn is_other_version(name: &str) -> bool {
         && name[1..].bytes().all(|byte| byte.is_ascii_digit())
 }
 
-/// Other version directories beside `v1/`: listed unreadable, never read.
-pub fn other_versions(root: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    let mut other: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .filter(|entry| is_other_version(&entry.file_name().to_string_lossy()))
-        .map(|entry| entry.path())
-        .collect();
-    other.sort();
-    other
-}
-
-/// The bytes of the file at `path`, for a reader that must not create it.
-pub fn file_len(path: &Path) -> u64 {
-    std::fs::symlink_metadata(path).map_or(0, |metadata| metadata.len())
-}
-
-/// Open `path` for reading, for the index's tail reads, never through a link.
-pub fn open(path: &Path) -> std::io::Result<File> {
-    layout::open_nofollow(path)
+/// The names of other version directories beside `v1/` in the opened root: listed
+/// unreadable, never read.
+pub fn other_versions(root: &Confined) -> Vec<String> {
+    root.names()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| is_other_version(name))
+        .collect()
 }

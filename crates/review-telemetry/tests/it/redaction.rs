@@ -713,3 +713,297 @@ fn telemetry_unknown_home_is_reported() {
     assert_eq!(usable.home_unknown(), None);
     assert_eq!(usable.replace("/home/violet/src"), "~/src");
 }
+
+/// A configuration key the credential rule judges a credential withholds the whole pair at
+/// every level: the key, the value and the origin become the withheld marker whatever the
+/// value's shape, and the pair counts once in `af.redacted`.
+#[test]
+fn telemetry_config_rows_withhold_pairs_under_credential_shaped_keys() {
+    use review_telemetry::record::ConfigRow;
+    let row = |key: &str, value: &str| ConfigRow {
+        key: key.into(),
+        value: value.into(),
+        layer: "user".into(),
+        origin: Some("/etc/af/af.toml line 3 violet-origin".into()),
+    };
+    let credential_keys = [
+        "sk-proj-abcdef".to_string(),
+        "ghp_abcdef".to_string(),
+        JWT.to_string(),
+        HEX_RUN.to_string(),
+        "API_KEY=hunter2".to_string(),
+    ];
+    for level in [Level::Metrics, Level::Spans, Level::Content] {
+        let temp = tempfile::tempdir().unwrap();
+        let writer =
+            review_telemetry::segment::writer::Writer::new(options(temp.path(), level)).unwrap();
+        let span = writer
+            .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+            .unwrap();
+        let mut rows: Vec<ConfigRow> = credential_keys
+            .iter()
+            .zip(["violet", "4242", "{ table = \"violet\" }", "", "plain"])
+            .map(|(key, value)| row(key, value))
+            .collect();
+        rows.push(row("telemetry.level", "\"spans\""));
+        writer.config("exec", rows);
+        writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+        let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+        let lines = sealed_lines(&sealed.path);
+        let configs: Vec<&Value> = lines.iter().filter(|line| line["t"] == "config").collect();
+        let rows: Vec<&Value> = configs
+            .iter()
+            .flat_map(|config| config["rows"].as_array().unwrap())
+            .collect();
+        assert_eq!(rows.len(), credential_keys.len() + 1, "{level:?}");
+        for (index, written) in rows.iter().take(credential_keys.len()).enumerate() {
+            assert_eq!(written["key"], WITHHELD, "{level:?} row {index}: {written}");
+            assert_eq!(
+                written["value"], WITHHELD,
+                "{level:?} row {index}: {written}"
+            );
+            assert_eq!(
+                written["origin"], WITHHELD,
+                "{level:?} row {index}: {written}"
+            );
+            assert_eq!(written["layer"], "user", "{level:?} row {index}");
+        }
+        let ordinary = rows[credential_keys.len()];
+        assert_eq!(ordinary["key"], "telemetry.level");
+        assert_eq!(ordinary["value"], "\"spans\"");
+        assert_eq!(ordinary["origin"], "/etc/af/af.toml line 3 violet-origin");
+        let redacted: u64 = configs
+            .iter()
+            .map(|config| config["af.redacted"].as_u64().unwrap_or(0))
+            .sum();
+        assert_eq!(redacted, credential_keys.len() as u64, "{level:?}");
+        for (path, text) in every_file_text(temp.path()) {
+            for planted in [
+                "sk-proj",
+                "ghp_",
+                "4242",
+                "hunter2",
+                HEX_RUN,
+                JWT,
+                "\"violet\"",
+            ] {
+                assert!(
+                    !text.contains(planted),
+                    "{level:?}: {planted} survived in {}",
+                    path.display()
+                );
+            }
+            assert_eq!(
+                text.matches("violet-origin").count(),
+                usize::from(path == sealed.path),
+                "{level:?}: only the ordinary row's origin is kept"
+            );
+        }
+    }
+}
+
+/// The identity exemption holds only for a value that is exactly a kernel identity grammar in an
+/// identity position: an identity-shaped credential handed to `Attrs::id` under `af.run_id`, a
+/// node record's `node_id` or a span's `trace_id` is withheld, a real digest or id survives in
+/// its position, and the same digest outside an identity position is judged as text.
+#[test]
+fn telemetry_identity_exemption_requires_kernel_grammar() {
+    use review_telemetry::record::{Node, schema};
+    use review_telemetry::redact::is_kernel_identity;
+    let segment_id = "1700000000000-42-0a1b2c3d";
+    for (value, kernel) in [
+        (DIGEST.to_string(), true),
+        (format!("task:{DIGEST}"), true),
+        ("a".repeat(64), true),
+        ("0123456789abcdef".repeat(2), true),
+        ("0123456789abcdef".to_string(), true),
+        (segment_id.to_string(), true),
+        (format!("{segment_id}:12"), true),
+        ("7".to_string(), true),
+        ("sk-proj-violet".to_string(), false),
+        ("run-1".to_string(), false),
+        ("a".repeat(40), false),
+        ("ABCDEF0123456789".to_string(), false),
+        ("1".repeat(40), false),
+        (format!("{}-42-0a1b2c3d", "1".repeat(40)), false),
+        (format!("sha256:{}", "AB".repeat(32)), false),
+    ] {
+        assert_eq!(is_kernel_identity(&value), kernel, "{value}");
+    }
+    let store = "a".repeat(64);
+    let trace = review_telemetry::trace::trace_id(&store, "run-1");
+    let attrs = || {
+        Attrs::new()
+            .id("af.run_id", "sk-proj-violet")
+            .id("af.attempt_id", "ghp_violet")
+            .id("af.store_id", store.clone())
+            .id("af.context.manifest", DIGEST)
+            .id("af.execution_id", segment_id)
+            .id("af.task_id", "telemetry-p1")
+            .id("af.note", DIGEST)
+            .id("af.label", "sk-live-violet")
+    };
+    for level in [Level::Metrics, Level::Spans, Level::Content] {
+        let temp = tempfile::tempdir().unwrap();
+        let writer =
+            review_telemetry::segment::writer::Writer::new(options(temp.path(), level)).unwrap();
+        let run = writer
+            .span_start(Some(&trace), None, "af.run", SpanKind::Internal, attrs())
+            .unwrap();
+        let forged = writer
+            .span_start(
+                Some("sk-proj-violet"),
+                Some("ghp_violet"),
+                "af.node",
+                SpanKind::Internal,
+                Attrs::new(),
+            )
+            .unwrap();
+        writer.event(&run, "af.note", attrs());
+        writer.node(Node {
+            seq: 0,
+            schema: schema::NODE.into(),
+            execution_id: segment_id.into(),
+            plan_digest: DIGEST.into(),
+            node_id: "sk-proj-violet".into(),
+            kind: DIGEST.into(),
+            package: Some("correctness@1.2.0".into()),
+            depends_on: vec!["sk-proj-violet".into(), "n0".into(), DIGEST.into()],
+            expected_nodes: 3,
+        });
+        writer.span_end(&forged, SpanStatus::Ok, Attrs::new(), 1);
+        writer.span_end(&run, SpanStatus::Ok, Attrs::new(), 0);
+        let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+        let text = String::from_utf8(crate::sealed_bytes(&sealed.path)).unwrap();
+        assert!(!text.contains("violet"), "{level:?}: {text}");
+        let lines = sealed_lines(&sealed.path);
+        let starts: Vec<&Value> = lines
+            .iter()
+            .filter(|line| line["t"] == "span_start")
+            .collect();
+        assert_eq!(starts[0]["trace_id"], trace.as_str(), "{level:?}");
+        assert_eq!(starts[1]["trace_id"], WITHHELD, "{level:?}");
+        assert_eq!(starts[1]["parent_span_id"], WITHHELD, "{level:?}");
+        let note = lines
+            .iter()
+            .find(|line| line["t"] == "event" && line["name"] == "af.note")
+            .unwrap();
+        for attributes in [&starts[0]["attributes"], &note["attributes"]] {
+            assert_eq!(attributes["af.run_id"], WITHHELD, "{level:?}");
+            assert_eq!(attributes["af.attempt_id"], WITHHELD, "{level:?}");
+            assert_eq!(attributes["af.store_id"], store.as_str(), "{level:?}");
+            assert_eq!(attributes["af.context.manifest"], DIGEST, "{level:?}");
+            assert_eq!(attributes["af.execution_id"], segment_id, "{level:?}");
+            // An identity that is no kernel grammar is text, kept when it is harmless.
+            assert_eq!(attributes["af.task_id"], "telemetry-p1", "{level:?}");
+            // A digest outside an identity position is judged as text: a secret run.
+            assert_eq!(attributes["af.note"], WITHHELD, "{level:?}");
+            assert_eq!(attributes["af.label"], WITHHELD, "{level:?}");
+            assert_eq!(attributes["af.redacted"], 4, "{level:?}: {attributes}");
+        }
+        let node = lines.iter().find(|line| line["t"] == "node").unwrap();
+        assert_eq!(node["node_id"], WITHHELD, "{level:?}");
+        assert_eq!(node["plan_digest"], DIGEST, "{level:?}");
+        assert_eq!(node["execution_id"], segment_id, "{level:?}");
+        assert_eq!(node["kind"], WITHHELD, "{level:?}");
+        assert_eq!(node["package"], "correctness@1.2.0", "{level:?}");
+        assert_eq!(
+            node["depends_on"],
+            json!([WITHHELD, "n0", DIGEST]),
+            "{level:?}"
+        );
+    }
+}
+
+/// Usage and charge counters are canonical decimal strings only: an integer, a negative, a
+/// float or a non-canonical decimal under such a name is dropped and counted in
+/// `af.dropped_fields`, never written as a JSON number, at every level and through the
+/// `tracing` subscriber as well.
+#[test]
+fn telemetry_usage_counters_are_canonical_decimal_strings() {
+    let attrs = || {
+        Attrs::new()
+            .int("af.usage.input_tokens", 42)
+            .int("af.usage.output_tokens", -1)
+            .decimal("af.usage.cache_read_tokens", "007")
+            .decimal("af.usage.reasoning_tokens", "-1")
+            .float("af.charge.amount", 0.5)
+            .int("af.charge.micros", 7)
+            .decimal("af.usage.chargeable_tokens", "18446744073709551616")
+            .decimal("af.charge.total", "12")
+            .int("af.attempt", 3)
+    };
+    let dropped_names = [
+        "af.usage.input_tokens",
+        "af.usage.output_tokens",
+        "af.usage.cache_read_tokens",
+        "af.usage.reasoning_tokens",
+        "af.charge.amount",
+        "af.charge.micros",
+    ];
+    for level in [Level::Metrics, Level::Spans, Level::Content] {
+        let temp = tempfile::tempdir().unwrap();
+        let writer =
+            review_telemetry::segment::writer::Writer::new(options(temp.path(), level)).unwrap();
+        let span = writer
+            .span_start(None, None, "af.attempt", SpanKind::Internal, attrs())
+            .unwrap();
+        writer.event(&span, "af.usage", attrs());
+        writer.span_end(&span, SpanStatus::Ok, attrs(), 1);
+        let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+        let lines = sealed_lines(&sealed.path);
+        let mut checked = 0;
+        for line in &lines {
+            let Some(attributes) = line.get("attributes").and_then(Value::as_object) else {
+                continue;
+            };
+            for name in dropped_names {
+                assert!(!attributes.contains_key(name), "{level:?} {name}: {line}");
+            }
+            assert_eq!(
+                attributes["af.usage.chargeable_tokens"], "18446744073709551616",
+                "{level:?}"
+            );
+            assert_eq!(attributes["af.charge.total"], "12", "{level:?}");
+            assert_eq!(attributes["af.attempt"], 3, "{level:?}");
+            assert_eq!(
+                attributes["af.dropped_fields"],
+                dropped_names.len(),
+                "{level:?}: {line}"
+            );
+            for (name, value) in attributes {
+                if name.starts_with("af.usage.") || name.starts_with("af.charge") {
+                    assert!(value.is_string(), "{level:?} {name}: {value}");
+                }
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 3, "{level:?}");
+    }
+
+    // Through the subscriber: a non-negative integer field becomes its decimal string, a
+    // negative one is dropped.
+    let temp = tempfile::tempdir().unwrap();
+    let writer =
+        review_telemetry::segment::writer::Writer::new(options(temp.path(), Level::Spans)).unwrap();
+    let dispatch = tracing::Dispatch::new(review_telemetry::subscriber::TelemetrySubscriber::new(
+        writer.clone(),
+    ));
+    tracing::dispatcher::with_default(&dispatch, || {
+        let span = tracing::info_span!(
+            "af.attempt",
+            af.usage.input_tokens = 42_u64,
+            af.usage.output_tokens = -1_i64
+        );
+        let _entered = span.enter();
+    });
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let lines = sealed_lines(&sealed.path);
+    let start = lines
+        .iter()
+        .find(|line| line["t"] == "span_start" && line["name"] == "af.attempt")
+        .unwrap();
+    assert_eq!(start["attributes"]["af.usage.input_tokens"], "42");
+    assert!(start["attributes"].get("af.usage.output_tokens").is_none());
+    assert_eq!(start["attributes"]["af.dropped_fields"], 1);
+}

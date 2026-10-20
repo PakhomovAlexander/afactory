@@ -21,10 +21,11 @@ use std::path::PathBuf;
 
 use flate2::Compression;
 use flate2::GzBuilder;
+use sha2::{Digest as _, Sha256};
 
-use crate::layout::{self, Layout};
+use crate::layout::{self, Confined, Layout};
 use crate::redact::{self, Redactor};
-use crate::trace::sha256_digest;
+use crate::trace::{hex, sha256_digest};
 
 /// How content is redacted: per line, or as one JSON document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +215,56 @@ pub fn prepare(source: &[u8], media: Media, max_blob_bytes: u64, redactor: &Reda
     }
 }
 
+/// Counts and digests the bytes written to it and holds none of them.
+struct Measure {
+    bytes: u64,
+    hasher: Sha256,
+}
+
+impl std::io::Write for Measure {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.bytes += bytes.len() as u64;
+        self.hasher.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Redact, bound, digest and compress a string array as one JSON document, the source being
+/// its JSON encoding.
+///
+/// The encoding is measured first, element by element, through a sink that only counts and
+/// digests: an array whose document is longer than `max_blob_bytes` cannot be judged whole and
+/// is withheld whole before any buffer proportional to it is allocated, its source identity
+/// (digest and length) taken from the measurement. Only an array within the bound is encoded
+/// and prepared as [`prepare`] prepares a JSON source.
+pub fn prepare_texts(values: &[String], max_blob_bytes: u64, redactor: &Redactor) -> Prepared {
+    let mut measure = Measure {
+        bytes: 0,
+        hasher: Sha256::new(),
+    };
+    serde_json::to_writer(&mut measure, values).expect("strings serialize");
+    if measure.bytes > max_blob_bytes {
+        let retained = withheld_json();
+        return Prepared {
+            digest: sha256_digest(&retained),
+            source_digest: format!("sha256:{}", hex(&measure.hasher.finalize())),
+            original_bytes: measure.bytes,
+            truncated: false,
+            withheld_whole: true,
+            redacted: 1,
+            media_type: Media::Json.media_type(),
+            compressed: compress(&retained),
+            retained,
+        };
+    }
+    let source = serde_json::to_vec(values).expect("strings serialize");
+    prepare(&source, Media::Json, max_blob_bytes, redactor)
+}
+
 /// gzip with no name and no time in the header, so equal bytes compress to equal files.
 pub fn compress(bytes: &[u8]) -> Vec<u8> {
     let mut encoder = GzBuilder::new().mtime(0).write(
@@ -224,28 +275,57 @@ pub fn compress(bytes: &[u8]) -> Vec<u8> {
     encoder.finish().expect("writing to memory")
 }
 
-/// A blob written to its temporary file, not yet in place.
+/// A blob written to its temporary file, not yet in place. It holds its prefix directory
+/// `blobs/<aa>/` open: the rename, the reuse check and every removal are made relative to that
+/// directory, never through a path a link could redirect.
 #[derive(Debug)]
 pub struct Staged {
+    directory: Confined,
+    /// The temporary file's name in the prefix directory.
+    temp_name: String,
+    /// The object's file name in the prefix directory: `<64 hex>.gz`.
+    name: String,
+    /// The temporary file's path, for messages and reports.
     pub temp: PathBuf,
+    /// The object's path, for messages and reports.
     pub path: PathBuf,
     pub stored_bytes: u64,
 }
 
-/// Write a prepared blob to a temporary file beside its final place.
+impl Staged {
+    /// Remove the temporary file, if it is still there.
+    pub fn discard(&self) {
+        let _ = self.directory.unlink(&self.temp_name);
+    }
+
+    /// Remove the object file this blob placed.
+    pub fn remove_placed(&self) {
+        let _ = self.directory.remove_file(&self.name);
+    }
+}
+
+/// Write a prepared blob to a temporary file beside its final place. Every directory from the
+/// root down is opened without following a link: a prefix directory linked elsewhere refuses
+/// the blob.
 pub fn stage(layout: &Layout, prepared: &Prepared) -> std::io::Result<Staged> {
     let path = layout.blob(&prepared.digest);
-    let parent = path.parent().expect("a blob has a directory");
-    // Never through a link: a prefix directory linked elsewhere refuses the blob.
-    layout.create_dirs(parent)?;
-    let temp = parent.join(layout::temp_name(layout::BLOB_TEMP_LABEL));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)?;
-    file.write_all(&prepared.compressed)?;
+    let hex = prepared
+        .digest
+        .strip_prefix("sha256:")
+        .unwrap_or(&prepared.digest);
+    let directory =
+        layout::create_versioned(layout, "blobs")?.create_child_dir(&hex[..2.min(hex.len())])?;
+    let temp_name = layout::temp_name(layout::BLOB_TEMP_LABEL);
+    let mut file = directory.create_file(&temp_name, false)?;
+    if let Err(error) = file.write_all(&prepared.compressed) {
+        let _ = directory.unlink(&temp_name);
+        return Err(error);
+    }
     Ok(Staged {
-        temp,
+        temp: directory.join(&temp_name),
+        directory,
+        temp_name,
+        name: format!("{hex}.gz"),
         path,
         stored_bytes: prepared.compressed.len() as u64,
     })
@@ -264,13 +344,13 @@ pub enum Placed {
 /// the temporary file removed; anything else is replaced by the rename.
 pub fn place(staged: &Staged) -> std::io::Result<Placed> {
     // Judged without following a link: a link in a blob's place is replaced, never reused.
-    match std::fs::symlink_metadata(&staged.path) {
-        Ok(existing) if existing.is_file() && existing.len() == staged.stored_bytes => {
-            std::fs::remove_file(&staged.temp)?;
+    match staged.directory.identity(&staged.name) {
+        Some(existing) if existing.size == staged.stored_bytes => {
+            staged.directory.unlink(&staged.temp_name)?;
             Ok(Placed::Reused)
         }
         _ => {
-            std::fs::rename(&staged.temp, &staged.path)?;
+            staged.directory.rename(&staged.temp_name, &staged.name)?;
             Ok(Placed::Renamed)
         }
     }

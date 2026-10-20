@@ -674,13 +674,16 @@ impl Record {
 pub enum Attr {
     /// Untrusted text: judged whole by the credential rules, then bounded.
     Text(String),
-    /// A kernel identity or digest the kernel validated; exempt from the heuristic. A value
-    /// that does not validate as one ([`redact::is_identity`]) is treated as text.
+    /// A kernel identity or digest; exempt from the heuristic only when the attribute is an
+    /// identity position ([`is_identity_position`]) and the value is exactly one of the
+    /// kernel's identity grammars ([`redact::is_kernel_identity`]). Any other value is judged
+    /// as untrusted text.
     Id(String),
     /// A value from a closed enumeration.
     Enum(&'static str),
     /// An exact counter as a canonical decimal string (`DecimalU128`, ADR-0078). A value that is
-    /// not one is dropped, never recorded as text.
+    /// not one is dropped, never recorded as text. The only form an exact counter
+    /// ([`is_exact_counter`]) is ever recorded in.
     Decimal(String),
     Int(i64),
     Float(f64),
@@ -786,11 +789,23 @@ fn bound_text(
     cut(&value, MAX_STRING_BYTES)
 }
 
-/// Bound one untrusted string array: each element redacted whole, then, when an element is over
-/// [`MAX_STRING_BYTES`] or the array over [`MAX_ARRAY_ELEMENTS`] or [`MAX_ARRAY_BYTES`], either
-/// offered whole and unredacted to `oversized`, which at `content` names one blob occurrence
-/// holding the array redacted as one document, or cut at the bound with the trailing marker
-/// element.
+/// Whether string values of these lengths are over the array bounds.
+fn texts_over(lengths: impl Iterator<Item = usize> + Clone) -> bool {
+    lengths.clone().count() > MAX_ARRAY_ELEMENTS
+        || lengths.clone().any(|length| length > MAX_STRING_BYTES)
+        || lengths.sum::<usize>() > MAX_ARRAY_BYTES
+}
+
+/// Bound one untrusted string array: when an element is over [`MAX_STRING_BYTES`] or the array
+/// over [`MAX_ARRAY_ELEMENTS`] or [`MAX_ARRAY_BYTES`], it is offered whole and unredacted to
+/// `oversized`, which at `content` names one blob occurrence holding the array redacted as one
+/// document; otherwise, or when `oversized` declines, each element is redacted whole and the
+/// array cut at the bound with the trailing marker element.
+///
+/// An array over its bound as given is offered before any element is redacted or copied: at
+/// `content` it becomes a blob, withheld whole there when its document is too long to judge,
+/// and nothing of it is held here. An array that only redaction makes longer (a grant's
+/// placeholder) is offered after.
 fn bound_texts(
     key: &str,
     values: &[String],
@@ -798,6 +813,10 @@ fn bound_texts(
     counters: &mut Counters,
     oversized: &mut dyn FnMut(&str, Oversized<'_>) -> Option<String>,
 ) -> Value {
+    let raw_over = texts_over(values.iter().map(String::len));
+    if raw_over && let Some(occurrence) = oversized(key, Oversized::Texts(values)) {
+        return Value::String(format!("{OCCURRENCE_PREFIX}{occurrence}"));
+    }
     let redacted: Vec<String> = values
         .iter()
         .map(|text| {
@@ -808,10 +827,11 @@ fn bound_texts(
             value
         })
         .collect();
-    let over = redacted.len() > MAX_ARRAY_ELEMENTS
-        || redacted.iter().any(|value| value.len() > MAX_STRING_BYTES)
-        || redacted.iter().map(String::len).sum::<usize>() > MAX_ARRAY_BYTES;
-    if over && let Some(occurrence) = oversized(key, Oversized::Texts(values)) {
+    let over = texts_over(redacted.iter().map(String::len));
+    if over
+        && !raw_over
+        && let Some(occurrence) = oversized(key, Oversized::Texts(values))
+    {
         return Value::String(format!("{OCCURRENCE_PREFIX}{occurrence}"));
     }
     let mut kept = Vec::new();
@@ -858,6 +878,59 @@ pub enum Oversized<'a> {
     Texts(&'a [String]),
 }
 
+/// The identity positions: the attribute names and record fields whose value may be a kernel
+/// identity. This set is closed: a value earns the identity exemption only here, and only when
+/// it is exactly a kernel identity ([`redact::is_kernel_identity`]); every other string is
+/// judged as untrusted text.
+pub const IDENTITY_POSITIONS: [&str; 29] = [
+    "af.store_id",
+    "af.run_id",
+    "af.task_id",
+    "af.attempt_id",
+    "af.execution_id",
+    "af.node_id",
+    "af.corr",
+    "af.measurement.id",
+    "af.store.event.id",
+    "af.store.event.causation_id",
+    "af.context.manifest",
+    "af.pipeline.digest",
+    "af.plan_digest",
+    "af.snapshot_id",
+    "af.artifact_id",
+    "trace_id",
+    "span_id",
+    "parent_span_id",
+    "execution_id",
+    "plan_digest",
+    "node_id",
+    "depends_on",
+    "demand_id",
+    "subject_id",
+    "snapshot_id",
+    "report_artifact_id",
+    "digest",
+    "source_digest",
+    "occurrence_id",
+];
+
+/// Whether `name` is one of the [`IDENTITY_POSITIONS`].
+pub fn is_identity_position(name: &str) -> bool {
+    IDENTITY_POSITIONS.contains(&name)
+}
+
+/// The exact counters (ADR-0078): token counts (`af.usage.*_tokens`, `gen_ai.usage.*`), charges
+/// (`af.charge*`) and the Store sequence an execution started at. Each is recorded only as a
+/// canonical decimal string ([`Attr::Decimal`]); an integer, a float, a negative or a
+/// non-canonical value under one of these names is dropped and counted in
+/// [`DROPPED_FIELDS`], never written as a JSON number.
+pub fn is_exact_counter(name: &str) -> bool {
+    (name.starts_with("af.usage.") && name.ends_with("_tokens"))
+        || name.starts_with("gen_ai.usage.")
+        || name.starts_with("af.charge")
+        || name == "af.store.sequence_at_start"
+}
+
 /// The attribute names of design §5 that hold a secret-name part (`token`, `auth`) yet are typed
 /// by af's own schema: exact counters and enumerations. Under any other name, and with any
 /// other value shape under these, the secret-name rule withholds the value.
@@ -880,7 +953,8 @@ pub const TYPED_SECRET_NAMED: [(&str, TypedName); 13] = [
 /// How af's schema types an attribute of [`TYPED_SECRET_NAMED`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TypedName {
-    /// A canonical decimal string or an integer.
+    /// A canonical decimal string; an integer too, unless the name is an exact counter
+    /// ([`is_exact_counter`]), which only a canonical decimal string may hold.
     Counter,
     /// A value of a closed enumeration.
     Enumeration,
@@ -891,12 +965,11 @@ fn typed_secret_named(key: &str, value: &Attr) -> bool {
     TYPED_SECRET_NAMED
         .iter()
         .find(|(name, _)| *name == key)
-        .is_some_and(|(_, typed)| {
-            matches!(
-                (typed, value),
-                (TypedName::Counter, Attr::Decimal(_) | Attr::Int(_))
-                    | (TypedName::Enumeration, Attr::Enum(_))
-            )
+        .is_some_and(|(_, typed)| match (typed, value) {
+            (TypedName::Counter, Attr::Decimal(_)) => true,
+            (TypedName::Counter, Attr::Int(_)) => !is_exact_counter(key),
+            (TypedName::Enumeration, Attr::Enum(_)) => true,
+            _ => false,
         })
 }
 
@@ -927,6 +1000,25 @@ pub fn bound_attributes(
             counters.dropped += 1;
             continue;
         }
+        // An exact counter is a canonical decimal string or nothing: a number in any other
+        // form (an integer, a float, a negative, a non-canonical decimal) is dropped and
+        // counted, never written as a JSON number.
+        if is_exact_counter(&key) {
+            match &value {
+                Attr::Decimal(decimal) if redact::is_canonical_decimal(decimal) => {}
+                Attr::Decimal(_) | Attr::Int(_) | Attr::Float(_) => {
+                    counters.dropped += 1;
+                    continue;
+                }
+                // Text and every other shape: the secret-name rule below withholds it under a
+                // token name; under any other counter name it is no counter and is dropped.
+                _ if redact::secret_name(&key) => {}
+                _ => {
+                    counters.dropped += 1;
+                    continue;
+                }
+            }
+        }
         // The secret-name rule, as for a JSON member or a configuration row: the key stays and
         // its value is withheld whole whatever its shape, unless af's own schema types the key
         // as a counter or an enumeration and the value is that typed field.
@@ -939,7 +1031,9 @@ pub fn bound_attributes(
             Attr::Text(text) => {
                 Value::String(bound_text(&key, &text, redactor, &mut counters, oversized))
             }
-            Attr::Id(id) if redact::is_identity(&id) => Value::String(id),
+            Attr::Id(id) if is_identity_position(&key) && redact::is_kernel_identity(&id) => {
+                Value::String(id)
+            }
             Attr::Id(text) => {
                 Value::String(bound_text(&key, &text, redactor, &mut counters, oversized))
             }

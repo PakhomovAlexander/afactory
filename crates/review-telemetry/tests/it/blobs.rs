@@ -1127,3 +1127,181 @@ fn telemetry_writer_never_writes_through_a_link() {
         .collect();
     assert_eq!(problems.len(), 1, "{problems:?}");
 }
+
+/// A blob is read only through real directories beneath the root: with its prefix directory
+/// moved outside and a link to it put in its place, the object is still reachable by path, yet
+/// the occurrence reads `content unavailable: missing blob`, `exists` says absent and `status`
+/// counts it missing.
+#[test]
+fn telemetry_blob_reads_stay_within_the_root() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("telemetry");
+    let outside = temp.path().join("outside");
+    let layout = Layout::new(&root);
+    let writer = writer(&root, Level::Content);
+    let span = writer
+        .span_start(None, None, "af.attempt", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event_with_content(
+        &span,
+        "gen_ai.content.output",
+        Attrs::new(),
+        b"content kept beneath the root\n",
+        Media::Text,
+    );
+    writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let occurrence = sealed_records(&sealed.path)
+        .into_iter()
+        .find_map(|record| match record {
+            Record::BlobRef(occurrence) => Some(occurrence),
+            _ => None,
+        })
+        .unwrap();
+    let digest = occurrence.digest.clone().unwrap();
+    assert!(blob_reader::exists(&layout, &digest));
+    let file = layout.blob(&digest);
+    let prefix = file.parent().unwrap().to_path_buf();
+    std::fs::rename(&prefix, &outside).unwrap();
+    std::os::unix::fs::symlink(&outside, &prefix).unwrap();
+    assert!(std::fs::read(&file).is_ok(), "reachable by path");
+
+    assert_eq!(
+        blob_reader::content(&layout, &occurrence),
+        Content::Unavailable(blob_reader::MISSING.into())
+    );
+    assert_eq!(
+        blob_reader::read(&layout, &digest),
+        Content::Unavailable(blob_reader::MISSING.into())
+    );
+    assert!(!blob_reader::exists(&layout, &digest));
+    let (status, _) = review_telemetry::status::status(&review_telemetry::status::StatusInput {
+        root: root.clone(),
+        level: Level::Content,
+        max_bytes: 4 << 30,
+        registry: None,
+        accounted: Vec::new(),
+        accounted_unknown: None,
+    })
+    .unwrap();
+    assert_eq!(status.missing_blobs, 1);
+    let unrecognized = status
+        .bytes
+        .entries
+        .iter()
+        .find(|entry| entry.kind == "unrecognized")
+        .expect("the linked prefix is unrecognized");
+    let relative = prefix.strip_prefix(&root).unwrap().display().to_string();
+    assert_eq!(unrecognized.names.clone().unwrap(), [relative]);
+    let index = Index::open(&layout).unwrap();
+    assert_eq!(
+        index.missing_blobs().unwrap().unwrap(),
+        [(occurrence.occurrence_id.clone(), digest)]
+    );
+}
+
+/// An array far above `content_max_blob_bytes` reaches its blob by measurement alone: its JSON
+/// encoding is counted and digested element by element and the occurrence withheld whole, with
+/// the original array's identity and nothing of it retained; no element is judged or copied on
+/// the way (the record counts no redaction for it, though one element is a credential).
+#[test]
+fn telemetry_oversized_arrays_are_withheld_before_serialization() {
+    let max = 64 * 1024;
+    let mut huge: Vec<String> = (0..64)
+        .map(|n| format!("{n:02}{}", "x".repeat(64 * 1024)))
+        .collect();
+    huge.push("API_KEY=hunter2".into());
+    let source = serde_json::to_vec(&huge).unwrap();
+    assert!(source.len() > 60 * max);
+    let withheld = serde_json::to_vec(review_telemetry::redact::WITHHELD).unwrap();
+
+    // The preparation alone: identity from the measurement, the withheld value retained.
+    let prepared = blob::prepare_texts(&huge, max as u64, &Redactor::new());
+    assert_eq!(prepared.retained, withheld);
+    assert!(prepared.withheld_whole && !prepared.truncated);
+    assert_eq!(prepared.original_bytes, source.len() as u64);
+    assert_eq!(
+        prepared.source_digest,
+        review_telemetry::trace::sha256_digest(&source)
+    );
+    assert_eq!(prepared.media_type, Media::Json.media_type());
+    // Within the bound it is the ordinary JSON preparation.
+    let small = vec!["a".to_string(), "API_KEY=hunter2".to_string()];
+    assert_eq!(
+        blob::prepare_texts(&small, max as u64, &Redactor::new()),
+        blob::prepare(
+            &serde_json::to_vec(&small).unwrap(),
+            Media::Json,
+            max as u64,
+            &Redactor::new()
+        )
+    );
+
+    // Through the writer.
+    let temp = tempfile::tempdir().unwrap();
+    let mut options = options(temp.path(), Level::Content);
+    options.content_max_blob_bytes = max as u64;
+    let writer = Writer::new(options).unwrap();
+    let span = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.event(
+        &span,
+        "af.arrays",
+        Attrs::new().texts("af.huge", huge.clone()),
+    );
+    writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let records = sealed_records(&sealed.path);
+    let occurrence = records
+        .iter()
+        .find_map(|record| match record {
+            Record::BlobRef(occurrence) => Some(occurrence.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(occurrence.state, BlobState::Stored);
+    assert!(!occurrence.truncated);
+    assert_eq!(occurrence.original_bytes, source.len() as u64);
+    assert_eq!(
+        occurrence.source_digest,
+        review_telemetry::trace::sha256_digest(&source)
+    );
+    let layout = Layout::new(temp.path());
+    assert_eq!(
+        blob_reader::content(&layout, &occurrence),
+        Content::Bytes(withheld)
+    );
+    let lines = crate::sealed_lines(&sealed.path);
+    let event = lines
+        .iter()
+        .find(|line| line["t"] == "event" && line["name"] == "af.arrays")
+        .unwrap();
+    assert_eq!(
+        event["attributes"]["af.huge"],
+        format!("{OCCURRENCE_PREFIX}{}", occurrence.occurrence_id)
+    );
+    assert!(
+        event["attributes"].get("af.redacted").is_none(),
+        "{}",
+        event["attributes"]
+    );
+    // Nothing of the array is retained anywhere beneath the root.
+    for path in walk(temp.path()) {
+        use std::io::Read as _;
+        let bytes = std::fs::read(&path).unwrap();
+        let mut text = Vec::new();
+        if flate2::read::GzDecoder::new(bytes.as_slice())
+            .read_to_end(&mut text)
+            .is_err()
+        {
+            text = bytes;
+        }
+        let text = String::from_utf8_lossy(&text);
+        assert!(
+            !text.contains("xxxxxxxx") && !text.contains("hunter2"),
+            "{}",
+            path.display()
+        );
+    }
+}

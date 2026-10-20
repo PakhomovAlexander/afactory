@@ -56,13 +56,28 @@ Provider's own words, and before any bound can cut it:
   `af.usage.input_tokens`) keep a value of their type. On a command line, the argument after an
   option named like a secret (`--api-key VALUE`) is withheld the same way.
 - Every other field of every record (span and event names, node, Finding and Demand fields,
-  configuration rows) is either an identity that validates as one or judged whole by these
-  rules.
-- Identities and counters `af` produced (digests, run, Attempt, segment and span ids, token
-  counts as exact decimal strings, timestamps) are typed fields and stay intact.
+  configuration rows) is either a kernel identity in an identity position or judged whole by
+  these rules.
+- An identity is exempt from these rules only when two things hold: the attribute or field is
+  one of the identity positions the record declares (`af.store_id`, `af.run_id`, `af.task_id`,
+  `af.attempt_id`, `af.execution_id`, `af.node_id`, `af.corr`, `trace_id`, `span_id`,
+  `parent_span_id`, the digest fields such as `af.context.manifest` and `plan_digest`, and the
+  like), and its value is exactly one of the kernel's identity grammars: a `sha256:` digest of
+  64 lowercase hex digits (or a Task's run id, `task:` and a digest), a lowercase-hex id of 16,
+  32 or 64 digits (span ids and `af.corr`, trace ids, Store ids), a segment id, an occurrence id
+  `segment_id:seq`, or a decimal ordinal. Every other value, an identity-shaped one included
+  (`af.run_id = "sk-proj-…"`), is judged as untrusted text, so a credential is withheld there as
+  anywhere; a digest outside an identity position is a long hex run and is withheld too.
+- Token and charge counters (`af.usage.*_tokens`, `af.charge*`, `gen_ai.usage.*`) are exact
+  decimal strings only: an integer, a negative, a float or a non-canonical decimal under such a
+  name is dropped and counted in `af.dropped_fields`, never written as a JSON number.
+  Timestamps are decimal strings too.
 - A configuration row whose key is named like a secret (`provider.password`, `sink.auth_token`)
-  keeps its key and loses its value, whatever its length or shape; other rows keep their values
-  under the rules above. Each `config` record counts what it withheld in `af.redacted`.
+  or passes for a credential itself (`sk-proj-…`, a JSON Web Token, a long secret run, an
+  assignment such as `API_KEY=…`) withholds the whole pair: the value and the origin become
+  `[withheld]` whatever their length or shape, a credential-shaped key becomes `[withheld]` as
+  well, and the pair counts once; other rows keep their values under the rules above. Each
+  `config` record counts what it withheld in `af.redacted`.
 - Environment values are never recorded; the home directory prefix becomes `~`. When `HOME`
   gives no usable prefix (unset, not absolute, `/`), the segment records one `redaction`
   problem saying home paths are not replaced, never a silent omission.
@@ -147,7 +162,11 @@ the 16 KiB record bound is an invalid line, so a sealed segment holding one is r
 listed, never indexed. An `index.sqlite` of another schema version (`af/telemetry-index@2`) is
 refused, never migrated or read around: `status` exits 1 naming the file and both schemas, and
 `af telemetry reindex` replaces it. Only when another command is replacing the index does
-`status` read the segments directly, saying so on stderr; its answer is the same.
+`status` read the segments directly, saying so on stderr; its answer is the same. The index
+remembers each sealed segment file it read by its identity (device, inode, size and
+modification time): a `.jsonl.gz` replaced or rewritten under its name since is read and
+validated again, and one that no longer reads has its earlier rows dropped and is listed as
+unreadable, so `status` answers as `reindex` would.
 
 ## `af telemetry reindex`
 
@@ -204,10 +223,21 @@ $XDG_STATE_HOME/af/telemetry-dirs.v1.json                every telemetry directo
   and size of the original bytes, before any redaction), its media type and the redaction its
   bytes passed; the shared object holds only what is intrinsic to the bytes. A JSON source
   longer than `content_max_blob_bytes` is withheld whole before it is parsed; longer text is
-  redacted line by line and cut head and tail. Blob collection acts only on two-hex prefix
-  directories and digest-named or temporary files that are real directories and regular
-  files, relative to the opened directory, and never follows a symbolic link out of the
-  telemetry directory; readers never open a segment, blob, lock or index file through one.
+  redacted line by line and cut head and tail. An array of strings over its bound is measured
+  before it is encoded: one whose JSON document is longer than `content_max_blob_bytes` is
+  withheld whole, keeping its source identity, before anything as large as it is held. Blob
+  collection acts only on two-hex prefix directories and digest-named or temporary files that
+  are real directories and regular files, relative to the opened directory, and never follows
+  a symbolic link out of the telemetry directory; readers never open a segment, blob, lock or
+  index file through one.
+- **Confinement.** Every file beneath the telemetry directory is opened, created, renamed,
+  measured and removed relative to an opened descriptor of its directory, each directory
+  opened from its parent without following a symbolic link (the telemetry directory itself may
+  be reached through one you chose). A writer seals its segment in the `segments/` directory it
+  opened, reading the live bytes back through its own descriptor, so a directory renamed or
+  replaced by a link while it runs changes nothing outside the telemetry directory; a blob
+  whose prefix directory is a link reads as `content unavailable: missing blob` and `status`
+  counts it missing.
 - **Registry.** Before its first write a process registers its telemetry directory
   (`af/TelemetryDirs@1`, [`schemas/telemetry-dirs-v1.json`](../schemas/telemetry-dirs-v1.json)).
   A directory inside or containing a Store, the warm check cache, a release installation or

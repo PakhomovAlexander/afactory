@@ -21,7 +21,7 @@ use std::time::Duration;
 use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
 use serde_json::Value;
 
-use crate::layout::{self, Held, Layout};
+use crate::layout::{self, Confined, EntryKind, FileIdentity, Held, Layout};
 use crate::record::{Record, SealExit};
 use crate::segment::reader::{self, Position};
 use crate::trace;
@@ -49,6 +49,7 @@ CREATE TABLE segments(
     exit TEXT,
     dropped INTEGER,
     discarded_bytes INTEGER,
+    identity TEXT,
     header TEXT NOT NULL
 );
 CREATE TABLE runs(
@@ -246,33 +247,49 @@ fn configure(connection: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-/// Open the index file, creating it when absent; refuse one of another shape or schema version
-/// (ADR-0145: refused, never migrated), naming the file, both schemas and the command that
-/// replaces it. A refused file is left as it was found.
-/// Open the index file, never through a link: a database, WAL or shared-memory file that is
-/// not a regular file in its place is refused (`reindex` removes the link itself, never what it
-/// points to). SQLite's own no-follow flag is not used: it refuses a link anywhere in the path,
-/// the user's own directories included.
-fn connect(path: &std::path::Path) -> Result<Connection, String> {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    for file in [
-        path.to_path_buf(),
-        path.with_file_name(format!("{name}-wal")),
-        path.with_file_name(format!("{name}-shm")),
-    ] {
-        if std::fs::symlink_metadata(&file).is_ok_and(|metadata| !metadata.is_file()) {
+/// The file names of the database with its WAL and shared-memory files, in `v1/`.
+fn index_names(layout: &Layout) -> Vec<String> {
+    layout
+        .index_files()
+        .iter()
+        .filter_map(|path| path.file_name())
+        .map(|name| name.to_string_lossy().to_string())
+        .collect()
+}
+
+/// Open the index file, never through a link: `v1/` must be a real directory beneath the
+/// opened root, and a database, WAL or shared-memory file that is not a regular file in its
+/// place is refused (`reindex` removes the link itself, never what it points to). SQLite's own
+/// no-follow flag is not used: it refuses a link anywhere in the path, the user's own
+/// directories included.
+fn connect(layout: &Layout) -> Result<Connection, String> {
+    let path = layout.index();
+    let versioned = layout.open_versioned().ok_or_else(|| {
+        format!(
+            "{}: not a real directory; the telemetry index is never opened through it",
+            layout.versioned().display()
+        )
+    })?;
+    for name in index_names(layout) {
+        if versioned
+            .kind(&name)
+            .is_some_and(|kind| kind != EntryKind::File)
+        {
             return Err(format!(
                 "{}: not a regular file; the telemetry index is never opened through it",
-                file.display()
+                versioned.join(&name).display()
             ));
         }
     }
-    Connection::open(path).map_err(|error| format!("{}: {error}", path.display()))
+    Connection::open(&path).map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// Open the index file, creating it when absent; refuse one of another shape or schema version
+/// (ADR-0145: refused, never migrated), naming the file, both schemas and the command that
+/// replaces it. A refused file is left as it was found.
 fn open_file(layout: &Layout) -> Result<Connection, String> {
     let path = layout.index();
-    let connection = connect(&path)?;
+    let connection = connect(layout)?;
     connection
         .busy_timeout(Duration::from_secs(5))
         .map_err(sql)?;
@@ -376,8 +393,18 @@ impl Index {
     /// and `.jsonl` tails beyond their ingested offset. Rows of segments that are gone or
     /// corrupt are removed, so a corrupt segment is excluded from every query. A segment that
     /// does not read is refused and listed; the others are ingested.
+    ///
+    /// A sealed segment's file is recorded with its identity (device, inode, size and
+    /// modification time) and compared with the file under its name on every ingest: a sealed
+    /// file replaced or rewritten since is read and validated again, its earlier rows
+    /// forgotten, and on refusal it is listed unreadable, exactly as a rebuild would answer.
     pub fn ingest(&mut self) -> Result<(Ingested, Vec<(String, String)>), String> {
-        let listing = reader::list(&self.layout)?;
+        let directory = Confined::versioned(&self.layout, "segments")
+            .map_err(|error| format!("{}: {error}", self.layout.segments().display()))?;
+        let listing = match &directory {
+            Some(directory) => reader::list_in(directory)?,
+            None => reader::Listing::default(),
+        };
         let transaction = self.connection.transaction().map_err(sql)?;
         let mut ingested = Ingested::default();
         let mut refused = Vec::new();
@@ -388,31 +415,51 @@ impl Index {
             .chain(&listing.live)
             .chain(&listing.unsealed)
             .collect();
-        let known: Vec<(String, String)> = {
+        let known: Vec<(String, String, Option<String>)> = {
             let mut statement = transaction
-                .prepare("SELECT segment_id, state FROM segments")
+                .prepare("SELECT segment_id, state, identity FROM segments")
                 .map_err(sql)?;
             statement
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
                 .map_err(sql)?
                 .collect::<Result<_, _>>()
                 .map_err(sql)?
         };
-        for (segment_id, _) in &known {
+        for (segment_id, _, _) in &known {
             if !present.contains(segment_id) {
                 forget(&transaction, segment_id)?;
             }
         }
-        let states: BTreeMap<String, String> = known.into_iter().collect();
+        let states: BTreeMap<String, (String, Option<String>)> = known
+            .into_iter()
+            .map(|(segment_id, state, identity)| (segment_id, (state, identity)))
+            .collect();
         for segment_id in &listing.sealed {
-            if states.get(segment_id).map(String::as_str) == Some("sealed") {
+            let directory = directory
+                .as_ref()
+                .expect("a listing comes from a directory");
+            let name = format!("{segment_id}{}", layout::SEALED);
+            let path = directory.join(&name);
+            // Read once whole; read again only when the file under its name is no longer the
+            // one read.
+            if let Some((state, Some(identity))) = states.get(segment_id)
+                && state == "sealed"
+                && directory
+                    .identity(&name)
+                    .map(|current| current.text())
+                    .as_ref()
+                    == Some(identity)
+            {
                 continue;
             }
-            let path = self.layout.sealed_segment(segment_id);
-            let records = match reader::read_sealed(&path) {
-                Ok(records) => records,
+            // Whatever rows the segment left (a live tail, an earlier file of this name) are
+            // forgotten: the sealed file is ingested whole or not at all.
+            if states.contains_key(segment_id) {
+                forget(&transaction, segment_id)?;
+            }
+            let (records, identity) = match reader::read_sealed_in(directory, segment_id) {
+                Ok(read) => read,
                 Err(reason) => {
-                    forget(&transaction, segment_id)?;
                     refused.push((path.display().to_string(), reason));
                     continue;
                 }
@@ -420,11 +467,10 @@ impl Index {
             let savepoint = SegmentIngest::new(segment_id);
             match savepoint.apply(&transaction, &records, &mut ended) {
                 Ok(()) => {
-                    let bytes = reader::file_len(&path);
-                    set_offset(&transaction, segment_id, bytes, &records, "sealed")?;
+                    set_sealed(&transaction, segment_id, &identity, &records)?;
                     ingested.segments += 1;
                     ingested.records += records.len() as u64;
-                    ingested.bytes += bytes;
+                    ingested.bytes += identity.size;
                 }
                 Err(reason) => {
                     forget(&transaction, segment_id)?;
@@ -433,7 +479,10 @@ impl Index {
             }
         }
         for segment_id in listing.live.iter().chain(&listing.unsealed) {
-            let path = self.layout.live_segment(segment_id);
+            let directory = directory
+                .as_ref()
+                .expect("a listing comes from a directory");
+            let path = directory.join(&format!("{segment_id}{}", layout::LIVE));
             let (offset, position) = transaction
                 .query_row(
                     "SELECT ingested_offset, last_seq, sealed_last FROM segments WHERE segment_id = ?1",
@@ -457,7 +506,7 @@ impl Index {
                         }),
                     )
                 });
-            let bytes = match reader::read_live_bytes(&path) {
+            let bytes = match reader::read_live_in(directory, segment_id) {
                 Ok(bytes) => bytes,
                 // Sealed or recovered between the listing and the read: the next ingest has it.
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -762,19 +811,25 @@ fn forget(transaction: &Transaction<'_>, segment_id: &str) -> Result<(), String>
     Ok(())
 }
 
-fn set_offset(
+/// Mark a segment ingested whole from its sealed file, recording the file's identity.
+fn set_sealed(
     transaction: &Transaction<'_>,
     segment_id: &str,
-    bytes: u64,
+    identity: &FileIdentity,
     records: &[Record],
-    state: &str,
 ) -> Result<(), String> {
     let last = records.last().map_or(0, Record::seq);
     transaction
         .execute(
-            "UPDATE segments SET state = ?2, ingested_offset = ?3, last_seq = ?4, sealed_last = 1
+            "UPDATE segments SET state = 'sealed', ingested_offset = ?2, last_seq = ?3,
+                 sealed_last = 1, identity = ?4
              WHERE segment_id = ?1",
-            params![segment_id, state, as_i64(bytes), as_i64(last)],
+            params![
+                segment_id,
+                as_i64(identity.size),
+                as_i64(last),
+                identity.text()
+            ],
         )
         .map_err(sql)?;
     Ok(())
@@ -1151,20 +1206,29 @@ pub fn replace(layout: &Layout) -> Result<Replaced, String> {
     let lock = layout::exclusive_within(&layout.index_lock(), layout::LOCK_WAIT)
         .map_err(|error| format!("{}: {error}", layout.index_lock().display()))?
         .ok_or("the telemetry index is in use by another command; try again")?;
-    if std::fs::symlink_metadata(layout.index()).is_ok_and(|metadata| metadata.is_file()) {
-        if let Ok(connection) = connect(&layout.index()) {
-            let _ = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
-            drop(connection);
-        }
+    let versioned = layout.open_versioned().ok_or_else(|| {
+        format!(
+            "{}: not a real directory; the telemetry index is never replaced through it",
+            layout.versioned().display()
+        )
+    })?;
+    let names = index_names(layout);
+    if versioned.kind(&names[0]) == Some(EntryKind::File)
+        && let Ok(connection) = connect(layout)
+    {
+        let _ = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+        drop(connection);
     }
-    for path in layout.index_files() {
-        match std::fs::remove_file(&path) {
+    // Removed relative to the opened `v1/`: a link in a file's place goes itself, never what
+    // it points to.
+    for name in &names {
+        match versioned.unlink(name) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("{}: {error}", path.display())),
+            Err(error) => return Err(format!("{}: {error}", versioned.join(name).display())),
         }
     }
-    let connection = connect(&layout.index())?;
+    let connection = connect(layout)?;
     configure(&connection)?;
     create(&connection)?;
     let mut index = Index {

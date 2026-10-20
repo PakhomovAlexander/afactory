@@ -10,7 +10,6 @@
 //! verification `deferred`. An index file of another schema version is refused (the command
 //! exits 1), never read around; `reindex` replaces it.
 
-use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -247,26 +246,6 @@ pub struct Reindex {
     pub unreadable: Vec<Unreadable>,
 }
 
-/// The allocated bytes of a file (what eviction would free), never its apparent length.
-fn allocated(path: &Path) -> u64 {
-    std::fs::symlink_metadata(path).map_or(0, |metadata| metadata.blocks() * 512)
-}
-
-fn allocated_tree(path: &Path) -> u64 {
-    let Ok(metadata) = std::fs::symlink_metadata(path) else {
-        return 0;
-    };
-    let mut total = metadata.blocks() * 512;
-    if metadata.is_dir()
-        && let Ok(entries) = std::fs::read_dir(path)
-    {
-        for entry in entries.filter_map(Result::ok) {
-            total += allocated_tree(&entry.path());
-        }
-    }
-    total
-}
-
 fn registered(
     registry: Option<&Path>,
     root: &Path,
@@ -374,22 +353,43 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
         }
         Err(error) => return Err(format!("{}: {error}", root.display())),
     }
-    std::fs::read_dir(root).map_err(|error| format!("{}: {error}", root.display()))?;
-    for other in reader::other_versions(root) {
+    // Every path beneath the root is judged, measured and read relative to the opened root
+    // and the directories opened beneath it, never through a link.
+    let failed = |error: std::io::Error| format!("{}: {error}", root.display());
+    let root_dir = Confined::root(root)
+        .map_err(failed)?
+        .ok_or_else(|| format!("{} is not a directory", root.display()))?;
+    root_dir.names().map_err(failed)?;
+    for other in reader::other_versions(&root_dir) {
         status.unreadable.push(Unreadable {
             reason: "written under another telemetry version; never read".into(),
-            path: other.display().to_string(),
+            path: root_dir.join(&other).display().to_string(),
         });
-        status.bytes.total += allocated_tree(&other);
+        status.bytes.total += root_dir.allocated_tree(&other);
     }
-    if !layout.has_versioned() {
-        if let Some(entry) = unrecognized(&layout) {
+    let Some(versioned) = root_dir.child_dir(layout::VERSION_DIR).map_err(failed)? else {
+        if let Some(entry) = unrecognized(&root_dir, &layout) {
             status.bytes.total += entry.bytes;
             status.bytes.entries.push(entry);
         }
         return Ok((status, None));
-    }
-    let listing = reader::list(&layout)?;
+    };
+    let segments = versioned
+        .child_dir("segments")
+        .map_err(|error| format!("{}: {error}", layout.segments().display()))?;
+    let listing = match &segments {
+        Some(segments) => reader::list_in(segments)?,
+        None => reader::Listing::default(),
+    };
+    let in_segments = |name: &str| segments.as_ref().map_or(0, |dir| dir.allocated(name));
+    let in_versioned =
+        |names: &[String]| -> u64 { names.iter().map(|name| versioned.allocated(name)).sum() };
+    let index_names: Vec<String> = layout
+        .index_files()
+        .iter()
+        .filter_map(|path| path.file_name())
+        .map(|name| name.to_string_lossy().to_string())
+        .collect();
     status.segments = Segments {
         live: listing.live.len() as u64,
         unsealed: listing.unsealed.len() as u64,
@@ -404,9 +404,9 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
         (&listing.corrupt, "corrupt", layout::CORRUPT),
     ] {
         for id in ids {
-            let mut bytes = allocated(&layout.segments().join(format!("{id}{file}")));
+            let mut bytes = in_segments(&format!("{id}{file}"));
             if state == "sealed" {
-                bytes += allocated(&layout.refs(id));
+                bytes += in_segments(&format!("{id}{}", layout::REFS));
             }
             entries.push(Entry {
                 state: Some(state.into()),
@@ -419,32 +419,35 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
         .refs
         .iter()
         .filter(|id| !listing.sealed.contains(id))
-        .map(|id| allocated(&layout.refs(id)))
+        .map(|id| in_segments(&format!("{id}{}", layout::REFS)))
         .sum::<u64>()
         + listing
             .temporary
             .iter()
-            .map(|path| allocated(path))
+            .filter_map(|path| path.file_name())
+            .map(|name| in_segments(&name.to_string_lossy()))
             .sum::<u64>();
-    entries.push(Entry::new("blobs", "blobs", blob_bytes(&layout)));
+    entries.push(Entry::new(
+        "blobs",
+        "blobs",
+        blob_bytes(&versioned, &layout),
+    ));
     entries.push(Entry::new(
         "index",
         "index.sqlite",
-        layout
-            .index_files()
-            .iter()
-            .map(|path| allocated(path))
-            .sum(),
+        in_versioned(&index_names),
     ));
     entries.push(Entry::new("temporary", "temporary", orphans));
+    let lock_names: Vec<String> = [layout.gc_lock(), layout.index_lock(), layout.index_intent()]
+        .iter()
+        .filter_map(|path| path.file_name())
+        .map(|name| name.to_string_lossy().to_string())
+        .chain(["segments".to_string()])
+        .collect();
     entries.push(Entry::new(
         "locks",
         "locks",
-        allocated(&layout.gc_lock())
-            + allocated(&layout.index_lock())
-            + allocated(&layout.index_intent())
-            + allocated(&layout.segments())
-            + allocated(&layout.versioned()),
+        in_versioned(&lock_names) + root_dir.allocated(layout::VERSION_DIR),
     ));
     let mut index = Index::open(&layout)?;
     let (ingested, refused) = index.ingest()?;
@@ -497,13 +500,9 @@ pub fn status(input: &StatusInput) -> Result<(Status, Option<String>), String> {
     drop(index);
     // The index's own size after the ingest.
     if let Some(entry) = entries.iter_mut().find(|entry| entry.kind == "index") {
-        entry.bytes = layout
-            .index_files()
-            .iter()
-            .map(|path| allocated(path))
-            .sum();
+        entry.bytes = in_versioned(&index_names);
     }
-    entries.extend(unrecognized(&layout));
+    entries.extend(unrecognized(&root_dir, &layout));
     status.bytes.total += entries.iter().map(|entry| entry.bytes).sum::<u64>();
     status.bytes.entries = entries;
     Ok((status, note))
@@ -576,38 +575,31 @@ fn is_blob_file(prefix: [u8; 2], name: &str) -> bool {
         || layout::blob_object_digest(prefix, name).is_some()
 }
 
-/// What `path` is, without following a link.
-fn entry_kind(path: &Path) -> EntryKind {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() => EntryKind::Directory,
-        Ok(metadata) if metadata.is_file() => EntryKind::File,
-        _ => EntryKind::Other,
-    }
-}
-
 /// The `blobs` entry: the `blobs/` directory itself, its prefix directories, the objects and
-/// the temporaries in them; any other path beneath `blobs/` is [`unrecognized`].
-fn blob_bytes(layout: &Layout) -> u64 {
-    let blobs = layout.blobs();
-    if !std::fs::symlink_metadata(&blobs).is_ok_and(|metadata| metadata.is_dir()) {
+/// the temporaries in them; any other path beneath `blobs/` is [`unrecognized`]. Walked
+/// relative to the opened `v1/`, never through a link.
+fn blob_bytes(versioned: &Confined, layout: &Layout) -> u64 {
+    let Ok(Some(blobs)) = versioned.child_dir("blobs") else {
         return 0;
-    }
-    let mut bytes = allocated(&blobs);
+    };
+    let mut bytes = versioned.allocated("blobs");
     let mut pending = vec![(blobs, Place::Blobs)];
     while let Some((directory, place)) = pending.pop() {
-        let Ok(children) = std::fs::read_dir(&directory) else {
+        let Ok(names) = directory.names() else {
             continue;
         };
-        for child in children.filter_map(Result::ok) {
-            let path = child.path();
-            let kind = entry_kind(&path);
-            let is_dir = kind == EntryKind::Directory;
-            match known(place, &child.file_name().to_string_lossy(), kind, layout) {
-                Known::Tree => bytes += allocated_tree(&path),
+        for name in names {
+            let Some(kind) = directory.kind(&name) else {
+                continue;
+            };
+            match known(place, &name, kind, layout) {
+                Known::Tree => bytes += directory.allocated_tree(&name),
                 Known::Own(inner) => {
-                    bytes += allocated(&path);
-                    if is_dir {
-                        pending.push((path, inner));
+                    bytes += directory.allocated(&name);
+                    if kind == EntryKind::Directory
+                        && let Ok(Some(child)) = directory.child_dir(&name)
+                    {
+                        pending.push((child, inner));
                     }
                 }
                 Known::Unrecognized => {}
@@ -617,47 +609,63 @@ fn blob_bytes(layout: &Layout) -> u64 {
     bytes
 }
 
-/// Every path beneath the root that matches no known kind, counted once with everything
-/// beneath it by allocated bytes, never read and never removed: with it the entries add up to
-/// the physical total of the tree (ADR-0153 clause 8). `None` when there is none.
-fn unrecognized(layout: &Layout) -> Option<Entry> {
-    let mut count = 0;
-    let mut bytes = 0;
-    let mut names = Vec::new();
-    let mut pending = vec![(layout.root().to_path_buf(), Place::Root)];
-    while let Some((directory, place)) = pending.pop() {
-        let Ok(children) = std::fs::read_dir(&directory) else {
+/// What [`unrecognized`] has found so far.
+#[derive(Default)]
+struct Unknown {
+    count: u64,
+    bytes: u64,
+    names: Vec<String>,
+}
+
+/// Every unrecognized path beneath `directory`, which lies at `relative` under the root in
+/// `place`.
+fn unrecognized_in(
+    directory: &Confined,
+    relative: &Path,
+    place: Place,
+    layout: &Layout,
+    found: &mut Unknown,
+) {
+    let Ok(names) = directory.names() else {
+        return;
+    };
+    for name in names {
+        let Some(kind) = directory.kind(&name) else {
             continue;
         };
-        for child in children.filter_map(Result::ok) {
-            let path = child.path();
-            let kind = entry_kind(&path);
-            let is_dir = kind == EntryKind::Directory;
-            match known(place, &child.file_name().to_string_lossy(), kind, layout) {
-                Known::Tree => {}
-                Known::Own(inner) => {
-                    if is_dir {
-                        pending.push((path, inner));
-                    }
+        match known(place, &name, kind, layout) {
+            Known::Tree => {}
+            Known::Own(inner) => {
+                if kind == EntryKind::Directory
+                    && let Ok(Some(child)) = directory.child_dir(&name)
+                {
+                    unrecognized_in(&child, &relative.join(&name), inner, layout, found);
                 }
-                Known::Unrecognized => {
-                    count += 1;
-                    bytes += allocated_tree(&path);
-                    let relative = path.strip_prefix(layout.root()).unwrap_or(&path);
-                    names.push(relative.display().to_string());
-                }
+            }
+            Known::Unrecognized => {
+                found.count += 1;
+                found.bytes += directory.allocated_tree(&name);
+                found.names.push(relative.join(&name).display().to_string());
             }
         }
     }
-    if count == 0 {
+}
+
+/// Every path beneath the root that matches no known kind, counted once with everything
+/// beneath it by allocated bytes, never read and never removed: with it the entries add up to
+/// the physical total of the tree (ADR-0153 clause 8). `None` when there is none.
+fn unrecognized(root: &Confined, layout: &Layout) -> Option<Entry> {
+    let mut found = Unknown::default();
+    unrecognized_in(root, Path::new(""), Place::Root, layout, &mut found);
+    if found.count == 0 {
         return None;
     }
-    names.sort();
-    names.truncate(UNRECOGNIZED_NAMES);
+    found.names.sort();
+    found.names.truncate(UNRECOGNIZED_NAMES);
     Some(Entry {
-        count: Some(count),
-        names: Some(names),
-        ..Entry::new("unrecognized", "unrecognized", bytes)
+        count: Some(found.count),
+        names: Some(found.names),
+        ..Entry::new("unrecognized", "unrecognized", found.bytes)
     })
 }
 
@@ -671,14 +679,14 @@ fn verify_blobs(layout: &Layout) -> Option<Vec<String>> {
     let mut corrupt = Vec::new();
     // The collector's grammar and confinement: only real prefix directories and regular files
     // named by their digest are opened, relative to the opened directory, never through a link.
-    let Ok(Some(mut blobs)) = Confined::versioned(layout, "blobs") else {
+    let Ok(Some(blobs)) = Confined::versioned(layout, "blobs") else {
         return Some(corrupt);
     };
     for prefix_name in blobs.names().unwrap_or_default() {
         if !layout::is_blob_prefix(&prefix_name) {
             continue;
         }
-        let Ok(Some(mut prefix)) = blobs.child_dir(&prefix_name) else {
+        let Ok(Some(prefix)) = blobs.child_dir(&prefix_name) else {
             continue;
         };
         for name in prefix.names().unwrap_or_default() {
@@ -731,13 +739,18 @@ pub fn reindex(root: &Path) -> Result<Reindex, String> {
         missing_blobs: 0,
         corrupt_blobs: Vec::new(),
         blob_verification: BlobVerification::Verified,
-        unreadable: reader::other_versions(root)
-            .into_iter()
-            .map(|path| Unreadable {
-                path: path.display().to_string(),
-                reason: "written under another telemetry version; never read".into(),
+        unreadable: Confined::root(root)
+            .map_err(|error| format!("{}: {error}", root.display()))?
+            .map(|root_dir| {
+                reader::other_versions(&root_dir)
+                    .into_iter()
+                    .map(|name| Unreadable {
+                        path: root_dir.join(&name).display().to_string(),
+                        reason: "written under another telemetry version; never read".into(),
+                    })
+                    .collect()
             })
-            .collect(),
+            .unwrap_or_default(),
     };
     if !layout.has_versioned() {
         return Ok(document);
