@@ -280,3 +280,5 @@ future readers need.
   steer](0153-record-telemetry-in-its-own-store-and-never-let-it-steer.md)
 - [0154 — Check for updates after headless and `--json`
   commands](0154-check-for-updates-after-headless-and-json-commands.md)
+- [0155 — Publish a fixture marker whole or not at
+  all](0155-publish-a-fixture-marker-whole-or-not-at-all.md)
