@@ -348,3 +348,55 @@ fn a_brief_no_kernel_constructor_rendered_is_refused_at_binding() {
         .unwrap();
     assert_eq!(admit_bound(&cas, &input(forwarded)), Ok(()));
 }
+
+/// The all-sections-dropped refusal is the renderer's own guard, and no loaded policy reaches
+/// it: the largest metadata a Brief can carry (a 128-byte variant name, a SHA-256 head with its
+/// Tree Digest and every section dropped) fits the policy floor of [`MIN_BRIEF_BYTES`], and the
+/// same Brief one byte under its size fails naming the variant and both byte counts.
+#[test]
+fn the_policy_floor_holds_the_largest_metadata_a_brief_can_carry() {
+    let mut pin = pin();
+    if let Some(identity) = pin.identity.body.as_mut() {
+        identity.head = "c".repeat(64);
+        assert!(identity.tree_digest.is_some());
+    }
+    pin.validate().unwrap();
+    let name = "v".repeat(128);
+    let mut every = variant(
+        &review_core::task::project_brief::BRIEF_SECTIONS,
+        MIN_BRIEF_BYTES,
+    );
+    every.validate(&name).unwrap();
+    let (brief, bytes) = render(&pin, &name, &every).unwrap();
+    assert_eq!(
+        brief.dropped.len(),
+        every.sections.len(),
+        "{:?}",
+        brief.dropped
+    );
+    assert!(brief.dropped.iter().all(
+        |drop| drop.section == "activity" || drop.reason == ProjectBriefDropReasonV1::MaxBytes
+    ));
+    let floor = bytes.len() as u64;
+    assert!(floor <= MIN_BRIEF_BYTES, "{floor}");
+    every.max_bytes = (floor - 1).into();
+    let error = render(&pin, &name, &every).unwrap_err();
+    assert!(
+        error.contains(&format!("variant {name} cannot fit"))
+            && error.contains(&format!(
+                "still {floor} bytes, over its max_bytes of {}",
+                floor - 1
+            )),
+        "{error}"
+    );
+}
+
+/// A Worker never authors a Brief: its output of that type is refused with the typed reason
+/// whatever its ports declare, and every other type passes.
+#[test]
+fn a_worker_output_of_the_brief_type_is_refused_by_its_type_alone() {
+    use review_core::task::project_brief::refuse_worker_authored;
+    let refused = refuse_worker_authored(PROJECT_BRIEF_V1).unwrap_err();
+    assert!(refused.starts_with(NOT_KERNEL_CONSTRUCTED), "{refused}");
+    assert_eq!(refuse_worker_authored("af/ImplementationReport@1"), Ok(()));
+}
