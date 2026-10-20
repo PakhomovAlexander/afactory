@@ -195,7 +195,9 @@ pub const MAX_SURVEY_TEXT_BYTES: usize = 256;
 pub const MAX_SURVEY_RECORD_BYTES: usize = 64 * 1024;
 
 /// The ceilings of `[survey] max_paths`, `max_entries` and `max_survey_bytes`: a project may only
-/// lower them.
+/// lower them. The Surveyor never writes a record longer than `MAX_SURVEY_BYTES`, af never reads
+/// one back as a Survey, and collection refuses one as `oversize` rather than taking it for
+/// corrupt (ADR-0152 clause 13).
 pub const MAX_SURVEY_PATHS: u64 = 200_000;
 pub const MAX_SURVEY_ENTRIES: u64 = 1_000;
 pub const MAX_SURVEY_BYTES: u64 = 1_048_576;
@@ -1564,12 +1566,6 @@ mod tests {
         assert_eq!(text["origin"], "created");
     }
 }
-
-/// The most bytes one Survey's record can hold: the ceiling of `[survey] max_survey_bytes`
-/// (1 MiB, docs/design/project.md §3.4). The Surveyor never writes a longer record, af never
-/// reads one back as a Survey, and collection refuses one as `oversize` rather than taking it
-/// for corrupt (ADR-0152 clause 13).
-pub const MAX_SURVEY_BYTES: u64 = 1_048_576;
 
 /// The totals of a collected Survey's `tree` its tombstone keeps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
