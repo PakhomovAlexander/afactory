@@ -29,6 +29,7 @@ mod reviewer_output;
 pub mod scatter;
 pub mod storage;
 pub mod task;
+pub mod telemetry;
 mod warm;
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -15,6 +15,11 @@
 //! as a canonical decimal string (ADR-0078). Four fields steer the record instead of becoming
 //! attributes: `af.kind` (the span kind), `af.status` (the end status), `af.event` (an event's
 //! name) and `message`; the event name is free text too and the writer judges it whole.
+//!
+//! The process's `af.run` spans drive the consumer thread: the first one opened starts it and
+//! the last one ended stops it within the bounded shutdown ([`Writer::run_started`],
+//! [`Writer::run_ended`]). At `metrics` only the spans that level lists are recorded
+//! ([`METRICS_SPANS`]).
 
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
@@ -26,6 +31,7 @@ use tracing_core::field::{Field, Visit};
 use tracing_core::span::{Attributes as SpanAttributes, Id, Record as SpanRecord};
 use tracing_core::{Dispatch, Event, Interest, Metadata, Subscriber};
 
+use crate::level::Level;
 use crate::record::{Attr, Attrs, SpanKind, SpanStatus};
 use crate::redact;
 use crate::segment::writer::Writer;
@@ -36,6 +42,34 @@ const KIND_FIELD: &str = "af.kind";
 const STATUS_FIELD: &str = "af.status";
 const EVENT_FIELD: &str = "af.event";
 const MESSAGE_FIELD: &str = "message";
+
+/// The span a process opens for the time it spends on one run; it starts and stops the
+/// consumer thread.
+pub const RUN_SPAN: &str = "af.run";
+
+/// The spans recorded at `metrics` (design §8); every other span and every event is recorded
+/// from `spans` on.
+pub const METRICS_SPANS: [&str; 8] = [
+    "af.command",
+    "af.run",
+    "af.gate",
+    "af.check",
+    "af.node",
+    "af.attempt",
+    "af.harness",
+    "af.sweep",
+];
+
+/// Whether `metadata` is recorded at `level`: at `metrics` a span only when that level lists it;
+/// an event whenever its site emits one (the sites that emit at `metrics` are the accounting
+/// ones).
+pub fn recorded_at(level: Level, metadata: &Metadata<'_>) -> bool {
+    match level {
+        Level::Off => false,
+        Level::Metrics => !metadata.is_span() || METRICS_SPANS.contains(&metadata.name()),
+        Level::Spans | Level::Content => true,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TypedValue {
@@ -274,20 +308,68 @@ impl TelemetrySubscriber {
     }
 }
 
+/// The writer of the subscriber installed as the process's global default.
+static INSTALLED: std::sync::OnceLock<Writer> = std::sync::OnceLock::new();
+
 /// Install `writer`'s subscriber as the process's global default. Called only at a level that
 /// records; at `off` nothing is installed.
 pub fn install(writer: Writer) -> Result<(), String> {
-    tracing_core::dispatcher::set_global_default(Dispatch::new(TelemetrySubscriber::new(writer)))
-        .map_err(|error| error.to_string())
+    tracing_core::dispatcher::set_global_default(Dispatch::new(TelemetrySubscriber::new(
+        writer.clone(),
+    )))
+    .map_err(|error| error.to_string())?;
+    let _ = INSTALLED.set(writer);
+    Ok(())
+}
+
+/// The writer the current dispatcher records through: the scoped default a fixture set, or the
+/// process's global one; `None` at `off`. The records that are not spans or events (`node`) are
+/// written through it.
+pub fn current_writer() -> Option<Writer> {
+    tracing_core::dispatcher::get_default(|dispatch| {
+        dispatch
+            .downcast_ref::<TelemetrySubscriber>()
+            .map(|subscriber| subscriber.writer().clone())
+    })
+    .or_else(|| INSTALLED.get().cloned())
+    .filter(|writer| !writer.failed())
+}
+
+/// The process's `af.command` span, which every `af.run` names as its parent whichever thread
+/// opens it.
+static COMMAND: Mutex<Option<tracing::Span>> = Mutex::new(None);
+
+/// Remember the process's `af.command` span.
+pub fn set_command_span(span: &tracing::Span) {
+    *lock(&COMMAND) = Some(span.clone());
+}
+
+/// Forget the process's `af.command` span, before it ends.
+pub fn take_command_span() -> Option<tracing::Span> {
+    lock(&COMMAND).take()
+}
+
+/// The process's `af.command` span, when one is open.
+pub fn command_span() -> Option<tracing::Span> {
+    lock(&COMMAND).clone()
+}
+
+/// The process's `af.command` span's id, when one is open and recorded.
+pub fn command_span_id() -> Option<Id> {
+    lock(&COMMAND).as_ref().and_then(tracing::Span::id)
 }
 
 impl Subscriber for TelemetrySubscriber {
-    fn register_callsite(&self, _: &'static Metadata<'static>) -> Interest {
-        Interest::always()
+    fn register_callsite(&self, metadata: &'static Metadata<'static>) -> Interest {
+        if recorded_at(self.writer.level(), metadata) {
+            Interest::always()
+        } else {
+            Interest::never()
+        }
     }
 
-    fn enabled(&self, _: &Metadata<'_>) -> bool {
-        !self.writer.failed()
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        recorded_at(self.writer.level(), metadata) && !self.writer.failed()
     }
 
     fn new_span(&self, span: &SpanAttributes<'_>) -> Id {
@@ -323,6 +405,9 @@ impl Subscriber for TelemetrySubscriber {
             fields.kind.unwrap_or(SpanKind::Internal),
             fields.attrs,
         );
+        if span.metadata().name() == RUN_SPAN && span_id.is_some() {
+            self.writer.run_started();
+        }
         lock(&self.spans).insert(
             id,
             SpanState {
@@ -418,6 +503,9 @@ impl Subscriber for TelemetrySubscriber {
                 state.end,
                 state.depth,
             );
+            if state.metadata.name() == RUN_SPAN {
+                self.writer.run_ended();
+            }
         }
         true
     }

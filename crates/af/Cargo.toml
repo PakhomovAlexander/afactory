@@ -41,6 +41,7 @@ clap = { version = "4.5.60", features = ["derive", "wrap_help", "env", "string"]
 clap_complete = { version = "4.5.60", features = ["unstable-dynamic"] }
 clap_mangen = "0.3.3"
 toml_edit = "0.25"
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 minisign-verify = "0.3.0"
 nix = { version = "0.31.3", default-features = false, features = ["fs", "signal", "user"] }
 # The Claude limit probe runs the CLI on a pseudo-terminal. Tests use it too: provider setup

@@ -40,9 +40,10 @@ crates/
   review-runner-claude/, review-runner-codex/  the model adapters: digest-pinned
                  Worker packages driving `claude -p` and `codex exec`
   review-source-task/ read-only capture of external issue sources into typed data
-  review-telemetry/ Telemetry's leaf crate: segments, blobs, structured redaction (the
-                 credential rules review-runner re-exports), the tracing subscriber and the
-                 rebuildable index; never read by the kernel (ADR-0153)
+  review-telemetry/ Telemetry's leaf crate: segments and their consumer thread, blobs,
+                 structured redaction (the credential rules review-runner re-exports), the
+                 tracing subscriber, the rebuildable index, the run views and the telemetry
+                 kind of the Storage Budget; never read by the kernel (ADR-0153)
   af/            the `af` binary: onboarding, review, task, provider and self-management
 fixtures/
   self-optimizer/ the credential-free Worker catalog and native examples the optimizer uses

@@ -11,3 +11,19 @@
   escapes them, and `status` re-reads a sealed segment changed under its name. No command records
   spans yet
   ([ADR-0153](docs/adr/0153-record-telemetry-in-its-own-store-and-never-let-it-steer.md)).
+- Telemetry, second package: the commands that run a kernel run (`af task run`,
+  `af task start --execute`, `af review run`, `af provider doctor`, `af self optimize --execute`)
+  now record `af.command > af.run > af.authority.load, af.plan` (one `af/TelemetryNode@1` record
+  per plan node), `af.node > af.attempt` with the kernel's exact accounting, and the run's
+  `af.sweep`; every other command, and every command at `off`, opens no telemetry directory. One
+  consumer thread owns the segment while a run is open and makes every record visible within
+  `flush_latency_ms`; it is stopped within 2 s or abandoned, leaving the segment for the next
+  reader to recover. `af telemetry runs`, `show`, `tail` and `gc` (`--json`:
+  `af/telemetry-runs@1`, `af/telemetry-show@1`, `af/telemetry-tail@1`, `af/telemetry-gc@1`)
+  report a run's executions — active time as their union, execution time as their sum, elapsed
+  time, history `prefix:k` or `partial`, never complete — its span tree and its live tail.
+  Telemetry is the kind `telemetry` of the Storage Budget (`af/storage@2`,
+  `af/storage-prune@2`): every registered directory counted once, one entry per segment by what
+  its eviction frees, evicted under ADR-0144's rules past `[telemetry] max_bytes` or the whole
+  budget, with temporaries, unreferenced blobs and free index pages reclaimed by every applied
+  sweep and an overlapping directory reported `overlapping`, never evicted as telemetry.

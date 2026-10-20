@@ -222,28 +222,29 @@ repository's `.af/af.toml` cannot change it. See `af help storage`.",
         after_long_help = "Examples:\n  af storage\n  af storage --json | jq .total_bytes\n  af storage prune\n  af storage prune --apply\n  AF_STORAGE__MAX_BYTES=10GiB af storage prune --apply"
     )]
     Storage {
-        /// Machine-readable af/storage@1
+        /// Machine-readable af/storage@2
         #[arg(long)]
         json: bool,
         #[command(subcommand)]
         command: Option<StorageCommand>,
     },
-    /// Show what Telemetry recorded on this machine, and rebuild its index
+    /// Show what Telemetry recorded on this machine: its runs, span trees and live tail
     #[command(
         subcommand_required = true,
         arg_required_else_help = true,
-        long_about = "Show what Telemetry recorded on this machine, and rebuild its index.\n\n\
+        long_about = "Show what Telemetry recorded on this machine: its runs, span trees and live tail.\n\n\
 Telemetry records what af does while it works — spans, events and, at `content`, redacted \
 content blobs — in its own store under the state root's `telemetry/`, never in a Task or \
 Campaign Store. The kernel never reads it: identity, replay, the Ledger, budgets, admission and \
 every Worker input are the same whether it is on, off or deleted (ADR-0153). `[telemetry] \
 level` is `off`, `metrics`, `spans` (the default) or `content`, set from machine layers only; \
 see `af help telemetry`.\n\n\
-`status` reads; `reindex` recovers crashed writers' segments and rebuilds the index. Neither \
-records telemetry, contacts a network or reads a Store. Exit codes: 0 success, 1 the telemetry \
-directory cannot be read or the index is in use, 2 a wrong command line or a refused \
-`[telemetry]` key.",
-        after_long_help = "Examples:\n  af telemetry status\n  af telemetry status --json | jq .segments\n  af telemetry reindex\n  af telemetry status --dir ./copied-telemetry\n  AF_TELEMETRY__LEVEL=content af task run TASK_ID"
+`status`, `runs`, `show` and `tail` read; `reindex` recovers crashed writers' segments and \
+rebuilds the index; `gc --apply` evicts telemetry under the Storage Budget's rules. None records \
+telemetry, contacts a network or reads a Store. Exit codes: 0 success, 1 the telemetry \
+directory cannot be read, the index is in use or a run is unknown, 2 a wrong command line or a \
+refused `[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry status\n  af telemetry runs --since 7d\n  af telemetry show RUN_ID\n  af telemetry tail\n  af telemetry gc\n  af telemetry status --json | jq .segments\n  af telemetry reindex\n  af telemetry status --dir ./copied-telemetry\n  AF_TELEMETRY__LEVEL=content af task run TASK_ID"
     )]
     Telemetry {
         #[command(subcommand)]
@@ -1405,7 +1406,7 @@ Finished Tasks go through the Store's own collection, so each keeps its tombston
         /// Remove what the preview names (default: preview only)
         #[arg(long)]
         apply: bool,
-        /// Machine-readable af/storage-prune@1
+        /// Machine-readable af/storage-prune@2
         #[arg(long)]
         json: bool,
     },
@@ -1474,6 +1475,140 @@ refused `[telemetry]` key.",
         /// Rebuild this telemetry directory's index instead of the configured one
         #[arg(long, value_name = "PATH", help_heading = "Selector")]
         dir: Option<PathBuf>,
+    },
+    /// Every run recorded: executions, active, execution and elapsed time, outcome, charge
+    #[command(
+        long_about = "Every run recorded: executions, active, execution and elapsed time, outcome, charge.\n\n\
+One row per kernel run within its Store (a Task run, a review run, a self-optimizer run, a \
+measurement): its Store (`af.store_id`), run id, kind, Task or Campaign, its retained \
+executions (one per process that worked on it) and first start; its **active** time (the union \
+of the executions' intervals, an overlap counted once), **execution** time (their sum, \
+`af.execution.duration_sum`) and **elapsed** time (first start to last end, idle gaps \
+included), an interval without a recorded end ending at its segment's last record and marked \
+open; the latest outcome; the Attempts' exact usage counters and charge as the kernel accounted \
+them; failures; coverage (`complete` when every retained segment was sealed by its writer with \
+nothing dropped); and the retained history: `prefix:k` when executions 1 to k are retained with \
+their seals and no ordinal between them is missing, `partial` with the missing ordinals \
+otherwise. A run's history is never called complete: every total says `retained executions \
+1–k` or `partial`.\n\n\
+Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or its index is of another \
+schema version, 2 a wrong command line or a refused `[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry runs\n  af telemetry runs --since 7d --kind task\n  af telemetry runs --json | jq '.runs[] | {run_id, active_us, history}'\n  af telemetry runs --dir ./copied-telemetry --json"
+    )]
+    Runs {
+        /// Only runs active at or after this long ago (30m, 12h, 14d, 2w)
+        #[arg(long, value_name = "D", help_heading = "Selector")]
+        since: Option<String>,
+        /// Only runs of this kind
+        #[arg(long, value_name = "K", value_parser = ["task", "review", "optimize", "measure"], help_heading = "Selector")]
+        kind: Option<String>,
+        /// Machine-readable af/telemetry-runs@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Read this telemetry directory instead of the configured one (one copied from another machine)
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// One run's span tree: start offset, total and self time, status and key attributes
+    #[command(
+        long_about = "One run's span tree: start offset, total and self time, status and key attributes.\n\n\
+RUN is the kernel run id `af telemetry runs` lists. The tree runs from each execution's \
+`af.command` through `af.run` to `af.authority.load`, `af.plan`, every `af.node` and its \
+`af.attempt` spans, and the command's `af.sweep`; each span with its start offset from the \
+run's first record, total and self time (total less its ended children's union), status (`ok`, \
+`error`, `unset`, or `open` when it has no recorded end) and key attributes. `--attempt ID` \
+keeps that Attempt's subtree with its ancestors, `--depth N` stops N levels below the root, and \
+`--span ID` prints one span with every attribute and its events. The run's retained executions \
+and history head the tree. When two Stores record the same run id it lists both and asks for \
+`--store ID`.\n\n\
+Never: reads a Store, records telemetry, removes anything, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read or the run, Attempt or span is \
+unknown, 2 a wrong command line, a run two Stores share without `--store`, or a refused \
+`[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry show RUN_ID\n  af telemetry show RUN_ID --depth 2\n  af telemetry show RUN_ID --attempt ATTEMPT_ID\n  af telemetry show RUN_ID --span SPAN_ID --json\n  af telemetry show RUN_ID --store STORE_ID"
+    )]
+    Show {
+        /// The kernel run id
+        #[arg(value_name = "RUN")]
+        run: String,
+        /// The Store the run belongs to, when two Stores record it (`af.store_id`)
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        store: Option<String>,
+        /// Only this Attempt's subtree, with its ancestors
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        attempt: Option<String>,
+        /// Only this span, with every attribute and its events
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        span: Option<String>,
+        /// Only spans at most this many levels below the root
+        #[arg(long, value_name = "N", help_heading = "Selector")]
+        depth: Option<u64>,
+        /// Machine-readable af/telemetry-show@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Read this telemetry directory instead of the configured one (one copied from another machine)
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// Follow the live segments and print every span end and event as it is written
+    #[command(
+        long_about = "Follow the live segments and print every span end and event as it is written.\n\n\
+Like `tail -f`: every live segment (or, with RUN, those that carry that run) is read from its \
+start and followed; each span end (with its duration and status) and each event is printed as \
+the writer writes it, within `[telemetry] flush_latency_ms` of its creation while a run is open. \
+It exits when every followed writer has sealed its segment; with no live segment it waits for \
+one. With `--json` each line is one `af/telemetry-tail@1` object. When two Stores record the \
+run id it asks for `--store ID`.\n\n\
+Never: reads a Store, records telemetry, removes or recovers anything, or contacts a network.\n\n\
+Exit codes: 0 success, 1 the telemetry directory cannot be read, 2 a wrong command line, a run \
+two Stores share without `--store`, or a refused `[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry tail\n  af telemetry tail RUN_ID\n  af telemetry tail RUN_ID --json | jq -c 'select(.record == \"span_end\")'"
+    )]
+    Tail {
+        /// Only this kernel run's records
+        #[arg(value_name = "RUN")]
+        run: Option<String>,
+        /// The Store the run belongs to, when two Stores record it (`af.store_id`)
+        #[arg(long, value_name = "ID", help_heading = "Selector")]
+        store: Option<String>,
+        /// One af/telemetry-tail@1 object per line
+        #[arg(long, help_heading = "Output")]
+        json: bool,
+        /// Follow this telemetry directory instead of the configured one
+        #[arg(long, value_name = "PATH", help_heading = "Selector")]
+        dir: Option<PathBuf>,
+    },
+    /// What the Storage Budget's sweep would evict from the telemetry kind; --apply evicts it
+    #[command(
+        long_about = "What the Storage Budget's sweep would evict from the telemetry kind; --apply evicts it.\n\n\
+Every registered telemetry directory, whatever the current level or `dir`, is listed as \
+`af storage` lists the kind `telemetry`: one entry per sealed or corrupt segment whose bytes are \
+what its eviction frees (the segment, its manifest and the blobs no other segment references), \
+live and unsealed segments in use, another telemetry version's directory, each directory's \
+`shared` remainder (the index, locks, shared blobs, temporaries), and a directory overlapping \
+other accounted state reported `overlapping`, counted once and never evicted. The step is \
+ADR-0144's: least recently used first (corrupt first among equals) while af is over \
+`[storage] max_bytes` or telemetry over `[telemetry] max_bytes`, by age past `[storage] \
+keep_days` too, never an entry in use or used within the last hour. With `--apply` it evicts, \
+then removes temporary files older than an hour, blobs no remaining segment references (under \
+`gc.lock`, skipped when a reader holds it past 2 s) and the index's free pages (`VACUUM`, or the \
+index deleted for the next reader to rebuild when there is no room), measured as allocated \
+bytes; registered directories that no longer exist are dropped from the registry. Without \
+`--apply` nothing is removed.\n\n\
+Never: removes anything of another kind, reads a span, records telemetry, or contacts a \
+network.\n\n\
+Exit codes: 0 success, 1 the storage or telemetry configuration cannot be read, 2 a wrong \
+command line or a refused `[telemetry]` key.",
+        after_long_help = "Examples:\n  af telemetry gc\n  af telemetry gc --apply\n  af telemetry gc --json | jq '.removals'"
+    )]
+    Gc {
+        /// Evict and reclaim; without it, only say what would be removed
+        #[arg(long)]
+        apply: bool,
+        /// Machine-readable af/telemetry-gc@1
+        #[arg(long, help_heading = "Output")]
+        json: bool,
     },
 }
 

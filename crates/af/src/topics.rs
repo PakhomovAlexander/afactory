@@ -215,6 +215,21 @@ unwritable directory, a full segment) is one problem and the run continues.
 
   af telemetry status           level, directory, bytes, segments, runs, index, problems
   af telemetry reindex          recover crashed writers' segments and rebuild the index
+  af telemetry runs             every run: executions, active, execution and elapsed time,
+                                outcome, charge, failures, coverage, retained history
+  af telemetry show RUN         the span tree: start offset, total and self time, status
+  af telemetry tail [RUN]       follow the live segments: every span end and event as written
+  af telemetry gc [--apply]     what the Storage Budget's sweep evicts from the telemetry kind
+
+Recorded: the commands that run a kernel run (af task run, af task start --execute, af review
+run, af provider doctor, af self optimize --execute) record af.command > af.run >
+af.authority.load, af.plan (one node record per plan node), af.node > af.attempt, and the
+command's af.sweep; every other command records nothing and opens no telemetry directory. While
+a run is open one consumer thread owns the segment and every record is in it within
+flush_latency_ms; at the run's end it is stopped within 2 s, else abandoned, and the segment is
+left for the next reader to recover. A run's executions (one per process that worked on it) can
+overlap: active time is their union, execution time their sum, elapsed time first start to last
+end. Its history is `prefix:k` or `partial`, never complete.
 
 The [telemetry] table, machine layers only (built-in, system, user, AF_TELEMETRY__<KEY>); a
 repository's .af/af.toml cannot set it, and a value outside its bound refuses the load naming
@@ -259,8 +274,17 @@ followed or removed. It rechecks each registered directory's overlap: none, over
 unknown when the Store registry cannot be read (named among the problems; the exit code is
 unchanged).
 
+Every registered telemetry directory is the kind `telemetry` in `af storage`, whatever the
+current level or dir: one entry per segment, whose bytes are what its eviction frees, and the
+directory's shared remainder (index, locks, shared blobs, temporaries). The sweep evicts sealed
+and corrupt segments least recently used first past [telemetry] max_bytes or the whole budget,
+never one in use or used within the hour, and reclaims temporary files, unreferenced blobs and
+free index pages. A directory overlapping other accounted state is `overlapping`: counted once,
+never evicted as telemetry.
+
 There is no telemetry keep_days: collection by age is [storage] keep_days under [storage]
-auto_gc or an applied prune. See docs/telemetry.md.";
+auto_gc or an applied prune (af storage prune --apply, af telemetry gc --apply). See
+docs/telemetry.md.";
 
 const SELF_TOPIC: &str = "\
 Layout

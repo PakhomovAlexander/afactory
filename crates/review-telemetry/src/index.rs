@@ -1327,6 +1327,101 @@ fn self_times(transaction: &Transaction<'_>, ended: &BTreeSet<String>) -> Result
     Ok(())
 }
 
+impl Index {
+    /// Drop every row the segments `segment_ids` contributed, in one transaction, without
+    /// reading any segment: the sweep's step after it evicts them. Returns how many of them the
+    /// index held.
+    pub fn forget_segments(&mut self, segment_ids: &[String]) -> Result<u64, String> {
+        let transaction = self.connection.transaction().map_err(sql)?;
+        let mut held = 0;
+        for segment_id in segment_ids {
+            let known: i64 = transaction
+                .query_row(
+                    "SELECT count(*) FROM segments WHERE segment_id = ?1",
+                    params![segment_id],
+                    |row| row.get(0),
+                )
+                .map_err(sql)?;
+            held += u64::try_from(known).unwrap_or(0);
+            forget(&transaction, segment_id)?;
+        }
+        transaction.commit().map_err(sql)?;
+        Ok(held)
+    }
+
+    /// The database's free pages and page size (`PRAGMA freelist_count`, `page_size`).
+    pub fn free_pages(&self) -> Result<(u64, u64), String> {
+        let pages: i64 = self
+            .connection
+            .query_row("PRAGMA freelist_count", [], |row| row.get(0))
+            .map_err(sql)?;
+        let size: i64 = self
+            .connection
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .map_err(sql)?;
+        Ok((
+            u64::try_from(pages).unwrap_or(0),
+            u64::try_from(size).unwrap_or(0),
+        ))
+    }
+
+    /// `VACUUM` the database, then truncate its write-ahead log. `Err` carries whether SQLite
+    /// failed for lack of space (`SQLITE_FULL`), when the caller replaces the index instead.
+    pub fn vacuum(&self) -> Result<(), (bool, String)> {
+        match self.connection.execute_batch("VACUUM") {
+            Ok(()) => {
+                let _ =
+                    self.connection
+                        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+                Ok(())
+            }
+            Err(error) => {
+                let full = matches!(
+                    &error,
+                    rusqlite::Error::SqliteFailure(failure, _)
+                        if failure.code == rusqlite::ErrorCode::DiskFull
+                );
+                Err((full, sql(error)))
+            }
+        }
+    }
+}
+
+/// Delete the index under `index.lock` held exclusively (within two seconds), leaving none: the
+/// next reader rebuilds it from the segments. `Ok(false)` when the lock was not had — the
+/// deletion is deferred. Every file is removed relative to the held `v1/`.
+pub fn delete_in(layout: &Layout, versioned: &Confined) -> Result<bool, String> {
+    let exclusive = FlockArg::LockExclusiveNonblock;
+    let Some(_intent) = layout::lock_in(
+        versioned,
+        layout::INDEX_INTENT,
+        layout::LOCK_WAIT,
+        exclusive,
+    )
+    .map_err(|error| format!("{}: {error}", layout.index_intent().display()))?
+    else {
+        return Ok(false);
+    };
+    let Some(_lock) = layout::lock_in(versioned, layout::INDEX_LOCK, layout::LOCK_WAIT, exclusive)
+        .map_err(|error| format!("{}: {error}", layout.index_lock().display()))?
+    else {
+        return Ok(false);
+    };
+    for name in index_names(layout) {
+        match versioned.unlink(&name) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("{}: {error}", versioned.join(&name).display())),
+        }
+    }
+    Ok(true)
+}
+
+/// The file names of the database with its WAL and shared-memory files, for the budget.
+pub fn file_names(layout: &Layout) -> Vec<String> {
+    index_names(layout)
+}
+
 /// What replacing the index did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Replaced {

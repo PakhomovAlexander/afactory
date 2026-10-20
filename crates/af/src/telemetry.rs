@@ -1,9 +1,10 @@
-//! `af telemetry status` and `af telemetry reindex` (ADR-0153): the reader side of Telemetry,
-//! which only `af telemetry`, `af storage` and the TUI link.
+//! `af telemetry` (ADR-0153): `status`, `reindex`, `runs`, `show`, `tail` and `gc` — the reader
+//! side of Telemetry, which only `af telemetry`, `af storage` and the TUI link — and the
+//! recording a command that runs a kernel run does ([`begin`], [`Recording::finish`]).
 //!
 //! The `[telemetry]` table is read from machine layers only. A refused key exits 2, an
-//! unreadable telemetry directory or a busy index exits 1; neither command ever records
-//! telemetry itself.
+//! unreadable telemetry directory, a busy index or an unknown run exits 1; no `af telemetry`
+//! command ever records telemetry itself.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,12 @@ use review_telemetry::status::{
 
 use crate::config;
 use crate::storage::{self, human_bytes};
+
+mod recording;
+mod views;
+
+pub(crate) use recording::begin;
+pub(crate) use views::{gc, runs, show, tail};
 
 /// The machine's `[telemetry]` table, or the refusal naming its key.
 pub(crate) fn settings() -> Result<Settings, String> {
@@ -40,31 +47,12 @@ pub(crate) fn registry() -> Result<PathBuf, String> {
 /// value says why the list is known incomplete: a Store registry that cannot be read (or is of
 /// another version) is never silently omitted, so every overlap check becomes `unknown`.
 pub(crate) fn accounted() -> Result<(Vec<Accounted>, Option<String>), String> {
-    let roots = storage::Roots::current()?;
-    let mut accounted = vec![
-        Accounted::container(config::state_home()?.join("af"), "the state root"),
-        Accounted::new(&roots.tasks, "the Task Store root"),
-        Accounted::new(&roots.campaigns, "the review campaign root"),
-        Accounted::new(&roots.local_reviews, "the local review root"),
-        Accounted::new(&roots.warm, "the warm check cache"),
-        Accounted::new(&roots.workspaces, "the warm Workspaces"),
-        Accounted::new(&roots.installs.versions, "the release installations"),
-    ];
-    let unknown = match storage::registry::read(&roots.registry) {
-        Ok(stores) => {
-            for store in stores {
-                accounted.push(Accounted::new(store.path, "a registered Store"));
-            }
-            None
-        }
-        Err(error) => Some(format!("the Store registry cannot be read: {error}")),
-    };
-    Ok((accounted, unknown))
+    Ok(storage::accounted(&storage::Roots::current()?))
 }
 
 /// A refused `[telemetry]` key: exit 2, one line on stderr, and under `--json` the error
 /// document on stdout.
-fn refused(command: &str, json: bool, refusal: &str) -> i32 {
+pub(super) fn refused(command: &str, json: bool, refusal: &str) -> i32 {
     if json {
         println!(
             "{}",
@@ -91,7 +79,7 @@ fn absolute(path: PathBuf) -> Result<PathBuf, String> {
 
 /// `--dir PATH` must name an existing directory; without it, the configured one is read and
 /// may not exist yet.
-fn chosen(dir: Option<PathBuf>, settings: &Settings) -> Result<PathBuf, String> {
+pub(super) fn chosen(dir: Option<PathBuf>, settings: &Settings) -> Result<PathBuf, String> {
     match dir {
         Some(dir) => {
             let dir = absolute(dir)?;
@@ -104,7 +92,7 @@ fn chosen(dir: Option<PathBuf>, settings: &Settings) -> Result<PathBuf, String> 
     }
 }
 
-fn home_relative(path: &str) -> String {
+pub(super) fn home_relative(path: &str) -> String {
     match config::home() {
         Ok(home) => match Path::new(path).strip_prefix(&home) {
             Ok(rest) => format!("~/{}", rest.display()),

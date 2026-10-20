@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:storage-prune:2",
+  "title": "af/storage-prune@2",
+  "description": "`af storage prune --json` (ADR-0144, ADR-0153): what one sweep removed, or without --apply would remove. Collection first (rule `collection`), then the budget, least recently used first (rule `budget`; among equals a corrupt telemetry segment first), until the total fits `max_bytes` or nothing else may be removed (`stop`); then telemetry past its own `[telemetry] max_bytes` under the same rules. Gate cleanups of finished Tasks are those the sweep tried; registry entries whose path holds no Store any more are dropped; a failed removal is listed and tried again by the next sweep. `telemetry` is the telemetry kind's part: its bytes before and after, why its step stopped, what every applied sweep reclaimed per directory beyond its evictions (temporary files and unreferenced blobs older than an hour, the index's free pages), measured as allocated bytes, what was skipped or deferred, and registered telemetry directories that no longer exist.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "applied",
+    "collection",
+    "max_bytes",
+    "total_before",
+    "total_after",
+    "stop",
+    "removals",
+    "gate_cleanups",
+    "registry_dropped",
+    "failures",
+    "telemetry"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/storage-prune@2"
+    },
+    "applied": {
+      "type": "boolean"
+    },
+    "collection": {
+      "type": "boolean"
+    },
+    "max_bytes": {
+      "$ref": "#/$defs/bytes"
+    },
+    "total_before": {
+      "$ref": "#/$defs/bytes"
+    },
+    "total_after": {
+      "$ref": "#/$defs/bytes"
+    },
+    "stop": {
+      "enum": [
+        "fits",
+        "nothing_evictable"
+      ]
+    },
+    "removals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "path",
+          "bytes",
+          "rule"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "warm_key",
+              "workspace",
+              "campaign",
+              "task",
+              "unreadable_store",
+              "version",
+              "claim",
+              "telemetry"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "task_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "bytes": {
+            "$ref": "#/$defs/bytes"
+          },
+          "rule": {
+            "enum": [
+              "collection",
+              "budget",
+              "recovery"
+            ]
+          },
+          "segment_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "gate_cleanups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "task_id",
+          "outcome",
+          "summary"
+        ],
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcome": {
+            "enum": [
+              "done",
+              "failed"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "registry_dropped": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_bytes",
+        "total_before",
+        "total_after",
+        "stop",
+        "reclaimed",
+        "notes",
+        "registry_dropped"
+      ],
+      "properties": {
+        "max_bytes": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/bytes"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "total_before": {
+          "$ref": "#/$defs/bytes"
+        },
+        "total_after": {
+          "$ref": "#/$defs/bytes"
+        },
+        "stop": {
+          "enum": [
+            "fits",
+            "nothing_evictable"
+          ]
+        },
+        "reclaimed": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reclaimed"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "registry_dropped": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "reclaimed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "directory",
+        "temporary_bytes",
+        "blob_bytes",
+        "index_bytes",
+        "index"
+      ],
+      "properties": {
+        "directory": {
+          "type": "string",
+          "minLength": 1
+        },
+        "temporary_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "blob_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "index_bytes": {
+          "$ref": "#/$defs/bytes"
+        },
+        "index": {
+          "enum": [
+            "vacuumed",
+            "deleted",
+            "deferred",
+            "kept",
+            "absent"
+          ]
+        }
+      }
+    }
+  }
+}

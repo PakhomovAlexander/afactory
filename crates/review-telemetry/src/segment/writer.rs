@@ -8,9 +8,26 @@
 //!
 //! **One owner.** The open file, every write, the manifest, the seal, the compression and the
 //! rename are the consumer's work ([`Writer::consume`] and the sealing below) and no other
-//! code's. Appending threads only encode into the buffer and signal [`Shared::wake`]; until the
-//! consumer thread exists (package P2), the appending thread runs the same consumer code after
-//! each append, under the consumer's own mutex, so there is never a second owner.
+//! code's. Appending threads only encode into the buffer and signal [`Shared::wake`].
+//!
+//! **The consumer thread** (design §6) exists while a run is open: [`Writer::run_started`]
+//! starts it when the process opens its first `af.run` span and [`Writer::run_ended`] stops it
+//! when the last one ends. It waits on one condition with one deadline and wakes when a kernel
+//! thread appends a record, when the stream queue receives a chunk ([`Writer::stream_chunk`],
+//! the hook package P6 fills), or when the deadline passes — the oldest pending record's time
+//! plus `flush_latency_ms`. After each wake it drains the stream queue, writes every full
+//! buffer, and writes the current buffer when the queue is empty or the deadline has passed;
+//! then it recomputes the deadline and sleeps. There is no periodic timer and no polling: a
+//! quiet writer sleeps without a deadline. While no consumer thread runs (before the first
+//! `af.run`, after the last, and in a process that opens none) the appending thread runs the
+//! same consumer code after each append, under the consumer's own mutex, so there is never a
+//! second owner.
+//!
+//! **Bounded shutdown.** Stopping signals the consumer and waits for it at most
+//! [`layout::LOCK_WAIT`] (2 s). A consumer that does not stop in time — a write blocked on the
+//! volume — is abandoned: no other thread writes, seals, compresses or replaces the segment, the
+//! records never written are absent, the lock ends with the process, and the next reader
+//! recovers the flushed prefix.
 //!
 //! **Segment limit.** `segment_max_bytes` bounds the file across every record kind. The last
 //! [`TERMINAL_RESERVE_BYTES`] are kept for terminal records (`problem`, `seal`): past the rest no
@@ -27,6 +44,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant};
 
 use nix::fcntl::FlockArg;
 use serde_json::Value;
@@ -71,6 +89,22 @@ pub enum HookAction {
 /// the protocol's order. A hook that blocks pauses the publisher.
 pub type PublishHook = Arc<dyn Fn(PublishStep) -> HookAction + Send + Sync>;
 
+/// Called by the segment's owner before each `write(2)` with the write's ordinal (1 for the
+/// first): fixtures block it to stall the consumer as a write blocked on the volume would, or
+/// return the error a full quota would give, which fails the write.
+pub type WriteHook = Arc<dyn Fn(u64) -> std::io::Result<()> + Send + Sync>;
+
+/// The writer's clock in unix nanoseconds, injected by fixtures that compare what two runs
+/// recorded; production writers read the monotonic clock from the header's origin.
+pub type ClockHook = Arc<dyn Fn() -> u128 + Send + Sync>;
+
+/// The stream queue of design §7.3, filled by package P6: the consumer drains it at every wake,
+/// before it writes.
+pub trait StreamQueue: Send + Sync {
+    /// Frame and record every queued chunk through `writer`; whether the queue is empty now.
+    fn drain(&self, writer: &Writer) -> bool;
+}
+
 /// Registration of the telemetry directory before the first write (design §6).
 #[derive(Debug, Clone)]
 pub struct Registration {
@@ -98,6 +132,14 @@ pub struct WriterOptions {
     pub redactor: Redactor,
     pub registration: Option<Registration>,
     pub publish_hook: Option<PublishHook>,
+    /// `[telemetry] flush_latency_ms`: the longest a record waits in the buffer while a run is
+    /// open.
+    pub flush_latency_ms: u64,
+    pub write_hook: Option<WriteHook>,
+    pub clock: Option<ClockHook>,
+    /// The segment id, for fixtures that compare what two runs recorded; `None` names a fresh
+    /// one at the first record.
+    pub segment_id: Option<String>,
 }
 
 impl WriterOptions {
@@ -118,6 +160,10 @@ impl WriterOptions {
             redactor: Redactor::for_this_process(),
             registration: None,
             publish_hook: None,
+            flush_latency_ms: defaults.flush_latency_ms,
+            write_hook: None,
+            clock: None,
+            segment_id: None,
         }
     }
 
@@ -127,6 +173,7 @@ impl WriterOptions {
         self.flush_bytes = settings.flush_bytes;
         self.segment_max_bytes = settings.segment_max_bytes;
         self.content_max_blob_bytes = settings.content_max_blob_bytes;
+        self.flush_latency_ms = settings.flush_latency_ms;
         self
     }
 }
@@ -143,6 +190,20 @@ enum State {
     Failed,
     /// Stopped as a killed process would be.
     Crashed,
+    /// The consumer thread did not stop within the bounded shutdown: nothing more is written,
+    /// sealed or replaced by any thread, and the segment is left for the next reader.
+    Abandoned,
+}
+
+/// Who owns the segment's writes now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// No consumer thread: the appending thread runs the consumer code.
+    Inline,
+    /// The consumer thread owns every write.
+    Running,
+    /// The consumer thread is asked to write what is pending and exit.
+    Stopping,
 }
 
 /// The buffer and the in-memory counters, guarded by one mutex. Appending threads hold it only
@@ -168,6 +229,20 @@ struct Pending {
     unwritten: Vec<(ProblemWhat, String)>,
     blobs_in_segment: BTreeSet<String>,
     referenced: BTreeSet<String>,
+    mode: Mode,
+    /// `af.run` spans open in this process: the consumer thread lives while one is.
+    runs_open: u64,
+    /// Records accepted so far; the consumer wakes when it has seen fewer.
+    appends: u64,
+    /// When the oldest record not yet written was accepted.
+    oldest: Option<Instant>,
+    /// Flushes asked for and flushes done: a publication waits for its references.
+    flush_asked: u64,
+    flush_done: u64,
+    /// The stream queue received a chunk since the consumer last drained it.
+    stream_pending: bool,
+    /// The consumer thread has exited.
+    consumer_exited: bool,
 }
 
 /// The consumer's own state: the open file and its lock, and the `segments/` directory it was
@@ -214,14 +289,24 @@ impl Tree {
     }
 }
 
+/// The problem an abandoned consumer leaves.
+pub const ABANDONED: &str = "the telemetry consumer did not stop within 2 s; the segment is \
+                             left unsealed for the next reader to recover";
+
 /// Shared between every handle of one writer.
 pub struct Shared {
     options: WriterOptions,
     clock: Clock,
     pending: Mutex<Pending>,
-    /// Signalled on every append; the consumer thread of P2 waits on it.
+    /// Signalled on every append; the consumer thread waits on it.
     pub wake: Condvar,
+    /// Signalled by the consumer thread after each write and when it exits.
+    done: Condvar,
     consumer: Mutex<Consumer>,
+    stream: Mutex<Option<Arc<dyn StreamQueue>>>,
+    thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// Writes made so far, for the write hook.
+    writes: std::sync::atomic::AtomicU64,
     /// Set once, when the consumer opens the segment.
     tree: OnceLock<Tree>,
 }
@@ -536,12 +621,24 @@ impl Writer {
                     unwritten: Vec::new(),
                     blobs_in_segment: BTreeSet::new(),
                     referenced: BTreeSet::new(),
+                    mode: Mode::Inline,
+                    runs_open: 0,
+                    appends: 0,
+                    oldest: None,
+                    flush_asked: 0,
+                    flush_done: 0,
+                    stream_pending: false,
+                    consumer_exited: true,
                 }),
                 wake: Condvar::new(),
+                done: Condvar::new(),
                 consumer: Mutex::new(Consumer {
                     file: None,
                     segments: None,
                 }),
+                stream: Mutex::new(None),
+                thread: Mutex::new(None),
+                writes: std::sync::atomic::AtomicU64::new(0),
                 tree: OnceLock::new(),
                 options,
             }),
@@ -558,7 +655,17 @@ impl Writer {
 
     /// Unix nanoseconds now on the writer's clock.
     pub fn now_unix_ns(&self) -> u128 {
-        self.shared.clock.now_unix_ns()
+        match &self.shared.options.clock {
+            Some(clock) => clock(),
+            None => self.shared.clock.now_unix_ns(),
+        }
+    }
+
+    fn origin_unix_ns(&self) -> u128 {
+        match &self.shared.options.clock {
+            Some(clock) => clock(),
+            None => self.shared.clock.origin_unix_ns(),
+        }
     }
 
     /// The segment id, once the segment is open.
@@ -594,8 +701,18 @@ impl Writer {
     pub fn failed(&self) -> bool {
         matches!(
             lock(&self.shared.pending).state,
-            State::Failed | State::Crashed
+            State::Failed | State::Crashed | State::Abandoned
         )
+    }
+
+    /// Whether the consumer thread was abandoned at shutdown.
+    pub fn abandoned(&self) -> bool {
+        lock(&self.shared.pending).state == State::Abandoned
+    }
+
+    /// Whether a consumer thread owns the segment's writes now.
+    pub fn consumer_running(&self) -> bool {
+        lock(&self.shared.pending).mode != Mode::Inline
     }
 
     fn header(&self, segment_id: &str) -> Record {
@@ -640,8 +757,8 @@ impl Writer {
             argv,
             cwd,
             host: host_facts(options.layout.root()),
-            started_unix_ns: ns(self.shared.clock.now_unix_ns()),
-            mono_origin_unix_ns: ns(self.shared.clock.origin_unix_ns()),
+            started_unix_ns: ns(self.now_unix_ns()),
+            mono_origin_unix_ns: ns(self.origin_unix_ns()),
             level: options.level,
         })
     }
@@ -652,7 +769,10 @@ impl Writer {
         match pending.state {
             State::Open => true,
             State::Unopened => {
-                let segment_id = new_segment_id(self.shared.clock.now_unix_ns());
+                let segment_id = match &self.shared.options.segment_id {
+                    Some(segment_id) => segment_id.clone(),
+                    None => new_segment_id(self.now_unix_ns()),
+                };
                 let mut header = self.header(&segment_id);
                 let Some(line) = record::encode(&mut header, Counters::default()) else {
                     pending.state = State::Failed;
@@ -687,10 +807,14 @@ impl Writer {
                     }
                 }
                 pending.flush_requested = true;
+                pending.appends += 1;
+                pending.oldest.get_or_insert_with(Instant::now);
                 pending.state = State::Open;
                 true
             }
-            State::Sealing | State::Sealed | State::Failed | State::Crashed => false,
+            State::Sealing | State::Sealed | State::Failed | State::Crashed | State::Abandoned => {
+                false
+            }
         }
     }
 
@@ -795,22 +919,31 @@ impl Writer {
                 pending.state = State::Sealing;
                 pending.flush_requested = true;
             }
+            pending.appends += 1;
+            pending.oldest.get_or_insert_with(Instant::now);
         }
     }
 
     /// The consumer's work: write every full buffer, and the current buffer when `force` or a
     /// flush point asked for it, each with one write of whole lines. Opens the file (and
-    /// registers the directory) at its first write.
+    /// registers the directory) at its first write. Only the segment's owner calls it: the
+    /// consumer thread while one runs, the appending thread otherwise.
     pub fn consume(&self, force: bool) {
         let mut consumer = lock(&self.shared.consumer);
         let (chunks, segment_id) = {
             let mut pending = lock(&self.shared.pending);
-            if matches!(pending.state, State::Failed | State::Crashed) {
+            if matches!(
+                pending.state,
+                State::Failed | State::Crashed | State::Abandoned
+            ) {
                 return;
             }
             let mut chunks: Vec<Vec<u8>> = pending.ready.drain(..).collect();
             if (force || pending.flush_requested) && !pending.buffer.is_empty() {
                 chunks.push(std::mem::take(&mut pending.buffer));
+            }
+            if pending.buffer.is_empty() {
+                pending.oldest = None;
             }
             pending.flush_requested = false;
             (chunks, pending.segment_id.clone())
@@ -826,7 +959,16 @@ impl Writer {
         }
         let file = consumer.file.as_mut().expect("opened above");
         for chunk in chunks {
-            if let Err(error) = file.write_all(&chunk) {
+            let hooked = match &self.shared.options.write_hook {
+                Some(hook) => hook(
+                    self.shared
+                        .writes
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1,
+                ),
+                None => Ok(()),
+            };
+            if let Err(error) = hooked.and_then(|()| file.write_all(&chunk)) {
                 drop(consumer);
                 self.fail(
                     ProblemWhat::Write,
@@ -835,6 +977,234 @@ impl Writer {
                 return;
             }
         }
+    }
+
+    /// After an append: without a consumer thread the appending thread runs the consumer code
+    /// (`flush` at a flush point); with one, the append has already signalled it.
+    fn after_append(&self, flush: bool) {
+        if lock(&self.shared.pending).mode == Mode::Inline {
+            self.consume(flush);
+        }
+    }
+
+    /// Have everything appended so far written, by whoever owns the writes: at once without a
+    /// consumer thread; with one, by asking it and waiting at most [`layout::LOCK_WAIT`].
+    /// Whether it was written.
+    fn flush_now(&self) -> bool {
+        let mut pending = lock(&self.shared.pending);
+        if pending.mode == Mode::Inline {
+            drop(pending);
+            self.consume(true);
+            return true;
+        }
+        pending.flush_asked += 1;
+        let ticket = pending.flush_asked;
+        self.shared.wake.notify_all();
+        let deadline = Instant::now() + layout::LOCK_WAIT;
+        while pending.flush_done < ticket && !pending.consumer_exited {
+            if matches!(
+                pending.state,
+                State::Failed | State::Crashed | State::Abandoned
+            ) {
+                return false;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            pending = self
+                .shared
+                .done
+                .wait_timeout(pending, deadline - now)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        true
+    }
+
+    /// The process opened an `af.run` span: the first one starts the consumer thread, the
+    /// segment's sole owner while a run is open. At `off` there is no writer, so no thread.
+    pub fn run_started(&self) {
+        let mut pending = lock(&self.shared.pending);
+        pending.runs_open += 1;
+        if pending.runs_open != 1
+            || pending.mode != Mode::Inline
+            || !matches!(pending.state, State::Unopened | State::Open)
+        {
+            return;
+        }
+        pending.mode = Mode::Running;
+        pending.consumer_exited = false;
+        drop(pending);
+        let writer = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("af-telemetry".into())
+            .spawn(move || writer.consumer_loop());
+        match spawned {
+            Ok(handle) => *lock(&self.shared.thread) = Some(handle),
+            Err(error) => {
+                {
+                    let mut pending = lock(&self.shared.pending);
+                    pending.mode = Mode::Inline;
+                    pending.consumer_exited = true;
+                }
+                self.problem(
+                    ProblemWhat::Write,
+                    &format!(
+                        "the telemetry consumer thread did not start ({}); the appending \
+                         thread writes instead",
+                        error.kind()
+                    ),
+                );
+            }
+        }
+    }
+
+    /// The process ended an `af.run` span: when it was the last one open, the consumer thread
+    /// is stopped within the bounded shutdown. Whether it stopped (it was abandoned otherwise).
+    pub fn run_ended(&self) -> bool {
+        {
+            let mut pending = lock(&self.shared.pending);
+            pending.runs_open = pending.runs_open.saturating_sub(1);
+            if pending.runs_open > 0 {
+                return true;
+            }
+        }
+        self.stop_consumer()
+    }
+
+    /// The bounded shutdown: signal the consumer thread and wait for it at most
+    /// [`layout::LOCK_WAIT`]; one that does not stop in time is abandoned, and from then on no
+    /// thread writes, seals, compresses or replaces the segment. Whether the writes are the
+    /// appending thread's again (false once abandoned).
+    fn stop_consumer(&self) -> bool {
+        let mut pending = lock(&self.shared.pending);
+        pending.runs_open = 0;
+        if pending.state == State::Abandoned {
+            return false;
+        }
+        if pending.mode == Mode::Inline {
+            return pending.state != State::Abandoned;
+        }
+        pending.mode = Mode::Stopping;
+        self.shared.wake.notify_all();
+        let deadline = Instant::now() + layout::LOCK_WAIT;
+        while !pending.consumer_exited {
+            let now = Instant::now();
+            if now >= deadline {
+                pending.state = State::Abandoned;
+                pending
+                    .unwritten
+                    .push((ProblemWhat::Write, ABANDONED.into()));
+                return false;
+            }
+            pending = self
+                .shared
+                .done
+                .wait_timeout(pending, deadline - now)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        drop(pending);
+        if let Some(handle) = lock(&self.shared.thread).take() {
+            // It has exited: the join returns at once.
+            let _ = handle.join();
+        }
+        true
+    }
+
+    /// Install the stream queue the consumer drains at every wake (package P6).
+    pub fn set_stream_queue(&self, queue: Arc<dyn StreamQueue>) {
+        *lock(&self.shared.stream) = Some(queue);
+    }
+
+    /// The stream queue received a chunk: wake the consumer. Never blocks.
+    pub fn stream_chunk(&self) {
+        lock(&self.shared.pending).stream_pending = true;
+        self.shared.wake.notify_all();
+    }
+
+    /// The consumer thread: one condition, one deadline, no timer and no polling.
+    fn consumer_loop(&self) {
+        let latency = Duration::from_millis(self.shared.options.flush_latency_ms.max(1));
+        let mut seen = 0_u64;
+        loop {
+            // Wait for an append, a stream chunk, a flush request, the stop, or the deadline.
+            let (stopping, asked, due) = {
+                let mut pending = lock(&self.shared.pending);
+                loop {
+                    if matches!(
+                        pending.state,
+                        State::Failed | State::Crashed | State::Abandoned
+                    ) {
+                        self.exit_consumer(pending);
+                        return;
+                    }
+                    let stopping = pending.mode == Mode::Stopping;
+                    let deadline = pending.oldest.map(|oldest| oldest + latency);
+                    let now = Instant::now();
+                    let due = deadline.is_some_and(|deadline| now >= deadline);
+                    let woken = stopping
+                        || pending.appends != seen
+                        || !pending.ready.is_empty()
+                        || pending.flush_asked > pending.flush_done
+                        || pending.stream_pending;
+                    if woken || due {
+                        seen = pending.appends;
+                        pending.stream_pending = false;
+                        break (stopping, pending.flush_asked, due);
+                    }
+                    pending = match deadline {
+                        None => self
+                            .shared
+                            .wake
+                            .wait(pending)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                        Some(deadline) => {
+                            self.shared
+                                .wake
+                                .wait_timeout(pending, deadline - now)
+                                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                .0
+                        }
+                    };
+                }
+            };
+            // Drain the stream queue, then write: the buffer goes when the queue is empty, the
+            // deadline has passed, a flush was asked for, or the consumer is stopping.
+            let stream = lock(&self.shared.stream).clone();
+            let queue_empty = stream.is_none_or(|queue| queue.drain(self));
+            let pending_ask = {
+                let pending = lock(&self.shared.pending);
+                asked > pending.flush_done
+            };
+            self.consume(queue_empty || due || stopping || pending_ask);
+            let pending = {
+                let mut pending = lock(&self.shared.pending);
+                pending.flush_done = pending.flush_done.max(asked);
+                pending
+            };
+            self.shared.done.notify_all();
+            if stopping
+                && pending.ready.is_empty()
+                && pending.buffer.is_empty()
+                && pending.appends == seen
+            {
+                self.exit_consumer(pending);
+                return;
+            }
+        }
+    }
+
+    /// The consumer thread's last act: the writes are the appending thread's again, unless the
+    /// shutdown abandoned it.
+    fn exit_consumer(&self, mut pending: MutexGuard<'_, Pending>) {
+        if pending.state != State::Abandoned {
+            pending.mode = Mode::Inline;
+        }
+        pending.consumer_exited = true;
+        drop(pending);
+        self.shared.done.notify_all();
     }
 
     fn open_file(&self, consumer: &mut Consumer, segment_id: &str) -> Result<(), String> {
@@ -889,9 +1259,10 @@ impl Writer {
         pending.unwritten.push((what, reason));
     }
 
-    /// Write everything buffered now.
+    /// Write everything buffered now (with a consumer thread: have it written, waiting at most
+    /// [`layout::LOCK_WAIT`]).
     pub fn flush(&self) {
-        self.consume(true);
+        self.flush_now();
     }
 
     /// Stop as a killed process would: nothing buffered is written, the lock on the segment
@@ -971,7 +1342,7 @@ impl Writer {
     ) -> Option<T> {
         if contents.is_empty() {
             let value = self.commit(false, |batch| build(batch, &[]));
-            self.consume(flush);
+            self.after_append(flush);
             return value;
         }
         // The directory is registered and the segment open before any blob file is written.
@@ -981,7 +1352,7 @@ impl Writer {
                 return None;
             }
         }
-        self.consume(true);
+        self.flush_now();
         if self.failed() {
             return None;
         }
@@ -1122,7 +1493,9 @@ impl Writer {
         if gc.is_some() && !self.hook(PublishStep::Renamed) {
             return None;
         }
-        self.consume(true);
+        // The references are written before gc.lock is released. A consumer that does not
+        // write them within the bounded wait leaves the blob to its one-hour protection.
+        self.flush_now();
         if gc.is_some() && !self.hook(PublishStep::Flushed) {
             return None;
         }
@@ -1484,12 +1857,18 @@ impl Writer {
     /// Seal the segment at exit: append the seal from the reserve, write the buffer, the `.refs`
     /// manifest, compress and rename. `Ok(None)` when nothing was ever opened.
     pub fn finish(&self, exit: SealExit) -> Result<Option<Sealed>, String> {
+        // A consumer thread still running (a run span never ended) is stopped first, within
+        // the bounded shutdown; an abandoned one leaves the segment unsealed.
+        if !self.stop_consumer() {
+            return Err(ABANDONED.into());
+        }
         let ended = ns(self.now_unix_ns());
         {
             let state = lock(&self.shared.pending).state;
             match state {
                 State::Unopened => return Ok(None),
                 State::Open => {}
+                State::Abandoned => return Err(ABANDONED.into()),
                 State::Failed | State::Crashed | State::Sealing | State::Sealed => {
                     return Err("the segment is not open".into());
                 }

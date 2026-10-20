@@ -1,0 +1,422 @@
+{
+  "schema": "af/telemetry-show@1",
+  "directory": "<root>/xstate/af/telemetry",
+  "index": {
+    "state": "fresh"
+  },
+  "run": {
+    "store_id": "5555555555555555555555555555555555555555555555555555555555555555",
+    "run_id": "task:sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "trace_id": "98700944c22daf247220383e057810d5",
+    "kind": "task",
+    "history": "prefix:2",
+    "missing_ordinals": [],
+    "retained": "retained executions 1–2",
+    "executions": [
+      {
+        "execution_id": "1700000000000-4242-0a1b2c3d",
+        "span_id": "f77c8fd6a3608be7",
+        "ordinal": 1,
+        "store_sequence_at_start": "2",
+        "start_unix_ns": "1700000000003000000",
+        "end_unix_ns": "1700000000021000000",
+        "open": false,
+        "wall_us": 18000,
+        "segment": "sealed",
+        "outcome": "finished"
+      },
+      {
+        "execution_id": "1700000100000-4243-0b1c2d3e",
+        "span_id": "1d20f69c02011cc7",
+        "ordinal": 2,
+        "store_sequence_at_start": "14",
+        "start_unix_ns": "1700000100003000000",
+        "end_unix_ns": "1700000100021000000",
+        "open": false,
+        "wall_us": 18000,
+        "segment": "sealed",
+        "outcome": "finished"
+      }
+    ],
+    "first_start_unix_ns": "1700000000000000000"
+  },
+  "spans": [
+    {
+      "span_id": "287a6a228932e04f",
+      "name": "af.command",
+      "depth": 0,
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "start_offset_us": 0,
+      "total_us": 24000,
+      "self_us": 5000,
+      "status": "ok",
+      "attributes": {
+        "process.exit_code": 0
+      }
+    },
+    {
+      "span_id": "f77c8fd6a3608be7",
+      "parent_span_id": "287a6a228932e04f",
+      "name": "af.run",
+      "depth": 1,
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "start_offset_us": 3000,
+      "total_us": 18000,
+      "self_us": 6000,
+      "status": "ok",
+      "attributes": {
+        "af.execution.ordinal": 1,
+        "af.run.kind": "task",
+        "af.task_id": "golden",
+        "af.epoch": 1,
+        "af.outcome": "finished",
+        "af.usage.chargeable_tokens": "1200"
+      }
+    },
+    {
+      "span_id": "0d9d4d675dbf4c9c",
+      "parent_span_id": "f77c8fd6a3608be7",
+      "name": "af.authority.load",
+      "depth": 2,
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "start_offset_us": 4000,
+      "total_us": 1000,
+      "self_us": 1000,
+      "status": "ok",
+      "attributes": {
+        "af.policy_rev": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "af.pipeline": "fixture/plain",
+        "af.pipeline.digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    },
+    {
+      "span_id": "52406d995ee99656",
+      "parent_span_id": "f77c8fd6a3608be7",
+      "name": "af.plan",
+      "depth": 2,
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "start_offset_us": 6000,
+      "total_us": 1000,
+      "self_us": 1000,
+      "status": "ok",
+      "attributes": {
+        "af.plan_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "af.pipeline": "fixture/plain",
+        "af.node_count": 3
+      }
+    },
+    {
+      "span_id": "9cda8103f9028a17",
+      "parent_span_id": "f77c8fd6a3608be7",
+      "name": "af.node",
+      "depth": 2,
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "start_offset_us": 8000,
+      "total_us": 4000,
+      "self_us": 2000,
+      "status": "ok",
+      "attributes": {
+        "af.node_id": "root.nodes.implement",
+        "af.node.kind": "worker",
+        "af.outcome": "succeeded"
+      }
+    },
+    {
+      "span_id": "c22f6d3f9518b850",
+      "parent_span_id": "9cda8103f9028a17",
+      "name": "af.attempt",
+      "depth": 3,
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "start_offset_us": 9000,
+      "total_us": 2000,
+      "self_us": 2000,
+      "status": "ok",
+      "attributes": {
+        "af.attempt_id": "attempt-1-1",
+        "af.node_id": "root.nodes.implement",
+        "af.worker": "fixture/implementer",
+        "af.provider": "claude-main",
+        "af.provider.kind": "claude",
+        "af.usage.chargeable_tokens": "1200",
+        "af.usage.observation": "complete",
+        "af.outcome": "succeeded"
+      }
+    },
+    {
+      "span_id": "0d6215508bb15d27",
+      "parent_span_id": "f77c8fd6a3608be7",
+      "name": "af.node",
+      "depth": 2,
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "start_offset_us": 13000,
+      "total_us": 5000,
+      "self_us": 3000,
+      "status": "ok",
+      "attributes": {
+        "af.node_id": "root.nodes.check",
+        "af.node.kind": "check",
+        "af.outcome": "succeeded"
+      }
+    },
+    {
+      "span_id": "b4a73c9d4fae596f",
+      "parent_span_id": "0d6215508bb15d27",
+      "name": "af.attempt",
+      "depth": 3,
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "start_offset_us": 14000,
+      "total_us": 1000,
+      "self_us": 1000,
+      "status": "error",
+      "attributes": {
+        "af.attempt_id": "attempt-1-check-1",
+        "af.node_id": "root.nodes.check",
+        "af.usage.chargeable_tokens": "0",
+        "af.usage.observation": "complete",
+        "af.outcome": "failed",
+        "af.failure.class": "failed",
+        "error.type": "failed",
+        "af.failure.reason": "the pagination check failed"
+      }
+    },
+    {
+      "span_id": "51131898ee3f483f",
+      "parent_span_id": "0d6215508bb15d27",
+      "name": "af.attempt",
+      "depth": 3,
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "start_offset_us": 16000,
+      "total_us": 1000,
+      "self_us": 1000,
+      "status": "ok",
+      "attributes": {
+        "af.attempt_id": "attempt-1-check-2",
+        "af.node_id": "root.nodes.check",
+        "af.usage.chargeable_tokens": "0",
+        "af.usage.observation": "complete",
+        "af.outcome": "succeeded"
+      }
+    },
+    {
+      "span_id": "fddac200562a2e14",
+      "parent_span_id": "f77c8fd6a3608be7",
+      "name": "af.node",
+      "depth": 2,
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "start_offset_us": 19000,
+      "total_us": 1000,
+      "self_us": 1000,
+      "status": "ok",
+      "attributes": {
+        "af.node_id": "root.nodes.accept",
+        "af.node.kind": "accept",
+        "af.outcome": "succeeded"
+      }
+    },
+    {
+      "span_id": "b376976c061ba316",
+      "parent_span_id": "287a6a228932e04f",
+      "name": "af.sweep",
+      "depth": 1,
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "start_offset_us": 22000,
+      "total_us": 1000,
+      "self_us": 1000,
+      "status": "ok",
+      "attributes": {
+        "af.sweep.bytes_before": 4096,
+        "af.sweep.bytes_after": 4096,
+        "af.sweep.evicted": 0
+      }
+    },
+    {
+      "span_id": "a7d3150f180de214",
+      "name": "af.command",
+      "depth": 0,
+      "segment_id": "1700000100000-4243-0b1c2d3e",
+      "start_offset_us": 100000000,
+      "total_us": 24000,
+      "self_us": 5000,
+      "status": "ok",
+      "attributes": {
+        "process.exit_code": 0
+      }
+    },
+    {
+      "span_id": "1d20f69c02011cc7",
+      "parent_span_id": "a7d3150f180de214",
+      "name": "af.run",
+      "depth": 1,
+      "segment_id": "1700000100000-4243-0b1c2d3e",
+      "start_offset_us": 100003000,
+      "total_us": 18000,
+      "self_us": 6000,
+      "status": "ok",
+      "attributes": {
+        "af.execution.ordinal": 2,
+        "af.run.kind": "task",
+        "af.task_id": "golden",
+        "af.epoch": 2,
+        "af.outcome": "finished",
+        "af.usage.chargeable_tokens": "1200"
+      }
+    },
+    {
+      "span_id": "6ddae88cc14c3905",
+      "parent_span_id": "1d20f69c02011cc7",
+      "name": "af.authority.load",
+      "depth": 2,
+      "segment_id": "1700000100000-4243-0b1c2d3e",
+      "start_offset_us": 100004000,
+      "total_us": 1000,
+      "self_us": 1000,
+      "status": "ok",
+      "attributes": {
+        "af.policy_rev": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "af.pipeline": "fixture/plain",
+        "af.pipeline.digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    },
+    {
+      "span_id": "34cb8ba70139c94a",
+      "parent_span_id": "1d20f69c02011cc7",
+      "name": "af.plan",
+      "depth": 2,
+      "segment_id": "1700000100000-4243-0b1c2d3e",
+      "start_offset_us": 100006000,
+      "total_us": 1000,
+      "self_us": 1000,
+      "status": "ok",
+      "attributes": {
+        "af.plan_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "af.pipeline": "fixture/plain",
+        "af.node_count": 3
+      }
+    },
+    {
+      "span_id": "d9aea58ec12e75a7",
+      "parent_span_id": "1d20f69c02011cc7",
+      "name": "af.node",
+      "depth": 2,
+      "segment_id": "1700000100000-4243-0b1c2d3e",
+      "start_offset_us": 100008000,
+      "total_us": 4000,
+      "self_us": 2000,
+      "status": "ok",
+      "attributes": {
+        "af.node_id": "root.nodes.implement",
+        "af.node.kind": "worker",
+        "af.outcome": "succeeded"
+      }
+    },
+    {
+      "span_id": "bfd9cfa856685bc2",
+      "parent_span_id": "d9aea58ec12e75a7",
+      "name": "af.attempt",
+      "depth": 3,
+      "segment_id": "1700000100000-4243-0b1c2d3e",
+      "start_offset_us": 100009000,
+      "total_us": 2000,
+      "self_us": 2000,
+      "status": "ok",
+      "attributes": {
+        "af.attempt_id": "attempt-2-1",
+        "af.node_id": "root.nodes.implement",
+        "af.worker": "fixture/implementer",
+        "af.provider": "claude-main",
+        "af.provider.kind": "claude",
+        "af.usage.chargeable_tokens": "1200",
+        "af.usage.observation": "complete",
+        "af.outcome": "succeeded"
+      }
+    },
+    {
+      "span_id": "a416809a8bcdb648",
+      "parent_span_id": "1d20f69c02011cc7",
+      "name": "af.node",
+      "depth": 2,
+      "segment_id": "1700000100000-4243-0b1c2d3e",
+      "start_offset_us": 100013000,
+      "total_us": 5000,
+      "self_us": 3000,
+      "status": "ok",
+      "attributes": {
+        "af.node_id": "root.nodes.check",
+        "af.node.kind": "check",
+        "af.outcome": "succeeded"
+      }
+    },
+    {
+      "span_id": "fdf27aa0c1672bf9",
+      "parent_span_id": "a416809a8bcdb648",
+      "name": "af.attempt",
+      "depth": 3,
+      "segment_id": "1700000100000-4243-0b1c2d3e",
+      "start_offset_us": 100014000,
+      "total_us": 1000,
+      "self_us": 1000,
+      "status": "error",
+      "attributes": {
+        "af.attempt_id": "attempt-2-check-1",
+        "af.node_id": "root.nodes.check",
+        "af.usage.chargeable_tokens": "0",
+        "af.usage.observation": "complete",
+        "af.outcome": "failed",
+        "af.failure.class": "failed",
+        "error.type": "failed",
+        "af.failure.reason": "the pagination check failed"
+      }
+    },
+    {
+      "span_id": "dc3793a57bf2a55f",
+      "parent_span_id": "a416809a8bcdb648",
+      "name": "af.attempt",
+      "depth": 3,
+      "segment_id": "1700000100000-4243-0b1c2d3e",
+      "start_offset_us": 100016000,
+      "total_us": 1000,
+      "self_us": 1000,
+      "status": "ok",
+      "attributes": {
+        "af.attempt_id": "attempt-2-check-2",
+        "af.node_id": "root.nodes.check",
+        "af.usage.chargeable_tokens": "0",
+        "af.usage.observation": "complete",
+        "af.outcome": "succeeded"
+      }
+    },
+    {
+      "span_id": "ceb1159caf6199f3",
+      "parent_span_id": "1d20f69c02011cc7",
+      "name": "af.node",
+      "depth": 2,
+      "segment_id": "1700000100000-4243-0b1c2d3e",
+      "start_offset_us": 100019000,
+      "total_us": 1000,
+      "self_us": 1000,
+      "status": "ok",
+      "attributes": {
+        "af.node_id": "root.nodes.accept",
+        "af.node.kind": "accept",
+        "af.outcome": "succeeded"
+      }
+    },
+    {
+      "span_id": "d4ed3b28514aeaea",
+      "parent_span_id": "a7d3150f180de214",
+      "name": "af.sweep",
+      "depth": 1,
+      "segment_id": "1700000100000-4243-0b1c2d3e",
+      "start_offset_us": 100022000,
+      "total_us": 1000,
+      "self_us": 1000,
+      "status": "ok",
+      "attributes": {
+        "af.sweep.bytes_before": 4096,
+        "af.sweep.bytes_after": 4096,
+        "af.sweep.evicted": 0
+      }
+    }
+  ],
+  "unreadable": []
+}

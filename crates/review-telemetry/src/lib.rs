@@ -5,8 +5,9 @@
 //! A leaf crate: it links nothing in the workspace, and `review-process` never links it
 //! (ADR-0026). The write side — [`record`], [`segment::writer`], [`blob`], [`redact`],
 //! [`level`], [`subscriber`], [`trace`], [`dirs`] — is for every crate that records. The read
-//! side — [`segment::reader`], [`index`] and [`status`] — is linked only by `af telemetry`,
-//! `af storage` and the TUI (clause 1); a source test holds every other crate to that.
+//! side — [`segment::reader`], [`index`], [`status`], [`view`], [`budget`], [`blob::reader`] and
+//! [`blob::collect`] — is linked only by `af telemetry`, `af storage` and the TUI (clause 1); a
+//! source test holds every other crate to that.
 //!
 //! [`Telemetry::start`] is the one entry point of a recording process. At `off` it returns a
 //! handle that touches nothing — no directory, no subscriber; at any other level the segment
@@ -14,6 +15,7 @@
 //! failure is one problem while the run continues (clause 7).
 
 pub mod blob;
+pub mod budget;
 pub mod dirs;
 pub mod index;
 pub mod layout;
@@ -24,6 +26,7 @@ pub mod segment;
 pub mod status;
 pub mod subscriber;
 pub mod trace;
+pub mod view;
 
 use std::path::PathBuf;
 
@@ -48,6 +51,9 @@ pub struct Start {
     pub accounted_unknown: Option<String>,
     pub af_version: String,
     pub af_commit: String,
+    /// Called by the segment's owner before each write (fixtures stall it); `None` in
+    /// production.
+    pub write_hook: Option<segment::writer::WriteHook>,
 }
 
 /// One process's Telemetry.
@@ -75,6 +81,7 @@ impl Telemetry {
             .with_settings(&start.settings);
         options.af_version = start.af_version;
         options.af_commit = start.af_commit;
+        options.write_hook = start.write_hook;
         options.registration = Some(Registration {
             registry: start.registry,
             accounted: start.accounted,

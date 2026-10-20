@@ -41,12 +41,24 @@ mod source;
 fn conflict(message: impl Into<String>) -> StoreError {
     StoreError::Conflict(message.into())
 }
-fn now() -> Result<u64, StoreError> {
+/// The Store's clock, in unix milliseconds: every Task transition's time. A Task writer's
+/// heartbeat judges its lease against the same clock.
+pub fn now() -> Result<u64, StoreError> {
     let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
         .and_then(|n| u64::try_from(n.as_millis()).ok())
         .ok_or_else(|| conflict("Host clock is unavailable"))?;
+    // The kernel's injected clock: a fixture that compares two runs' Store event logs byte for
+    // byte holds every Store time at one instant. Production release binaries never read this
+    // setting; no Worker receives it through the isolated command environment.
+    #[cfg(debug_assertions)]
+    if let Some(fixed) = std::env::var("AF_TEST_CLOCK_FIXED_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        return Ok(fixed);
+    }
     // Deterministic command-path fixtures may choose a coarser observed host-clock boundary so
     // matched per-run economics remain exactly representable. Production release binaries never
     // read this setting; no Worker receives it through the isolated command environment.

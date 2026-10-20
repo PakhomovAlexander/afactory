@@ -1,7 +1,10 @@
 //! The telemetry crate's integration fixtures (design §15 P1, §16 items 3, 5 and 7).
 
 mod blobs;
+mod budget;
+mod consumer;
 mod dirs;
+mod history;
 mod identity;
 mod index;
 mod redaction;

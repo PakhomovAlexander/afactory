@@ -188,6 +188,8 @@ pub struct TaskRuntime<'store, 'host> {
     /// Set when the free-disk floor refused a Worker Attempt (ADR-0144): the run stops like an
     /// interrupted one, nothing is assembled or finished, and the Task stays resumable.
     disk_refusal: Mutex<Option<String>>,
+    /// The run's telemetry spans; recorded only, never read (ADR-0153).
+    telemetry: crate::telemetry::RunTelemetry,
 }
 
 fn envelope(cas: &Cas, id: &str) -> Result<ArtifactEnvelope, String> {
@@ -234,7 +236,11 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         authority: &'host dyn TaskAuthority,
         host: &'host dyn TaskOperatorHost,
     ) -> Result<Self, String> {
+        let telemetry =
+            crate::telemetry::RunTelemetry::open(&store.lock().expect("Task Store"), &lease);
+        let load = telemetry.authority_load();
         let (plan, projection) = {
+            let _loading = load.enter();
             let locked = store.lock().expect("Task Store");
             let plan = locked
                 .check_current_task_plan_for_recording(cas, &lease, authority)
@@ -254,7 +260,17 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
                 "Closed Review Round requires its dedicated Integration phase runtime".into(),
             );
         }
-        Self::from_captured(store, cas, lease, authority, host, plan, projection, None)
+        Self::from_captured(
+            store,
+            cas,
+            lease,
+            authority,
+            host,
+            plan,
+            projection,
+            None,
+            (telemetry, load),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -269,6 +285,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         integration: Option<
             review_store::store::task::review_integration::RegisteredTaskReviewIntegration,
         >,
+        (mut telemetry, load): (crate::telemetry::RunTelemetry, tracing::Span),
     ) -> Result<Self, String> {
         let value = envelope(cas, &plan.compiled_graph_id)?;
         if value.artifact_type != "af/CompiledTask@1" {
@@ -279,6 +296,10 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         if graph.schema != "af.compiled-task/1" {
             return Err("Unsupported compiled Task version".into());
         }
+        if let Some(plan_id) = &projection.plan_id {
+            telemetry.plan(&load, plan_id, &plan, &graph);
+        }
+        drop(load);
         Ok(Self {
             store,
             cas,
@@ -294,6 +315,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             failures: Mutex::new(BTreeMap::new()),
             publication_failures: Mutex::new(BTreeSet::new()),
             disk_refusal: Mutex::new(None),
+            telemetry,
         })
     }
 
@@ -332,6 +354,15 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
     }
 
     pub fn execute(&self) -> Result<RunReport, String> {
+        let executed = self.execute_graph();
+        if let Ok(projection) = self.projection() {
+            self.telemetry
+                .finish(&projection, executed.as_ref().err().map(String::as_str));
+        }
+        executed
+    }
+
+    fn execute_graph(&self) -> Result<RunReport, String> {
         if self.integration.is_some() {
             return Err("Activated Integration runtime can execute only its captured phase".into());
         }
@@ -372,11 +403,11 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
     }
 
     pub fn finish(&self, result_id: &str) -> Result<(), String> {
-        self.store
-            .lock()
-            .expect("Task Store")
+        let mut store = self.store.lock().expect("Task Store");
+        store
             .finish_task(self.cas, &self.lease, result_id, self.authority)
             .map_err(|e| e.to_string())?;
+        crate::telemetry::finished(&store, &self.lease);
         Ok(())
     }
 
@@ -673,6 +704,8 @@ impl TaskRuntime<'_, '_> {
             return Ok(artifact_map(&values));
         }
         let allowance = resolved.allowance.as_ref();
+        let (_, slot) = crate::telemetry::operator_kind(compiled);
+        let node_span = tracing::Span::current();
         let mut last_error = String::new();
         for index in 0..allowance.map_or(1, |a| a.max_attempts) {
             control::check(self.cancellation)?;
@@ -725,6 +758,14 @@ impl TaskRuntime<'_, '_> {
                     return Err(error.to_string());
                 }
             }
+            let attempt_span = match &attempt {
+                Some(attempt) => {
+                    self.telemetry
+                        .attempt(&node_span, &node.id, attempt.id(), slot.as_deref())
+                }
+                None => tracing::Span::none(),
+            };
+            let _attempting = attempt_span.enter();
             let started = SystemTime::now();
             let timer = Instant::now();
             let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -906,6 +947,7 @@ impl TaskRuntime<'_, '_> {
                 }
             });
             let charged = known.unwrap_or(0);
+            let reported = result.usage.clone();
             if attempt.is_none() && (charged != 0 || result.usage_observation.is_some()) {
                 return Err("Pure Task operator reported a paid operation".into());
             }
@@ -958,6 +1000,21 @@ impl TaskRuntime<'_, '_> {
                 {
                     produced = Err(reason);
                 }
+                let class = if refused_input {
+                    "model_refused"
+                } else {
+                    "failed"
+                };
+                crate::telemetry::attempt_end(
+                    &attempt_span,
+                    charged,
+                    reported.as_ref(),
+                    unknown_usage.as_ref(),
+                    produced
+                        .as_ref()
+                        .err()
+                        .map(|reason| (class, reason.as_str())),
+                );
             }
             match produced {
                 Ok((id, values)) => {
@@ -1105,7 +1162,18 @@ impl Dispatch for TaskRuntime<'_, '_> {
     }
 
     fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
-        self.execute_node(node, inputs)
+        let span = self
+            .telemetry
+            .node(&node.id, self.graph.nodes.get(&node.id));
+        let ran = span.in_scope(|| self.execute_node(node, inputs));
+        let refused = self.disk_refusal().is_some() || control::check(self.cancellation).is_err();
+        crate::telemetry::outcome(
+            &span,
+            ran.as_ref()
+                .err()
+                .map(|reason| (if refused { "refused" } else { "failed" }, reason.as_str())),
+        );
+        ran
     }
 
     fn record_outputs(&self, node: &Node, outputs: &ArtifactMap) -> Result<(), String> {

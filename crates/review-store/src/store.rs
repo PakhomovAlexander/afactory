@@ -242,6 +242,27 @@ impl EventStore {
         })
     }
 
+    /// The path of this Store's database file, when it has one: its directory is the Store's
+    /// instance, which Telemetry names by its canonical path (design §5). A read; it changes
+    /// nothing.
+    pub fn database_path(&self) -> Option<std::path::PathBuf> {
+        self.conn
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(std::path::PathBuf::from)
+    }
+
+    /// The highest committed event sequence of `run_id`, `None` before its first event. A read;
+    /// it changes nothing.
+    pub fn latest_run_sequence(&self, run_id: &str) -> Result<Option<u64>, StoreError> {
+        let latest: Option<i64> = self.conn.query_row(
+            "SELECT MAX(sequence) FROM events WHERE run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+        Ok(latest.and_then(|sequence| u64::try_from(sequence).ok()))
+    }
+
     /// Open a second connection to this Store's database file, with the same durability. A
     /// Task writer's heartbeat uses it to observe and renew its own lease while the caller's
     /// connection is busy (ADR-0128). It grants nothing by itself: every append through it

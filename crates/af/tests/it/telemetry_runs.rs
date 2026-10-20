@@ -1,0 +1,1551 @@
+//! Telemetry's kernel integration end to end (design §15 P2): what a Task run records, the
+//! consumer's bounded shutdown, `af telemetry runs`, `show`, `tail` and `gc`, and the telemetry
+//! kind of the Storage Budget — each over a private HOME and private XDG roots.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use serde_json::Value;
+
+use crate::task_gc;
+
+/// A private machine: every root af reads lives below one temporary directory.
+pub(crate) struct Machine {
+    _root: tempfile::TempDir,
+    pub(crate) root: PathBuf,
+}
+
+impl Machine {
+    pub(crate) fn new() -> Self {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        for name in ["home", "config", "xstate", "data", "cache"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        Self {
+            _root: directory,
+            root,
+        }
+    }
+
+    /// The configured telemetry directory.
+    pub(crate) fn telemetry(&self) -> PathBuf {
+        self.root.join("xstate/af/telemetry")
+    }
+
+    /// The directory registry.
+    pub(crate) fn registry(&self) -> PathBuf {
+        self.root.join("xstate/af/telemetry-dirs.v1.json")
+    }
+
+    pub(crate) fn command(&self, cwd: &Path, env: &[(&str, &str)], args: &[&str]) -> Command {
+        let mut command = crate::common::af();
+        command
+            .current_dir(cwd)
+            .env("HOME", self.root.join("home"))
+            .env("XDG_CONFIG_HOME", self.root.join("config"))
+            .env("XDG_STATE_HOME", self.root.join("xstate"))
+            .env("XDG_DATA_HOME", self.root.join("data"))
+            .env("XDG_CACHE_HOME", self.root.join("cache"))
+            .env("AF_SELF_OFFLINE", "1")
+            .env("NO_COLOR", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("AF_VERSION")
+            .env_remove("AF_TELEMETRY__LEVEL")
+            .env_remove("AF_TEST_FREE_BYTES")
+            .env_remove("AF_TEST_TELEMETRY_STALL_AFTER_WRITES")
+            .env_remove("CARGO_TARGET_DIR")
+            .args(args);
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        command
+    }
+
+    pub(crate) fn af(&self, cwd: &Path, env: &[(&str, &str)], args: &[&str]) -> Output {
+        self.command(cwd, env, args).output().unwrap()
+    }
+}
+
+pub(crate) fn text(output: &Output) -> (String, String) {
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+pub(crate) fn json(output: &Output) -> Value {
+    let (stdout, stderr) = text(output);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    serde_json::from_str(stdout.trim()).unwrap_or_else(|_| panic!("{stdout}\n{stderr}"))
+}
+
+/// `af task start --execute` of a Task file in `repo`, with the machine settings `env`.
+fn start(machine: &Machine, repo: &Path, state: &Path, file: &str, env: &[(&str, &str)]) -> Output {
+    machine.af(
+        repo,
+        env,
+        &[
+            "task",
+            "start",
+            "--execute",
+            "--file",
+            file,
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    )
+}
+
+/// Every row of a Store's event log, each column as its text.
+fn events(state: &Path) -> Vec<Vec<String>> {
+    let connection = rusqlite::Connection::open_with_flags(
+        state.join("events.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    let mut statement = connection
+        .prepare(
+            "SELECT run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
+                    causation_id, correlation_id, artifact_refs, payload
+             FROM events ORDER BY run_id, sequence",
+        )
+        .unwrap();
+    statement
+        .query_map([], |row| {
+            Ok((0..11)
+                .map(|index| match row.get_ref(index).unwrap() {
+                    rusqlite::types::ValueRef::Null => "NULL".to_string(),
+                    rusqlite::types::ValueRef::Integer(value) => value.to_string(),
+                    rusqlite::types::ValueRef::Real(value) => value.to_string(),
+                    rusqlite::types::ValueRef::Text(text) => {
+                        String::from_utf8_lossy(text).into_owned()
+                    }
+                    rusqlite::types::ValueRef::Blob(bytes) => format!("{bytes:?}"),
+                })
+                .collect())
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    assert!(
+        Command::new("cp")
+            .arg("-a")
+            .arg(from)
+            .arg(to)
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+/// Every path beneath `root`, relative, sorted.
+fn listing(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            out.push(path.strip_prefix(root).unwrap().display().to_string());
+            if path.is_dir() {
+                pending.push(path);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// §12 and ADR-0153: `af --help`, `af --version` and every read command but `af storage` and
+/// `af telemetry`, at the default level against a fresh state root, leave no telemetry directory
+/// and no registry entry; a Task run at `off` opens nothing either.
+#[test]
+fn telemetry_off_opens_nothing() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let reads: [&[&str]; 12] = [
+        &["--help"],
+        &["--version"],
+        &["--version", "--json"],
+        &["help"],
+        &["help", "telemetry"],
+        &["help", "storage"],
+        &["config", "show"],
+        &["config", "show", "--origin"],
+        &["config", "paths"],
+        &["task", "list", "--state", state.to_str().unwrap()],
+        &["completions", "bash"],
+        &["telemetry", "--help"],
+    ];
+    for args in reads {
+        let _ = machine.af(&repo, &[], args);
+    }
+    let state_root = machine.root.join("xstate/af");
+    let after_reads = listing(&state_root);
+    assert!(
+        after_reads.iter().all(|path| !path.contains("telemetry")),
+        "{after_reads:?}"
+    );
+    assert!(!machine.telemetry().exists() && !machine.registry().exists());
+
+    // A Task run at `off`: no segment, no consumer, no directory, no registry entry.
+    let output = start(
+        &machine,
+        &repo,
+        &state,
+        "gc-older.json",
+        &[("AF_TELEMETRY__LEVEL", "off")],
+    );
+    let (stdout, stderr) = text(&output);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert!(!stderr.contains("telemetry"), "{stderr}");
+    assert!(!machine.telemetry().exists(), "nothing at off");
+    assert!(!machine.registry().exists(), "no registry entry at off");
+    // And a read of what that run left, at the default level, still opens nothing.
+    for args in [
+        vec![
+            "task",
+            "show",
+            "gc-older",
+            "--state",
+            state.to_str().unwrap(),
+        ],
+        vec!["task", "list", "--state", state.to_str().unwrap(), "--json"],
+    ] {
+        assert!(machine.af(&repo, &[], &args).status.success());
+    }
+    assert!(!machine.telemetry().exists() && !machine.registry().exists());
+}
+
+/// `af task show --json` with every wall time taken out: the Attempt walls' start and elapsed.
+fn without_wall_times(mut shown: Value) -> Value {
+    if let Some(walls) = shown.get_mut("attempt_walls").and_then(Value::as_array_mut) {
+        for wall in walls {
+            if let Some(wall) = wall.as_object_mut() {
+                wall.remove("started_unix_ms");
+                wall.remove("elapsed_ms");
+            }
+        }
+    }
+    shown
+}
+
+/// ADR-0153 clause 3 (design §16 item 1): under the kernel's injected clock and a budget with
+/// room enough that the sweep evicts nothing, the same planned Task run at `off` and at
+/// `content` leaves byte-identical Store event logs — the `storage_sweep` records included —
+/// and the same `af task show --json` apart from wall times. Nothing here is normalised: the
+/// clock is the injected one, and the resuming writer's name the injected process id.
+#[test]
+fn telemetry_never_steers() {
+    let machine = Machine::new();
+    let work = machine.root.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let (repo, state) = task_gc::fixture(&work);
+    let clock = [("AF_TEST_CLOCK_FIXED_MS", "1700000000000")];
+    let planned = machine.af(
+        &repo,
+        &clock,
+        &[
+            "task",
+            "start",
+            "--file",
+            "gc-older.json",
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    let planned: Value = serde_json::from_slice(&planned.stdout).unwrap();
+    assert!(planned["plan_id"].is_string(), "{planned}");
+    let pristine = machine.root.join("pristine");
+    copy_tree(&work, &pristine);
+    let mut logs = Vec::new();
+    let mut shown = Vec::new();
+    for level in ["off", "content"] {
+        std::fs::remove_dir_all(&work).unwrap();
+        copy_tree(&pristine, &work);
+        let output = machine.af(
+            &repo,
+            &[
+                clock[0],
+                ("AF_TEST_WRITER_PID", "4242"),
+                ("AF_TELEMETRY__LEVEL", level),
+            ],
+            &[
+                "task",
+                "run",
+                "gc-older",
+                "--execute",
+                "--state",
+                state.to_str().unwrap(),
+                "--json",
+            ],
+        );
+        let (stdout, stderr) = text(&output);
+        let document: Value = serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|_| panic!("{level}: {stdout}\n{stderr}"));
+        assert_eq!(document["phase"]["kind"], "finished", "{level}: {stderr}");
+        assert!(!stderr.contains("telemetry problem"), "{level}: {stderr}");
+        if level == "off" {
+            assert!(!machine.telemetry().exists(), "nothing recorded at off");
+        } else {
+            let runs = json(&machine.af(&repo, &[], &["telemetry", "runs", "--json"]));
+            assert_eq!(runs["runs"].as_array().unwrap().len(), 1, "{runs}");
+        }
+        logs.push(events(&state));
+        shown.push(without_wall_times(json(&machine.af(
+            &repo,
+            &[],
+            &[
+                "task",
+                "show",
+                "gc-older",
+                "--state",
+                state.to_str().unwrap(),
+                "--json",
+            ],
+        ))));
+    }
+    assert!(!logs[0].is_empty());
+    assert_eq!(logs[0], logs[1], "the Store's event log is byte-identical");
+    let sweeps = |log: &[Vec<String>]| {
+        log.iter()
+            .filter(|row| row[10].contains("\"storage_sweep\""))
+            .count()
+    };
+    assert_eq!(sweeps(&logs[0]), sweeps(&logs[1]));
+    assert_eq!(shown[0], shown[1]);
+}
+
+/// ADR-0153 clause 5 (design §16 item 4): with `sink = "none"` and `harness_native = false` a
+/// Task run opens no listener and no connection, however often it is looked at while it runs.
+#[test]
+fn telemetry_default_opens_no_socket() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let mut child = machine
+        .command(
+            &repo,
+            &[("AF_TELEMETRY__LEVEL", "content")],
+            &[
+                "task",
+                "start",
+                "--execute",
+                "--file",
+                "gc-older.json",
+                "--state",
+                state.to_str().unwrap(),
+                "--json",
+            ],
+        )
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id().to_string();
+    let mut looks = 0;
+    let mut sockets = Vec::new();
+    while child.try_wait().unwrap().is_none() {
+        let fds = PathBuf::from(format!("/proc/{pid}/fd"));
+        if fds.is_dir() {
+            for entry in std::fs::read_dir(&fds).into_iter().flatten().flatten() {
+                if let Ok(target) = std::fs::read_link(entry.path())
+                    && target.to_string_lossy().starts_with("socket:")
+                {
+                    sockets.push(target.display().to_string());
+                }
+            }
+            looks += 1;
+        } else if let Ok(output) = Command::new("lsof")
+            .args(["-nP", "-a", "-p", &pid, "-i"])
+            .output()
+        {
+            let listed = String::from_utf8_lossy(&output.stdout).into_owned();
+            if listed.lines().count() > 1 {
+                sockets.push(listed);
+            }
+            looks += 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(child.wait().unwrap().success());
+    assert!(looks > 0, "the run was looked at while it ran");
+    assert!(sockets.is_empty(), "{sockets:?}");
+    // Nothing in the telemetry crate or af's telemetry side names a socket.
+    let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let mut sources = Vec::new();
+    for root in [
+        workspace.join("crates/review-telemetry/src"),
+        workspace.join("crates/af/src/telemetry"),
+    ] {
+        let mut pending = vec![root];
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory)
+                .unwrap()
+                .filter_map(Result::ok)
+            {
+                if entry.path().is_dir() {
+                    pending.push(entry.path());
+                } else {
+                    sources.push(entry.path());
+                }
+            }
+        }
+    }
+    for source in sources {
+        let text = std::fs::read_to_string(&source).unwrap();
+        for socket in [
+            "std::net",
+            "TcpListener",
+            "TcpStream",
+            "UdpSocket",
+            "UnixListener",
+        ] {
+            assert!(!text.contains(socket), "{}: {socket}", source.display());
+        }
+    }
+}
+
+/// Design §5: a resume under a changed configuration after an idle interval is a second
+/// execution of the same run; active time is the two executions' union, execution time their
+/// sum, elapsed time from the first start to the last end, idle gap included.
+#[test]
+fn telemetry_executions_of_a_resume() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    // The first execution is stopped by the free-disk floor before its Worker starts.
+    let first = start(
+        &machine,
+        &repo,
+        &state,
+        "gc-older.json",
+        &[("AF_TEST_FREE_BYTES", "1024")],
+    );
+    assert_eq!(first.status.code(), Some(1), "{}", text(&first).1);
+    std::thread::sleep(std::time::Duration::from_millis(1_500));
+    // The resume runs under another configuration.
+    let resumed = machine.af(
+        &repo,
+        &[("AF_TELEMETRY__FLUSH_BYTES", "8KiB")],
+        &[
+            "task",
+            "run",
+            "gc-older",
+            "--execute",
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    let (stdout, stderr) = text(&resumed);
+    assert!(resumed.status.success(), "{stdout}\n{stderr}");
+    let runs = json(&machine.af(&repo, &[], &["telemetry", "runs", "--json"]));
+    crate::schemas::valid(&crate::schemas::validator("telemetry-runs-v1.json"), &runs);
+    let [run] = runs["runs"].as_array().unwrap().as_slice() else {
+        panic!("one run: {runs}");
+    };
+    assert_eq!(run["task_id"], "gc-older");
+    assert_eq!(run["executions"], 2, "{run}");
+    let executions = run["execution_list"].as_array().unwrap();
+    let ordinals: Vec<u64> = executions
+        .iter()
+        .map(|execution| execution["ordinal"].as_u64().unwrap())
+        .collect();
+    assert_eq!(ordinals, [1, 2], "one lease each");
+    let walls: u64 = executions
+        .iter()
+        .map(|execution| execution["wall_us"].as_u64().unwrap())
+        .sum();
+    let active = run["active_us"].as_u64().unwrap();
+    let execution = run["execution_us"].as_u64().unwrap();
+    let elapsed = run["elapsed_us"].as_u64().unwrap();
+    // Each figure is truncated to microseconds from the nanoseconds it sums.
+    assert!(execution.abs_diff(walls) <= 2, "{execution} {walls}");
+    assert_eq!(active, execution, "no overlap");
+    assert!(elapsed >= active + 1_500_000, "the idle gap: {run}");
+    assert_eq!(run["history"], "prefix:2");
+    assert_eq!(run["retained"], "retained executions 1–2");
+    assert_eq!(run["outcome"], "finished");
+    let first_sequence: u64 = executions[0]["store_sequence_at_start"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let second_sequence: u64 = executions[1]["store_sequence_at_start"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(second_sequence > first_sequence);
+}
+
+/// Design §6, §7.3: a consumer that does not stop — its write blocked, as on a stalled volume —
+/// delays the command's exit by at most the 2 s join; the exit status is the run's, the segment
+/// is left unsealed and unlocked, and the next reader recovers its flushed prefix.
+#[test]
+fn telemetry_stalled_consumer_leaves_recoverable_segment() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let timed = |file: &str, env: &[(&str, &str)]| {
+        let started = std::time::Instant::now();
+        let output = start(&machine, &repo, &state, file, env);
+        (output, started.elapsed())
+    };
+    let (control, normal) = timed("gc-older.json", &[]);
+    assert!(control.status.success(), "{}", text(&control).1);
+    // Every write after the first blocks on the consumer thread; the appending thread's first
+    // write (the header and `af.command`) is the flushed prefix.
+    let (stalled, took) = timed(
+        "gc-newer.json",
+        &[("AF_TEST_TELEMETRY_STALL_AFTER_WRITES", "1")],
+    );
+    let (stdout, stderr) = text(&stalled);
+    assert!(stalled.status.success(), "{stdout}\n{stderr}");
+    let document: Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(document["result"]["acceptance"], "satisfied", "{document}");
+    assert!(
+        stderr.contains("did not stop within 2 s"),
+        "one telemetry problem: {stderr}"
+    );
+    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+    assert!(
+        took < normal + std::time::Duration::from_secs(2 + 8),
+        "the join plus a margin: {took:?} against {normal:?}"
+    );
+    let status = json(&machine.af(&repo, &[], &["telemetry", "status", "--json"]));
+    assert_eq!(status["segments"]["unsealed"], 1, "{status}");
+    assert_eq!(
+        status["segments"]["live"], 0,
+        "the lock ended with the process"
+    );
+    let reindexed = json(&machine.af(&repo, &[], &["telemetry", "reindex", "--json"]));
+    let [recovered] = reindexed["recovered"].as_array().unwrap().as_slice() else {
+        panic!("{reindexed}");
+    };
+    let id = recovered["segment_id"].as_str().unwrap();
+    let records = review_telemetry::segment::reader::read_sealed(
+        &review_telemetry::layout::Layout::new(machine.telemetry()).sealed_segment(id),
+    )
+    .unwrap();
+    assert!(matches!(
+        records.first(),
+        Some(review_telemetry::record::Record::Segment(_))
+    ));
+    assert!(records.iter().any(|record| matches!(
+        record,
+        review_telemetry::record::Record::SpanStart(start) if start.name == "af.command"
+    )));
+    assert!(matches!(
+        records.last(),
+        Some(review_telemetry::record::Record::Seal(seal))
+            if seal.exit == review_telemetry::record::SealExit::Recovered
+    ));
+}
+
+/// ADR-0153 clause 7 (design §16 item 6): a telemetry-only failure — a read-only telemetry
+/// directory, a quota on it, a locked index — is one problem, and the run succeeds.
+#[test]
+fn telemetry_write_failure_is_fail_open() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let problems = |stderr: &str| {
+        stderr
+            .lines()
+            .filter(|line| line.starts_with("af: telemetry problem"))
+            .count()
+    };
+    // A read-only directory (which the superuser could write anyway).
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    if !nix::unistd::geteuid().is_root() {
+        let directory = machine.telemetry();
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let output = start(&machine, &repo, &state, "gc-older.json", &[]);
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (stdout, stderr) = text(&output);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
+        assert_eq!(problems(&stderr), 1, "{stderr}");
+        assert!(!directory.join("v1").exists());
+    }
+
+    // A quota: every write fails.
+    let output = start(
+        &machine,
+        &repo,
+        &state,
+        "gc-newer.json",
+        &[("AF_TEST_TELEMETRY_QUOTA", "1")],
+    );
+    let (stdout, stderr) = text(&output);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(problems(&stderr), 1, "{stderr}");
+    assert!(
+        stderr.contains("quota") || stderr.contains("Disc quota"),
+        "{stderr}"
+    );
+
+    // A locked index: the sweep cannot reclaim its pages, one `problem` record in the segment.
+    let locked = Machine::new();
+    let (repo, state) = task_gc::fixture(&locked.root);
+    assert!(
+        start(&locked, &repo, &state, "gc-older.json", &[])
+            .status
+            .success()
+    );
+    json(&locked.af(&repo, &[], &["telemetry", "status", "--json"]));
+    let layout = review_telemetry::layout::Layout::new(locked.telemetry());
+    assert!(layout.index().exists());
+    let held = review_telemetry::layout::exclusive_within(
+        &layout.index_lock(),
+        std::time::Duration::from_secs(2),
+    )
+    .unwrap()
+    .unwrap();
+    let output = start(&locked, &repo, &state, "gc-newer.json", &[]);
+    drop(held);
+    let (stdout, stderr) = text(&output);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(problems(&stderr), 1, "{stderr}");
+    let status = json(&locked.af(&repo, &[], &["telemetry", "status", "--json"]));
+    let recorded: Vec<&Value> = status["problems"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|problem| problem["what"] == "budget")
+        .collect();
+    assert_eq!(recorded.len(), 1, "{status}");
+    assert_eq!(recorded[0]["segments"], 1);
+    assert!(
+        recorded[0]["reason"].as_str().unwrap().contains("deferred"),
+        "{status}"
+    );
+}
+
+/// ADR-0144's free-disk floor with Telemetry at `content` (design §16 item 6): below
+/// `min_free_bytes` a Worker Attempt, a check and a measurement are refused exactly as without
+/// Telemetry.
+#[test]
+fn insufficient_disk_still_refuses_admission() {
+    let content = [("AF_TELEMETRY__LEVEL", "content")];
+    crate::storage_budget::attempt_refused_below_the_floor(&content);
+    crate::storage_budget::check_refused_below_the_floor(&content);
+    crate::task_experiment::measurement_refused_below_the_floor(&content);
+}
+
+/// The telemetry kind of `af storage --json`, by directory and segment.
+fn telemetry_entries(document: &Value) -> Vec<Value> {
+    document["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["kind"] == "telemetry")
+        .cloned()
+        .collect()
+}
+
+/// Every file beneath `root`, last modified `age` ago.
+fn age(root: &Path, age: std::time::Duration) {
+    let when = std::time::SystemTime::now() - age;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(Result::ok)
+        {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                std::fs::File::open(&path)
+                    .unwrap()
+                    .set_modified(when)
+                    .unwrap();
+            }
+        }
+    }
+}
+
+/// Design §6: every directory Telemetry has written is registered, and `af storage` inventories
+/// and prunes each one whatever the current level or `dir` — written to A, switched to B, then
+/// with Telemetry `off`. A registered directory that no longer exists is reported and dropped by
+/// an applied prune.
+#[test]
+fn telemetry_dirs_registry_reaches_every_directory() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let a = machine.root.join("telemetry-a");
+    let b = machine.root.join("telemetry-b");
+    for (file, directory) in [("gc-older.json", &a), ("gc-newer.json", &b)] {
+        let output = start(
+            &machine,
+            &repo,
+            &state,
+            file,
+            &[("AF_TELEMETRY__DIR", directory.to_str().unwrap())],
+        );
+        assert!(output.status.success(), "{}", text(&output).1);
+    }
+    let registry: Value =
+        serde_json::from_slice(&std::fs::read(machine.registry()).unwrap()).unwrap();
+    let registered: Vec<&str> = registry["dirs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        registered,
+        [a.to_str().unwrap(), b.to_str().unwrap()],
+        "{registry}"
+    );
+    let off = [("AF_TELEMETRY__LEVEL", "off")];
+    let shown = json(&machine.af(&repo, &off, &["storage", "--json"]));
+    crate::schemas::valid(&crate::schemas::validator("storage-v2.json"), &shown);
+    let entries = telemetry_entries(&shown);
+    for directory in [&a, &b] {
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry["directory"] == directory.to_str().unwrap()
+                    && entry["state"] == "sealed"),
+            "{}: {entries:?}",
+            directory.display()
+        );
+    }
+    // Old enough to collect: an applied prune with Telemetry off takes them from both.
+    age(&a, std::time::Duration::from_secs(40 * 86_400));
+    age(&b, std::time::Duration::from_secs(40 * 86_400));
+    let pruned = json(&machine.af(
+        &repo,
+        &[off[0], ("AF_STORAGE__KEEP_DAYS", "14")],
+        &["storage", "prune", "--apply", "--json"],
+    ));
+    crate::schemas::valid(&crate::schemas::validator("storage-prune-v2.json"), &pruned);
+    for directory in [&a, &b] {
+        assert!(
+            pruned["removals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|removal| {
+                    removal["kind"] == "telemetry"
+                        && removal["rule"] == "collection"
+                        && removal["path"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with(directory.to_str().unwrap())
+                }),
+            "{}: {pruned}",
+            directory.display()
+        );
+    }
+    // A registered directory that no longer exists: reported, then dropped by a prune.
+    std::fs::remove_dir_all(&a).unwrap();
+    let shown = json(&machine.af(&repo, &off, &["storage", "--json"]));
+    assert!(
+        shown["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|problem| problem["path"] == a.to_str().unwrap()),
+        "{shown}"
+    );
+    let pruned = json(&machine.af(&repo, &off, &["storage", "prune", "--apply", "--json"]));
+    assert_eq!(
+        pruned["telemetry"]["registry_dropped"],
+        serde_json::json!([a.to_str().unwrap()])
+    );
+    let registry: Value =
+        serde_json::from_slice(&std::fs::read(machine.registry()).unwrap()).unwrap();
+    assert_eq!(registry["dirs"].as_array().unwrap().len(), 1, "{registry}");
+}
+
+// ------------------------------------------------------------------------------------------
+// One recorded fixture run, and the four commands' goldens.
+
+const GOLDEN_STORE: &str = "5555555555555555555555555555555555555555555555555555555555555555";
+const GOLDEN_RUN: &str =
+    "task:sha256:7777777777777777777777777777777777777777777777777777777777777777";
+
+/// A writer whose clock is injected — each reading one millisecond after the last, from
+/// `start_ms` — with a fixed segment id, argv and working directory: what it records is the
+/// same on every machine.
+fn golden_writer(
+    root: &Path,
+    segment: &str,
+    start_ms: u64,
+) -> review_telemetry::segment::writer::Writer {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let clock = Arc::new(AtomicU64::new(start_ms * 1_000_000));
+    let mut options = review_telemetry::segment::writer::WriterOptions::new(
+        root,
+        review_telemetry::level::Level::Spans,
+    );
+    options.argv = vec!["af".into(), "task".into(), "run".into(), "golden".into()];
+    options.cwd = PathBuf::from("/work");
+    options.af_version = "0.0.0-golden".into();
+    options.af_commit = "0123456789ab".into();
+    options.redactor = review_telemetry::redact::Redactor::new();
+    options.segment_id = Some(segment.into());
+    options.clock = Some(Arc::new(move || {
+        u128::from(clock.fetch_add(1_000_000, Ordering::SeqCst))
+    }));
+    review_telemetry::segment::writer::Writer::new(options).unwrap()
+}
+
+fn digest(fill: char) -> String {
+    format!("sha256:{}", fill.to_string().repeat(64))
+}
+
+/// One execution of the golden run, as the Task runtime records it: `af.command` >
+/// `af.run` > `af.authority.load`, `af.plan` (with its node records), `af.node` > `af.attempt`
+/// (one failed Attempt and its retry), then `af.sweep` under the command. `between` runs after
+/// each node, while the segment is live.
+fn golden_execution(
+    root: &Path,
+    segment: &str,
+    start_ms: u64,
+    ordinal: u64,
+    between: &mut dyn FnMut(&review_telemetry::segment::writer::Writer),
+) {
+    execution_in_store(root, GOLDEN_STORE, segment, start_ms, ordinal, between);
+}
+
+/// [`golden_execution`] of the golden run id in the Store `store`.
+fn execution_in_store(
+    root: &Path,
+    store: &str,
+    segment: &str,
+    start_ms: u64,
+    ordinal: u64,
+    between: &mut dyn FnMut(&review_telemetry::segment::writer::Writer),
+) {
+    use review_telemetry::record::{Attrs, Node, SealExit, SpanKind, SpanStatus};
+    let writer = golden_writer(root, segment, start_ms);
+    let execution = review_telemetry::trace::Execution {
+        store_id: store.into(),
+        run_id: GOLDEN_RUN.into(),
+        execution_id: segment.into(),
+        ordinal,
+        store_sequence_at_start: 2 + 12 * (ordinal - 1),
+    };
+    let trace = execution.trace_id();
+    let span = |name: &str, parent: &str, attrs: Attrs| {
+        writer
+            .span_start(Some(&trace), Some(parent), name, SpanKind::Internal, attrs)
+            .unwrap()
+    };
+    let command = writer
+        .span_start(
+            None,
+            None,
+            "af.command",
+            SpanKind::Internal,
+            Attrs::new().text("process.command", "af"),
+        )
+        .unwrap();
+    let run = span(
+        "af.run",
+        &command,
+        execution
+            .attributes()
+            .enumerated("af.run.kind", "task")
+            .text("af.task_id", "golden")
+            .int("af.epoch", i64::try_from(ordinal).unwrap()),
+    );
+    let load = span("af.authority.load", &run, Attrs::new());
+    writer.span_end(
+        &load,
+        SpanStatus::Ok,
+        Attrs::new()
+            .id("af.policy_rev", digest('1'))
+            .text("af.pipeline", "fixture/plain")
+            .id("af.pipeline.digest", digest('2')),
+        2,
+    );
+    let plan = span(
+        "af.plan",
+        &run,
+        Attrs::new()
+            .id("af.plan_digest", digest('3'))
+            .text("af.pipeline", "fixture/plain")
+            .int("af.node_count", 3),
+    );
+    for (node, kind, package, depends_on) in [
+        (
+            "root.nodes.implement",
+            "worker",
+            Some("fixture/implementer"),
+            vec![],
+        ),
+        (
+            "root.nodes.check",
+            "check",
+            None,
+            vec!["root.nodes.implement"],
+        ),
+        (
+            "root.nodes.accept",
+            "accept",
+            None,
+            vec!["root.nodes.check", "root.nodes.implement"],
+        ),
+    ] {
+        writer.node(Node {
+            seq: 0,
+            schema: String::new(),
+            execution_id: segment.into(),
+            plan_digest: digest('3'),
+            node_id: node.into(),
+            kind: kind.into(),
+            package: package.map(str::to_string),
+            depends_on: depends_on.into_iter().map(str::to_string).collect(),
+            expected_nodes: 3,
+        });
+    }
+    writer.span_end(&plan, SpanStatus::Ok, Attrs::new(), 2);
+    let usage = |charge: &str| {
+        Attrs::new()
+            .decimal("af.usage.input_tokens", "1000")
+            .decimal("af.usage.output_tokens", "200")
+            .decimal("af.usage.chargeable_tokens", charge)
+            .text("af.usage.observation", "complete")
+    };
+    // The implementer: one Attempt.
+    let implement = span(
+        "af.node",
+        &run,
+        Attrs::new()
+            .text("af.node_id", "root.nodes.implement")
+            .text("af.node.kind", "worker"),
+    );
+    let attempt = span(
+        "af.attempt",
+        &implement,
+        Attrs::new()
+            .text("af.attempt_id", format!("attempt-{ordinal}-1"))
+            .text("af.node_id", "root.nodes.implement")
+            .text("af.worker", "fixture/implementer")
+            .text("af.provider", "claude-main")
+            .text("af.provider.kind", "claude"),
+    );
+    writer.event(
+        &attempt,
+        "af.note",
+        Attrs::new().text("af.note", "the Worker replied"),
+    );
+    writer.span_end(
+        &attempt,
+        SpanStatus::Ok,
+        usage("1200").text("af.outcome", "succeeded"),
+        3,
+    );
+    writer.span_end(
+        &implement,
+        SpanStatus::Ok,
+        Attrs::new().text("af.outcome", "succeeded"),
+        2,
+    );
+    between(&writer);
+    // The check: a failed Attempt, then its retry.
+    let check = span(
+        "af.node",
+        &run,
+        Attrs::new()
+            .text("af.node_id", "root.nodes.check")
+            .text("af.node.kind", "check"),
+    );
+    for (index, failed) in [(1, true), (2, false)] {
+        let attempt = span(
+            "af.attempt",
+            &check,
+            Attrs::new()
+                .text("af.attempt_id", format!("attempt-{ordinal}-check-{index}"))
+                .text("af.node_id", "root.nodes.check"),
+        );
+        let ended = Attrs::new()
+            .decimal("af.usage.chargeable_tokens", "0")
+            .text("af.usage.observation", "complete");
+        if failed {
+            writer.span_end(
+                &attempt,
+                SpanStatus::Error,
+                ended
+                    .text("af.outcome", "failed")
+                    .text("af.failure.class", "failed")
+                    .text("error.type", "failed")
+                    .text("af.failure.reason", "the pagination check failed"),
+                3,
+            );
+        } else {
+            writer.span_end(
+                &attempt,
+                SpanStatus::Ok,
+                ended.text("af.outcome", "succeeded"),
+                3,
+            );
+        }
+    }
+    writer.span_end(
+        &check,
+        SpanStatus::Ok,
+        Attrs::new().text("af.outcome", "succeeded"),
+        2,
+    );
+    between(&writer);
+    let accept = span(
+        "af.node",
+        &run,
+        Attrs::new()
+            .text("af.node_id", "root.nodes.accept")
+            .text("af.node.kind", "accept"),
+    );
+    writer.span_end(
+        &accept,
+        SpanStatus::Ok,
+        Attrs::new().text("af.outcome", "succeeded"),
+        2,
+    );
+    writer.span_end(
+        &run,
+        SpanStatus::Ok,
+        Attrs::new()
+            .text("af.outcome", "finished")
+            .decimal("af.usage.chargeable_tokens", "1200"),
+        1,
+    );
+    let sweep = writer
+        .span_start(
+            None,
+            Some(&command),
+            "af.sweep",
+            SpanKind::Internal,
+            Attrs::new(),
+        )
+        .unwrap();
+    writer.span_end(
+        &sweep,
+        SpanStatus::Ok,
+        Attrs::new()
+            .int("af.sweep.bytes_before", 4096)
+            .int("af.sweep.bytes_after", 4096)
+            .int("af.sweep.evicted", 0),
+        1,
+    );
+    writer.span_end(
+        &command,
+        SpanStatus::Ok,
+        Attrs::new().int("process.exit_code", 0),
+        0,
+    );
+    between(&writer);
+    writer.finish(SealExit::Ok).unwrap();
+}
+
+fn golden_directory() -> PathBuf {
+    let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    workspace.join("crates/af/tests/it/telemetry_golden")
+}
+
+/// Compare `actual` with the golden `name`; `AF_UPDATE_TELEMETRY_GOLDEN=1` rewrites it.
+fn golden(name: &str, actual: &str) {
+    let path = golden_directory().join(name);
+    if std::env::var_os("AF_UPDATE_TELEMETRY_GOLDEN").is_some() {
+        std::fs::write(&path, actual).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    assert_eq!(actual, expected, "{name} differs from its golden");
+}
+
+/// A document's absolute paths below the machine as `<root>`; with `machine_bytes`, every
+/// allocated byte count and modification time as `<n>` (they are the file system's).
+fn normalized(document: &Value, root: &Path, machine_bytes: bool) -> String {
+    fn walk(value: &mut Value, root: &str, machine_bytes: bool) {
+        match value {
+            Value::String(text) => *text = text.replace(root, "<root>"),
+            Value::Array(items) => items
+                .iter_mut()
+                .for_each(|item| walk(item, root, machine_bytes)),
+            Value::Object(members) => {
+                for (key, member) in members.iter_mut() {
+                    let machine = matches!(
+                        key.as_str(),
+                        "bytes"
+                            | "total_before"
+                            | "total_after"
+                            | "storage_total_before"
+                            | "storage_total_after"
+                            | "temporary_bytes"
+                            | "blob_bytes"
+                            | "index_bytes"
+                            | "last_use_unix_ms"
+                    );
+                    if machine_bytes && machine && member.is_u64() {
+                        *member = Value::String("<n>".into());
+                    } else {
+                        walk(member, root, machine_bytes);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut document = document.clone();
+    walk(&mut document, &root.display().to_string(), machine_bytes);
+    serde_json::to_string_pretty(&document).unwrap() + "\n"
+}
+
+/// Design §10: `runs`, `show`, `tail` and `gc` over one recorded fixture run of two executions,
+/// each in text and as its versioned document, against goldens; every document matches its
+/// schema and refuses a member its schema does not name.
+#[test]
+fn telemetry_commands_match_their_goldens() {
+    let machine = Machine::new();
+    let root = machine.telemetry();
+    golden_execution(
+        &root,
+        "1700000000000-4242-0a1b2c3d",
+        1_700_000_000_000,
+        1,
+        &mut |_| {},
+    );
+
+    // `tail` follows the second execution while it is written, and exits at its seal: it is
+    // started once the segment is live and has printed its first line before the rest is
+    // written.
+    let (sender, received) = std::sync::mpsc::channel::<String>();
+    let mut tail: Option<std::process::Child> = None;
+    let mut tailed = String::new();
+    golden_execution(
+        &root,
+        "1700000100000-4243-0b1c2d3e",
+        1_700_000_100_000,
+        2,
+        &mut |writer| {
+            writer.flush();
+            if tail.is_some() {
+                return;
+            }
+            let mut child = machine
+                .command(&machine.root, &[], &["telemetry", "tail", "--json"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                use std::io::BufRead as _;
+                for line in std::io::BufReader::new(stdout).lines() {
+                    if sender.send(line.unwrap()).is_err() {
+                        break;
+                    }
+                }
+            });
+            let first = received
+                .recv_timeout(std::time::Duration::from_secs(60))
+                .expect("tail prints the live segment's first span end");
+            tailed.push_str(&first);
+            tailed.push('\n');
+            tail = Some(child);
+        },
+    );
+    drop(sender);
+    while let Ok(line) = received.recv_timeout(std::time::Duration::from_secs(60)) {
+        tailed.push_str(&line);
+        tailed.push('\n');
+    }
+    let tail = tail.unwrap().wait_with_output().unwrap();
+    assert!(tail.status.success(), "{}", text(&tail).1);
+    let tail_schema = crate::schemas::validator("telemetry-tail-v1.json");
+    for line in tailed.lines() {
+        let value: Value = serde_json::from_str(line).unwrap();
+        crate::schemas::valid(&tail_schema, &value);
+    }
+    golden("tail.jsonl", &tailed);
+
+    let at = &machine.root;
+    let runs = json(&machine.af(at, &[], &["telemetry", "runs", "--json"]));
+    crate::schemas::valid(&crate::schemas::validator("telemetry-runs-v1.json"), &runs);
+    golden("runs.json", &normalized(&runs, &machine.root, false));
+    golden(
+        "runs.txt",
+        &text(&machine.af(at, &[], &["telemetry", "runs"])).0,
+    );
+    let show = json(&machine.af(at, &[], &["telemetry", "show", GOLDEN_RUN, "--json"]));
+    crate::schemas::valid(&crate::schemas::validator("telemetry-show-v1.json"), &show);
+    golden("show.json", &normalized(&show, &machine.root, false));
+    golden(
+        "show.txt",
+        &text(&machine.af(at, &[], &["telemetry", "show", GOLDEN_RUN])).0,
+    );
+    golden(
+        "show-attempt.txt",
+        &text(&machine.af(
+            at,
+            &[],
+            &[
+                "telemetry",
+                "show",
+                GOLDEN_RUN,
+                "--attempt",
+                "attempt-2-check-1",
+            ],
+        ))
+        .0,
+    );
+    golden(
+        "show-depth.txt",
+        &text(&machine.af(at, &[], &["telemetry", "show", GOLDEN_RUN, "--depth", "2"])).0,
+    );
+    let attempt = show["spans"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|span| span["attributes"]["af.attempt_id"] == "attempt-1-1")
+        .unwrap()["span_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let one = json(&machine.af(
+        at,
+        &[],
+        &[
+            "telemetry",
+            "show",
+            GOLDEN_RUN,
+            "--span",
+            &attempt,
+            "--json",
+        ],
+    ));
+    crate::schemas::valid(&crate::schemas::validator("telemetry-show-v1.json"), &one);
+    golden("show-span.json", &normalized(&one, &machine.root, false));
+    let gc = json(&machine.af(at, &[], &["telemetry", "gc", "--json"]));
+    crate::schemas::valid(&crate::schemas::validator("telemetry-gc-v1.json"), &gc);
+    golden("gc.json", &normalized(&gc, &machine.root, true));
+
+    // Every document refuses a member its schema does not name.
+    for (schema, document, pointer) in [
+        ("telemetry-runs-v1.json", &runs, "/runs/0"),
+        ("telemetry-show-v1.json", &show, "/spans/0"),
+        ("telemetry-show-v1.json", &show, "/run"),
+        ("telemetry-gc-v1.json", &gc, ""),
+    ] {
+        let mut extended = document.clone();
+        extended
+            .pointer_mut(pointer)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .insert("unnamed".into(), Value::from(1));
+        assert!(
+            !crate::schemas::validator(schema).is_valid(&extended),
+            "{schema} {pointer}"
+        );
+    }
+    // An unknown run exits 1 naming it; a run two Stores share asks for `--store`.
+    let unknown = machine.af(at, &[], &["telemetry", "show", "task:none"]);
+    assert_eq!(unknown.status.code(), Some(1));
+    assert!(text(&unknown).1.contains("unknown run task:none"));
+}
+
+/// `af telemetry gc` lists exactly what `af storage` lists for the kind `telemetry`, and with
+/// `--apply` removes nothing of another kind.
+#[test]
+fn telemetry_gc_lists_what_storage_lists() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    for file in ["gc-older.json", "gc-newer.json"] {
+        assert!(start(&machine, &repo, &state, file, &[]).status.success());
+    }
+    let storage = json(&machine.af(&repo, &[], &["storage", "--json"]));
+    let gc = json(&machine.af(&repo, &[], &["telemetry", "gc", "--json"]));
+    crate::schemas::valid(&crate::schemas::validator("telemetry-gc-v1.json"), &gc);
+    assert_eq!(
+        gc["entries"].as_array().unwrap(),
+        &telemetry_entries(&storage)
+    );
+    assert_eq!(gc["applied"], false);
+    let tasks_before = json(&machine.af(
+        &repo,
+        &[],
+        &["task", "list", "--state", state.to_str().unwrap(), "--json"],
+    ));
+    // Everything old enough, collection by age on: only telemetry goes.
+    age(
+        &machine.telemetry(),
+        std::time::Duration::from_secs(40 * 86_400),
+    );
+    let applied = json(&machine.af(
+        &repo,
+        &[("AF_STORAGE__KEEP_DAYS", "1")],
+        &["telemetry", "gc", "--apply", "--json"],
+    ));
+    crate::schemas::valid(&crate::schemas::validator("telemetry-gc-v1.json"), &applied);
+    let removals = applied["removals"].as_array().unwrap();
+    assert_eq!(removals.len(), 2, "{applied}");
+    assert!(
+        removals
+            .iter()
+            .all(|removal| removal["kind"] == "telemetry" && removal["rule"] == "collection")
+    );
+    let tasks_after = json(&machine.af(
+        &repo,
+        &[],
+        &["task", "list", "--state", state.to_str().unwrap(), "--json"],
+    ));
+    assert_eq!(tasks_before, tasks_after, "nothing of another kind");
+    let (stdout, _) = text(&machine.af(&repo, &[], &["telemetry", "gc"]));
+    assert!(stdout.contains("[telemetry] max_bytes"), "{stdout}");
+}
+
+/// On the Task fixture at `spans` (design §16): `af telemetry runs` lists the run with its
+/// execution, and `show` prints the tree `af.command > af.run > af.authority.load, af.plan,
+/// af.node > af.attempt` and the command's `af.sweep`, every span with total and self time and
+/// every span of the run naming its Store, run, kind and execution; `af.plan`'s node records
+/// cover the plan.
+#[test]
+fn telemetry_task_run_records_its_span_tree() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let output = start(&machine, &repo, &state, "gc-older.json", &[]);
+    assert!(output.status.success(), "{}", text(&output).1);
+    let runs = json(&machine.af(&repo, &[], &["telemetry", "runs", "--json"]));
+    let [run] = runs["runs"].as_array().unwrap().as_slice() else {
+        panic!("{runs}");
+    };
+    assert_eq!(run["kind"], "task");
+    assert_eq!(run["task_id"], "gc-older");
+    assert_eq!(run["executions"], 1);
+    assert_eq!(run["outcome"], "finished");
+    assert_eq!(run["history"], "prefix:1");
+    assert_eq!(run["coverage"], "complete");
+    let run_id = run["run_id"].as_str().unwrap();
+    assert!(run_id.starts_with("task:sha256:"), "{run_id}");
+    let show = json(&machine.af(&repo, &[], &["telemetry", "show", run_id, "--json"]));
+    crate::schemas::valid(&crate::schemas::validator("telemetry-show-v1.json"), &show);
+    let spans = show["spans"].as_array().unwrap();
+    let tree: Vec<(u64, &str)> = spans
+        .iter()
+        .map(|span| {
+            (
+                span["depth"].as_u64().unwrap(),
+                span["name"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(tree[0], (0, "af.command"), "{tree:?}");
+    assert_eq!(tree[1], (1, "af.run"), "{tree:?}");
+    assert_eq!(tree[2], (2, "af.authority.load"), "{tree:?}");
+    assert_eq!(tree[3], (2, "af.plan"), "{tree:?}");
+    assert_eq!(*tree.last().unwrap(), (1, "af.sweep"), "{tree:?}");
+    let nodes = tree
+        .iter()
+        .filter(|(depth, name)| *depth == 2 && *name == "af.node")
+        .count();
+    let attempts = tree
+        .iter()
+        .filter(|(depth, name)| *depth == 3 && *name == "af.attempt")
+        .count();
+    assert!(nodes >= 5 && attempts >= 2, "{tree:?}");
+    for span in spans {
+        assert_eq!(span["status"], "ok", "{span}");
+        assert!(
+            span["total_us"].is_u64() && span["self_us"].is_u64(),
+            "{span}"
+        );
+        assert!(
+            span["self_us"].as_u64() <= span["total_us"].as_u64(),
+            "{span}"
+        );
+    }
+    let worker = spans
+        .iter()
+        .find(|span| span["attributes"]["af.worker"] == "fixture/implementer")
+        .unwrap_or_else(|| panic!("an implementer Attempt: {show}"));
+    assert_eq!(worker["name"], "af.attempt");
+    assert_eq!(worker["attributes"]["af.usage.observation"], "complete");
+    assert!(worker["attributes"]["af.usage.chargeable_tokens"].is_string());
+    let run_span = &spans[1]["attributes"];
+    assert!(
+        run_span["af.policy_rev"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert_eq!(run_span["af.pipeline"], "fixture/plain");
+    // Every span of the run names its Store, run, kind and execution: read through `--span`.
+    let execution = run["execution_list"][0]["execution_id"].as_str().unwrap();
+    for span in spans
+        .iter()
+        .skip(1)
+        .filter(|span| span["name"] != "af.sweep")
+    {
+        let one = json(&machine.af(
+            &repo,
+            &[],
+            &[
+                "telemetry",
+                "show",
+                run_id,
+                "--span",
+                span["span_id"].as_str().unwrap(),
+                "--json",
+            ],
+        ));
+        let attributes = &one["spans"][0]["attributes"];
+        assert_eq!(attributes["af.run_id"], run_id, "{one}");
+        assert_eq!(attributes["af.store_id"], run["store_id"], "{one}");
+        assert_eq!(attributes["af.run.kind"], "task", "{one}");
+        assert_eq!(attributes["af.execution_id"], execution, "{one}");
+    }
+    // The command names the run it worked on, once known.
+    assert_eq!(spans[0]["attributes"]["process.exit_code"], 0);
+    // The plan's node records: one per compiled node, each with the expected count.
+    let mut index = review_telemetry::index::Index::open(&review_telemetry::layout::Layout::new(
+        machine.telemetry(),
+    ))
+    .unwrap();
+    index.ingest().unwrap();
+    let (records, expected): (i64, i64) = index
+        .connection()
+        .query_row(
+            "SELECT count(*), max(expected_nodes) FROM nodes",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(records, expected);
+    assert_eq!(records, 6, "root.inputs and the five plan nodes");
+}
+
+/// Design §6 and §16: `af telemetry tail`, run against a live Task run, prints each span end
+/// within `flush_latency_ms` of its creation, and exits when the writer seals.
+#[test]
+fn telemetry_tail_follows_a_live_run_within_the_flush_latency() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let latency_ms: u128 = 1_000;
+    let mut tail = machine
+        .command(&repo, &[], &["telemetry", "tail", "--json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = tail.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead as _;
+        let mut lines = Vec::new();
+        for line in std::io::BufReader::new(stdout).lines() {
+            let arrived = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            lines.push((arrived, line.unwrap()));
+        }
+        lines
+    });
+    // Let tail start and look before the run opens its segment.
+    std::thread::sleep(std::time::Duration::from_millis(1_500));
+    let output = start(&machine, &repo, &state, "gc-older.json", &[]);
+    assert!(output.status.success(), "{}", text(&output).1);
+    let started = std::time::Instant::now();
+    while tail.try_wait().unwrap().is_none() {
+        if started.elapsed() > std::time::Duration::from_secs(60) {
+            let _ = tail.kill();
+            panic!("tail did not exit at the seal");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(tail.wait().unwrap().success());
+    let lines = reader.join().unwrap();
+    let ends: Vec<(u128, Value)> = lines
+        .into_iter()
+        .map(|(arrived, line)| (arrived, serde_json::from_str::<Value>(&line).unwrap()))
+        .filter(|(_, line)| line["record"] == "span_end")
+        .collect();
+    assert!(
+        ends.iter().any(|(_, line)| line["span"] == "af.attempt"),
+        "{ends:?}"
+    );
+    // The records made while the run was open (everything before `af.run` ends).
+    let run_end = ends
+        .iter()
+        .position(|(_, line)| line["span"] == "af.run")
+        .unwrap_or_else(|| panic!("{ends:?}"));
+    for (arrived, line) in &ends[..=run_end] {
+        let created: u128 = line["time_unix_ns"].as_str().unwrap().parse().unwrap();
+        let waited = arrived.saturating_sub(created) / 1_000_000;
+        assert!(
+            waited < latency_ms,
+            "{} visible {waited} ms after its creation",
+            line["span"]
+        );
+    }
+}
+
+/// Design §10: a run id two Stores share is two runs; `show` and `tail` list both Stores and ask
+/// for `--store ID`, and with it read the one named.
+#[test]
+fn telemetry_a_run_two_stores_share_asks_for_the_store() {
+    let machine = Machine::new();
+    let root = machine.telemetry();
+    let other = "6".repeat(64);
+    golden_execution(
+        &root,
+        "1700000000000-4242-0a1b2c3d",
+        1_700_000_000_000,
+        1,
+        &mut |_| {},
+    );
+    execution_in_store(
+        &root,
+        &other,
+        "1700000200000-4244-0c1d2e3f",
+        1_700_000_200_000,
+        1,
+        &mut |_| {},
+    );
+    let at = &machine.root;
+    let runs = json(&machine.af(at, &[], &["telemetry", "runs", "--json"]));
+    let stores: std::collections::BTreeSet<&str> = runs["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|run| run["store_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(stores, [GOLDEN_STORE, other.as_str()].into_iter().collect());
+    for command in ["show", "tail"] {
+        let refused = machine.af(at, &[], &["telemetry", command, GOLDEN_RUN]);
+        assert_eq!(refused.status.code(), Some(2), "{command}");
+        let (_, stderr) = text(&refused);
+        assert!(stderr.contains("--store"), "{stderr}");
+        assert!(
+            stderr.contains(GOLDEN_STORE) && stderr.contains(&other),
+            "{stderr}"
+        );
+    }
+    let one = json(&machine.af(
+        at,
+        &[],
+        &["telemetry", "show", GOLDEN_RUN, "--store", &other, "--json"],
+    ));
+    assert_eq!(one["run"]["store_id"], other.as_str());
+    assert_eq!(one["run"]["executions"].as_array().unwrap().len(), 1);
+}

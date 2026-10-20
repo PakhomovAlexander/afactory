@@ -1,0 +1,80 @@
+{
+  "schema": "af/telemetry-show@1",
+  "directory": "<root>/xstate/af/telemetry",
+  "index": {
+    "state": "fresh"
+  },
+  "run": {
+    "store_id": "5555555555555555555555555555555555555555555555555555555555555555",
+    "run_id": "task:sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "trace_id": "98700944c22daf247220383e057810d5",
+    "kind": "task",
+    "history": "prefix:2",
+    "missing_ordinals": [],
+    "retained": "retained executions 1–2",
+    "executions": [
+      {
+        "execution_id": "1700000000000-4242-0a1b2c3d",
+        "span_id": "f77c8fd6a3608be7",
+        "ordinal": 1,
+        "store_sequence_at_start": "2",
+        "start_unix_ns": "1700000000003000000",
+        "end_unix_ns": "1700000000021000000",
+        "open": false,
+        "wall_us": 18000,
+        "segment": "sealed",
+        "outcome": "finished"
+      },
+      {
+        "execution_id": "1700000100000-4243-0b1c2d3e",
+        "span_id": "1d20f69c02011cc7",
+        "ordinal": 2,
+        "store_sequence_at_start": "14",
+        "start_unix_ns": "1700000100003000000",
+        "end_unix_ns": "1700000100021000000",
+        "open": false,
+        "wall_us": 18000,
+        "segment": "sealed",
+        "outcome": "finished"
+      }
+    ],
+    "first_start_unix_ns": "1700000000000000000"
+  },
+  "spans": [
+    {
+      "span_id": "c22f6d3f9518b850",
+      "parent_span_id": "9cda8103f9028a17",
+      "name": "af.attempt",
+      "depth": 3,
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "start_offset_us": 9000,
+      "total_us": 2000,
+      "self_us": 2000,
+      "status": "ok",
+      "attributes": {
+        "af.attempt_id": "attempt-1-1",
+        "af.node_id": "root.nodes.implement",
+        "af.worker": "fixture/implementer",
+        "af.provider": "claude-main",
+        "af.provider.kind": "claude",
+        "af.usage.input_tokens": "1000",
+        "af.usage.output_tokens": "200",
+        "af.usage.chargeable_tokens": "1200",
+        "af.usage.observation": "complete",
+        "af.outcome": "succeeded"
+      }
+    }
+  ],
+  "events": [
+    {
+      "seq": 13,
+      "name": "af.note",
+      "time_unix_ns": "1700000000010000000",
+      "offset_us": 10000,
+      "attributes": {
+        "af.note": "the Worker replied"
+      }
+    }
+  ],
+  "unreadable": []
+}

@@ -11,7 +11,7 @@ use std::{
         Condvar, Mutex, TryLockError,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 /// The ADR-0089 heartbeat tick, renewal threshold and lease duration, unchanged.
@@ -52,11 +52,10 @@ fn stopped_within(stopped: &(Mutex<bool>, Condvar), timeout: Duration) -> bool {
     *done
 }
 
+/// The Store's own clock: a lease's expiry is a Store time, so it is judged against the clock
+/// the Store recorded it with.
 fn now_ms() -> Result<u64, String> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_millis() as u64)
+    review_store::store::task::now().map_err(|e| e.to_string())
 }
 
 fn renew_if_due(store: &mut EventStore, cas: &Cas, lease: &TaskLease) -> Result<(), String> {

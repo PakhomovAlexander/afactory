@@ -46,6 +46,7 @@ dependencies = [
  "tempfile",
  "toml",
  "toml_edit",
+ "tracing",
 ]
 
 [[package]]
@@ -1469,12 +1470,14 @@ dependencies = [
  "review-sandbox",
  "review-source-git",
  "review-store",
+ "review-telemetry",
  "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "toml",
  "toml_edit",
+ "tracing",
 ]
 
 [[package]]

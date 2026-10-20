@@ -591,6 +591,51 @@ impl Confined {
         now.duration_since(modified).is_ok_and(|since| since >= age)
     }
 
+    /// When the entry `name` itself (never a link's target) was last modified, in unix
+    /// milliseconds; `None` when it is gone.
+    pub fn modified_unix_ms(&self, name: &str) -> Option<u64> {
+        self.stat(name).map(|stat| {
+            let seconds = u64::try_from(stat.st_mtime).unwrap_or(0);
+            let nanos = u64::try_from(stat.st_mtime_nsec).unwrap_or(0);
+            seconds.saturating_mul(1000) + nanos / 1_000_000
+        })
+    }
+
+    /// The newest modification time of the entry `name` and everything beneath it, walked
+    /// without following a link, in unix milliseconds.
+    pub fn newest_modified_unix_ms(&self, name: &str) -> u64 {
+        let own = self.modified_unix_ms(name).unwrap_or(0);
+        if self.kind(name) != Some(EntryKind::Directory) {
+            return own;
+        }
+        let Ok(Some(child)) = self.child_dir(name) else {
+            return own;
+        };
+        child
+            .names()
+            .unwrap_or_default()
+            .iter()
+            .map(|inner| child.newest_modified_unix_ms(inner))
+            .fold(own, u64::max)
+    }
+
+    /// Remove the directory `name` and everything beneath it relative to this directory,
+    /// never following a link: a link beneath it is removed itself, never what it points to.
+    pub fn remove_tree(&self, name: &str) -> std::io::Result<()> {
+        match self.kind(name) {
+            None => return Ok(()),
+            Some(EntryKind::Directory) => {}
+            Some(_) => return self.unlink(name),
+        }
+        if let Some(child) = self.child_dir(name)? {
+            for inner in child.names()? {
+                child.remove_tree(&inner)?;
+            }
+        }
+        nix::unistd::unlinkat(&self.fd, name, nix::unistd::UnlinkatFlags::RemoveDir)
+            .map_err(std::io::Error::from)
+    }
+
     /// Remove the regular file `name` relative to this directory. Anything else (a directory, a
     /// link, a device) is left in place and reported as an error.
     pub fn remove_file(&self, name: &str) -> std::io::Result<()> {
