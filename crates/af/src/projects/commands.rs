@@ -772,7 +772,7 @@ fn lists_worktree(git: &Git, path: &Path) -> Result<bool, String> {
 }
 
 /// The names in `<common dir>/worktrees`; a missing directory holds none.
-fn administrative_names(administrative: &Path) -> Result<BTreeSet<OsString>, String> {
+pub(super) fn administrative_names(administrative: &Path) -> Result<BTreeSet<OsString>, String> {
     let listing = |error: std::io::Error| format!("listing {}: {error}", administrative.display());
     match std::fs::read_dir(administrative) {
         Ok(entries) => entries
@@ -1037,7 +1037,11 @@ fn git_dir_option(git_dir: &Path) -> OsString {
 /// supervised, filter-free cached-index comparison (`git diff-index --cached` with external diff
 /// and textconv disabled, as `index_matches_head` makes it): the index of the worktree `git` runs
 /// in, or of the administrative entry `git_dir`.
-fn staged_paths(git: &Git, git_dir: Option<&Path>, commit: &str) -> Result<Vec<PathBuf>, String> {
+pub(super) fn staged_paths(
+    git: &Git,
+    git_dir: Option<&Path>,
+    commit: &str,
+) -> Result<Vec<PathBuf>, String> {
     let mut args: Vec<OsString> = git_dir.map(git_dir_option).into_iter().collect();
     args.extend(
         [
@@ -1486,7 +1490,6 @@ fn new(
             state: admitted.directory.join("state"),
             bindings: Some(admitted.directory.join("bindings.toml")),
             tasks: Some(admitted.directory.join("tasks")),
-            removing_entry: None,
         };
         let registered = register_in(
             &mut store,
@@ -1622,7 +1625,6 @@ fn add(
         state,
         bindings,
         tasks,
-        removing_entry: None,
     };
     let registration = register_in(
         &mut store,
@@ -1685,449 +1687,6 @@ fn store_note(state: &Path) -> String {
     }
 }
 
-/// The administrative entry of the linked worktree at `path` (canonical): the directory under
-/// `<common dir>/worktrees/` that its `.git` file names and whose `gitdir` names `<path>/.git`.
-fn own_entry(git: &Git, path: &Path) -> Result<PathBuf, String> {
-    let not_linked = |why: String| {
-        format!(
-            "{} is not a linked worktree of this repository whose administrative entry names it \
-             ({why})",
-            path.display()
-        )
-    };
-    let dot_git = path.join(".git");
-    let text = match std::fs::symlink_metadata(&dot_git) {
-        Ok(metadata) if metadata.is_file() => std::fs::read(&dot_git)
-            .map_err(|error| format!("reading {}: {error}", dot_git.display()))?,
-        _ => return Err(not_linked("its .git is no file".into())),
-    };
-    let named = text
-        .strip_prefix(b"gitdir: ")
-        .map(|rest| rest.strip_suffix(b"\n").unwrap_or(rest))
-        .ok_or_else(|| not_linked("its .git file names no gitdir".into()))?;
-    let resolve = |base: &Path, bytes: &[u8]| {
-        let named = Path::new(<OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(bytes));
-        std::fs::canonicalize(base.join(named)).ok()
-    };
-    let administrative = std::fs::canonicalize(git.common_dir()?.join("worktrees"))
-        .map_err(|error| not_linked(format!("the repository has no worktrees/: {error}")))?;
-    let entry = resolve(path, named)
-        .filter(|entry| entry.parent() == Some(administrative.as_path()))
-        .ok_or_else(|| not_linked("its .git file names no entry under worktrees/".into()))?;
-    let gitdir = std::fs::read(entry.join("gitdir"))
-        .map_err(|error| not_linked(format!("{}: {error}", entry.join("gitdir").display())))?;
-    let gitdir = gitdir.strip_suffix(b"\n").unwrap_or(&gitdir);
-    if resolve(&entry, gitdir).as_deref() != Some(dot_git.as_path()) {
-        return Err(not_linked(format!(
-            "the gitdir of {} names another path",
-            entry.display()
-        )));
-    }
-    Ok(entry)
-}
-
-/// The first path at which the files below `worktree` differ from `snapshot`, in content, mode
-/// or presence; git's own `.git` at the top is no file of the worktree. `None` when they equal.
-fn first_difference(worktree: &Path, snapshot: &Snapshot) -> Result<Option<String>, String> {
-    let scanned = review_source_git::scan_tree(worktree)
-        .map_err(|error| format!("reading the worktree {}: {error}", worktree.display()))?;
-    let mut on_disk = scanned
-        .entries
-        .iter()
-        .filter(|entry| entry.path != ".git")
-        .peekable();
-    let mut committed = snapshot.manifest.entries.iter().peekable();
-    loop {
-        match (committed.peek(), on_disk.peek()) {
-            (None, None) => return Ok(None),
-            (Some(want), Some(have)) if want.path == have.path => {
-                if (want.kind, &want.content) != (have.kind, &have.content) {
-                    return Ok(Some(want.path.clone()));
-                }
-                committed.next();
-                on_disk.next();
-            }
-            (Some(want), Some(have)) => {
-                return Ok(Some(
-                    if want.path.as_bytes() < have.path.as_bytes() {
-                        want
-                    } else {
-                        have
-                    }
-                    .path
-                    .clone(),
-                ));
-            }
-            (Some(only), None) | (None, Some(only)) => return Ok(Some(only.path.clone())),
-        }
-    }
-}
-
-/// Why `--delete-worktree` did not finish: it refused and changed nothing, or it changed
-/// something and the message says exactly what.
-enum Unfinished {
-    Refused(String),
-    Partial(String),
-}
-
-/// The infix of the container an entry is moved into before it is deleted:
-/// `<name>.af-removing-<pid>-<16 random hex digits>`, beside the entry.
-const REMOVING: &str = ".af-removing-";
-
-/// How many fresh names [`removal_container`] tries before it gives up.
-const CONTAINER_TRIES: usize = 16;
-
-/// Where an administrative entry remains after its deletion failed, and why: at its own path
-/// when the move into its container failed, inside the container when the deletion after it did.
-pub(super) struct Remains {
-    at: PathBuf,
-    renamed: bool,
-    error: std::io::Error,
-    /// The empty container a failed move left behind, when it could not be removed either.
-    container: Option<PathBuf>,
-}
-
-impl Remains {
-    pub(super) fn describe(&self) -> String {
-        if self.renamed {
-            return format!(
-                "its administrative entry remains at {}: {}",
-                self.at.display(),
-                self.error
-            );
-        }
-        let mut described = format!(
-            "its administrative entry {} remains: {}",
-            self.at.display(),
-            self.error
-        );
-        if let Some(container) = &self.container {
-            described.push_str(&format!(
-                "; so does the empty directory {} made to receive it",
-                container.display()
-            ));
-        }
-        described
-    }
-}
-
-/// 64 bits from the operating system's random source, through the standard library's
-/// per-process hash keys.
-fn nonce() -> u64 {
-    use std::hash::{BuildHasher, Hasher};
-    std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish()
-}
-
-/// A directory beside `entry` that this process created exclusively:
-/// `<name>.af-removing-<pid>-<16 random hex digits>`. `create_dir` fails on any existing path, so
-/// nothing another process or an earlier one made, whatever its PID, is ever taken; a taken name
-/// is tried again with new randomness.
-fn removal_container(entry: &Path) -> std::io::Result<PathBuf> {
-    let mut taken = None;
-    for _ in 0..CONTAINER_TRIES {
-        let mut name = entry.as_os_str().to_os_string();
-        name.push(format!("{REMOVING}{}-{:016x}", std::process::id(), nonce()));
-        let container = PathBuf::from(name);
-        match std::fs::create_dir(&container) {
-            Ok(()) => return Ok(container),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => taken = Some(error),
-            Err(error) => return Err(error),
-        }
-    }
-    Err(taken.unwrap_or_else(|| std::io::Error::other("no free container name")))
-}
-
-/// Delete the administrative entry `entry` whole, or leave it whole: it is first moved into a
-/// container this process created exclusively beside it ([`removal_container`]), so the move can
-/// land on nothing this removal does not own, and fails without touching the entry when
-/// `worktrees/` is read-only; the container goes with it. A removal that fails keeps the entry
-/// where the error says it is.
-pub(super) fn remove_entry(entry: &Path) -> Result<(), Remains> {
-    let stays = |error, container| Remains {
-        at: entry.to_path_buf(),
-        renamed: false,
-        error,
-        container,
-    };
-    let Some(name) = entry.file_name() else {
-        return Err(stays(std::io::Error::other("it has no name"), None));
-    };
-    let container = removal_container(entry).map_err(|error| stays(error, None))?;
-    let moved = container.join(name);
-    if let Err(error) = std::fs::rename(entry, &moved) {
-        // Empty and made by this process: removed only while it is still empty.
-        let left = std::fs::remove_dir(&container)
-            .is_err()
-            .then_some(container);
-        return Err(stays(error, left));
-    }
-    delete_container(&container, &moved)
-}
-
-/// Delete a container [`remove_entry`] made and the entry `entry` it moved into it.
-fn delete_container(container: &Path, entry: &Path) -> Result<(), Remains> {
-    std::fs::remove_dir_all(container).map_err(|error| Remains {
-        at: if std::fs::symlink_metadata(entry).is_ok() {
-            entry.to_path_buf()
-        } else {
-            container.to_path_buf()
-        },
-        renamed: true,
-        error,
-        container: None,
-    })
-}
-
-/// The name of the entry the container [`remove_entry`] made at `container` receives, when it is
-/// so named: `<name>.af-removing-<pid>-<16 hex digits>`. The predictable `<name>.af-removing-<pid>`
-/// is no such container.
-pub(super) fn contained_name(container: &Path) -> Option<&[u8]> {
-    let name = container.file_name()?.as_encoded_bytes();
-    let at = name
-        .windows(REMOVING.len())
-        .rposition(|window| window == REMOVING.as_bytes())?;
-    let rest = &name[at + REMOVING.len()..];
-    let dash = rest.iter().position(|byte| *byte == b'-')?;
-    let (pid, random) = (&rest[..dash], &rest[dash + 1..]);
-    let hex = |byte: &u8| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte);
-    (at > 0
-        && !pid.is_empty()
-        && pid.iter().all(u8::is_ascii_digit)
-        && random.len() == 16
-        && random.iter().all(hex))
-    .then(|| &name[..at])
-}
-
-/// Delete the linked worktree at `path` when its index and its files both equal its `HEAD`
-/// commit: the index through delivery's filter-free cached-index comparison, the files through
-/// the committed capture `workspace new` materializes from, so no filter, hook or other program
-/// the repository configures runs. Never `git worktree remove`, whose cleanliness check runs the
-/// repository's clean filters (ADR-0001): the entry it is about to remove is recorded for the
-/// Workspace `workspace_id`, then the directory and that worktree's own administrative entry are
-/// deleted directly, and nothing else. A worktree whose index or files differ is refused with the
-/// first differing path and left as it was; an entry that cannot be deleted once the directory is
-/// gone is reported where it remains.
-fn clean_delete(
-    git: &Git,
-    store: &mut ProjectStore,
-    workspace_id: &str,
-    path: &Path,
-) -> Result<(), Unfinished> {
-    use Unfinished::{Partial, Refused};
-    let entry = own_entry(git, path).map_err(Refused)?;
-    if std::fs::symlink_metadata(entry.join("locked")).is_ok() {
-        return Err(Refused(format!(
-            "the worktree {} is locked; unlock it with `git worktree unlock` first",
-            path.display()
-        )));
-    }
-    let scratch = tempfile::Builder::new()
-        .prefix("af-workspace-remove-")
-        .tempdir()
-        .map_err(|error| Refused(format!("creating a scratch directory: {error}")))?;
-    let cas = Cas::open(scratch.path().join("cas")).map_err(|error| Refused(error.to_string()))?;
-    let snapshot = Capture::new(&git.at(path).repo(), &cas)
-        .committed("HEAD")
-        .map_err(|error| Refused(format!("capturing the HEAD of {}: {error}", path.display())))?;
-    let commit = snapshot.source_revision.as_deref().unwrap_or("HEAD");
-    // A staged addition, modification or deletion, or an unmerged entry, is a change too.
-    let staged = staged_paths(&git.at(path), None, commit).map_err(Refused)?;
-    if let Some(staged) = staged.first() {
-        return Err(Refused(format!(
-            "the index of the worktree {} differs from its commit {commit} at `{}`",
-            path.display(),
-            staged.display()
-        )));
-    }
-    if let Some(differing) = first_difference(path, &snapshot).map_err(Refused)? {
-        return Err(Refused(format!(
-            "the worktree {} differs from its commit {commit} at `{}`",
-            path.display(),
-            review_source_git::fs_path(&differing).display()
-        )));
-    }
-    // A rerun knows the entry by this record once its `gitdir` is gone.
-    store
-        .record_removing(workspace_id, &entry)
-        .map_err(|error| Refused(format!("recording the entry {}: {error}", entry.display())))?;
-    std::fs::remove_dir_all(path).map_err(|error| {
-        Partial(format!(
-            "removing the worktree {}: {error}; some of its files may be gone, its administrative \
-             entry {} remains, and the Workspace stays registered",
-            path.display(),
-            entry.display()
-        ))
-    })?;
-    remove_entry(&entry).map_err(|remains| {
-        Partial(format!(
-            "removed the worktree {}; {}; fix it and run the command again",
-            path.display(),
-            remains.describe()
-        ))
-    })
-}
-
-/// An administrative entry a `--delete-worktree` left behind: `entry`, at its own path, or inside
-/// the `container` a removal moved it into, which goes with it (the container itself when it no
-/// longer holds the entry).
-struct Leftover {
-    entry: PathBuf,
-    container: Option<PathBuf>,
-}
-
-/// The `gitdir` of the administrative entry `entry`, `None` when it has none. A `gitdir` that
-/// cannot be read may name the checkout, so it is an error naming that file, never "no entry".
-fn read_gitdir(entry: &Path) -> Result<Option<Vec<u8>>, String> {
-    let file = entry.join("gitdir");
-    match std::fs::read(&file) {
-        Ok(mut gitdir) => {
-            if gitdir.last() == Some(&b'\n') {
-                gitdir.pop();
-            }
-            if gitdir.is_empty() || gitdir.contains(&0) {
-                return Err(format!(
-                    "{} holds no path, so its entry may name the checkout",
-                    file.display()
-                ));
-            }
-            Ok(Some(gitdir))
-        }
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-            ) =>
-        {
-            Ok(None)
-        }
-        Err(error) => Err(format!(
-            "{} could not be read ({error}), so its entry may name the checkout",
-            file.display()
-        )),
-    }
-}
-
-/// The administrative entries of the repository that a `--delete-worktree` of the checkout at
-/// `path` left behind: each whose `gitdir` names `<path>/.git`, at its own path or moved into a
-/// removal's container, and the entry `recorded` for it inside such a container once its `gitdir`
-/// is gone, or that container alone once the entry is. A `gitdir` that cannot be read may name the
-/// checkout, so it is an error naming that file, never "no entry".
-fn entries_naming(
-    git: &Git,
-    path: &Path,
-    recorded: Option<&Path>,
-) -> Result<Vec<Leftover>, String> {
-    let administrative = git.common_dir()?.join("worktrees");
-    let own = path.join(".git");
-    let own = own.as_os_str().as_encoded_bytes();
-    let recorded = recorded.and_then(Path::file_name);
-    let mut found = Vec::new();
-    for name in administrative_names(&administrative)? {
-        let at = administrative.join(name);
-        let Some(contained) = contained_name(&at) else {
-            if read_gitdir(&at)?.is_some_and(|gitdir| gitdir == own) {
-                found.push(Leftover {
-                    entry: at,
-                    container: None,
-                });
-            }
-            continue;
-        };
-        let entry = at.join(<OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(
-            contained,
-        ));
-        let ours = match read_gitdir(&entry)? {
-            Some(gitdir) => gitdir == own,
-            None => recorded.is_some_and(|recorded| recorded.as_encoded_bytes() == contained),
-        };
-        if ours {
-            found.push(Leftover {
-                entry: if std::fs::symlink_metadata(&entry).is_ok() {
-                    entry
-                } else {
-                    at.clone()
-                },
-                container: Some(at),
-            });
-        }
-    }
-    Ok(found)
-}
-
-/// Finish a `--delete-worktree` of the worktree at `path`, which is already gone: delete the
-/// administrative entries it left behind, `recorded` being the one its first run began removing:
-/// the ones in a removal's container first, then each other one after recording it for the
-/// Workspace `workspace_id`, as the first run did. What to report.
-fn finish_delete(
-    git: &Git,
-    store: &mut ProjectStore,
-    workspace_id: &str,
-    path: &Path,
-    recorded: Option<&Path>,
-) -> Result<String, String> {
-    let mut leftovers = entries_naming(git, path, recorded).map_err(|error| {
-        format!(
-            "the worktree {} is already gone, but {error}; fix it and run the command again; \
-             nothing was changed",
-            path.display()
-        )
-    })?;
-    if let Some(locked) = leftovers
-        .iter()
-        .find(|leftover| std::fs::symlink_metadata(leftover.entry.join("locked")).is_ok())
-    {
-        return Err(format!(
-            "the worktree {} is already gone, but its administrative entry {} is locked; unlock \
-             it with `git worktree unlock` first; nothing was changed",
-            path.display(),
-            locked.entry.display()
-        ));
-    }
-    if leftovers.is_empty() {
-        return Ok(format!(
-            "the worktree {} is already gone; its branch is kept",
-            path.display()
-        ));
-    }
-    leftovers.sort_by_key(|leftover| leftover.container.is_none());
-    for leftover in &leftovers {
-        let removed = match &leftover.container {
-            Some(container) => delete_container(container, &leftover.entry),
-            None => {
-                store
-                    .record_removing(workspace_id, &leftover.entry)
-                    .map_err(|error| {
-                        format!(
-                            "the worktree {} is already gone; recording its administrative entry \
-                             {}: {error}; fix it and run the command again",
-                            path.display(),
-                            leftover.entry.display()
-                        )
-                    })?;
-                remove_entry(&leftover.entry)
-            }
-        };
-        removed.map_err(|remains| {
-            format!(
-                "the worktree {} is already gone; {}; fix it and run the command again",
-                path.display(),
-                remains.describe()
-            )
-        })?;
-    }
-    Ok(format!(
-        "the worktree {} was already gone; removed its administrative entry {}; its branch is kept",
-        path.display(),
-        leftovers
-            .iter()
-            .map(|leftover| leftover.entry.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    ))
-}
-
 fn remove(label: &str, delete_worktree: bool, json_output: bool) -> Result<i32, String> {
     let (checkout, mut store) = open_here()?;
     let log = store.log()?;
@@ -2140,6 +1699,7 @@ fn remove(label: &str, delete_worktree: bool, json_output: bool) -> Result<i32, 
         .paths()?
         .into_iter()
         .find(|entry| entry.id == workspace.workspace_id);
+    let record = super::removal::location(&store.directory, &workspace.workspace_id);
     let mut deleted = None;
     if delete_worktree {
         let path = paths.as_ref().map(|paths| paths.path.clone()).ok_or_else(|| {
@@ -2155,37 +1715,19 @@ fn remove(label: &str, delete_worktree: bool, json_output: bool) -> Result<i32, 
             ));
         }
         let git = Git::open(&checkout.toplevel)?;
-        let gone = matches!(
-            std::fs::symlink_metadata(&path),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound
-        );
-        // A rerun after a removal that deleted the directory but not its entry finishes it.
-        let recorded = paths
-            .as_ref()
-            .and_then(|paths| paths.removing_entry.clone());
-        deleted = Some(if gone {
-            finish_delete(
-                &git,
-                &mut store,
-                &workspace.workspace_id,
-                &path,
-                recorded.as_deref(),
-            )?
-        } else {
-            match clean_delete(&git, &mut store, &workspace.workspace_id, &path) {
-                Ok(()) => format!(
-                    "removed the worktree {}; its branch is kept",
-                    path.display()
-                ),
-                Err(Unfinished::Refused(error)) => {
-                    return Err(format!(
-                        "{error}; nothing was changed: commit or discard the worktree's changes, \
-                         or remove the Workspace without --delete-worktree"
-                    ));
-                }
-                Err(Unfinished::Partial(error)) => return Err(error),
-            }
-        });
+        // A rerun finishes what the removal record of an earlier run holds.
+        deleted = Some(super::removal::delete_worktree(
+            &git,
+            &store.directory,
+            &workspace.workspace_id,
+            &path,
+        )?);
+    } else if record.exists() {
+        return Err(format!(
+            "an unfinished `--delete-worktree` of Workspace `{label}` is recorded in {}; finish \
+             it with `af project workspace remove {label} --delete-worktree`; nothing was changed",
+            record.display()
+        ));
     }
     store.unregister(&workspace.workspace_id)?;
     let note = paths.as_ref().map(|paths| store_note(&paths.state));
@@ -2193,7 +1735,9 @@ fn remove(label: &str, delete_worktree: bool, json_output: bool) -> Result<i32, 
         let log = store.log()?;
         print_json(&workspaces_document(&store, &log, &store.paths()?))?;
         if let Some(deleted) = deleted {
-            eprintln!("af project workspace remove: {deleted}");
+            for line in std::iter::once(&deleted.line).chain(&deleted.notes) {
+                eprintln!("af project workspace remove: {line}");
+            }
         }
         if let Some(note) = note {
             eprintln!("af project workspace remove: {note}");
@@ -2202,7 +1746,10 @@ fn remove(label: &str, delete_worktree: bool, json_output: bool) -> Result<i32, 
     }
     println!("removed Workspace {label} ({})", workspace.workspace_id);
     if let Some(deleted) = deleted {
-        println!("{deleted}");
+        println!("{}", deleted.line);
+        for note in &deleted.notes {
+            println!("{note}");
+        }
     } else if let Some(paths) = &paths {
         println!("kept the checkout {}", paths.path.display());
     }

@@ -2,8 +2,7 @@
 //!
 //! Machine-written TOML beside the Project Store's log, outside every record, like
 //! `stores.toml` (ADR-0144): the checkout, the Task Store and, when the Workspace has them, the
-//! bindings file and the Task-file directory of each Workspace, keyed by its ID, and the
-//! administrative entry a `--delete-worktree` of it began removing. It is replaced
+//! bindings file and the Task-file directory of each Workspace, keyed by its ID. It is replaced
 //! whole through a temporary file and a rename, under the Project Store's lock, so a reader never
 //! sees half of it.
 
@@ -28,11 +27,6 @@ pub(crate) struct WorkspacePaths {
     pub(crate) bindings: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) tasks: Option<PathBuf>,
-    /// The administrative entry of the checkout that `remove --delete-worktree` began removing,
-    /// recorded before it deletes anything, so a rerun knows that entry by its name once its
-    /// `gitdir` is gone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) removing_entry: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -71,11 +65,7 @@ pub(super) fn parse(text: &str) -> Result<Vec<WorkspacePaths>, String> {
     for entry in &file.workspaces {
         let relative = [Some(&entry.path), Some(&entry.state)]
             .into_iter()
-            .chain([
-                entry.bindings.as_ref(),
-                entry.tasks.as_ref(),
-                entry.removing_entry.as_ref(),
-            ])
+            .chain([entry.bindings.as_ref(), entry.tasks.as_ref()])
             .flatten()
             .any(|path| !path.is_absolute());
         if relative {

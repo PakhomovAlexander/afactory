@@ -45,9 +45,9 @@ these events, each canonical JSON with numbers as decimal strings:
 
 No event ever holds a path. Beside the log, outside every record, `workspaces.toml` holds this
 machine's paths of each Workspace: its checkout, its Task Store, and, when it has them, its
-bindings file, its Task-file directory and the administrative entry an unfinished
-`--delete-worktree` began removing. af writes that file whole through a temporary file
-and a rename, as it writes `stores.toml`.
+bindings file and its Task-file directory. An unfinished `--delete-worktree` of a Workspace is
+held by its removal record beside it, `removals/<workspace id>.toml`. af writes each file whole
+through a temporary file and a rename, as it writes `stores.toml`.
 
 The Store registry (`$XDG_STATE_HOME/af/stores.toml`) records every Project Store with the kind
 `project`, so `af storage` counts it as a `project_store` entry
@@ -271,34 +271,44 @@ equal `HEAD`. The files must equal the commit's tree in content and mode, and th
 hold no other file, ignored or not, besides git's own `.git`; they are compared through the same
 committed capture `workspace new` fills a worktree from, against the files on disk. No filter,
 hook, diff driver or other program the repository configures runs; it never calls `git worktree
-remove`, whose cleanliness check runs the repository's clean filters. A clean worktree is
-removed by deleting its directory and then its own entry under the repository's `worktrees/`,
-nothing else. The entry is recorded in `workspaces.toml` first, then renamed into a container
-directory beside it that the command creates exclusively,
-`<name>.af-removing-<pid>-<16 random hex digits>` (a name that exists is never taken; another is
-drawn), and the container is deleted with the entry in it. So the entry goes whole or stays
-whole, the rename never lands on anything the removal does not own (a directory already at
-`<name>.af-removing-<pid>` is left alone), and the message says where the entry remains. When
-the entry cannot be renamed once the directory is gone, or cannot be deleted once renamed, the
-command fails with
+remove`, whose cleanliness check runs the repository's clean filters. A dirty worktree is
+refused with the first differing path and nothing changes; so are an unknown checkout and the
+checkout the command runs in. A clean worktree is removed by deleting its directory and then its
+own entry under the repository's `worktrees/`, nothing else. The branch stays either way.
+
+The removal goes by what it inspected, never by a name. Before it moves or deletes anything it
+writes a removal record in the Project Store, `removals/<workspace id>.toml`, never in the
+repository: the checkout path, the identity (device and inode) of the checkout and of its entry,
+the container it makes for each with that container's identity, and the step each reached. It
+rewrites the record at every step and deletes it when it is done, just before the Workspace is
+unregistered. Each directory is first claimed: moved into a container the command creates
+beside it, `<name>.af-removing-<pid>-<16 random hex digits>` with mode 0700, through that
+container's own descriptor once its identity is checked, never over a name that is taken, and
+found there by its identity. The checkout is judged there, its files read through descriptors
+without following a link, and put back when it is dirty. Only what was claimed is deleted, then
+the container with `rmdir`. A container that holds anything else keeps it, the message names the
+first such path, and the Workspace stays registered until you clear it. A directory another
+process put at the checkout's path before the claim is kept and the command refused with nothing
+changed; one put there after the claim is kept and reported. When the entry cannot be moved
+once the directory is gone, or cannot be deleted once moved, the command fails with
 
 ```text
 removed the worktree <path>; its administrative entry <common dir>/worktrees/<name> remains: <os error>; fix it and run the command again
-removed the worktree <path>; its administrative entry remains at <common dir>/worktrees/<name>.af-removing-<pid>-<hex>/<name>: <os error>; fix it and run the command again
+removed the worktree <path>; its administrative entry remains at <container>/<name>: <os error>; fix it and run the command again
 ```
 
-and the Workspace stays registered. Run the same command again once the cause is fixed: a
-registered checkout that no longer exists has the entries whose `gitdir` still names it removed,
-at their own path or in a removal's container, and so has the container of the entry recorded
-at the first run once that entry's `gitdir` is gone (a locked one is refused); only then is it
-unregistered, and both are reported. Only a container named
-`<name>.af-removing-<pid>-<hex>` is recognised; the predictable `<name>.af-removing-<pid>` is
-never taken for one. Without such an
-entry it is unregistered and reported as already gone. An entry whose `gitdir` cannot be read
-may still name the checkout, so the rerun refuses with that file and the error, changes nothing
-and keeps the Workspace registered. A dirty worktree is refused with the first differing path
-and nothing changes; so are an unknown checkout and the checkout the command runs in. The
-branch stays either way.
+and the Workspace stays registered. Run the same command again once the cause is fixed: it
+finishes from the record, step by step, acting only on directories whose identity the record
+holds, then unregisters the Workspace and reports what it removed; its messages begin `the
+worktree <path> is already gone;`. An entry whose `gitdir` cannot be read may still name the
+checkout, so the command stops with that file and the error and keeps the Workspace registered.
+A directory that only looks like a container, one nobody recorded or a worktree or entry whose
+own name has that form, is never touched and is reported as `left <directory>: it is named like
+a removal's container, but no removal record names it, so it is not this removal's`. Without a
+record, a checkout that no longer exists has each entry whose `gitdir` still names it removed
+the same way, and is otherwise unregistered and reported as already gone. While a removal record
+exists, `workspace remove` without `--delete-worktree` is refused and names the command that
+finishes it.
 
 ```sh
 af project workspace remove research

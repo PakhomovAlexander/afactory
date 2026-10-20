@@ -245,7 +245,6 @@ fn paths(id: &str, label: &str) -> WorkspacePaths {
         state: PathBuf::from(format!("/state/{label}")),
         bindings: (label == "b").then(|| PathBuf::from("/state/b/bindings.toml")),
         tasks: None,
-        removing_entry: None,
     }
 }
 
@@ -289,128 +288,291 @@ fn the_workspaces_file_refuses_another_version_unknown_keys_and_relative_paths()
     let relative = "version = 1\n[[workspaces]]\nid = \"w-000000000000000a\"\nlabel = \"a\"\n\
                     path = \"src/a\"\nstate = \"/state/a\"\n";
     assert!(file::parse(relative).is_err());
+    // The entry a removal began is no path of a Workspace: the removal record holds it.
     let removing = "version = 1\n[[workspaces]]\nid = \"w-000000000000000a\"\nlabel = \"a\"\n\
-                    path = \"/src/a\"\nstate = \"/state/a\"\nremoving_entry = \"worktrees/a\"\n";
+                    path = \"/src/a\"\nstate = \"/state/a\"\nremoving_entry = \"/src/.git/worktrees/a\"\n";
     assert!(file::parse(removing).is_err());
-    let absolute = removing.replace("\"worktrees/a\"", "\"/src/.git/worktrees/a\"");
-    assert_eq!(
-        file::parse(&absolute).unwrap()[0].removing_entry,
-        Some(PathBuf::from("/src/.git/worktrees/a"))
-    );
 }
 
+const RECORD: &str = "version = 1\nworkspace_id = \"w-000000000000000a\"\npath = \"/src/a\"\n\n\
+                      [checkout]\npath = \"/src/a\"\nidentity = \"16777230:42\"\nstep = \
+                      \"contained\"\ncontainer = \"/src/a.af-removing-7-0123456789abcdef\"\n\
+                      container_identity = \"16777230:43\"\n\n[[entries]]\npath = \
+                      \"/src/.git/worktrees/a\"\nidentity = \"16777230:44\"\nstep = \"inspected\"\n";
+
 #[test]
-fn a_removal_container_is_known_by_its_name_pid_and_randomness() {
-    for (container, name) in [
+fn a_removal_record_round_trips_and_refuses_what_this_release_does_not_write() {
+    let record = removal::parse(RECORD, "w-000000000000000a").unwrap();
+    let checkout = record.checkout.clone().unwrap();
+    assert_eq!(checkout.step, removal::Step::Contained);
+    assert_eq!(
+        removal::decode(&checkout.identity),
+        Some(review_sandbox::removal::Identity {
+            device: 16777230,
+            inode: 42
+        })
+    );
+    assert_eq!(record.entries.len(), 1);
+    let store = tempfile::tempdir().unwrap();
+    assert!(
+        removal::read(store.path(), "w-000000000000000a")
+            .unwrap()
+            .is_none()
+    );
+    removal::write(store.path(), &record).unwrap();
+    let file = removal::location(store.path(), "w-000000000000000a");
+    assert!(
+        file.ends_with("removals/w-000000000000000a.toml"),
+        "{file:?}"
+    );
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .starts_with("# An unfinished `af project workspace remove --delete-worktree`")
+    );
+    assert_eq!(
+        removal::read(store.path(), "w-000000000000000a").unwrap(),
+        Some(record)
+    );
+    // Nothing but the record is left: the temporary file was renamed into place.
+    assert_eq!(
+        std::fs::read_dir(file.parent().unwrap()).unwrap().count(),
+        1
+    );
+
+    for (broken, why) in [
         (
-            "/repo/.git/worktrees/wt.af-removing-4242-0123456789abcdef",
-            Some("wt"),
+            RECORD.replace("version = 1", "version = 2"),
+            "another version",
+        ),
+        (format!("{RECORD}extra = true\n"), "an unknown key"),
+        (
+            RECORD.replace("\"w-000000000000000a\"", "\"w-000000000000000b\""),
+            "another Workspace",
         ),
         (
-            "/repo/.git/worktrees/wt.v2.af-removing-1-ffffffffffffffff",
-            Some("wt.v2"),
-        ),
-        ("/repo/.git/worktrees/wt", None),
-        // The predictable name of an earlier round is no container: another may own it.
-        ("/repo/.git/worktrees/wt.af-removing-4242", None),
-        ("/repo/.git/worktrees/wt.af-removing-", None),
-        (
-            "/repo/.git/worktrees/wt.af-removing-12x-0123456789abcdef",
-            None,
+            RECORD.replace("\"16777230:42\"", "\"16777230\""),
+            "an identity without its inode",
         ),
         (
-            "/repo/.git/worktrees/wt.af-removing--0123456789abcdef",
-            None,
+            RECORD.replace("\"16777230:42\"", "\"-1:42\""),
+            "a signed identity",
         ),
         (
-            "/repo/.git/worktrees/wt.af-removing-12-0123456789abcde",
-            None,
+            RECORD.replace("path = \"/src/a\"\n\n", "path = \"src/a\"\n\n"),
+            "a relative checkout",
         ),
         (
-            "/repo/.git/worktrees/wt.af-removing-12-0123456789ABCDEF",
-            None,
+            RECORD.replace("container_identity = \"16777230:43\"\n", ""),
+            "a made container without its identity",
         ),
         (
-            "/repo/.git/worktrees/.af-removing-12-0123456789abcdef",
-            None,
+            RECORD.replace(
+                "\"/src/a.af-removing-7-0123456789abcdef\"",
+                "\"/elsewhere/a.af-removing-7-0123456789abcdef\"",
+            ),
+            "a container that is not beside its directory",
+        ),
+        (
+            RECORD.replace("step = \"inspected\"", "step = \"deleting\""),
+            "a deletion without a container",
         ),
     ] {
-        assert_eq!(
-            commands::contained_name(Path::new(container)),
-            name.map(str::as_bytes),
-            "{container}"
+        assert!(
+            removal::parse(&broken, "w-000000000000000a").is_err(),
+            "{why}: {broken}"
         );
     }
 }
 
 #[test]
-fn a_removal_moves_the_entry_into_its_own_container_and_never_onto_the_predictable_name() {
+fn an_entry_names_a_gone_checkout_by_its_gitdir_resolved_as_git_reads_it() {
     let root = tempfile::tempdir().unwrap();
-    let administrative = std::fs::canonicalize(root.path()).unwrap();
-    let entry = administrative.join("wt");
-    std::fs::create_dir(&entry).unwrap();
-    std::fs::write(entry.join("gitdir"), "/work/wt/.git\n").unwrap();
-    // The name the removal of an earlier round renamed onto, made by another: a rename of a
-    // directory replaces an empty one, so a removal that took that name would destroy it.
-    let predictable = administrative.join(format!("wt.af-removing-{}", std::process::id()));
-    std::fs::create_dir(&predictable).unwrap();
-    let before = commands::identity(&std::fs::symlink_metadata(&predictable).unwrap());
-    assert!(commands::remove_entry(&entry).is_ok());
-    assert!(!entry.exists());
-    assert_eq!(
-        commands::identity(&std::fs::symlink_metadata(&predictable).unwrap()),
-        before
-    );
-    assert_eq!(std::fs::read_dir(&predictable).unwrap().count(), 0);
-    let names: Vec<_> = std::fs::read_dir(&administrative)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name())
-        .collect();
-    assert_eq!(names, [predictable.file_name().unwrap()]);
+    let canonical = std::fs::canonicalize(root.path()).unwrap();
+    std::fs::create_dir_all(canonical.join("repo/.git/worktrees/wt")).unwrap();
+    std::fs::create_dir_all(canonical.join("real")).unwrap();
+    std::os::unix::fs::symlink(canonical.join("real"), canonical.join("alias")).unwrap();
+    let entry = canonical.join("repo/.git/worktrees/wt");
+    // The checkout `real/wt` is gone; its directory above stays.
+    let own = canonical.join("real/wt/.git");
+    let gitdir = |path: &Path| path.as_os_str().as_encoded_bytes().to_vec();
+    assert!(removal::names_checkout(&entry, &gitdir(&own), &own));
+    // Spelled through a link above the worktree, as an adopted path may be.
+    assert!(removal::names_checkout(
+        &entry,
+        &gitdir(&canonical.join("alias/wt/.git")),
+        &own
+    ));
+    // Relative to the entry, as `worktree.useRelativePaths` writes it.
+    assert!(removal::names_checkout(
+        &entry,
+        b"../../../../real/wt/.git",
+        &own
+    ));
+    assert!(!removal::names_checkout(
+        &entry,
+        &gitdir(&canonical.join("real/other/.git")),
+        &own
+    ));
+    assert!(!removal::names_checkout(
+        &entry,
+        &gitdir(&canonical.join("elsewhere/wt/.git")),
+        &own
+    ));
 }
 
 #[test]
-fn a_failed_deletion_names_the_entry_inside_its_container() {
+fn a_container_name_is_fresh_every_time_and_proves_nothing() {
+    let first = removal::container_name(OsStr::new("wt"));
+    let second = removal::container_name(OsStr::new("wt"));
+    assert_ne!(first, second);
+    let first = first.to_string_lossy().into_owned();
+    let random = first
+        .strip_prefix(&format!("wt.af-removing-{}-", std::process::id()))
+        .unwrap();
+    assert_eq!(random.len(), 16);
+    assert!(random.bytes().all(|byte| byte.is_ascii_hexdigit()));
+}
+
+/// A directory below a fresh root, opened as a parent, and the identity of its child `name`.
+fn claimed(root: &Path, name: &str) -> (std::os::fd::OwnedFd, review_sandbox::removal::Identity) {
+    let parent = review_sandbox::removal::open_anchor(root).unwrap();
+    let identity = review_sandbox::removal::Identity::of(&root.join(name)).unwrap();
+    (parent, identity)
+}
+
+#[test]
+fn a_claimed_tree_is_deleted_through_descriptors_and_a_link_is_never_followed() {
+    let root = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(root.path()).unwrap();
+    let outside = root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("sentinel"), "keep\n").unwrap();
+    let target = root.join("container/wt");
+    std::fs::create_dir_all(target.join("deep/er")).unwrap();
+    std::fs::write(target.join("deep/er/file"), "x").unwrap();
+    std::os::unix::fs::symlink(&outside, target.join("deep/link")).unwrap();
+    let (container, identity) = claimed(&root.join("container"), "wt");
+
+    // Another directory than the one claimed is never deleted.
+    let other = review_sandbox::removal::Identity {
+        device: identity.device,
+        inode: identity.inode + 1,
+    };
+    assert!(removal::remove_tree(&container, OsStr::new("wt"), other).is_err());
+    assert!(target.join("deep/er/file").is_file());
+
+    removal::remove_tree(&container, OsStr::new("wt"), identity).unwrap();
+    assert!(!target.exists());
+    assert_eq!(
+        std::fs::read_to_string(outside.join("sentinel")).unwrap(),
+        "keep\n"
+    );
+    assert_eq!(
+        std::fs::read_dir(root.join("container")).unwrap().count(),
+        0
+    );
+}
+
+#[test]
+fn a_directory_that_may_not_be_emptied_stays_and_is_the_error() {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();
-    let administrative = std::fs::canonicalize(root.path()).unwrap();
-    let entry = administrative.join("wt");
-    // A read-only directory inside the entry: the entry moves, its contents cannot all go.
-    std::fs::create_dir_all(entry.join("held")).unwrap();
-    std::fs::write(entry.join("held/file"), "kept\n").unwrap();
-    let mode = |path: &Path, mode: u32| {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
-    };
-    mode(&entry.join("held"), 0o555);
-    let remains = commands::remove_entry(&entry).err().unwrap().describe();
-    let containers: Vec<_> = std::fs::read_dir(&administrative)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect();
-    assert_eq!(containers.len(), 1, "{containers:?}");
-    let container = &containers[0];
+    let root = std::fs::canonicalize(root.path()).unwrap();
+    let held = root.join("container/wt/held");
+    std::fs::create_dir_all(&held).unwrap();
+    std::fs::write(held.join("file"), "held\n").unwrap();
+    std::fs::set_permissions(&held, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let (container, identity) = claimed(&root.join("container"), "wt");
+    let error = removal::remove_tree(&container, OsStr::new("wt"), identity).unwrap_err();
     assert_eq!(
-        commands::contained_name(container),
-        Some(b"wt".as_slice()),
-        "{container:?}"
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "{error}"
     );
-    let name = container
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    assert!(
-        name.starts_with(&format!("wt.af-removing-{}-", std::process::id())),
-        "{name}"
+    // Its permissions are never changed to make it go.
+    assert_eq!(
+        std::fs::metadata(&held).unwrap().permissions().mode() & 0o777,
+        0o555
     );
-    assert!(
-        remains.starts_with(&format!(
-            "its administrative entry remains at {}: ",
-            container.join("wt").display()
-        )),
-        "{remains}"
-    );
-    mode(&container.join("wt/held"), 0o755);
+    assert!(held.join("file").is_file());
+    std::fs::set_permissions(&held, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn a_claimed_worktree_is_compared_with_its_commit_through_descriptors() {
+    use review_source_git::{Entry, EntryKind, Manifest, digest_bytes};
+    use std::os::unix::fs::PermissionsExt;
+    let entry = |path: &str, kind, bytes: &[u8]| Entry {
+        path: path.into(),
+        kind,
+        content: digest_bytes(bytes),
+        size: bytes.len() as u64,
+    };
+    let manifest = Manifest::new(vec![
+        entry("README.md", EntryKind::File, b"one\n"),
+        entry("bin/run", EntryKind::Executable, b"#!/bin/sh\n"),
+        entry("link", EntryKind::Symlink, b"README.md"),
+    ])
+    .unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(root.path()).unwrap();
+    let worktree = root.join("container/wt");
+    std::fs::create_dir_all(worktree.join("bin")).unwrap();
+    std::fs::write(worktree.join("README.md"), "one\n").unwrap();
+    std::fs::write(worktree.join("bin/run"), "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(
+        worktree.join("bin/run"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink("README.md", worktree.join("link")).unwrap();
+    // Git's own `.git` file at the top is no file of the worktree; an empty directory is none.
+    std::fs::write(worktree.join(".git"), "gitdir: /repo/.git/worktrees/wt\n").unwrap();
+    std::fs::create_dir(worktree.join("empty")).unwrap();
+    let (container, identity) = claimed(&root.join("container"), "wt");
+    let first =
+        || removal::first_difference_at(&container, OsStr::new("wt"), identity, &manifest).unwrap();
+    assert_eq!(first(), None);
+
+    // A re-moded file, an untracked file and a link where a directory was each differ, and the
+    // first in manifest order is named.
+    std::fs::set_permissions(
+        worktree.join("bin/run"),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .unwrap();
+    assert_eq!(first().as_deref(), Some("bin/run"));
+    std::fs::write(worktree.join("a-scratch.txt"), "work\n").unwrap();
+    assert_eq!(first().as_deref(), Some("a-scratch.txt"));
+    std::fs::remove_file(worktree.join("a-scratch.txt")).unwrap();
+    std::fs::remove_dir_all(worktree.join("bin")).unwrap();
+    std::os::unix::fs::symlink(&root, worktree.join("bin")).unwrap();
+    assert_eq!(first().as_deref(), Some("bin"));
+    std::fs::remove_file(worktree.join("bin")).unwrap();
+    assert_eq!(first().as_deref(), Some("bin/run"));
+    // Changed content of the same size differs too.
+    std::fs::create_dir(worktree.join("bin")).unwrap();
+    std::fs::write(worktree.join("bin/run"), "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(
+        worktree.join("bin/run"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    std::fs::write(worktree.join("README.md"), "two\n").unwrap();
+    assert_eq!(first().as_deref(), Some("README.md"));
+    // A `.git` directory is not git's file: what it holds is compared like any other path.
+    std::fs::write(worktree.join("README.md"), "one\n").unwrap();
+    std::fs::remove_file(worktree.join(".git")).unwrap();
+    std::fs::create_dir(worktree.join(".git")).unwrap();
+    std::fs::write(worktree.join(".git/config"), "").unwrap();
+    assert_eq!(first().as_deref(), Some(".git/config"));
+    // Another directory than the one claimed is refused.
+    let other = review_sandbox::removal::Identity {
+        device: identity.device,
+        inode: identity.inode + 1,
+    };
+    assert!(removal::first_difference_at(&container, OsStr::new("wt"), other, &manifest).is_err());
 }
 
 #[test]
@@ -490,6 +652,7 @@ fn every_process_of_the_projects_modules_is_supervised() {
         ("projects/commands.rs", include_str!("commands.rs")),
         ("projects/file.rs", include_str!("file.rs")),
         ("projects/git.rs", include_str!("git.rs")),
+        ("projects/removal.rs", include_str!("removal.rs")),
         ("projects/tests.rs", include_str!("tests.rs")),
     ];
     // Spelled in pieces, so this test does not find itself.
