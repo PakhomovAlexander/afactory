@@ -55,7 +55,8 @@ pub use check_runtime::{CONTAINER_CHECK_RUNTIME, CheckRuntime};
 pub use container::{Availability, ContainerProvider};
 #[cfg(unix)]
 pub use removal::{
-    AbandonedClaim, Identity, abandoned_claims, finish_abandoned_claims, open_anchor, open_beneath,
+    AbandonedClaim, Identity, PartlyRemoved, REMOVAL_MAX_DEPTH, abandoned_claims,
+    deeper_than_removal_walk, finish_abandoned_claims, open_anchor, open_beneath, partly_removed,
     remove_beneath, remove_tree_at,
 };
 pub use seal::{MutationSet, SealedSandbox};

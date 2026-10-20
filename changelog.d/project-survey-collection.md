@@ -12,16 +12,26 @@
   deletes the record. A sweep plans once over one inventory snapshot: `af storage prune` prints
   that plan, every removal in order with the bytes it frees, its rule (`recovery`, `collection`,
   `keep_surveys`, `budget`) and the total after it, and under `left` what it leaves (`held`,
-  `foreign`, `oversize`, `unreadable_name`); `--apply` runs the same plan entry by entry, keeps an
-  entry of any kind whose removal failed (the lock lost, what it names replaced, an I/O error) in
-  its place as `outcome` `failed: <reason>` with nothing freed and the running total unchanged
-  instead of choosing again, and so stops where its preview stops, a pending recovery's bytes
-  counted once and its totals what af then holds. The claims dead processes left
-  (`.af-removing-*`) and the containers dead passes left empty are in that one inventory, `claim`
-  entries under `recovery` that the preview and the applied sweep list alike with the same bytes,
-  and nothing is removed beside the plan; a Survey's record is measured once by device, inode and
-  bytes, and one replaced between inventory and the plan is `refused (replaced since inventory)`
-  and never adopted. A record is reached and read only through directory descriptors that follow no link, and
+  `foreign`, `oversize`, `unreadable_name`, `too_deep`); `--apply` runs the same plan entry by
+  entry, keeps an entry of any kind whose removal failed (the lock lost, what it names replaced
+  or gone since the inventory, an I/O error) in its place as `outcome` `failed: <reason>` with
+  nothing freed and the running total unchanged instead of choosing again, while a deletion that
+  stopped part way reports the bytes that actually left the disk (what the inventory measured less
+  what its claim still holds), and so stops where its preview stops, a pending recovery's bytes
+  counted once and its totals what af then holds. A directory nested deeper than the removal
+  walk's 128 levels is left `too_deep` by preview and apply alike and listed in use by `af
+  storage`. The claims dead processes left (`.af-removing-*`) and the containers of dead passes
+  are in that one inventory, `claim` entries under `recovery` that the preview and the applied
+  sweep list alike with the same bytes, a container that held a moved record planned after it,
+  and nothing is removed beside the plan; a claim inside a Project Store is counted once, in the
+  Store's bytes. A registration whose path holds no Store is dropped by the plan
+  (`registry_dropped`, the same in preview and apply), after the inventory reached its parent's
+  claims, so a registered Store a dead process renamed into its claim is recovered alike by
+  both. Each uncollected Survey's `SurveyRecorded@1` is verified against its record once, in the
+  Project Store's one read, and the plan and the inventory read only what that verified: an event
+  whose cutoff its record disproves is never the Survey's last use, and the Survey is refused and
+  kept. A Survey's record is measured once by device, inode and bytes, and one replaced between
+  inventory and the plan is `refused (replaced since inventory)` and never adopted. A record is reached and read only through directory descriptors that follow no link, and
   deleted inside a container each job creates for itself, `cas/removing/<pass-id>/` (mode 0700, a
   fresh random ID), where it is stated again relative to the container just before the unlink, so
   only the inode found before the tombstone is deleted and a replacement is refused, put back,
