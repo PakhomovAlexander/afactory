@@ -64,10 +64,14 @@ fail loudly there, never skip.
 ## Test time
 
 After every nextest run, passing or failing, `make test` prints a summary of the JUnit report
-nextest just wrote (`target/nextest/ci/junit.xml`, or the gate's run directory under
-`nextest-reports/` when `scripts/verify.sh` runs it). CI also adds it to the step summary, and
-a Task gate's output ends with it. Before nextest starts, the JUnit an earlier run left at that
-path is removed, so a run that writes none is never reported from an old one. The report never
+nextest just wrote. Each run writes it into a private run directory under `nextest-reports/`
+(below `target/`, or the gate's target when `scripts/verify.sh` runs it), so two `make test`
+runs in one checkout, even overlapping ones, each report their own tests. A plain `make test`
+then copies its JUnit to `target/nextest/ci/junit.xml`, replacing the file in one rename, and
+removes its run directory. Before nextest starts, the JUnit an earlier run left there is
+removed, and a run that writes none removes it again when it ends. Runs take turns on that path,
+so it holds the JUnit of the run that finished last, or nothing if that run wrote none. CI also
+adds the summary to the step summary, and a Task gate's output ends with it. The report never
 changes the step's exit status: if the JUnit is missing or unreadable, or its testcases do not
 add up to the `tests`, `failures` and `errors` counts nextest declared, you get a warning
 instead. Read it top down:

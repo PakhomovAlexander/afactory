@@ -282,3 +282,5 @@ future readers need.
   commands](0154-check-for-updates-after-headless-and-json-commands.md)
 - [0155 — Publish a fixture marker whole or not at
   all](0155-publish-a-fixture-marker-whole-or-not-at-all.md)
+- [0156 — Give every `make test` run a private JUnit
+  store](0156-give-every-make-test-run-a-private-junit-store.md)
