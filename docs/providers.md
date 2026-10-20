@@ -28,6 +28,14 @@ command a human should run at a private terminal. In this default path, `af` doe
 complete an OAuth flow, and it never captures, parses, stores or re-emits what that login prints
 ([ADR-0112](adr/0112-refuse-agent-mediated-provider-logins.md)).
 
+What the terminal check protects against is **accidental capture**: a pipe, a CI job, a chat or
+agent transcript, a tool call that runs `af` without a terminal. It cannot tell a human from a
+program. A caller that holds a pseudo-terminal (`script`, `expect`, `tmux send-keys`, `ssh -tt`,
+a PTY library) passes the check, sees the OAuth URL and can type the code, exactly as a person at
+that terminal would; such a caller is out of this boundary's scope, and a test pins that it
+reaches the login. An agent that must start a login on someone's behalf uses the private host
+protocol below, whose permission and private delivery are explicit capabilities.
+
 ## Onboarding a Provider
 
 Already authenticated with the official CLI? Then no login is needed and none is started:
@@ -321,22 +329,37 @@ credential filter judges every such line before it reaches stderr, the human tab
 an Attempt diagnostic, and replaces the whole line with `[line withheld: looks like credential
 material]` when it contains:
 
-- a key, token, secret, password, credential or auth assignment, in any case and with any prefix:
-  `API_KEY=…`, `OPENAI_API_KEY="…"`, `ANTHROPIC_API_KEY: …`, `"refresh_token": "…"`;
-- `Bearer` followed by a token, or an `Authorization` header;
-- a token prefix such as `sk-`, `sk-ant-`, `sk-proj-`, `ghp_`, `github_pat_`, `xoxb-` or `glpat-`;
-- a run of 32 or more hexadecimal characters, a run of 32 or more base64 or base64url characters
-  (`A-Z`, `a-z`, `0-9`, `+`, `/`, `=`, `_`, `-`) that holds at least one upper-case letter, one
-  lower-case letter and one digit, or a JSON Web Token (exactly three non-empty base64url runs
-  joined by single dots, the first starting with `eyJ`, the first and third each 16 or more
-  characters long, bounded by any other character or the line's ends; `error: eyJabc.def.ghi`
-  passes), while a run of letters alone, such as a long option name or a
-  path (`--dangerously-bypass-approvals-and-sandbox`, `/Users/alice/projects/af`), passes by
-  design.
+- a key, token, secret, password, passphrase, credential or auth assignment, in any case and
+  with any prefix: `API_KEY=…`, `OPENAI_API_KEY="…"`, `ANTHROPIC_API_KEY: …`,
+  `"refresh_token": "…"`, `DB_PW=…`;
+- a password after whitespace alone: `--password hunter2`, a `.netrc` line
+  (`machine … login alice password hunter2`), and `mysql -u root -phunter2`; prose such as
+  `password is incorrect` passes;
+- a URL carrying a password (`postgres://app:pw@db`) or any user in an `http(s)` URL
+  (`https://token@github.com`); `ssh://git@github.com/…` passes;
+- `Bearer` followed by a token (`Bearer: …` too), or an `Authorization` header;
+- a token prefix such as `sk-`, `sk-ant-`, `sk-proj-`, `ghp_`, `github_pat_`, `xoxb-` or `glpat-`,
+  and an AWS access key id (`AKIA…`, `ASIA…`);
+- a run of 32 or more hexadecimal characters, or 20 or more mixing letters and digits; a run of
+  32 or more base64 or base64url characters (`A-Z`, `a-z`, `0-9`, `+`, `/`, `=`, `_`, `-`) that
+  holds at least one upper-case letter, one lower-case letter and one digit; a run of 40 or more
+  lower-case letters and digits holding both; or a JSON Web Token (three non-empty base64url runs,
+  `+` and `/` allowed, joined by single dots, the first starting with `eyJ` and 16 or more
+  characters long; `error: eyJabc.def.ghi` passes). A run of letters alone, such as a long option
+  name or a path (`--dangerously-bypass-approvals-and-sandbox`, `/Users/alice/projects/af`), and
+  a git object id or a SHA-256 digest standing alone (`sha256:…`, a 40-hex commit), pass by
+  design;
+- two long words joined by one space that pass for one of these together (`sk- ant-api03-…`, a
+  key split in two);
+- a device code (`ABCD-EFGH`) on a line that says `code`, and the account a login holds
+  (`Logged in as alice@example.com`).
+
+The filter is a bounded heuristic, not a promise to recognise every secret.
 
 An ordinary argument error such as `error: unexpected argument '--stdio' found` passes through. A
-stream that carries login-challenge material anywhere (an official login origin, a device or user
-code, an OAuth parameter) is that marker alone, and so is a Worker's stderr excerpt when its stdout
+stream that carries login-challenge material anywhere (an official login origin or a device page
+such as `/login/device`, a device, user or one-time code, an OAuth parameter such as `?code=` or
+`#code=`) is that marker alone, and so is a Worker's stderr excerpt when its stdout
 carries such material, because both captured streams are then replaced. The exit status and the classification always
 stay, and a withheld rate-limit label keeps its window figures. Provider-authored text never
 reaches a versioned JSON document or retry feedback.

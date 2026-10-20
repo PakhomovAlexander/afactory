@@ -93,7 +93,13 @@ pub struct WriterOptions {
     pub content_max_blob_bytes: u64,
     pub af_version: String,
     pub af_commit: String,
+    /// The whole command line, recorded from `spans` on.
     pub argv: Vec<String>,
+    /// `argv[0]` and the subcommand path (`af task show`), the only command-line words the
+    /// header records at `metrics`. Empty, as [`WriterOptions::new`] leaves it, it is derived
+    /// from `argv` by [`command_path`]; a caller that parsed its command line sets it exactly.
+    pub command: Vec<String>,
+    /// The working directory, recorded from `spans` on.
     pub cwd: PathBuf,
     pub redactor: Redactor,
     pub registration: Option<Registration>,
@@ -114,6 +120,7 @@ impl WriterOptions {
             af_version: env!("CARGO_PKG_VERSION").to_string(),
             af_commit: "unknown".to_string(),
             argv: std::env::args().collect(),
+            command: Vec::new(),
             cwd: std::env::current_dir().unwrap_or_default(),
             redactor: Redactor::for_this_process(),
             registration: None,
@@ -129,6 +136,31 @@ impl WriterOptions {
         self.content_max_blob_bytes = settings.content_max_blob_bytes;
         self
     }
+}
+
+/// The deepest subcommand path [`command_path`] keeps: `af provider auth begin`.
+pub const MAX_SUBCOMMAND_DEPTH: usize = 3;
+
+/// `argv[0]` and the subcommand path of `argv`: the leading arguments shaped like a subcommand
+/// name (a lower-case letter, then lower-case letters, digits and `-`), at most
+/// [`MAX_SUBCOMMAND_DEPTH`], ending at the first option or any other argument.
+pub fn command_path(argv: &[String]) -> Vec<String> {
+    let subcommand = |word: &&String| {
+        word.starts_with(|c: char| c.is_ascii_lowercase())
+            && word
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    };
+    argv.iter()
+        .take(1)
+        .chain(
+            argv.iter()
+                .skip(1)
+                .take_while(subcommand)
+                .take(MAX_SUBCOMMAND_DEPTH),
+        )
+        .cloned()
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -601,9 +633,17 @@ impl Writer {
     fn header(&self, segment_id: &str) -> Record {
         let options = &self.shared.options;
         let redactor = &options.redactor;
-        // An option's value under a secret name is withheld first, then each argument is judged
-        // whole and bounded.
-        let (argv, _) = redact::withhold_option_values(&options.argv);
+        // At `metrics` the command line is `argv[0]` and the subcommand path, and the working
+        // directory is not recorded; from `spans` on both are whole. An option's value under a
+        // secret name is withheld first, then each argument is judged whole and bounded.
+        let whole = options.level >= Level::Spans;
+        let argv = if whole {
+            redact::withhold_option_values(&options.argv).0
+        } else if options.command.is_empty() {
+            command_path(&options.argv)
+        } else {
+            options.command.clone()
+        };
         let (argv, _) =
             record::bound_attributes(Attrs::new().texts("argv", argv), redactor, &mut |_, _| None);
         let argv = match argv.get("argv") {
@@ -615,10 +655,14 @@ impl Writer {
         };
         // Free text is judged whole before it is cut: a credential in the working directory
         // leaves the marker, never a prefix of itself.
-        let cwd = record::cut(
-            &redactor.value(&options.cwd.to_string_lossy()).0,
-            MAX_STRING_BYTES,
-        );
+        let cwd = if whole {
+            record::cut(
+                &redactor.value(&options.cwd.to_string_lossy()).0,
+                MAX_STRING_BYTES,
+            )
+        } else {
+            String::new()
+        };
         // The build's commit is kept when it is a commit id (40 or 64 lowercase hex digits) or
         // a kernel identity, and judged as text otherwise.
         let commit = &options.af_commit;

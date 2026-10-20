@@ -6,7 +6,7 @@
 //! telemetry itself.
 
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use review_telemetry::dirs::{self, Accounted};
 use review_telemetry::level::Settings;
@@ -104,14 +104,18 @@ fn chosen(dir: Option<PathBuf>, settings: &Settings) -> Result<PathBuf, String> 
     }
 }
 
-fn home_relative(path: &str) -> String {
-    match config::home() {
-        Ok(home) => match Path::new(path).strip_prefix(&home) {
-            Ok(rest) => format!("~/{}", rest.display()),
-            Err(_) => path.to_string(),
-        },
-        Err(_) => path.to_string(),
-    }
+/// The warning `status` gives when the directory is over `[telemetry] max_bytes`, which this
+/// release does not enforce.
+fn over_max_bytes_warning(status: &Status) -> Option<String> {
+    status.over_max_bytes().map(|over| {
+        format!(
+            "warning: the telemetry directory holds {}, {} over [telemetry] max_bytes ({}); the \
+             cap is advisory on this release and nothing removes telemetry to meet it",
+            human_bytes(status.bytes.total),
+            human_bytes(over),
+            human_bytes(status.bytes.max_bytes)
+        )
+    })
 }
 
 /// `af telemetry status`.
@@ -134,6 +138,13 @@ pub(crate) fn status(json: bool, dir: Option<PathBuf>) -> Result<i32, String> {
     if let Some(note) = note {
         eprintln!("{COMMAND}: {note}");
     }
+    if let Some(warning) = over_max_bytes_warning(&status) {
+        eprintln!("{COMMAND}: {warning}");
+    }
+    let status = match config::home() {
+        Ok(home) => status.relative_to(&home),
+        Err(_) => status,
+    };
     if json {
         println!(
             "{}",
@@ -149,7 +160,7 @@ fn render_status(status: &Status) -> String {
     let mut out = String::new();
     let level = status.level.as_str();
     let perturbing = if status.perturbing {
-        " (perturbing: content is not bounded by the overhead gate)"
+        " (perturbing: keeps content blobs of what Workers saw and did)"
     } else {
         ""
     };
@@ -157,7 +168,7 @@ fn render_status(status: &Status) -> String {
     let _ = writeln!(
         out,
         "directory    {}{}",
-        home_relative(&status.directory),
+        status.directory,
         if status.exists {
             ""
         } else {
@@ -166,9 +177,15 @@ fn render_status(status: &Status) -> String {
     );
     let _ = writeln!(
         out,
-        "bytes        {} of a {} cap ([telemetry] max_bytes)",
+        "bytes        {} of a {} advisory cap ([telemetry] max_bytes; nothing removes telemetry \
+         to meet it on this release){}",
         human_bytes(status.bytes.total),
-        human_bytes(status.bytes.max_bytes)
+        human_bytes(status.bytes.max_bytes),
+        if status.over_max_bytes().is_some() {
+            " — over"
+        } else {
+            ""
+        }
     );
     for entry in &status.bytes.entries {
         if entry.bytes == 0 && entry.kind != "segment" {
@@ -243,8 +260,7 @@ fn render_status(status: &Status) -> String {
         let _ = writeln!(
             out,
             "unreadable   {}: {}",
-            home_relative(&unreadable.path),
-            unreadable.reason
+            unreadable.path, unreadable.reason
         );
     }
     if !status.registered.is_empty() {
@@ -272,7 +288,7 @@ fn render_status(status: &Status) -> String {
             } else {
                 format!("  ({})", notes.join("; "))
             };
-            let _ = writeln!(out, "  {}{notes}", home_relative(&dir.path));
+            let _ = writeln!(out, "  {}{notes}", dir.path);
         }
     }
     out
@@ -293,6 +309,10 @@ pub(crate) fn reindex(json: bool, dir: Option<PathBuf>) -> Result<i32, String> {
         ));
     }
     let document = telemetry_status::reindex(&root)?;
+    let document = match config::home() {
+        Ok(home) => document.relative_to(&home),
+        Err(_) => document,
+    };
     if json {
         println!(
             "{}",
@@ -306,7 +326,7 @@ pub(crate) fn reindex(json: bool, dir: Option<PathBuf>) -> Result<i32, String> {
 
 fn render_reindex(document: &Reindex) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "reindexed    {}", home_relative(&document.directory));
+    let _ = writeln!(out, "reindexed    {}", document.directory);
     let _ = writeln!(
         out,
         "segments     {} ({} records): {} spans, {} events, {} blobs, {} occurrences",
@@ -348,9 +368,57 @@ fn render_reindex(document: &Reindex) -> String {
         let _ = writeln!(
             out,
             "unreadable   {}: {}",
-            home_relative(&unreadable.path),
-            unreadable.reason
+            unreadable.path, unreadable.reason
         );
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(total: u64, max_bytes: u64) -> Status {
+        serde_json::from_value(serde_json::json!({
+            "schema": "af/telemetry-status@1",
+            "level": "content",
+            "perturbing": true,
+            "directory": "~/.local/state/af/telemetry",
+            "exists": true,
+            "bytes": {"total": total, "max_bytes": max_bytes, "entries": []},
+            "segments": {"live": 0, "unsealed": 0, "sealed": 0, "corrupt": 0},
+            "runs": 0,
+            "withheld_attempts": 0,
+            "missing_blobs": 0,
+            "blob_verification": "verified",
+            "index": {
+                "state": "fresh",
+                "ingested_segments": 0,
+                "ingested_records": 0,
+                "ingested_bytes": 0
+            },
+            "problems": [],
+            "unreadable": [],
+            "registered": []
+        }))
+        .unwrap()
+    }
+
+    /// `[telemetry] max_bytes` is advisory on this release: `status` says so on its bytes line
+    /// and warns when the directory is over it (audit L17), and names no overhead gate (I3).
+    #[test]
+    fn status_warns_when_over_the_advisory_cap() {
+        let under = status(1 << 20, 256 << 20);
+        assert_eq!(over_max_bytes_warning(&under), None);
+        let text = render_status(&under);
+        assert!(text.contains("advisory cap"), "{text}");
+        assert!(!text.contains("— over"), "{text}");
+        assert!(!text.contains("overhead gate"), "{text}");
+
+        let over = status(300 << 20, 256 << 20);
+        let warning = over_max_bytes_warning(&over).unwrap();
+        assert!(warning.contains("over [telemetry] max_bytes"), "{warning}");
+        assert!(warning.contains("advisory on this release"), "{warning}");
+        assert!(render_status(&over).contains("— over"));
+    }
 }

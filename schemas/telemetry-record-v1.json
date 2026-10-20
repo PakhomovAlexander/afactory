@@ -712,7 +712,7 @@
           "minimum": 0
         },
         "redaction": {
-          "const": "af-redact/1"
+          "const": "af-redact/2"
         }
       }
     },
@@ -792,7 +792,7 @@
           "description": "How this occurrence's source was judged (per line, or as one JSON document) and how its retained bytes read. It belongs to the occurrence, never to the shared object: two sources of different media types may retain identical bytes."
         },
         "redaction": {
-          "const": "af-redact/1"
+          "const": "af-redact/2"
         }
       }
     },

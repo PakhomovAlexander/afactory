@@ -14,7 +14,10 @@ use crate::{options, sealed_lines};
 
 const DIGEST: &str = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
 const JWT: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlc2lnbmF0dXJl";
-const HEX_RUN: &str = "3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f";
+/// A hex secret: longer than a git object id, shorter than a digest.
+const HEX_RUN: &str = "3f9a1c0b7e6d5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b";
+/// A 32-hex trace id: a kernel identity in an identity position, a secret run anywhere else.
+const TRACE_SHAPED: &str = "0123456789abcdef0123456789abcdef";
 
 /// Every credential kind of design §8, as text lines.
 fn credential_lines() -> Vec<String> {
@@ -68,7 +71,7 @@ fn telemetry_redaction_keeps_identities() {
                 .text("af.failure.reason", credential_lines().join("\n")),
         )
         .unwrap();
-    // The same digest in untrusted text earns no exemption.
+    // A digest in untrusted text is judged as text, and a digest is no credential there.
     writer.event(
         &run,
         "af.note",
@@ -102,7 +105,7 @@ fn telemetry_redaction_keeps_identities() {
     assert_eq!(attributes["af.failure.reason"], WITHHELD);
     assert_eq!(attributes["af.redacted"], 1);
     let note = lines.iter().find(|line| line["name"] == "af.note").unwrap();
-    assert_eq!(note["attributes"]["af.text"], WITHHELD);
+    assert_eq!(note["attributes"]["af.text"], format!("digest {DIGEST}"));
     for line in &lines {
         assert_no_fixture(&line.to_string());
         if let Some(time) = line.get("start_unix_ns").or(line.get("time_unix_ns")) {
@@ -111,7 +114,7 @@ fn telemetry_redaction_keeps_identities() {
     }
     let blob = lines.iter().find(|line| line["t"] == "blob").unwrap();
     let digest = blob["digest"].as_str().unwrap();
-    assert_eq!(blob["redaction"], "af-redact/1");
+    assert_eq!(blob["redaction"], "af-redact/2");
     let review_telemetry::blob::reader::Content::Bytes(bytes) =
         review_telemetry::blob::reader::read(&Layout::new(temp.path()), digest)
     else {
@@ -121,8 +124,9 @@ fn telemetry_redaction_keeps_identities() {
     assert_no_fixture(&content);
     assert_eq!(
         content.matches(WITHHELD_LINE).count(),
-        credential_lines().len() + 1
+        credential_lines().len()
     );
+    assert!(content.contains(&format!("blob {DIGEST}\n")), "{content}");
     assert!(content.contains("an ordinary line\n"), "{content}");
 }
 
@@ -153,10 +157,10 @@ fn telemetry_redaction_withholds_secret_members() {
     assert_eq!(document["items"][0]["access_token"], WITHHELD);
     assert_eq!(document["items"][1]["name"], "kept");
     assert_eq!(document["credentials"], Value::Null);
-    // A harness document has no exempt field: a digest-shaped value is a secret run there.
-    assert_eq!(document["id"], WITHHELD);
+    // A harness document has no exempt field, and needs none for a digest: it is no secret.
+    assert_eq!(document["id"], DIGEST);
     assert_eq!(document["count"], 3);
-    assert_eq!(withheld, 8);
+    assert_eq!(withheld, 7);
     for secret in ["violet", "\"pw\"", "12345678", "4321", "short"] {
         assert!(!text.contains(secret), "{secret} in {text}");
     }
@@ -169,7 +173,7 @@ fn telemetry_redaction_withholds_secret_members() {
     let mut kernel = json!({
         "artifact_id": DIGEST,
         "refs": [DIGEST],
-        "payload": {"secret": DIGEST, "note": DIGEST}
+        "payload": {"secret": DIGEST, "note": TRACE_SHAPED}
     });
     Redactor::new().kernel_json(&mut kernel, &["/artifact_id", "/refs/*"]);
     assert_eq!(kernel["artifact_id"], DIGEST);
@@ -215,7 +219,7 @@ fn telemetry_redaction_withholds_credential_member_names() {
         serde_json::to_vec(&json!({"tools": [{"sk-live-1234": "x"}], "ok": DIGEST})).unwrap();
     let prepared = blob::prepare(&source, Media::Json, 64 * 1024, &Redactor::new());
     let retained: Value = serde_json::from_slice(&prepared.retained).unwrap();
-    assert_eq!(retained, json!({"tools": [WITHHELD], "ok": WITHHELD}));
+    assert_eq!(retained, json!({"tools": [WITHHELD], "ok": DIGEST}));
 }
 
 #[test]
@@ -342,10 +346,16 @@ fn telemetry_redaction_covers_event_names_and_header_fields() {
                 path.display()
             );
         }
-        // Each field carries the withheld marker instead.
+        // Each field carries the withheld marker instead; at `metrics` the header records no
+        // working directory at all.
         let lines = sealed_lines(&sealed.path);
         let header = lines.iter().find(|line| line["t"] == "segment").unwrap();
-        assert_eq!(header["cwd"], WITHHELD, "{level:?}");
+        let cwd = if level == Level::Metrics {
+            ""
+        } else {
+            WITHHELD
+        };
+        assert_eq!(header["cwd"], cwd, "{level:?}");
         let events: Vec<&Value> = lines.iter().filter(|line| line["t"] == "event").collect();
         assert_eq!(events.len(), 3, "{level:?}");
         for event in &events {
@@ -810,7 +820,7 @@ fn telemetry_config_rows_withhold_pairs_under_credential_shaped_keys() {
 /// The identity exemption holds only for a value that is exactly a kernel identity grammar in an
 /// identity position: an identity-shaped credential handed to `Attrs::id` under `af.run_id`, a
 /// node record's `node_id` or a span's `trace_id` is withheld, a real digest or id survives in
-/// its position, and the same digest outside an identity position is judged as text.
+/// its position, and a kernel id outside an identity position is judged as text.
 #[test]
 fn telemetry_identity_exemption_requires_kernel_grammar() {
     use review_telemetry::record::{Node, schema};
@@ -845,7 +855,7 @@ fn telemetry_identity_exemption_requires_kernel_grammar() {
             .id("af.context.manifest", DIGEST)
             .id("af.execution_id", segment_id)
             .id("af.task_id", "telemetry-p1")
-            .id("af.note", DIGEST)
+            .id("af.note", TRACE_SHAPED)
             .id("af.label", "sk-live-violet")
     };
     for level in [Level::Metrics, Level::Spans, Level::Content] {
@@ -871,7 +881,7 @@ fn telemetry_identity_exemption_requires_kernel_grammar() {
             execution_id: segment_id.into(),
             plan_digest: DIGEST.into(),
             node_id: "sk-proj-violet".into(),
-            kind: DIGEST.into(),
+            kind: TRACE_SHAPED.into(),
             package: Some("correctness@1.2.0".into()),
             depends_on: vec!["sk-proj-violet".into(), "n0".into(), DIGEST.into()],
             expected_nodes: 3,
@@ -901,7 +911,7 @@ fn telemetry_identity_exemption_requires_kernel_grammar() {
             assert_eq!(attributes["af.execution_id"], segment_id, "{level:?}");
             // An identity that is no kernel grammar is text, kept when it is harmless.
             assert_eq!(attributes["af.task_id"], "telemetry-p1", "{level:?}");
-            // A digest outside an identity position is judged as text: a secret run.
+            // A 32-hex id outside an identity position is judged as text: a secret run.
             assert_eq!(attributes["af.note"], WITHHELD, "{level:?}");
             assert_eq!(attributes["af.label"], WITHHELD, "{level:?}");
             assert_eq!(attributes["af.redacted"], 4, "{level:?}: {attributes}");
@@ -1144,4 +1154,97 @@ fn telemetry_usage_counters_are_canonical_decimal_strings() {
         .filter(|name| *name != "*")
         .collect();
     assert_eq!(documented, EXACT_COUNTERS);
+}
+
+/// The segment header at `metrics` records `argv[0]` and the subcommand path and no working
+/// directory (audit L11); from `spans` on it records the whole command line, every value of a
+/// secret option (`-p`, `--pw`) and every argument shaped like a credential withheld, and the
+/// working directory.
+#[test]
+fn telemetry_header_records_the_command_line_by_level() {
+    use review_telemetry::segment::writer::{Writer, command_path};
+    let argv: Vec<String> = [
+        "/usr/local/bin/af",
+        "task",
+        "show",
+        "--state",
+        "/srv/secret-client/state",
+        "-p",
+        "hunter2",
+        "--pw",
+        "hunter3",
+        "postgres://app:S3cretPw@db.internal/prod",
+        "telemetry-p1",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    assert_eq!(command_path(&argv), ["/usr/local/bin/af", "task", "show"]);
+    let deep: Vec<String> = ["af", "provider", "auth", "begin", "extra", "--kind"]
+        .map(str::to_string)
+        .to_vec();
+    assert_eq!(command_path(&deep), ["af", "provider", "auth", "begin"]);
+    for level in [Level::Metrics, Level::Spans, Level::Content] {
+        let temp = tempfile::tempdir().unwrap();
+        let mut options = options(temp.path(), level);
+        options.argv = argv.clone();
+        options.cwd = std::path::PathBuf::from("/srv/secret-client/repo");
+        let writer = Writer::new(options).unwrap();
+        let span = writer
+            .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+            .unwrap();
+        writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+        let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+        let text = String::from_utf8(crate::sealed_bytes(&sealed.path)).unwrap();
+        for secret in ["hunter2", "hunter3", "S3cretPw"] {
+            assert!(!text.contains(secret), "{level:?}: {secret} in {text}");
+        }
+        let lines = sealed_lines(&sealed.path);
+        let header = lines.iter().find(|line| line["t"] == "segment").unwrap();
+        if level == Level::Metrics {
+            assert_eq!(
+                header["argv"],
+                json!(["/usr/local/bin/af", "task", "show"]),
+                "{level:?}"
+            );
+            assert_eq!(header["cwd"], "", "{level:?}");
+            assert!(!text.contains("secret-client"), "{level:?}: {text}");
+            assert!(!text.contains("telemetry-p1"), "{level:?}: {text}");
+        } else {
+            assert_eq!(
+                header["argv"],
+                json!([
+                    "/usr/local/bin/af",
+                    "task",
+                    "show",
+                    "--state",
+                    "/srv/secret-client/state",
+                    "-p",
+                    WITHHELD,
+                    "--pw",
+                    WITHHELD,
+                    WITHHELD,
+                    "telemetry-p1"
+                ]),
+                "{level:?}"
+            );
+            assert_eq!(header["cwd"], "/srv/secret-client/repo", "{level:?}");
+        }
+    }
+    // A caller that parsed its command line names the path exactly: a positional argument shaped
+    // like a subcommand (`af provider setup work`) is then not recorded at `metrics`.
+    let temp = tempfile::tempdir().unwrap();
+    let mut options = options(temp.path(), Level::Metrics);
+    options.argv = ["af", "provider", "setup", "work"]
+        .map(str::to_string)
+        .to_vec();
+    options.command = ["af", "provider", "setup"].map(str::to_string).to_vec();
+    let writer = Writer::new(options).unwrap();
+    let span = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+    let sealed = writer.finish(SealExit::Ok).unwrap().unwrap();
+    let lines = sealed_lines(&sealed.path);
+    let header = lines.iter().find(|line| line["t"] == "segment").unwrap();
+    assert_eq!(header["argv"], json!(["af", "provider", "setup"]));
 }
