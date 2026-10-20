@@ -5,7 +5,7 @@
   unavailable with the bound it reached. A complete Survey is reused only while its survey key is
   unchanged (the head commit, the digest of one bounded `for-each-ref` observation of
   `refs/heads` and `refs/tags`, which also yields `history`'s tags and branches, the policy
-  digest and Surveyor version 6), taken from the record; replay binds every `SurveyRecorded@1`
+  digest and Surveyor version 7), taken from the record; replay binds every `SurveyRecorded@1`
   to its record, or a collected Survey's to its tombstone, which copies every identity field of
   the record (head, refs, cutoff, completeness, policy, Surveyor version and previous Survey)
   once the event was verified against it, and `af project history`, `af project survey` with
@@ -30,15 +30,23 @@
   of temporary manifest data, and absent with `deadline`, `max_record_bytes`, `manifest_bytes` or
   `temp_bytes`, never the digest of a part; its spilled runs live in an
   `af-tree-digest-<pid>-*` directory that the crash sweep of sandboxes and check runtimes reaps
-  under the same liveness and preservation rules, and the next refresh sweeps a killed one's.
+  under the same liveness and preservation rules, and every refresh sweeps a killed one's first,
+  before it decides to reuse a Survey, within its deadline. A Survey is published through a
+  pending-publication entry beside the Project Store's lock (`af/survey-pending@1`, the Survey
+  ID, its length and, once written, the CAS object's device and inode), cleared once
+  `SurveyRecorded@1` committed, so a crash between the record and its event leaves the entry,
+  and the next refresh of the same bytes finishes it.
   A complete Survey is byte-identical for the same head, refs, policy, Surveyor and git
   versions, cutoff and previous Survey, and one that is not complete records where it stopped
   (`stopped`: the section, the item index, the commit or path, the reason), which `af project
   survey` prints. The history walk includes merges with `--diff-merges=off`, so a merge counts
   as a commit and a merge with no churn, and reads `git log -z` in NUL-separated fields with the
   commit ID repeated, so an author name or subject holding 0x1f is read whole and a record that
-  does not parse stops the walk with `malformed_record` naming its commit, never a guessed
-  identity. `max_paths`, `max_entries` and `max_survey_bytes`
+  does not parse, or a log that ends before its last record's NUL, stops the walk with
+  `malformed_record` naming its commit, never a guessed identity, never complete history and
+  never `SurveyFailed@1`; a malformed first record leaves `history` and `contributors` partial
+  with zero counts, naming the head. A gitlink is one file of zero bytes and lines, language
+  `other`, never fetched, and left out of the Tree Digest as the committed Manifest leaves it. `max_paths`, `max_entries` and `max_survey_bytes`
   are ceilings a layer may only lower, every pattern list holds at most 64 patterns, the history
   walk tracks at most `max_paths` paths, and every list is ranked before `max_entries` cuts it
   with `seen` and a reason, while display strings are cut to 256 bytes and marked `truncated` and

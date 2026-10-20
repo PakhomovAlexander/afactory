@@ -410,8 +410,11 @@ history at item 9, commit 219207013596 (max_commits)`. A complete Survey has no 
 | `checks` | the names and programs, never an argument, of the checks of exactly `.af/code-policy.toml` (source `code-policy`) and every `.af/pipelines/*.toml` in the head tree, routed or not (source the file's basename), each `[[checks]]`, a check's identity being `<source>:<name>` so equal names in two pipelines are two checks; the toolchain files at the root among exactly these eight, `rust-toolchain.toml`, `rust-toolchain`, `.tool-versions`, `.nvmrc`, `.node-version`, `.python-version`, `.ruby-version` and `.java-version`, and no other (`.go-version` and `Cargo.toml` are none); the count of `.github/workflows/*.yml` and `*.yaml`; the declarations it could not read, under `unreadable` |
 
 A line is a newline of a text blob, one with no NUL in its first 8 KiB, at or under
-`max_file_bytes`. A larger or binary blob, a symlink and a submodule entry count as a file and
-its bytes only; symlinks and submodules are of language `other`. Each section carries
+`max_file_bytes`. A larger or binary blob and a symlink count as a file and its bytes only. A
+submodule entry, a gitlink (mode `160000`, whose size `git ls-tree -l` reports as `-`), is one
+file of zero bytes and zero lines, counted in `files_without_lines`; its target is never resolved
+or fetched, and the Tree Digest leaves it out as the committed Manifest does. Symlinks and
+gitlinks are of language `other`. Each section carries
 `completeness`: `complete`, `partial` with what it reached, or `unavailable`, and the bound it
 reached as `reason` when it is not complete: `max_wall_ms`, `max_record_bytes`,
 `malformed_record` (`history`'s and `contributors`' alone), `manifest_bytes`, `temp_bytes` (these
@@ -437,11 +440,18 @@ again, the `Co-Authored-By` values and the commit ID a third time. A commit cann
 ID, so the second proves the fields before it were read whole and the third ends the trailers.
 An author name holding 0x1f, or a subject holding 0x1f and a newline, is read whole like any
 other. A record that still does not parse (a field that holds a NUL, a parent or time that is
-not one, a numstat line that is not one) stops the walk there: `history` and `contributors` are
-`partial` (or `unavailable` when it was the first commit) with reason `malformed_record`,
-`history.stopped_in` and the stopping point name the commit, and no identity is guessed from
-it. A record over 64 KiB or a commit over `max_paths` names the commit it stopped in the same
-way.
+not one, a numstat line that is not one, an item that is neither) stops the walk there:
+`history` and `contributors` are `partial` with reason `malformed_record`, the commits before it
+counted, `history.stopped_in` and the stopping point name the commit, and no identity is guessed
+from it. So is a log that ends inside a record: the stream ends well only after a record that
+ended, its fields' NUL and every item after it read with their NUL, and a successful `git log`
+whose last record lacks its final NUL, or that ends right after a commit ID or inside the
+fields, is never whole history and never `SurveyFailed@1`. The cut record is the one named and
+is not counted, or the commit before it when the cut came before any ID. A malformed first
+record, the head's, leaves both sections `partial` too, with zero counts, naming the head:
+`unavailable`, which holds nothing but its completeness and reason, is for a walk that never
+started (the deadline before it). A record over 64 KiB or a commit over `max_paths` names the
+commit it stopped in the same way, the first included.
 
 `max_wall_ms` is one absolute deadline for the whole Survey, its start plus `max_wall_ms`, from
 before `rev-parse HEAD` to the last section. Every git process the Surveyor starts runs under the
@@ -470,10 +480,13 @@ in the canonical path order the capture's digest hashes, so the two digests are 
 does not finish it is absent, never the digest of a part, and its temporary storage is removed.
 The runs live in one directory `af-tree-digest-<pid>-<random>` under `$TMPDIR`, a name the crash
 sweep of sandbox and check runtime directories knows: when a refresh is killed after it spilled,
-the next refresh, before its own digest, and the sweep of the next review or Task run remove the
-directory once no process has that pid, under the same rules (a directory whose process still
-runs is kept, a `preserved` one is left for the operator, and the tree is removed through
-directory descriptors without following a link). On every other way out:
+the next refresh and the sweep of the next review or Task run remove the directory once no
+process has that pid, under the same rules (a directory whose process still runs is kept, a
+`preserved` one is left for the operator, and the tree is removed through directory descriptors
+without following a link). Every refresh sweeps first, before it decides whether to reuse the
+newest Survey, so one that reuses it still removes what a killed refresh spilled; the sweep is
+one listing of `$TMPDIR` and begins no removal after the refresh's deadline. On every other way
+out:
 `tree_digest_reason` is `deadline` when the deadline passed first (every later section is then
 `unavailable`), `max_record_bytes` for a listing record over 64 KiB, and `manifest_bytes` or
 `temp_bytes` when a ceiling stopped it, which makes `identity` partial with that reason and stops
@@ -633,7 +646,7 @@ over 64 KiB, records `SurveyFailed@1`. Then nothing beyond `rev-parse HEAD`, tha
 the newest Survey's summary, and nothing is recorded:
 
 ```text
-unchanged: head 219207013596, refs df39bc03fecd7f04, policy f9da720b696edb5a, surveyor 6
+unchanged: head 219207013596, refs df39bc03fecd7f04, policy f9da720b696edb5a, surveyor 7
 ```
 
 A new commit, even one with the same tree, a new tag or branch, a policy change or a newer
@@ -642,13 +655,23 @@ Surveyor records a new Survey, and so does a newest Survey that is `partial` or 
 for a `[survey]` key that does not load, a git that fails or a record over `max_survey_bytes`,
 records `SurveyFailed@1` and exits 1.
 
+A Survey is published under the Project Store's lock in this order: a pending-publication entry
+`pending-surveys/<64 hex>.json` beside `project.lock`, `af/survey-pending@1`
+([schema](../schemas/project-survey-pending-v1.json)) naming the Survey and the length of its
+bytes; the record into the CAS, and the CAS object's device and inode into the entry; then
+`SurveyRecorded@1`, and the entry removed once that committed. A crash between the bytes and the
+event leaves the entry with the object's identity, so the record no event names is never lost
+to inventory. The next refresh that measures the same bytes (the same Survey ID) finishes that
+publication and clears the entry; an entry of another Survey is left for collection. The entry
+is never in the repository or the log.
+
 An example, from the integration test's fixture repository
 (`crates/af/tests/it/project_survey.rs`), not from afactory:
 
 ```sh
 $ af project refresh
 recorded
-Survey sha256:5dc2bbc98c964255b4c4ac78f7ef47b1e5b57f9025479a72468251e65b6df756
+Survey sha256:79d9dbd24488723372bbf4279107fe4123d0b75a309012bf4ec28f1e9f2342ae
   head          219207013596994d436542a8fb656f7e3cdb2d17
   cutoff        2027-01-15T08:00:00Z
   completeness  complete
@@ -843,7 +866,8 @@ and 14).
 | `workspaces/LABEL/` with `state/`, `tasks/`, `bindings.toml` | in the Project Store | `workspace new` |
 | A worktree and a branch | beside the checkout, never inside it; in the repository's git directory | `workspace new` |
 | A Survey and `SurveyRecorded@1`, or `SurveyFailed@1` | in the Project Store's `cas/` and log | `af project refresh`, `af onboard --apply` |
-| The Tree Digest's spilled manifest runs (no blob, at most 256 MiB, only when the manifest exceeds 16 MiB) and the history's private bare repository (no object, attached to the checkout's object database) | `af-tree-digest-<pid>-*` and `review-kernel-tree-diff-*` under `$TMPDIR`, each removed when its step ends, a stopped one included; a spill a killed process left, by the next refresh or review or Task run once that pid is gone | `af project refresh`, `af onboard --apply` |
+| A pending-publication entry while a Survey is published, left by a crash between its record and its event | `pending-surveys/<64 hex>.json` beside `project.lock` | `af project refresh`, `af onboard --apply` |
+| The Tree Digest's spilled manifest runs (no blob, at most 256 MiB, only when the manifest exceeds 16 MiB) and the history's private bare repository (no object, attached to the checkout's object database) | `af-tree-digest-<pid>-*` and `review-kernel-tree-diff-*` under `$TMPDIR`, each removed when its step ends, a stopped one included; a spill a killed process left, by the next refresh (a reused Survey's included) or review or Task run once that pid is gone | `af project refresh`, `af onboard --apply` |
 
 Nothing is ever written inside a checkout: `.af/` holds declarations only
 ([ADR-0032](adr/0032-generate-review-authority-with-af-onboard.md),

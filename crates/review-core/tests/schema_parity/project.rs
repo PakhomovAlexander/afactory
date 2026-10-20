@@ -570,6 +570,50 @@ fn restopped(
     survey
 }
 
+/// `malformed`, whose walk stopped at a malformed record, stopped in its first record instead:
+/// `history` and `contributors` partial with zero counts under `identity`, the commit named.
+fn malformed_first(
+    malformed: &review_core::project::ProjectSurveyV1,
+    identity: review_core::project::SurveyIdentityPolicyV1,
+) -> review_core::project::ProjectSurveyV1 {
+    use review_core::project::*;
+    let mut first = malformed.clone();
+    if let Some(history) = first.history.body.as_mut() {
+        let none = || SurveyWindowV1 {
+            commits: 0.into(),
+            merges: 0.into(),
+        };
+        history.commits = 0.into();
+        history.merges = 0.into();
+        history.windows = SurveyWindowsV1 {
+            days_30: none(),
+            days_90: none(),
+            days_365: none(),
+        };
+        history.first_commit_unix_s = 0.into();
+        history.last_commit_unix_s = 0.into();
+        history.oldest_reached = None;
+        history.churn_90d.clear();
+        history.hot_paths.clear();
+    }
+    first.contributors = SurveySectionV1::partial(
+        SurveyReasonV1::MalformedRecord,
+        SurveyContributorsV1 {
+            identity,
+            identities: 0.into(),
+            active_90d: 0.into(),
+            human_commits: 0.into(),
+            agent_commits: 0.into(),
+            human_share_bp: 0.into(),
+            agent_share_bp: 0.into(),
+            top_share_bp: 0.into(),
+            by_identity: Vec::new(),
+            seen: std::collections::BTreeMap::new(),
+        },
+    );
+    restopped(first)
+}
+
 /// The record, its schema and the Rust validator agree on what a Survey is.
 #[test]
 fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
@@ -995,15 +1039,96 @@ fn a_survey_that_is_not_complete_names_its_stopping_point() {
     let mut not_a_commit = malformed_value.clone();
     not_a_commit["history"]["stopped_in"] = json!("HEAD");
     assert_invalid(SCHEMA, &not_a_commit, "stopped_in is a commit ID");
-    // A history that reached no commit holds no measurement: the stop alone names the commit.
-    let mut first = malformed.clone();
-    first.history = SurveySectionV1::unavailable(SurveyReasonV1::MalformedRecord);
-    first.contributors = SurveySectionV1::unavailable(SurveyReasonV1::MalformedRecord);
-    if let Some(stop) = first.stopped.as_mut() {
-        stop.item = 1.into();
+    // A malformed first record leaves both sections partial with zero counts, under either
+    // identity policy, `stopped_in` and the stop naming the commit; never unavailable, which
+    // holds nothing but its completeness and reason.
+    for identity in [
+        SurveyIdentityPolicyV1::Name,
+        SurveyIdentityPolicyV1::EmailHash,
+    ] {
+        let first = malformed_first(&malformed, identity);
+        first.validate().unwrap();
+        let first_value = serde_json::to_value(&first).unwrap();
+        assert_valid(SCHEMA, &first_value);
+        assert_eq!(first_value["history"]["commits"], "0");
+        assert_eq!(
+            first_value["history"]["stopped_in"],
+            stopped_in.as_str(),
+            "{identity:?}"
+        );
+        assert_eq!(first_value["contributors"]["identities"], "0");
+        assert_eq!(first_value["contributors"]["identity"], identity.as_str());
+        assert_eq!(first_value["stopped"]["commit"], stopped_in.as_str());
+
+        let mut unnamed = first.clone();
+        if let Some(history) = unnamed.history.body.as_mut() {
+            history.stopped_in = None;
+        }
+        assert!(
+            restopped(unnamed.clone()).validate().is_err(),
+            "a malformed history names its commit"
+        );
+        assert_invalid(
+            SCHEMA,
+            &serde_json::to_value(restopped(unnamed)).unwrap(),
+            "a malformed history names its commit",
+        );
+        let mut unavailable = first.clone();
+        unavailable.history = SurveySectionV1::unavailable(SurveyReasonV1::MalformedRecord);
+        unavailable.contributors = SurveySectionV1::unavailable(SurveyReasonV1::MalformedRecord);
+        assert!(
+            restopped(unavailable.clone()).validate().is_err(),
+            "a malformed first record is partial, never unavailable"
+        );
+        assert_invalid(
+            SCHEMA,
+            &serde_json::to_value(restopped(unavailable.clone())).unwrap(),
+            "a malformed first record is partial, never unavailable",
+        );
+        // An unavailable history's stop names no commit, the one it stopped in least of all.
+        if let Some(stop) = unavailable.stopped.as_mut() {
+            stop.commit = Some(stopped_in.clone());
+        }
+        assert!(
+            unavailable.validate().is_err(),
+            "the stop's commit is history's"
+        );
+        let mut contributors_unavailable = first.clone();
+        contributors_unavailable.contributors =
+            SurveySectionV1::unavailable(SurveyReasonV1::MalformedRecord);
+        assert!(
+            restopped(contributors_unavailable.clone())
+                .validate()
+                .is_err(),
+            "malformed contributors are partial"
+        );
+        assert_invalid(
+            SCHEMA,
+            &serde_json::to_value(restopped(contributors_unavailable)).unwrap(),
+            "malformed contributors are partial",
+        );
     }
-    first.validate().unwrap();
-    assert_valid(SCHEMA, &serde_json::to_value(&first).unwrap());
+    // A history that folded no commit names the one it stopped in, whatever the bound.
+    let mut nothing = malformed_first(&malformed, SurveyIdentityPolicyV1::Name);
+    nothing.history.reason = Some(SurveyReasonV1::MaxRecordBytes);
+    nothing.contributors.reason = Some(SurveyReasonV1::MaxRecordBytes);
+    restopped(nothing.clone()).validate().unwrap();
+    assert_valid(
+        SCHEMA,
+        &serde_json::to_value(restopped(nothing.clone())).unwrap(),
+    );
+    if let Some(history) = nothing.history.body.as_mut() {
+        history.stopped_in = None;
+    }
+    assert!(
+        restopped(nothing.clone()).validate().is_err(),
+        "zero commits name the commit stopped in"
+    );
+    assert_invalid(
+        SCHEMA,
+        &serde_json::to_value(restopped(nothing)).unwrap(),
+        "zero commits name the commit stopped in",
+    );
 
     // Under max_file_bytes the stop names the first declaration not read.
     let mut unread = survey.clone();
@@ -1219,4 +1344,67 @@ fn the_history_document_lists_the_chain_newest_first() {
     ] {
         assert_invalid("project-history-v1.json", &broken, why);
     }
+}
+
+/// A pending-publication entry names its Survey, the length of its bytes and, once they were
+/// written, the CAS object's identity; nothing else, and never a path.
+#[test]
+fn a_pending_publication_names_its_survey_its_bytes_and_its_object() {
+    use review_core::project::*;
+    const SCHEMA: &str = "project-survey-pending-v1.json";
+    let begun = SurveyPendingV1 {
+        schema: SURVEY_PENDING_V1.into(),
+        survey_id: digest('a'),
+        bytes: 4_595.into(),
+        object: None,
+    };
+    begun.validate().unwrap();
+    let value = serde_json::to_value(&begun).unwrap();
+    assert_eq!(
+        value,
+        json!({"schema": "af/survey-pending@1", "survey_id": digest('a'), "bytes": "4595"})
+    );
+    assert_valid(SCHEMA, &value);
+    let written = SurveyPendingV1 {
+        object: Some(SurveyObjectIdentityV1 {
+            device: 16_777_232.into(),
+            inode: 123_456.into(),
+        }),
+        ..begun.clone()
+    };
+    written.validate().unwrap();
+    let written_value = serde_json::to_value(&written).unwrap();
+    assert_eq!(
+        written_value["object"],
+        json!({"device": "16777232", "inode": "123456"})
+    );
+    assert_valid(SCHEMA, &written_value);
+
+    for (broken, why) in [
+        (
+            with(&value, "schema", json!("af/survey-pending@2")),
+            "its version",
+        ),
+        (with(&value, "survey_id", json!("abc")), "a digest"),
+        (with(&value, "bytes", json!("0")), "a record has bytes"),
+        (with(&value, "bytes", json!(4595)), "decimal text"),
+        (with(&value, "path", json!("/tmp/x")), "no other field"),
+        (without(&value, "bytes"), "its length"),
+        (
+            with(&value, "object", json!({"device": "1"})),
+            "a device and an inode",
+        ),
+    ] {
+        assert_invalid(SCHEMA, &broken, why);
+        assert!(
+            serde_json::from_value::<SurveyPendingV1>(broken)
+                .map_err(|error| error.to_string())
+                .and_then(|entry| entry.validate())
+                .is_err(),
+            "{why}"
+        );
+    }
+    let mut oversize = begun;
+    oversize.bytes = (MAX_SURVEY_BYTES + 1).into();
+    assert!(oversize.validate().is_err(), "at most MAX_SURVEY_BYTES");
 }

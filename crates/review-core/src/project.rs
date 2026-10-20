@@ -1053,7 +1053,7 @@ impl ProjectSurveyV1 {
 
     /// Whether `stopped` is the stopping point the sections determine: present exactly when the
     /// Survey is not complete, on the section, reason and path they name, and on the commit
-    /// `history` names, which only a `history` without a measurement may name alone.
+    /// `history` names: an unavailable `history` names none.
     fn validate_stop(&self) -> Result<(), String> {
         let (stopped, expected) = match (&self.stopped, self.stopping_point()) {
             (None, None) => return Ok(()),
@@ -1075,14 +1075,7 @@ impl ProjectSurveyV1 {
         if stopped.path != expected.path {
             return Err("the stopping point's path is the first declaration not read".into());
         }
-        let commit_holds = match (&expected.commit, &stopped.commit) {
-            (Some(expected), stopped) => stopped.as_ref() == Some(expected),
-            (None, None) => true,
-            (None, Some(commit)) => {
-                expected.section == "history" && self.history.body.is_none() && is_commit_id(commit)
-            }
-        };
-        if !commit_holds {
+        if stopped.commit != expected.commit {
             return Err("the stopping point's commit is the one `history` stopped in".into());
         }
         Ok(())
@@ -1129,6 +1122,32 @@ impl ProjectSurveyV1 {
             return Err(format!(
                 "the Survey section `{name}` cannot stop at malformed_record: a log record"
             ));
+        }
+        // ... and names the commit it stopped in, the first included: a section it stopped is
+        // partial, since an unavailable one holds nothing but its completeness and reason.
+        if let Some((name, _, _)) = self
+            .sections()
+            .into_iter()
+            .find(|(_, completeness, reason)| {
+                *reason == Some(SurveyReasonV1::MalformedRecord)
+                    && *completeness != SurveyCompletenessV1::Partial
+            })
+        {
+            return Err(format!(
+                "the Survey section `{name}` stopped at malformed_record is partial, naming the \
+                 commit"
+            ));
+        }
+        if self.history.reason == Some(SurveyReasonV1::MalformedRecord)
+            && self
+                .history
+                .body
+                .as_ref()
+                .is_none_or(|history| history.stopped_in.is_none())
+        {
+            return Err(
+                "a history stopped at malformed_record names the commit in stopped_in".into(),
+            );
         }
         self.validate_stop()?;
         self.identity.validate_with("identity", validate_identity)?;
@@ -1332,8 +1351,11 @@ fn validate_tree(tree: &SurveyTreeV1) -> Result<(), String> {
 fn validate_history(history: &SurveyHistoryV1) -> Result<(), String> {
     let windows = &history.windows;
     let ordered = |window: &SurveyWindowV1| window.merges.get() <= window.commits.get();
-    if history.commits.get() == 0
-        || history.commits.get() > history.reachable_commits.get()
+    // A walk that folded no commit stopped in the head's record, and names it.
+    if history.commits.get() == 0 && history.stopped_in.is_none() {
+        return Err("a history that reached no commit names the commit it stopped in".into());
+    }
+    if history.commits.get() > history.reachable_commits.get()
         || history.merges.get() > history.commits.get()
         || windows.days_30.commits.get() > windows.days_90.commits.get()
         || windows.days_90.commits.get() > windows.days_365.commits.get()
@@ -1885,6 +1907,55 @@ impl SurveyCollectedPayloadV1 {
             if self.tree.is_some() || self.history.is_some() {
                 return Err("SurveyCollected@1 keeps no totals of an unreadable record".into());
             }
+        }
+        Ok(())
+    }
+}
+
+/// The schema of a pending-publication entry.
+pub const SURVEY_PENDING_V1: &str = "af/survey-pending@1";
+
+/// The identity of the CAS object a pending publication wrote: its device and inode, as the
+/// Surveyor stated it without following a link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SurveyObjectIdentityV1 {
+    pub device: DecimalU64,
+    pub inode: DecimalU64,
+}
+
+/// `af/survey-pending@1`: one Survey the Surveyor is publishing (ADR-0152 clause 2), a
+/// machine-local file beside the Project Store's lock, never in the repository or the log. It is
+/// written under the lock before the record's bytes go into the CAS, naming the Survey and the
+/// bytes it will hold; given the object's identity once they are written; and removed once
+/// `SurveyRecorded@1` committed. One that outlives its refresh names a record a crash left
+/// between the CAS and the log, which no event references.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SurveyPendingV1 {
+    pub schema: String,
+    pub survey_id: String,
+    /// The length of the record's canonical bytes.
+    pub bytes: DecimalU64,
+    /// The CAS object, once the bytes were written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<SurveyObjectIdentityV1>,
+}
+
+impl SurveyPendingV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema != SURVEY_PENDING_V1 {
+            return Err(format!(
+                "a pending publication's schema is {SURVEY_PENDING_V1}"
+            ));
+        }
+        if !crate::is_digest(&self.survey_id) {
+            return Err("a pending publication names its Survey by digest".into());
+        }
+        if self.bytes.get() == 0 || self.bytes.get() > MAX_SURVEY_BYTES {
+            return Err(format!(
+                "a pending publication holds a record of 1 to {MAX_SURVEY_BYTES} bytes"
+            ));
         }
         Ok(())
     }
