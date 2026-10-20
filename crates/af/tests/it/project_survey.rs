@@ -165,6 +165,64 @@ fn git(repo: &Path, args: &[&str]) -> String {
     git_as(repo, None, args)
 }
 
+/// The first 16 hex digits of SHA-256 of `bytes`.
+fn hex16(bytes: &[u8]) -> String {
+    review_core::hex::encode(&Sha256::digest(bytes))[..16].to_string()
+}
+
+/// A contributor's key under `identity = "name"`: the hash of the exact author-name bytes.
+fn name_key(name: &str) -> String {
+    hex16(name.as_bytes())
+}
+
+/// The `h:` identity of an author name that carries an email address, under either policy.
+fn name_hash(name: &str) -> String {
+    format!("h:{}", hex16(name.trim().to_lowercase().as_bytes()))
+}
+
+/// The contributor entry whose display name is `name`.
+fn contributor<'a>(contributors: &'a Value, name: &str) -> &'a Value {
+    contributors["by_identity"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["name"] == name)
+        .unwrap_or_else(|| panic!("no contributor {name}: {contributors}"))
+}
+
+/// The display names of `contributors`, in ranked order.
+fn names(contributors: &Value) -> Vec<String> {
+    contributors["by_identity"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The keys of `contributors`, in ranked order.
+fn keys(contributors: &Value) -> Vec<String> {
+    contributors["by_identity"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["key"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// A repository named `name` below `root` holding `files`, committed by Ada a day before the
+/// cutoff.
+fn repository(root: &Path, name: &str, files: &[(&str, &[u8])]) -> PathBuf {
+    let repo = root.join(name);
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    for (path, content) in files {
+        write(&repo, path, content);
+    }
+    commit(&repo, ADA, 1, &["Start"]);
+    repo
+}
+
 fn write(repo: &Path, path: &str, content: &[u8]) {
     let path = repo.join(path);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -473,8 +531,9 @@ fn the_fixture_repository_yields_the_checked_in_survey_byte_for_byte() {
     assert_eq!(contributors["human_share_bp"], "6250");
     assert_eq!(contributors["top_share_bp"], "5000");
     // Ada authored both agent-assisted human commits and the merge: her count holds them.
-    assert_eq!(contributors["by_identity"]["Ada"]["commits"], "4");
-    assert_eq!(contributors["by_identity"]["Bob"]["commits"], "2");
+    assert_eq!(contributor(contributors, "Ada")["commits"], "4");
+    assert_eq!(contributor(contributors, "Ada")["key"], name_key("Ada"));
+    assert_eq!(contributor(contributors, "Bob")["commits"], "2");
     let decisions = &survey["decisions"];
     assert_eq!(
         decisions["count"], "3",
@@ -498,12 +557,19 @@ fn the_fixture_repository_yields_the_checked_in_survey_byte_for_byte() {
     let declared = survey["checks"]["declared"].as_array().unwrap();
     assert_eq!(declared.len(), 3);
     assert!(declared.iter().any(|check| check["program"] == "make"));
+    assert_eq!(declared[0]["source"], "code-policy");
+    assert_eq!(declared[2]["source"], "review.toml");
     assert_eq!(survey["checks"]["ci_workflows"], "1");
+    assert_eq!(
+        survey["checks"]["toolchain"],
+        serde_json::json!(["rust-toolchain.toml"]),
+        "Cargo.toml declares no toolchain"
+    );
     let identity = &survey["identity"];
     assert_eq!(identity["name"], "survey-fixture");
     assert_eq!(identity["head"], git(&repo, &["rev-parse", "HEAD"]));
     assert_eq!(identity["cutoff_unix_s"], CUTOFF.to_string());
-    assert_eq!(identity["surveyor_version"], "2");
+    assert_eq!(identity["surveyor_version"], "3");
     assert_eq!(identity["git_version"], git_version().as_str());
     let refs = git(
         &repo,
@@ -580,7 +646,7 @@ fn an_unchanged_survey_key_records_nothing_and_prints_the_key() {
     let identity = &survey["identity"];
     let hex16 = |digest: &Value| digest.as_str().unwrap()["sha256:".len()..][..16].to_string();
     let key = format!(
-        "unchanged: head {}, refs {}, policy {}, surveyor 2",
+        "unchanged: head {}, refs {}, policy {}, surveyor 3",
         &identity["head"].as_str().unwrap()[..12],
         hex16(&identity["refs_digest"]),
         hex16(&identity["policy_digest"])
@@ -688,9 +754,26 @@ fn a_new_tag_a_new_branch_a_partial_survey_and_force_each_record_a_survey() {
 fn max_wall_ms_records_a_partial_survey_without_a_partial_tree_digest() {
     let machine = Machine::new();
     let repo = fixture(&machine.root());
-    let (stdout, stderr) = machine.expect(
+    // The deadline runs from before `rev-parse`: one millisecond computes no survey key.
+    let (_, stderr) = machine.expect(
         &repo,
         &[("AF_SURVEY__MAX_WALL_MS", "1")],
+        &["project", "refresh"],
+        1,
+    );
+    assert!(
+        stderr.contains("the survey key could not be computed within max_wall_ms"),
+        "{stderr}"
+    );
+    assert_eq!(machine.surveys(), 0);
+    // A deadline that passes inside `identity`, its one slowed section, once the key exists.
+    let (stdout, stderr) = machine.expect(
+        &repo,
+        &[
+            ("AF_SURVEY__MAX_WALL_MS", "1500"),
+            ("AF_TEST_SURVEY_SLOW_ITEM_US", "2000000"),
+            ("AF_TEST_SURVEY_SLOW_SECTION", "identity"),
+        ],
         &["project", "refresh"],
         0,
     );
@@ -851,12 +934,22 @@ fn a_long_author_name_is_cut_and_marked_and_seven_roots_stay_exact() {
     git(&repo, &["init", "-q", "-b", "main"]);
     let long = format!("Ada {}", "x".repeat(296));
     assert_eq!(long.len(), 300);
+    // A second author whose name shares the first 256 bytes of the first one's.
+    let twin = format!("Ada {}y", "x".repeat(295));
+    assert_eq!(&twin[..256], &long[..256]);
     write(&repo, "r0.txt", b"0\n");
     commit(
         &repo,
         (long.as_str(), "long@fixture.invalid"),
         9,
         &["Root 0"],
+    );
+    write(&repo, "r0b.txt", b"0\n");
+    commit(
+        &repo,
+        (twin.as_str(), "twin@fixture.invalid"),
+        9,
+        &["Root 0b"],
     );
     for root in 1..7 {
         git(
@@ -905,15 +998,32 @@ fn a_long_author_name_is_cut_and_marked_and_seven_roots_stay_exact() {
     let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
     schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
     assert_eq!(survey["identity"]["repository_id"], repository_id.as_str());
-    let by_identity = survey["contributors"]["by_identity"].as_object().unwrap();
-    let (name, entry) = by_identity
+    let contributors = &survey["contributors"];
+    let cut: Vec<&Value> = contributors["by_identity"]
+        .as_array()
+        .unwrap()
         .iter()
-        .find(|(name, _)| name.starts_with("Ada x"))
-        .unwrap();
+        .filter(|entry| entry["name"].as_str().unwrap().starts_with("Ada x"))
+        .collect();
+    // Two identities, by key, with equal display text.
+    assert_eq!(cut.len(), 2, "{contributors}");
+    assert_eq!(cut[0]["name"], cut[1]["name"]);
+    let name = cut[0]["name"].as_str().unwrap();
     assert_eq!(name.len(), 256);
-    assert!(long.starts_with(name.as_str()));
-    assert_eq!(entry["truncated"], true);
-    assert!(by_identity["Ada"].get("truncated").is_none());
+    assert!(long.starts_with(name));
+    let mut cut_keys: Vec<&str> = cut
+        .iter()
+        .map(|entry| entry["key"].as_str().unwrap())
+        .collect();
+    cut_keys.sort();
+    let mut expected = vec![name_key(&long), name_key(&twin)];
+    expected.sort();
+    assert_eq!(cut_keys, expected);
+    for entry in &cut {
+        assert_eq!(entry["truncated"], true);
+    }
+    assert!(contributor(contributors, "Ada").get("truncated").is_none());
+    assert_eq!(contributors["identities"], "4");
 }
 
 #[test]
@@ -1015,26 +1125,40 @@ fn no_author_email_reaches_a_record_an_event_a_document_or_an_output_under_eithe
             assert!(!kept.contains(email), "{identity}: {email} was recorded");
             assert!(!kept.contains(&email.to_uppercase()), "{identity}: {email}");
         }
-        let identities: Vec<&String> = survey["contributors"]["by_identity"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .collect();
-        assert_eq!(survey["contributors"]["identity"], identity);
-        let rule = |text: &str| {
-            review_core::hex::encode(&Sha256::digest(text.trim().to_lowercase()))[..16].to_string()
-        };
+        let contributors = &survey["contributors"];
+        assert_eq!(contributors["identity"], identity);
+        let rule = |text: &str| hex16(text.trim().to_lowercase().as_bytes());
+        // Ranked by commits, then lines added: Ada 4, Bob 2, the address 1 with 6 lines, the
+        // bot 1 with 4. The author named by an address is `h:` and the hash of the name under
+        // both policies, never of the email.
+        let carol = name_hash(CAROL.0);
         if identity == "email_hash" {
-            let mut expected: Vec<String> = [ADA.1, BOB.1, BOT.1, CAROL.1]
-                .iter()
-                .map(|email| rule(email))
-                .collect();
-            expected.sort();
-            assert_eq!(identities, expected.iter().collect::<Vec<_>>());
+            assert_eq!(
+                keys(contributors),
+                [rule(ADA.1), rule(BOB.1), carol.clone(), rule(BOT.1)]
+            );
+            assert!(
+                contributors["by_identity"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|entry| entry.get("name").is_none()),
+                "email_hash names no one"
+            );
         } else {
-            // The author named by an address is `h:` and the hash of the name.
-            let carol = format!("h:{}", rule(CAROL.0));
-            assert_eq!(identities, ["Ada", "Bob", carol.as_str(), "renovate[bot]"]);
+            assert_eq!(
+                names(contributors),
+                ["Ada", "Bob", carol.as_str(), "renovate[bot]"]
+            );
+            assert_eq!(
+                keys(contributors),
+                [
+                    name_key("Ada"),
+                    name_key("Bob"),
+                    carol.clone(),
+                    name_key("renovate[bot]")
+                ]
+            );
         }
     }
 }
@@ -1116,4 +1240,666 @@ fn survey_without_a_recorded_one_fails_and_an_unknown_policy_key_records_the_fai
     let (shown, _) = machine.expect(&repo, &[], &["project", "show"], 0);
     assert!(!shown.contains("Survey failed"), "{shown}");
     assert!(shown.contains("\nSurvey sha256:"), "{shown}");
+}
+
+/// `af` as `Machine::af` with the fake git of `bin` first on `PATH`.
+fn af_with_git(
+    machine: &Machine,
+    repo: &Path,
+    bin: &Path,
+    env: &[(&str, &str)],
+    args: &[&str],
+) -> Output {
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut command = crate::common::af();
+    command
+        .current_dir(repo)
+        .env("XDG_STATE_HOME", machine.state_home())
+        .env("AF_SELF_OFFLINE", "1")
+        .env("NO_COLOR", "1")
+        .env("AF_TEST_SURVEY_CUTOFF_UNIX_S", CUTOFF.to_string())
+        .env("PATH", path);
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    command.args(args).output().unwrap()
+}
+
+#[test]
+fn a_stalled_for_each_ref_fails_the_refresh_within_max_wall_ms() {
+    use std::os::unix::fs::PermissionsExt;
+    let machine = Machine::new();
+    let repo = repository(&machine.root(), "stalled", &[("README.md", b"# Stalled\n")]);
+    machine.expect(&repo, &[], &["project", "show"], 0);
+    // A git that passes every command to the real one but the survey key's `for-each-ref`,
+    // which never answers.
+    let real = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let real = String::from_utf8(real.stdout).unwrap().trim().to_string();
+    let bin = machine.root().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("git");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\nfor argument in \"$@\"; do\n  [ \
+             \"$argument\" = '--format=%(refname)%09%(objectname)' ] && exec sleep 120\ndone\n\
+             exec '{real}' \"$@\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The first exec of a script just written can be slow (macOS scans it): start it once.
+    assert!(Command::new(&fake).arg("warm").status().unwrap().success());
+    let max_wall_ms: u64 = 1500;
+    let started = std::time::Instant::now();
+    let output = af_with_git(
+        &machine,
+        &repo,
+        &bin,
+        &[("AF_SURVEY__MAX_WALL_MS", &max_wall_ms.to_string())],
+        &["project", "refresh"],
+    );
+    let took = started.elapsed();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(
+        took < std::time::Duration::from_millis(max_wall_ms + 2000),
+        "the refresh took {took:?}"
+    );
+    let reason = "the survey key could not be computed within max_wall_ms";
+    assert!(stderr.contains(reason), "{stderr}");
+    assert_eq!(machine.events().last().unwrap(), "SurveyFailed@1");
+    assert_eq!(machine.surveys(), 0);
+    let (shown, _) = machine.expect(&repo, &[], &["project", "show"], 0);
+    assert!(shown.contains(reason), "{shown}");
+}
+
+/// A repository of `size` decision records, vocabulary terms, code-policy checks and commits
+/// by distinct authors, written with one `git fast-import`.
+fn wide_repository(root: &Path, size: usize) -> PathBuf {
+    let repo = root.join("wide-sections");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    let mut stream = Vec::new();
+    let blob = |stream: &mut Vec<u8>, path: &str, content: &str| {
+        stream.extend(format!("M 644 inline {path}\ndata {}\n{content}\n", content.len()).bytes());
+    };
+    for index in 0..size {
+        let time = CUTOFF - (2 * size - index) as u64 * 3600;
+        let who = format!("Author {index:03} <author{index}@fixture.invalid> {time} +0000");
+        let message = format!("Commit {index}");
+        stream.extend(
+            format!(
+                "commit refs/heads/main\nmark :{}\nauthor {who}\ncommitter {who}\ndata {}\n{message}\n",
+                index + 1,
+                message.len()
+            )
+            .bytes(),
+        );
+        if index > 0 {
+            stream.extend(format!("from :{index}\n").bytes());
+        } else {
+            for adr in 0..size {
+                blob(
+                    &mut stream,
+                    &format!("docs/adr/{:04}-x.md", adr + 1),
+                    &format!("# ADR {adr}\n\nStatus: accepted\n"),
+                );
+            }
+            let terms: String = (0..size)
+                .map(|term| format!("**Term {term:03}**:\nA definition.\n"))
+                .collect();
+            blob(&mut stream, "CONTEXT.md", &terms);
+            let checks: String = (0..size)
+                .map(|check| format!("[checks.c{check:03}.command]\nprogram = \"make\"\n"))
+                .collect();
+            blob(&mut stream, ".af/code-policy.toml", &checks);
+        }
+        blob(&mut stream, "log.txt", &format!("{index}\n"));
+    }
+    let mut child = Command::new("git")
+        .current_dir(&repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args(["fast-import", "--quiet"])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use std::io::Write as _;
+    child.stdin.take().unwrap().write_all(&stream).unwrap();
+    assert!(child.wait().unwrap().success());
+    repo
+}
+
+#[test]
+fn a_deadline_inside_any_sections_post_processing_leaves_it_partial_and_the_rest_unavailable() {
+    const SECTIONS: [&str; 7] = [
+        "identity",
+        "tree",
+        "history",
+        "contributors",
+        "decisions",
+        "vocabulary",
+        "checks",
+    ];
+    let size = 120;
+    let root = tempfile::tempdir().unwrap();
+    let repo = wide_repository(root.path(), size);
+    let max_wall_ms: u64 = 4000;
+    // Each slowed section on its own machine, at once: every item of that section alone, an
+    // aggregated entry, a ranked identity, a declaration, a line of terms or a declared check,
+    // costs a tenth of a second, so the deadline falls inside it.
+    let runs: Vec<_> = ["tree", "contributors", "decisions", "vocabulary", "checks"]
+        .into_iter()
+        .map(|slowed| {
+            let repo = repo.clone();
+            std::thread::spawn(move || {
+                let machine = Machine::new();
+                machine.expect(&repo, &[], &["project", "show"], 0);
+                let started = std::time::Instant::now();
+                machine.expect(
+                    &repo,
+                    &[
+                        ("AF_SURVEY__MAX_WALL_MS", &max_wall_ms.to_string()),
+                        ("AF_TEST_SURVEY_SLOW_ITEM_US", "100000"),
+                        ("AF_TEST_SURVEY_SLOW_SECTION", slowed),
+                    ],
+                    &["project", "refresh"],
+                    0,
+                );
+                let took = started.elapsed();
+                let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
+                (slowed, took, survey)
+            })
+        })
+        .collect();
+    for run in runs {
+        let (slowed, took, survey) = run.join().unwrap();
+        assert!(
+            took < std::time::Duration::from_millis(max_wall_ms + 2000),
+            "{slowed}: the refresh took {took:?}"
+        );
+        schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+        let at = SECTIONS
+            .iter()
+            .position(|section| *section == slowed)
+            .unwrap();
+        for (index, section) in SECTIONS.iter().enumerate() {
+            let measured = &survey[*section];
+            let expected = match index.cmp(&at) {
+                std::cmp::Ordering::Less => "complete",
+                std::cmp::Ordering::Equal => "partial",
+                std::cmp::Ordering::Greater => "unavailable",
+            };
+            assert_eq!(
+                measured["completeness"], expected,
+                "{slowed}: {section}: {measured}"
+            );
+            if index >= at {
+                assert_eq!(measured["reason"], "max_wall_ms", "{slowed}: {section}");
+            }
+        }
+        let count = |value: &Value| value.as_str().unwrap().parse::<usize>().unwrap();
+        let section = &survey[slowed];
+        let reached = match slowed {
+            "tree" => count(&section["files"]),
+            "contributors" => {
+                assert_eq!(count(&section["seen"]["by_identity"]), size);
+                assert_eq!(count(&section["identities"]), size, "the totals stay whole");
+                section["by_identity"].as_array().unwrap().len()
+            }
+            "decisions" => count(&section["count"]),
+            "vocabulary" => count(&section["count"]),
+            _ => section["declared"].as_array().unwrap().len(),
+        };
+        assert!(reached < size, "{slowed} reached {reached} of {size}");
+    }
+}
+
+#[test]
+fn the_status_grammar_shares_ranking_checks_discovery_and_languages_are_stated() {
+    let machine = Machine::new();
+    let repo = machine.root().join("rules");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    let files: &[(&str, &[u8])] = &[
+        (
+            ".af/af.toml",
+            b"version = 1\n\n[survey.languages]\n\"**/*.rs\" = \"rust-any\"\n\
+              \"generated/**\" = \"generated\"\n\"*.md\" = \"docs\"\n",
+        ),
+        (
+            "docs/adr/0001-two-dates.md",
+            b"# Two dates\n\n**Status:** accepted 2026-01-02, reviewed 2026-03-04\n",
+        ),
+        (
+            "docs/adr/0002-partial.md",
+            b"# Partial\n\nStatus: accepted; superseded in part by ADR-0003, amended 2026-05-06\n",
+        ),
+        (
+            "docs/adr/0003-undated.md",
+            b"# Undated\n\nStatus: proposed\n",
+        ),
+        (
+            "docs/adr/0004-none.md",
+            b"# No status line\n\nThis was accepted on 2026-01-02.\n",
+        ),
+        (
+            ".af/code-policy.toml",
+            b"[checks.test.command]\nprogram = \"cargo\"\n",
+        ),
+        (
+            ".af/pipelines/review.toml",
+            b"[[checks]]\nname = \"test\"\nprogram = \"cargo\"\n",
+        ),
+        // A pipeline nothing routes to, declaring a check of the same name.
+        (
+            ".af/pipelines/unused.toml",
+            b"[[checks]]\nname = \"test\"\nprogram = \"make\"\n\n[[checks]]\nname = \"lint\"\n\
+              program = \"npx\"\n",
+        ),
+        ("rust-toolchain", b"stable\n"),
+        (".nvmrc", b"22\n"),
+        ("Cargo.toml", b"[workspace]\n"),
+        ("sub/.python-version", b"3.12\n"),
+        ("generated/x.rs", b"fn x() {}\n"),
+        ("generated/notes.txt", b"notes\n"),
+        ("src/lib.rs", b"pub fn lib() {}\n"),
+        ("README.md", b"# Rules\n"),
+        ("data.xyz", b"data\n"),
+    ];
+    for (path, content) in files {
+        write(&repo, path, content);
+    }
+    commit(&repo, BOB, 30, &["Start"]);
+    // Ada: more commits and fewer lines than Bob; one of the three commits is agent-assisted.
+    write(&repo, "a.txt", b"a\n");
+    commit(&repo, ADA, 20, &["One line"]);
+    write(&repo, "b.txt", b"b\n");
+    commit(
+        &repo,
+        ADA,
+        10,
+        &[
+            "One more",
+            "Co-Authored-By: Claude Opus <noreply@anthropic.com>",
+        ],
+    );
+    machine.expect(&repo, &[], &["project", "refresh"], 0);
+    let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
+    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+
+    // Status and date from the first status line; `amended` a flag; unknown when absent.
+    let decisions = &survey["decisions"];
+    assert_eq!(decisions["completeness"], "complete");
+    let records = decisions["records"].as_array().unwrap();
+    let stated: Vec<(&str, Option<&str>, Option<&str>, bool)> = records
+        .iter()
+        .map(|record| {
+            (
+                record["number"].as_str().unwrap(),
+                record["status"].as_str(),
+                record["date"].as_str(),
+                record["amended"] == true,
+            )
+        })
+        .collect();
+    assert_eq!(
+        stated,
+        [
+            ("0001", Some("accepted"), Some("2026-01-02"), false),
+            ("0002", Some("accepted"), Some("2026-05-06"), true),
+            ("0003", Some("proposed"), None, false),
+            ("0004", None, None, false),
+        ]
+    );
+    assert_eq!(
+        decisions["by_status"],
+        serde_json::json!({"accepted": "2", "proposed": "1", "unknown": "1"})
+    );
+
+    // One third of three commits is 3333 basis points; ranking by commits, then lines added.
+    let contributors = &survey["contributors"];
+    assert_eq!(contributors["agent_share_bp"], "3333");
+    assert_eq!(contributors["human_share_bp"], "6666");
+    assert_eq!(contributors["top_share_bp"], "6666");
+    assert_eq!(names(contributors), ["Ada", "Bob"]);
+    let added = |name: &str| {
+        contributor(contributors, name)["added"]
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+    };
+    assert_eq!(added("Ada"), 2);
+    assert!(
+        added("Bob") > added("Ada"),
+        "Bob added more lines in fewer commits"
+    );
+
+    // Every pipeline file, routed or not; identity `<source>:<name>`; the listed toolchain
+    // files at the root only.
+    let checks = &survey["checks"];
+    let declared: Vec<String> = checks["declared"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|check| {
+            format!(
+                "{}:{} {}",
+                check["source"].as_str().unwrap(),
+                check["name"].as_str().unwrap(),
+                check["program"].as_str().unwrap()
+            )
+        })
+        .collect();
+    assert_eq!(
+        declared,
+        [
+            "code-policy:test cargo",
+            "review.toml:test cargo",
+            "unused.toml:lint npx",
+            "unused.toml:test make",
+        ]
+    );
+    assert_eq!(
+        checks["toolchain"],
+        serde_json::json!([".nvmrc", "rust-toolchain"])
+    );
+
+    // Each file one language: configured over built-in, bytewise-first pattern, else other.
+    let languages = &survey["tree"]["languages"];
+    assert_eq!(languages["rust-any"]["files"], "2", "{languages}");
+    assert_eq!(languages["generated"]["files"], "1", "{languages}");
+    assert_eq!(languages["docs"]["files"], "5", "{languages}");
+    assert!(languages.get("rust").is_none() && languages.get("markdown").is_none());
+    assert_eq!(languages["toml"]["files"], "5", "{languages}");
+    let total: u64 = languages
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|language| language["files"].as_str().unwrap().parse::<u64>().unwrap())
+        .sum();
+    assert_eq!(total.to_string(), survey["tree"]["files"].as_str().unwrap());
+
+    // A list over max_entries keeps its first ranked entries and says how many it saw.
+    machine.expect(
+        &repo,
+        &[("AF_SURVEY__MAX_ENTRIES", "1")],
+        &["project", "refresh"],
+        0,
+    );
+    let cut = machine.json(&repo, &[], &["project", "survey", "--json"]);
+    schemas::valid(&schemas::validator("project-survey-v1.json"), &cut);
+    let contributors = &cut["contributors"];
+    assert_eq!(names(contributors), ["Ada"], "more commits, fewer lines");
+    assert_eq!(contributors["seen"]["by_identity"], "2");
+    assert_eq!(
+        contributors["agent_share_bp"], "3333",
+        "the totals cover all"
+    );
+    assert_eq!(cut["decisions"]["records"][0]["number"], "0001");
+    assert_eq!(cut["decisions"]["seen"]["records"], "4");
+    assert_eq!(cut["checks"]["declared"][0]["source"], "code-policy");
+    assert_eq!(cut["checks"]["seen"]["declared"], "4");
+    assert_eq!(cut["checks"]["toolchain"], serde_json::json!([".nvmrc"]));
+    assert_eq!(cut["checks"]["seen"]["toolchain"], "2");
+    assert_eq!(cut["checks"]["reason"], "max_entries");
+}
+
+#[test]
+fn a_historical_commit_over_max_paths_leaves_history_partial_and_the_survey_recorded() {
+    let machine = Machine::new();
+    let repo = machine.root().join("wide-history");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    for index in 0..10 {
+        write(&repo, &format!("f{index}.txt"), b"x\n");
+    }
+    commit(&repo, ADA, 3, &["Ten files"]);
+    for index in 1..10 {
+        std::fs::remove_file(repo.join(format!("f{index}.txt"))).unwrap();
+    }
+    commit(&repo, ADA, 2, &["Nine removed"]);
+    write(&repo, "f0.txt", b"y\n");
+    commit(&repo, BOB, 1, &["One changed"]);
+    let (stdout, _) = machine.expect(
+        &repo,
+        &[("AF_SURVEY__MAX_PATHS", "5")],
+        &["project", "refresh"],
+        0,
+    );
+    assert!(stdout.starts_with("recorded\n"), "{stdout}");
+    let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
+    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    assert_eq!(survey["tree"]["completeness"], "complete", "a small head");
+    for section in ["history", "contributors"] {
+        assert_eq!(survey[section]["completeness"], "partial", "{section}");
+        assert_eq!(survey[section]["reason"], "max_paths", "{section}");
+    }
+    // The totals and rankings cover the commits observed before the walk stopped.
+    assert_eq!(survey["history"]["commits"], "1");
+    assert_eq!(survey["history"]["reachable_commits"], "3");
+    assert_eq!(names(&survey["contributors"]), ["Bob"]);
+}
+
+#[test]
+fn every_list_of_checks_is_bounded_and_a_non_utf8_declaration_is_unreadable() {
+    let machine = Machine::new();
+    let big = format!("# {}\n", "z".repeat(200));
+    let repo = repository(
+        &machine.root(),
+        "unreadable",
+        &[
+            (".af/pipelines/a.toml", big.as_bytes()),
+            (".af/pipelines/b.toml", big.as_bytes()),
+        ],
+    );
+    let env = [
+        ("AF_SURVEY__MAX_FILE_BYTES", "128"),
+        ("AF_SURVEY__MAX_ENTRIES", "1"),
+    ];
+    machine.expect(&repo, &env, &["project", "refresh"], 0);
+    let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
+    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    let checks = &survey["checks"];
+    assert_eq!(
+        checks["unreadable"],
+        serde_json::json!([".af/pipelines/a.toml"])
+    );
+    assert_eq!(checks["seen"]["unreadable"], "2");
+    assert_eq!(checks["completeness"], "partial");
+    assert_eq!(checks["reason"], "max_entries");
+    let surveys = machine.events();
+    assert_eq!(
+        surveys.last().unwrap(),
+        "SurveyRecorded@1",
+        "under max_survey_bytes"
+    );
+
+    // A decision, the vocabulary and a declaration that are not valid UTF-8 are not text.
+    let repo = repository(
+        &machine.root(),
+        "latin1",
+        &[
+            ("docs/adr/0001-cafe.md", b"# Caf\xe9\n\nStatus: accepted\n"),
+            ("docs/adr/0002-fine.md", b"# Fine\n\nStatus: accepted\n"),
+            ("CONTEXT.md", b"**Caf\xe9**:\nA definition.\n"),
+            (
+                ".af/pipelines/latin.toml",
+                b"[[checks]]\nname = \"caf\xe9\"\nprogram = \"make\"\n",
+            ),
+        ],
+    );
+    machine.expect(&repo, &[], &["project", "refresh"], 0);
+    let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
+    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    for section in ["decisions", "vocabulary", "checks"] {
+        assert_eq!(survey[section]["completeness"], "partial", "{section}");
+        assert_eq!(survey[section]["reason"], "max_file_bytes", "{section}");
+    }
+    let decisions = &survey["decisions"];
+    assert_eq!(decisions["records"][0]["status"], "unreadable");
+    assert!(decisions["records"][0].get("title").is_none());
+    assert_eq!(decisions["records"][1]["title"], "Fine");
+    let vocabulary = &survey["vocabulary"];
+    assert_eq!(vocabulary["present"], true);
+    assert!(vocabulary.get("terms").is_none() && vocabulary.get("count").is_none());
+    assert_eq!(
+        survey["checks"]["unreadable"],
+        serde_json::json!([".af/pipelines/latin.toml"])
+    );
+    assert_eq!(survey["checks"]["declared"], serde_json::json!([]));
+}
+
+#[test]
+fn an_author_name_carrying_an_email_is_its_hash_under_both_identity_policies() {
+    const ALICE: (&str, &str) = ("Alice alice@example.org", "alice@real.invalid");
+    for identity in ["name", "email_hash"] {
+        let machine = Machine::new();
+        let repo = machine.root().join("emails");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        write(&repo, "a.txt", b"a\nb\n");
+        commit(&repo, ALICE, 2, &["Alice"]);
+        write(&repo, "c.txt", b"c\n");
+        commit(&repo, CAROL, 1, &["Carol"]);
+        let env = [("AF_SURVEY__IDENTITY", identity)];
+        let (said, _) = machine.expect(&repo, &env, &["project", "refresh", "--json"], 0);
+        let survey: Value = serde_json::from_str(&said).unwrap();
+        schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+        let contributors = &survey["contributors"];
+        // The email field is never used for such a name: both keys are the names' hashes.
+        assert_eq!(
+            keys(contributors),
+            [name_hash(ALICE.0), name_hash(CAROL.0)],
+            "{identity}"
+        );
+        if identity == "name" {
+            assert_eq!(
+                names(contributors),
+                [name_hash(ALICE.0), name_hash(CAROL.0)]
+            );
+        }
+        let kept = everything_kept(&machine);
+        for email in ["alice@example.org", ALICE.1, CAROL.1] {
+            assert!(!kept.contains(email), "{identity}: {email} was recorded");
+            assert!(!said.contains(email), "{identity}: {email} was printed");
+        }
+    }
+}
+
+#[test]
+fn replay_refuses_a_survey_event_that_does_not_describe_its_record() {
+    let machine = Machine::new();
+    let repo = fixture(&machine.root());
+    machine.expect(&repo, &[], &["project", "refresh"], 0);
+    // Hand-write the event: the same Survey, another refs digest.
+    let log = rusqlite::Connection::open(machine.store().join("events.sqlite")).unwrap();
+    let (sequence, payload): (i64, String) = log
+        .query_row(
+            "SELECT sequence, payload FROM events WHERE type = 'SurveyRecorded@1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let mut payload: Value = serde_json::from_str(&payload).unwrap();
+    payload["refs_digest"] = Value::String(format!("sha256:{}", "0".repeat(64)));
+    log.execute(
+        "UPDATE events SET payload = ?1 WHERE sequence = ?2 AND type = 'SurveyRecorded@1'",
+        rusqlite::params![payload.to_string(), sequence],
+    )
+    .unwrap();
+    drop(log);
+    for args in [&["project", "survey"][..], &["project", "refresh"]] {
+        let (_, stderr) = machine.expect(&repo, &[], args, 1);
+        assert!(
+            stderr.contains(&format!(
+                "SurveyRecorded@1 at sequence {sequence} names a refs_digest"
+            )),
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn the_ceilings_are_only_lowered_from_the_project_layer_and_the_environment() {
+    let machine = Machine::new();
+    let repo = repository(
+        &machine.root(),
+        "ceilings",
+        &[("README.md", b"# Ceilings\n")],
+    );
+    for (key, ceiling) in [
+        ("max_paths", 200_000_u64),
+        ("max_entries", 1_000),
+        ("max_survey_bytes", 1_048_576),
+    ] {
+        let variable = format!("AF_SURVEY__{}", key.to_uppercase());
+        let refused = format!("{key} is a positive integer at most its ceiling {ceiling}");
+        // The environment form: zero, above the ceiling, and a value that fits no integer.
+        for value in [
+            "0",
+            &(ceiling + 1).to_string(),
+            "99999999999999999999",
+            "-1",
+        ] {
+            let (_, stderr) = machine.expect(
+                &repo,
+                &[(variable.as_str(), value)],
+                &["project", "refresh"],
+                1,
+            );
+            assert!(stderr.contains(&refused), "{variable}={value}: {stderr}");
+            assert_eq!(machine.events().last().unwrap(), "SurveyFailed@1");
+        }
+        // The project layer alike.
+        for value in [
+            "0",
+            &(ceiling + 1).to_string(),
+            "9223372036854775807",
+            "\"1\"",
+        ] {
+            write(
+                &repo,
+                ".af/af.toml",
+                format!("version = 1\n\n[survey]\n{key} = {value}\n").as_bytes(),
+            );
+            let (_, stderr) = machine.expect(&repo, &[], &["project", "refresh"], 1);
+            assert!(stderr.contains(&refused), "{key} = {value}: {stderr}");
+        }
+        // An integer TOML itself cannot hold is refused with the file.
+        write(
+            &repo,
+            ".af/af.toml",
+            format!("version = 1\n\n[survey]\n{key} = 18446744073709551616\n").as_bytes(),
+        );
+        let (_, stderr) = machine.expect(&repo, &[], &["project", "refresh"], 1);
+        assert!(
+            stderr.contains("the configuration does not load"),
+            "{stderr}"
+        );
+        assert_eq!(machine.events().last().unwrap(), "SurveyFailed@1");
+        // The ceiling itself and anything below it load.
+        write(
+            &repo,
+            ".af/af.toml",
+            format!("version = 1\n\n[survey]\n{key} = {ceiling}\n").as_bytes(),
+        );
+        machine.expect(&repo, &[], &["project", "refresh", "--force"], 0);
+        let lower = (ceiling / 2).to_string();
+        machine.expect(
+            &repo,
+            &[(variable.as_str(), lower.as_str())],
+            &["project", "refresh", "--force"],
+            0,
+        );
+    }
 }

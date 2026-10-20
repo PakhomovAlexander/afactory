@@ -65,6 +65,17 @@ fn with(base: &Value, key: &str, value: Value) -> Value {
     changed
 }
 
+/// `base` without the field `key` of the object at `pointer`.
+fn without_pointer(base: &Value, pointer: &str, key: &str) -> Value {
+    let mut changed = base.clone();
+    changed
+        .pointer_mut(pointer)
+        .and_then(Value::as_object_mut)
+        .unwrap()
+        .remove(key);
+    changed
+}
+
 fn without(base: &Value, key: &str) -> Value {
     let mut changed = base.clone();
     changed.as_object_mut().unwrap().remove(key);
@@ -444,32 +455,30 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
         human_share_bp: 7500.into(),
         agent_share_bp: 2500.into(),
         top_share_bp: 7500.into(),
-        by_identity: BTreeMap::from([
-            (
-                "Ada".into(),
-                SurveyContributorV1 {
-                    commits: 3.into(),
-                    added: 5.into(),
-                    removed: 1.into(),
-                    first_unix_s: 1_700_000_000.into(),
-                    last_unix_s: 1_791_000_000.into(),
-                    active_90d: true,
-                    truncated: false,
-                },
-            ),
-            (
-                "dependabot[bot]".into(),
-                SurveyContributorV1 {
-                    commits: 1.into(),
-                    added: 0.into(),
-                    removed: 0.into(),
-                    first_unix_s: 1_700_000_000.into(),
-                    last_unix_s: 1_700_000_000.into(),
-                    active_90d: false,
-                    truncated: false,
-                },
-            ),
-        ]),
+        by_identity: vec![
+            SurveyContributorV1 {
+                key: "0123456789abcdef".into(),
+                name: Some("Ada".into()),
+                commits: 3.into(),
+                added: 5.into(),
+                removed: 1.into(),
+                first_unix_s: 1_700_000_000.into(),
+                last_unix_s: 1_791_000_000.into(),
+                active_90d: true,
+                truncated: false,
+            },
+            SurveyContributorV1 {
+                key: "fedcba9876543210".into(),
+                name: Some("dependabot[bot]".into()),
+                commits: 1.into(),
+                added: 0.into(),
+                removed: 0.into(),
+                first_unix_s: 1_700_000_000.into(),
+                last_unix_s: 1_700_000_000.into(),
+                active_90d: false,
+                truncated: false,
+            },
+        ],
         seen: BTreeMap::new(),
     };
     let decisions = SurveyDecisionsV1 {
@@ -483,6 +492,7 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
                 truncated: false,
                 status: None,
                 date: None,
+                amended: false,
             },
             SurveyDecisionV1 {
                 number: "0002".into(),
@@ -491,6 +501,7 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
                 truncated: true,
                 status: Some("accepted".into()),
                 date: Some("2026-10-19".into()),
+                amended: true,
             },
         ],
         seen: BTreeMap::new(),
@@ -507,13 +518,21 @@ fn full_survey() -> review_core::project::ProjectSurveyV1 {
         seen: BTreeMap::new(),
     };
     let checks = SurveyChecksV1 {
-        declared: vec![SurveyCheckV1 {
-            source: ".af/code-policy.toml".into(),
-            name: "check".into(),
-            program: "make".into(),
-            truncated: false,
-        }],
-        toolchain: vec!["Cargo.toml".into(), "rust-toolchain.toml".into()],
+        declared: vec![
+            SurveyCheckV1 {
+                source: "code-policy".into(),
+                name: "check".into(),
+                program: "make".into(),
+                truncated: false,
+            },
+            SurveyCheckV1 {
+                source: "review.toml".into(),
+                name: "check".into(),
+                program: "cargo".into(),
+                truncated: false,
+            },
+        ],
+        toolchain: vec![".nvmrc".into(), "rust-toolchain.toml".into()],
         ci_workflows: 1.into(),
         unreadable: Vec::new(),
         seen: BTreeMap::new(),
@@ -582,7 +601,7 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
         checks.unreadable = vec![".af/pipelines/huge.toml".into()];
     }
     cut_short.checks.completeness = SurveyCompletenessV1::Partial;
-    cut_short.checks.reason = Some(SurveyReasonV1::MaxFileBytes);
+    cut_short.checks.reason = Some(SurveyReasonV1::MaxEntries);
     if let Some(vocabulary) = cut_short.vocabulary.body.as_mut() {
         vocabulary.count = None;
         vocabulary.terms = None;
@@ -590,10 +609,14 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
     cut_short.vocabulary.completeness = SurveyCompletenessV1::Partial;
     cut_short.vocabulary.reason = Some(SurveyReasonV1::MaxFileBytes);
     if let Some(contributors) = cut_short.contributors.body.as_mut() {
-        let entry = contributors.by_identity.remove("Ada").unwrap();
-        contributors
-            .by_identity
-            .insert("h:0123456789abcdef".into(), entry);
+        // A name that carries an email address is its `h:` key, as key and name.
+        let ada = &mut contributors.by_identity[0];
+        ada.key = "h:0123456789abcdef".into();
+        ada.name = Some(ada.key.clone());
+    }
+    if let Some(checks) = cut_short.checks.body.as_mut() {
+        checks.toolchain.truncate(1);
+        checks.seen = std::collections::BTreeMap::from([("toolchain".into(), 2.into())]);
     }
     cut_short.validate().unwrap();
     let cut_short_value = serde_json::to_value(&cut_short).unwrap();
@@ -632,19 +655,24 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
         assert!(broken.validate().is_err(), "{why}");
     }
 
+    // Under email_hash a key is the email's hash, or the name's `h:` hash for a name that
+    // carries an email address, and there is no name.
     let mut hashed = survey.clone();
     if let Some(contributors) = hashed.contributors.body.as_mut() {
         contributors.identity = SurveyIdentityPolicyV1::EmailHash;
-        contributors.by_identity = contributors
-            .by_identity
-            .values()
-            .cloned()
-            .zip(["0123456789abcdef", "fedcba9876543210"])
-            .map(|(entry, key)| (key.to_string(), entry))
-            .collect();
+        for entry in &mut contributors.by_identity {
+            entry.name = None;
+        }
+        contributors.by_identity[1].key = "h:fedcba9876543210".into();
     }
     hashed.validate().unwrap();
-    assert_valid(SCHEMA, &serde_json::to_value(&hashed).unwrap());
+    let hashed_value = serde_json::to_value(&hashed).unwrap();
+    assert_valid(SCHEMA, &hashed_value);
+    let mut named_hash = hashed_value.clone();
+    named_hash["contributors"]["by_identity"][0]["name"] = json!("Ada");
+    assert_invalid(SCHEMA, &named_hash, "email_hash records no name");
+    let typed = serde_json::from_value::<ProjectSurveyV1>(named_hash).unwrap();
+    assert!(typed.validate().is_err(), "email_hash records no name");
 
     let pointer = |path: &str, replacement: Value| {
         let mut changed = value.clone();
@@ -661,13 +689,35 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
             "a float is never a Survey number",
         ),
         (
+            pointer("/contributors/by_identity/0/name", json!("ada@example.com")),
+            "an email is never a name",
+        ),
+        (
             pointer(
-                "/contributors/by_identity",
-                json!({"ada@example.com": {
-                "commits": "1", "added": "0", "removed": "0", "first_unix_s": "1",
-                "last_unix_s": "1", "active_90d": true}}),
+                "/contributors/by_identity/0/name",
+                json!("Ada ada@example.com"),
             ),
-            "an email is never an identity",
+            "a name that carries an email is never text",
+        ),
+        (
+            pointer("/contributors/by_identity/0/key", json!("ada@example.com")),
+            "a key is a hash",
+        ),
+        (
+            without_pointer(&value, "/contributors/by_identity/0", "name"),
+            "under `name` every identity has its display name",
+        ),
+        (
+            pointer("/decisions/records/1/amended", json!(false)),
+            "only an amended status is marked",
+        ),
+        (
+            pointer("/checks/declared/0/source", json!(".af/code-policy.toml")),
+            "a check's source is `code-policy` or a pipeline's basename",
+        ),
+        (
+            pointer("/history/reason", json!("max_bytes")),
+            "max_record_bytes is the record bound",
         ),
         (
             pointer("/identity/git_version", json!("")),
@@ -754,6 +804,26 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
         unfolded.validate().is_err(),
         "the record folds its sections"
     );
+    let mut unranked = survey.clone();
+    if let Some(contributors) = unranked.contributors.body.as_mut() {
+        contributors.by_identity.reverse();
+    }
+    assert!(
+        unranked.validate().is_err(),
+        "identities are ranked by commits, then lines added, then key"
+    );
+    let mut unsorted = survey.clone();
+    if let Some(checks) = unsorted.checks.body.as_mut() {
+        checks.declared.reverse();
+    }
+    assert!(
+        unsorted.validate().is_err(),
+        "checks are sorted by identity"
+    );
+    let mut record_bound = survey.clone();
+    record_bound.history.reason = Some(SurveyReasonV1::MaxRecordBytes);
+    record_bound.validate().unwrap();
+    assert_valid(SCHEMA, &serde_json::to_value(&record_bound).unwrap());
     let mut unsummed = survey;
     if let Some(tree) = unsummed.tree.body.as_mut() {
         tree.files = 4.into();

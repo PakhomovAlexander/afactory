@@ -34,12 +34,18 @@ use serde_json::Value;
 
 use policy::Policy;
 
-use super::{Checkout, Git, Log, ProjectStore};
+use super::{Checkout, Git, Log, ProjectStore, RUN_ID};
 
 /// The Surveyor's measurement rules. Bumped whenever a rule changes, so a head measured under
 /// the old rules is surveyed again. 2: the survey key's refs, the fixed maxima, one pattern
-/// grammar, the stated measurement policy and the agent-assisted partition.
-pub(crate) const SURVEYOR_VERSION: u64 = 2;
+/// grammar, the stated measurement policy and the agent-assisted partition. 3: the deadline
+/// through every section's post-processing and the key, contributor keys and ranking before
+/// every cut, the status-line grammar, the checks discovery set, language patterns, UTF-8
+/// declarations and the bounded walk and records.
+pub(crate) const SURVEYOR_VERSION: u64 = 3;
+
+/// Why a refresh whose deadline passed before its survey key existed failed.
+const KEY_DEADLINE: &str = "the survey key could not be computed within max_wall_ms";
 
 /// A debug build's fixture may fix the cutoff, so a fixture repository's Survey is
 /// byte-identical across runs. Release binaries never read it.
@@ -122,13 +128,17 @@ struct Key {
 }
 
 impl Key {
-    /// Whether `recorded` is complete and was measured under this key.
-    fn reuses(&self, recorded: &SurveyRecordedPayloadV1) -> bool {
-        recorded.completeness == SurveyCompletenessV1::Complete
-            && recorded.head == self.head
-            && recorded.refs_digest == self.refs_digest
-            && recorded.policy_digest == self.policy_digest
-            && recorded.surveyor_version.get() == self.surveyor_version
+    /// Whether `recorded` is complete and was measured under this key, as its record, which
+    /// replay bound to its event, says.
+    fn reuses(&self, recorded: &Recorded) -> bool {
+        let Some(identity) = recorded.survey.identity.body.as_ref() else {
+            return false;
+        };
+        recorded.survey.completeness == SurveyCompletenessV1::Complete
+            && identity.head == self.head
+            && identity.refs_digest == self.refs_digest
+            && identity.policy_digest == self.policy_digest
+            && identity.surveyor_version.get() == self.surveyor_version
     }
 }
 
@@ -186,8 +196,45 @@ impl Log {
     }
 }
 
+/// The first field in which a `SurveyRecorded@1` and the record it names disagree: what replay
+/// refuses, so an event can never stand for a Survey it does not describe.
+fn unbound_field(
+    event: &SurveyRecordedPayloadV1,
+    survey: &ProjectSurveyV1,
+) -> Option<&'static str> {
+    let Some(identity) = survey.identity.body.as_ref() else {
+        return Some("head");
+    };
+    [
+        ("head", event.head == identity.head),
+        ("refs_digest", event.refs_digest == identity.refs_digest),
+        (
+            "cutoff_unix_s",
+            event.cutoff_unix_s == identity.cutoff_unix_s,
+        ),
+        ("completeness", event.completeness == survey.completeness),
+        (
+            "policy_digest",
+            event.policy_digest == identity.policy_digest,
+        ),
+        (
+            "surveyor_version",
+            event.surveyor_version == identity.surveyor_version,
+        ),
+        (
+            "previous_survey_id",
+            event.previous_survey_id == survey.previous_survey_id,
+        ),
+    ]
+    .into_iter()
+    .find_map(|(field, equal)| (!equal).then_some(field))
+}
+
 impl ProjectStore {
-    /// The record `recorded` names, read back from the CAS and checked against the event.
+    /// The record `recorded` names, read back from the CAS, validated, and bound to its event:
+    /// an event whose head, refs, cutoff, completeness, policy, Surveyor version or previous
+    /// Survey differs from its record's is a replay error naming the event's sequence and the
+    /// field.
     pub(crate) fn survey(&self, recorded: &SurveyRecordedPayloadV1) -> Result<Recorded, String> {
         let bytes = self.cas.get(&recorded.survey_id).map_err(|error| {
             format!(
@@ -198,11 +245,37 @@ impl ProjectStore {
         let survey: ProjectSurveyV1 = serde_json::from_slice(&bytes)
             .map_err(|error| format!("Survey {}: {error}", recorded.survey_id))?;
         survey.validate()?;
+        if let Some(field) = unbound_field(recorded, &survey) {
+            let sequence = self.recorded_sequence(recorded)?;
+            return Err(format!(
+                "the Project Store {} does not replay: SurveyRecorded@1 at sequence {sequence} \
+                 names a {field} its Survey {} does not record",
+                self.directory.display(),
+                recorded.survey_id
+            ));
+        }
         Ok(Recorded {
             event: recorded.clone(),
             survey,
             bytes,
         })
+    }
+
+    /// The sequence of the newest `SurveyRecorded@1` whose payload is `recorded`.
+    fn recorded_sequence(&self, recorded: &SurveyRecordedPayloadV1) -> Result<u64, String> {
+        let events = self
+            .events
+            .replay(RUN_ID)
+            .map_err(|error| format!("the Project Store {}: {error}", self.directory.display()))?;
+        Ok(events
+            .iter()
+            .rev()
+            .filter(|event| event.event_type == EventType::SurveyRecordedV1)
+            .find(|event| {
+                serde_json::from_value::<SurveyRecordedPayloadV1>(event.payload.clone())
+                    .is_ok_and(|payload| payload == *recorded)
+            })
+            .map_or(0, |event| event.sequence))
     }
 
     fn record_survey(
@@ -282,11 +355,6 @@ fn public_reason(reason: &str) -> String {
     line
 }
 
-/// The head commit of the checkout.
-fn head(git: &Git) -> Result<String, String> {
-    git.require(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], None)
-}
-
 fn open(checkout: &Checkout) -> Result<ProjectStore, String> {
     let store = ProjectStore::open(&crate::xdg_state_root()?, &checkout.project_id)?;
     if store.log()?.project.is_none() {
@@ -296,23 +364,56 @@ fn open(checkout: &Checkout) -> Result<ProjectStore, String> {
 }
 
 /// Record a Survey of the checkout's head now, synchronously, unless the newest Survey is
-/// complete under the current survey key and `force` is not asked. A Survey that cannot be
-/// taken, or whose record is over `max_survey_bytes`, records `SurveyFailed@1` and is the error.
+/// complete under the current survey key and `force` is not asked. One `max_wall_ms` deadline
+/// runs from before `rev-parse` to the last section: a deadline that passes before the key
+/// exists records `SurveyFailed@1`. A Survey that cannot be taken, or whose record is over
+/// `max_survey_bytes`, records `SurveyFailed@1` and is the error.
 pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, String> {
+    let started = Instant::now();
     let git = Git::open(&checkout.toplevel)?;
-    let head = head(&git)?;
-    let refs_digest = measure::refs_digest(&git)?;
     let policy = Policy::load(&checkout.toplevel).and_then(within_pattern_limits);
-    let mut store = open(checkout)?;
+    let clock = measure::Clock::new(
+        started,
+        policy
+            .as_ref()
+            .map_or(Policy::default().max_wall_ms, |policy| policy.max_wall_ms),
+    );
+    // The key's reads are no section's: a fixture that slows one section leaves them alone.
+    let key_clock = clock.section("key");
+    let head = match measure::head(&git, &key_clock) {
+        Ok(Some(head)) => head,
+        Ok(None) => return Err(format!("{KEY_DEADLINE}; no head was read")),
+        Err(failure) => return Err(format!("{}: {}", failure.reason, failure.detail)),
+    };
     let policy = match policy {
         Ok(policy) => policy,
         Err(reason) => {
-            store.record_failure(&head, &reason)?;
+            open(checkout)?.record_failure(&head, &reason)?;
             return Err(format!(
                 "{reason}; fix the [survey] table and run `af project refresh` again"
             ));
         }
     };
+    let refs_digest = match measure::refs_digest(&git, &key_clock) {
+        Ok(Ok(digest)) => digest,
+        Ok(Err(reason)) => {
+            let reason = match reason {
+                review_core::project::SurveyReasonV1::MaxWallMs => KEY_DEADLINE.to_string(),
+                other => format!(
+                    "the survey key could not be computed: a ref is longer than {} bytes ({})",
+                    review_core::project::MAX_SURVEY_RECORD_BYTES,
+                    other.as_str()
+                ),
+            };
+            open(checkout)?.record_failure(&head, &reason)?;
+            return Err(reason);
+        }
+        Err(failure) => {
+            open(checkout)?.record_failure(&head, &failure.reason)?;
+            return Err(format!("{}: {}", failure.reason, failure.detail));
+        }
+    };
+    let store = open(checkout)?;
     let key = Key {
         head: head.clone(),
         refs_digest: refs_digest.clone(),
@@ -320,20 +421,23 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
         surveyor_version: SURVEYOR_VERSION,
     };
     if !force
-        && let Some(newest) = store.log()?.newest_survey()
-        && key.reuses(newest)
+        && let Some(newest) = newest(&store, &store.log()?)?
+        && key.reuses(&newest)
     {
-        return Ok(Refreshed::Unchanged(store.survey(newest)?));
+        return Ok(Refreshed::Unchanged(newest));
     }
     // The Store is not held while the head is measured.
     drop(store);
-    let started = Instant::now();
-    let git_version = match git.require(["--version"], None) {
-        Ok(version) => version,
-        Err(detail) => {
+    let git_version = match measure::git_version(&git, &key_clock) {
+        Ok(Some(version)) => version,
+        Ok(None) => {
+            open(checkout)?.record_failure(&head, KEY_DEADLINE)?;
+            return Err(KEY_DEADLINE.into());
+        }
+        Err(failure) => {
             let reason = "git --version failed; run `af project refresh` again";
             open(checkout)?.record_failure(&head, reason)?;
-            return Err(format!("{reason}: {detail}"));
+            return Err(format!("{reason}: {}", failure.detail));
         }
     };
     let basis = measure::Basis {
@@ -347,7 +451,7 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
         surveyor_version: SURVEYOR_VERSION,
         git_version: &git_version,
     };
-    let measured = measure::measure(&git, &basis, started);
+    let measured = measure::measure(&git, &basis, clock);
     let mut store = open(checkout)?;
     let sections = match measured {
         Ok(sections) => sections,
@@ -357,13 +461,12 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
         }
     };
     let log = store.log()?;
-    let newest = log.newest_survey();
     if !force
-        && let Some(newest) = newest
-        && key.reuses(newest)
+        && let Some(newest) = newest(&store, &log)?
+        && key.reuses(&newest)
     {
         // Another refresh recorded this head while this one measured it.
-        return Ok(Refreshed::Unchanged(store.survey(newest)?));
+        return Ok(Refreshed::Unchanged(newest));
     }
     let completeness = SurveyCompletenessV1::fold([
         sections.identity.completeness,
@@ -377,7 +480,7 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
     let survey = ProjectSurveyV1 {
         schema: PROJECT_SURVEY_V1.into(),
         completeness,
-        previous_survey_id: newest.map(|newest| newest.survey_id.clone()),
+        previous_survey_id: log.newest_survey().map(|newest| newest.survey_id.clone()),
         identity: sections.identity,
         tree: sections.tree,
         history: sections.history,
@@ -389,10 +492,11 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
     let bytes = record_bytes(&survey)?;
     if bytes.len() as u64 > policy.max_survey_bytes {
         let reason = format!(
-            "the Survey needs {} bytes, more than [survey] max_survey_bytes = {}; raise it or \
-             exclude paths, and run `af project refresh` again",
+            "the Survey needs {} bytes, more than [survey] max_survey_bytes = {}; raise it to at \
+             most {}, exclude paths or lower max_entries, and run `af project refresh` again",
             bytes.len(),
-            policy.max_survey_bytes
+            policy.max_survey_bytes,
+            review_core::project::MAX_SURVEY_BYTES
         );
         store.record_failure(&head, &reason)?;
         return Err(reason);
