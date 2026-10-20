@@ -2,7 +2,7 @@
 
 **Status:** accepted (2026-10-19); clauses 4, 5 and 8 amended (2026-10-20) by PJ1b, clause 5
 again (2026-10-20) by its second round, clauses 3 and 5 by its third, clause 5 by its
-fifth, clauses 3 and 5 by its sixth, and clause 5 by its seventh. Package PJ1 of the
+fifth, clauses 3 and 5 by its sixth, and clause 5 by its seventh and eighth. Package PJ1 of the
 [Project design note](../design/project.md). Builds on
 [ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md) (delivery makes only a local
 branch and worktree), [ADR-0032](0032-generate-review-authority-with-af-onboard.md),
@@ -250,11 +250,21 @@ directories.
    `removed the worktree <path>; its administrative entry remains at <container>/<name>: <os error>; fix it and run the command again`
 
    and the Workspace stays registered. A rerun acts through the record and the file system
-   together; the recorded step alone proves nothing. Before it acts on a directory it
-   re-establishes the precondition of the step recorded for it, and a precondition that fails
-   never advances the step:
+   together; the recorded step alone proves nothing. Whatever step the record holds, the first
+   thing the rerun of a directory does, before it claims, judges, deletes or moves anything of
+   it or reads the commit, is one entry check: the administrative entry is read now, at its
+   own path for the checkout's rerun and wherever its recorded identity is found for its own,
+   and its `gitdir` must name `<path>/.git` and it may hold no `locked`. A failed check stops
+   the removal with that condition and leaves everything as found: the checkout at its path,
+   or in its container, reported there by its claim name as
 
-   | Step | What the rerun verifies on the file system before acting |
+   `the worktree <path> is kept at <container>/<name>, where this removal moved it, because <condition>; the Workspace stays registered; move it back to <path> to keep it`
+
+   so an operator can restore it or finish with the same command, the entry, the record and the
+   registration untouched. Only then does it re-establish the precondition of the step recorded
+   for the directory, and a precondition that fails never advances the step:
+
+   | Step | What the rerun verifies on the file system before acting, after the entry check |
    |---|---|
    | `inspected` | The registered path holds the recorded identity: nothing there is a directory gone without this removal, another identity a replacement, kept. The entry's `gitdir` names `<path>/.git` and it holds no `locked`, for the checkout's claim as for the entry's own. Only then is a container named. |
    | `container` | Nothing is proved: the name was recorded before the container was made, so a directory found there is reported and left, and the directory is `inspected` again. |
