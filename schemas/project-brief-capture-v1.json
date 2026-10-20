@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-brief-capture:1",
+  "title": "af/ProjectBriefCapture@1",
+  "description": "What a Task's initial capture recorded for its Project Briefs before any pipeline was selected (ADR-0159), kept in the Task revision's provenance: the pinned Survey (absent: none was recorded), the project's own `[brief.<name>]` variants (the built-in `orient` and `none` are the release's) and the ancestry of every Survey head a Brief of the Task describes against the source commit. Every normalization renders and receipts from it alone, never from live git or a policy file. A Task that would record nothing here records no capture.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/ProjectBriefCapture@1"
+    },
+    "pin_id": {
+      "description": "The `af/ProjectSurveyPin@1`.",
+      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+    },
+    "source_commit": {
+      "$ref": "urn:af:schema:project-survey:1#/$defs/commit"
+    },
+    "variants": {
+      "type": "object",
+      "propertyNames": {
+        "allOf": [
+          {
+            "$ref": "urn:af:schema:project-brief:1#/$defs/name"
+          },
+          {
+            "not": {
+              "const": "none"
+            }
+          }
+        ]
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/variant"
+      }
+    },
+    "ancestry": {
+      "description": "By Survey head.",
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:project-survey:1#/$defs/commit"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/ancestry"
+      }
+    }
+  },
+  "$defs": {
+    "variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sections",
+        "max_bytes",
+        "decisions",
+        "hot_paths"
+      ],
+      "properties": {
+        "sections": {
+          "description": "Rendered in this order; dropped whole from the end until the Brief fits `max_bytes`. `hot_paths` is `history.hot_paths` alone; `activity` is never rendered by a Survey of this version.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 9,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "identity",
+              "tree",
+              "history",
+              "contributors",
+              "decisions",
+              "vocabulary",
+              "checks",
+              "hot_paths",
+              "activity"
+            ]
+          }
+        },
+        "max_bytes": {
+          "description": "The Brief's canonical bytes are at most this: 1024 to 262144.",
+          "type": "string",
+          "pattern": "^(102[4-9]|10[3-9][0-9]|1[1-9][0-9]{2}|[2-9][0-9]{3}|[1-9][0-9]{4}|1[0-9]{5}|2[0-5][0-9]{4}|26[01][0-9]{3}|2620[0-9]{2}|2621[0-3][0-9]|26214[0-4])$"
+        },
+        "decisions": {
+          "description": "How many of the newest decision records `decisions` keeps: 0 to 1000.",
+          "$ref": "#/$defs/count"
+        },
+        "hot_paths": {
+          "description": "How many of the first hot paths `hot_paths` keeps: 0 to 1000.",
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "ancestry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "behind_commits"
+          ],
+          "properties": {
+            "kind": {
+              "const": "behind"
+            },
+            "behind_commits": {
+              "description": "`git rev-list --count <head>..<source commit>`, the head being an ancestor of the source commit.",
+              "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "properties": {
+            "kind": {
+              "const": "unknown"
+            },
+            "reason": {
+              "enum": [
+                "not_ancestor",
+                "no_checkout",
+                "missing_objects",
+                "deadline",
+                "no_committed_revision"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "count": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,2}|1000)$"
+    }
+  }
+}

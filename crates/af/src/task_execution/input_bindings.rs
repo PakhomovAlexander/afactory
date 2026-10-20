@@ -623,6 +623,12 @@ pub(super) fn resolve(
             }
             return Err(refuse(port, reference, reason));
         }
+        // A bound Project Brief is the kernel's rendering of a pinned Survey or nothing
+        // (ADR-0159): its provenance is established before it suppresses construction.
+        if want_type == review_core::task::project_brief::PROJECT_BRIEF_V1 {
+            let admitted = crate::project_brief::admit_bound(cas, &recorded);
+            admitted.map_err(|e| refuse(port, reference, e))?;
+        }
         let (resolved, binding) = if port.as_str() == "source" {
             let bound = bind_source(cas, recorded, task.as_ref());
             let (input, binding, manifest) = bound.map_err(|e| refuse(port, reference, e))?;

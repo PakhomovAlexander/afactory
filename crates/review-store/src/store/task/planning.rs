@@ -139,6 +139,22 @@ impl TaskProjection {
                     .extend(value.artifact_ids.clone());
             }
         }
+        // A generated root's Project Brief ports are receipted by the new revision itself
+        // (ADR-0159): its `af/ProjectBriefReceipt@1` records are the one provenance it adds
+        // beside the artifacts of its new inputs.
+        for id in &next.provenance.input_artifact_ids {
+            let receipt = cas
+                .get_optional_artifact(id)
+                .ok()
+                .flatten()
+                .is_some_and(|found| {
+                    found.artifact_type
+                        == review_core::task::project_brief::PROJECT_BRIEF_RECEIPT_V1
+                });
+            if receipt {
+                expected.provenance.input_artifact_ids.push(id.clone());
+            }
+        }
         expected.provenance.input_artifact_ids.sort();
         expected.provenance.input_artifact_ids.dedup();
         if next != expected {

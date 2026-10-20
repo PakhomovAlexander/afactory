@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-brief:1",
+  "title": "af/ProjectBrief@1",
+  "description": "One variant of one pinned Survey (ADR-0159), in the Task Store's CAS: what a pipeline's declared `project_brief` port carries into the Workers it is wired to. Canonical JSON, every number decimal text, at most its variant's `max_bytes`. Every section is the pinned Survey's verbatim, except `decisions` (its records the variant's newest N, by date descending, undated last, then number descending, then path) and `hot_paths` (the first N of `history.hot_paths`). No host path, Provider ID or email.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "survey_id",
+    "project_id",
+    "variant",
+    "head",
+    "sections",
+    "dropped",
+    "rendered_bytes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/ProjectBrief@1"
+    },
+    "survey_id": {
+      "description": "The pinned Survey's ID in the Project Store: provenance, never a Task Store object.",
+      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+    },
+    "project_id": {
+      "$ref": "urn:af:schema:project-registered:1#/$defs/project_id"
+    },
+    "variant": {
+      "description": "The `[brief.<name>]` variant rendered; never `none`.",
+      "allOf": [
+        {
+          "$ref": "#/$defs/name"
+        },
+        {
+          "not": {
+            "const": "none"
+          }
+        }
+      ]
+    },
+    "head": {
+      "description": "The Survey's head: its commit and, when the Survey has one, its Tree Digest.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit"
+      ],
+      "properties": {
+        "commit": {
+          "$ref": "urn:af:schema:project-survey:1#/$defs/commit"
+        },
+        "tree_digest": {
+          "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+        }
+      }
+    },
+    "sections": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "$ref": "urn:af:schema:project-survey:1#/properties/identity"
+        },
+        "tree": {
+          "$ref": "urn:af:schema:project-survey:1#/properties/tree"
+        },
+        "history": {
+          "$ref": "urn:af:schema:project-survey:1#/properties/history"
+        },
+        "contributors": {
+          "$ref": "urn:af:schema:project-survey:1#/properties/contributors"
+        },
+        "decisions": {
+          "$ref": "urn:af:schema:project-survey:1#/properties/decisions"
+        },
+        "vocabulary": {
+          "$ref": "urn:af:schema:project-survey:1#/properties/vocabulary"
+        },
+        "checks": {
+          "$ref": "urn:af:schema:project-survey:1#/properties/checks"
+        },
+        "hot_paths": {
+          "$ref": "urn:af:schema:project-survey:1#/properties/history/properties/hot_paths"
+        }
+      }
+    },
+    "dropped": {
+      "description": "The sections the variant lists that the Brief does not render, in drop order: `not_in_survey` for one the pinned Survey lacks, then `max_bytes` for each dropped whole, last-declared first, until the Brief fit.",
+      "type": "array",
+      "maxItems": 9,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "section",
+          "reason"
+        ],
+        "properties": {
+          "section": {
+            "enum": [
+              "identity",
+              "tree",
+              "history",
+              "contributors",
+              "decisions",
+              "vocabulary",
+              "checks",
+              "hot_paths",
+              "activity"
+            ]
+          },
+          "reason": {
+            "enum": [
+              "max_bytes",
+              "not_in_survey"
+            ]
+          }
+        }
+      }
+    },
+    "rendered_bytes": {
+      "description": "The byte length of this record's canonical JSON, this field included: what the drop rule held at or under `max_bytes`.",
+      "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+    }
+  },
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    }
+  }
+}

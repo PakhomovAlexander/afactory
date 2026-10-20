@@ -29,6 +29,7 @@ fn port(artifact_type: &str, cardinality: review_core::PortCardinality) -> Pipel
         optional: false,
         affinity: PortAffinityV1::Unbound {},
         root_default: None,
+        brief: None,
         covers: BTreeSet::new(),
     }
 }
@@ -67,7 +68,7 @@ impl TaskPlanCompiler {
             .find(|(_, p)| p.artifact_id == plan.pipeline_id)
             .map(|(name, _)| name.as_str())
             .ok_or("Generated root is not captured")?;
-        if self.normalize_root_inputs(cas, root, previous.inputs.clone())? != next.inputs {
+        if self.normalize_root_inputs(cas, root, previous)? != next.inputs {
             return Err("Planning changed inputs beyond admitted root constructors".into());
         }
         Ok(())
@@ -189,8 +190,7 @@ impl TaskPlanCompiler {
             }
         }
         let mut normalized = task.clone();
-        normalized.inputs =
-            preview.normalize_root_inputs(cas, &proposal.root, normalized.inputs)?;
+        normalized.inputs = preview.normalize_root_inputs(cas, &proposal.root, task)?;
         let graph = preview.compile_graph(&normalized, &proposal.root)?;
         preview.validate_replacement_schemas(&graph)?;
         Ok((preview, normalized, graph))

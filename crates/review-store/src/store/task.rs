@@ -59,10 +59,12 @@ fn now() -> Result<u64, StoreError> {
     Ok(millis)
 }
 
-/// Every port's artifact identity, then the one provenance record no port carries that a Task
+/// Every port's artifact identity, then the provenance records no port carries that a Task
 /// revision keeps across selection and source refresh: the `af/TaskInputBindings@1` record a
-/// Task file's `inputs` table produced (ADR-0117). Nothing else is preserved, so a revision
-/// whose adapter recorded some other observation keeps byte for byte the list it had.
+/// Task file's `inputs` table produced (ADR-0117), and the `af/ProjectBriefCapture@1` and
+/// `af/ProjectBriefReceipt@1` records of its Project Briefs (ADR-0159). Nothing else is
+/// preserved, so a revision whose adapter recorded some other observation keeps byte for byte
+/// the list it had.
 ///
 /// Both the adapter that writes a revision and the Store that validates a refreshed one derive
 /// the list here, so they cannot disagree. An entry that is absent, unreadable or a raw blob is
@@ -78,7 +80,14 @@ pub fn revision_provenance_inputs(cas: &Cas, revision: &TaskRevisionV1) -> Vec<S
             continue;
         }
         let found = cas.get_optional_artifact(id).ok().flatten();
-        let record = found.is_some_and(|e| e.artifact_type == TASK_INPUT_BINDINGS_V1);
+        let record = found.is_some_and(|e| {
+            [
+                TASK_INPUT_BINDINGS_V1,
+                review_core::task::project_brief::PROJECT_BRIEF_CAPTURE_V1,
+                review_core::task::project_brief::PROJECT_BRIEF_RECEIPT_V1,
+            ]
+            .contains(&e.artifact_type.as_str())
+        });
         if record {
             ids.push(id.clone());
         }

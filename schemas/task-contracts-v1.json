@@ -627,8 +627,14 @@
         },
         "root_default": {
           "enum": [
-            "empty_review_history"
+            "empty_review_history",
+            "project_brief"
           ]
+        },
+        "brief": {
+          "description": "The `[brief.<name>]` variant a `project_brief` root default renders (ADR-0159); allowed only with it.",
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
         },
         "covers": {
           "type": "array",
@@ -645,7 +651,12 @@
           "if": {
             "required": [
               "root_default"
-            ]
+            ],
+            "properties": {
+              "root_default": {
+                "const": "empty_review_history"
+              }
+            }
           },
           "then": {
             "properties": {
@@ -655,6 +666,48 @@
               "cardinality": {
                 "const": "one"
               }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "root_default"
+            ],
+            "properties": {
+              "root_default": {
+                "const": "project_brief"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "brief"
+            ],
+            "properties": {
+              "artifact_type": {
+                "const": "af/ProjectBrief@1"
+              },
+              "cardinality": {
+                "const": "one"
+              },
+              "optional": {
+                "const": true
+              },
+              "affinity": {
+                "properties": {
+                  "kind": {
+                    "const": "unbound"
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "required": [
+                "brief"
+              ]
             }
           }
         }

@@ -349,7 +349,15 @@ fn run_planner(
             .checked_add(1)
             .ok_or("Task revision overflow")?;
         next.previous_revision_id = Some(state.revision_id.clone());
-        next.inputs = compiler.normalize_root_inputs(cas, &root, next.inputs)?;
+        next.inputs = compiler.normalize_root_inputs(cas, &root, &next)?;
+        // A generated root that introduces a Brief port renders it from the Survey the initial
+        // capture pinned, and receipts it from the capture's observation (ADR-0159).
+        let contract = &compiler
+            .pipelines()
+            .get(&root)
+            .ok_or("Generated root is not captured")?
+            .contract;
+        crate::project_brief::record_receipts(cas, contract, &mut next)?;
         next.provenance.input_artifact_ids.extend(
             next.inputs
                 .values()
@@ -360,6 +368,7 @@ fn run_planner(
         let revision_id = selection::capture_revision(cas, &next)?;
         let _adapters = bind_models(cas, &mut compiler, authority, &revision_id, &root)?;
         let (generated, graph) = compiler.compile(cas, &revision_id, &root)?;
+        crate::project_brief::check_request_cap(cas, &compiler, &graph, &next)?;
         selection::available_tools(cas, &compiler, authority, &graph)?;
         let remaining = state
             .execution

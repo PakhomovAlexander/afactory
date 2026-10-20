@@ -840,7 +840,9 @@ fn restore_compiler(
             )?;
         }
     }
-    Ok(compiler.with_provider_admission(admission_cost))
+    Ok(compiler
+        .with_provider_admission(admission_cost)
+        .with_project_briefs(std::sync::Arc::new(crate::project_brief::Resolver)))
 }
 
 fn bind_models(
@@ -1595,6 +1597,22 @@ fn start_captured(
     if let Some(bound) = &bound {
         let ids = &mut revision.provenance.input_artifact_ids;
         ids.push(bound.record_id.clone());
+        ids.sort();
+        ids.dedup();
+    }
+    // The Project Brief's initial capture, before any pipeline is selected: the pinned Survey,
+    // the `[brief]` policy and the ancestry of every Survey head against the source commit, so
+    // every later normalization renders from them alone (ADR-0159).
+    let constructs = crate::project_brief::constructs(&compiler, authority.planner.is_some());
+    if let Some(id) = crate::project_brief::capture(
+        &cas,
+        &options.repo,
+        source.source_revision.as_deref(),
+        constructs,
+        &bound_ports,
+    )? {
+        let ids = &mut revision.provenance.input_artifact_ids;
+        ids.push(id);
         ids.sort();
         ids.dedup();
     }

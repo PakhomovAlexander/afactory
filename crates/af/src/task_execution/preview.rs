@@ -549,6 +549,11 @@ fn render_marked(
     let bound = recorded.map_or_else(BindingRows::new, |r| r.bindings);
     let labels = input_labels(plan.inputs.keys(), &bound);
     line(&mut out, &format!("IN    {labels}"));
+    // Each Project Brief port: its Brief, its size and staleness, or why it carries none.
+    // Never wrapped, so the Brief's ID stays whole.
+    for brief in crate::project_brief::preview_lines(cas, revision)? {
+        command(&mut out, &format!("      {brief}"));
+    }
     if tree {
         for row in binding_rows(&bound) {
             line(&mut out, &row);

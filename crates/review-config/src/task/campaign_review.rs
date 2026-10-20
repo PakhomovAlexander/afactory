@@ -125,6 +125,7 @@ fn port(artifact_type: &str, cardinality: PortCardinality, optional: bool) -> Pi
         optional,
         affinity: PortAffinityV1::Unbound {},
         root_default: None,
+        brief: None,
         covers: BTreeSet::new(),
     }
 }

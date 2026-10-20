@@ -41,6 +41,9 @@ mod model_check;
 mod model_failures;
 mod onboard;
 mod project;
+/// Project Briefs (ADR-0159), beside the Surveyor they render from.
+#[path = "projects/brief.rs"]
+mod project_brief;
 mod projects;
 mod providers;
 mod report_tasks;
@@ -1217,7 +1220,17 @@ fn main() {
                 .map(|()| 0),
         ),
         cli::Command::Task { command } => ("af task", task_command(command)),
-        cli::Command::Project { command } => {
+        cli::Command::Project {
+            command:
+                cli::ProjectCli::Brief {
+                    variant,
+                    survey,
+                    json,
+                },
+        } => ("af project", project_brief::command(variant, survey, json)),
+        cli::Command::Project {
+            command: cli::ProjectCli::Core(command),
+        } => {
             let sections = match &command {
                 cli::ProjectCommand::Survey { json: false } => cli::survey_sections(&argv),
                 _ => Vec::new(),

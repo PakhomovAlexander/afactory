@@ -64,6 +64,12 @@ bound `sources` makes `document_sources` — or, for a report Task, whose `sourc
 `af/ReportSources@1`, `report_sources` — unnecessary. Their expected type is this profile's, as
 ADR-0117 fixed it; every other port's is the selected Pipeline's declaration.
 
+A Project Brief port binds the same way, to a recorded result output of type
+`af/ProjectBrief@1`, never by exact artifact ID; the binding suppresses its `project_brief` root
+default, and a Brief the kernel did not construct from a pinned Survey is refused with the reason
+`not_kernel_constructed`
+([ADR-0159](../adr/0159-carry-a-bounded-project-brief-on-a-declared-port.md)).
+
 The referenced Task must be recorded in this Store, finished, its result must carry the named
 port, and every artifact the port names must verify in the CAS. Only result outputs bind: a name
 the result does not carry — `raw_artifact_ids`, `runtime_evidence` or any other record — is
@@ -80,6 +86,22 @@ as a list. A list binds only a `many` port; each listed output must carry the po
 their artifacts, in order, must be distinct. A refusal is an ordinary Task-file input error that
 names the port, the reference and both types where they differ: exit 1 with the `af/error@1`
 document under `--json`, and no Task is recorded.
+
+## Root defaults
+
+A root input the Task file does not bind is filled only by a constructor its port declares in
+`root_default`, and only for the root Pipeline; a child call binds every input itself.
+
+| `root_default` | Port | Fills it with |
+|---|---|---|
+| `empty_review_history` | one `af/ReviewHistory@1` | a typed empty review history |
+| `project_brief` | one optional, `unbound` `af/ProjectBrief@1`, naming its variant in `brief` | the Project Brief that `[brief.<variant>]` renders from the Survey the Task pinned when it was planned, or nothing without a Survey or with the variant `none` ([ADR-0159](../adr/0159-carry-a-bounded-project-brief-on-a-declared-port.md)) |
+
+`brief` is allowed only beside `root_default = "project_brief"`. Both constructors run at plan
+time in `normalize_root_inputs` (`crates/review-config/src/task/catalog.rs`), for the Task-file
+adapter, proposal validation and a generated pipeline's handoff alike; the second through the
+`ProjectBriefResolver` the `af` crate installs (`crates/af/src/projects/brief.rs`), which reads
+nothing but the revision's pinned capture. A bound port is never constructed.
 
 ## What resolution records
 

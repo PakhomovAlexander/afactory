@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-survey-pin:1",
+  "title": "af/ProjectSurveyPin@1",
+  "description": "The complete Survey a Task's initial capture pinned (ADR-0159), in the Task Store's CAS: its identity and sections verbatim, and its Survey ID as provenance. It names no previous Survey and links to no other record, so collecting an earlier Task releases its pin while a later Task keeps its own.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "survey_id",
+    "identity",
+    "tree",
+    "history",
+    "contributors",
+    "decisions",
+    "vocabulary",
+    "checks"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/ProjectSurveyPin@1"
+    },
+    "survey_id": {
+      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+    },
+    "identity": {
+      "allOf": [
+        {
+          "$ref": "urn:af:schema:project-survey:1#/properties/identity"
+        },
+        {
+          "properties": {
+            "completeness": {
+              "const": "complete"
+            }
+          }
+        }
+      ]
+    },
+    "tree": {
+      "allOf": [
+        {
+          "$ref": "urn:af:schema:project-survey:1#/properties/tree"
+        },
+        {
+          "properties": {
+            "completeness": {
+              "const": "complete"
+            }
+          }
+        }
+      ]
+    },
+    "history": {
+      "allOf": [
+        {
+          "$ref": "urn:af:schema:project-survey:1#/properties/history"
+        },
+        {
+          "properties": {
+            "completeness": {
+              "const": "complete"
+            }
+          }
+        }
+      ]
+    },
+    "contributors": {
+      "allOf": [
+        {
+          "$ref": "urn:af:schema:project-survey:1#/properties/contributors"
+        },
+        {
+          "properties": {
+            "completeness": {
+              "const": "complete"
+            }
+          }
+        }
+      ]
+    },
+    "decisions": {
+      "allOf": [
+        {
+          "$ref": "urn:af:schema:project-survey:1#/properties/decisions"
+        },
+        {
+          "properties": {
+            "completeness": {
+              "const": "complete"
+            }
+          }
+        }
+      ]
+    },
+    "vocabulary": {
+      "allOf": [
+        {
+          "$ref": "urn:af:schema:project-survey:1#/properties/vocabulary"
+        },
+        {
+          "properties": {
+            "completeness": {
+              "const": "complete"
+            }
+          }
+        }
+      ]
+    },
+    "checks": {
+      "allOf": [
+        {
+          "$ref": "urn:af:schema:project-survey:1#/properties/checks"
+        },
+        {
+          "properties": {
+            "completeness": {
+              "const": "complete"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

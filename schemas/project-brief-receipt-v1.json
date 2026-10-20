@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:project-brief-receipt:1",
+  "title": "af/ProjectBriefReceipt@1",
+  "description": "The plan-time receipt of one Project Brief port of one Task revision (ADR-0159), kept in the revision's provenance, which the compiled plan pins: the Brief the port carries and its staleness, keyed by the Brief's ID and the Task's source commit and read from the capture's ancestry observation; or why the port carries none. Staleness is reported, never refused.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "port",
+    "outcome",
+    "variant"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/ProjectBriefReceipt@1"
+    },
+    "port": {
+      "$ref": "urn:af:schema:project-brief:1#/$defs/name"
+    },
+    "outcome": {
+      "enum": [
+        "constructed",
+        "bound",
+        "none"
+      ]
+    },
+    "variant": {
+      "description": "The port's variant; for a bound Brief, the variant it was rendered by.",
+      "$ref": "urn:af:schema:project-brief:1#/$defs/name"
+    },
+    "reason": {
+      "enum": [
+        "variant_none",
+        "no_survey"
+      ]
+    },
+    "brief_id": {
+      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+    },
+    "source_commit": {
+      "$ref": "urn:af:schema:project-survey:1#/$defs/commit"
+    },
+    "staleness": {
+      "$ref": "urn:af:schema:project-brief-capture:1#/$defs/ancestry"
+    }
+  },
+  "if": {
+    "properties": {
+      "outcome": {
+        "const": "none"
+      }
+    }
+  },
+  "then": {
+    "required": [
+      "reason"
+    ],
+    "not": {
+      "anyOf": [
+        {
+          "required": [
+            "brief_id"
+          ]
+        },
+        {
+          "required": [
+            "staleness"
+          ]
+        }
+      ]
+    }
+  },
+  "else": {
+    "required": [
+      "brief_id",
+      "staleness"
+    ],
+    "not": {
+      "required": [
+        "reason"
+      ]
+    }
+  }
+}

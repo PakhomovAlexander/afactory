@@ -250,9 +250,20 @@ impl WorkerContract {
                 {
                     return Err("Worker input differs from its admitted type or Snapshot".into());
                 }
+                // A Project Brief is the one input a pipeline adds for orientation alone, so
+                // its entry names the port that asked for it (ADR-0159).
+                let required_by =
+                    if value.artifact_type == review_core::task::project_brief::PROJECT_BRIEF_V1 {
+                        format!(
+                            "{}{port}",
+                            review_core::task::project_brief::PORT_REQUIRED_BY_PREFIX
+                        )
+                    } else {
+                        "declared input port".into()
+                    };
                 manifest.record(
                     port,
-                    "declared input port",
+                    required_by,
                     Some(id.clone()),
                     Some(value.artifact_type.clone()),
                     serde_json::to_vec(&value).map_err(|e| e.to_string())?.len(),

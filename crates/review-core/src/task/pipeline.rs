@@ -39,6 +39,9 @@ pub enum PortAffinityV1 {
 #[serde(rename_all = "snake_case")]
 pub enum RootDefaultV1 {
     EmptyReviewHistory,
+    /// The Project Brief the port's `brief` variant renders from the Survey the Task's initial
+    /// capture pinned (ADR-0159).
+    ProjectBrief,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +57,14 @@ pub struct PipelinePortV1 {
         deserialize_with = "super::present_option"
     )]
     pub root_default: Option<RootDefaultV1>,
+    /// The `[brief.<name>]` variant a `project_brief` root default renders; allowed only with
+    /// it (ADR-0159).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub brief: Option<String>,
     #[serde(deserialize_with = "super::unique_set")]
     pub covers: BTreeSet<String>,
 }
@@ -74,12 +85,26 @@ impl PipelinePortV1 {
             self.covers.iter().all(|s| is_name(s)),
             "Invalid public coverage name",
         )?;
-        if self.root_default.is_some() {
-            require(
+        match self.root_default {
+            Some(RootDefaultV1::EmptyReviewHistory) => require(
                 self.artifact_type == REVIEW_HISTORY_V1 && self.cardinality == PortCardinality::One,
                 "Empty review history is only a default for a single ReviewHistory port",
-            )?;
+            )?,
+            Some(RootDefaultV1::ProjectBrief) => require(
+                self.artifact_type == super::project_brief::PROJECT_BRIEF_V1
+                    && self.cardinality == PortCardinality::One
+                    && self.optional
+                    && self.affinity == PortAffinityV1::Unbound {}
+                    && self.brief.as_deref().is_some_and(is_name),
+                "A project_brief root default is one optional unbound af/ProjectBrief@1 port \
+                 naming its variant in `brief`",
+            )?,
+            None => {}
         }
+        require(
+            self.brief.is_none() || self.root_default == Some(RootDefaultV1::ProjectBrief),
+            "A port names a `brief` variant only with root_default = \"project_brief\"",
+        )?;
         Ok(())
     }
 }

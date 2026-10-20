@@ -213,6 +213,16 @@ pub(super) fn assess(
                     reason: resources.join("; "),
                 };
             }
+            // Each Brief port's receipt is this revision's, and no Worker wired to a Brief may
+            // be handed more than the request renderer's cap (ADR-0159).
+            let briefs = candidate.pipelines().get(root).map_or(Ok(()), |pipeline| {
+                crate::project_brief::record_receipts(cas, &pipeline.contract, &mut revision)
+            });
+            if let Err(reason) = briefs.and_then(|()| {
+                crate::project_brief::check_request_cap(cas, &candidate, &graph, &revision)
+            }) {
+                return CandidateState::Invalid { reason };
+            }
             revision.provenance.input_artifact_ids = provenance_input_artifact_ids(cas, &revision);
             // A pipeline with remote checks publishes to its repository's push target, and its
             // authority says so before the revision has an identity (ADR-0140).
