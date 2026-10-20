@@ -11,10 +11,12 @@
 //! A sweep plans once (`crate::storage::plan`): [`look`] reads each Project Store once, without
 //! its lock, into what the plan needs (its Surveys, the deletions an interruption left, the empty
 //! containers of dead passes, the files it leaves), each object with the identity and bytes it
-//! stated, [`judge`] reads a Survey the plan picks and refuses it when its name holds another
-//! inode than [`look`] stated, and the preview prints that plan while the applied sweep runs
-//! each of its [`Job`]s with [`execute`], which compares what it opens with the same identity
-//! and reports what it found instead of choosing again. Held is decided by one predicate, [`lock_available`]. Collection
+//! stated and each uncollected Survey's event verified against its record once, there and
+//! nowhere else ([`Verdict`]); [`judge`] reads only that verdict and the record's name, refusing
+//! a Survey whose name holds another inode than [`look`] stated, and the preview prints that
+//! plan while the applied sweep runs each of its [`Job`]s with [`execute`], which compares what
+//! it opens with the same identity and reports what it found instead of choosing again; an
+//! object gone since the inventory is a failed entry, never a deletion of nothing. Held is decided by one predicate, [`lock_available`]. Collection
 //! appends `SurveyCollected@1` to the Project Store's log before the record leaves the CAS. The
 //! tombstones are a run of their own, `survey-collection`, beside the run `project` the
 //! Surveyor appends its chain to: a `SurveyRecorded@1` a tombstone names replays as collected,
@@ -90,6 +92,9 @@ const REPLACED: &str = "refused (replaced during collection)";
 /// How a Survey whose record's name holds another file than inventory measured is refused: the
 /// plan never adopts an inode inventory did not measure.
 const REPLACED_SINCE_INVENTORY: &str = "refused (replaced since inventory)";
+/// How a planned object that is not there any more fails: nothing of it is freed, and the
+/// running total is unchanged by it.
+const GONE: &str = "gone since the inventory";
 /// What a file found in place of a record is renamed to in a container when its name is taken
 /// again: a name that is no Survey's, so no pass ever deletes it.
 const REPLACED_SUFFIX: &str = ".replaced";
@@ -514,7 +519,7 @@ impl Record {
     /// this pass's own ([`Container`]) and unlinked there only after `fstatat` relative to the
     /// container finds the device and inode that was stated. Returns the allocated bytes of the
     /// inode it deleted. Another file is set aside ([`Container::set_aside`]) and the deletion
-    /// is [`REPLACED`].
+    /// is [`REPLACED`]; a record gone before its unlink is [`GONE`], never a deletion of nothing.
     fn remove(self) -> Result<u64, String> {
         let object = self.object.clone();
         self.remove_with(|step, _| {
@@ -538,10 +543,10 @@ impl Record {
         hook(Before::Rename, &inside);
         match rename_free(&self.prefix, name, &container.directory, entry) {
             Ok(()) => {}
-            // Gone since it was found: nothing of it is left to delete.
+            // Gone since it was found: nothing of it is freed, and the entry says so.
             Err(rustix::io::Errno::NOENT) => {
                 container.close();
-                return Ok(0);
+                return Err(format!("{GONE}, so nothing of it is freed"));
             }
             Err(errno) => {
                 container.close();
@@ -551,7 +556,7 @@ impl Record {
         hook(Before::Check, &inside);
         let removed = match container.unlink_checked(entry, self.identity) {
             Ok(bytes) => Ok(bytes),
-            Err(Checked::Gone) => Ok(0),
+            Err(Checked::Gone) => Err(format!("{GONE}, so nothing of it is freed")),
             Err(Checked::Failed(why)) => Err(format!(
                 "deleting its record from `{}`: {why}; the next pass finishes it",
                 container.label(entry)
@@ -583,6 +588,10 @@ pub(crate) enum LeftReason {
     /// A name under `cas/removing` that is not UTF-8, a file's or its container's, so no
     /// Survey's and no pass's.
     UnreadableName,
+    /// A directory nested deeper than the removal walk reaches
+    /// (`review_sandbox::REMOVAL_MAX_DEPTH`): any removal of it would leave part of it, so the
+    /// inventory leaves all of it, in the preview as in the applied sweep.
+    TooDeep,
 }
 
 impl LeftReason {
@@ -592,6 +601,7 @@ impl LeftReason {
             LeftReason::Foreign => "foreign",
             LeftReason::Oversize => "oversize",
             LeftReason::UnreadableName => "unreadable_name",
+            LeftReason::TooDeep => "too_deep",
         }
     }
 }
@@ -640,7 +650,8 @@ pub(crate) enum Job {
         survey_id: String,
         identity: Identity,
     },
-    /// Remove a container a dead pass left empty, stated as `identity`.
+    /// Remove a container a dead pass left, stated as `identity`: one it left empty, or one
+    /// whose every file is a moved record planned before it, once those are settled.
     Container {
         store: PathBuf,
         container: OsString,
@@ -686,13 +697,42 @@ pub(crate) struct Inventoried {
     pub(crate) identity: Option<Identity>,
 }
 
-/// An uncollected Survey of the chain, oldest first: what `keep_surveys` counts.
+/// What [`look`]'s one read of an uncollected Survey's record found: its `SurveyRecorded@1`
+/// verified against it once, by the fold's own verifier
+/// ([`super::TombstoneIdentity::of_record`]). The plan's judgement and the inventory read
+/// nothing else of the event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Verdict {
+    /// The event agrees with its record on every field clause 2 compares.
+    Agrees,
+    /// The event names a `field` its record does not record: refused, preview and pass alike,
+    /// and kept.
+    Disagrees(&'static str),
+    /// No record vouches for anything (its bytes are no Survey, or the CAS does not hold it):
+    /// collected `unreadable`, with why.
+    Unreadable(String),
+    /// A record over [`MAX_SURVEY_BYTES`]: left `oversize`, with why.
+    Oversize(String),
+    /// A record that cannot be reached without a link or that af may not read: refused, with
+    /// why, beginning `refused`.
+    Refused(String),
+}
+
+/// An uncollected Survey of the chain, oldest first: what `keep_surveys` counts, with what
+/// [`look`] verified of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Live {
     pub(crate) survey_id: String,
+    /// Its cutoff as its record vouches for it (0 when a record that disagrees with its event
+    /// records none), never the time an event its record disproves names; the event's only
+    /// when no record vouches for anything, as an `unreadable` tombstone takes it.
     pub(crate) cutoff_ms: u64,
-    /// The newest complete Survey: never collected.
+    /// The newest complete Survey by the same verified fields: never collected.
     pub(crate) protected: bool,
+    /// Its record as [`look`] stated it; `None` when the CAS does not hold it or it cannot be
+    /// reached.
+    pub(crate) identity: Option<Identity>,
+    pub(crate) verdict: Verdict,
 }
 
 /// One Project Store as one read without its lock finds it: everything a sweep's plan needs.
@@ -706,7 +746,8 @@ pub(crate) struct Look {
     /// Its uncollected Surveys, oldest first.
     pub(crate) live: Vec<Live>,
     /// The deletions an interruption left, in the order the tombstones were appended, then the
-    /// containers of dead passes that hold nothing.
+    /// containers of dead passes whose every file is one of those moved records, then the ones
+    /// that hold nothing.
     pub(crate) recovery: Vec<Pending>,
     /// What it leaves: foreign files and unreadable names.
     pub(crate) left: Vec<Left>,
@@ -786,20 +827,22 @@ fn is_pass_id(name: &OsStr) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
 }
 
-/// A container a dead pass left holding nothing, as the walk stated it.
+/// A container a dead pass left, as the walk stated it: its name, identity and allocated bytes,
+/// and whether it holds nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Empty {
+struct PassContainer {
     name: OsString,
     identity: Identity,
     bytes: u64,
+    empty: bool,
 }
 
 /// Walk `cas/removing` with raw names: every name in it, and in each directory below it (a
-/// container) every name there, plus the pass containers that hold nothing. A directory whose
-/// own name is no pass ID (not UTF-8, or not [`pass_id`]'s pattern) is no pass's container:
-/// what it holds is walked and judged like any leftover, and, when it holds nothing, it is
-/// itself a leftover, never an empty container to remove. Reads only.
-fn walk_removing(cas: &CasDirectories) -> Result<(Vec<Found>, Vec<Empty>), String> {
+/// container) every name there, plus every pass container, with whether it holds nothing. A
+/// directory whose own name is no pass ID (not UTF-8, or not [`pass_id`]'s pattern) is no
+/// pass's container: what it holds is walked and judged like any leftover, and, when it holds
+/// nothing, it is itself a leftover, never an empty container to remove. Reads only.
+fn walk_removing(cas: &CasDirectories) -> Result<(Vec<Found>, Vec<PassContainer>), String> {
     let Some(removing) = open_removing(cas, false)? else {
         return Ok((Vec::new(), Vec::new()));
     };
@@ -822,16 +865,15 @@ fn walk_removing(cas: &CasDirectories) -> Result<(Vec<Found>, Vec<Empty>), Strin
             ));
         }
         let inside = names_in(&container).map_err(listing)?;
-        if inside.is_empty() {
-            if is_pass_id(&name) {
-                empty.push(Empty {
-                    name: name.clone(),
-                    identity: top.identity,
-                    bytes: top.bytes,
-                });
-            } else {
-                all.push(top);
-            }
+        if is_pass_id(&name) {
+            empty.push(PassContainer {
+                name: name.clone(),
+                identity: top.identity,
+                bytes: top.bytes,
+                empty: inside.is_empty(),
+            });
+        } else if inside.is_empty() {
+            all.push(top);
         }
         for entry in inside {
             if let Some(file) = found(&container, Some(&name), entry).map_err(listing)? {
@@ -940,11 +982,13 @@ fn judge_leftovers(
 /// Read the Project Store at `store` once, without its lock, for a sweep's plan and for `af
 /// storage`: its Surveys at their CAS names (a record that cannot be reached without a link is
 /// listed in use with nothing measured through the link, and so is one over
-/// [`MAX_SURVEY_BYTES`]), whether its lock is held, its uncollected Surveys, and what an
-/// interruption left: per tombstoned Survey, in tombstone order, its record moved into a dead
-/// pass's container (a file that took its CAS name since is `foreign`), otherwise its record
-/// still at its name, which is its record only when its bytes hash to its ID (any other file
-/// there is `foreign`), and then each dead pass's container that holds nothing. Every one is
+/// [`MAX_SURVEY_BYTES`] and one whose event its record disproves), whether its lock is held, its
+/// uncollected Surveys, each record read and its event verified against it once here
+/// ([`verify`]), and what an interruption left: per tombstoned Survey, in tombstone order, its
+/// record moved into a dead pass's container (a file that took its CAS name since is
+/// `foreign`), otherwise its record still at its name, which is its record only when its bytes
+/// hash to its ID (any other file there is `foreign`); then each dead pass's container whose
+/// every file is a moved record planned before it, and each one that holds nothing. Every one is
 /// recorded with the identity and bytes stated here, which every later step compares against.
 /// Writes nothing but the lock file every holder of the Store creates.
 pub(crate) fn look(store: &Path) -> Result<Look, String> {
@@ -961,13 +1005,21 @@ pub(crate) fn look(store: &Path) -> Result<Look, String> {
         ..Look::default()
     };
     let walked = open_cas(store).and_then(|cas| walk_removing(&cas));
-    let (found, empty) = walked.unwrap_or_else(|why| {
+    let (found, containers) = walked.unwrap_or_else(|why| {
         look.refused.push((
             store.join("cas").join(REMOVING),
             format!("what is under `cas/{REMOVING}` is left: {why}"),
         ));
         (Vec::new(), Vec::new())
     });
+    // A dead pass's container goes only when everything in it is a moved record the plan
+    // settles before it; one that holds anything else stays with what it holds.
+    let mut holding: BTreeMap<OsString, usize> = BTreeMap::new();
+    for file in &found {
+        if let Some(container) = &file.container {
+            *holding.entry(container.clone()).or_default() += 1;
+        }
+    }
     let (moved, left) = judge_leftovers(store, found, &collected);
     look.left = left;
     // What each collected Survey left, in the order the tombstones were appended: its record
@@ -1049,36 +1101,104 @@ pub(crate) fn look(store: &Path) -> Result<Look, String> {
             )),
         }
     }
-    // The containers dead passes left empty: planned like every other removal, never removed
-    // beside the plan.
-    for container in empty {
+    // The containers of dead passes: planned like every other removal, after the records they
+    // hold, never removed beside the plan. One that held records goes once they are settled;
+    // one that holds nothing goes as it was stated.
+    let mut planned_moves: BTreeMap<&OsStr, usize> = BTreeMap::new();
+    for record in moved.values() {
+        *planned_moves
+            .entry(record.container.as_os_str())
+            .or_default() += 1;
+    }
+    let (emptied, empty): (Vec<&PassContainer>, Vec<&PassContainer>) = containers
+        .iter()
+        .filter(|container| {
+            container.empty
+                || planned_moves.get(container.name.as_os_str()).copied()
+                    == holding.get(&container.name).copied()
+        })
+        .partition(|container| !container.empty);
+    for container in emptied.into_iter().chain(empty) {
         look.recovery.push(Pending {
             object: store.join("cas").join(REMOVING).join(&container.name),
             bytes: container.bytes,
             counted: Counted::Store,
             job: Job::Container {
                 store: store.to_path_buf(),
-                container: container.name,
+                container: container.name.clone(),
                 identity: container.identity,
             },
         });
     }
-    let protected = newest_complete(&log);
-    for recorded in oldest_first(&log) {
+    // Every uncollected Survey once, its record read and its event verified against it here and
+    // nowhere else; what the inventory and the plan know of it is what this read verified.
+    let chain = oldest_first(&log);
+    let verified: Vec<(&SurveyRecordedPayloadV1, Verified)> = chain
+        .iter()
+        .filter(|recorded| !collected.contains(&recorded.survey_id))
+        .map(|recorded| (*recorded, verify(store, recorded)))
+        .collect();
+    let protected = verified
+        .iter()
+        .rev()
+        .find(|(recorded, verified)| {
+            verified.completeness(recorded) == SurveyCompletenessV1::Complete
+        })
+        .map(|(recorded, _)| recorded.survey_id.clone());
+    look.live = verified
+        .iter()
+        .map(|(recorded, verified)| Live {
+            survey_id: recorded.survey_id.clone(),
+            cutoff_ms: verified.cutoff_ms(recorded),
+            protected: protected.as_deref() == Some(recorded.survey_id.as_str()),
+            identity: verified.identity,
+            verdict: verified.verdict.clone(),
+        })
+        .collect();
+    let live: BTreeMap<&str, (&Live, &Verified)> = look
+        .live
+        .iter()
+        .zip(verified.iter().map(|(_, verified)| verified))
+        .map(|(live, verified)| (live.survey_id.as_str(), (live, verified)))
+        .collect();
+    for recorded in chain {
         let survey_id = recorded.survey_id.as_str();
         if moved.contains_key(survey_id) || not_records.contains(survey_id) {
             continue;
         }
-        let (bytes, identity, refused) = match locate(store, survey_id) {
-            Ok(None) => continue,
-            Ok(Some(record)) => (record.bytes, Some(record.identity), record.oversize()),
-            Err(reason) => (0, None, Some(format!("its record is left: {reason}"))),
+        let (bytes, identity, last_use_unix_ms, refused) = match live.get(survey_id) {
+            // A collected Survey whose record is still at its name: its deletion is recovery.
+            None => match locate(store, survey_id) {
+                Ok(None) => continue,
+                Ok(Some(record)) => (
+                    record.bytes,
+                    Some(record.identity),
+                    cutoff_ms(recorded),
+                    record.oversize(),
+                ),
+                Err(reason) => (0, None, 0, Some(format!("its record is left: {reason}"))),
+            },
+            Some((live, found)) => {
+                if !found.present {
+                    continue;
+                }
+                let refused = match &live.verdict {
+                    Verdict::Agrees | Verdict::Unreadable(_) => None,
+                    Verdict::Oversize(why) => Some(why.clone()),
+                    Verdict::Refused(why) => Some(format!(
+                        "its record is left: {}",
+                        why.strip_prefix("refused: ").unwrap_or(why)
+                    )),
+                    Verdict::Disagrees(field) => Some(disagrees(field)),
+                };
+                (found.bytes, live.identity, live.cutoff_ms, refused)
+            }
         };
         let in_use = if refused.is_some() {
             refused
         } else if look.held.is_some() {
             look.held.clone()
-        } else if !collected.contains(survey_id) && protected == Some(survey_id) {
+        } else if !collected.contains(survey_id) && protected.as_deref() == Some(survey_id) {
             Some(NEWEST_COMPLETE.to_string())
         } else {
             None
@@ -1086,22 +1206,115 @@ pub(crate) fn look(store: &Path) -> Result<Look, String> {
         look.surveys.push(Inventoried {
             object: object_path(store, survey_id),
             bytes,
-            last_use_unix_ms: cutoff_ms(recorded),
+            last_use_unix_ms,
             in_use,
             identity,
         });
     }
-    // A Survey whose record is gone from the CAS still counts against `keep_surveys`.
-    look.live = oldest_first(&log)
-        .into_iter()
-        .filter(|recorded| !collected.contains(&recorded.survey_id))
-        .map(|recorded| Live {
-            survey_id: recorded.survey_id.clone(),
-            cutoff_ms: cutoff_ms(recorded),
-            protected: protected == Some(recorded.survey_id.as_str()),
-        })
-        .collect();
     Ok(look)
+}
+
+/// How a Survey whose event its record disproves is refused and kept, preview and pass alike.
+fn disagrees(field: &str) -> String {
+    format!(
+        "refused: its SurveyRecorded@1 names a {field} its record does not record, so it is kept"
+    )
+}
+
+/// What one read of an uncollected Survey's record found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Verified {
+    /// Whether the CAS holds something at its name, a link included.
+    present: bool,
+    identity: Option<Identity>,
+    bytes: u64,
+    verdict: Verdict,
+    /// The cutoff, in Unix seconds, and the completeness its record vouches for, when it can:
+    /// its bytes are its record's and parse (the cutoff `None` when the record holds none).
+    vouched: Option<(Option<u64>, SurveyCompletenessV1)>,
+}
+
+impl Verified {
+    /// Its cutoff in Unix milliseconds, as a verified field says it.
+    fn cutoff_ms(&self, recorded: &SurveyRecordedPayloadV1) -> u64 {
+        match self.vouched {
+            Some((cutoff_s, _)) => cutoff_s.unwrap_or(0).saturating_mul(1000),
+            None => cutoff_ms(recorded),
+        }
+    }
+
+    /// Its completeness, the same way.
+    fn completeness(&self, recorded: &SurveyRecordedPayloadV1) -> SurveyCompletenessV1 {
+        self.vouched
+            .map_or(recorded.completeness, |(_, completeness)| completeness)
+    }
+}
+
+/// Read the record of the uncollected Survey `recorded` names once, through descriptors, and
+/// verify the event against it with the fold's own verifier: the one place the plan's
+/// judgement and the inventory learn whether the event agrees with its record.
+fn verify(store: &Path, recorded: &SurveyRecordedPayloadV1) -> Verified {
+    let survey_id = recorded.survey_id.as_str();
+    let mut verified = Verified {
+        present: false,
+        identity: None,
+        bytes: 0,
+        verdict: Verdict::Unreadable("its record is not in the CAS".into()),
+        vouched: None,
+    };
+    let record = match locate(store, survey_id) {
+        Ok(Some(record)) => record,
+        Ok(None) => return verified,
+        Err(why) => {
+            verified.present = true;
+            verified.verdict = Verdict::Refused(format!("refused: {why}"));
+            return verified;
+        }
+    };
+    verified.present = true;
+    verified.identity = Some(record.identity);
+    verified.bytes = record.bytes;
+    if let Some(why) = record.oversize() {
+        verified.verdict = Verdict::Oversize(why);
+        return verified;
+    }
+    let bytes = match record.read() {
+        Ok(bytes) if bytes.len() as u64 > MAX_SURVEY_BYTES => {
+            verified.verdict = Verdict::Oversize(oversize(bytes.len() as u64));
+            return verified;
+        }
+        Ok(bytes) => bytes,
+        Err(error) => {
+            verified.verdict = Verdict::Refused(format!(
+                "refused: its record cannot be read, so it is kept: {error}"
+            ));
+            return verified;
+        }
+    };
+    let survey = match parse_survey(survey_id, &bytes) {
+        Ok(survey) => survey,
+        Err(why) => {
+            verified.verdict = Verdict::Unreadable(why);
+            return verified;
+        }
+    };
+    verified.verdict = match super::TombstoneIdentity::of_record(recorded, &bytes) {
+        Ok(Ok(identity)) => {
+            verified.vouched = Some((Some(identity.cutoff_unix_s.get()), identity.completeness));
+            Verdict::Agrees
+        }
+        Ok(Err(field)) => {
+            let cutoff_s = survey
+                .identity
+                .body
+                .as_ref()
+                .map(|identity| identity.cutoff_unix_s.get());
+            verified.vouched = Some((cutoff_s, survey.completeness));
+            Verdict::Disagrees(field)
+        }
+        Err(why) => Verdict::Unreadable(why),
+    };
+    verified
 }
 
 /// What the collection pass takes from one Project: the Surveys beyond the newest
@@ -1142,6 +1355,8 @@ fn beyond_limit<'a>(
             survey_id: recorded.survey_id.clone(),
             cutoff_ms: cutoff_ms(recorded),
             protected: protected == Some(recorded.survey_id.as_str()),
+            identity: None,
+            verdict: Verdict::Agrees,
         })
         .collect();
     let chosen: BTreeSet<&str> = choose_beyond(&live, keep_surveys, idle_ms, now_ms)
@@ -1168,92 +1383,44 @@ pub(crate) enum Judged {
     Refused(String),
 }
 
-/// Judge one Survey the plan picks from the Project Store at `store`, reading only: its record
-/// found through descriptors, compared with `inventoried`, the identity inventory stated for it
-/// (`None`: the CAS did not hold it), and read as its tombstone will read it. Another file at
-/// its name, or one where inventory found none, is [`REPLACED_SINCE_INVENTORY`]: the plan never
-/// adopts an inode inventory did not measure, so the bytes it plans are always the measured
-/// inode's. A record that cannot be reached without a link or that the file system will not
-/// let af read is refused; one over [`MAX_SURVEY_BYTES`] is left `oversize`; one within it
-/// whose bytes are no Survey, or that is gone from the CAS, is taken `unreadable`.
-pub(crate) fn judge(store: &Path, survey_id: &str, inventoried: Option<Identity>) -> Judged {
+/// Judge one Survey the plan picks from the Project Store at `store`, reading only what
+/// [`look`] verified of it (`live`, its verdict) and its record's name: found through
+/// descriptors and compared with `inventoried`, the identity inventory stated for it (`None`:
+/// the CAS did not hold it). Another file at its name, or one where inventory found none, is
+/// [`REPLACED_SINCE_INVENTORY`]: the plan never adopts an inode inventory did not measure, so
+/// the bytes it plans are always the measured inode's. The event is never read again here: a
+/// Survey whose event its record disproves is refused, one that cannot be reached without a
+/// link or that af may not read is refused, one over [`MAX_SURVEY_BYTES`] is left `oversize`,
+/// and one whose bytes are no Survey, or that is gone from the CAS, is taken `unreadable`.
+pub(crate) fn judge(store: &Path, live: &Live, inventoried: Option<Identity>) -> Judged {
     replace_object(
         "AF_TEST_SURVEY_REPLACE_BEFORE_JUDGE",
-        &object_path(store, survey_id),
+        &object_path(store, &live.survey_id),
     );
-    let record = match locate(store, survey_id) {
+    let record = match locate(store, &live.survey_id) {
         Ok(record) => record,
         Err(why) => return Judged::Refused(format!("refused: {why}")),
     };
-    if record.as_ref().map(|record| record.identity) != inventoried {
+    let found = record.as_ref().map(|record| record.identity);
+    if found != inventoried || found != live.identity {
         return Judged::Refused(format!(
             "{REPLACED_SINCE_INVENTORY}: its record's name holds another file than inventory \
              measured, so nothing of it is taken and the next pass measures it again"
         ));
     }
-    let Some(record) = record else {
-        return Judged::Take {
-            unreadable: Some("its record is not in the CAS".into()),
-            identity: None,
-        };
-    };
-    if let Some(why) = record.oversize() {
-        return Judged::Left(LeftReason::Oversize, why);
-    }
-    match record.read() {
-        Ok(bytes) if bytes.len() as u64 > MAX_SURVEY_BYTES => {
-            Judged::Left(LeftReason::Oversize, oversize(bytes.len() as u64))
-        }
-        Ok(bytes) => match totals(survey_id, &bytes) {
-            Err(why) => Judged::Take {
-                unreadable: Some(why),
-                identity: Some(record.identity),
-            },
-            // The event it names is verified against the record before the plan selects it,
-            // as the pass verifies it before its tombstone (ADR-0152 clause 13): a Survey whose
-            // event disagrees with its record is refused by preview and pass alike.
-            Ok(_) => {
-                let recorded = match recorded_of(store, survey_id) {
-                    Ok(recorded) => recorded,
-                    Err(why) => return Judged::Refused(format!("refused: {why}")),
-                };
-                match super::TombstoneIdentity::of_record(&recorded, &bytes) {
-                    Ok(Ok(_)) => Judged::Take {
-                        unreadable: None,
-                        identity: Some(record.identity),
-                    },
-                    Ok(Err(field)) => Judged::Refused(format!(
-                        "refused: its SurveyRecorded@1 names a {field} its record does not \
-                         record, so it is kept"
-                    )),
-                    Err(why) => Judged::Take {
-                        unreadable: Some(why),
-                        identity: Some(record.identity),
-                    },
-                }
-            }
+    match &live.verdict {
+        Verdict::Agrees => Judged::Take {
+            unreadable: None,
+            identity: found,
         },
-        Err(error) => Judged::Refused(format!(
-            "refused: its record cannot be read, so it is kept: {error}"
-        )),
+        Verdict::Unreadable(why) => Judged::Take {
+            unreadable: Some(why.clone()),
+            identity: found,
+        },
+        Verdict::Oversize(why) => Judged::Left(LeftReason::Oversize, why.clone()),
+        Verdict::Disagrees(field) => Judged::Refused(disagrees(field)),
+        Verdict::Refused(why) => Judged::Refused(why.clone()),
     }
-}
-
-/// The `SurveyRecorded@1` naming `survey_id` in the log of the Project Store at `store`, read
-/// without its lock, for the plan's judgement of the Survey.
-fn recorded_of(store: &Path, survey_id: &str) -> Result<SurveyRecordedPayloadV1, String> {
-    let events = EventStore::open_read_only(store.join("events.sqlite"))
-        .map_err(|error| format!("its Project Store's log cannot be read: {error}"))?;
-    let log = Log::fold(
-        &events
-            .replay(RUN_ID)
-            .map_err(|error| format!("its Project Store's log cannot be read: {error}"))?,
-    )?;
-    log.chain()
-        .into_iter()
-        .find(|recorded| recorded.survey_id == survey_id)
-        .cloned()
-        .ok_or_else(|| "not recorded in its Project Store".to_string())
 }
 
 /// The lock of the Project Store at `store`, taken without waiting and opened with the flags
@@ -1335,7 +1502,7 @@ pub(crate) fn execute(job: &Job) -> Result<Executed, String> {
         | Job::AtName { survey_id, .. }
         | Job::Moved { survey_id, .. } => format!("Survey {survey_id} is {why}"),
         Job::Container { container, .. } => format!(
-            "the empty container `cas/{REMOVING}/{}` is {why}",
+            "the container `cas/{REMOVING}/{}` of a dead pass is {why}",
             container.to_string_lossy()
         ),
     };
@@ -1370,7 +1537,7 @@ pub(crate) fn execute(job: &Job) -> Result<Executed, String> {
             let _held = hold(store)?.map_err(lost)?;
             let record = locate(store, survey_id).map_err(|why| said(format!("refused: {why}")))?;
             match record {
-                None => Ok(Executed::default()),
+                None => Err(said(format!("{GONE}, so nothing of it is freed"))),
                 Some(record) if record.identity != *identity => Err(said(format!(
                     "{REPLACED}: another file holds its record's name since the plan, so \
                      nothing is deleted and the next pass plans again"
@@ -1465,12 +1632,7 @@ fn take(
     // record that is no Survey vouches for nothing, and its tombstone says `unreadable`.
     let (identity, tree, history, unreadable) = match read {
         Ok((Ok(identity), (tree, history))) => (identity, tree, history, None),
-        Ok((Err(field), _)) => {
-            return Err(format!(
-                "refused: its SurveyRecorded@1 names a {field} its record does not record, so \
-                 it is kept"
-            ));
-        }
+        Ok((Err(field), _)) => return Err(disagrees(field)),
         Err(why) => (
             super::TombstoneIdentity::of_event(&recorded),
             None,
@@ -1509,19 +1671,23 @@ fn take(
     let bytes = match record {
         Some(_) if stop_after_tombstones() => 0,
         Some(record) => record.remove().map_err(|error| {
-            format!(
-                "{}; its tombstone is recorded, and the next pass deletes its record",
-                refusal(error)
-            )
+            if error.starts_with(GONE) {
+                format!("{error}; its tombstone is recorded")
+            } else {
+                format!(
+                    "{}; its tombstone is recorded, and the next pass deletes its record",
+                    refusal(error)
+                )
+            }
         })?,
         None => 0,
     };
     Ok(Executed { bytes, unreadable })
 }
 
-/// A removal's error as a refusal: [`REPLACED`] already says so.
+/// A removal's error as a refusal: [`REPLACED`] already says so, and [`GONE`] is no refusal.
 fn refusal(error: String) -> String {
-    if error.starts_with(REPLACED) {
+    if error.starts_with(REPLACED) || error.starts_with(GONE) {
         error
     } else {
         format!("refused: {error}")
@@ -1531,8 +1697,9 @@ fn refusal(error: String) -> String {
 /// Settle a record a dead pass left as `survey_id` in its `container`, the same sequence a
 /// pass's own deletion follows: renamed into a container of this pass's own, stated there with
 /// `fstatat` relative to that container and unlinked only when it is the inode the plan found.
-/// Another file is set aside and nothing is deleted. The dead container goes once it is empty.
-/// Returns the allocated bytes of the inode deleted.
+/// Another file is set aside and nothing is deleted, and a record gone since inventory is
+/// [`GONE`]. The dead container stays: it goes only as an entry of its own the plan lists after
+/// the records it holds ([`Job::Container`]). Returns the allocated bytes of the inode deleted.
 fn settle(
     store: &Path,
     container: &OsStr,
@@ -1554,7 +1721,7 @@ fn settle(
             hook(Before::Check);
             match own.unlink_checked(entry, identity) {
                 Ok(bytes) => Ok(bytes),
-                Err(Checked::Gone) => Ok(0),
+                Err(Checked::Gone) => Err(format!("{GONE}, so nothing of it is freed")),
                 Err(Checked::Failed(why)) => Err(format!(
                     "deleting it from `{}`: {why}; the next pass finishes it",
                     own.label(entry)
@@ -1565,26 +1732,27 @@ fn settle(
                 )),
             }
         }
-        Err(rustix::io::Errno::NOENT) => Ok(0),
+        Err(rustix::io::Errno::NOENT) => Err(format!("{GONE}, so nothing of it is freed")),
         Err(errno) => Err(format!("moving it into this pass's container: {errno}")),
     };
     own.close();
-    let _ = nix::unistd::unlinkat(&removing, container, nix::unistd::UnlinkatFlags::RemoveDir);
     settled
 }
 
-/// Remove the container `container` of a dead pass that inventory found empty as `identity`,
-/// under a Store lock the caller holds: stated again relative to `cas/removing` without
-/// following it, and removed only while it is that directory; `rmdir` removes no container that
-/// holds a file since. Returns the allocated bytes of the directory it removed.
+/// Remove the container `container` of a dead pass that inventory stated as `identity`, empty
+/// or holding only the moved records the plan settles before it, under a Store lock the caller
+/// holds: stated again relative to `cas/removing` without following it, and removed only while
+/// it is that directory; `rmdir` removes no container that still holds a file. A container gone
+/// since inventory is [`GONE`]. Returns the allocated bytes of the directory it removed.
 fn remove_container(store: &Path, container: &OsStr, identity: Identity) -> Result<u64, String> {
     use nix::sys::stat::SFlag;
     let cas = open_cas(store)?;
+    let gone = || format!("{GONE}, so nothing of it is freed");
     let Some(removing) = open_removing(&cas, false)? else {
-        return Ok(0);
+        return Err(gone());
     };
     let Some(stat) = stat_at(&removing, container)? else {
-        return Ok(0);
+        return Err(gone());
     };
     if kind_of(&stat) != SFlag::S_IFDIR || Identity::of_stat(&stat) != identity {
         return Err(format!(
@@ -1618,22 +1786,7 @@ fn totals(
     ),
     String,
 > {
-    if review_store::canonical::blob_content_id(bytes) != survey_id {
-        return Err("its bytes do not match its digest".into());
-    }
-    let survey: ProjectSurveyV1 = serde_json::from_slice(bytes).map_err(|error| {
-        let category = match error.classify() {
-            serde_json::error::Category::Io => "a read",
-            serde_json::error::Category::Syntax => "a syntax",
-            serde_json::error::Category::Data => "a data",
-            serde_json::error::Category::Eof => "an end-of-input",
-        };
-        bounded(format!(
-            "its bytes are not a Survey record: {category} error at line {}, column {}",
-            error.line(),
-            error.column()
-        ))
-    })?;
+    let survey = parse_survey(survey_id, bytes)?;
     let tree = survey.tree.body.as_ref().map(|tree| SurveyCollectedTreeV1 {
         files: tree.files,
         bytes: tree.bytes,
@@ -1648,6 +1801,27 @@ fn totals(
             merges: history.merges,
         });
     Ok((tree, history))
+}
+
+/// A Survey's record of at most [`MAX_SURVEY_BYTES`] parsed, when its bytes hash to its ID:
+/// what it vouches for. Otherwise why its bytes are no Survey, in af's own words.
+fn parse_survey(survey_id: &str, bytes: &[u8]) -> Result<ProjectSurveyV1, String> {
+    if review_store::canonical::blob_content_id(bytes) != survey_id {
+        return Err("its bytes do not match its digest".into());
+    }
+    serde_json::from_slice(bytes).map_err(|error| {
+        let category = match error.classify() {
+            serde_json::error::Category::Io => "a read",
+            serde_json::error::Category::Syntax => "a syntax",
+            serde_json::error::Category::Data => "a data",
+            serde_json::error::Category::Eof => "an end-of-input",
+        };
+        bounded(format!(
+            "its bytes are not a Survey record: {category} error at line {}, column {}",
+            error.line(),
+            error.column()
+        ))
+    })
 }
 
 /// The tombstones of a Project Store's log, in order.
@@ -2599,8 +2773,8 @@ mod tests {
         assert_eq!(files, [format!("{}/{survey_id}.replaced", containers[0])]);
         // The next pass finds it in a dead container under a name that is no Survey's: foreign,
         // left, even though a tombstone names the Survey.
-        let (found, empty) = walk_removing(&open_cas(&store).unwrap()).unwrap();
-        assert!(empty.is_empty());
+        let (found, containers) = walk_removing(&open_cas(&store).unwrap()).unwrap();
+        assert!(containers.iter().all(|container| !container.empty));
         let (moved, left) = judge_leftovers(&store, found, &BTreeSet::from([survey_id.clone()]));
         assert!(moved.is_empty(), "{moved:?}");
         assert_eq!(left.len(), 1);
@@ -2609,8 +2783,9 @@ mod tests {
     }
 
     /// What a dead pass left in its container is settled by the next pass through a container of
-    /// its own: renamed, checked relative to it and unlinked, and the dead container goes. A file
-    /// that is not the inode the plan found is put back and nothing is deleted.
+    /// its own: renamed, checked relative to it and unlinked. The dead container stays for the
+    /// entry of its own the plan lists after it. A file that is not the inode the plan found is
+    /// put back and nothing is deleted, and a record gone since is a failure.
     #[test]
     fn a_dead_passs_container_is_settled_through_the_next_passs_own() {
         let (_root, store, survey_id) = store_with(b"one");
@@ -2654,10 +2829,20 @@ mod tests {
         assert!(error.starts_with(REPLACED), "{error}");
         assert_eq!(std::fs::read(dead.join(&survey_id)).unwrap(), b"one");
         let identity = Identity::of(&dead.join(&survey_id)).unwrap();
+        let container = Identity::of(&dead).unwrap();
         let bytes = settle(&store, OsStr::new("dead"), &survey_id, identity, |_| {}).unwrap();
         assert!(bytes > 0);
-        assert_eq!(under_removing(&store), (Vec::new(), Vec::new()));
+        assert_eq!(
+            under_removing(&store),
+            (Vec::new(), vec!["dead".to_string()]),
+            "only the planned container entry removes the dead container"
+        );
         assert!(!object.exists(), "its CAS name is not touched");
+        // Settled again, the record is gone since the plan: failed, nothing freed.
+        let error = settle(&store, OsStr::new("dead"), &survey_id, identity, |_| {}).unwrap_err();
+        assert!(error.starts_with(GONE), "{error}");
+        remove_container(&store, OsStr::new("dead"), container).unwrap();
+        assert_eq!(under_removing(&store), (Vec::new(), Vec::new()));
     }
 
     fn file(container: Option<&str>, name: &[u8], inode: u64) -> Found {
@@ -2802,14 +2987,37 @@ mod tests {
     }
 
     /// The plan's judgement compares the record with what inventory stated: another inode at
-    /// its name, or a file where inventory found none, is refused, and never adopted.
+    /// its name, or a file where inventory found none, is refused, and never adopted. What it
+    /// takes or refuses beyond that is the verdict inventory's one read reached.
     #[test]
     fn a_record_replaced_since_inventory_is_refused_by_the_judgement() {
         let (_root, store, survey_id) = store_with(b"one");
         let object = object_path(&store, &survey_id);
-        let measured = locate(&store, &survey_id).unwrap().unwrap().identity;
+        let recorded = SurveyRecordedPayloadV1 {
+            survey_id: survey_id.clone(),
+            ..recorded(1, SurveyCompletenessV1::Complete, NOW_S)
+        };
+        let verified = verify(&store, &recorded);
+        let measured = verified.identity.unwrap();
+        let live = |identity: Option<Identity>, verdict: Verdict| Live {
+            survey_id: survey_id.clone(),
+            cutoff_ms: verified.cutoff_ms(&recorded),
+            protected: false,
+            identity,
+            verdict,
+        };
+        let unreadable = Verdict::Unreadable(
+            "its bytes are not a Survey record: a syntax error at line 1, column 1".into(),
+        );
+        assert_eq!(verified.verdict, unreadable);
         assert_eq!(
-            judge(&store, &survey_id, Some(measured)),
+            verified.cutoff_ms(&recorded),
+            NOW_S * 1000,
+            "no record vouches for a time"
+        );
+        let as_read = live(Some(measured), unreadable.clone());
+        assert_eq!(
+            judge(&store, &as_read, Some(measured)),
             Judged::Take {
                 unreadable: Some(
                     "its bytes are not a Survey record: a syntax error at line 1, column 1".into()
@@ -2817,11 +3025,22 @@ mod tests {
                 identity: Some(measured),
             }
         );
+        // A verdict that its event disagrees with its record refuses it, reading nothing more.
+        assert_eq!(
+            judge(
+                &store,
+                &live(Some(measured), Verdict::Disagrees("cutoff_unix_s")),
+                Some(measured)
+            ),
+            Judged::Refused(disagrees("cutoff_unix_s"))
+        );
         // A byte-identical copy, another inode, takes the name.
         std::fs::rename(&object, object.with_extension("aside")).unwrap();
         std::fs::write(&object, b"one").unwrap();
         for inventoried in [Some(measured), None] {
-            let Judged::Refused(why) = judge(&store, &survey_id, inventoried) else {
+            let Judged::Refused(why) =
+                judge(&store, &live(inventoried, unreadable.clone()), inventoried)
+            else {
                 panic!("{inventoried:?} is refused");
             };
             assert!(why.starts_with(REPLACED_SINCE_INVENTORY), "{why}");
@@ -2834,12 +3053,14 @@ mod tests {
         // Gone since inventory stated it: replaced by nothing, refused the same way.
         std::fs::remove_file(&object).unwrap();
         assert!(matches!(
-            judge(&store, &survey_id, Some(measured)),
+            judge(&store, &as_read, Some(measured)),
             Judged::Refused(why) if why.starts_with(REPLACED_SINCE_INVENTORY)
         ));
         // Absent then and now: collected `unreadable`, as before.
+        let absent = verify(&store, &recorded);
+        assert_eq!(absent.identity, None);
         assert_eq!(
-            judge(&store, &survey_id, None),
+            judge(&store, &live(None, absent.verdict), None),
             Judged::Take {
                 unreadable: Some("its record is not in the CAS".into()),
                 identity: None,
@@ -2871,11 +3092,9 @@ mod tests {
         // As it was stated and empty: removed.
         remove_container(&store, OsStr::new(P2), stated).unwrap();
         assert!(!removing.join(P2).exists());
-        assert_eq!(
-            remove_container(&store, OsStr::new(P2), stated),
-            Ok(0),
-            "gone"
-        );
+        // Gone since inventory: a failure that frees nothing, never a removal of nothing.
+        let error = remove_container(&store, OsStr::new(P2), stated).unwrap_err();
+        assert!(error.starts_with(GONE), "{error}");
     }
 
     #[test]

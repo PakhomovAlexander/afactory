@@ -38,6 +38,11 @@
 //! `claim` entry under `recovery` that the preview and the applied sweep list alike, with the
 //! same bytes, and a Survey ID file in a container whose name is not UTF-8 is `unreadable_name`
 //! and left with its container.
+//! A dead pass's container that held a moved record is its own `recovery` entry after it, with
+//! its bytes. A registered Store a dead process renamed into its claim is recovered, and its
+//! registration dropped, alike by preview and apply; a claim under a Project Store is counted
+//! once; a campaign nested deeper than the removal walk is left `too_deep`; and an event whose
+//! cutoff its record disproves is never the Survey's last use, the Survey refused and kept.
 //! `?` is one byte of the canonical encoded spelling in the Surveyor's `exclude`, and the
 //! superseded `af/storage@2` and `af/storage-prune@1` are refused.
 
@@ -729,12 +734,70 @@ fn a_collection_interrupted_after_its_tombstones_is_finished_by_the_next_sweep()
     assert!(dead.join(&surveys[0]).is_file(), "a preview moves nothing");
     assert!(preview["left"].as_array().unwrap().is_empty(), "{preview}");
 
+    // Each dead container is an entry of its own, after the record it holds: the one that held
+    // the moved record, then the empty one, each with its allocated bytes subtracted.
+    let containers = |document: &Value| -> Vec<Value> {
+        document["removals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|removal| removal["kind"] == "claim")
+            .cloned()
+            .collect()
+    };
+    let planned = containers(&preview);
+    let paths: Vec<&str> = planned
+        .iter()
+        .map(|removal| removal["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            dead.to_str().unwrap(),
+            removing.join(EMPTY_PASS).to_str().unwrap()
+        ],
+        "{preview}"
+    );
+    let own_bytes = |path: &Path| {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::symlink_metadata(path).unwrap().blocks() * 512
+    };
+    assert_eq!(planned[0]["bytes"].as_u64().unwrap(), own_bytes(&dead));
+    assert_eq!(
+        planned[1]["bytes"].as_u64().unwrap(),
+        own_bytes(&removing.join(EMPTY_PASS))
+    );
+    let removals = preview["removals"].as_array().unwrap();
+    let at = |path: &str| {
+        removals
+            .iter()
+            .position(|removal| removal["path"] == path)
+            .unwrap()
+    };
+    assert!(
+        at(&finished[0]) < at(dead.to_str().unwrap()),
+        "after its record"
+    );
+    for (index, removal) in removals.iter().enumerate().skip(1) {
+        assert_eq!(
+            removal["total_after"].as_u64().unwrap(),
+            removals[index - 1]["total_after"].as_u64().unwrap()
+                - removal["bytes"].as_u64().unwrap(),
+            "{removal}"
+        );
+    }
+
     let pruned = prune(&machine, &repo, &[keep]);
     assert_eq!(removed(&pruned, "recovery"), finished, "{pruned}");
     assert_eq!(recovery(&pruned), recovery(&preview), "entry for entry");
+    assert_eq!(
+        containers(&pruned),
+        planned,
+        "the same containers, the same bytes"
+    );
     assert_eq!(pruned["left"], preview["left"]);
     // Settled through the next pass's own container: every container, the dead ones and its
-    // own, is gone.
+    // own, is gone, and only through the entries the plan listed.
     assert!(
         std::fs::read_dir(&removing).unwrap().next().is_none(),
         "{:?}",
@@ -791,6 +854,10 @@ fn a_file_at_a_moved_surveys_name_is_foreign_and_only_the_moved_record_is_delete
     std::fs::rename(&object, dead.join(target)).unwrap();
     std::fs::write(&object, b"not af's").unwrap();
     let moved_bytes = allocated(&dead.join(target));
+    let container_bytes = {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::symlink_metadata(&dead).unwrap().blocks() * 512
+    };
     let foreign_bytes = allocated(&object);
     assert!(foreign_bytes > 0);
 
@@ -843,8 +910,8 @@ fn a_file_at_a_moved_surveys_name_is_foreign_and_only_the_moved_record_is_delete
     assert_eq!(applied["total_after"].as_u64().unwrap(), after);
     assert_eq!(
         before - after,
-        moved_bytes,
-        "the directory freed what was said"
+        moved_bytes + container_bytes,
+        "the directory freed what was said: the moved record and its planned container"
     );
 
     // No pass ever deletes it: not the next collection, not a budget of one byte.
@@ -1847,4 +1914,290 @@ fn a_survey_file_in_a_container_with_a_name_that_is_not_utf8_is_reported_and_lef
         vec![target.clone()],
         "no tombstone twice"
     );
+}
+
+/// Append a registration of `kind` at `path` to the machine's Store registry.
+fn register(machine: &Machine, path: &Path, kind: &str) {
+    let registry = machine.root().join("state/af/stores.toml");
+    let mut text = std::fs::read_to_string(&registry).unwrap_or_else(|_| "version = 2\n".into());
+    text.push_str(&format!(
+        "\n[[store]]\npath = \"{}\"\nkind = \"{kind}\"\nfirst_use_unix_ms = 1\nlast_use_unix_ms = 1\n",
+        path.display()
+    ));
+    std::fs::write(&registry, text).unwrap();
+}
+
+/// The removals of `kind` in a sweep's document.
+fn removals_of(document: &Value, kind: &str) -> Vec<Value> {
+    document["removals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|removal| removal["kind"] == kind)
+        .cloned()
+        .collect()
+}
+
+/// A dead process's claim holding `bytes` at `claim`.
+fn dead_claim(claim: &Path, bytes: usize) -> u64 {
+    std::fs::create_dir_all(claim.join("cas")).unwrap();
+    std::fs::write(claim.join("cas/object"), vec![1_u8; bytes]).unwrap();
+    allocated(claim)
+}
+
+/// A registered Store at a custom path that a dead process renamed into its claim: apply drops
+/// no registration before the inventory, so the inventory reaches the claim through the
+/// registered path's parent. Preview and apply list the same `recovery` entry and the same
+/// registration's removal, and after apply the claim and the registration are gone.
+#[test]
+fn a_registered_store_renamed_into_a_dead_claim_is_recovered_and_unregistered_alike() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    refresh(&machine, &repo, &at(0), true);
+    let parent = machine.root().join("custom/stores");
+    let registered = parent.join("state");
+    let claim = parent.join(".af-removing-999999999-3-0");
+    let claim_bytes = dead_claim(&claim, 64 * 1024);
+    register(&machine, &registered, "task");
+
+    let previewed = preview(&machine, &repo, &[]);
+    let planned = removals_of(&previewed, "claim");
+    assert_eq!(planned.len(), 1, "{previewed}");
+    assert_eq!(planned[0]["path"], claim.to_str().unwrap());
+    assert_eq!(planned[0]["rule"], "recovery");
+    assert_eq!(planned[0]["bytes"].as_u64().unwrap(), claim_bytes);
+    assert_eq!(
+        previewed["registry_dropped"],
+        serde_json::json!([registered.to_str().unwrap()]),
+        "{previewed}"
+    );
+    assert!(claim.is_dir(), "a preview removes nothing");
+
+    let applied = prune(&machine, &repo, &[]);
+    assert_eq!(removals_of(&applied, "claim"), planned, "entry for entry");
+    assert_eq!(applied["registry_dropped"], previewed["registry_dropped"]);
+    assert!(!claim.exists(), "the claim is finished");
+    let registry = std::fs::read_to_string(machine.root().join("state/af/stores.toml")).unwrap();
+    assert!(
+        !registry.contains(registered.to_str().unwrap()),
+        "{registry}"
+    );
+    assert!(registry.contains("kind = \"project\""), "{registry}");
+    let after = preview(&machine, &repo, &[]);
+    assert!(removals_of(&after, "claim").is_empty(), "{after}");
+    assert_eq!(after["registry_dropped"], serde_json::json!([]));
+}
+
+/// A claimed Workspace `state` directory under a Project Store is in the Store's measured
+/// bytes: counted once, so `total_before` is what `af storage` measures, and the recovery takes
+/// the claim's bytes out of the Store's, leaving `total_after` the measured total less them.
+#[test]
+fn a_claim_under_a_project_store_is_counted_once() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    refresh(&machine, &repo, &at(0), true);
+    let workspace = machine.store().join("workspaces/main");
+    let claim = workspace.join(".af-removing-999999999-4-0");
+    let claim_bytes = dead_claim(&claim, 128 * 1024);
+    register(&machine, &workspace.join("state"), "task");
+
+    let measured = storage_total(&machine, &repo);
+    let (shown, _) = survey_entries(&machine, &repo);
+    let of_store: u64 = shown["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| {
+            entry["path"]
+                .as_str()
+                .unwrap()
+                .starts_with(machine.store().to_str().unwrap())
+        })
+        .map(|entry| entry["bytes"].as_u64().unwrap())
+        .sum();
+    assert_eq!(of_store, allocated(&machine.store()), "the directory, once");
+
+    let previewed = preview(&machine, &repo, &[]);
+    assert_eq!(previewed["total_before"].as_u64().unwrap(), measured);
+    let planned = removals_of(&previewed, "claim");
+    assert_eq!(planned.len(), 1, "{previewed}");
+    assert_eq!(planned[0]["path"], claim.to_str().unwrap());
+    assert_eq!(planned[0]["bytes"].as_u64().unwrap(), claim_bytes);
+    assert_eq!(
+        planned[0]["total_after"].as_u64().unwrap(),
+        measured - claim_bytes
+    );
+
+    let applied = prune(&machine, &repo, &[]);
+    assert_eq!(applied["total_before"].as_u64().unwrap(), measured);
+    assert_eq!(
+        applied["total_after"].as_u64().unwrap(),
+        measured - claim_bytes
+    );
+    assert!(!claim.exists());
+    assert_eq!(storage_total(&machine, &repo), measured - claim_bytes);
+}
+
+/// A campaign directory nested deeper than the removal walk's 128 levels is left, and said, by
+/// the preview and the applied sweep alike: never planned, so never partly removed, and listed
+/// in use by `af storage`.
+#[test]
+fn a_campaign_deeper_than_the_removal_walk_is_left_and_reported() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    refresh(&machine, &repo, &at(0), true);
+    let campaign = machine
+        .root()
+        .join("state/af/review/campaigns")
+        .join(format!("c-{}", "d".repeat(64)));
+    std::fs::create_dir_all(&campaign).unwrap();
+    review_store::EventStore::open(campaign.join("events.sqlite")).unwrap();
+    let mut deep = campaign.join("deep");
+    for _ in 0..130 {
+        deep = deep.join("d");
+    }
+    std::fs::create_dir_all(&deep).unwrap();
+    std::fs::write(deep.join("file"), b"x").unwrap();
+    let old = SystemTime::now() - Duration::from_secs(60 * DAY);
+    std::fs::File::open(campaign.join("events.sqlite"))
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+    let keep = [("AF_STORAGE__KEEP_CAMPAIGNS", "0")];
+
+    let (shown, _) = survey_entries(&machine, &repo);
+    let entry = shown["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == campaign.to_str().unwrap())
+        .unwrap_or_else(|| panic!("{shown}"))
+        .clone();
+    assert!(
+        entry["in_use"]
+            .as_str()
+            .unwrap()
+            .starts_with("left: deeper than the removal walk"),
+        "{entry}"
+    );
+    for document in [
+        preview(&machine, &repo, &keep),
+        prune(&machine, &repo, &keep),
+    ] {
+        assert!(removals_of(&document, "campaign").is_empty(), "{document}");
+        let deep = left(&document, "too_deep");
+        assert_eq!(deep.len(), 1, "{document}");
+        assert_eq!(deep[0]["kind"], "campaign");
+        assert_eq!(deep[0]["path"], campaign.to_str().unwrap());
+        assert_eq!(deep[0]["bytes"], entry["bytes"]);
+        assert!(
+            deep[0]["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("deeper than the removal walk"),
+            "{}",
+            deep[0]
+        );
+        assert!(deep_exists(&campaign), "left whole");
+    }
+    let (text, _) = machine.expect(&repo, &keep, &["storage", "prune"], 0);
+    assert!(text.contains("left campaign "), "{text}");
+    assert!(
+        text.contains(", too deep: deeper than the removal walk"),
+        "{text}"
+    );
+}
+
+fn deep_exists(campaign: &Path) -> bool {
+    let mut deep = campaign.join("deep");
+    for _ in 0..130 {
+        deep = deep.join("d");
+    }
+    deep.join("file").is_file()
+}
+
+/// The keep_surveys = 1 forged-cutoff case: the oldest Survey's `SurveyRecorded@1` names a
+/// recent cutoff its record does not record. Its event is verified once, in the Store's one
+/// read: the inventory uses its record's cutoff, never the forged one, so the collection pass
+/// picks it as the old Survey it is, and preview and apply both refuse and report it; nothing is
+/// collected for it, and the other Survey beyond the limit is.
+#[test]
+fn a_forged_cutoff_is_never_used_and_its_survey_is_refused_and_kept() {
+    let machine = Machine::new();
+    let repo = repository(&machine, "");
+    let surveys: Vec<String> = (0..3)
+        .map(|n| refresh(&machine, &repo, &at(n), true))
+        .collect();
+    let target = &surveys[0];
+    let log = rusqlite::Connection::open(machine.store().join("events.sqlite")).unwrap();
+    let (sequence, payload): (i64, String) = log
+        .query_row(
+            "SELECT sequence, payload FROM events WHERE type = 'SurveyRecorded@1' AND \
+             json_extract(payload, '$.survey_id') = ?1",
+            [target.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let mut payload: Value = serde_json::from_str(&payload).unwrap();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    payload["cutoff_unix_s"] = if payload["cutoff_unix_s"].is_string() {
+        Value::String(now.to_string())
+    } else {
+        Value::from(now)
+    };
+    log.execute(
+        "UPDATE events SET payload = ?1 WHERE sequence = ?2 AND type = 'SurveyRecorded@1'",
+        rusqlite::params![payload.to_string(), sequence],
+    )
+    .unwrap();
+    drop(log);
+
+    // The inventory's last use is the record's cutoff, and the Survey is in use for its refusal.
+    let (_, entries) = survey_entries(&machine, &repo);
+    let entry = &entries[&path_of(&machine, target)];
+    let recorded_ms = (old_cutoff()) * 1000;
+    assert_eq!(
+        entry["last_use_unix_ms"].as_u64().unwrap(),
+        recorded_ms,
+        "{entry}"
+    );
+    assert!(
+        entry["in_use"]
+            .as_str()
+            .unwrap()
+            .contains("names a cutoff_unix_s its record does not record"),
+        "{entry}"
+    );
+    let refused = format!(
+        "Survey {target} is refused: its SurveyRecorded@1 names a cutoff_unix_s its record does \
+         not record, so it is kept"
+    );
+    let keep = [("AF_STORAGE__KEEP_SURVEYS", "1")];
+    for document in [
+        preview(&machine, &repo, &keep),
+        prune(&machine, &repo, &keep),
+    ] {
+        let said: Vec<&str> = document["failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|failure| failure.contains(&refused))
+            .collect();
+        assert_eq!(said.len(), 1, "{document}");
+        assert_eq!(
+            removed(&document, "keep_surveys"),
+            vec![path_of(&machine, &surveys[1])],
+            "{document}"
+        );
+    }
+    assert_eq!(
+        machine.collected(),
+        vec![surveys[1].clone()],
+        "no tombstone for it"
+    );
+    assert!(machine.held(target), "its record is kept");
 }

@@ -16,10 +16,18 @@ const MAX_DEPTH: u32 = 256;
 /// holds nothing; an entry that cannot be read is an error, so an unmeasurable entry is never
 /// counted as empty.
 pub fn allocated_bytes(path: &Path) -> std::io::Result<u64> {
+    allocated_bytes_and_depth(path).map(|(bytes, _)| bytes)
+}
+
+/// [`allocated_bytes`] and, from the same walk, how deep directories nest below `path`: the
+/// level of the deepest directory, `path` itself at level 0 (a file or an empty directory is 0).
+/// What a removal walk cannot reach is known before it starts
+/// ([`crate::removal::deeper_than_removal_walk`]).
+pub fn allocated_bytes_and_depth(path: &Path) -> std::io::Result<(u64, u32)> {
     let mut seen = BTreeSet::new();
     match std::fs::symlink_metadata(path) {
         Ok(metadata) => walk(path, &metadata, 0, &mut seen),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((0, 0)),
         Err(error) => Err(error),
     }
 }
@@ -39,16 +47,18 @@ fn allocated(metadata: &std::fs::Metadata, _: &mut BTreeSet<(u64, u64)>) -> u64 
     metadata.len()
 }
 
+/// The allocated bytes below `path` and the level of its deepest directory, `path` at `depth`.
 fn walk(
     path: &Path,
     metadata: &std::fs::Metadata,
     depth: u32,
     seen: &mut BTreeSet<(u64, u64)>,
-) -> std::io::Result<u64> {
+) -> std::io::Result<(u64, u32)> {
     let mut total = allocated(metadata, seen);
     if !metadata.is_dir() {
-        return Ok(total);
+        return Ok((total, 0));
     }
+    let mut deepest = depth;
     if depth > MAX_DEPTH {
         return Err(std::io::Error::other(format!(
             "{} is nested deeper than {MAX_DEPTH} directories",
@@ -64,9 +74,11 @@ fn walk(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error),
         };
-        total = total.saturating_add(walk(&child, &metadata, depth + 1, seen)?);
+        let (bytes, below) = walk(&child, &metadata, depth + 1, seen)?;
+        total = total.saturating_add(bytes);
+        deepest = deepest.max(below);
     }
-    Ok(total)
+    Ok((total, deepest))
 }
 
 /// The newest modification time below `path`, `path` included, without following a link.

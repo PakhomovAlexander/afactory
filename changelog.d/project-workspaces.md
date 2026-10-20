@@ -33,8 +33,13 @@
   such path, and a directory merely named like a container is reported and never touched. An
   interrupted or failed removal says where what is left remains, keeps the Workspace registered
   and is finished by the same command from its record, which unregisters the Workspace exactly
-  once, refusing while an entry's `gitdir` cannot be read; a plain `workspace remove` is refused
-  meanwhile. Automatic Workspace labels follow one stated rule within 128 bytes. `af
+  once. The rerun never takes a recorded step as proof: before acting it checks that step's
+  precondition on the file system, so a checkout moved back out of its container is claimed and
+  judged again and a replacement at its path is kept, and an entry is claimed or deleted only
+  while its `gitdir` names the checkout and it holds no `locked`, whatever the step; an entry that
+  is locked, names another checkout or lacks its `gitdir` stays where it is, reported, and so does
+  the Workspace's registration, as while an entry's `gitdir` cannot be read; a plain `workspace
+  remove` is refused meanwhile. Automatic Workspace labels follow one stated rule within 128 bytes. `af
   onboard --apply`, `af task plan|start`, `af review run` and `af project` register the Project
   and the checkout lazily (`af task plan|start` before resolving `--workspace`), refuse a shallow
   clone with `git fetch --unshallow`, and never change a command's result; every git process they

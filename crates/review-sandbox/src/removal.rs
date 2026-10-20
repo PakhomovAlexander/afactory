@@ -15,6 +15,43 @@ use std::io;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Component, Path};
 
+/// The deepest directory level below the directory it removes that [`remove_tree_at`]'s walk
+/// reaches, the directory itself at level 0: a tree nested deeper is only ever partly removed.
+pub const REMOVAL_MAX_DEPTH: u32 = crate::stale::MAX_DEPTH;
+
+/// Whether a tree whose deepest directory is at level `depth` (as
+/// [`crate::storage::allocated_bytes_and_depth`] measures it) is deeper than the removal walk:
+/// [`remove_tree_at`] would leave part of it, so a planner leaves all of it.
+pub fn deeper_than_removal_walk(depth: u32) -> bool {
+    depth > REMOVAL_MAX_DEPTH
+}
+
+/// A removal that unlinked some of a tree and left the rest under its claim: the error
+/// [`remove_tree_at`] returns then, which names the claim so a caller can measure what is left.
+#[derive(Debug)]
+pub struct PartlyRemoved {
+    /// The private name in the parent that holds what is left, `.af-removing-<pid>-…`.
+    pub claim: String,
+    message: String,
+}
+
+impl std::fmt::Display for PartlyRemoved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for PartlyRemoved {}
+
+/// The claim a removal that failed part way left, when `error` is that failure: the name in
+/// the removed directory's parent that holds what is left of it.
+pub fn partly_removed(error: &io::Error) -> Option<&str> {
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<PartlyRemoved>())
+        .map(|partly| partly.claim.as_str())
+}
+
 /// What names one directory on this machine independent of its path: its device and inode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Identity {
@@ -110,7 +147,9 @@ pub fn open_beneath(anchor: impl AsFd, relative: &Path) -> io::Result<OwnedFd> {
 /// claimed under a private name in `parent` and checked there by identity, emptied through its
 /// own descriptor (an entry below it, a link included, is unlinked, never followed) and unlinked
 /// under its private name. A name that is a symlink, no directory, or another directory than
-/// `expected` is left and is an error; so is a directory that changed while being claimed.
+/// `expected` is left and is an error; so is a directory that changed while being claimed. A
+/// tree emptied only part way (nested deeper than [`REMOVAL_MAX_DEPTH`], a child that cannot be
+/// unlinked) is a [`PartlyRemoved`] error naming the claim that holds the rest.
 pub fn remove_tree_at(
     parent: impl AsFd,
     name: &OsStr,
@@ -177,11 +216,14 @@ pub fn remove_tree_at(
         // What is left stays under its claim: renaming it back could replace whatever took the
         // old name since. Once this process has exited, a later sweep finishes the claim
         // ([`finish_abandoned_claims`]) and reports it while it cannot.
-        return Err(io::Error::other(format!(
-            "`{}` was only partly removed ({errno}); the rest is left under `{claimed}` for a \
-             later sweep",
-            name.to_string_lossy()
-        )));
+        return Err(io::Error::other(PartlyRemoved {
+            message: format!(
+                "`{}` was only partly removed ({errno}); the rest is left under `{claimed}` for \
+                 a later sweep",
+                name.to_string_lossy()
+            ),
+            claim: claimed,
+        }));
     }
     drop(directory);
     // The claimed name is checked once more right before it is unlinked. POSIX has no unlink by
@@ -226,6 +268,9 @@ pub struct AbandonedClaim {
     pub identity: Identity,
     /// Its allocated bytes as the listing measured them.
     pub bytes: u64,
+    /// The level of its deepest directory, as the same walk measured it: one deeper than
+    /// [`REMOVAL_MAX_DEPTH`] cannot be finished whole.
+    pub depth: u32,
 }
 
 /// List, reading only, the removals a process that has since died left claimed in `parent`:
@@ -250,10 +295,13 @@ pub fn abandoned_claims(parent: &Path) -> Vec<AbandonedClaim> {
         let Ok(identity) = Identity::of(&entry.path()) else {
             continue;
         };
+        let (bytes, depth) =
+            crate::storage::allocated_bytes_and_depth(&entry.path()).unwrap_or((0, 0));
         claims.push(AbandonedClaim {
             name: name.to_string(),
             identity,
-            bytes: crate::storage::allocated_bytes(&entry.path()).unwrap_or(0),
+            bytes,
+            depth,
         });
     }
     claims.sort_by(|a, b| a.name.cmp(&b.name));
@@ -352,9 +400,14 @@ mod tests {
         std::fs::create_dir_all(&deep).unwrap();
         let identity = Identity::of(&parent.join("target")).unwrap();
         let fd = open_anchor(&parent).unwrap();
+        let (_, depth) = crate::storage::allocated_bytes_and_depth(&parent.join("target")).unwrap();
+        assert_eq!(depth, crate::stale::MAX_DEPTH + 2);
+        assert!(deeper_than_removal_walk(depth));
         let error = remove_tree_at(&fd, OsStr::new("target"), Some(identity)).unwrap_err();
         assert!(error.to_string().contains("left under"), "{error}");
         assert!(!parent.join("target").exists(), "it is never renamed back");
+        let claim = partly_removed(&error).expect("the error names its claim");
+        assert!(parent.join(claim).is_dir(), "what is left is under {claim}");
         let claims: Vec<String> = std::fs::read_dir(&parent)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())

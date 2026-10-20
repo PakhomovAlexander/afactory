@@ -300,8 +300,25 @@ removed the worktree <path>; its administrative entry remains at <container>/<na
 and the Workspace stays registered. Run the same command again once the cause is fixed: it
 finishes from the record, step by step, acting only on directories whose identity the record
 holds, then unregisters the Workspace and reports what it removed; its messages begin `the
-worktree <path> is already gone;`. An entry whose `gitdir` cannot be read may still name the
-checkout, so the command stops with that file and the error and keeps the Workspace registered.
+worktree <path> is already gone;`. The step a record holds proves nothing by itself: before the
+rerun acts on a directory it checks that step's precondition on the file system, and a check
+that fails never moves the step on.
+
+| Step | What the rerun checks before it acts |
+|---|---|
+| `inspected` | The checkout's path holds the recorded identity (nothing there: gone; another directory: kept, and the command refused). The entry's `gitdir` names the checkout and the entry holds no `locked`, before the checkout is claimed and before the entry is. |
+| `container` | Nothing is proved: a directory found under the recorded name is reported and left, and the directory counts as `inspected` again. |
+| `contained` | The container is still the one made. The directory is in it by identity, or at its path by identity and moved in only while the container is empty and the entry passes the check above. In the container the checkout is judged again (its entry, its index, its files), and an entry is checked again before it is deleted. With the container gone, as `deleting`. |
+| `deleting` | The directory is in its container by identity (an entry there holding no `locked`, and any `gitdir` still there naming the checkout) and its deletion finishes. Otherwise its path decides: the recorded identity there is the directory moved back, claimed and judged again from the start; another directory is a replacement, kept and reported, and the Workspace stays registered; only when neither holds the recorded identity is it deleted. |
+| `deleted` | Its container goes only while it is the one made and empty; a directory at the checkout's path is kept and reported. |
+| `done` | Nothing. |
+
+An entry that is locked, whose `gitdir` names another checkout, or whose `gitdir` is missing
+(`its gitdir is missing, so it is not known to name this checkout`) is left where it is, the
+message names the condition, and the Workspace stays registered until you clear it; only an
+entry whose recorded deletion has begun may lack its `gitdir`, since that deletion removes it
+early. An entry whose `gitdir` cannot be read may still name the checkout, so the command stops
+with that file and the error and keeps the Workspace registered.
 A directory that only looks like a container, one nobody recorded or a worktree or entry whose
 own name has that form, is never touched and is reported as `left <directory>: it is named like
 a removal's container, but no removal record names it, so it is not this removal's`. Without a
@@ -680,19 +697,32 @@ removes, in order, with the bytes it frees, its rule (`recovery`, then `collecti
 `keep_surveys`, then `budget`) and af's total after it, and under `left` every file or Survey it
 leaves with its reason. `--apply` runs that same plan entry by entry and never chooses again: each
 entry says what it freed and the total after it. An entry of any kind whose removal failed (the
-lock lost, what it names replaced since it was measured, an I/O error) keeps its place with
-nothing freed, the total after it unchanged and `outcome` `failed: <reason>`, for the next sweep
-to plan again, so the document's totals are what af then holds. So the bytes of a deletion an
+lock lost, what it names replaced or gone since it was measured, an I/O error) keeps its place
+with nothing freed, the total after it unchanged and `outcome` `failed: <reason>`, for the next
+sweep to plan again. A deletion that stopped part way (a tree grown deeper than the removal walk,
+a child that cannot be unlinked) is failed too, and its `bytes` are what actually left the disk:
+what the inventory measured less what its claim still holds. So the document's totals are what
+af then holds. A directory nested deeper than the removal walk's 128 levels is never planned: the
+inventory lists it in use (`left: deeper than the removal walk`) and the preview and the applied
+sweep both leave it under `left` as `too_deep`, whole, for the operator. So the bytes of a deletion an
 interruption left count once: a preview that frees them first and then fits the budget stops
 exactly where the applied sweep stops.
 
 The snapshot is the only thing a sweep reads. A removal a process that died left half done (a
-`.af-removing-<pid>-…` claim) and a container a dead Survey collection left empty are in it, each
-a `claim` entry under `recovery` with the bytes it measured, so the preview lists them and the
-applied sweep removes nothing it did not list. Every Survey's record is measured once, with its
-device, inode and bytes: a record another file replaced after that is refused `refused (replaced
-since inventory)` and taken in no way, and the bytes a plan lists are always those of the file it
-measured.
+`.af-removing-<pid>-…` claim) and a container a dead Survey collection left are in it, each a
+`claim` entry under `recovery` with the bytes it measured, so the preview lists them and the
+applied sweep removes nothing it did not list. A claim inside a Project Store (a Workspace's
+`state` renamed into one) is counted once, in the Store's bytes, and its recovery takes them out
+of the Store's. The snapshot is taken over the Store registrations as they are: a registered Store
+a dead process renamed into its claim is reached through its parent, the claim planned as
+`recovery`, and the registration, whose path holds no Store, dropped by the plan as an entry of
+`registry_dropped` of its own, the same in the preview and the applied sweep. Every Survey's
+record is measured once, with its device, inode and bytes: a record another file replaced after
+that is refused `refused (replaced since inventory)` and taken in no way, and the bytes a plan
+lists are always those of the file it measured. Its `SurveyRecorded@1` is verified against it in
+that same read, once, and the plan and the inventory read only what it verified: a Survey whose
+event names a field its record does not record is refused and kept by preview and pass alike, and
+its last use is its record's cutoff, never the time the disproved event names.
 
 A record is reached, read and deleted only through directory descriptors, the removal boundary of
 [ADR-0144](adr/0144-hold-afs-disk-use-to-a-machine-budget.md): the Project Store from `/`, then
@@ -709,7 +739,8 @@ nothing is deleted, and the sweep reports the Survey `refused (replaced during c
 
 The next sweep settles what a dead pass left the same way. A file in its container named by a
 collected Survey is that Survey's record, moved: renamed into the new pass's container, checked
-and deleted under `recovery`, and the empty container goes. A file at that Survey's CAS name is
+and deleted under `recovery`; the container, once it holds nothing else, is an entry of its own
+after it, removed with its bytes only through that entry. A file at that Survey's CAS name is
 then somebody else's: listed under `left` as `foreign` with its bytes, counted in the Project
 Store's bytes and never the Survey's, and never deleted by any sweep. Without a moved record, the
 file at a collected Survey's name is deleted only when its bytes are the record's (they hash to

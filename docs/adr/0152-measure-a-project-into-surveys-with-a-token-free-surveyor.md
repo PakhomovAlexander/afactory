@@ -372,7 +372,7 @@ email first of all.
     each with the bytes it frees, its rule (`recovery` for what an interruption left, then
     `collection` and, for Surveys beyond `keep_surveys`, `keep_surveys`, then `budget`) and the
     total after it, and the entries it leaves with their reasons (`held`, `foreign`, `oversize`,
-    `unreadable_name`), computed over an in-memory model of the snapshot that its own removals
+    `unreadable_name`, `too_deep`), computed over an in-memory model of the snapshot that its own removals
     update and never over a second inventory, so the bytes of a record an interruption moved
     under `cas/removing` are subtracted once, from the Project Store entry that holds them, and
     never restored (Task Stores are told apart into their finished Tasks, in place, only when
@@ -381,7 +381,21 @@ email first of all.
     `.af-removing-<pid>-…` (ADR-0144) and the containers dead passes left empty, each with the
     identity and bytes the listing stated, are planned first as `recovery` entries of kind
     `claim`, so the applied sweep removes nothing before the inventory and nothing the plan does
-    not list. Every object is recorded once with its identity (device and inode) and its bytes:
+    not list. The inventory is taken over the Store registrations as they are: no registration
+    is dropped before it, so a registered Store a dead process renamed into its claim is
+    inventoried through that claim and its parent, and the plan lists the claim as `recovery` and
+    the registration's removal as an entry of its own (`registry_dropped`), which the applied
+    sweep runs after its removals, each only while its path still holds no Store; preview and
+    apply agree for the same file-system state. A claim inside an entry the inventory measured
+    whole (a Project Store, whose Workspace `state` a dead process renamed into its claim) is
+    measured once, inside that entry's bytes, and never again as a model entry of its own: its
+    recovery takes its bytes out of that entry, so `total_before` and `total_after` are what the
+    directory holds. A directory a removal walk would take whole (a Workspace, a campaign, an
+    unreadable Store, a version, a claim) nested deeper than that walk's 128 levels
+    (`review_sandbox::REMOVAL_MAX_DEPTH`), as the walk that measured its bytes found it, is
+    refused by the inventory, listed in use (`left: deeper than the removal walk`) and left by
+    the preview and the applied sweep alike as `too_deep` with its bytes, never planned. Every
+    object is recorded once with its identity (device and inode) and its bytes:
     the plan's judgement of a Survey, the budget step and the applied job each compare the
     identity they open with the inventory's and refuse the entry, `refused (replaced since
     inventory)`, on a mismatch, never adopting an inode the inventory did not measure, so the
@@ -390,13 +404,28 @@ email first of all.
     freed and the total after it. A planned entry of any kind whose execution fails (the lock
     lost, the Survey protected or collected since, what it names replaced, gone or refused, an
     I/O error) stays in the applied document's `removals` with `outcome` `failed: <reason>`,
-    nothing freed and the running total unchanged by it, so the document's totals are what the
-    directory holds, and the sweep never plans again; the next one does.
+    nothing freed and the running total unchanged by it, and the sweep never plans again; the
+    next one does. A planned object that is not there when its job runs (a container, a record at
+    its name or in a dead pass's container, a record between its tombstone and its unlink) is
+    such a failure, `failed: … gone since the inventory`, never a removal of nothing. A deletion
+    that stops part way (`review_sandbox::remove_tree_at` failing after it unlinked some of a tree
+    that grew deeper than its walk or holds a child it cannot unlink) is failed too, and its
+    bytes are what actually left the disk: the bytes the inventory measured less the allocated
+    bytes of what the claim it leaves still holds, stated after the failure (nothing, when that
+    cannot be measured). So the document's totals are what the directory holds.
     The tombstone binds the
     event: every field but `survey_id` and `collected_unix_ms` is copied from the record after
     the event was verified against it on every field clause 2 compares, never from the event,
     so replay refuses a collected event that differs from its tombstone on any of them, naming
-    the field. A Survey whose event disagrees with its record is refused, preview and pass
+    the field. The plan's check is the one read the inventory already makes of a Project Store:
+    it reads each uncollected Survey's record once and verifies its event there with the fold's
+    own verifier (`TombstoneIdentity::of_record`, the record's parse), carrying the verdict with
+    the Survey; the plan's judgement reads only that verdict and the record's name, never the log
+    again, and what `keep_surveys` counts, the newest complete Survey and the inventory's last
+    use are read from the verified fields (the record's own cutoff and completeness when the
+    record disproves its event, the event's only when no record vouches for anything, as an
+    `unreadable` tombstone takes them), so a forged cutoff is never a Survey's last use. The pass
+    verifies again under the lock before its tombstone. A Survey whose event disagrees with its record is refused, preview and pass
     alike, and reported `refused: its SurveyRecorded@1 names a <field> its record does not
     record, so it is kept`: no tombstone is appended and its record stays.
     A record is reached, read and deleted only through directory descriptors, ADR-0144's removal
@@ -447,8 +476,10 @@ email first of all.
     unlink taking the raw name. A regular file in a container of a dead pass (every pass holds
     the Store's lock, so a container found under it is a dead one's) named by a tombstoned
     Survey is that Survey's record, moved: its bytes are the Survey's, and it is settled by the
-    same sequence, renamed into the new pass's own container, checked there and unlinked, and
-    the dead container goes once it is empty. A file at that Survey's CAS name is then a foreign
+    same sequence, renamed into the new pass's own container, checked there and unlinked; the
+    dead container, when every file in it is such a moved record, is planned as a `recovery`
+    entry of its own after them with its allocated bytes, and its `rmdir` runs only as that
+    planned entry, so preview and apply list the same containers. A file at that Survey's CAS name is then a foreign
     object: it is left in place and listed as `foreign` with its bytes, counted in the Store's
     total and never as the Survey's, and never deleted by any path. Without a moved record, the
     file at a tombstoned Survey's name is its record, deleted as above, only when its bytes are

@@ -422,6 +422,89 @@ fn an_entry_names_a_gone_checkout_by_its_gitdir_resolved_as_git_reads_it() {
 }
 
 #[test]
+fn an_entry_is_claimed_only_while_what_it_holds_now_names_the_checkout() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let canonical = std::fs::canonicalize(root.path()).unwrap();
+    let entry = canonical.join("repo/.git/worktrees/wt");
+    let moved = canonical.join("repo/.git/worktrees/wt.af-removing-7-0123456789abcdef/wt");
+    std::fs::create_dir_all(&entry).unwrap();
+    std::fs::create_dir_all(&moved).unwrap();
+    let own = canonical.join("wt/.git");
+    let unproven = |at: &Path, deleting| removal::entry_unproven(at, &entry, &own, deleting);
+    let condition = |at: &Path, deleting| unproven(at, deleting).unwrap_or_default();
+
+    // A missing `gitdir` proves nothing, until the entry's own deletion may have removed it.
+    for at in [&entry, &moved] {
+        assert!(
+            condition(at, false).ends_with(
+                "is kept: its gitdir is missing, so it is not known to name this checkout"
+            ),
+            "{}",
+            condition(at, false)
+        );
+    }
+    assert_eq!(unproven(&moved, true), None);
+
+    // It names the checkout as git reads it from where it was inspected, wherever it is now.
+    for at in [&entry, &moved] {
+        std::fs::write(at.join("gitdir"), format!("{}\n", own.display())).unwrap();
+        assert_eq!(unproven(at, false), None);
+        assert_eq!(unproven(at, true), None);
+    }
+    std::fs::write(moved.join("gitdir"), "../../../../wt/.git\n").unwrap();
+    assert_eq!(
+        unproven(&moved, false),
+        None,
+        "relative to the inspected path"
+    );
+
+    // Another checkout's, even while its deletion has begun.
+    let other = canonical.join("other/.git");
+    std::fs::write(entry.join("gitdir"), format!("{}\n", other.display())).unwrap();
+    for deleting in [false, true] {
+        assert_eq!(
+            unproven(&entry, deleting),
+            Some(format!(
+                "its administrative entry {} is kept: its gitdir names {} now, not this worktree",
+                entry.display(),
+                other.display()
+            ))
+        );
+    }
+    std::fs::write(entry.join("gitdir"), format!("{}\n", own.display())).unwrap();
+
+    // Locked, at its path or in its container, whatever the step.
+    for at in [&entry, &moved] {
+        std::fs::write(at.join("locked"), "").unwrap();
+        for deleting in [false, true] {
+            assert!(
+                condition(at, deleting).contains("is locked, so it is kept"),
+                "{}",
+                condition(at, deleting)
+            );
+        }
+        std::fs::remove_file(at.join("locked")).unwrap();
+    }
+    assert!(condition(&entry, false).is_empty());
+
+    // Unreadable is never "no gitdir": it may name the checkout.
+    let gitdir = entry.join("gitdir");
+    std::fs::set_permissions(&gitdir, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // A superuser reads it anyway; there is nothing to refuse then.
+    if std::fs::read(&gitdir).is_err() {
+        for deleting in [false, true] {
+            assert!(
+                condition(&entry, deleting).contains("could not be read"),
+                "{}",
+                condition(&entry, deleting)
+            );
+        }
+    }
+    std::fs::set_permissions(&gitdir, std::fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+#[test]
 fn a_container_name_is_fresh_every_time_and_proves_nothing() {
     let first = removal::container_name(OsStr::new("wt"));
     let second = removal::container_name(OsStr::new("wt"));
