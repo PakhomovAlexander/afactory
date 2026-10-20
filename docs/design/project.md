@@ -190,7 +190,7 @@ for one third, `0` for an empty population), with these sections. Every section 
 |---|---|---|---|
 | `identity` | Project ID, `repository_id`, `[project] name` and `min_af`, the af release `.af/af.lock` pins, head commit, Tree Digest, cutoff, policy digest, Surveyor version, git version | `.af/af.toml`, `.af/af.lock`, git | the Tree Digest is the kernel's capture digest of the whole head tree, independent of `exclude` and of every maximum, computed by a digest-only path (no blob written to any CAS, no listing buffered: fixed-size blob buffers through the hash, at most 16 MiB of manifest buffering and 256 MiB of temporary manifest data, fixed ceilings no project may raise, under the Survey deadline) that equals the committed capture's digest of the same tree: absent with reason `deadline` when it did not finish or a typed resource reason (`max_record_bytes`, `manifest_bytes`, `temp_bytes`) when a ceiling stopped it, with nothing left in temporary storage, never the digest of a part |
 | `tree` | files and bytes in total; per top-level directory files, lines and bytes; per language files and lines; the `tests` split | `git ls-tree -l`, blob reads | lines only for text blobs: regular or executable blobs at or under `max_file_bytes` (1 MiB) whose first 8 KiB hold no NUL, UTF-8 validity irrelevant (the rule ADR-0133's citations use); symlinks and gitlinks contribute no lines; a declaration (a decision, the vocabulary file, a check file) is parsed only when it is such a text blob and valid UTF-8, else unreadable; `[survey] exclude` globs; `[survey] tests` globs; `[survey.languages]` extends the built-in extension map (the one docs/project.md lists): each file counts for exactly one language, a configured pattern overrides a built-in extension, among configured patterns the bytewise-first matching one wins, and a file nothing matches is `other` like a symlink or submodule |
-| `history` | commits and merges in total and in the last 30, 90 and 365 days; first and last commit time; churn (commits, lines added, removed) per top-level directory over 90 days; hot paths; tags in total and the newest five matching `release_tags`; local branch count | `git log --numstat`, `rev-list`, `tag` | `max_commits` (100,000; beyond it `partial`, oldest commit reached recorded); `hot_paths` (20) |
+| `history` | commits and merges in total and in the last 30, 90 and 365 days; first and last commit time; churn (commits, lines added, removed) per top-level directory over 90 days; hot paths; tags in total and the newest five matching `release_tags`; local branch count | `git log --numstat`, `rev-list`, `tag`, each through a private bare repository attached to the object database alone (ADR-0001's administrative directory), so no checkout, index, local configuration, attribute file, diff driver or replacement ref changes a count | `max_commits` (100,000; beyond it `partial`, oldest commit reached recorded); `hot_paths` (20) |
 | `contributors` | per identity, keyed by `key` (under `name` the first 16 hex digits of SHA-256 of the exact author-name bytes, under `email_hash` the 16-hex email hash) with `name` the bounded display text, grouped and ranked by `key` so two names sharing a 256-byte prefix stay distinct: commits, lines added and removed, first and last time, active in 90 days; the top identity's share; human and agent-assisted commit counts and shares | `git log` | `[survey] identity = "name"` (default) or `"email_hash"`: an email is hashed or absent, never stored, and an author name any whitespace-separated token of which is an email address (an `@` between non-empty parts) is replaced whole, before any truncation and under both policies, by `h:` and the first 16 hex digits of its hash; `agent_authors` (`*[bot]`) and `agent_trailers` (`Co-Authored-By` matching `*Claude*`, `*Codex*`, `*GPT*`): a commit is agent-assisted when its author or any `Co-Authored-By` name matches, otherwise human; each commit counts once in that partition and its author keeps the per-identity totals; an empty window makes every share `0` |
 | `decisions` | per decision record: number, title, status, date; counts by status | the `decisions` pattern, default `docs/adr/*.md`, then the name rule (four ASCII digits and a dash): title from the first H1; status and date from the first line that starts with `**Status:**` or `Status:`: the status is the first of `proposed`, `accepted`, `superseded`, `deprecated`, `rejected` on that line (`accepted; superseded in part by` is `accepted`; `amended` becomes a flag when the line says so), the date the first `YYYY-MM-DD` on it, each `unknown` when absent or malformed | `max_entries`; a Brief variant picks the newest N (§3.5) |
 | `vocabulary` | the defined term names and their count | the `vocabulary` file, default `CONTEXT.md`: bold-colon headings | names only; definitions stay in the tree |
@@ -205,7 +205,10 @@ hottest paths of the last 90 days no longer exist). The Survey records `previous
 The newest uncollected Survey is reused, and nothing recorded, exactly when it is `complete`,
 its *survey key* equals the current one and no `--force` asks; this one predicate serves `af
 project refresh`, the parent's preflight and the refresher's recheck under the lock. The key is:
-the head commit, the digest of `git for-each-ref refs/heads refs/tags` (names and targets), the
+the head commit, the digest of one bounded `git for-each-ref refs/heads refs/tags` observation (names,
+targets and object types) that also yields the tag and branch statistics of `history`, tagger
+times resolved through the captured object IDs, so the key and the statistics never come from
+two reads (an observation the deadline cuts records `SurveyFailed@1`, never a Survey), the
 policy digest, the Surveyor version and, for `activity`, the activity watermark PJ5 defines: for every
 Store of the discovery set its instance ID and the digest of what one read transaction captured
 from it, every run prefix's events and its `attempt_wall` rows, so the aggregate and the
@@ -388,9 +391,12 @@ artifact ID in the compiled plan. `af task run`, resume, retry and replay never 
 (ADR-0117). Without a Survey the optional port is empty and the preview says so:
 `project: none (no Survey recorded; run af project refresh)`. A Task file binds the port like any
 other bindable root input: ADR-0134 admits a recorded Task result output of type
-`af/ProjectBrief@1` (a pipeline that exposes its constructed `project` input as a public output
-records one) and refuses the exact-artifact form; an explicit binding suppresses the
-`project_brief` construction for that port.
+`af/ProjectBrief@1` only when the kernel constructed it (a pipeline that exposes its constructed
+`project` input as a public output records one, forwarded unchanged; a Worker-authored producer
+of that type is refused at output admission and at input binding, since ADR-0134 grants
+provenance, not verification) and refuses the exact-artifact form; binding validation
+establishes the constructing node and its recorded rendering inputs before an explicit binding
+suppresses the `project_brief` construction for that port.
 
 Staleness is reported, not refused, in v1, and it is the consuming Task's, not the Brief's: the
 compiled plan records a staleness receipt keyed by the Brief's artifact ID and the Task's source
@@ -516,7 +522,8 @@ in `crates/af/src/project.rs`), which PJ2 re-implements for both by dynamic prog
 match costs pattern length times text length and never backtracks (the recursive form takes
 billions of steps on `*a` thirty times followed by `b` against thirty `a`s, a failing match
 inside the string limits and outside
-every deadline); a pattern is at most 256 bytes and a list at most 64 patterns, refused at policy
+every deadline); a pattern is at most 256 bytes and a list at most 64 patterns (`[survey.languages]` included:
+only the built-in fallback is an extension lookup), refused at policy
 load beyond that, and the Surveyor checks its deadline between matches: `**` spans segments, `*` a run inside one, `?` exactly one byte of the canonical
 encoded spelling (as the byte-slice matcher does today: `caf?.rs` rejects `café.rs` and
 `caf??.rs` accepts it, and the rewrite keeps that, with Unicode and percent-encoded parity
@@ -603,7 +610,9 @@ layout test still passes; `af --help` and `af project --help` stay under 50 ms.
 Deliverables: `af/ProjectSurvey@1` with `identity`, `tree`, `history`, `contributors`,
 `decisions`, `vocabulary` and `checks`; the Surveyor operator with its bounds, every git subprocess under the
 minimum of its own limit and the remaining Survey time with its process group terminated at the
-deadline, and the digest-only capture path for the Tree Digest; `af onboard
+deadline, the digest-only capture path for the Tree Digest (ADR-0152 clause 9 amended to it),
+history measured through a private bare repository and one ref observation for key and
+statistics; `af onboard
 --apply` recording the first Survey; `af project survey|refresh|history`; the survey key and
 `--force`; `SurveyFailed@1` with its schema and replay and the outcome `af project refresh`
 prints; Survey collection under `[storage] keep_surveys` with the replay rules of §3.9, and
@@ -618,7 +627,9 @@ with its reason, never a partial digest, and a silent git process against a shor
 leaves no process behind and a partial Survey within the deadline; a blob above `max_file_bytes`
 and a tree beyond `max_paths` still digest, equal to the committed capture's digest, an injected
 manifest or temporary ceiling leaves the digest absent with its reason and nothing in temporary
-storage; `--section` with `--json` exits 2; a repository whose `repository_id` joins seven roots
+storage; `--section` with `--json` exits 2; a 65-pattern language map is refused; an untracked
+`.gitattributes`, a `.git/info/attributes` and a local diff driver leave history counts
+unchanged; a tag created between the key capture and history measurement appears in neither; a repository whose `repository_id` joins seven roots
 (286 bytes) keeps it exact; `max_paths = 0`, a value above its ceiling and an overflowing one
 are refused at policy load; one third of three commits is the share `3333`; the
 failing adversarial pattern (`*a` thirty times then `b`, against thirty `a`s) returns false within
@@ -659,7 +670,8 @@ staleness; `af project brief --json` prints the preview document byte-equal in i
 the text form; collecting earlier Tasks
 releases their pinned Survey data while a later Task remains replayable; a variant with
 `max_bytes` 262,145 is refused at policy load, as are an unknown or repeated section, a `[brief.none]`
-table and `contributors` in `orient`, an unknown requested variant is a plan-time error, and a node whose
+table and `contributors` in `orient`, an unknown requested variant is a plan-time error, a schema-valid Worker-authored Brief is
+refused at admission and at binding while a forwarded constructed one binds, and a node whose
 known inputs plus the Brief exceed the renderer cap is refused at plan time; a pipeline wiring the port to one of two Workers delivers the Brief to that Worker's
 manifest and not the other's; replay after a refresh renders the pinned Brief, not the newer
 Survey; a variant over `max_bytes` drops the last section and records the reason; without a
