@@ -300,8 +300,25 @@ removed the worktree <path>; its administrative entry remains at <container>/<na
 and the Workspace stays registered. Run the same command again once the cause is fixed: it
 finishes from the record, step by step, acting only on directories whose identity the record
 holds, then unregisters the Workspace and reports what it removed; its messages begin `the
-worktree <path> is already gone;`. An entry whose `gitdir` cannot be read may still name the
-checkout, so the command stops with that file and the error and keeps the Workspace registered.
+worktree <path> is already gone;`. The step a record holds proves nothing by itself: before the
+rerun acts on a directory it checks that step's precondition on the file system, and a check
+that fails never moves the step on.
+
+| Step | What the rerun checks before it acts |
+|---|---|
+| `inspected` | The checkout's path holds the recorded identity (nothing there: gone; another directory: kept, and the command refused). The entry's `gitdir` names the checkout and the entry holds no `locked`, before the checkout is claimed and before the entry is. |
+| `container` | Nothing is proved: a directory found under the recorded name is reported and left, and the directory counts as `inspected` again. |
+| `contained` | The container is still the one made. The directory is in it by identity, or at its path by identity and moved in only while the container is empty and the entry passes the check above. In the container the checkout is judged again (its entry, its index, its files), and an entry is checked again before it is deleted. With the container gone, as `deleting`. |
+| `deleting` | The directory is in its container by identity (an entry there holding no `locked`, and any `gitdir` still there naming the checkout) and its deletion finishes. Otherwise its path decides: the recorded identity there is the directory moved back, claimed and judged again from the start; another directory is a replacement, kept and reported, and the Workspace stays registered; only when neither holds the recorded identity is it deleted. |
+| `deleted` | Its container goes only while it is the one made and empty; a directory at the checkout's path is kept and reported. |
+| `done` | Nothing. |
+
+An entry that is locked, whose `gitdir` names another checkout, or whose `gitdir` is missing
+(`its gitdir is missing, so it is not known to name this checkout`) is left where it is, the
+message names the condition, and the Workspace stays registered until you clear it; only an
+entry whose recorded deletion has begun may lack its `gitdir`, since that deletion removes it
+early. An entry whose `gitdir` cannot be read may still name the checkout, so the command stops
+with that file and the error and keeps the Workspace registered.
 A directory that only looks like a container, one nobody recorded or a worktree or entry whose
 own name has that form, is never touched and is reported as `left <directory>: it is named like
 a removal's container, but no removal record names it, so it is not this removal's`. Without a
