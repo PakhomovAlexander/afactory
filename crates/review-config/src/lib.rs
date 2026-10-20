@@ -15,6 +15,7 @@
 //! silently does nothing — the same rule the contracts use, for the same reason.
 
 pub mod captured_review;
+pub mod excerpt;
 pub mod layout;
 pub mod lock;
 pub mod task;
@@ -1282,7 +1283,7 @@ impl Loaded {
 
 impl Definition {
     pub fn from_toml(text: &str) -> Result<Definition, ConfigError> {
-        toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))
+        toml::from_str(text).map_err(|e| ConfigError::Parse(excerpt::bounded(&e.to_string())))
     }
 
     /// Validate everything: the schema, the graph, and the bindings.

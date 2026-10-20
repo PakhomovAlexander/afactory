@@ -90,6 +90,12 @@ pub enum LockError {
         name: String,
         root: PathBuf,
     },
+    /// A package beyond [`MAX_PACKAGE_FILES`] files or [`MAX_PACKAGE_BYTES`] bytes, or a file of
+    /// it beyond [`MAX_AUTHORITY_FILE_BYTES`]: refused before it is read whole.
+    TooLarge {
+        name: String,
+        reason: String,
+    },
     Io {
         path: PathBuf,
         error: String,
@@ -178,6 +184,7 @@ impl std::fmt::Display for LockError {
                 "reviewer `{name}` at {} has no reviewer.toml",
                 root.display()
             ),
+            LockError::TooLarge { name, reason } => write!(f, "reviewer `{name}` {reason}"),
             LockError::Io { path, error } => write!(f, "{}: {error}", path.display()),
         }
     }
@@ -461,12 +468,27 @@ fn validate_pin(name: &str, pin: &Pin) -> Result<(), LockError> {
     Ok(())
 }
 
+/// The most bytes af reads from one authority file: a policy, a lock, one file of a Worker
+/// package.
+pub const MAX_AUTHORITY_FILE_BYTES: u64 = 1024 * 1024;
+/// The most bytes one Worker package on disk may hold in all.
+pub const MAX_PACKAGE_BYTES: u64 = 8 * 1024 * 1024;
+/// The most files one Worker package on disk may hold.
+pub const MAX_PACKAGE_FILES: usize = 256;
+
 /// Read every regular file in the package into memory, keyed by `/`-separated relative path.
 ///
 /// One read serves both the digest and the manifest parse, so what was verified is what is
-/// interpreted — a second read from disk could race with a writer.
+/// interpreted — a second read from disk could race with a writer. Every file is read without
+/// following a link and within [`MAX_AUTHORITY_FILE_BYTES`]; the package within
+/// [`MAX_PACKAGE_FILES`] files and [`MAX_PACKAGE_BYTES`] bytes.
 fn collect(name: &str, root: &Path) -> Result<BTreeMap<String, Vec<u8>>, LockError> {
     let mut files = BTreeMap::new();
+    let mut total = 0_u64;
+    let too_large = |reason: String| LockError::TooLarge {
+        name: name.to_string(),
+        reason,
+    };
     let mut pending = vec![root.to_path_buf()];
     let io = |path: &Path, error: std::io::Error| LockError::Io {
         path: path.to_path_buf(),
@@ -507,7 +529,28 @@ fn collect(name: &str, root: &Path) -> Result<BTreeMap<String, Vec<u8>>, LockErr
                     components.push(component);
                 }
                 let relative = components.join("/");
-                let bytes = std::fs::read(&path).map_err(|e| io(&path, e))?;
+                if files.len() >= MAX_PACKAGE_FILES {
+                    return Err(too_large(format!(
+                        "holds more than {MAX_PACKAGE_FILES} files; a package is at most \
+                         {MAX_PACKAGE_FILES} files"
+                    )));
+                }
+                if kind.len() > MAX_AUTHORITY_FILE_BYTES {
+                    return Err(too_large(format!(
+                        "file `{relative}` is {} bytes; a package file is at most \
+                         {MAX_AUTHORITY_FILE_BYTES} bytes",
+                        kind.len()
+                    )));
+                }
+                let bytes = review_store::local_fs::read_bounded(&path, MAX_AUTHORITY_FILE_BYTES)
+                    .map_err(|e| io(&path, e))?;
+                total = total.saturating_add(bytes.len() as u64);
+                if total > MAX_PACKAGE_BYTES {
+                    return Err(too_large(format!(
+                        "holds more than {MAX_PACKAGE_BYTES} bytes; a package is at most \
+                         {MAX_PACKAGE_BYTES} bytes"
+                    )));
+                }
                 files.insert(relative, bytes);
             }
         }
@@ -602,8 +645,8 @@ impl Lockfile {
     /// Parse and validate. A floating version or malformed digest is refused *here*, so a bad
     /// pin cannot sit latent in a file that parses.
     pub fn from_toml(text: &str) -> Result<Lockfile, LockError> {
-        let lockfile: Lockfile =
-            toml::from_str(text).map_err(|e| LockError::Parse(e.to_string()))?;
+        let lockfile: Lockfile = toml::from_str(text)
+            .map_err(|e| LockError::Parse(crate::excerpt::bounded(&e.to_string())))?;
         if lockfile.version != 1 {
             return Err(LockError::Parse(format!(
                 "unsupported lockfile version {}; this kernel understands version 1",
@@ -749,8 +792,11 @@ impl Lockfile {
             })?;
         let text = std::str::from_utf8(bytes)
             .map_err(|e| LockError::Parse(format!("reviewer.toml for `{name}`: {e}")))?;
-        let manifest: PackageManifest = toml::from_str(text)
-            .map_err(|e| LockError::Parse(format!("reviewer.toml for `{name}`: {e}")))?;
+        let manifest: PackageManifest = toml::from_str(text).map_err(|e| {
+            LockError::Parse(crate::excerpt::bounded(&format!(
+                "reviewer.toml for `{name}`: {e}"
+            )))
+        })?;
         if manifest.subjects.is_empty() {
             return Err(LockError::Parse(format!(
                 "reviewer.toml for `{name}` accepts no Subject kind"

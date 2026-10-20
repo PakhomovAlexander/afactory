@@ -14,6 +14,7 @@
 
 pub(crate) mod gate;
 mod hint;
+pub(crate) mod owned;
 pub(crate) mod registry;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -391,7 +392,7 @@ pub(crate) fn hold_campaign_for_removal(
     state: &Path,
 ) -> Result<nix::fcntl::Flock<std::fs::File>, String> {
     let path = state.join(RUNNING_LOCK);
-    let file = std::fs::OpenOptions::new()
+    let file = review_store::local_fs::private_file_options()
         .create(true)
         .truncate(false)
         .write(true)
@@ -409,7 +410,7 @@ pub(crate) fn hold_campaign_for_removal(
 /// no `af review gc` removes the campaign's state.
 pub(crate) fn hold_running(state: &Path) -> Result<nix::fcntl::Flock<std::fs::File>, String> {
     let path = state.join(RUNNING_LOCK);
-    let file = std::fs::OpenOptions::new()
+    let file = review_store::local_fs::private_file_options()
         .create(true)
         .truncate(false)
         .write(true)
@@ -488,7 +489,7 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
         {
             continue;
         }
-        measure_into(&mut inventory, Kind::Workspace, &path, |path| {
+        measure_into(&mut inventory, roots, Kind::Workspace, &path, |path| {
             let last = review_sandbox::storage::newest_write(path).map_or(0, unix_ms);
             let in_use = review_sandbox::workspace_in_use(path)
                 .then(|| "a run holds its workspace lock".to_string());
@@ -520,9 +521,9 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
     }
     for path in campaigns.into_iter().filter(|path| has_store(path)) {
         match written_by_another_release(&path) {
-            Ok(Some(reason)) => unreadable(&mut inventory, &path, reason),
+            Ok(Some(reason)) => unreadable(&mut inventory, roots, &path, reason),
             // Only the run lock here: a lease is checked again, in full, before a removal.
-            Ok(None) => measure_into(&mut inventory, Kind::Campaign, &path, |path| {
+            Ok(None) => measure_into(&mut inventory, roots, Kind::Campaign, &path, |path| {
                 (
                     newest_store_write(path),
                     lock_held(&path.join(RUNNING_LOCK))
@@ -534,10 +535,10 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
     }
     for path in tasks.into_iter().filter(|path| has_store(path)) {
         match written_by_another_release(&path) {
-            Ok(Some(reason)) => unreadable(&mut inventory, &path, reason),
+            Ok(Some(reason)) => unreadable(&mut inventory, roots, &path, reason),
             Ok(None) if detail == Detail::Tasks => task_store(&mut inventory, roots, &path),
             Ok(None) => {
-                measure_into(&mut inventory, Kind::TaskStore, &path, |path| {
+                measure_into(&mut inventory, roots, Kind::TaskStore, &path, |path| {
                     (
                         newest_store_write(path),
                         Some(
@@ -554,9 +555,13 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
         Ok(versions) => {
             for version in versions {
                 let protected = version.protected.map(str::to_string);
-                measure_into(&mut inventory, Kind::Version, &version.directory, |_| {
-                    (version.installed_unix_ms, protected)
-                });
+                measure_into(
+                    &mut inventory,
+                    roots,
+                    Kind::Version,
+                    &version.directory,
+                    |_| (version.installed_unix_ms, protected),
+                );
             }
         }
         Err(reason) => inventory.problems.push(Problem {
@@ -569,11 +574,16 @@ pub(crate) fn inventory(roots: &Roots, detail: Detail) -> Inventory {
 
 fn measure_into(
     inventory: &mut Inventory,
+    roots: &Roots,
     kind: Kind,
     path: &Path,
     judge: impl FnOnce(&Path) -> (u64, Option<String>),
 ) {
-    match review_sandbox::storage::allocated_bytes(path) {
+    let measured = match kind {
+        Kind::Campaign | Kind::UnreadableStore | Kind::TaskStore => store_bytes(roots, path),
+        _ => review_sandbox::storage::allocated_bytes(path),
+    };
+    match measured {
         Ok(bytes) => {
             let (last_use_unix_ms, in_use) = judge(path);
             inventory.entries.push(Entry {
@@ -594,8 +604,18 @@ fn measure_into(
     }
 }
 
-fn unreadable(inventory: &mut Inventory, path: &Path, reason: String) {
-    measure_into(inventory, Kind::UnreadableStore, path, |path| {
+/// The allocated bytes of a Store: the whole directory below af's own roots; elsewhere (a
+/// registered `--state` or `--state-root` Store) only af's entries, for the rest is not af's.
+fn store_bytes(roots: &Roots, state: &Path) -> std::io::Result<u64> {
+    if roots.anchor_of(state) == Path::new("/") {
+        owned::af_bytes(state)
+    } else {
+        review_sandbox::storage::allocated_bytes(state)
+    }
+}
+
+fn unreadable(inventory: &mut Inventory, roots: &Roots, path: &Path, reason: String) {
+    measure_into(inventory, roots, Kind::UnreadableStore, path, |path| {
         (newest_file_write(path), unreadable_in_use(path))
     });
     if let Some(entry) = inventory.entries.last_mut()
@@ -687,7 +707,7 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
         Err(reason) => {
             // Its Tasks cannot be told apart, but its bytes are still on disk: counted, kept
             // whole (nothing in it can be collected Task by Task), and reported.
-            let bytes = match review_sandbox::storage::allocated_bytes(state) {
+            let bytes = match store_bytes(roots, state) {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     inventory.problems.push(Problem {
@@ -716,7 +736,7 @@ fn task_store(inventory: &mut Inventory, roots: &Roots, state: &Path) {
     };
     // A Store that cannot be measured whole is a problem, not an empty one: its Tasks are still
     // listed, and the remainder the Store holds is reported unknown rather than as zero.
-    let allocated = match review_sandbox::storage::allocated_bytes(state) {
+    let allocated = match store_bytes(roots, state) {
         Ok(bytes) => Some(bytes),
         Err(error) => {
             inventory.problems.push(Problem {
@@ -788,6 +808,10 @@ pub(crate) struct Removal {
     pub(crate) task_id: Option<String>,
     pub(crate) bytes: u64,
     pub(crate) rule: Rule,
+    /// What the removal left in place: a Store outside af's roots that was not proven af's, or
+    /// held what is not af's, keeps its directory and everything that is not af's (ADR-0144).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) left: Vec<PathBuf>,
 }
 
 /// Why the budget step stopped.
@@ -857,6 +881,7 @@ pub(crate) fn sweep(
                 task_id: None,
                 bytes,
                 rule: Rule::Recovery,
+                left: Vec::new(),
             });
         }
         report.failures.extend(left);
@@ -947,12 +972,12 @@ pub(crate) fn sweep(
         let removed = if apply {
             evict(roots, policy, &stock, entry)
         } else {
-            Ok(entry.bytes)
+            Ok((entry.bytes, Vec::new()))
         };
         match removed {
             // What the removal freed, measured: a Task's collection can free more than the
             // Task's own bytes, and the loop stops as soon as af fits.
-            Ok(freed) => {
+            Ok((freed, left)) => {
                 // At least what inventory measured is gone; a Task's collection may free more.
                 let freed = freed.max(entry.bytes);
                 total = total.saturating_sub(freed);
@@ -962,6 +987,7 @@ pub(crate) fn sweep(
                     task_id: entry.task_id.clone(),
                     bytes: freed,
                     rule: Rule::Budget,
+                    left,
                 });
             }
             Err(error) => report.failures.push(error),
@@ -1145,6 +1171,7 @@ fn collect(
                         task_id: Some(task_id.clone()),
                         bytes,
                         rule: Rule::Collection,
+                        left: Vec::new(),
                     });
                     stock.entries.retain(|entry| {
                         !(entry.kind == Kind::Task
@@ -1174,15 +1201,16 @@ fn collect(
         match if apply {
             evict(roots, policy, stock, entry)
         } else {
-            Ok(entry.bytes)
+            Ok((entry.bytes, Vec::new()))
         } {
-            Ok(_) => {
+            Ok((_, left)) => {
                 report.removals.push(Removal {
                     kind: entry.kind,
                     path: entry.path.clone(),
                     task_id: None,
                     bytes: entry.bytes,
                     rule: Rule::Collection,
+                    left,
                 });
                 taken.push(entry.path.clone());
             }
@@ -1200,15 +1228,16 @@ fn collect(
         match if apply {
             evict(roots, policy, stock, entry)
         } else {
-            Ok(entry.bytes)
+            Ok((entry.bytes, Vec::new()))
         } {
-            Ok(_) => {
+            Ok((_, left)) => {
                 report.removals.push(Removal {
                     kind: entry.kind,
                     path: entry.path.clone(),
                     task_id: None,
                     bytes: entry.bytes,
                     rule: Rule::Collection,
+                    left,
                 });
                 taken.push(entry.path.clone());
             }
@@ -1221,13 +1250,14 @@ fn collect(
     });
 }
 
-/// Remove one entry through the rule that owns it. Returns the bytes removed.
+/// Remove one entry through the rule that owns it. Returns the bytes removed and what the
+/// removal left in place.
 fn evict(
     roots: &Roots,
     policy: &StoragePolicy,
     stock: &Inventory,
     entry: &Entry,
-) -> Result<u64, String> {
+) -> Result<(u64, Vec<PathBuf>), String> {
     let failed = |error: String| format!("removing {}: {error}", entry.path.display());
     match entry.kind {
         Kind::WarmKey => {
@@ -1257,7 +1287,10 @@ fn evict(
                         ));
                     };
                     match key.identity() {
-                        Ok(locked) if locked == measured => key.remove_key().map_err(failed),
+                        Ok(locked) if locked == measured => key
+                            .remove_key()
+                            .map(|bytes| (bytes, Vec::new()))
+                            .map_err(failed),
                         Ok(_) => Err(failed(
                             "another directory holds its name since it was measured; left in \
                              place"
@@ -1328,10 +1361,15 @@ fn evict(
                 // Collection also sweeps whatever no Task reaches any more, an interrupted
                 // earlier collection's leftovers included: what the Store freed is measured.
                 let after = review_sandbox::storage::allocated_bytes(&entry.path).ok();
-                Ok(match (before, after) {
-                    (Some(before), Some(after)) => before.saturating_sub(after).max(entry.bytes),
-                    _ => entry.bytes,
-                })
+                Ok((
+                    match (before, after) {
+                        (Some(before), Some(after)) => {
+                            before.saturating_sub(after).max(entry.bytes)
+                        }
+                        _ => entry.bytes,
+                    },
+                    Vec::new(),
+                ))
             } else {
                 Err(failed(format!("Task `{task_id}` is protected now")))
             }
@@ -1360,12 +1398,18 @@ fn still_measured(entry: &Entry) -> Result<(), String> {
 
 /// Remove an entry's directory from its anchor through descriptors, never following a link
 /// below the anchor, and only when it is still the directory inventory measured. The measured
-/// bytes are what was removed.
-fn remove_entry(roots: &Roots, entry: &Entry) -> Result<u64, String> {
+/// bytes are what was removed. A Store outside af's roots goes whole only when it is proven
+/// af's; otherwise only af's entries go, and what was left is returned (ADR-0144).
+fn remove_entry(roots: &Roots, entry: &Entry) -> Result<(u64, Vec<PathBuf>), String> {
     let identity = entry
         .identity
         .ok_or("its identity was not measured, so it is not removed")?;
-    remove_directory(roots.anchor_of(&entry.path), &entry.path, Some(identity))
+    let anchor = roots.anchor_of(&entry.path);
+    if anchor == Path::new("/") {
+        let removed = owned::remove(anchor, &entry.path, identity)?;
+        return Ok((removed.bytes, removed.left));
+    }
+    remove_directory(anchor, &entry.path, Some(identity)).map(|bytes| (bytes, Vec::new()))
 }
 
 /// Remove `path`, strictly below `anchor`, and everything below it through descriptors opened
@@ -1406,6 +1450,9 @@ pub(crate) fn report_to_stderr(report: &SweepReport) {
                 Rule::Recovery => "recovery",
             }
         );
+        if let Some(line) = owned::left_line(&removal.path, &removal.left) {
+            eprintln!("af storage: {line}");
+        }
     }
     for cleanup in &report.gate_cleanups {
         eprintln!(
@@ -1853,7 +1900,16 @@ pub(crate) fn purge_outside_roots() -> Vec<String> {
         }
         lines.extend(gate::unreached(state));
     }
-    for entry in &registered {
+    lines.extend(purge_registered(&registered));
+    lines
+}
+
+/// Remove every registered Store for `af self uninstall --purge`, one line each: a Store proven
+/// af's goes whole, any other loses af's entries alone and the line names what was left
+/// (ADR-0144).
+fn purge_registered(registered: &[registry::Registered]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for entry in registered {
         let stores = match entry.kind {
             StoreKind::Task | StoreKind::Review => vec![entry.path.clone()],
             StoreKind::ReviewRoot => real_directories(&entry.path),
@@ -1871,8 +1927,12 @@ pub(crate) fn purge_outside_roots() -> Vec<String> {
                     continue;
                 }
             };
-            match remove_directory(Path::new("/"), &store, Some(identity)) {
-                Ok(_) => lines.push(format!("removed {}", store.display())),
+            // Whole only when it is proven af's; otherwise af's entries alone (ADR-0144).
+            match owned::remove(Path::new("/"), &store, identity) {
+                Ok(removed) => lines.push(
+                    owned::left_line(&store, &removed.left)
+                        .unwrap_or_else(|| format!("removed {}", store.display())),
+                ),
                 Err(error) => lines.push(format!("left {}: {error}", store.display())),
             }
         }
@@ -2091,6 +2151,9 @@ pub(crate) fn prune(apply: bool, json_output: bool) -> Result<i32, String> {
                 Rule::Recovery => "recovery",
             }
         );
+        if let Some(line) = owned::left_line(&removal.path, &removal.left) {
+            println!("{line}");
+        }
     }
     for path in &report.registry_dropped {
         println!(

@@ -92,7 +92,9 @@ The Task ID is chosen here and must be new to the state directory. Without `pipe
 ## Start and inspect a Task
 
 Run from the clean repository at committed `HEAD`. State defaults to a directory outside the
-repository under the user's XDG state directory; `--state` selects another external directory.
+repository under the user's XDG state directory; `--state` selects another external directory,
+which must be absent, empty or already an af Store: it becomes af-owned, so a directory holding
+anything else is refused.
 Save the Task request outside the checkout too (for example, `../ticket.json`); Afactory captures
 its contents into Task state. `--file` selects the request, not the source repository, so remain
 in the source checkout or select it with `--repo`.
@@ -304,11 +306,15 @@ first: finished Tasks beyond the
 newest `keep_tasks` (20) of each Store, review campaigns beyond the newest `keep_campaigns` (20)
 and Stores this release cannot read, each idle at least `keep_days` (14); then it evicts until
 af fits. A Store made with `--state` is recorded in `$XDG_STATE_HOME/af/stores.toml`, so the
-sweep reaches it too. A finished Task whose remote checks left gate branches or a pull request is
+sweep reaches it too; it counts only af's own entries, and it is removed whole only while it
+carries the owner marker `.af-store` af wrote when it created the directory and holds nothing
+else. Otherwise only af's entries go, and the sweep names what it left in place. A finished
+Task whose remote checks left gate branches or a pull request is
 collected only after its gate cleanup is done, by the sweep and by `af task gc --apply` alike;
-until then it stays and the next sweep tries again. The sweep that ends `af task run` records
-what it removed and what failed on that Task as one `storage_sweep` observation: `af task show`
-prints a `storage sweep:` line and `--json` carries `storage_sweeps`.
+until then it stays and the next sweep tries again. A Task cancelled or abandoned after its gate
+published is cleaned up the same way once no writer holds its lease. The sweep that ends `af task
+run` records what it removed and what failed on that Task as one `storage_sweep` observation:
+`af task show` prints a `storage sweep:` line and `--json` carries `storage_sweeps`.
 
 Below the free-disk floor af does not start a check, a measurement repetition or a Worker
 Attempt. Every volume af works on counts — the one holding its temporary directory and the one

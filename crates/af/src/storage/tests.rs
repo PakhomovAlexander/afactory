@@ -328,6 +328,10 @@ fn a_registered_store_that_is_gone_is_dropped_and_one_that_is_there_is_visited()
     let moved = elsewhere.join("store");
     std::fs::create_dir_all(&elsewhere).unwrap();
     std::fs::rename(&present, &moved).unwrap();
+    // A Store af made where nothing was, holding only af's entries, goes whole.
+    std::fs::remove_file(moved.join("filler")).unwrap();
+    std::fs::write(moved.join(owned::MARKER), b"").unwrap();
+    age(&moved, 30 * DAY);
     let now = now_unix_ms();
     let mut text = "version = 1\n".to_string();
     for path in [&moved, &gone] {
@@ -627,6 +631,7 @@ fn a_sweep_becomes_a_bounded_task_observation_only_when_it_did_something() {
         task_id: Some(format!("task-{index}")),
         bytes: 10,
         rule: Rule::Collection,
+        left: Vec::new(),
     };
     let report = |removals: Vec<Removal>, failures: Vec<String>, applied: bool| SweepReport {
         applied,
@@ -703,4 +708,123 @@ fn a_removal_a_dead_process_left_claimed_is_finished_and_reported_by_the_sweep()
     let recorded = observation(&report)
         .unwrap_or_else(|| panic!("a sweep that removed something is recorded: {report:?}"));
     assert_eq!(recorded.removals.len(), 1);
+}
+
+/// A review Store registered outside af's roots (`--state`), as a run makes one; `marked` when
+/// af created its directory, and `foreign` when the user's own files share it.
+fn outside_store(layout: &Layout, name: &str, marked: bool, foreign: bool) -> PathBuf {
+    let path = layout.root.join(name);
+    std::fs::create_dir_all(path.join("git-home")).unwrap();
+    EventStore::open(path.join("events.sqlite")).unwrap();
+    Cas::open(path.join("cas")).unwrap();
+    std::fs::write(path.join("cas/filler"), vec![3_u8; CHUNK]).unwrap();
+    std::fs::write(path.join(RUNNING_LOCK), b"").unwrap();
+    if marked {
+        std::fs::write(path.join(owned::MARKER), b"").unwrap();
+    }
+    if foreign {
+        std::fs::write(path.join("important.txt"), b"mine").unwrap();
+        std::fs::create_dir_all(path.join("photos")).unwrap();
+        std::fs::write(path.join("photos/1.jpg"), vec![9_u8; 8 * CHUNK]).unwrap();
+    }
+    age(&path, 3 * DAY);
+    path
+}
+
+fn register_reviews(layout: &Layout, paths: &[&Path]) {
+    register(layout, paths);
+    let text = std::fs::read_to_string(&layout.roots.registry)
+        .unwrap()
+        .replace("kind = \"task\"", "kind = \"review\"");
+    std::fs::write(&layout.roots.registry, text).unwrap();
+}
+
+/// H2 of the 2026-10-20 audit: a `--state` directory that also holds the user's files is
+/// measured by af's entries alone, and the budget sweep takes af's entries out of it and leaves
+/// the rest, naming it; a marked, af-only Store still goes whole.
+#[test]
+fn a_registered_store_holding_what_is_not_afs_keeps_it_through_the_budget_sweep() {
+    let layout = layout();
+    let mixed = outside_store(&layout, "mydocs", true, true);
+    let unmarked = outside_store(&layout, "older", false, false);
+    let whole = outside_store(&layout, "elsewhere-state", true, false);
+    register_reviews(&layout, &[&mixed, &unmarked, &whole]);
+
+    let stock = inventory(&layout.roots, Detail::Stores);
+    let measured = stock
+        .entries
+        .iter()
+        .find(|entry| entry.path == mixed)
+        .unwrap();
+    assert_eq!(measured.kind, Kind::Campaign);
+    assert!(
+        measured.bytes < 4 * CHUNK as u64,
+        "the user's 2 MiB are not af's: {}",
+        measured.bytes
+    );
+
+    let report = sweep(&layout.roots, &policy(1024), false, true);
+    assert!(report.failures.is_empty(), "{:?}", report.failures);
+    let removal = |path: &Path| {
+        report
+            .removals
+            .iter()
+            .find(|removal| removal.path == path)
+            .unwrap_or_else(|| panic!("{} in {report:?}", path.display()))
+    };
+    assert_eq!(
+        removal(&mixed).left,
+        [
+            mixed.clone(),
+            mixed.join("important.txt"),
+            mixed.join("photos")
+        ]
+    );
+    assert_eq!(std::fs::read(mixed.join("important.txt")).unwrap(), b"mine");
+    assert!(mixed.join("photos/1.jpg").is_file());
+    for gone in [
+        "events.sqlite",
+        "cas",
+        "git-home",
+        RUNNING_LOCK,
+        owned::MARKER,
+    ] {
+        assert!(!mixed.join(gone).exists(), "{gone}");
+    }
+    assert_eq!(removal(&unmarked).left, [unmarked.clone()]);
+    assert!(
+        unmarked.is_dir(),
+        "an unmarked directory is not proven af's"
+    );
+    assert!(
+        removal(&whole).left.is_empty(),
+        "{:?}",
+        removal(&whole).left
+    );
+    assert!(!whole.exists(), "a marked, af-only Store goes whole");
+}
+
+/// `af self uninstall --purge` over the registered Stores: the same rule as the sweep.
+#[test]
+fn purge_removes_a_marked_af_only_store_whole_and_only_afs_entries_of_any_other() {
+    let layout = layout();
+    let mixed = outside_store(&layout, "mydocs", true, true);
+    let whole = outside_store(&layout, "elsewhere-state", true, false);
+    register_reviews(&layout, &[&mixed, &whole]);
+    let lines = purge_registered(&registry::read(&layout.roots.registry).unwrap());
+    assert!(!whole.exists());
+    assert!(
+        lines.contains(&format!("removed {}", whole.display())),
+        "{lines:?}"
+    );
+    assert!(mixed.join("important.txt").is_file());
+    assert!(mixed.join("photos/1.jpg").is_file());
+    assert!(!mixed.join("events.sqlite").exists() && !mixed.join("cas").exists());
+    assert!(
+        lines.iter().any(
+            |line| line.contains("left the directory with what is not af's")
+                && line.contains("important.txt")
+        ),
+        "{lines:?}"
+    );
 }

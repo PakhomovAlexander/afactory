@@ -92,6 +92,16 @@ verifies the signature before trusting a checksum. `install.sh` verifies the sig
 verified result is delivered as uncommitted work in a new local worktree for a human to
 inspect (ADR-0031).
 
+**af's state is private to you.** Every directory af creates for its own state — the state and
+telemetry roots, campaign and Task Stores, their `cas/` and `git-home/` — is created `0700`, and
+every file af writes there `0600`, the event log's SQLite `-wal` and `-shm` files included, whatever
+your umask; a root af owns that is open to group or others is narrowed to `0700` when af opens it.
+af never changes the process umask, so what it writes into your checkout, such as the `.af/` files
+of `af onboard`, keeps the modes your umask gives it. An explicit `--state` directory must be
+absent, empty or already an af Store, since it becomes af-owned; af removes such a Store whole only
+while it carries the owner marker af wrote when it created it and holds nothing else, and otherwise
+removes only its own entries ([ADR-0144](docs/adr/0144-hold-afs-disk-use-to-a-machine-budget.md)).
+
 ### Out of scope
 
 - **What a reviewer writes.** A malicious or compromised reviewer model can write anything

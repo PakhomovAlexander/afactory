@@ -13,7 +13,8 @@ pub mod selection;
 pub mod shared;
 
 pub fn parse_task_pipeline(text: &str) -> Result<PipelineDefinitionV1, ConfigError> {
-    let toml: toml::Value = toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?;
+    let toml: toml::Value = toml::from_str(text)
+        .map_err(|e| ConfigError::Parse(crate::excerpt::bounded(&e.to_string())))?;
     let mut value = serde_json::to_value(toml).map_err(|e| ConfigError::Parse(e.to_string()))?;
     if let Some(contract) = value.get_mut("contract") {
         for side in ["inputs", "outputs"] {

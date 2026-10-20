@@ -595,7 +595,7 @@ impl TaskPlanCompiler {
             (None, Some(source), None) => {
                 let worker: TaskWorkerManifest =
                     toml::from_str(std::str::from_utf8(source).map_err(|e| e.to_string())?)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e| crate::excerpt::bounded(&e.to_string()))?;
                 if worker.schema != "af.worker/1"
                     || worker.name != bytes.name
                     || worker.version != bytes.version
@@ -625,7 +625,7 @@ impl TaskPlanCompiler {
             (None, None, Some(source)) => {
                 let kind: TaskKindManifest =
                     toml::from_str(std::str::from_utf8(source).map_err(|e| e.to_string())?)
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e| crate::excerpt::bounded(&e.to_string()))?;
                 kind.validate()?;
                 if kind.name != bytes.name || kind.version != bytes.version {
                     return Err("Task-kind manifest disagrees with its pin".into());
