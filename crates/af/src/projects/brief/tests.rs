@@ -407,7 +407,9 @@ fn a_worker_output_of_the_brief_type_is_refused_by_its_type_alone() {
 #[test]
 fn a_bound_brief_port_constructs_nothing_and_only_selectable_pipelines_count() {
     use review_core::task::pipeline::RootDefaultV1;
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
     let text = std::fs::read(root.join("fixtures/task-contracts/v2/pipeline-definition.json"));
     let oriented: PipelineDefinitionV1 = serde_json::from_slice(&text.unwrap()).unwrap();
     assert_eq!(
