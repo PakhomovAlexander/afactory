@@ -96,8 +96,9 @@ pub struct WriterOptions {
     /// The whole command line, recorded from `spans` on.
     pub argv: Vec<String>,
     /// `argv[0]` and the subcommand path (`af task show`), the only command-line words the
-    /// header records at `metrics`. Empty, as [`WriterOptions::new`] leaves it, it is derived
-    /// from `argv` by [`command_path`]; a caller that parsed its command line sets it exactly.
+    /// header records at `metrics`: the subcommand chain exactly as the caller's argument
+    /// parser matched it, never guessed from `argv`. Empty, as [`WriterOptions::new`] leaves it
+    /// when no chain is known, the header records `argv[0]` alone.
     pub command: Vec<String>,
     /// The working directory, recorded from `spans` on.
     pub cwd: PathBuf,
@@ -136,31 +137,6 @@ impl WriterOptions {
         self.content_max_blob_bytes = settings.content_max_blob_bytes;
         self
     }
-}
-
-/// The deepest subcommand path [`command_path`] keeps: `af provider auth begin`.
-pub const MAX_SUBCOMMAND_DEPTH: usize = 3;
-
-/// `argv[0]` and the subcommand path of `argv`: the leading arguments shaped like a subcommand
-/// name (a lower-case letter, then lower-case letters, digits and `-`), at most
-/// [`MAX_SUBCOMMAND_DEPTH`], ending at the first option or any other argument.
-pub fn command_path(argv: &[String]) -> Vec<String> {
-    let subcommand = |word: &&String| {
-        word.starts_with(|c: char| c.is_ascii_lowercase())
-            && word
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-    };
-    argv.iter()
-        .take(1)
-        .chain(
-            argv.iter()
-                .skip(1)
-                .take_while(subcommand)
-                .take(MAX_SUBCOMMAND_DEPTH),
-        )
-        .cloned()
-        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -633,14 +609,15 @@ impl Writer {
     fn header(&self, segment_id: &str) -> Record {
         let options = &self.shared.options;
         let redactor = &options.redactor;
-        // At `metrics` the command line is `argv[0]` and the subcommand path, and the working
-        // directory is not recorded; from `spans` on both are whole. An option's value under a
-        // secret name is withheld first, then each argument is judged whole and bounded.
+        // At `metrics` the command line is `argv[0]` and the subcommand path the caller parsed
+        // (`argv[0]` alone when it named none), and the working directory is not recorded;
+        // from `spans` on both are whole. An option's value under a secret name is withheld
+        // first, then each argument is judged whole and bounded.
         let whole = options.level >= Level::Spans;
         let argv = if whole {
             redact::withhold_option_values(&options.argv).0
         } else if options.command.is_empty() {
-            command_path(&options.argv)
+            options.argv.iter().take(1).cloned().collect()
         } else {
             options.command.clone()
         };

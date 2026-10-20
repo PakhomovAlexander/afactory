@@ -670,7 +670,7 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
                 let removed = storage::owned::remove(&root, &path, identity)
                     .map_err(|error| format!("removing {}: {error}", path.display()))?;
                 if let Some(line) = storage::owned::left_line(&path, &removed.left) {
-                    eprintln!("af review gc: {line}");
+                    eprintln!("af review gc: {}", terminal_text(&line));
                 }
                 reclaimed = reclaimed.saturating_add(removed.bytes);
             } else {
@@ -1790,13 +1790,17 @@ fn print_render(options: &Options) -> Result<(), String> {
     }
     // The header goes to stderr and the exact bytes to stdout, so `> prompt.md` is exact.
     eprintln!("review render (token-free; no Campaign state)");
-    eprintln!("node      {} ({})", view.node, view.runner);
+    eprintln!(
+        "node      {} ({})",
+        terminal_text(&view.node),
+        terminal_text(&view.runner)
+    );
     if let Some(package) = &view.package {
         eprintln!(
             "package   {} {} {}",
             terminal_text(package["name"].as_str().unwrap_or("?")),
-            package["version"].as_str().unwrap_or("?"),
-            package["digest"].as_str().unwrap_or("?")
+            terminal_text(package["version"].as_str().unwrap_or("?")),
+            terminal_text(package["digest"].as_str().unwrap_or("?"))
         );
     }
     eprintln!(
@@ -1844,7 +1848,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
     if options.json {
         // The document's shape is unchanged; the model lines go to stderr (ADR-0148).
         for line in &models {
-            eprintln!("{line}");
+            eprintln!("{}", terminal_text(line));
         }
         println!(
             "{}",
@@ -1857,23 +1861,24 @@ fn print_plan(options: &Options) -> Result<(), String> {
     println!("review plan (token-free; no Campaign state)");
     println!(
         "policy   {} => {}",
-        selectors["policy_rev"].as_str().unwrap_or("?"),
-        resolved["policy_snapshot_id"].as_str().unwrap_or("?")
+        terminal_text(selectors["policy_rev"].as_str().unwrap_or("?")),
+        terminal_text(resolved["policy_snapshot_id"].as_str().unwrap_or("?"))
     );
     if let Some(base) = selectors["base"].as_str() {
         println!(
-            "base     {base} => {}",
-            resolved["base_snapshot_id"].as_str().unwrap_or("?")
+            "base     {} => {}",
+            terminal_text(base),
+            terminal_text(resolved["base_snapshot_id"].as_str().unwrap_or("?"))
         );
     }
     println!(
         "candidate {} => {}",
-        selectors["candidate"].as_str().unwrap_or("?"),
-        resolved["candidate_snapshot_id"].as_str().unwrap_or("?")
+        terminal_text(selectors["candidate"].as_str().unwrap_or("?")),
+        terminal_text(resolved["candidate_snapshot_id"].as_str().unwrap_or("?"))
     );
     println!(
         "subject  {} ({} paths, {} patch bytes{})",
-        plan["subject"]["kind"].as_str().unwrap_or("?"),
+        terminal_text(plan["subject"]["kind"].as_str().unwrap_or("?")),
         plan["subject"]["changed_paths"]
             .as_array()
             .map_or(0, Vec::len),
@@ -1929,8 +1934,8 @@ fn print_plan(options: &Options) -> Result<(), String> {
     {
         println!(
             "  node {} [{}]",
-            node["id"].as_str().unwrap_or("?"),
-            node["kind"].as_str().unwrap_or("?")
+            terminal_text(node["id"].as_str().unwrap_or("?")),
+            terminal_text(node["kind"].as_str().unwrap_or("?"))
         );
     }
     for edge in plan["pipeline"]["topology"]["edges"]
@@ -1940,10 +1945,10 @@ fn print_plan(options: &Options) -> Result<(), String> {
     {
         println!(
             "  {}.{} -> {}.{}",
-            edge["from"]["node"].as_str().unwrap_or("?"),
-            edge["from"]["port"].as_str().unwrap_or("?"),
-            edge["to"]["node"].as_str().unwrap_or("?"),
-            edge["to"]["port"].as_str().unwrap_or("?")
+            terminal_text(edge["from"]["node"].as_str().unwrap_or("?")),
+            terminal_text(edge["from"]["port"].as_str().unwrap_or("?")),
+            terminal_text(edge["to"]["node"].as_str().unwrap_or("?")),
+            terminal_text(edge["to"]["port"].as_str().unwrap_or("?"))
         );
     }
     for gate in plan["pipeline"]["gates"].as_array().into_iter().flatten() {
@@ -1979,9 +1984,9 @@ fn print_plan(options: &Options) -> Result<(), String> {
             .map(|reservation| {
                 format!(
                     "{} {} ({})",
-                    reservation["node"].as_str().unwrap_or("?"),
+                    terminal_text(reservation["node"].as_str().unwrap_or("?")),
                     reservation["tokens"].as_u64().unwrap_or(0),
-                    reservation["source"].as_str().unwrap_or("?")
+                    terminal_text(reservation["source"].as_str().unwrap_or("?"))
                 )
             })
             .collect::<Vec<_>>();
@@ -1998,7 +2003,7 @@ fn print_plan(options: &Options) -> Result<(), String> {
             };
             println!(
                 "input    {} {bytes} bytes (about {} tokens){}",
-                reservation["node"].as_str().unwrap_or("?"),
+                terminal_text(reservation["node"].as_str().unwrap_or("?")),
                 reservation["input_tokens"].as_u64().unwrap_or(0),
                 if reservation["fits"].as_bool() == Some(false) {
                     " — EXCEEDS its Attempt cap; run will refuse"
@@ -2015,8 +2020,8 @@ fn print_plan(options: &Options) -> Result<(), String> {
     for provider in plan["providers"].as_array().into_iter().flatten() {
         println!(
             "provider {} -> {}",
-            provider["node"].as_str().unwrap_or("?"),
-            provider["binding"].as_str().unwrap_or("MISSING")
+            terminal_text(provider["node"].as_str().unwrap_or("?")),
+            terminal_text(provider["binding"].as_str().unwrap_or("MISSING"))
         );
     }
     for line in &models {
@@ -2118,10 +2123,10 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
                     .map(|report| {
                         format!(
                             "{} round {}={} at {}:{}",
-                            report.source,
+                            terminal_text(&report.source),
                             report.round,
                             report.scope_label(),
-                            report.file,
+                            terminal_text(&report.file),
                             report.line.map_or("-".to_string(), |line| line.to_string())
                         )
                     })
@@ -2371,10 +2376,12 @@ fn show(options: &ShowOptions) -> Result<(), String> {
         let report = cas
             .get_json(&attached.report_id)
             .map_err(|e| format!("reading report {}: {e}", attached.report_id))?;
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
-        );
+        // JSON escapes C0 controls itself; DEL and C1 controls it leaves raw, so each line is
+        // shown through the helper too.
+        let pretty = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
+        for line in pretty.lines() {
+            println!("{}", terminal_text(line));
+        }
     }
 
     println!("\nhistory:");
@@ -2403,20 +2410,32 @@ fn show(options: &ShowOptions) -> Result<(), String> {
         println!("  (none)");
     } else {
         for proposal in linked {
-            println!(
-                "  {} base={} applicability={} paths={}",
-                proposal.id,
-                proposal.proposal.base_snapshot_id,
-                if proposal.proposal.base_snapshot_id == head {
-                    "current"
-                } else {
-                    "stale"
-                },
-                proposal.proposal.paths.join(",")
-            );
+            println!("{}", proposal_line(proposal, &head));
         }
     }
     Ok(())
+}
+
+/// One Proposal of `af review show`. Its paths are model-authored, so each is shown through
+/// [`terminal_text`]: a control character in one can neither drive the terminal nor forge a line.
+fn proposal_line(proposal: &CampaignProposal, head: &str) -> String {
+    format!(
+        "  {} base={} applicability={} paths={}",
+        proposal.id,
+        proposal.proposal.base_snapshot_id,
+        if proposal.proposal.base_snapshot_id == head {
+            "current"
+        } else {
+            "stale"
+        },
+        proposal
+            .proposal
+            .paths
+            .iter()
+            .map(|path| terminal_text(path))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
 }
 
 #[derive(serde::Serialize)]
@@ -3183,7 +3202,7 @@ fn report_round_authority(
 }
 
 fn print_report_text(report: &ReviewReportView) {
-    println!("Review campaign: {}", report.campaign);
+    println!("Review campaign: {}", terminal_text(&report.campaign));
     println!("Runs recorded: {}", report.runs_recorded);
     println!("Ledger round: {}", report.ledger_round);
     println!(
@@ -3191,7 +3210,7 @@ fn print_report_text(report: &ReviewReportView) {
         report.final_verdict.as_deref().unwrap_or("not recorded")
     );
     for reason in &report.final_reasons {
-        println!("  reason: {reason}");
+        println!("  reason: {}", terminal_text(reason));
     }
     if let Some(wall) = report.wall_ms {
         println!("Wall-clock: {}", human_duration(wall));
@@ -3214,7 +3233,10 @@ fn print_report_text(report: &ReviewReportView) {
             round.tokens_label()
         );
     }
-    print!("{}", report_tasks::render(&report.task_accounting, false));
+    // Node IDs in it are repository-authored: every line is shown through the helper.
+    for line in report_tasks::render(&report.task_accounting, false).lines() {
+        println!("{}", terminal_text(line));
+    }
     println!("Demands:");
     if report.demands.is_empty() {
         println!("  none");
@@ -3269,7 +3291,7 @@ fn print_report_text(report: &ReviewReportView) {
 }
 
 fn print_report_markdown(report: &ReviewReportView) {
-    println!("# Review campaign `{}`", report.campaign);
+    println!("# Review campaign `{}`", terminal_text(&report.campaign));
     println!();
     println!("- Runs recorded: {}", report.runs_recorded);
     println!("- Ledger round: {}", report.ledger_round);
@@ -3303,7 +3325,10 @@ fn print_report_markdown(report: &ReviewReportView) {
         );
     }
     println!();
-    print!("{}", report_tasks::render(&report.task_accounting, true));
+    // Node IDs in it are repository-authored: every line is shown through the helper.
+    for line in report_tasks::render(&report.task_accounting, true).lines() {
+        println!("{}", terminal_text(line));
+    }
     println!("## Demands");
     if report.demands.is_empty() {
         println!();
@@ -3523,11 +3548,16 @@ fn print_scope_authority_warnings(ledger: &Ledger) {
         match failure.authority {
             review_store::ScopeAuthorityKind::RoundBinding => eprintln!(
                 "warning: round {} Report Scope is unknown: round binding disagrees for Subject {}: {}",
-                failure.round, failure.authority_id, failure.reason
+                failure.round,
+                failure.authority_id,
+                terminal_text(&failure.reason)
             ),
             authority => eprintln!(
                 "warning: round {} Report Scope is unknown: {:?} authority {} is unavailable: {}",
-                failure.round, authority, failure.authority_id, failure.reason
+                failure.round,
+                authority,
+                failure.authority_id,
+                terminal_text(&failure.reason)
             ),
         }
     }
@@ -4045,7 +4075,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
 
 #[cfg(test)]
 mod terminal_text_tests {
-    use super::{markdown_line, one_line, terminal_text};
+    use super::{CampaignProposal, markdown_line, one_line, proposal_line, terminal_text};
 
     #[test]
     fn every_control_character_is_shown_not_sent() {
@@ -4072,6 +4102,36 @@ mod terminal_text_tests {
             }
         }
         assert_eq!(one_line("two\nlines\x1b"), "two lines\\u{1b}");
+    }
+
+    /// A Proposal's paths are model-authored: `af review show` prints one holding ESC, BEL or a
+    /// newline escaped, on its one line.
+    #[test]
+    fn a_proposal_path_is_shown_not_sent() {
+        let proposal = CampaignProposal {
+            id: "sha256:proposal".into(),
+            proposal: review_core::PatchProposal {
+                base_snapshot_id: "sha256:head".into(),
+                patch_artifact_id: "sha256:patch".into(),
+                finding_refs: Vec::new(),
+                evidence_ids: Vec::new(),
+                paths: vec![
+                    "esc\x1b]0;PWNED\x07name".into(),
+                    "new\n  sha256:forged base=x applicability=current paths=y".into(),
+                ],
+                description: String::new(),
+                auto_apply_nominated: false,
+            },
+        };
+        let line = proposal_line(&proposal, "sha256:head");
+        assert!(!line.chars().any(char::is_control), "{line:?}");
+        assert_eq!(line.lines().count(), 1, "{line}");
+        assert_eq!(
+            line,
+            "  sha256:proposal base=sha256:head applicability=current \
+             paths=esc\\u{1b}]0;PWNED\\u{7}name,new\\u{a}  sha256:forged base=x \
+             applicability=current paths=y"
+        );
     }
 }
 

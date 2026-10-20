@@ -501,3 +501,78 @@ fn review_plan_text_output_shows_control_characters_in_changed_paths_escaped() {
     let json = String::from_utf8(planned.stdout).unwrap();
     assert!(json.contains(r#""esc\u001b]0;PWNED\u0007name""#), "{json}");
 }
+
+/// Pipeline node IDs are repository-authored too: a reviewer and a gather node whose IDs hold
+/// ESC and BEL (written as TOML unicode escapes) reach no terminal raw through any line of
+/// `af review plan`'s text output — topology, edges, reservations, input sizes or providers.
+#[test]
+fn review_plan_text_output_shows_control_characters_in_node_ids_escaped() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = onboarded_repo_with_a_change(root.path());
+    let pipeline = repo.join(".af/pipelines/review.toml");
+    let declared = std::fs::read_to_string(&pipeline).unwrap();
+    let hostile = declared
+        .replace(
+            "id = \"architecture\"",
+            "id = \"arch\\u001b]0;PWNED\\u0007itecture\"",
+        )
+        .replace(
+            "node = \"architecture\"",
+            "node = \"arch\\u001b]0;PWNED\\u0007itecture\"",
+        )
+        .replace("id = \"gather\"", "id = \"gath\\u001b[2J\\u0007er\"")
+        .replace("node = \"gather\"", "node = \"gath\\u001b[2J\\u0007er\"");
+    assert_ne!(hostile, declared);
+    std::fs::write(&pipeline, hostile).unwrap();
+    repin(&repo, "review");
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "hostile node ids"]);
+    let state_home = root.path().join("state");
+    let planned = af(
+        &state_home,
+        &[
+            "review",
+            "plan",
+            "--repo",
+            repo.to_str().unwrap(),
+            "--pipeline",
+            ".af/pipelines/review.toml",
+            "--policy-rev",
+            "HEAD",
+            "--base",
+            "HEAD~1",
+            "--candidate",
+            "HEAD",
+        ],
+    );
+    assert!(planned.status.success(), "{}", stderr(&planned));
+    let raw_controls: Vec<u8> = planned
+        .stdout
+        .iter()
+        .copied()
+        .filter(|byte| (*byte < 0x20 && *byte != b'\n') || *byte == 0x7f)
+        .collect();
+    assert!(
+        raw_controls.is_empty(),
+        "raw control bytes {raw_controls:?}"
+    );
+    let text = String::from_utf8(planned.stdout).unwrap();
+    assert!(!text.chars().any(|c| c.is_control() && c != '\n'), "{text}");
+    let architecture = "arch\\u{1b}]0;PWNED\\u{7}itecture";
+    let gather = "gath\\u{1b}[2J\\u{7}er";
+    for line in [
+        format!("  node {architecture} [reviewer]"),
+        format!("  node {gather} [gather]"),
+        format!("  {architecture}.result -> {gather}.architecture"),
+        format!("provider {architecture} -> MISSING"),
+    ] {
+        assert!(text.lines().any(|row| row == line), "{line}:\n{text}");
+    }
+    for prefix in ["reserve  ", "input    "] {
+        assert!(
+            text.lines()
+                .any(|row| row.starts_with(prefix) && row.contains(architecture)),
+            "{prefix}:\n{text}"
+        );
+    }
+}

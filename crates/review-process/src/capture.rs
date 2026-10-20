@@ -57,6 +57,11 @@ impl Caps {
 
     /// A buffered run whose stdout is a trusted tool's whole answer (git plumbing, a version
     /// probe), parsed as one document: stdout is kept whole and only stderr is capped.
+    ///
+    /// Deliberately uncapped. [`MAX_CAPTURED_STREAM_BYTES`] bounds reviewer, Worker and check
+    /// output, which a hostile repository or model can make endless; git plumbing output
+    /// (`ls-files`, `ls-tree`) grows with the repository's own tree, and truncating it would
+    /// break large repositories rather than bound an adversary.
     pub(crate) const PROTOCOL: Self = Self {
         stdout: usize::MAX,
         stderr: MAX_CAPTURED_STREAM_BYTES,
@@ -330,9 +335,10 @@ where
     if cancelled(cancellation) {
         return StreamCapture::empty(SupervisedError::Cancelled);
     }
-    if exit_policy == ExitPolicy::KillDescendants {
-        crate::reaper::adopt_orphans();
-    }
+    // Marks every process of the run's tree, so that its descendants are told from any other
+    // run's however they leave its process group.
+    let tree =
+        (exit_policy == ExitPolicy::KillDescendants).then(|| crate::reaper::Tree::new(command));
     command.stdin(if writer.is_some() {
         Stdio::piped()
     } else {
@@ -368,10 +374,10 @@ where
         let deadline = Instant::now() + timeout;
         let waited =
             wait_exact_cancellable(deadline, cancellation, &leader, exit_policy.kills_group());
-        if exit_policy == ExitPolicy::KillDescendants {
+        if let Some(tree) = &tree {
             // Before draining: an escaped descendant may hold a pipe, and must not outlive the
             // run that started it. The leader is still unreaped, so its group id is exact.
-            crate::reaper::end_escaped(leader.pid());
+            tree.end_escaped(leader.pid());
         }
         if let Err(error) = waited {
             return failed(

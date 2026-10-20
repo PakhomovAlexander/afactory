@@ -41,7 +41,7 @@ Each segment begins with one header record (`af/TelemetrySegment@1`). Its fields
 | Field | `metrics` | `spans` and `content` |
 | --- | --- | --- |
 | `segment_id`, `af_version`, `af_commit`, `pid`, `parent_pid`, `host`, `started_unix_ns`, `mono_origin_unix_ns`, `level` | recorded | recorded |
-| `argv` | `argv[0]` and the subcommand path only (`af task show`): no option, no other argument | the whole command line; the value after an option named like a secret (`--api-key`, `--password`, `--pw`) or after `-p` is `[withheld]`, and every argument is judged whole by the credential rules below |
+| `argv` | `argv[0]` and the subcommand path only (`af task show`), exactly as the caller's argument parser matched it and never guessed from the words; `argv[0]` alone when no parsed path was passed in: no option, no other argument | the whole command line; the value after an option named like a secret (`--api-key`, `--password`, `--pw`) or after `-p` is `[withheld]`, and every argument is judged whole by the credential rules below |
 | `cwd` | `""`: not recorded | the working directory, judged whole, home prefix as `~` |
 
 ## Credentials

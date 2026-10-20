@@ -854,8 +854,13 @@ impl Redactor {
     /// Every absolute or home-relative path in `text` that is not written in its normal form
     /// (`/./`, `/../`, `//`) and normalizes to a grant, or to a path inside one, has the grant's
     /// part replaced by `<grant:NAME>`. Other text keeps its bytes.
+    ///
+    /// A path starts wherever a `/` or `~` follows the start of the text, whitespace, a quote,
+    /// a bracket or a separator, `=` and `:` included (`path=/…`, `--dir=/…`, `key:/…`), and
+    /// ends before the next of them; so a path is found however it is introduced, and each
+    /// byte is judged once.
     fn replace_unnormalized_grants(&self, text: &str) -> String {
-        let path_char = |c: char| !(c.is_whitespace() || "\"'`<>()[]{},;|".contains(c));
+        let path_char = |c: char| !(c.is_whitespace() || "\"'`<>()[]{},;|=:".contains(c));
         let mut out = String::with_capacity(text.len());
         let mut rest = text;
         while let Some(at) = rest.find(['/', '~']) {
@@ -1403,6 +1408,43 @@ mod tests {
             (
                 "'/Users/bob/../alice/.claude-work/y'",
                 "'<grant:CLAUDE_CONFIG_DIR>/y'",
+            ),
+            // Wherever the path starts: after `=`, `:`, a quote, `(` or whitespace.
+            (
+                "path=/Users/alice/./.claude-work",
+                "path=<grant:CLAUDE_CONFIG_DIR>",
+            ),
+            (
+                "--dir=/Users/alice//.claude-work/x",
+                "--dir=<grant:CLAUDE_CONFIG_DIR>/x",
+            ),
+            (
+                "\"/Users/alice/./.claude-work\"",
+                "\"<grant:CLAUDE_CONFIG_DIR>\"",
+            ),
+            (
+                "dir:/Users/alice/./.claude-work/x",
+                "dir:<grant:CLAUDE_CONFIG_DIR>/x",
+            ),
+            (
+                "open(/Users/alice//.claude-work)",
+                "open(<grant:CLAUDE_CONFIG_DIR>)",
+            ),
+            (
+                "at\t/Users/alice/./.claude-work/x",
+                "at\t<grant:CLAUDE_CONFIG_DIR>/x",
+            ),
+            (
+                "--dir=~/./.claude-work/x",
+                "--dir=<grant:CLAUDE_CONFIG_DIR>/x",
+            ),
+            (
+                "a/b=/Users/alice/./.claude-work",
+                "a/b=<grant:CLAUDE_CONFIG_DIR>",
+            ),
+            (
+                "PATH=/usr/bin:/Users/alice//.claude-work/bin",
+                "PATH=/usr/bin:<grant:CLAUDE_CONFIG_DIR>/bin",
             ),
             // Other paths, normal or not, keep their bytes apart from the home prefix.
             ("at /Users/alice/./other", "at ~/./other"),

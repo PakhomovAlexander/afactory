@@ -48,6 +48,11 @@ pub struct Start {
     pub accounted_unknown: Option<String>,
     pub af_version: String,
     pub af_commit: String,
+    /// The subcommand chain the caller's argument parser matched (`["provider", "setup"]` for
+    /// `af provider setup alice --kind claude`), passed in by the caller that parsed it: at
+    /// `metrics` the header records `argv[0]` and exactly these words. Empty when no chain is
+    /// known: the header then records `argv[0]` alone, never a guess from `argv`.
+    pub command: Vec<String>,
 }
 
 /// One process's Telemetry.
@@ -75,6 +80,15 @@ impl Telemetry {
             .with_settings(&start.settings);
         options.af_version = start.af_version;
         options.af_commit = start.af_commit;
+        if !start.command.is_empty() {
+            options.command = options
+                .argv
+                .iter()
+                .take(1)
+                .cloned()
+                .chain(start.command)
+                .collect();
+        }
         options.registration = Some(Registration {
             registry: start.registry,
             accounted: start.accounted,

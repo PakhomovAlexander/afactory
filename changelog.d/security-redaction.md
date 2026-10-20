@@ -6,13 +6,18 @@
   the account a login names, and two long words that are one secret split by a space; a `sha256:`
   digest and a 40- or 64-hex git object id are no longer withheld. JSON values are judged whole
   whatever their member's name (`pw` now counts as a secret name), and a granted path is replaced in
-  its home-relative, canonical, JSON-escaped, percent-encoded and non-normalised spellings; blobs
+  its home-relative, canonical, JSON-escaped, percent-encoded and non-normalised spellings, the
+  last wherever the path starts (after `=`, `:`, a quote, a bracket or whitespace); blobs
   record `af-redact/2`. Provider login processes disable core dumps (non-dumpable on Linux) and zero
-  the challenge and the returned code when dropped (new dependency: `zeroize`). The terminal-only
+  the challenge and the returned code when dropped (new dependency: `zeroize`); every buffer of
+  the private-host transport that holds a challenge or a code (the serialized frame, the read
+  buffer and the pending input, each allocated once at its bound) is zeroed on every exit path. The terminal-only
   login is documented as protection against accidental capture, with a pseudo-terminal caller out of
   scope and a test pinning it ([ADR-0112](docs/adr/0112-refuse-agent-mediated-provider-logins.md),
   amended). At telemetry level `metrics` the segment header keeps only `argv[0]` and the subcommand
-  path and no working directory; `-p` and `--pw` values are withheld at `spans`. `sink = "otlp"`,
+  path its caller's argument parser matched (`Start::command`; never guessed from leading
+  lower-case words, so `af provider setup alice` records `provider setup`; `argv[0]` alone when
+  none is passed in) and no working directory; `-p` and `--pw` values are withheld at `spans`. `sink = "otlp"`,
   `sink_endpoint` and `sink_headers_file` are refused at load as not implemented; `[telemetry]
   max_bytes` is documented as advisory and `af telemetry status` warns when over it; its `--json`
   paths (and `reindex --json`'s) are `~`-prefixed like the text output; no help or status text names

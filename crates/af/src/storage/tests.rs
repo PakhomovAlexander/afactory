@@ -828,3 +828,106 @@ fn purge_removes_a_marked_af_only_store_whole_and_only_afs_entries_of_any_other(
         "{lines:?}"
     );
 }
+
+/// V1 of the security close-out: a Store entry is af's only by its exact name. A file named
+/// like one of af's but not one (`notes.lock`, `backup.lock`, `events.sqlite.notes`) beside a
+/// marked Store is not measured, keeps the Store from going whole, and survives the budget sweep,
+/// `af storage prune --apply` and `af self uninstall --purge`, each named as left.
+#[test]
+fn a_name_only_like_afs_survives_every_removal_and_is_not_measured() {
+    for name in ["notes.lock", "backup.lock", "events.sqlite.notes"] {
+        let user = |layout: &Layout, store: &str| {
+            let path = outside_store(layout, store, true, false);
+            std::fs::write(path.join(name), vec![7_u8; 4 * CHUNK]).unwrap();
+            age(&path, 3 * DAY);
+            path
+        };
+        let check = |path: &Path, left: &[PathBuf], how: &str| {
+            assert_eq!(
+                std::fs::read(path.join(name)).unwrap(),
+                vec![7_u8; 4 * CHUNK],
+                "{name} survives {how}"
+            );
+            assert_eq!(
+                left,
+                [path.to_path_buf(), path.join(name)],
+                "{name} is left by {how}"
+            );
+            for gone in [
+                "events.sqlite",
+                "cas",
+                "git-home",
+                RUNNING_LOCK,
+                owned::MARKER,
+            ] {
+                assert!(!path.join(gone).exists(), "{gone} after {how}");
+            }
+        };
+
+        let first = layout();
+        let swept = user(&first, "swept");
+        let pruned = user(&first, "pruned");
+        register_reviews(&first, &[&swept, &pruned]);
+        let measured = owned::af_bytes(&swept).unwrap();
+        assert!(
+            measured < 2 * CHUNK as u64,
+            "{name} is not measured: {measured}"
+        );
+        let stock = inventory(&first.roots, Detail::Stores);
+        let entry = stock
+            .entries
+            .iter()
+            .find(|entry| entry.path == swept)
+            .unwrap();
+        assert!(entry.bytes < 2 * CHUNK as u64, "{name}: {}", entry.bytes);
+
+        // The budget sweep.
+        let report = sweep(&first.roots, &policy(1024), false, true);
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let removal = |path: &Path| {
+            report
+                .removals
+                .iter()
+                .find(|removal| removal.path == path)
+                .unwrap_or_else(|| panic!("{} in {report:?}", path.display()))
+                .left
+                .clone()
+        };
+        check(&swept, &removal(&swept), "the sweep");
+        check(&pruned, &removal(&pruned), "the sweep");
+
+        // `af storage prune --apply`: the same sweep with collection.
+        let second = layout();
+        let pruned = user(&second, "pruned");
+        register_reviews(&second, &[&pruned]);
+        let report = sweep(&second.roots, &policy(1024), true, true);
+        assert!(report.failures.is_empty(), "{:?}", report.failures);
+        let left = report
+            .removals
+            .iter()
+            .find(|removal| removal.path == pruned)
+            .unwrap_or_else(|| panic!("{} in {report:?}", pruned.display()))
+            .left
+            .clone();
+        check(&pruned, &left, "prune --apply");
+
+        // `af self uninstall --purge`.
+        let third = layout();
+        let purged = user(&third, "purged");
+        register_reviews(&third, &[&purged]);
+        let lines = purge_registered(&registry::read(&third.roots.registry).unwrap());
+        assert!(purged.is_dir(), "{name} keeps the purged Store's directory");
+        assert!(
+            lines.iter().any(
+                |line| line.contains("left the directory with what is not af's")
+                    && line.contains(name)
+            ),
+            "{lines:?}"
+        );
+        let left: Vec<String> = std::fs::read_dir(&purged)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, [name], "only {name} is left by the purge");
+    }
+}

@@ -19,6 +19,7 @@ pub use capture::{
 };
 use drain::{collect_after_kill, collect_stderr, drain_async};
 pub use live::{kill_live_process_groups, live_process_groups};
+pub use reaper::{TREE_VARIABLE, descendant_cleanup_fallback};
 pub use spawn::spawn;
 
 const STDIN_EXIT_GRACE: Duration = Duration::from_millis(500);
@@ -168,11 +169,12 @@ pub enum ExitPolicy {
     /// End the entire process group when the leader exits, closing pipes held by background work.
     KillProcessGroup,
     /// [`ExitPolicy::KillProcessGroup`], and also end every descendant that left the group, a
-    /// `setsid` child included, before the leader is reaped: for a run whose working tree is
-    /// sealed afterwards (a shell Attempt, a local check). On Linux the supervisor is a child
-    /// subreaper, so an orphaned descendant becomes its child and is killed and reaped; on other
-    /// platforms this is the group kill alone, and a descendant in another session or group can
-    /// outlive the run.
+    /// `setsid` child or a `set -m` job included, before the leader is reaped: for a run whose
+    /// working tree is sealed afterwards (a shell Attempt, a local check). On Linux, while the
+    /// supervisor is a child subreaper, an orphaned descendant becomes its child, is told from
+    /// any other run's by [`TREE_VARIABLE`], and is killed and reaped. When the subreaper cannot
+    /// be set, and on other platforms, this is the group kill alone, and a descendant in another
+    /// session or group can outlive the run; on Linux [`descendant_cleanup_fallback`] says so.
     KillDescendants,
 }
 

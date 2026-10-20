@@ -289,7 +289,25 @@ fn normalize(value: &mut serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_proposal_declaration, parse_reviewer_result};
+    use super::{note_cleanup_fallback, parse_proposal_declaration, parse_reviewer_result};
+
+    /// V4 of the security close-out: an Attempt that ran while af could not become a child
+    /// subreaper records, in its stored stderr, that descendant cleanup fell back to the
+    /// process-group kill; with the subreaper set nothing is added.
+    #[test]
+    fn an_attempt_records_that_descendant_cleanup_fell_back() {
+        let mut stderr = b"worker said".to_vec();
+        note_cleanup_fallback(&mut stderr, None);
+        assert_eq!(stderr, b"worker said");
+        note_cleanup_fallback(
+            &mut stderr,
+            Some("descendant cleanup fell back to the process-group kill: EPERM"),
+        );
+        assert_eq!(
+            stderr,
+            b"worker said\ndescendant cleanup fell back to the process-group kill: EPERM\n"
+        );
+    }
 
     #[test]
     fn a_findings_keyed_answer_is_read_as_reports() {
@@ -1362,6 +1380,12 @@ impl ModelRunner {
                 .extend_from_slice(b"\nstderr was still held after 5 seconds\n");
         }
         capture.started = !matches!(output.status, Err(SupervisedError::Spawn(_)));
+        if capture.started && self.exit_policy == ExitPolicy::KillDescendants {
+            note_cleanup_fallback(
+                &mut capture.stderr,
+                review_process::descendant_cleanup_fallback(),
+            );
+        }
         // Output past the cap is not evidence the kernel can keep whole: whatever the exit
         // status said, the Attempt failed (M2). The kept prefix is still stored for usage.
         if let (Ok(status), Some(reason)) = (&output.status, output.truncation.reason()) {
@@ -1384,6 +1408,14 @@ impl ModelRunner {
             },
         });
         capture
+    }
+}
+
+/// Record in an Attempt's stored stderr, as a held pipe is, that its descendant cleanup fell back
+/// to the process-group kill: an Attempt never claims that guarantee silently.
+fn note_cleanup_fallback(stderr: &mut Vec<u8>, fallback: Option<&str>) {
+    if let Some(fallback) = fallback {
+        stderr.extend_from_slice(format!("\n{fallback}\n").as_bytes());
     }
 }
 

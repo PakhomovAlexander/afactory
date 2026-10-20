@@ -1,7 +1,7 @@
 # ADR-0120: Give a source-writing Worker that declares `execute-checks` a shell
 
-Status: accepted, 2026-09-24. Amended 2026-10-20: a `setsid` child is ended on Linux only (see
-the amended
+Status: accepted, 2026-09-24. Amended 2026-10-20: a `setsid` child is ended on Linux only, and
+only while af is a child subreaper (see the amended
 [ADR-0118 Bounds and children](0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md#bounds-and-children)).
 
 ## Context
@@ -30,8 +30,10 @@ Two rules constrain the answer:
 under the same `--safe-mode --restricted --permission-mode dontAsk --strict-mcp-config`; Codex runs
 `-s workspace-write` as for any writer. A shell's process group dies with the Attempt, as for an
 execute-checks reviewer (`WorkerAccess::has_shell`). Amended 2026-10-20: on Linux so does every
-descendant that left the group with `setsid`; on macOS such a child can outlive the Attempt
-under `trusted_local` and write into the candidate tree, as ADR-0118 now records.
+descendant that left the group, with `setsid` or as a `set -m` job, while af is a child
+subreaper; when the subreaper cannot be set the Attempt records that cleanup fell back to the
+group kill. On macOS such a child can outlive the Attempt under `trusted_local` and write into
+the candidate tree, as ADR-0118 now records.
 
 At `finish`, candidate capture skips shell scratch: a path under a top-level name the source
 Snapshot did not hold, or a new top-level dotfile. Every other addition, edit and deletion is the

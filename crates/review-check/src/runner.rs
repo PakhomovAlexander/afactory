@@ -280,8 +280,19 @@ impl<'a> CheckRunner<'a> {
         self.run_traced(definition).0
     }
 
-    /// [`Self::run`], with how the process ended beside the recorded result.
+    /// [`Self::run`], with how the process ended beside the recorded result. A check whose
+    /// process ran while descendant cleanup fell back to the process-group kill says so in its
+    /// recorded `reason` ([`review_process::descendant_cleanup_fallback`]).
     pub fn run_traced(&self, definition: &CheckDefinition) -> (CheckResult, CheckEnding) {
+        let (result, ending) = self.run_process(definition);
+        if ending == CheckEnding::NotStarted {
+            return (result, ending);
+        }
+        let fallback = review_process::descendant_cleanup_fallback();
+        (noting_cleanup_fallback(result, fallback), ending)
+    }
+
+    fn run_process(&self, definition: &CheckDefinition) -> (CheckResult, CheckEnding) {
         let base = base_result(definition);
         let argv = match resolved_args(definition, &base) {
             Ok(argv) => argv,
@@ -513,6 +524,18 @@ impl<'a> CheckRunner<'a> {
     }
 }
 
+/// `result`, its `reason` naming `fallback` when descendant cleanup fell back to the
+/// process-group kill: a check never claims that guarantee silently. Its own reason comes first.
+fn noting_cleanup_fallback(mut result: CheckResult, fallback: Option<&str>) -> CheckResult {
+    if let Some(fallback) = fallback {
+        result.reason = Some(match result.reason.take() {
+            Some(reason) => format!("{reason}; {fallback}"),
+            None => fallback.to_owned(),
+        });
+    }
+    result
+}
+
 fn base_result(definition: &CheckDefinition) -> CheckResult {
     CheckResult {
         name: definition.name.clone(),
@@ -645,6 +668,41 @@ mod tests {
     use super::*;
     use crate::{CheckDefinition, Command};
     use review_store::Cas;
+
+    /// V4 of the security close-out: a check that ran while af could not become a child
+    /// subreaper records that its descendant cleanup fell back to the process-group kill, beside
+    /// any reason of its own; with the subreaper set nothing is added.
+    #[test]
+    fn a_check_records_that_descendant_cleanup_fell_back() {
+        let fallback = "descendant cleanup fell back to the process-group kill: af could not \
+                        become a child subreaper (PR_SET_CHILD_SUBREAPER: EPERM)";
+        let passed = CheckResult {
+            name: "test".into(),
+            status: CheckStatus::Passed,
+            exit_code: Some(0),
+            reason: None,
+            program: Some("true".into()),
+            args: Vec::new(),
+            stdout: None,
+            stderr: None,
+            required: true,
+            remote: None,
+        };
+        assert_eq!(noting_cleanup_fallback(passed.clone(), None), passed);
+        let noted = noting_cleanup_fallback(passed.clone(), Some(fallback));
+        assert_eq!(noted.status, CheckStatus::Passed);
+        assert_eq!(noted.reason.as_deref(), Some(fallback));
+        let signalled = CheckResult {
+            reason: Some("terminated by a signal".into()),
+            ..passed
+        };
+        assert_eq!(
+            noting_cleanup_fallback(signalled, Some(fallback))
+                .reason
+                .unwrap(),
+            format!("terminated by a signal; {fallback}")
+        );
+    }
 
     #[test]
     fn held_stderr_is_explicitly_unverifiable() {

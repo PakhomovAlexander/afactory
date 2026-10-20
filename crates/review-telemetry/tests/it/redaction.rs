@@ -1156,13 +1156,13 @@ fn telemetry_usage_counters_are_canonical_decimal_strings() {
     assert_eq!(documented, EXACT_COUNTERS);
 }
 
-/// The segment header at `metrics` records `argv[0]` and the subcommand path and no working
-/// directory (audit L11); from `spans` on it records the whole command line, every value of a
-/// secret option (`-p`, `--pw`) and every argument shaped like a credential withheld, and the
-/// working directory.
+/// The segment header at `metrics` records `argv[0]` and the subcommand path its caller parsed,
+/// `argv[0]` alone when none is known, and no working directory (audit L11); from `spans` on it
+/// records the whole command line, every value of a secret option (`-p`, `--pw`) and every
+/// argument shaped like a credential withheld, and the working directory.
 #[test]
 fn telemetry_header_records_the_command_line_by_level() {
-    use review_telemetry::segment::writer::{Writer, command_path};
+    use review_telemetry::segment::writer::Writer;
     let argv: Vec<String> = [
         "/usr/local/bin/af",
         "task",
@@ -1178,11 +1178,6 @@ fn telemetry_header_records_the_command_line_by_level() {
     ]
     .map(str::to_string)
     .to_vec();
-    assert_eq!(command_path(&argv), ["/usr/local/bin/af", "task", "show"]);
-    let deep: Vec<String> = ["af", "provider", "auth", "begin", "extra", "--kind"]
-        .map(str::to_string)
-        .to_vec();
-    assert_eq!(command_path(&deep), ["af", "provider", "auth", "begin"]);
     for level in [Level::Metrics, Level::Spans, Level::Content] {
         let temp = tempfile::tempdir().unwrap();
         let mut options = options(temp.path(), level);
@@ -1201,11 +1196,8 @@ fn telemetry_header_records_the_command_line_by_level() {
         let lines = sealed_lines(&sealed.path);
         let header = lines.iter().find(|line| line["t"] == "segment").unwrap();
         if level == Level::Metrics {
-            assert_eq!(
-                header["argv"],
-                json!(["/usr/local/bin/af", "task", "show"]),
-                "{level:?}"
-            );
+            // No parsed chain was passed in: `argv[0]` alone, never words guessed from `argv`.
+            assert_eq!(header["argv"], json!(["/usr/local/bin/af"]), "{level:?}");
             assert_eq!(header["cwd"], "", "{level:?}");
             assert!(!text.contains("secret-client"), "{level:?}: {text}");
             assert!(!text.contains("telemetry-p1"), "{level:?}: {text}");

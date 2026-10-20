@@ -22,18 +22,60 @@ pub(crate) const MARKER: &str = ".af-store";
 const MARKER_TEXT: &str = "af created this Store directory: it is af-owned, and af removes it \
                            whole once it holds nothing but af's entries (ADR-0144).\n";
 
-/// Whether `name` is an entry af itself writes directly in a Store directory: the event log and
-/// SQLite's files beside it, the CAS, the Git home, lock files, the owner marker, and a claim a
-/// removal of one of them left.
+/// The event log and SQLite's files beside it (write-ahead log, shared memory, and the rollback
+/// journal SQLite keeps while it switches a new database to WAL).
+const EVENT_LOG: [&str; 4] = [
+    "events.sqlite",
+    "events.sqlite-wal",
+    "events.sqlite-shm",
+    "events.sqlite-journal",
+];
+
+/// Every name af itself creates directly in a Store directory, exactly: the event log and its
+/// SQLite files, the CAS, the Git home (`task.rs`), the owner marker, the run lock
+/// ([`super::RUNNING_LOCK`]), and the Task delivery lock database with its SQLite files
+/// (`task.rs`). Nothing else af writes there.
+const AF_ENTRIES: [&str; 12] = [
+    EVENT_LOG[0],
+    EVENT_LOG[1],
+    EVENT_LOG[2],
+    EVENT_LOG[3],
+    "cas",
+    "git-home",
+    MARKER,
+    super::RUNNING_LOCK,
+    "task-delivery-lock.sqlite",
+    "task-delivery-lock.sqlite-wal",
+    "task-delivery-lock.sqlite-shm",
+    "task-delivery-lock.sqlite-journal",
+];
+
+/// Whether `name` is an entry af itself writes directly in a Store directory: exactly one of
+/// [`AF_ENTRIES`], or a claim a removal of one of them left, exactly as
+/// `review_sandbox::remove_tree_at` names it (`.af-removing-<pid>-<nanos>-<n>`). No prefix,
+/// suffix or extension makes a name af's: `notes.lock`, `backup.lock` and
+/// `events.sqlite.notes` are the user's.
 pub(crate) fn is_af_entry(name: &OsStr) -> bool {
     let Some(name) = name.to_str() else {
         return false;
     };
-    matches!(name, MARKER | "cas" | "git-home")
-        || name.starts_with("events.sqlite")
-        || name.starts_with("task-delivery-lock.sqlite")
-        || name.starts_with(".af-removing-")
-        || (name.ends_with(".lock") && name.len() > ".lock".len())
+    AF_ENTRIES.contains(&name) || is_removal_claim(name)
+}
+
+/// A removal claim's exact name: `.af-removing-` and three decimal fields.
+fn is_removal_claim(name: &str) -> bool {
+    name.strip_prefix(".af-removing-").is_some_and(|rest| {
+        let fields: Vec<&str> = rest.split('-').collect();
+        fields.len() == 3
+            && fields
+                .iter()
+                .all(|field| !field.is_empty() && field.bytes().all(|byte| byte.is_ascii_digit()))
+    })
+}
+
+/// Whether `name` is one of the event log's files, which a partial removal takes last.
+fn is_event_log(name: &OsStr) -> bool {
+    name.to_str().is_some_and(|name| EVENT_LOG.contains(&name))
 }
 
 /// What a directory holds, as the ownership rule sees it.
@@ -208,20 +250,14 @@ pub(crate) fn remove(
     let mut failures = Vec::new();
     // The event log goes last, and only once everything else of af's went: while it is there
     // the Store stays registered, and the next sweep finishes what this one could not.
-    let (log, rest): (Vec<&OsString>, Vec<&OsString>) = names.iter().partition(|name| {
-        name.to_str()
-            .is_some_and(|name| name.starts_with("events.sqlite"))
-    });
+    let (log, rest): (Vec<&OsString>, Vec<&OsString>) =
+        names.iter().partition(|name| is_event_log(name));
     for name in rest.into_iter().chain(log) {
         if !is_af_entry(name) {
             removed.left.push(path.join(name));
             continue;
         }
-        if !failures.is_empty()
-            && name
-                .to_str()
-                .is_some_and(|n| n.starts_with("events.sqlite"))
-        {
+        if !failures.is_empty() && is_event_log(name) {
             continue;
         }
         let bytes = review_sandbox::storage::allocated_bytes(&path.join(name)).unwrap_or(0);
@@ -299,10 +335,13 @@ mod tests {
             "events.sqlite-shm",
             "cas",
             "git-home",
+            "events.sqlite-journal",
             "af-running.lock",
             "task-delivery-lock.sqlite",
+            "task-delivery-lock.sqlite-wal",
+            "task-delivery-lock.sqlite-shm",
             ".af-store",
-            ".af-removing-12-ab",
+            ".af-removing-12-345-0",
         ] {
             assert!(is_af_entry(OsStr::new(name)), "{name}");
         }
@@ -313,6 +352,17 @@ mod tests {
             "cas2",
             ".DS_Store",
             "events",
+            // No prefix, suffix or extension match: these are the user's (audit V1).
+            "notes.lock",
+            "backup.lock",
+            "events.sqlite.notes",
+            "events.sqlite-wal.bak",
+            "task-delivery-lock.sqlite.old",
+            "cas.lock",
+            ".af-store~",
+            ".af-removing-12-ab",
+            ".af-removing-1-2-3-4",
+            ".af-removing-",
         ] {
             assert!(!is_af_entry(OsStr::new(name)), "{name}");
         }

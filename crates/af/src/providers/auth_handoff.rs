@@ -453,7 +453,68 @@ pub fn cancel(id: &str, kind: &str, auth: &Path, recovery_id: &str) -> Result<i3
 struct Host {
     input_pipe: File,
     output_pipe: File,
-    input: Vec<u8>,
+    /// Bytes read and not yet parsed; a frame may carry the user's code. Allocated once at
+    /// [`MAX_MESSAGE`] and never grown, so no reallocation leaves a copy behind; a consumed
+    /// frame is zeroed as the rest moves down ([`take_line`]), and the whole allocation is
+    /// zeroed when the host is dropped, on every exit path.
+    input: Zeroizing<Vec<u8>>,
+}
+
+/// One serialized frame for the private host: it may carry the challenge. Allocated once at its
+/// bound and never grown, so serializing into it leaves no reallocated copy behind, and zeroed
+/// when dropped, whichever way `send` returns.
+struct Frame {
+    bytes: Zeroizing<Vec<u8>>,
+    bound: usize,
+    /// A write would have passed the bound: refused, never grown.
+    over: bool,
+}
+
+impl Frame {
+    fn new(bound: usize) -> Self {
+        Self {
+            bytes: Zeroizing::new(Vec::with_capacity(bound)),
+            bound,
+            over: false,
+        }
+    }
+}
+
+impl Write for Frame {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        if self.bytes.len().saturating_add(data.len()) > self.bound {
+            self.over = true;
+            return Err(std::io::Error::other("the frame is over its bound"));
+        }
+        self.bytes.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The first newline-terminated frame of `input`, removed from it into a buffer of its own that
+/// is zeroed when dropped. The consumed bytes are overwritten as the rest moves down and the
+/// vacated tail is zeroed ([`vacate`]) before `input` shrinks, so its spare capacity keeps no
+/// copy either.
+fn take_line(input: &mut Vec<u8>) -> Option<Zeroizing<Vec<u8>>> {
+    let end = input.iter().position(|byte| *byte == b'\n')?;
+    let line = Zeroizing::new(input[..=end].to_vec());
+    let kept = vacate(input, end + 1);
+    input.truncate(kept);
+    Some(line)
+}
+
+/// Move what follows the first `consumed` bytes of `buffer` to its front and zero everything
+/// after it. Returns how many bytes are kept.
+fn vacate(buffer: &mut [u8], consumed: usize) -> usize {
+    use zeroize::Zeroize as _;
+    buffer.copy_within(consumed.., 0);
+    let kept = buffer.len() - consumed;
+    buffer[kept..].zeroize();
+    kept
 }
 
 // Linux exposes kernel-authored descriptor provenance. On macOS there is no equivalent
@@ -547,16 +608,21 @@ impl Host {
         Ok(Self {
             input_pipe,
             output_pipe,
-            input: Vec::new(),
+            input: Zeroizing::new(Vec::with_capacity(MAX_MESSAGE)),
         })
     }
 
     fn send(&mut self, value: &impl Serialize) -> Result<(), State> {
-        let mut data = serde_json::to_vec(value).map_err(|_| State::PrivateRouteUnavailable)?;
-        data.push(b'\n');
-        if data.len() > MAX_MESSAGE {
+        // Zeroed on every return, this early one and every error below included.
+        let mut frame = Frame::new(MAX_MESSAGE);
+        let serialized = serde_json::to_writer(&mut frame, value)
+            .map_err(|_| ())
+            .and_then(|()| frame.write_all(b"\n").map_err(|_| ()));
+        if frame.over {
             return Err(State::InvalidChallenge);
         }
+        serialized.map_err(|()| State::PrivateRouteUnavailable)?;
+        let data = frame.bytes.as_slice();
         let deadline = Instant::now() + Duration::from_secs(1);
         let mut written = 0;
         while written < data.len() {
@@ -572,26 +638,27 @@ impl Host {
                 Err(_) => return Err(State::PrivateRouteUnavailable),
             }
         }
-        data.fill(0);
         Ok(())
     }
 
     fn read<T: for<'de> Deserialize<'de>>(&mut self) -> Result<Option<T>, State> {
-        if let Some(end) = self.input.iter().position(|byte| *byte == b'\n') {
-            // A frame may carry the user's code: its bytes are zeroed once parsed.
-            let line = Zeroizing::new(self.input.drain(..=end).collect::<Vec<u8>>());
+        // A frame may carry the user's code: its bytes are zeroed once parsed.
+        if let Some(line) = take_line(&mut self.input) {
             return serde_json::from_slice(&line)
                 .map(Some)
                 .map_err(|_| State::InvalidResponse);
         }
-        let mut bytes = [0; 2048];
-        match self.input_pipe.read(&mut bytes) {
+        // Zeroed on every return, as `self.input` is when the host is dropped.
+        let mut bytes = Zeroizing::new([0_u8; 2048]);
+        match self.input_pipe.read(&mut bytes[..]) {
             Ok(0) => Err(State::PrivateRouteUnavailable),
             Ok(count) => {
-                self.input.extend_from_slice(&bytes[..count]);
-                if self.input.len() > MAX_MESSAGE {
+                // Never grown past its bound: a reallocation would leave an unzeroed copy.
+                if self.input.len() + count > MAX_MESSAGE {
+                    zeroize::Zeroize::zeroize(&mut *self.input);
                     return Err(State::InvalidResponse);
                 }
+                self.input.extend_from_slice(&bytes[..count]);
                 // At most one buffered, bounded frame is consumed per poll.
                 if self.input.contains(&b'\n') {
                     self.read()
@@ -983,6 +1050,12 @@ mod tests {
         };
         zeroed_on_drop(&code);
         assert_eq!(code.as_str(), "ABCD-EFGH");
+        // The transport's buffers are zeroed when dropped, on every exit path.
+        let frame = Frame::new(MAX_MESSAGE);
+        zeroed_on_drop(&frame.bytes);
+        zeroed_on_drop(&Zeroizing::new([0_u8; 2048]));
+        let input: Zeroizing<Vec<u8>> = Zeroizing::new(Vec::with_capacity(MAX_MESSAGE));
+        zeroed_on_drop(&input);
 
         let frame = ChallengeMessage {
             schema: HOST_SCHEMA,
@@ -1005,5 +1078,47 @@ mod tests {
             })
             .to_string()
         );
+    }
+
+    /// A frame is serialized into one buffer allocated at its bound: a frame over the bound is
+    /// refused without the buffer ever growing, so no reallocated copy of a challenge is left.
+    #[test]
+    fn a_frame_never_grows_past_its_bound() {
+        let mut frame = Frame::new(16);
+        let (start, capacity) = (frame.bytes.as_ptr(), frame.bytes.capacity());
+        serde_json::to_writer(&mut frame, "ABCD").unwrap();
+        frame.write_all(b"\n").unwrap();
+        assert_eq!(frame.bytes.as_slice(), b"\"ABCD\"\n");
+        assert!(!frame.over);
+        assert!(serde_json::to_writer(&mut frame, "challenge-material").is_err());
+        assert!(frame.over);
+        assert!(frame.bytes.len() <= 16);
+        assert_eq!(
+            (frame.bytes.as_ptr(), frame.bytes.capacity()),
+            (start, capacity)
+        );
+    }
+
+    /// A consumed frame is overwritten as the rest moves down and the vacated tail is zeroed
+    /// before the input buffer shrinks; the frame itself leaves in a buffer of its own.
+    #[test]
+    fn a_consumed_frame_leaves_no_copy_in_the_input_buffer() {
+        let mut buffer = *b"code:ABCD\nrest";
+        let kept = vacate(&mut buffer, 10);
+        assert_eq!(kept, 4);
+        assert_eq!(&buffer, b"rest\0\0\0\0\0\0\0\0\0\0");
+
+        let mut input: Zeroizing<Vec<u8>> = Zeroizing::new(Vec::with_capacity(MAX_MESSAGE));
+        input.extend_from_slice(b"{\"code\":\"ABCD\"}\n{\"a\"");
+        let start = input.as_ptr();
+        let line = take_line(&mut input).unwrap();
+        assert_eq!(line.as_slice(), b"{\"code\":\"ABCD\"}\n");
+        assert_eq!(input.as_slice(), b"{\"a\"");
+        assert_eq!(
+            input.as_ptr(),
+            start,
+            "the input buffer is never reallocated"
+        );
+        assert!(take_line(&mut input).is_none());
     }
 }

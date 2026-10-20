@@ -196,8 +196,11 @@ remote check left two branches and a draft pull request open.
 
 **Amended 2026-10-20** (GA-readiness and security audit, findings H2, M6 and L4). A Store is
 created only in a directory that is absent, empty, or already an af Store (nothing in it but af's
-entries: `events.sqlite*`, `cas/`, `git-home/`, lock files, `task-delivery-lock.sqlite*`, a
-removal claim and the owner marker); an explicit `--state` that holds anything else is refused
+entries, each by its exact name: `events.sqlite` with its `-wal`, `-shm` and `-journal`, `cas/`,
+`git-home/`, `af-running.lock`, `task-delivery-lock.sqlite` with its `-wal`, `-shm` and
+`-journal`, the owner marker, and a removal claim `.af-removing-<pid>-<nanos>-<n>`; no prefix,
+suffix or extension makes a name af's, so `notes.lock` or `events.sqlite.notes` is the user's);
+an explicit `--state` that holds anything else is refused
 before anything is written or registered, and the `--state` help says the directory becomes
 af-owned. A Store made in an absent or empty directory carries the owner marker `.af-store`. `/`
 is no longer a trusted anchor for removing a registered Store whole: the sweep, `af storage prune

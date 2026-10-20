@@ -421,4 +421,69 @@ mod tests {
         assert!(warning.contains("advisory on this release"), "{warning}");
         assert!(render_status(&over).contains("— over"));
     }
+
+    /// At `metrics` the segment header records exactly the subcommand chain clap parsed, passed
+    /// to `Telemetry::start` by its caller: `af provider setup alice --kind claude` records
+    /// `provider setup`, never the positional `alice` a guess from leading lower-case words
+    /// would take; without a chain it records `argv[0]` alone (audit E1).
+    #[test]
+    fn the_metrics_header_records_the_parsed_subcommand_chain() {
+        use clap::CommandFactory as _;
+        use review_telemetry::level::Level;
+        use review_telemetry::record::{Attrs, Record, SealExit, SpanKind, SpanStatus};
+        use review_telemetry::{Start, Telemetry};
+
+        let matches = crate::cli::Af::command()
+            .try_get_matches_from(["af", "provider", "setup", "alice", "--kind", "claude"])
+            .unwrap();
+        let mut chain = Vec::new();
+        let mut current = &matches;
+        while let Some((name, next)) = current.subcommand() {
+            chain.push(name.to_owned());
+            current = next;
+        }
+        assert_eq!(chain, ["provider", "setup"]);
+        let header = |command: Vec<String>| {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let telemetry = Telemetry::start(Start {
+                settings: Settings {
+                    level: Level::Metrics,
+                    ..Settings::default()
+                },
+                directory: root.join("state/af/telemetry"),
+                registry: dirs::location(&root.join("state")),
+                accounted: vec![Accounted::container(
+                    root.join("state/af"),
+                    "the state root",
+                )],
+                accounted_unknown: None,
+                af_version: "0.0.0-test".into(),
+                af_commit: "test".into(),
+                command,
+            });
+            let writer = telemetry.writer().unwrap();
+            let span = writer
+                .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+                .unwrap();
+            writer.span_end(&span, SpanStatus::Ok, Attrs::new(), 0);
+            let finished = telemetry.finish(SealExit::Ok);
+            let sealed = finished.sealed.unwrap();
+            let records = review_telemetry::segment::reader::read_sealed(&sealed.path).unwrap();
+            records
+                .into_iter()
+                .find_map(|record| match record {
+                    Record::Segment(header) => Some(header.argv),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        // `argv[0]` is this test binary, its home prefix redacted to `~`.
+        let recorded = header(chain);
+        assert_eq!(recorded[1..], ["provider", "setup"], "{recorded:?}");
+        assert!(!recorded.iter().any(|word| word.contains("alice")));
+        let alone = header(Vec::new());
+        assert_eq!(alone.len(), 1, "{alone:?}");
+        assert_eq!(alone[0], recorded[0]);
+    }
 }

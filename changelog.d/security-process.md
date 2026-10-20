@@ -3,8 +3,12 @@
   (`review_process::MAX_CAPTURED_STREAM_BYTES`); the rest is read and discarded so the child never
   stalls, the total is recorded, and a check whose output passed the cap fails with a reason
   naming it, as does a Worker Attempt. On Linux af is a child subreaper, and a shell Attempt or a
-  local check ends every descendant that left its process group (`setsid`) before its tree is
-  sealed; on macOS such a descendant can still outlive it under `trusted_local`
+  local check ends every descendant that left its process group (`setsid`, or a `set -m` job in
+  another group of the same session) before its tree is sealed, told from any concurrent run's by
+  the `AF_PROCESS_TREE` value its leader starts with; when the subreaper cannot be set, af warns
+  once on stderr and every check (`reason`) and Attempt (stored stderr) records that descendant
+  cleanup fell back to the process-group kill. On macOS such a descendant can still outlive it
+  under `trusted_local`
   ([ADR-0118](docs/adr/0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md),
   [ADR-0120](docs/adr/0120-give-a-source-writing-worker-a-shell.md), amended). Container checks
   run with `--pids-limit 4096`, `--cap-drop=ALL`, `--security-opt=no-new-privileges` and

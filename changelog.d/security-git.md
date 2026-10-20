@@ -1,7 +1,9 @@
 - Bare `af` no longer runs `git diff` against the working tree or `git hash-object` to mark
   drifted Pipelines and Workers. Both could run an fsmonitor or a clean filter that a checkout's
-  own `.git/config` names. The browser now reads the committed blobs with `ls-tree` and
-  `cat-file --batch`, reads working-tree files directly, and compares the two in-process. Every
+  own `.git/config` names. The browser now takes the committed blob ids from `ls-tree`, hashes
+  each working-tree file in-process as git hashes a blob (`blob <len>\0`, then the bytes,
+  streamed through one 64 KiB buffer), and compares the ids, so its drift check never holds a
+  whole blob or a whole working-tree file. Every
   git call the browser makes, and the Task file advice's `git check-ignore`, now runs with
   capture's cleared environment and full `-c` override set
   (`review_source_git::git::isolated_command`). That advice still reads the global excludes file
@@ -22,5 +24,7 @@
   file, executable when its owner bit is set, instead of failing the review.
 - Text output of `af review plan`, `ledger`, `show`, `report` (text and Markdown), `render` and
   `run` shows every control character in a changed path, finding title or other repository- or
-  model-authored string as a visible `\u{…}` escape. ESC, BEL and newlines no longer reach the
+  model-authored string (pipeline node IDs, edges, reservation, input and provider lines of
+  `plan`, Proposal paths and report JSON lines of `show`, the selectors and node of `render`) as
+  a visible `\u{…}` escape. ESC, BEL and newlines no longer reach the
   terminal raw. `--json` output is unchanged.

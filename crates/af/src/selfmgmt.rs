@@ -1382,12 +1382,46 @@ pub(crate) struct Pinned {
 }
 
 /// The pin a repository carries, read leniently so a lock written by a newer release still
-/// dispatches to it.
+/// dispatches to it. A lock [`read_lock`] refuses pins nothing, and says why in one line on
+/// stderr, once per lock and process.
 pub(crate) fn pinned(repo: &Path) -> Option<Pinned> {
-    let toplevel = config::git_toplevel(repo)?;
+    match read_pinned(repo) {
+        Ok(pinned) => pinned,
+        Err(line) => {
+            static SAID: std::sync::Mutex<BTreeSet<String>> =
+                std::sync::Mutex::new(BTreeSet::new());
+            let mut said = SAID.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if said.insert(line.clone()) {
+                eprintln!("af: {line}");
+            }
+            None
+        }
+    }
+}
+
+/// [`pinned`], with a refused lock as its one-line reason.
+fn read_pinned(repo: &Path) -> Result<Option<Pinned>, String> {
+    let Some(toplevel) = config::git_toplevel(repo) else {
+        return Ok(None);
+    };
     let lock = toplevel.join(".af/af.lock");
-    let text = std::fs::read_to_string(&lock).ok()?;
-    review_config::lock::pinned_af(&text).map(|pin| Pinned { pin, lock })
+    let Some(text) = read_lock(&lock)? else {
+        return Ok(None);
+    };
+    Ok(review_config::lock::pinned_af(&text).map(|pin| Pinned { pin, lock }))
+}
+
+/// A project's `.af/af.lock`, read as every authority file is ([`config::read_authority`]):
+/// as named, without following a link, and within 1 MiB, an oversized lock refused before it is
+/// read whole. `None` when nothing is there; a refusal is one line naming the lock.
+fn read_lock(lock: &Path) -> Result<Option<String>, String> {
+    match std::fs::symlink_metadata(lock) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        _ => {}
+    }
+    config::read_authority(lock)
+        .map(Some)
+        .map_err(|error| format!("{} is not read as a pin: {error}", lock.display()))
 }
 
 fn strip_sha256(digest: &str) -> &str {
@@ -1577,7 +1611,8 @@ fn pins_still_held(paths: &Paths, locked: bool) -> BTreeSet<String> {
 fn keep_live_pins(state: &mut SelfState, versions: &mut BTreeSet<String>) -> bool {
     let before = state.pins.len();
     state.pins.retain_mut(|seen| {
-        let Some(text) = std::fs::read_to_string(&seen.lock).ok() else {
+        // Bounded and never through a link, as dispatch reads it: a lock it refuses pins nothing.
+        let Ok(Some(text)) = read_lock(&seen.lock) else {
             return false;
         };
         let Some(pin) = review_config::lock::pinned_af(&text) else {
@@ -3627,6 +3662,74 @@ mod tests {
         assert_eq!(state.last_check.as_deref(), Some("2026-10-19T00:00:00Z"));
         assert_eq!(state.pins.len(), 1);
         assert_eq!(state.pins[0].version, "0.9.7");
+    }
+
+    /// V2 of the security close-out: dispatch's `pinned` and `keep_live_pins` read a
+    /// `.af/af.lock` as every authority file is read: an oversized lock is refused in one line
+    /// before it is read whole, a linked lock is refused rather than followed, and neither pins.
+    #[test]
+    fn an_oversized_or_linked_lock_is_refused_by_dispatch_and_by_the_remembered_pins() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let repo = root.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(repo.join(".af")).unwrap();
+        let lock = repo.join(".af/af.lock");
+        let pin = "version = 1\n\n[af]\nversion = \"0.9.7\"\n";
+        std::fs::write(&lock, pin).unwrap();
+        assert_eq!(pinned(&repo).unwrap().pin.version, "0.9.7");
+
+        let seen = || SelfState {
+            pins: vec![SeenPin {
+                lock: lock.clone(),
+                version: "0.9.7".to_string(),
+                seen: iso_now(),
+            }],
+            ..SelfState::default()
+        };
+        let mut versions = BTreeSet::new();
+        let mut state = seen();
+        assert!(!keep_live_pins(&mut state, &mut versions));
+        assert_eq!(versions, BTreeSet::from(["0.9.7".to_string()]));
+
+        // Over 1 MiB: refused from its size, before it is read whole.
+        std::fs::write(&lock, format!("{pin}# {}\n", "x".repeat(2 * 1024 * 1024))).unwrap();
+        let Err(refused) = read_pinned(&repo) else {
+            panic!("the lock is refused");
+        };
+        assert!(
+            refused.starts_with(&lock.display().to_string()),
+            "{refused}"
+        );
+        assert!(
+            refused.contains("over the bound of 1048576 bytes"),
+            "{refused}"
+        );
+        assert_eq!(refused.lines().count(), 1);
+        assert!(pinned(&repo).is_none());
+        let (mut state, mut versions) = (seen(), BTreeSet::new());
+        assert!(keep_live_pins(&mut state, &mut versions));
+        assert!(state.pins.is_empty() && versions.is_empty());
+
+        // A link to a lock elsewhere: refused, never followed.
+        let elsewhere = root.join("elsewhere.lock");
+        std::fs::write(&elsewhere, pin).unwrap();
+        std::fs::remove_file(&lock).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &lock).unwrap();
+        let Err(refused) = read_pinned(&repo) else {
+            panic!("the lock is refused");
+        };
+        assert!(refused.contains("symbolic link"), "{refused}");
+        assert_eq!(refused.lines().count(), 1);
+        assert!(pinned(&repo).is_none());
+        let (mut state, mut versions) = (seen(), BTreeSet::new());
+        assert!(keep_live_pins(&mut state, &mut versions));
+        assert!(state.pins.is_empty() && versions.is_empty());
+
+        // No lock at all pins nothing, and is no refusal.
+        std::fs::remove_file(&lock).unwrap();
+        assert!(read_pinned(&repo).unwrap().is_none());
     }
 
     #[test]

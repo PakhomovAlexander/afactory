@@ -550,7 +550,10 @@ pub(crate) fn load_rooted(
 
     let mut ignored = Vec::new();
     for (layer, path) in planned {
-        let present = path.is_file();
+        // A link where a layer belongs is present, so that reading it refuses it in one line;
+        // it is never followed to whatever it names.
+        let present = std::fs::symlink_metadata(&path)
+            .is_ok_and(|metadata| metadata.is_file() || metadata.file_type().is_symlink());
         if present {
             let text = read_layer(&path)
                 .map_err(|error| Refusal::naming("reading ", &path, &format!(": {error}")))?;
@@ -625,17 +628,21 @@ pub(crate) fn load_rooted(
     })
 }
 
-/// One layer file, whole, within [`review_config::lock::MAX_AUTHORITY_FILE_BYTES`]: resolved as
-/// named (a layer may be a link the user keeps elsewhere), then opened without following a link
-/// and read no further than the bound, so an ancestor's or a repository's `.af/af.toml` of
-/// gigabytes is refused, not read (the way `caches.toml` is).
+/// One layer file, whole, through [`read_authority`].
 fn read_layer(path: &Path) -> Result<String, String> {
-    let resolved = std::fs::canonicalize(path).map_err(|error| error.to_string())?;
-    let bytes = review_store::local_fs::read_bounded(
-        &resolved,
-        review_config::lock::MAX_AUTHORITY_FILE_BYTES,
-    )
-    .map_err(|error| error.to_string())?;
+    read_authority(path)
+}
+
+/// One authority file (a configuration layer, a project's `.af/af.lock`), whole, within
+/// [`review_config::lock::MAX_AUTHORITY_FILE_BYTES`]: opened by the path as named, never
+/// canonicalised first, without following a link at its final component, and read no further
+/// than the bound. A link is refused, and so is a file of gigabytes, before it is read whole;
+/// either in one line. Canonicalisation, where a caller still needs it for display or
+/// ancestry, comes after this read and never decides which file is read.
+pub(crate) fn read_authority(path: &Path) -> Result<String, String> {
+    let bytes =
+        review_store::local_fs::read_bounded(path, review_config::lock::MAX_AUTHORITY_FILE_BYTES)
+            .map_err(|error| error.to_string())?;
     String::from_utf8(bytes).map_err(|error| error.to_string())
 }
 
@@ -1185,10 +1192,11 @@ mod tests {
     }
 
     /// L10 of the 2026-10-20 audit: a layer file beyond 1 MiB — an ancestor's or the
-    /// repository's `.af/af.toml` — is refused in one line naming it, never read whole; a layer
-    /// kept elsewhere behind a link is still read.
+    /// repository's `.af/af.toml` — is refused in one line naming it, never read whole; and a
+    /// layer is opened as named, never through a link (V3 of the close-out): a linked project,
+    /// local or directory layer is refused in one line, not followed.
     #[test]
-    fn an_oversized_layer_is_refused_naming_its_file_and_a_linked_layer_is_read() {
+    fn an_oversized_layer_is_refused_naming_its_file_and_a_linked_layer_is_refused() {
         let temp = tempfile::tempdir().unwrap();
         let root = std::fs::canonicalize(temp.path()).unwrap();
         let repo = root.join("repo");
@@ -1217,8 +1225,27 @@ mod tests {
         std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
         std::fs::write(&kept, "[storage]\nkeep_days = 3\n").unwrap();
         std::fs::remove_file(&file).unwrap();
-        std::os::unix::fs::symlink(&kept, &file).unwrap();
         assert!(load_rooted(Some(&repo), false, &roots).is_ok());
+        let local = repo.join(".af/af.local.toml");
+        let ancestor = root.join(".af/af.toml");
+        std::fs::create_dir_all(ancestor.parent().unwrap()).unwrap();
+        for linked in [&file, &local, &ancestor] {
+            std::os::unix::fs::symlink(&kept, linked).unwrap();
+            let refusal = load_rooted(Some(&repo), false, &roots).unwrap_err();
+            assert_eq!(
+                refusal.text,
+                format!(
+                    "reading {}: it is a symbolic link; af reads it only as a regular file",
+                    linked.display()
+                )
+            );
+            std::fs::remove_file(linked).unwrap();
+        }
+        // A dangling link is refused too, never skipped as absent.
+        std::os::unix::fs::symlink(root.join("nowhere.toml"), &file).unwrap();
+        let refusal = load_rooted(Some(&repo), false, &roots).unwrap_err();
+        assert!(refusal.text.contains("symbolic link"), "{}", refusal.text);
+        assert_eq!(refusal.text.lines().count(), 1);
     }
 
     #[test]

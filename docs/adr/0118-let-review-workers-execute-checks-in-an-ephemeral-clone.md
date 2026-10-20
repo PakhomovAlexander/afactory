@@ -110,11 +110,17 @@ that calls `setsid` (or moves to a group of its own) leaves it. `ModelRunner` no
 `ExitPolicy::KillDescendants`. On Linux af makes itself a child subreaper
 (`PR_SET_CHILD_SUBREAPER`), so a descendant the Attempt orphaned becomes af's child, and before
 the leader is reaped af kills and reaps every member of the group, every child of its own that
-started after the leader in another session, and every descendant of either, until none is
-left. A descendant that moved to a group of its own without a new session after its parent had
-already exited is not told from af's other children and is left; that is a deliberate act, not a
-background job. On macOS the policy is the group kill alone: under `trusted_local` a `setsid`
-child can outlive the Attempt and write into its tree, before or while the kernel seals it.
+started with this run's `AF_PROCESS_TREE` value (which the leader is given and every descendant
+inherits, so a `setsid` child or a `set -m` job in another group of the same session is told from
+any other run's, however many Attempts and checks one af runs at once), while no other such run
+is live also every child of its own that started after the leader in another session, and every
+descendant of any of these, until none is left. A process af did not start is never its child and
+never touched. The guarantee holds on Linux only while the subreaper is set: when
+`PR_SET_CHILD_SUBREAPER` cannot be set, af says so once per process on stderr, and every check
+records in its `reason`, and every Attempt in its stored stderr, that descendant cleanup fell back
+to the process-group kill. On macOS the policy is the group kill alone: under `trusted_local` a
+`setsid` child can outlive the Attempt and write into its tree, before or while the kernel seals
+it.
 `trusted_local` is no security boundary; a project that needs one demands container isolation,
 where the container is removed whole. The check runner selects the same policy for every
 host-local check.

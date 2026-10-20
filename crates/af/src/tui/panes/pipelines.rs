@@ -764,10 +764,11 @@ pub(crate) fn blobs(root: &Path, objects: &[&str]) -> Result<BTreeMap<String, Ve
 ///
 /// Never `git diff` against the working tree, and never `git hash-object`: both hash working-tree
 /// files through the clean filter a checkout's own `.gitattributes` and `.git/config` select, and
-/// a worktree diff refreshes the index through its fsmonitor. The committed side is read as
-/// capture reads it (`ls-tree` and `cat-file --batch`, which apply no filter), the working-tree
-/// side straight from the filesystem, and the two compared here, as a dirty capture would see
-/// them. Index flags (`skip-worktree`, `assume-unchanged`) hide nothing from that comparison.
+/// a worktree diff refreshes the index through its fsmonitor. The committed side is the blob id
+/// `ls-tree` lists (no filter, no blob read), the working-tree side is hashed here as git hashes
+/// a blob, straight from the filesystem through one bounded buffer, and the two are compared by
+/// id, as a dirty capture would see them. Neither a whole blob nor a whole working-tree file is
+/// ever held. Index flags (`skip-worktree`, `assume-unchanged`) hide nothing from that comparison.
 pub(crate) fn differing(root: &Path, commit: &str, paths: &[&str]) -> BTreeSet<String> {
     if paths.is_empty() {
         return BTreeSet::new();
@@ -776,19 +777,10 @@ pub(crate) fn differing(root: &Path, commit: &str, paths: &[&str]) -> BTreeSet<S
     let Ok(committed) = listed_paths(root, commit, paths) else {
         return everything();
     };
-    let mut objects: Vec<&str> = committed.values().map(|(_, id)| id.as_str()).collect();
-    objects.sort_unstable();
-    objects.dedup();
-    let Ok(read) = blobs(root, &objects) else {
-        return everything();
-    };
     let mut differ = BTreeSet::new();
     for path in paths {
         let same = match committed.get(*path) {
-            Some((mode, id)) => {
-                let bytes = read.get(id).map(Vec::as_slice).unwrap_or_default();
-                holds(&root.join(path), mode, bytes)
-            }
+            Some((mode, id)) => holds(&root.join(path), mode, id),
             // Not a file at `commit`: the same only while the working tree has nothing there.
             None => std::fs::symlink_metadata(root.join(path)).is_err(),
         };
@@ -799,25 +791,171 @@ pub(crate) fn differing(root: &Path, commit: &str, paths: &[&str]) -> BTreeSet<S
     differ
 }
 
-/// Whether the working-tree entry at `full` is the blob `bytes` with `mode`: the same kind
-/// (a link, a file, an executable as a dirty capture classifies it) and the same bytes.
-fn holds(full: &Path, mode: &str, bytes: &[u8]) -> bool {
+/// Whether the working-tree entry at `full` is the blob `id` with `mode`: the same kind (a link,
+/// a file, an executable as a dirty capture classifies it) and the same blob id, the file hashed
+/// through [`blob_id`] and never read whole.
+fn holds(full: &Path, mode: &str, id: &str) -> bool {
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let Ok(meta) = std::fs::symlink_metadata(full) else {
         return false;
     };
     match review_source_git::EntryKind::from_mode(mode) {
         Some(review_source_git::EntryKind::Symlink) if meta.file_type().is_symlink() => {
-            std::fs::read_link(full).is_ok_and(|target| target.as_os_str().as_bytes() == bytes)
+            std::fs::read_link(full).is_ok_and(|target| {
+                let target = target.as_os_str().as_bytes();
+                blob_id(id, target.len() as u64, &mut &target[..]).as_deref() == Some(id)
+            })
         }
         Some(kind) if meta.is_file() => {
             let executable = meta.permissions().mode() & 0o111 != 0;
             executable == (kind == review_source_git::EntryKind::Executable)
-                && meta.len() == bytes.len() as u64
-                && std::fs::read(full).is_ok_and(|read| read == bytes)
+                && std::fs::OpenOptions::new()
+                    .read(true)
+                    .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
+                    .open(full)
+                    .is_ok_and(|mut file| blob_id(id, meta.len(), &mut file).as_deref() == Some(id))
         }
         _ => false,
+    }
+}
+
+/// The bytes of a working-tree file [`blob_id`] holds at once, whatever the file's size.
+const HASH_BUFFER_BYTES: usize = 64 * 1024;
+
+/// The git blob id of exactly `len` bytes from `reader`, hashed as git hashes a blob — the
+/// header `blob <len>\0`, then the bytes, streamed through one [`HASH_BUFFER_BYTES`] buffer —
+/// with the object format `like` (an id of the same repository) names by its length: 40 hex
+/// digits SHA-1, 64 SHA-256. `None` when the reader gives other than `len` bytes (the file
+/// changed while it was read), fails, or `like` is neither.
+fn blob_id(like: &str, len: u64, reader: &mut impl std::io::Read) -> Option<String> {
+    use sha2::Digest;
+    enum Hasher {
+        Sha1(Box<Sha1>),
+        Sha256(Box<sha2::Sha256>),
+    }
+    let mut hasher = match like.len() {
+        40 => Hasher::Sha1(Box::default()),
+        64 => Hasher::Sha256(Box::default()),
+        _ => return None,
+    };
+    let mut update = |bytes: &[u8]| match &mut hasher {
+        Hasher::Sha1(hasher) => hasher.update(bytes),
+        Hasher::Sha256(hasher) => hasher.update(bytes),
+    };
+    update(format!("blob {len}\0").as_bytes());
+    let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
+    let mut read = 0_u64;
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(count) => count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        };
+        read = read.saturating_add(count as u64);
+        if read > len {
+            return None;
+        }
+        update(&buffer[..count]);
+    }
+    if read != len {
+        return None;
+    }
+    Some(match hasher {
+        Hasher::Sha1(hasher) => review_core::hex::encode(&hasher.finish()),
+        Hasher::Sha256(hasher) => review_core::hex::encode(&hasher.finalize()),
+    })
+}
+
+/// SHA-1 (FIPS 180-4), for the blob ids of a SHA-1 repository only: [`blob_id`] compares a
+/// working-tree file with the id `ls-tree` lists, without running `git hash-object`.
+struct Sha1 {
+    state: [u32; 5],
+    block: [u8; 64],
+    filled: usize,
+    length: u64,
+}
+
+impl Default for Sha1 {
+    fn default() -> Self {
+        Self {
+            state: [
+                0x6745_2301,
+                0xEFCD_AB89,
+                0x98BA_DCFE,
+                0x1032_5476,
+                0xC3D2_E1F0,
+            ],
+            block: [0; 64],
+            filled: 0,
+            length: 0,
+        }
+    }
+}
+
+impl Sha1 {
+    fn update(&mut self, mut bytes: &[u8]) {
+        self.length = self.length.wrapping_add(bytes.len() as u64);
+        while !bytes.is_empty() {
+            let take = (64 - self.filled).min(bytes.len());
+            self.block[self.filled..self.filled + take].copy_from_slice(&bytes[..take]);
+            self.filled += take;
+            bytes = &bytes[take..];
+            if self.filled == 64 {
+                self.compress();
+                self.filled = 0;
+            }
+        }
+    }
+
+    fn finish(mut self) -> [u8; 20] {
+        let bits = self.length.wrapping_mul(8);
+        self.update(&[0x80]);
+        while self.filled != 56 {
+            self.update(&[0]);
+        }
+        self.update(&bits.to_be_bytes());
+        let mut digest = [0; 20];
+        for (out, word) in digest.chunks_exact_mut(4).zip(self.state) {
+            out.copy_from_slice(&word.to_be_bytes());
+        }
+        digest
+    }
+
+    fn compress(&mut self) {
+        let mut schedule = [0_u32; 80];
+        for (word, bytes) in schedule.iter_mut().zip(self.block.chunks_exact(4)) {
+            *word = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        }
+        for at in 16..80 {
+            schedule[at] =
+                (schedule[at - 3] ^ schedule[at - 8] ^ schedule[at - 14] ^ schedule[at - 16])
+                    .rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = self.state;
+        for (round, word) in schedule.iter().enumerate() {
+            let (mixed, constant) = match round {
+                0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let next = a
+                .rotate_left(5)
+                .wrapping_add(mixed)
+                .wrapping_add(e)
+                .wrapping_add(constant)
+                .wrapping_add(*word);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = next;
+        }
+        for (state, value) in self.state.iter_mut().zip([a, b, c, d, e]) {
+            *state = state.wrapping_add(value);
+        }
     }
 }
 
@@ -1121,6 +1259,67 @@ mod tests {
         assert!(
             discover(root).unwrap().entries[0].modified,
             "the executable bit differs"
+        );
+    }
+
+    /// The drift check compares blob ids only: a working-tree file several times the hash
+    /// buffer is hashed through it as git hashes a blob, the same bytes are the same, and one
+    /// changed byte at its end, at an equal length, differs.
+    #[test]
+    fn a_file_larger_than_the_hash_buffer_is_compared_by_blob_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        package(root, "p", "fixture/p");
+        let large = ".af/task-packages/p/large.bin";
+        let mut bytes: Vec<u8> = (0..3 * HASH_BUFFER_BYTES + 17)
+            .map(|at| (at % 251) as u8)
+            .collect();
+        std::fs::write(root.join(large), &bytes).unwrap();
+        commit_all(root, "package");
+        let found = discover(root).unwrap();
+        let paths = [large, ".af/task-packages/p/pipeline.toml"];
+        assert!(differing(root, &found.commit, &paths).is_empty());
+        let listed = listed_paths(root, &found.commit, &[large]).unwrap();
+        let mut file = std::fs::File::open(root.join(large)).unwrap();
+        assert_eq!(
+            blob_id(&listed[large].1, bytes.len() as u64, &mut file).as_deref(),
+            Some(listed[large].1.as_str()),
+            "git's own blob id"
+        );
+        *bytes.last_mut().unwrap() ^= 1;
+        std::fs::write(root.join(large), &bytes).unwrap();
+        assert_eq!(
+            differing(root, &found.commit, &paths),
+            BTreeSet::from([large.to_owned()])
+        );
+    }
+
+    #[test]
+    fn a_blob_id_is_gits_for_either_object_format() {
+        let sha1 = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391";
+        assert_eq!(blob_id(sha1, 0, &mut &b""[..]).as_deref(), Some(sha1));
+        let hello = "ce013625030ba8dba906f756967f9e9ca394464a";
+        assert_eq!(
+            blob_id(sha1, 6, &mut &b"hello\n"[..]).as_deref(),
+            Some(hello)
+        );
+        let sha256 = "473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813";
+        assert_eq!(blob_id(sha256, 0, &mut &b""[..]).as_deref(), Some(sha256));
+        // A reader that gives other than the stated length names no blob.
+        assert_eq!(blob_id(sha1, 5, &mut &b"hello\n"[..]), None);
+        assert_eq!(blob_id(sha1, 7, &mut &b"hello\n"[..]), None);
+        assert_eq!(blob_id("abc", 0, &mut &b""[..]), None);
+        let mut abc = Sha1::default();
+        abc.update(b"abc");
+        assert_eq!(
+            review_core::hex::encode(&abc.finish()),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+        let mut long = Sha1::default();
+        long.update(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
+        assert_eq!(
+            review_core::hex::encode(&long.finish()),
+            "84983e441c3bd26ebaae4aa1f95129e5e54670f1"
         );
     }
 
