@@ -1302,9 +1302,6 @@ impl Followed {
         out: &mut Vec<TailLine>,
     ) {
         for record in records {
-            if binding.conflict.is_some() {
-                return;
-            }
             self.position = Some(Position {
                 seq: record.seq(),
                 sealed: matches!(record, Record::Seal(_)),
@@ -1332,8 +1329,11 @@ impl Followed {
                                     Some(bound) if *bound == store => true,
                                     Some(_) if selection.store_named => false,
                                     Some(_) => {
-                                        binding.conflict = Some(store);
-                                        return;
+                                        // Refused once every followed segment's pending lines of
+                                        // the bound Store are drained; its traces are never
+                                        // selected, so none of its records is emitted.
+                                        binding.conflict.get_or_insert(store);
+                                        false
                                     }
                                 }
                             }
@@ -1429,7 +1429,10 @@ impl Followed {
 /// followed segment whose sealed file cannot be read fails it, naming the file (the reader
 /// fails closed). The selected run stays in one Store for the whole tail (see
 /// [`TailSelection::store_id`]); a second Store recording it ends the tail as
-/// [`Tailed::Ambiguous`] once the bound Store's lines read so far are emitted.
+/// [`Tailed::Ambiguous`] once every pending line of the bound Store in every followed segment
+/// is emitted, whatever order the segments sort in. With a run selected, every segment first
+/// observed after the first listing is inspected for it, a sealed one included (one created
+/// and sealed between two looks): a second Store there is refused the same way.
 pub fn tail(
     root: &Path,
     selection: &TailSelection,
@@ -1444,6 +1447,10 @@ pub fn tail(
     };
     let mut root_dir: Option<Confined> = None;
     let mut segments: Option<Confined> = None;
+    // The sealed segments of the first listing, which the index read before following began;
+    // every other sealed segment is new.
+    let mut preexisting: Option<BTreeSet<String>> = None;
+    let mut first = true;
     loop {
         if segments.is_none() {
             if root_dir.is_none() {
@@ -1472,6 +1479,22 @@ pub fn tail(
             for id in listing.live.iter().chain(&listing.unsealed) {
                 followed.entry(id.clone()).or_default();
             }
+            let preexisting = preexisting.get_or_insert_with(|| {
+                if first {
+                    listing.sealed.iter().cloned().collect()
+                } else {
+                    BTreeSet::new()
+                }
+            });
+            if selection.run_id.is_some() {
+                for id in listing
+                    .sealed
+                    .iter()
+                    .filter(|id| !preexisting.contains(*id))
+                {
+                    followed.entry(id.clone()).or_default();
+                }
+            }
             let mut lines = Vec::new();
             for (id, state) in followed.iter_mut().filter(|(_, state)| !state.sealed) {
                 if listing.live.contains(id) || listing.unsealed.contains(id) {
@@ -1481,9 +1504,6 @@ pub fn tail(
                             let prefix = reader::scan_from(&bytes, offset, state.position);
                             state.offset = prefix.kept_bytes;
                             state.take(id, prefix.records, selection, &mut binding, &mut lines);
-                            if binding.conflict.is_some() {
-                                break;
-                            }
                             continue;
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -1507,9 +1527,6 @@ pub fn tail(
                         .collect();
                     state.take(id, rest, selection, &mut binding, &mut lines);
                     state.sealed = true;
-                    if binding.conflict.is_some() {
-                        break;
-                    }
                 } else if !listing.live.contains(id) && !listing.unsealed.contains(id) {
                     // Gone without a sealed file (corrupt, or removed): nothing more to follow.
                     state.sealed = true;
@@ -1540,6 +1557,7 @@ pub fn tail(
         if stop() {
             return Ok(Tailed::Done);
         }
+        first = false;
         std::thread::sleep(interval);
     }
 }

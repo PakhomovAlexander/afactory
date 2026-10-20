@@ -2652,90 +2652,169 @@ fn telemetry_a_run_two_stores_share_asks_for_the_store() {
     );
 }
 
+/// A spawned tail: the child, its stdout lines, and the thread reading them.
+type Following = (
+    std::process::Child,
+    std::sync::mpsc::Receiver<String>,
+    std::thread::JoinHandle<()>,
+);
+
+/// `af telemetry tail GOLDEN_RUN --json`, its stdout lines on a channel.
+fn spawn_tail(machine: &Machine) -> Following {
+    let mut tail = machine
+        .command(
+            &machine.root,
+            &[],
+            &["telemetry", "tail", GOLDEN_RUN, "--json"],
+        )
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = tail.stdout.take().unwrap();
+    let (sender, received) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        use std::io::BufRead as _;
+        for line in std::io::BufReader::new(stdout).lines() {
+            let _ = sender.send(line.unwrap());
+        }
+    });
+    (tail, received, reader)
+}
+
+/// Wait for a spawned tail to end on its own (at most a minute), then its status, its stderr
+/// and every line it printed, `first` first.
+fn ended_tail(
+    (mut tail, received, reader): Following,
+    first: String,
+) -> (std::process::ExitStatus, String, Vec<Value>) {
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = tail.try_wait().unwrap() {
+            break status;
+        }
+        if started.elapsed() > std::time::Duration::from_secs(60) {
+            let _ = tail.kill();
+            panic!("tail did not refuse the second Store");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut tail.stderr.take().unwrap(), &mut stderr).unwrap();
+    reader.join().unwrap();
+    let lines = std::iter::once(first)
+        .chain(received.try_iter())
+        .map(|line| serde_json::from_str::<Value>(&line).unwrap())
+        .collect();
+    (status, stderr, lines)
+}
+
 /// Design §10: `tail RUN` binds the Store it follows for its whole lifetime. Started while Store
 /// A alone records RUN (live), it follows A; when Store B starts the same run id before A seals,
 /// tail emits A's records only and then refuses the ambiguity as a run two Stores share at the
-/// start is refused: exit 2, both Stores named, `--store` asked for.
+/// start is refused: exit 2, both Stores named, `--store` asked for. B appears in two ways, each
+/// between two of tail's scans (tail held stopped):
+/// - live, its segment id sorting before A's (as after a wall-clock rollback), while A has
+///   flushed a span end tail has not read yet: tail first prints A's pending span end, then
+///   refuses;
+/// - created, flushed and sealed while A stays live: tail inspects the sealed segment and
+///   refuses before any of B's records is emitted, never waiting for A to exit 0.
 #[test]
 fn telemetry_tail_refuses_a_second_store_that_appears_while_following() {
-    let machine = Machine::new();
-    let root = machine.telemetry();
     let other = "6".repeat(64);
     let a_segment = "1700000000000-4242-0a1b2c3d";
+    let refused = |status: &std::process::ExitStatus, stderr: &str, lines: &[Value]| {
+        assert_eq!(status.code(), Some(2), "{stderr}");
+        assert!(stderr.contains("--store"), "{stderr}");
+        assert!(
+            stderr.contains(GOLDEN_STORE) && stderr.contains(&other),
+            "names both Stores: {stderr}"
+        );
+        assert!(!lines.is_empty());
+        assert!(
+            lines.iter().all(|line| line["segment_id"] == a_segment),
+            "A's records only: {lines:?}"
+        );
+    };
+
+    // B live and sorting before A, while A's flushed failed check Attempt is still unread.
+    let machine = Machine::new();
+    let root = machine.telemetry();
+    let mut following: Option<(Following, String)> = None;
     let mut tailed: Option<(std::process::ExitStatus, String, Vec<Value>)> = None;
     golden_execution(&root, a_segment, 1_700_000_000_000, 1, &mut |a| {
         if tailed.is_some() {
             return;
         }
         a.flush();
-        let mut tail = machine
-            .command(
-                &machine.root,
-                &[],
-                &["telemetry", "tail", GOLDEN_RUN, "--json"],
-            )
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        let stdout = tail.stdout.take().unwrap();
-        let (sender, received) = std::sync::mpsc::channel();
-        let reader = std::thread::spawn(move || {
-            use std::io::BufRead as _;
-            for line in std::io::BufReader::new(stdout).lines() {
-                let _ = sender.send(line.unwrap());
-            }
-        });
-        // Tail follows A: its first record reached it.
-        let first = received
-            .recv_timeout(std::time::Duration::from_secs(30))
-            .expect("tail prints A's record");
+        let Some(pending) = following.take() else {
+            // Tail follows A: its first record reached it. Held stopped, it looks no more
+            // until A's check node and B are both there.
+            let tail = spawn_tail(&machine);
+            let first = tail
+                .1
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .expect("tail prints A's record");
+            signal(tail.0.id(), "STOP");
+            following = Some((tail, first));
+            return;
+        };
         // B starts the same run id while A is still live, and stays live until tail has ended.
+        let mut pending = Some(pending);
         let mut b_tailed = None;
         execution_in_store(
             &root,
             &other,
-            "1700000200000-4244-0c1d2e3f",
+            "1699999900000-4244-0c1d2e3f",
             1_700_000_200_000,
             1,
             &mut |b| {
-                if b_tailed.is_some() {
+                let Some((tail, first)) = pending.take() else {
                     return;
-                }
-                b.flush();
-                let started = std::time::Instant::now();
-                let status = loop {
-                    if let Some(status) = tail.try_wait().unwrap() {
-                        break status;
-                    }
-                    if started.elapsed() > std::time::Duration::from_secs(60) {
-                        let _ = tail.kill();
-                        panic!("tail did not refuse the second Store");
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(20));
                 };
-                b_tailed = Some(status);
+                b.flush();
+                signal(tail.0.id(), "CONT");
+                b_tailed = Some(ended_tail(tail, first));
             },
         );
-        let mut stderr = String::new();
-        std::io::Read::read_to_string(&mut tail.stderr.take().unwrap(), &mut stderr).unwrap();
-        reader.join().unwrap();
-        let lines = std::iter::once(first)
-            .chain(received.try_iter())
-            .map(|line| serde_json::from_str::<Value>(&line).unwrap())
-            .collect();
-        tailed = Some((b_tailed.unwrap(), stderr, lines));
+        tailed = b_tailed;
     });
     let (status, stderr, lines) = tailed.unwrap();
-    assert_eq!(status.code(), Some(2), "{stderr}");
-    assert!(stderr.contains("--store"), "{stderr}");
+    refused(&status, &stderr, &lines);
     assert!(
-        stderr.contains(GOLDEN_STORE) && stderr.contains(&other),
-        "names both Stores: {stderr}"
+        lines.iter().any(|line| line["record"] == "span_end"
+            && line["span"] == "af.attempt"
+            && line["attributes"]["af.outcome"] == "failed"),
+        "A's flushed span end is printed before the refusal: {lines:?}"
     );
-    assert!(!lines.is_empty());
-    assert!(
-        lines.iter().all(|line| line["segment_id"] == a_segment),
-        "A's records only: {lines:?}"
-    );
+
+    // B created, flushed and sealed between two scans while A stays live.
+    let machine = Machine::new();
+    let root = machine.telemetry();
+    let mut tailed: Option<(std::process::ExitStatus, String, Vec<Value>)> = None;
+    golden_execution(&root, a_segment, 1_700_000_000_000, 1, &mut |a| {
+        if tailed.is_some() {
+            return;
+        }
+        a.flush();
+        let tail = spawn_tail(&machine);
+        let first = tail
+            .1
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("tail prints A's record");
+        signal(tail.0.id(), "STOP");
+        let b_segment = "1700000200000-4244-0c1d2e3f";
+        execution_in_store(&root, &other, b_segment, 1_700_000_200_000, 1, &mut |_| {});
+        let files = listing(&root);
+        assert!(
+            files
+                .iter()
+                .any(|name| name.ends_with(&format!("{b_segment}.jsonl.gz"))),
+            "B is sealed before tail looks again: {files:?}"
+        );
+        signal(tail.0.id(), "CONT");
+        tailed = Some(ended_tail(tail, first));
+    });
+    let (status, stderr, lines) = tailed.unwrap();
+    refused(&status, &stderr, &lines);
 }

@@ -346,8 +346,9 @@ segment it waits for one. `--json` prints one `af/telemetry-tail@1` object per l
 that run in one Store for its whole lifetime: the one `--store ID` names, else the one Store
 that records it when tail starts or, when none does yet, the first whose `af.run` arrives. When
 two Stores record the run id without `--store`, at the start or once a second Store starts it
-while it is followed, tail lists both and asks for `--store ID` (exit 2) before it prints
-anything of the second. It never recovers or removes a segment.
+while it is followed (also in a segment created and sealed between two of tail's looks), tail
+prints every pending record of the followed Store, then lists both and asks for `--store ID`
+(exit 2); it prints nothing of the second. It never recovers or removes a segment.
 
 ## `af telemetry gc`
 
