@@ -284,3 +284,5 @@ future readers need.
   all](0155-publish-a-fixture-marker-whole-or-not-at-all.md)
 - [0156 — Give every `make test` run a private JUnit
   store](0156-give-every-make-test-run-a-private-junit-store.md)
+- [0157 — Print a Task package digest with the pin
+  recipe](0157-print-a-task-package-digest-with-the-pin-recipe.md)
