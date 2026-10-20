@@ -23,9 +23,11 @@ pub const TASK_PACKAGE_V1: &str = "af/TaskPackage@1";
 pub const COMPILED_TASK_V1: &str = "af/CompiledTask@1";
 
 pub mod export;
+mod local;
 pub mod planning;
 mod requirements;
 mod validation;
+pub use local::LocalTaskPackage;
 pub use validation::CapturedTaskPlanValidator;
 #[cfg(test)]
 mod tests;

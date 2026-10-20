@@ -51,8 +51,9 @@ Its `--destination`, like that of `af catalog sync`, is a safe path relative to 
 (default `.`); an absolute path is refused.
 `af catalog sync` imports shared definitions from Git
 ([shared catalogs](task-execution/shared-catalogs.md)). The catalog pins every package by digest,
-so changing any package byte requires a newly reviewed pin. Checks are project-specific, so the
-code policy is written per repository.
+so changing any package byte requires a newly reviewed pin; `af catalog digest PACKAGE_DIR`
+prints that digest ([pin a package](task-execution/shared-catalogs.md#pin-a-package)). Checks
+are project-specific, so the code policy is written per repository.
 
 Trusting that committed authority and running `af task start --execute`, or confirming the
 previewed plan, authorizes Afactory to deliver each Worker its exact declared inputs for every
