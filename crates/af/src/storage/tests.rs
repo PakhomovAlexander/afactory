@@ -698,6 +698,13 @@ fn telemetry_segment(root: &Path, old: Duration) -> String {
         review_telemetry::level::Level::Spans,
     );
     options.redactor = review_telemetry::redact::Redactor::new();
+    // Sealed `old` ago on the writer's clock: a sealed segment's last use is its seal time.
+    let when = SystemTime::now() - old;
+    let at = when
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    options.clock = Some(std::sync::Arc::new(move || at));
     let writer = review_telemetry::segment::writer::Writer::new(options).unwrap();
     let span = writer
         .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
@@ -712,7 +719,7 @@ fn telemetry_segment(root: &Path, old: Duration) -> String {
     for path in [&sealed.path, &sealed.refs] {
         std::fs::File::open(path)
             .unwrap()
-            .set_modified(SystemTime::now() - old)
+            .set_modified(when)
             .unwrap();
     }
     sealed.segment_id

@@ -15,19 +15,24 @@
   `af task start --execute`, `af review run`, `af provider doctor`, `af self optimize --execute`)
   now record `af.command > af.run > af.authority.load, af.plan` (one `af/TelemetryNode@1` record
   per plan node), `af.node > af.attempt` with the kernel's exact accounting, and the run's
-  `af.sweep`; every other command, and every command at `off`, opens no telemetry directory. One
-  consumer thread owns the segment while a run is open and makes every record visible within
-  `flush_latency_ms`; it is stopped within 2 s or abandoned, leaving the segment for the next
-  reader to recover. `af telemetry runs`, `show`, `tail` and `gc` (`--json`:
-  `af/telemetry-runs@1`, `af/telemetry-show@1`, `af/telemetry-tail@1`, `af/telemetry-gc@1`)
-  report a run's executions — numbered by the leases that began a kernel run, active time as
+  `af.sweep`; every other command, and every command at `off`, opens no telemetry directory. From
+  the first `af.run` until the seal one consumer thread is the segment's only writer and makes
+  every record visible within `flush_latency_ms`; the command's end and the seal are one request
+  to it, bounded at 2 s, after which it is abandoned and publishes nothing, leaving the segment
+  for the next reader to recover. Every lease that begins kernel execution now commits an
+  `execution_started` transition (`af/TaskExecutionStarted@1`) to its Task's log, at every
+  telemetry level, and `af task show` lists it. `af telemetry runs`, `show`, `tail` and `gc`
+  (`--json`: `af/telemetry-runs@1`, `af/telemetry-show@1`, `af/telemetry-tail@1`,
+  `af/telemetry-gc@1`) report a run's executions — numbered by those markers, active time as
   their union, execution time as their sum, elapsed time, history `prefix:k` or `partial`, never
-  complete, the open ones named beside the sealed ones in every label and total — its span tree
-  and its live tail, which fails naming a sealed segment it cannot read.
+  complete, the open ones named beside the sealed ones in every label and total, the outcome the
+  latest execution's own — its span tree and its live tail, which fails naming a sealed segment
+  it cannot read.
   Telemetry is the kind `telemetry` of the Storage Budget (`af/storage@2`,
   `af/storage-prune@2`): every registered directory counted once, one entry per segment by what
-  its eviction frees, evicted under ADR-0144's rules past `[telemetry] max_bytes` or the whole
-  budget, each entry checked again just before it is unlinked and left in place, reported
-  `changed`, when it is no longer what the inventory found, with temporaries, unreferenced blobs
+  its eviction frees, a sealed one last used at its seal time, evicted under ADR-0144's rules
+  past `[telemetry] max_bytes` or the whole budget, every file of an entry, its manifest
+  included, checked again before either is unlinked and the whole entry left in place, reported
+  `changed`, when one is no longer what the inventory found, with temporaries, unreferenced blobs
   and free index pages reclaimed by every applied sweep and an overlapping directory reported
   `overlapping`, never evicted as telemetry.

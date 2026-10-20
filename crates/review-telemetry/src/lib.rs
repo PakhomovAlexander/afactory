@@ -124,6 +124,14 @@ impl Telemetry {
         }
     }
 
+    /// The shutdown begins (the run spans' ends, the `af.command` end, then the seal): from here
+    /// every write is the consumer thread's and every wait shares one 2 s bound.
+    pub fn begin_terminal(&self) {
+        if let Some(writer) = self.writer() {
+            writer.begin_terminal();
+        }
+    }
+
     /// Seal the segment and report every problem.
     pub fn finish(self, exit: SealExit) -> Finished {
         let mut problems = self.problems;

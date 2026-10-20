@@ -224,12 +224,14 @@ unwritable directory, a full segment) is one problem and the run continues.
 Recorded: the commands that run a kernel run (af task run, af task start --execute, af review
 run, af provider doctor, af self optimize --execute) record af.command > af.run >
 af.authority.load, af.plan (one node record per plan node), af.node > af.attempt, and the
-command's af.sweep; every other command records nothing and opens no telemetry directory. While
-a run is open one consumer thread owns the segment and every record is in it within
-flush_latency_ms; at the run's end it is stopped within 2 s and at the command's end it seals
-the segment within 2 s, else it is abandoned and the segment is left for the next reader to
-recover. A run's executions (one per process that worked on it) can overlap: active time is
-their union, execution time their sum, elapsed time first start to last end. Its history is
+command's af.sweep; every other command records nothing and opens no telemetry directory. From
+the first af.run until the seal one consumer thread is the segment's only writer and every
+record is in it within flush_latency_ms; at the command's end it writes the command's end and
+seals the segment within one 2 s bound, else it is abandoned, publishes nothing, and the segment
+is left for the next reader to recover. A run's executions (one per process that worked on it,
+numbered by the execution_started markers the Store holds for the leases before it) can
+overlap: active time is their union, execution time their sum, elapsed time first start to last
+end. Its history is
 `prefix:k` or `partial`, never complete, and its open executions are named beside the sealed
 ones (retained executions 1–1, open: 2).
 
@@ -278,9 +280,11 @@ unchanged).
 
 Every registered telemetry directory is the kind `telemetry` in `af storage`, whatever the
 current level or dir: one entry per segment, whose bytes are what its eviction frees, and the
-directory's shared remainder (index, locks, shared blobs, temporaries). The sweep evicts sealed
-and corrupt segments least recently used first past [telemetry] max_bytes or the whole budget,
-never one in use or used within the hour, and reclaims temporary files, unreferenced blobs and
+directory's shared remainder (index, locks, shared blobs, temporaries). A sealed segment's last
+use is its seal time. The sweep evicts sealed and corrupt segments least recently used first
+past [telemetry] max_bytes or the whole budget, never one in use or used within the hour, each
+whole or not at all — any of its files (its manifest included) changed since the inventory
+leaves it in place, reported as changed — and reclaims temporary files, unreferenced blobs and
 free index pages. A directory overlapping other accounted state is `overlapping`: counted once,
 never evicted as telemetry.
 

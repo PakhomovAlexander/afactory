@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use review_telemetry::level::Level;
 use review_telemetry::record::{Attrs, SealExit, SpanKind, SpanStatus};
 use review_telemetry::segment::reader;
-use review_telemetry::segment::writer::Writer;
+use review_telemetry::segment::writer::{self, Writer};
 use review_telemetry::trace::Execution;
 use review_telemetry::view::{self, TailSelection};
 
@@ -131,11 +131,12 @@ fn telemetry_visibility_latency_holds() {
     writer.span_end(&attempt, SpanStatus::Ok, Attrs::new(), 3);
     writer.span_end(&node, SpanStatus::Ok, Attrs::new(), 2);
     writer.span_end(&run, SpanStatus::Ok, Attrs::new(), 1);
-    assert!(writer.run_ended(), "the consumer stops within the bound");
+    writer.run_ended();
     assert!(
-        !writer.consumer_running(),
-        "the run's end stops the consumer"
+        writer.consumer_running(),
+        "the run's end leaves the segment to the consumer"
     );
+    writer.begin_terminal();
     writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
     writer.finish(SealExit::Ok).unwrap().unwrap();
     // `tail` exits once the writer it followed sealed.
@@ -151,8 +152,9 @@ fn telemetry_visibility_latency_holds() {
     );
 }
 
-/// A consumer blocked in a write is abandoned at the run's end within the 2 s bound: no other
-/// thread writes, seals or replaces the segment, which stays `.jsonl` with what was flushed.
+/// A consumer blocked in a write is abandoned at the seal within the 2 s bound: ending the run
+/// waits for nothing, and no other thread writes, seals or replaces the segment, which stays
+/// `.jsonl` with what was flushed.
 #[test]
 fn telemetry_consumer_shutdown_is_bounded() {
     let temp = tempfile::tempdir().unwrap();
@@ -190,17 +192,27 @@ fn telemetry_consumer_shutdown_is_bounded() {
     while writes.load(Ordering::SeqCst) < 2 && started.elapsed() < Duration::from_secs(5) {
         std::thread::sleep(Duration::from_millis(5));
     }
+    let ending = Instant::now();
     writer.span_end(&run, SpanStatus::Ok, Attrs::new(), 1);
-    let stopping = Instant::now();
-    assert!(!writer.run_ended(), "a blocked consumer is abandoned");
-    let waited = stopping.elapsed();
+    writer.run_ended();
+    writer.begin_terminal();
+    writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
+    assert!(
+        ending.elapsed() < Duration::from_millis(500),
+        "ending the run and the command waits for nothing"
+    );
+    let sealing = Instant::now();
+    assert!(
+        writer.finish(SealExit::Ok).is_err(),
+        "a blocked consumer is abandoned"
+    );
+    let waited = sealing.elapsed();
     assert!(
         waited >= Duration::from_millis(1_900) && waited < Duration::from_secs(4),
         "{waited:?}"
     );
     assert!(writer.abandoned());
     // Nothing else seals or writes it.
-    writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
     assert!(writer.finish(SealExit::Ok).is_err());
     assert!(path.exists(), "left unsealed");
     assert_eq!(std::fs::metadata(&path).unwrap().len(), flushed);
@@ -213,4 +225,114 @@ fn telemetry_consumer_shutdown_is_bounded() {
         writer.problems()
     );
     release.store(true, Ordering::SeqCst);
+}
+
+/// Design §6: a consumer that missed the deadline never publishes a sealed segment. Its write
+/// of the compressed copy is held until `finish` has given up at the 2 s bound, then released:
+/// the compressed bytes were staged, the deadline is found passed, and the staged files are
+/// removed. The live `.jsonl` stays, no `.jsonl.gz` and no `.refs` appear, and a later reader
+/// recovers the prefix — every record the consumer wrote, its seal superseded by the recovered
+/// one.
+#[test]
+fn telemetry_released_terminal_write_cannot_seal_after_the_deadline() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut options = options(temp.path(), Level::Spans);
+    let release = Arc::new(AtomicBool::new(false));
+    let returned = Arc::new(AtomicBool::new(false));
+    let (gate, done) = (release.clone(), returned.clone());
+    options.write_hook = Some(Arc::new(move |_| {
+        if writer::phase() == writer::Phase::Compressed {
+            while !gate.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            done.store(true, Ordering::SeqCst);
+        }
+        Ok(())
+    }));
+    let writer = Writer::new(options).unwrap();
+    let command = writer
+        .span_start(None, None, "af.command", SpanKind::Internal, Attrs::new())
+        .unwrap();
+    let run = writer
+        .span_start(
+            None,
+            Some(&command),
+            "af.run",
+            SpanKind::Internal,
+            Attrs::new(),
+        )
+        .unwrap();
+    writer.run_started();
+    writer.span_end(&run, SpanStatus::Ok, Attrs::new(), 1);
+    writer.run_ended();
+    writer.begin_terminal();
+    writer.span_end(&command, SpanStatus::Ok, Attrs::new(), 0);
+    let id = writer.segment_id().unwrap();
+    let layout = review_telemetry::layout::Layout::new(temp.path());
+    let started = Instant::now();
+    assert_eq!(
+        writer.finish(SealExit::Ok).unwrap_err(),
+        writer::ABANDONED,
+        "finish gives up at the bound"
+    );
+    assert!(started.elapsed() < Duration::from_secs(4));
+    // The held write goes through after the deadline.
+    release.store(true, Ordering::SeqCst);
+    let names = || -> Vec<String> {
+        std::fs::read_dir(layout.segments())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    };
+    let waiting = Instant::now();
+    while !(returned.load(Ordering::SeqCst) && names().len() == 1) {
+        assert!(
+            waiting.elapsed() < Duration::from_secs(10),
+            "the released consumer removes what it staged: {:?}",
+            names()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Long enough for a consumer that would publish to have done so.
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(names(), [format!("{id}.jsonl")], "only the live segment");
+    assert!(!layout.sealed_segment(&id).exists());
+    assert!(!layout.refs(&id).exists());
+    // The process ends: its lock goes with the last handle.
+    drop(writer);
+    let recovering = Instant::now();
+    let recovery = loop {
+        match reader::recover(&layout, &id).unwrap() {
+            reader::Recovery::Live => {
+                assert!(recovering.elapsed() < Duration::from_secs(10));
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            other => break other,
+        }
+    };
+    assert!(
+        matches!(
+            recovery,
+            reader::Recovery::Recovered {
+                discarded_bytes: 0,
+                ..
+            }
+        ),
+        "{recovery:?}"
+    );
+    let records = reader::read_sealed(&layout.sealed_segment(&id)).unwrap();
+    let ended: Vec<&str> = records
+        .iter()
+        .filter_map(|record| match record {
+            review_telemetry::record::Record::SpanEnd(end) if end.end_unix_ns.is_some() => {
+                Some(end.span_id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ended, [run.as_str(), command.as_str()], "the whole prefix");
+    let Some(review_telemetry::record::Record::Seal(seal)) = records.last() else {
+        panic!("recovered with a seal");
+    };
+    assert_eq!(seal.exit, SealExit::Recovered);
 }

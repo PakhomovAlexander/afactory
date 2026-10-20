@@ -301,15 +301,6 @@ pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError>
 }
 
 impl TaskExecutionProjection {
-    /// The writer epochs under which some Attempt of this Task was prepared: only a running
-    /// kernel run dispatches, so each is a lease that began one.
-    pub(super) fn prepared_epochs(&self) -> BTreeSet<u64> {
-        self.attempts
-            .values()
-            .map(|attempt| attempt.prepared_epoch)
-            .collect()
-    }
-
     fn check_reservation(
         &self,
         lease: &TaskLease,

@@ -712,11 +712,12 @@ fn run(
         .map(|execution| execution.interval().1)
         .max()
         .unwrap_or(0);
+    // The latest execution's own outcome and nothing else: a live execution whose `af.run` has
+    // no end attributes yet has none, never an earlier execution's.
     let outcome = executions
         .list
-        .iter()
-        .rev()
-        .find_map(|execution| execution.outcome.clone());
+        .last()
+        .and_then(|execution| execution.outcome.clone());
     let failures: i64 = index
         .connection()
         .query_row(

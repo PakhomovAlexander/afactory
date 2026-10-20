@@ -1485,7 +1485,8 @@ executions (one per process that worked on it) and first start; its **active** t
 of the executions' intervals, an overlap counted once), **execution** time (their sum, \
 `af.execution.duration_sum`) and **elapsed** time (first start to last end, idle gaps \
 included), an interval without a recorded end ending at its segment's last record and marked \
-open; the latest outcome; the Attempts' exact usage counters and charge as the kernel accounted \
+open; the latest execution's own outcome (none while its `af.run` has not ended); the \
+Attempts' exact usage counters and charge as the kernel accounted \
 them; failures; coverage (`complete` when every retained segment was sealed by its writer with \
 nothing dropped); and the retained history: `prefix:k` when executions 1 to k are retained with \
 their seals and no ordinal between them is missing, `partial` with the missing ordinals \

@@ -17,12 +17,19 @@
 //! reclaimed by every sweep ([`reclaim`]). A directory of another telemetry version (`v0/`,
 //! `v2/`) is one `unreadable` entry, evicted whole like a segment and never read.
 //!
+//! **Last use.** A sealed segment's last use is its validated seal record's `ended_unix_ns`,
+//! read from the file the inventory identifies; a file's modification time serves only an entry
+//! with no seal to read — a corrupt segment, another version's directory, or a sealed file whose
+//! seal cannot be read, which is reported.
+//!
 //! **Identity-bound eviction** (ADR-0144). The inventory records where it found each entry —
-//! the telemetry root's and the entry's own device and inode ([`Found`]) — and its last-use
-//! time; [`evict`] checks all of them again immediately before it unlinks, through the held
-//! directory descriptors: the root it opens must be the one inventoried, the file under the
-//! name the one inventoried, no writer may hold its lock, and it must not have been used within
-//! [`PROTECTED`]. An entry that changed is left in place and reported as changed.
+//! the telemetry root's device and inode and those of every file the entry owns, the `.refs`
+//! manifest included ([`Found`]) — and its last-use time; [`evict`] checks all of them again
+//! before it unlinks any, through the held directory descriptors: the root it opens must be the
+//! one inventoried, every file under its name a regular file and the one inventoried, none
+//! modified within [`PROTECTED`], no writer may hold its lock, and the entry must not have been
+//! used within [`PROTECTED`]. When any file of the entry changed, the whole entry is left in
+//! place and reported as changed.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -75,21 +82,27 @@ pub struct Segment {
     pub path: PathBuf,
     /// Allocated bytes of the segment's own files (the segment and its manifest).
     pub own_bytes: u64,
-    /// Seal time: when the sealed file was written; for a corrupt segment or another version's
-    /// directory its modification time.
+    /// Seal time: the `ended_unix_ns` of the sealed file's validated seal record; for a
+    /// corrupt segment, another version's directory, or a sealed file whose seal cannot be read,
+    /// its modification time.
     pub last_use_unix_ms: u64,
     /// The blob digests it references.
     pub refs: BTreeSet<String>,
     /// The device and inode of its file (another version's: its directory) as inventoried.
     pub identity: Option<(u64, u64)>,
+    /// The device and inode of a sealed segment's `.refs` manifest as inventoried; `None` when
+    /// it had none.
+    pub manifest: Option<(u64, u64)>,
 }
 
-/// Where the inventory found an entry: the telemetry root's device and inode and the entry's
-/// own. An applied eviction removes nothing that is no longer both.
+/// Where the inventory found an entry: the telemetry root's device and inode and those of every
+/// file the entry owns. An applied eviction removes nothing of an entry any of which changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Found {
     pub root: (u64, u64),
     pub file: (u64, u64),
+    /// A sealed segment's `.refs` manifest; `None` when the inventory found none.
+    pub manifest: Option<(u64, u64)>,
 }
 
 /// One telemetry directory as the budget sees it.
@@ -135,6 +148,24 @@ fn identity_of(directory: &Confined, name: &str) -> Option<(u64, u64)> {
     directory.entry_identity(name)
 }
 
+/// The seal time of the sealed segment `id`, in unix milliseconds — its validated seal record's
+/// `ended_unix_ns` — with the device and inode of the file it was read from.
+fn sealed_at(segments: &Confined, id: &str) -> Result<(u64, (u64, u64)), String> {
+    let (records, read) = reader::read_sealed_in(segments, id)?;
+    let ended = match records.last() {
+        Some(crate::record::Record::Seal(seal)) => seal.ended_unix_ns.parse::<u128>().ok(),
+        _ => None,
+    }
+    .ok_or_else(|| {
+        format!(
+            "{}: its seal names no end time",
+            segments.join(&format!("{id}{}", layout::SEALED)).display()
+        )
+    })?;
+    let ms = u64::try_from(ended / 1_000_000).unwrap_or(u64::MAX);
+    Ok((ms, (read.dev, read.ino)))
+}
+
 impl Directory {
     /// The eviction target of segment `id` as this inventory found it; `None` for an entry in
     /// use or one found without an identity.
@@ -152,6 +183,7 @@ impl Directory {
             found: Found {
                 root: self.root_identity?,
                 file: segment.identity?,
+                manifest: segment.manifest,
             },
             last_use_unix_ms: segment.last_use_unix_ms,
         })
@@ -188,6 +220,7 @@ impl Directory {
                         last_use_unix_ms: root_dir.newest_modified_unix_ms(&name),
                         refs: BTreeSet::new(),
                         identity: identity_of(&root_dir, &name),
+                        manifest: None,
                     },
                 );
             }
@@ -232,6 +265,7 @@ impl Directory {
                             last_use_unix_ms: modified_ms(&segments, &name),
                             refs,
                             identity: identity_of(&segments, &name),
+                            manifest: None,
                         },
                     );
                 }
@@ -239,11 +273,26 @@ impl Directory {
             for id in &listing.sealed {
                 let name = format!("{id}{}", layout::SEALED);
                 let refs_name = format!("{id}{}", layout::REFS);
+                // The manifest's identity before its digests are read: an eviction removes it only
+                // while it is still the file these digests came from.
+                let manifest = segments
+                    .identity(&refs_name)
+                    .map(|found| (found.dev, found.ino));
                 let refs = match reader::manifest_digests_in(&segments, id) {
                     Ok(refs) => refs,
                     Err(problem) => {
                         directory.problems.push(problem);
                         BTreeSet::new()
+                    }
+                };
+                // The last use is the seal time of the file read, bound to its identity.
+                let (last_use_unix_ms, identity) = match sealed_at(&segments, id) {
+                    Ok((sealed_ms, read)) => (sealed_ms, Some(read)),
+                    Err(problem) => {
+                        directory
+                            .problems
+                            .push(format!("{problem}; its last use is its modification time"));
+                        (modified_ms(&segments, &name), identity_of(&segments, &name))
                     }
                 };
                 directory.segments.insert(
@@ -253,9 +302,10 @@ impl Directory {
                         state: State::Sealed,
                         path: segments.join(&name),
                         own_bytes: segments.allocated(&name) + segments.allocated(&refs_name),
-                        last_use_unix_ms: modified_ms(&segments, &name),
+                        last_use_unix_ms,
                         refs,
-                        identity: identity_of(&segments, &name),
+                        identity,
+                        manifest,
                     },
                 );
             }
@@ -271,6 +321,7 @@ impl Directory {
                         last_use_unix_ms: modified_ms(&segments, &name),
                         refs: BTreeSet::new(),
                         identity: identity_of(&segments, &name),
+                        manifest: None,
                     },
                 );
             }
@@ -361,7 +412,11 @@ impl Directory {
                         State::Sealed | State::Corrupt | State::Unreadable,
                         Some(root),
                         Some(file),
-                    ) => Some(Found { root, file }),
+                    ) => Some(Found {
+                        root,
+                        file,
+                        manifest: segment.manifest,
+                    }),
                     _ => None,
                 },
             })
@@ -418,11 +473,13 @@ fn unix_ms(time: SystemTime) -> u64 {
 
 /// Remove the entry `target` of `root` as the inventory found it — a sealed segment with its
 /// manifest, a corrupt one, or another version's directory — relative to the opened
-/// directories, never through a link. Immediately before it unlinks it checks again, through
-/// the held descriptors, that the root is the directory inventoried, that the name still holds
-/// the file (or directory) inventoried, that no writer holds its lock (nor a live file of the
-/// segment's), and that it was not used within [`PROTECTED`] of `now`; an entry that fails any
-/// of these is left in place and returned as [`Evicted::Changed`].
+/// directories, never through a link. Before it unlinks any file of the entry it checks again,
+/// through the held descriptors, that the root is the directory inventoried, that every file
+/// the entry owns (the `.refs` manifest included) is a regular file under its name with the
+/// device and inode inventoried and was not modified within [`PROTECTED`] of `now`, that no
+/// writer holds its lock (nor a live file of the segment's), and that its last use — a sealed
+/// segment's seal time — is not within [`PROTECTED`] of `now`; an entry any file of which fails
+/// one of these is left in place whole and returned as [`Evicted::Changed`].
 pub fn evict(root: &Path, target: &Target, now: SystemTime) -> Result<Evicted, String> {
     let failed = |error: std::io::Error| format!("{}: {error}", root.display());
     let changed = |why: &str| Ok(Evicted::Changed(why.to_string()));
@@ -498,8 +555,17 @@ pub fn evict(root: &Path, target: &Target, now: SystemTime) -> Result<Evicted, S
     let Ok(held) = layout::try_lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock) else {
         return changed("locked: in use");
     };
-    if protected_until(mtime_ms(&opened).max(target.last_use_unix_ms)) > now_ms {
+    if protected_until(target.last_use_unix_ms) > now_ms {
         return changed("used within the last hour");
+    }
+    if protected_until(mtime_ms(&opened)) > now_ms {
+        return changed("modified within the last hour");
+    }
+    // The manifest, before either file goes: the one inventoried, or still none.
+    if let Some(manifest) = &manifest
+        && let Some(why) = manifest_changed(&segments, manifest, target.found.manifest, now_ms)
+    {
+        return changed(why);
     }
     // Still the same file under the name at the moment it is unlinked.
     if segments
@@ -513,17 +579,53 @@ pub fn evict(root: &Path, target: &Target, now: SystemTime) -> Result<Evicted, S
         .unlink(&name)
         .map_err(|error| format!("{}: {error}", segments.join(&name).display()))?;
     drop(held);
-    if let Some(manifest) = manifest {
+    // The manifest checked again at the moment it is unlinked: a file that took its name since
+    // is not this entry's and stays.
+    if let Some(manifest) = manifest
+        && target.found.manifest.is_some()
+        && manifest_changed(&segments, &manifest, target.found.manifest, now_ms).is_none()
+    {
         let allocated = segments.allocated(&manifest);
-        match segments.remove_file(&manifest) {
+        match segments.unlink(&manifest) {
             Ok(()) => bytes += allocated,
-            Err(_) if segments.kind(&manifest).is_none() => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
                 return Err(format!("{}: {error}", segments.join(&manifest).display()));
             }
         }
     }
     Ok(Evicted::Removed(bytes))
+}
+
+/// Why the manifest `name` is no longer what the inventory found (`found`: its device and
+/// inode, or `None` for no manifest): another file under the name, something not a regular
+/// file, one modified within [`PROTECTED`] of `now_ms`, or one where there was none. `None` when
+/// it is unchanged.
+fn manifest_changed(
+    segments: &Confined,
+    name: &str,
+    found: Option<(u64, u64)>,
+    now_ms: u64,
+) -> Option<&'static str> {
+    let present = segments.kind(name);
+    let Some(found) = found else {
+        return present
+            .is_some()
+            .then_some("its manifest appeared since the inventory");
+    };
+    if present.is_none() {
+        return Some("its manifest is gone since the inventory");
+    }
+    let Some(current) = segments.identity(name) else {
+        return Some("its manifest was replaced since the inventory by something not a file");
+    };
+    if (current.dev, current.ino) != found {
+        return Some("its manifest was replaced since the inventory");
+    }
+    if mtime_ms(&current).saturating_add(PROTECTED.as_millis() as u64) > now_ms {
+        return Some("its manifest was modified within the last hour");
+    }
+    None
 }
 
 /// What one sweep reclaimed in a directory beyond its evictions, as allocated bytes.
@@ -647,6 +749,7 @@ mod tests {
             last_use_unix_ms: 0,
             refs: refs.iter().map(|digest| digest.to_string()).collect(),
             identity: None,
+            manifest: None,
         }
     }
 

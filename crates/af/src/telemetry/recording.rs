@@ -28,11 +28,14 @@ impl Recording {
     }
 
     /// End the command: every run span it opened, then its `af.command` span with the exit
-    /// code, then the seal. Every telemetry-only problem is one line on stderr.
+    /// code, then the seal. Every record from here on is the consumer thread's write, the
+    /// command's end and the seal are one terminal request to it, and every wait of the shutdown
+    /// shares one bound of 2 s. Every telemetry-only problem is one line on stderr.
     pub(crate) fn finish(mut self, code: i32, exit: SealExit) {
         let Some(telemetry) = self.telemetry.take() else {
             return;
         };
+        telemetry.begin_terminal();
         review_pipeline::telemetry::end_runs();
         if !self.command.is_disabled() {
             self.command.record("process.exit_code", i64::from(code));
@@ -56,18 +59,28 @@ impl Recording {
 /// `AF_TEST_TELEMETRY_STALL_AFTER_WRITES=N`: after N writes the consumer thread blocks as a
 /// write blocked on the volume would (the appending thread never does).
 /// `AF_TEST_TELEMETRY_STALL_SEAL`: the consumer's write of the seal record blocks the same way.
+/// `AF_TEST_TELEMETRY_STALL_COMMAND_END`: the consumer's write of the terminal records (the
+/// `af.command` end) blocks the same way.
 /// `AF_TEST_TELEMETRY_QUOTA`: every write fails as on a full quota.
 fn test_hook() -> Option<review_telemetry::segment::writer::WriteHook> {
     #[cfg(debug_assertions)]
     {
+        use review_telemetry::segment::writer::{Phase, phase};
         if std::env::var_os("AF_TEST_TELEMETRY_QUOTA").is_some() {
             return Some(std::sync::Arc::new(|_| {
                 Err(std::io::Error::from_raw_os_error(nix::libc::EDQUOT))
             }));
         }
-        if std::env::var_os("AF_TEST_TELEMETRY_STALL_SEAL").is_some() {
-            return Some(std::sync::Arc::new(|_| {
-                if review_telemetry::segment::writer::sealing() {
+        let held = if std::env::var_os("AF_TEST_TELEMETRY_STALL_SEAL").is_some() {
+            Some(Phase::Seal)
+        } else if std::env::var_os("AF_TEST_TELEMETRY_STALL_COMMAND_END").is_some() {
+            Some(Phase::Terminal)
+        } else {
+            None
+        };
+        if let Some(held) = held {
+            return Some(std::sync::Arc::new(move |_| {
+                if phase() == held {
                     loop {
                         std::thread::sleep(std::time::Duration::from_secs(3_600));
                     }

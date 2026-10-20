@@ -37,7 +37,22 @@
       "state": "shared"
     }
   ],
-  "removals": [],
+  "removals": [
+    {
+      "kind": "telemetry",
+      "path": "<root>/xstate/af/telemetry/v1/segments/1700000000000-4242-0a1b2c3d.jsonl.gz",
+      "segment_id": "1700000000000-4242-0a1b2c3d",
+      "bytes": "<n>",
+      "rule": "collection"
+    },
+    {
+      "kind": "telemetry",
+      "path": "<root>/xstate/af/telemetry/v1/segments/1700000100000-4243-0b1c2d3e.jsonl.gz",
+      "segment_id": "1700000100000-4243-0b1c2d3e",
+      "bytes": "<n>",
+      "rule": "collection"
+    }
+  ],
   "reclaimed": [],
   "registry_dropped": [],
   "changed": [],

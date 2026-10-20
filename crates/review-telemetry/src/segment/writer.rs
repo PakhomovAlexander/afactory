@@ -10,31 +10,34 @@
 //! rename are the consumer's work ([`Writer::consume`] and the sealing below) and no other
 //! code's. Appending threads only encode into the buffer and signal [`Shared::wake`].
 //!
-//! **The consumer thread** (design §6) exists while a run is open: [`Writer::run_started`]
-//! starts it when the process opens its first `af.run` span and [`Writer::run_ended`] stops it
-//! when the last one ends. It waits on one condition with one deadline and wakes when a kernel
-//! thread appends a record, when the stream queue receives a chunk ([`Writer::stream_chunk`],
-//! the hook package P6 fills), or when the deadline passes — the oldest pending record's time
-//! plus `flush_latency_ms`. After each wake it drains the stream queue, writes every full
-//! buffer, and writes the current buffer when the queue is empty or the deadline has passed;
-//! then it recomputes the deadline and sleeps. There is no periodic timer and no polling: a
-//! quiet writer sleeps without a deadline. While no consumer thread runs (before the first
-//! `af.run`, after the last, and in a process that opens none) the appending thread runs the
-//! same consumer code after each append, under the consumer's own mutex, so there is never a
-//! second owner.
+//! **The consumer thread** (design §6) starts when the process opens its first `af.run` span
+//! ([`Writer::run_started`]) and is from then on the segment's only writer, until the segment
+//! is sealed or abandoned: ending `af.run` ([`Writer::run_ended`]) neither stops it nor hands
+//! the writes back, so the `af.command` end and every later record go through it too. It waits
+//! on one condition with one deadline and wakes when a kernel thread appends a record, when the
+//! stream queue receives a chunk ([`Writer::stream_chunk`], the hook package P6 fills), or when
+//! the deadline passes — the oldest pending record's time plus `flush_latency_ms`. After each
+//! wake it drains the stream queue, writes every full buffer, and writes the current buffer when
+//! the queue is empty or the deadline has passed; then it recomputes the deadline and sleeps.
+//! There is no periodic timer and no polling: a quiet writer sleeps without a deadline. Before
+//! the consumer thread starts (before the first `af.run`, and in a process that opens none) the
+//! appending thread runs the same consumer code after each append, under the consumer's own
+//! mutex, so there is never a second owner; [`Writer::begin_terminal`] starts the consumer for
+//! the shutdown when no `af.run` did.
 //!
-//! **Bounded shutdown.** Stopping signals the consumer and waits for it at most
-//! [`layout::LOCK_WAIT`] (2 s). A consumer that does not stop in time — a write blocked on the
-//! volume — is abandoned: no other thread writes, seals, compresses or replaces the segment, the
-//! records never written are absent, the lock ends with the process, and the next reader
-//! recovers the flushed prefix.
-//!
-//! **Sealing.** The seal is the consumer thread's too: [`Writer::finish`] asks the running
-//! consumer to seal — or starts one for the seal when none runs — and waits for it once, at most
-//! [`layout::LOCK_WAIT`], over the whole terminal operation: every pending record written, the
-//! seal record's write, the `.refs` manifest, the compression and the rename. A consumer that
-//! has not finished by then is abandoned like one that does not stop: the segment stays an
-//! unsealed `.jsonl` for the next reader, and the calling thread returns at once.
+//! **Bounded shutdown and sealing.** The seal is the consumer thread's: [`Writer::finish`] sends
+//! it one terminal request — the records still pending (the `af.command` end among them), the
+//! seal record, the `.refs` manifest, the compression and the publication — and waits for it
+//! once, at most [`layout::LOCK_WAIT`] (2 s), over all of it; once [`Writer::begin_terminal`]
+//! began the shutdown, that bound runs from there and every other wait of the shutdown (a
+//! publication's flush) ends with it too. A consumer that has not finished
+//! by then — a write blocked on the volume — is abandoned: no other thread writes, seals,
+//! compresses or replaces the segment, the records never written are absent, the lock ends with
+//! the process, and the next reader recovers the flushed prefix. The compressed segment and its
+//! manifest are staged in temporary files; abandonment is checked again after their blocking
+//! write and sync, and the publication is claimed, under the lock [`Writer::finish`] judges the
+//! deadline under, immediately before the first rename into place: a consumer released after
+//! the deadline publishes nothing, removes what it staged and leaves the live segment.
 //!
 //! **Segment limit.** `segment_max_bytes` bounds the file across every record kind. The last
 //! [`TERMINAL_RESERVE_BYTES`] are kept for terminal records (`problem`, `seal`): past the rest no
@@ -96,9 +99,10 @@ pub enum HookAction {
 /// the protocol's order. A hook that blocks pauses the publisher.
 pub type PublishHook = Arc<dyn Fn(PublishStep) -> HookAction + Send + Sync>;
 
-/// Called by the segment's owner before each `write(2)` with the write's ordinal (1 for the
-/// first): fixtures block it to stall the consumer as a write blocked on the volume would, or
-/// return the error a full quota would give, which fails the write.
+/// Called by the segment's owner before each `write(2)` — of the segment, and of its compressed
+/// copy at the seal — with the write's ordinal (1 for the first): fixtures block it to stall the
+/// consumer as a write blocked on the volume would, or return the error a full quota would give,
+/// which fails the write. [`phase`] says which write it is.
 pub type WriteHook = Arc<dyn Fn(u64) -> std::io::Result<()> + Send + Sync>;
 
 /// The writer's clock in unix nanoseconds, injected by fixtures that compare what two runs
@@ -205,12 +209,10 @@ enum State {
 /// Who owns the segment's writes now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
-    /// No consumer thread: the appending thread runs the consumer code.
+    /// No consumer thread yet: the appending thread runs the consumer code.
     Inline,
-    /// The consumer thread owns every write.
+    /// The consumer thread owns every write until the segment is sealed or abandoned.
     Running,
-    /// The consumer thread is asked to write what is pending and exit.
-    Stopping,
 }
 
 /// The buffer and the in-memory counters, guarded by one mutex. Appending threads hold it only
@@ -219,9 +221,18 @@ struct Pending {
     state: State,
     segment_id: String,
     next_seq: u64,
-    /// Full buffers waiting for the consumer, oldest first.
-    ready: VecDeque<Vec<u8>>,
+    /// Full buffers waiting for the consumer, oldest first, each marked when it holds terminal
+    /// records (appended after [`Writer::begin_terminal`]).
+    ready: VecDeque<(Vec<u8>, bool)>,
     buffer: Vec<u8>,
+    /// Records appended from now on are terminal: the root span's (`af.command`'s) end and what
+    /// follows it.
+    terminal: bool,
+    /// Set by [`Writer::begin_terminal`]: the one bound every wait of the shutdown shares.
+    terminal_deadline: Option<Instant>,
+    /// The consumer claimed the publication of the sealed segment before the deadline: the
+    /// renames into place are under way and nothing abandons them.
+    publishing: bool,
     flush_requested: bool,
     /// Bytes of every record accepted, written or buffered.
     accepted_bytes: u64,
@@ -237,7 +248,7 @@ struct Pending {
     blobs_in_segment: BTreeSet<String>,
     referenced: BTreeSet<String>,
     mode: Mode,
-    /// `af.run` spans open in this process: the consumer thread lives while one is.
+    /// `af.run` spans open in this process.
     runs_open: u64,
     /// Records accepted so far; the consumer wakes when it has seen fewer.
     appends: u64,
@@ -250,8 +261,9 @@ struct Pending {
     stream_pending: bool,
     /// The consumer thread has exited.
     consumer_exited: bool,
-    /// [`Writer::finish`] asks the consumer to seal: the seal's exit and end time.
-    seal_request: Option<(SealExit, String)>,
+    /// [`Writer::finish`] asks the consumer to seal: the seal's exit, its end time, and the
+    /// deadline after which nothing may be published.
+    seal_request: Option<(SealExit, String, Instant)>,
     /// What the consumer's seal came to, for [`Writer::finish`].
     seal_result: Option<Result<Option<Sealed>, String>>,
 }
@@ -300,20 +312,49 @@ impl Tree {
     }
 }
 
-thread_local! {
-    /// Set on the consumer thread while it writes a segment's seal record.
-    static SEALING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+/// Which write the segment's owner is making, for a fixture's [`WriteHook`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// Records appended before the terminal ones.
+    Records,
+    /// Terminal records: the `af.command` end and what follows it, before the seal.
+    Terminal,
+    /// The seal record.
+    Seal,
+    /// The compressed copy of the segment, staged before it is published.
+    Compressed,
 }
 
-/// Whether the calling thread is writing a segment's seal record: a fixture's [`WriteHook`]
-/// asks it to hold the terminal write.
+thread_local! {
+    /// Set on the consumer thread while it makes a write of a later phase than [`Phase::Records`].
+    static PHASE: std::cell::Cell<Phase> = const { std::cell::Cell::new(Phase::Records) };
+}
+
+/// Which write the calling thread is making: a fixture's [`WriteHook`] asks it to hold one.
+pub fn phase() -> Phase {
+    PHASE.with(std::cell::Cell::get)
+}
+
+/// Whether the calling thread is writing a segment's seal record.
 pub fn sealing() -> bool {
-    SEALING.with(std::cell::Cell::get)
+    phase() == Phase::Seal
+}
+
+/// Run `work` in `phase`, then return to the phase before.
+fn in_phase<T>(phase: Phase, work: impl FnOnce() -> T) -> T {
+    let before = PHASE.with(|cell| cell.replace(phase));
+    let value = work();
+    PHASE.with(|cell| cell.set(before));
+    value
 }
 
 /// The problem an abandoned consumer leaves.
 pub const ABANDONED: &str = "the telemetry consumer did not stop within 2 s; the segment is \
                              left unsealed for the next reader to recover";
+
+/// The problem a seal still being published at the bound leaves.
+pub const PUBLISHING: &str = "the telemetry seal was still being published at the 2 s bound; \
+                              the process does not wait for it";
 
 /// Shared between every handle of one writer.
 pub struct Shared {
@@ -522,6 +563,15 @@ enum Refusal {
     Full(u64),
 }
 
+/// When a wait that begins now gives up: [`layout::LOCK_WAIT`] from now, and never after the
+/// shutdown's one bound once it began.
+fn wait_until(pending: &Pending) -> Instant {
+    let own = Instant::now() + layout::LOCK_WAIT;
+    pending
+        .terminal_deadline
+        .map_or(own, |shutdown| own.min(shutdown))
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -631,6 +681,9 @@ impl Writer {
                     next_seq: 1,
                     ready: VecDeque::new(),
                     buffer: Vec::new(),
+                    terminal: false,
+                    terminal_deadline: None,
+                    publishing: false,
                     flush_requested: false,
                     accepted_bytes: 0,
                     exhausted: false,
@@ -932,7 +985,8 @@ impl Writer {
                 && pending.buffer.len() + line.bytes.len() + 1 > flush_bytes
             {
                 let full = std::mem::take(&mut pending.buffer);
-                pending.ready.push_back(full);
+                let terminal = pending.terminal;
+                pending.ready.push_back((full, terminal));
             }
             pending.buffer.extend_from_slice(&line.bytes);
             pending.buffer.push(b'\n');
@@ -962,9 +1016,9 @@ impl Writer {
             ) {
                 return;
             }
-            let mut chunks: Vec<Vec<u8>> = pending.ready.drain(..).collect();
+            let mut chunks: Vec<(Vec<u8>, bool)> = pending.ready.drain(..).collect();
             if (force || pending.flush_requested) && !pending.buffer.is_empty() {
-                chunks.push(std::mem::take(&mut pending.buffer));
+                chunks.push((std::mem::take(&mut pending.buffer), pending.terminal));
             }
             if pending.buffer.is_empty() {
                 pending.oldest = None;
@@ -982,16 +1036,14 @@ impl Writer {
             return;
         }
         let file = consumer.file.as_mut().expect("opened above");
-        for chunk in chunks {
-            let hooked = match &self.shared.options.write_hook {
-                Some(hook) => hook(
-                    self.shared
-                        .writes
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                        + 1,
-                ),
-                None => Ok(()),
+        for (chunk, terminal) in chunks {
+            // A terminal chunk is a write of the terminal phase, unless a later one (the seal's)
+            // is already under way.
+            let phase = match phase() {
+                Phase::Records if terminal => Phase::Terminal,
+                phase => phase,
             };
+            let hooked = in_phase(phase, || self.write_hook());
             // A write held past the bounded shutdown belongs to an abandoned segment: nothing
             // more reaches the file.
             if hooked.is_ok() && lock(&self.shared.pending).state == State::Abandoned {
@@ -1005,6 +1057,19 @@ impl Writer {
                 );
                 return;
             }
+        }
+    }
+
+    /// The write hook before a write, with the write's ordinal; `Ok` without a hook.
+    fn write_hook(&self) -> std::io::Result<()> {
+        match &self.shared.options.write_hook {
+            Some(hook) => hook(
+                self.shared
+                    .writes
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    + 1,
+            ),
+            None => Ok(()),
         }
     }
 
@@ -1029,7 +1094,7 @@ impl Writer {
         pending.flush_asked += 1;
         let ticket = pending.flush_asked;
         self.shared.wake.notify_all();
-        let deadline = Instant::now() + layout::LOCK_WAIT;
+        let deadline = wait_until(&pending);
         while pending.flush_done < ticket && !pending.consumer_exited {
             if matches!(
                 pending.state,
@@ -1052,15 +1117,47 @@ impl Writer {
     }
 
     /// The process opened an `af.run` span: the first one starts the consumer thread, the
-    /// segment's sole owner while a run is open. At `off` there is no writer, so no thread.
+    /// segment's only writer from then on until it is sealed or abandoned. At `off` there is no
+    /// writer, so no thread.
     pub fn run_started(&self) {
+        lock(&self.shared.pending).runs_open += 1;
+        self.start_consumer();
+    }
+
+    /// The process ended an `af.run` span. The consumer thread keeps the segment: the records
+    /// after it, the `af.command` end among them, go through it, and [`Self::finish`] seals.
+    pub fn run_ended(&self) {
         let mut pending = lock(&self.shared.pending);
-        pending.runs_open += 1;
-        if pending.runs_open != 1
-            || pending.mode != Mode::Inline
-            || !matches!(pending.state, State::Unopened | State::Open)
+        pending.runs_open = pending.runs_open.saturating_sub(1);
+    }
+
+    /// The shutdown begins: the run spans' ends, the `af.command` end and the seal follow. From
+    /// here every wait — a publication's flush, the seal — shares one bound,
+    /// [`layout::LOCK_WAIT`] from now, and the consumer thread is started when no `af.run`
+    /// started it, so every remaining record is its write.
+    pub fn begin_terminal(&self) {
         {
-            return;
+            let mut pending = lock(&self.shared.pending);
+            if pending.state != State::Open {
+                return;
+            }
+            pending
+                .terminal_deadline
+                .get_or_insert_with(|| Instant::now() + layout::LOCK_WAIT);
+        }
+        self.start_consumer();
+    }
+
+    /// Start the consumer thread when none runs yet and the segment may still be written;
+    /// whether one runs now. A thread that cannot be started is one problem, and the appending
+    /// thread keeps the writes.
+    fn start_consumer(&self) -> bool {
+        let mut pending = lock(&self.shared.pending);
+        if pending.mode == Mode::Running {
+            return true;
+        }
+        if !matches!(pending.state, State::Unopened | State::Open) {
+            return false;
         }
         pending.mode = Mode::Running;
         pending.consumer_exited = false;
@@ -1070,7 +1167,10 @@ impl Writer {
             .name("af-telemetry".into())
             .spawn(move || writer.consumer_loop());
         match spawned {
-            Ok(handle) => *lock(&self.shared.thread) = Some(handle),
+            Ok(handle) => {
+                *lock(&self.shared.thread) = Some(handle);
+                true
+            }
             Err(error) => {
                 {
                     let mut pending = lock(&self.shared.pending);
@@ -1085,61 +1185,9 @@ impl Writer {
                         error.kind()
                     ),
                 );
+                false
             }
         }
-    }
-
-    /// The process ended an `af.run` span: when it was the last one open, the consumer thread
-    /// is stopped within the bounded shutdown. Whether it stopped (it was abandoned otherwise).
-    pub fn run_ended(&self) -> bool {
-        {
-            let mut pending = lock(&self.shared.pending);
-            pending.runs_open = pending.runs_open.saturating_sub(1);
-            if pending.runs_open > 0 {
-                return true;
-            }
-        }
-        self.stop_consumer()
-    }
-
-    /// The bounded shutdown: signal the consumer thread and wait for it at most
-    /// [`layout::LOCK_WAIT`]; one that does not stop in time is abandoned, and from then on no
-    /// thread writes, seals, compresses or replaces the segment. Whether the writes are the
-    /// appending thread's again (false once abandoned).
-    fn stop_consumer(&self) -> bool {
-        let mut pending = lock(&self.shared.pending);
-        pending.runs_open = 0;
-        if pending.state == State::Abandoned {
-            return false;
-        }
-        if pending.mode == Mode::Inline {
-            return pending.state != State::Abandoned;
-        }
-        pending.mode = Mode::Stopping;
-        self.shared.wake.notify_all();
-        let deadline = Instant::now() + layout::LOCK_WAIT;
-        while !pending.consumer_exited {
-            let now = Instant::now();
-            if now >= deadline {
-                pending.state = State::Abandoned;
-                pending
-                    .unwritten
-                    .push((ProblemWhat::Write, ABANDONED.into()));
-                return false;
-            }
-            pending = self
-                .shared
-                .done
-                .wait_timeout(pending, deadline - now)
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .0;
-        }
-        drop(pending);
-        if let Some(handle) = lock(&self.shared.thread).take() {
-            // It has exited: the join returns at once.
-            let _ = handle.join();
-        }
-        true
     }
 
     /// Install the stream queue the consumer drains at every wake (package P6).
@@ -1158,8 +1206,8 @@ impl Writer {
         let latency = Duration::from_millis(self.shared.options.flush_latency_ms.max(1));
         let mut seen = 0_u64;
         loop {
-            // Wait for an append, a stream chunk, a flush request, the stop, or the deadline.
-            let (stopping, asked, due) = {
+            // Wait for an append, a stream chunk, a flush request, the seal, or the deadline.
+            let (asked, due) = {
                 let mut pending = lock(&self.shared.pending);
                 loop {
                     if matches!(
@@ -1169,28 +1217,26 @@ impl Writer {
                         self.exit_consumer(pending);
                         return;
                     }
-                    let stopping = pending.mode == Mode::Stopping;
                     let deadline = pending.oldest.map(|oldest| oldest + latency);
                     let now = Instant::now();
                     let due = deadline.is_some_and(|deadline| now >= deadline);
-                    if let Some((exit, ended)) = pending.seal_request.take() {
+                    if let Some((exit, ended, bound)) = pending.seal_request.take() {
                         drop(pending);
-                        let sealed = self.seal(exit, ended);
+                        let sealed = self.seal(exit, ended, bound);
                         let mut pending = lock(&self.shared.pending);
                         pending.seal_result = Some(sealed);
                         pending.flush_done = pending.flush_asked;
                         self.exit_consumer(pending);
                         return;
                     }
-                    let woken = stopping
-                        || pending.appends != seen
+                    let woken = pending.appends != seen
                         || !pending.ready.is_empty()
                         || pending.flush_asked > pending.flush_done
                         || pending.stream_pending;
                     if woken || due {
                         seen = pending.appends;
                         pending.stream_pending = false;
-                        break (stopping, pending.flush_asked, due);
+                        break (pending.flush_asked, due);
                     }
                     pending = match deadline {
                         None => self
@@ -1209,37 +1255,25 @@ impl Writer {
                 }
             };
             // Drain the stream queue, then write: the buffer goes when the queue is empty, the
-            // deadline has passed, a flush was asked for, or the consumer is stopping.
+            // deadline has passed or a flush was asked for.
             let stream = lock(&self.shared.stream).clone();
             let queue_empty = stream.is_none_or(|queue| queue.drain(self));
             let pending_ask = {
                 let pending = lock(&self.shared.pending);
                 asked > pending.flush_done
             };
-            self.consume(queue_empty || due || stopping || pending_ask);
-            let pending = {
+            self.consume(queue_empty || due || pending_ask);
+            {
                 let mut pending = lock(&self.shared.pending);
                 pending.flush_done = pending.flush_done.max(asked);
-                pending
-            };
-            self.shared.done.notify_all();
-            if stopping
-                && pending.ready.is_empty()
-                && pending.buffer.is_empty()
-                && pending.appends == seen
-            {
-                self.exit_consumer(pending);
-                return;
             }
+            self.shared.done.notify_all();
         }
     }
 
-    /// The consumer thread's last act: the writes are the appending thread's again, unless the
-    /// shutdown abandoned it.
+    /// The consumer thread's last act, once the segment is sealed, failed or abandoned: no
+    /// record is accepted any more, so the writes are nobody's.
     fn exit_consumer(&self, mut pending: MutexGuard<'_, Pending>) {
-        if pending.state != State::Abandoned {
-            pending.mode = Mode::Inline;
-        }
         pending.consumer_exited = true;
         drop(pending);
         self.shared.done.notify_all();
@@ -1595,6 +1629,9 @@ impl Writer {
     /// End a span with the attributes known only at its end. A span of `depth` at most 2 (the
     /// root is depth 0) is a flush point.
     pub fn span_end(&self, span_id: &str, status: SpanStatus, attrs: Attrs, depth: usize) {
+        if depth == 0 {
+            self.mark_terminal();
+        }
         let Bounded {
             mut attributes,
             counters,
@@ -1616,6 +1653,20 @@ impl Writer {
                 counters,
             )
         });
+    }
+
+    /// The root span (`af.command`) ends: its end and every later record are terminal, set apart
+    /// from what is buffered before them.
+    fn mark_terminal(&self) {
+        let mut pending = lock(&self.shared.pending);
+        if pending.terminal {
+            return;
+        }
+        if !pending.buffer.is_empty() {
+            let earlier = std::mem::take(&mut pending.buffer);
+            pending.ready.push_back((earlier, false));
+        }
+        pending.terminal = true;
     }
 
     /// An event on a span; returns its `seq`.
@@ -1893,62 +1944,55 @@ impl Writer {
     }
 
     /// Seal the segment at exit, `Ok(None)` when nothing was ever opened. The seal is the
-    /// consumer thread's work: the running consumer is asked to seal, or one is started for the
-    /// seal when none runs, and the caller waits for it once, at most [`layout::LOCK_WAIT`],
-    /// over the whole terminal operation. A consumer that has not finished by then is
+    /// consumer thread's work: the running consumer gets one terminal request — the records
+    /// still pending, the seal record, the manifest, the compression and the publication — or
+    /// one is started for it when none runs, and the caller waits for it once, at most
+    /// [`layout::LOCK_WAIT`], over all of it. A consumer that has not finished by then is
     /// abandoned: no other thread seals, compresses, replaces or writes the segment, which the
-    /// next reader recovers.
+    /// next reader recovers, and the consumer itself publishes nothing after the deadline.
     pub fn finish(&self, exit: SealExit) -> Result<Option<Sealed>, String> {
         let ended = ns(self.now_unix_ns());
-        let deadline = Instant::now() + layout::LOCK_WAIT;
-        let mut pending = lock(&self.shared.pending);
-        match pending.state {
-            State::Unopened => return Ok(None),
-            State::Open => {}
-            State::Abandoned => return Err(ABANDONED.into()),
-            State::Failed | State::Crashed | State::Sealing | State::Sealed => {
-                return Err("the segment is not open".into());
-            }
-        }
-        pending.runs_open = 0;
-        pending.seal_result = None;
-        pending.seal_request = Some((exit, ended));
-        if pending.mode == Mode::Inline {
-            pending.mode = Mode::Running;
-            pending.consumer_exited = false;
-            drop(pending);
-            let writer = self.clone();
-            let spawned = std::thread::Builder::new()
-                .name("af-telemetry".into())
-                .spawn(move || writer.consumer_loop());
-            match spawned {
-                Ok(handle) => *lock(&self.shared.thread) = Some(handle),
-                Err(error) => {
-                    // No consumer, so no seal: the segment stays for the next reader.
-                    let mut pending = lock(&self.shared.pending);
-                    pending.seal_request = None;
-                    pending.mode = Mode::Inline;
-                    pending.consumer_exited = true;
-                    let reason = format!(
-                        "the telemetry consumer thread did not start for the seal ({}); the \
-                         segment is left unsealed for the next reader to recover",
-                        error.kind()
-                    );
-                    pending.unwritten.push((ProblemWhat::Write, reason.clone()));
-                    return Err(reason);
+        let deadline;
+        {
+            let mut pending = lock(&self.shared.pending);
+            deadline = wait_until(&pending);
+            match pending.state {
+                State::Unopened => return Ok(None),
+                State::Open => {}
+                State::Abandoned => return Err(ABANDONED.into()),
+                State::Failed | State::Crashed | State::Sealing | State::Sealed => {
+                    return Err("the segment is not open".into());
                 }
             }
-            pending = lock(&self.shared.pending);
+            pending.runs_open = 0;
+            pending.seal_result = None;
+            pending.seal_request = Some((exit, ended, deadline));
+        }
+        if !self.start_consumer() {
+            // No consumer, so no seal: the segment stays for the next reader.
+            let mut pending = lock(&self.shared.pending);
+            pending.seal_request = None;
+            let reason = "the telemetry consumer thread did not start for the seal; the segment \
+                          is left unsealed for the next reader to recover"
+                .to_string();
+            pending.unwritten.push((ProblemWhat::Write, reason.clone()));
+            return Err(reason);
         }
         self.shared.wake.notify_all();
+        let mut pending = lock(&self.shared.pending);
         while !pending.consumer_exited {
             let now = Instant::now();
             if now >= deadline {
-                pending.state = State::Abandoned;
-                pending
-                    .unwritten
-                    .push((ProblemWhat::Write, ABANDONED.into()));
-                return Err(ABANDONED.into());
+                // A publication claimed before the deadline is under way: renames, never a
+                // write, and the process does not wait for them.
+                let reason = if pending.publishing {
+                    PUBLISHING
+                } else {
+                    pending.state = State::Abandoned;
+                    ABANDONED
+                };
+                pending.unwritten.push((ProblemWhat::Write, reason.into()));
+                return Err(reason.into());
             }
             pending = self
                 .shared
@@ -1971,9 +2015,14 @@ impl Writer {
 
     /// The consumer thread's seal: every pending record written first, so a seal write held on
     /// the volume leaves every earlier record in the live file; then the seal record from the
-    /// reserve, its write, the `.refs` manifest, the compression and the rename. Nothing of it
-    /// happens once the caller has abandoned the segment.
-    fn seal(&self, exit: SealExit, ended: String) -> Result<Option<Sealed>, String> {
+    /// reserve, its write, the `.refs` manifest, the compression and the publication. Nothing
+    /// is published once `deadline` has passed or the caller has abandoned the segment.
+    fn seal(
+        &self,
+        exit: SealExit,
+        ended: String,
+        deadline: Instant,
+    ) -> Result<Option<Sealed>, String> {
         if let Some(queue) = lock(&self.shared.stream).clone() {
             queue.drain(self);
         }
@@ -2007,9 +2056,7 @@ impl Writer {
         if sealed.is_none() {
             return Err("the seal did not fit the segment".into());
         }
-        SEALING.with(|sealing| sealing.set(true));
-        self.consume(true);
-        SEALING.with(|sealing| sealing.set(false));
+        in_phase(Phase::Seal, || self.consume(true));
         let mut consumer = lock(&self.shared.consumer);
         let (segment_id, referenced) = {
             let pending = lock(&self.shared.pending);
@@ -2020,16 +2067,36 @@ impl Writer {
             }
             (pending.segment_id.clone(), pending.referenced.clone())
         };
-        let abandoned = || lock(&self.shared.pending).state == State::Abandoned;
-        let result = seal_file(&mut consumer, &segment_id, &referenced, &abandoned);
+        let shared = &self.shared;
+        let steps = SealSteps {
+            write_hook: &|| in_phase(Phase::Compressed, || self.write_hook()),
+            expired: &|| {
+                Instant::now() >= deadline || lock(&shared.pending).state == State::Abandoned
+            },
+            claim: &|| {
+                let mut pending = lock(&shared.pending);
+                if pending.state == State::Abandoned || Instant::now() >= deadline {
+                    return false;
+                }
+                pending.publishing = true;
+                true
+            },
+        };
+        let result = seal_file(&mut consumer, &segment_id, &referenced, &steps);
         let mut pending = lock(&self.shared.pending);
+        pending.publishing = false;
         if pending.state == State::Abandoned {
             return Err(ABANDONED.into());
         }
         match result {
-            Ok(sealed) => {
+            Ok(Some(sealed)) => {
                 pending.state = State::Sealed;
                 Ok(Some(sealed))
+            }
+            // The deadline passed before the publication was claimed.
+            Ok(None) => {
+                pending.state = State::Abandoned;
+                Err(ABANDONED.into())
             }
             Err(error) => {
                 pending.state = State::Failed;
@@ -2050,18 +2117,50 @@ pub(crate) fn manifest(referenced: &BTreeSet<String>) -> Vec<u8> {
     text.into_bytes()
 }
 
+/// What the seal's file work asks of its writer: the write hook before the compressed copy's
+/// write, whether the deadline has passed or the segment was abandoned, and the claim of the
+/// publication — granted, under the lock the deadline is judged under, only before it.
+struct SealSteps<'a> {
+    write_hook: &'a dyn Fn() -> std::io::Result<()>,
+    expired: &'a dyn Fn() -> bool,
+    claim: &'a dyn Fn() -> bool,
+}
+
+/// Stage `contents` in a new temporary file of `segments`, written and synced; its name.
+fn stage(
+    segments: &Confined,
+    contents: &[u8],
+    hook: &dyn Fn() -> std::io::Result<()>,
+) -> std::io::Result<String> {
+    let temp = layout::temp_name(layout::WRITE_TEMP_LABEL);
+    let written = segments.create_file(&temp, false).and_then(|mut file| {
+        hook()?;
+        file.write_all(contents)?;
+        file.sync_all()
+    });
+    match written {
+        Ok(()) => Ok(temp),
+        Err(error) => {
+            let _ = segments.unlink(&temp);
+            Err(error)
+        }
+    }
+}
+
 /// Write the manifest, compress the segment to `.jsonl.gz` and remove the `.jsonl`, under the
 /// writer's lock, which ends when the file closes. Every step is relative to the `segments/`
 /// directory the live file was created in, and the live bytes are read back through the held
 /// descriptor: a directory above it renamed or replaced by a link since changes nothing
-/// outside the root. Once `abandoned` says the caller gave up waiting, no further step starts:
-/// the segment stays `.jsonl` for the next reader.
+/// outside the root. The manifest and the compressed copy are staged in temporary files first;
+/// once the deadline has passed — checked after their blocking writes and syncs, and claimed
+/// immediately before the first rename into place — nothing is published: the staged files are
+/// removed, the live segment stays for the next reader, and `Ok(None)` says so.
 fn seal_file(
     consumer: &mut Consumer,
     segment_id: &str,
     referenced: &BTreeSet<String>,
-    abandoned: &dyn Fn() -> bool,
-) -> Result<Sealed, String> {
+    steps: &SealSteps<'_>,
+) -> Result<Option<Sealed>, String> {
     let segments = consumer
         .segments
         .as_ref()
@@ -2077,24 +2176,43 @@ fn seal_file(
         let path = segments.join(name);
         move |error: std::io::Error| format!("{}: {error}", path.display())
     };
-    let left = || Err::<Sealed, String>(ABANDONED.into());
     held.sync_all().map_err(failed(&live))?;
-    if abandoned() {
-        return left();
+    if (steps.expired)() {
+        return Ok(None);
     }
-    segments
-        .write_atomically(&refs, &manifest(referenced))
-        .map_err(failed(&refs))?;
     let mut bytes = Vec::new();
     held.seek(SeekFrom::Start(0))
         .and_then(|_| held.read_to_end(&mut bytes))
         .map_err(failed(&live))?;
-    if abandoned() {
-        return left();
+    let staged_refs = stage(segments, &manifest(referenced), &|| Ok(())).map_err(failed(&refs))?;
+    let staged_sealed = match stage(segments, &blob::compress(&bytes), steps.write_hook) {
+        Ok(staged) => staged,
+        Err(error) => {
+            let _ = segments.unlink(&staged_refs);
+            return Err(failed(&sealed)(error));
+        }
+    };
+    let discard = || {
+        let _ = segments.unlink(&staged_refs);
+        let _ = segments.unlink(&staged_sealed);
+    };
+    // A write released after the deadline publishes nothing.
+    if (steps.expired)() || !(steps.claim)() {
+        discard();
+        return Ok(None);
     }
-    segments
-        .write_atomically(&sealed, &blob::compress(&bytes))
-        .map_err(failed(&sealed))?;
+    let placed = segments
+        .rename(&staged_refs, &refs)
+        .map_err(failed(&refs))
+        .and_then(|()| {
+            segments
+                .rename(&staged_sealed, &sealed)
+                .map_err(failed(&sealed))
+        });
+    if let Err(error) = placed {
+        discard();
+        return Err(error);
+    }
     // Only the file this writer created is removed: a name that no longer holds it is left.
     let opened = FileIdentity::of_file(held).map_err(failed(&live))?;
     if segments
@@ -2109,5 +2227,5 @@ fn seal_file(
         refs: segments.join(&refs),
     };
     consumer.file = None;
-    Ok(sealed)
+    Ok(Some(sealed))
 }

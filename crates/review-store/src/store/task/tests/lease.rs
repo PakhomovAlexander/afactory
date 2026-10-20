@@ -567,9 +567,11 @@ fn projection_applies_the_same_writers_earlier_time_and_fences_every_other_case(
     }
 }
 
-/// Telemetry numbers a run's executions by the leases that began a kernel run (design §5): a
-/// lease that only planned, or one a housekeeping command took, is not counted; one under which
-/// an Attempt was prepared is.
+/// Telemetry numbers a run's executions by the leases that began kernel execution (design §5):
+/// each leaves one `execution_started` marker before anything else it does, so a lease that
+/// stops before any Attempt is counted like one that prepared several; a lease that only
+/// planned, or one a housekeeping command took, leaves none. A second runtime of the same lease
+/// records nothing more.
 #[test]
 fn only_leases_that_began_a_kernel_run_are_counted() {
     let mut f = Fixture::new(false).with_execution_graph();
@@ -586,25 +588,54 @@ fn only_leases_that_began_a_kernel_run_are_counted() {
         .take_task_lease(&f.cas, "task-1", "af-storage-sweep-1", 60_000)
         .unwrap();
     f.store.release_task_lease(&f.cas, &housekeeping).unwrap();
-    let run = f
+    let stopped = f
         .store
         .take_task_lease(&f.cas, "task-1", "writer-3", 60_000)
         .unwrap();
-    assert_eq!(run.epoch(), 3);
+    assert_eq!(stopped.epoch(), 3);
     assert_eq!(
         count(&f, 3),
         0,
         "planning and housekeeping began no kernel run"
     );
+    // An execution that stops before any Attempt (a refusal, an interrupt) still began one.
+    assert!(
+        f.store
+            .begin_task_execution(&f.cas, &stopped)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        f.store
+            .begin_task_execution(&f.cas, &stopped)
+            .unwrap()
+            .is_none(),
+        "a second runtime of the same lease records nothing more"
+    );
+    f.store.release_task_lease(&f.cas, &stopped).unwrap();
+    assert_eq!(count(&f, 3), 0, "a lease is not before itself");
+    assert_eq!(count(&f, 4), 1, "the stopped execution counts");
+    let run = f
+        .store
+        .take_task_lease(&f.cas, "task-1", "writer-4", 60_000)
+        .unwrap();
+    f.store.begin_task_execution(&f.cas, &run).unwrap();
     f.store.admit_task_plan(&f.cas, &run, &f.authority).unwrap();
     f.record_execution_inputs(&run);
     f.store
         .reserve_task_attempt(&f.cas, &run, "root.nodes.write", &f.authority)
         .unwrap();
-    assert_eq!(count(&f, 3), 0, "a lease is not before itself");
-    assert_eq!(
-        count(&f, 4),
-        1,
-        "the lease that prepared an Attempt began one"
-    );
+    assert_eq!(count(&f, 4), 1);
+    assert_eq!(count(&f, 5), 2, "each execution its own ordinal");
+    // The marker is the lease's own: a fenced writer cannot record one.
+    let fenced = review_core::task::event::TaskTransitionV1 {
+        writer: "writer-3".into(),
+        epoch: 3,
+        now_unix_ms: crate::store::task::now().unwrap(),
+        change: TaskChangeV1::ExecutionStarted {
+            execution: review_core::task::execution_started::TaskExecutionStartedV1::new(),
+        },
+    };
+    let state = f.store.task_projection(&f.cas, "task-1").unwrap().unwrap();
+    assert!(apply_unstamped(&f, &state, &fenced).is_err());
 }

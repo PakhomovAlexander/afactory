@@ -56,6 +56,8 @@ impl Machine {
             .env_remove("AF_TEST_FREE_BYTES")
             .env_remove("AF_TEST_TELEMETRY_STALL_AFTER_WRITES")
             .env_remove("AF_TEST_TELEMETRY_STALL_SEAL")
+            .env_remove("AF_TEST_TELEMETRY_STALL_COMMAND_END")
+            .env_remove("AF_TEST_TASK_PAUSE_AFTER_RUN_OPENS")
             .env_remove("AF_TEST_TELEMETRY_EVICT_PAUSE")
             .env_remove("CARGO_TARGET_DIR")
             .args(args);
@@ -492,6 +494,174 @@ fn telemetry_executions_of_a_resume() {
     assert!(second_sequence > first_sequence);
 }
 
+/// The `(epoch, change kind)` of every Task transition of the Store `state` whose change is
+/// `kind`, in log order.
+fn transitions(state: &Path, kind: &str) -> Vec<u64> {
+    events(state)
+        .iter()
+        .filter(|row| row[3] == "TaskTransition@5")
+        .filter_map(|row| {
+            let payload: Value = serde_json::from_str(&row[10]).unwrap();
+            (payload["change"]["kind"] == kind).then(|| payload["epoch"].as_u64().unwrap())
+        })
+        .collect()
+}
+
+/// The ordinals of the retained executions of the one run of Task `task`, oldest first, with
+/// the run.
+fn ordinals(machine: &Machine, repo: &Path, task: &str) -> (Vec<u64>, Value) {
+    let runs = json(&machine.af(repo, &[], &["telemetry", "runs", "--json"]));
+    crate::schemas::valid(&crate::schemas::validator("telemetry-runs-v1.json"), &runs);
+    let of_task: Vec<&Value> = runs["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|run| run["task_id"] == task)
+        .collect();
+    let [run] = of_task.as_slice() else {
+        panic!("one run of {task}: {runs}");
+    };
+    let ordinals = run["executions"]["list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|execution| execution["ordinal"].as_u64().unwrap())
+        .collect();
+    (ordinals, (*run).clone())
+}
+
+/// Design §5: every lease that begins kernel execution commits its `execution_started` marker
+/// before its `af.run` span opens, and the ordinal counts exactly the markers before it. An
+/// execution the free-disk floor stops before any Attempt starts still takes ordinal 1, and
+/// the resume takes 2: never a second 1, so `history` never calls a duplicate a prefix.
+#[test]
+fn telemetry_refused_before_an_attempt_keeps_its_ordinal() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let refused = start(
+        &machine,
+        &repo,
+        &state,
+        "gc-older.json",
+        &[("AF_TEST_FREE_BYTES", "1024")],
+    );
+    let (_, stderr) = text(&refused);
+    assert_eq!(refused.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("insufficient_disk"), "{stderr}");
+    assert_eq!(transitions(&state, "execution_started"), [1]);
+    let resumed = machine.af(
+        &repo,
+        &[],
+        &[
+            "task",
+            "run",
+            "gc-older",
+            "--execute",
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    let (stdout, stderr) = text(&resumed);
+    assert!(resumed.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(
+        transitions(&state, "execution_started"),
+        [1, 2],
+        "one marker per lease that began execution"
+    );
+    let (ordinals, run) = ordinals(&machine, &repo, "gc-older");
+    assert_eq!(ordinals, [1, 2], "{run}");
+    assert_eq!(run["history"], "prefix:2", "{run}");
+    assert_eq!(run["missing_ordinals"], serde_json::json!([]), "{run}");
+}
+
+/// Design §5: an execution killed after its `af.run` span opened and before any Attempt or run
+/// report still took ordinal 1 — its marker was committed before the span opened — and the
+/// resume after the dead writer's lease expired is execution 2.
+#[test]
+fn telemetry_interrupted_before_an_attempt_keeps_its_ordinal() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let pauses = machine.root.join("pauses");
+    std::fs::create_dir_all(&pauses).unwrap();
+    let spawned = std::time::Instant::now();
+    let mut child = machine
+        .command(
+            &repo,
+            &[(
+                "AF_TEST_TASK_PAUSE_AFTER_RUN_OPENS",
+                pauses.to_str().unwrap(),
+            )],
+            &[
+                "task",
+                "start",
+                "--execute",
+                "--file",
+                "gc-older.json",
+                "--state",
+                state.to_str().unwrap(),
+                "--json",
+            ],
+        )
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let paused = pauses.join(format!("{}.paused", child.id()));
+    let segments = machine.telemetry().join("v1/segments");
+    let run_visible = || {
+        std::fs::read_dir(&segments).is_ok_and(|entries| {
+            entries.filter_map(Result::ok).any(|entry| {
+                entry.file_name().to_string_lossy().ends_with(".jsonl")
+                    && std::fs::read_to_string(entry.path())
+                        .is_ok_and(|text| text.contains(r#""name":"af.run""#))
+            })
+        })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while !(paused.exists() && run_visible()) {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "the execution pauses after af.run opened"
+        );
+        assert!(std::time::Instant::now() < deadline, "the execution pauses");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert_eq!(transitions(&state, "execution_started"), [1]);
+    assert!(
+        transitions(&state, "execution_recorded").is_empty()
+            && transitions(&state, "run_reported").is_empty(),
+        "killed before any Attempt or run report"
+    );
+    // The dead writer's lease (15 s from its opening) expires before the resume takes over.
+    let expired = std::time::Duration::from_secs(16);
+    if let Some(left) = expired.checked_sub(spawned.elapsed()) {
+        std::thread::sleep(left);
+    }
+    let resumed = machine.af(
+        &repo,
+        &[],
+        &[
+            "task",
+            "run",
+            "gc-older",
+            "--execute",
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    let (stdout, stderr) = text(&resumed);
+    assert!(resumed.status.success(), "{stdout}\n{stderr}");
+    assert_eq!(transitions(&state, "execution_started"), [1, 2]);
+    let (ordinals, run) = ordinals(&machine, &repo, "gc-older");
+    assert_eq!(ordinals, [1, 2], "{run}");
+    assert_eq!(run["missing_ordinals"], serde_json::json!([]), "{run}");
+    assert_ne!(run["history"], "prefix:1", "{run}");
+}
+
 /// Each retained execution of the one run of Task `task` in `af telemetry runs --json`, as
 /// (ordinal, the `af.epoch` its `af.run` span carries), oldest first, with the run.
 fn ordinals_and_epochs(machine: &Machine, repo: &Path, task: &str) -> (Vec<(u64, u64)>, Value) {
@@ -809,6 +979,115 @@ fn telemetry_blocked_terminal_write_leaves_the_segment_unsealed() {
     assert_eq!(seals, 1, "the held seal never reached the file");
 }
 
+/// Design §6: the consumer thread is the segment's only writer from the moment `af.run` starts
+/// it until the seal, and the whole shutdown has one bound. With the consumer's write of the
+/// terminal records — the `af.command` end — held as on a stalled volume, the command still
+/// returns within the 2 s bound plus a margin with the run's own outcome; nothing else writes,
+/// seals or replaces the segment, which stays one unsealed, unlocked `.jsonl`; and the next
+/// reader recovers its complete prefix: every record before the command's end.
+#[test]
+fn telemetry_command_end_is_inside_the_shutdown_bound() {
+    use review_telemetry::record::Record;
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let timed = |file: &str, env: &[(&str, &str)]| {
+        let started = std::time::Instant::now();
+        let output = start(&machine, &repo, &state, file, env);
+        (output, started.elapsed())
+    };
+    let (control, normal) = timed("gc-older.json", &[]);
+    assert!(control.status.success(), "{}", text(&control).1);
+    let (held, took) = timed(
+        "gc-newer.json",
+        &[("AF_TEST_TELEMETRY_STALL_COMMAND_END", "1")],
+    );
+    let (stdout, stderr) = text(&held);
+    assert!(held.status.success(), "{stdout}\n{stderr}");
+    let document: Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(document["result"]["acceptance"], "satisfied", "{document}");
+    assert!(
+        stderr.contains("did not stop within 2 s"),
+        "one telemetry problem: {stderr}"
+    );
+    assert!(took >= std::time::Duration::from_secs(2), "{took:?}");
+    assert!(
+        took < normal + std::time::Duration::from_secs(2 + 8),
+        "the bound plus a margin: {took:?} against {normal:?}"
+    );
+    // Nothing sealed, compressed or replaced it: the held segment is a lone `.jsonl`.
+    let segments = machine.telemetry().join("v1/segments");
+    let names: Vec<String> = std::fs::read_dir(&segments)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    let live: Vec<&String> = names
+        .iter()
+        .filter(|name| name.ends_with(".jsonl"))
+        .collect();
+    let [live] = live.as_slice() else {
+        panic!("one unsealed segment: {names:?}");
+    };
+    let id = live.trim_end_matches(".jsonl").to_string();
+    assert!(
+        names
+            .iter()
+            .all(|name| name == *live || !name.starts_with(&id)),
+        "no manifest or compressed copy of {id}: {names:?}"
+    );
+    let status = json(&machine.af(&repo, &[], &["telemetry", "status", "--json"]));
+    assert_eq!(status["segments"]["unsealed"], 1, "{status}");
+    assert_eq!(
+        status["segments"]["live"], 0,
+        "the lock ended with the process"
+    );
+    let reindexed = json(&machine.af(&repo, &[], &["telemetry", "reindex", "--json"]));
+    let [recovered] = reindexed["recovered"].as_array().unwrap().as_slice() else {
+        panic!("{reindexed}");
+    };
+    assert_eq!(recovered["segment_id"], id.as_str());
+    let records = review_telemetry::segment::reader::read_sealed(
+        &review_telemetry::layout::Layout::new(machine.telemetry()).sealed_segment(&id),
+    )
+    .unwrap();
+    let started: Vec<(String, String)> = records
+        .iter()
+        .filter_map(|record| match record {
+            Record::SpanStart(start) => Some((start.span_id.clone(), start.name.clone())),
+            _ => None,
+        })
+        .collect();
+    let ended = |name: &str| {
+        started.iter().any(|(span, named)| {
+            named == name
+                && records.iter().any(|record| {
+                    matches!(record, Record::SpanEnd(end)
+                        if &end.span_id == span && end.end_unix_ns.is_some())
+                })
+        })
+    };
+    for name in ["af.run", "af.attempt", "af.sweep"] {
+        assert!(ended(name), "{name} ended in the recovered prefix");
+    }
+    assert!(
+        started.iter().any(|(_, name)| name == "af.command"),
+        "the command started in the prefix"
+    );
+    assert!(
+        !ended("af.command"),
+        "the held command end never reached the file"
+    );
+    let Some(Record::Seal(seal)) = records.last() else {
+        panic!("recovered with a seal");
+    };
+    assert_eq!(seal.exit, review_telemetry::record::SealExit::Recovered);
+    assert_eq!(seal.discarded_bytes, 0, "every written line was whole");
+    let seals = records
+        .iter()
+        .filter(|record| matches!(record, Record::Seal(_)))
+        .count();
+    assert_eq!(seals, 1, "only the recovered seal");
+}
+
 /// ADR-0153 clause 7 (design §16 item 6): a telemetry-only failure — a read-only telemetry
 /// directory, a quota on it, a locked index — is one problem, and the run succeeds.
 #[test]
@@ -910,9 +1189,11 @@ fn telemetry_entries(document: &Value) -> Vec<Value> {
         .collect()
 }
 
-/// Every file beneath `root`, last modified `age` ago.
+/// Every file beneath the telemetry directory `root`, last modified `age` ago, and every sealed
+/// segment's seal — its last use — ended then too.
 fn age(root: &Path, age: std::time::Duration) {
     let when = std::time::SystemTime::now() - age;
+    backdate_seals(root, when);
     let mut pending = vec![root.to_path_buf()];
     while let Some(directory) = pending.pop() {
         for entry in std::fs::read_dir(&directory)
@@ -929,6 +1210,40 @@ fn age(root: &Path, age: std::time::Duration) {
                     .unwrap();
             }
         }
+    }
+}
+
+/// Rewrite every sealed segment beneath the telemetry directory `root` so that its seal record
+/// ended at `when`: a sealed segment's last use is its seal time, never its file's.
+fn backdate_seals(root: &Path, when: std::time::SystemTime) {
+    use review_telemetry::record::Record;
+    let ended = when
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos()
+        .to_string();
+    let Ok(entries) = std::fs::read_dir(root.join("v1/segments")) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        if !path.to_string_lossy().ends_with(".jsonl.gz") {
+            continue;
+        }
+        // A file under a sealed name that is no segment (a fixture's replacement) has no seal.
+        let Ok(mut records) = review_telemetry::segment::reader::read_sealed(&path) else {
+            continue;
+        };
+        let Some(Record::Seal(seal)) = records.last_mut() else {
+            panic!("{} ends with its seal", path.display());
+        };
+        seal.ended_unix_ns = ended.clone();
+        let mut bytes = Vec::new();
+        for record in &records {
+            bytes.extend(serde_json::to_vec(record).unwrap());
+            bytes.push(b'\n');
+        }
+        std::fs::write(&path, review_telemetry::blob::compress(&bytes)).unwrap();
     }
 }
 
@@ -1028,14 +1343,16 @@ fn telemetry_dirs_registry_reaches_every_directory() {
 }
 
 /// Run the applied telemetry eviction `args` with every telemetry file aged past collection,
-/// pausing each eviction between the inventory and its check; the first segment it reaches is
-/// replaced meanwhile by a recent regular file of the same name. Returns the command's document,
-/// the replaced segment's id, its path and the bytes now under that name.
+/// pausing each eviction between the inventory and its check; the file `<id><suffix>` of the
+/// first segment it reaches (`.jsonl.gz`, or its `.refs` manifest) is replaced meanwhile by a
+/// recent regular file of the same name. Returns the command's document, the segment's id and
+/// the replaced file's path.
 fn evict_with_a_replacement(
     machine: &Machine,
     repo: &Path,
     args: &[&str],
     env: &[(&str, &str)],
+    suffix: &str,
     replacement: &[u8],
 ) -> (Value, String, PathBuf) {
     age(
@@ -1072,8 +1389,8 @@ fn evict_with_a_replacement(
                 continue;
             }
             if replaced.is_none() {
-                // A recent regular file takes the inventoried segment's name.
-                let path = segments.join(format!("{id}.jsonl.gz"));
+                // A recent regular file takes the inventoried file's name.
+                let path = segments.join(format!("{id}{suffix}"));
                 let staged = machine.root.join("replacement");
                 std::fs::write(&staged, replacement).unwrap();
                 std::fs::rename(&staged, &path).unwrap();
@@ -1107,6 +1424,7 @@ fn telemetry_eviction_refuses_a_replaced_segment() {
         &repo,
         &["storage", "prune", "--apply", "--json"],
         &[off, ("AF_STORAGE__KEEP_DAYS", "14")],
+        ".jsonl.gz",
         b"not the segment the prune inventoried\n",
     );
     crate::schemas::valid(&crate::schemas::validator("storage-prune-v2.json"), &pruned);
@@ -1146,6 +1464,7 @@ fn telemetry_eviction_refuses_a_replaced_segment() {
         &repo,
         &["telemetry", "gc", "--apply", "--json"],
         &[("AF_STORAGE__KEEP_DAYS", "1")],
+        ".jsonl.gz",
         b"not the segment gc inventoried\n",
     );
     crate::schemas::valid(
@@ -1167,6 +1486,126 @@ fn telemetry_eviction_refuses_a_replaced_segment() {
         b"not the segment gc inventoried\n",
         "the replacement stays"
     );
+}
+
+/// ADR-0144: an entry is evicted whole or not at all, and the check before either unlink covers
+/// every file it owns. An inventoried old sealed segment whose `.refs` manifest is replaced by a
+/// recent regular file — the compressed segment intact — before `af storage prune --apply`
+/// reaches it loses nothing: neither file is removed, and the document reports the entry as
+/// changed because of its manifest.
+#[test]
+fn telemetry_eviction_refuses_a_replaced_manifest() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    for file in ["gc-older.json", "gc-newer.json"] {
+        let output = start(&machine, &repo, &state, file, &[]);
+        assert!(output.status.success(), "{}", text(&output).1);
+    }
+    let segments = machine.telemetry().join("v1/segments");
+    let (pruned, id, manifest) = evict_with_a_replacement(
+        &machine,
+        &repo,
+        &["storage", "prune", "--apply", "--json"],
+        &[
+            ("AF_TELEMETRY__LEVEL", "off"),
+            ("AF_STORAGE__KEEP_DAYS", "14"),
+        ],
+        ".refs",
+        b"not the manifest the prune inventoried\n",
+    );
+    crate::schemas::valid(&crate::schemas::validator("storage-prune-v2.json"), &pruned);
+    let [changed] = pruned["telemetry"]["changed"]
+        .as_array()
+        .unwrap()
+        .as_slice()
+    else {
+        panic!("one changed entry: {pruned}");
+    };
+    assert_eq!(changed["segment_id"], id.as_str(), "{pruned}");
+    assert!(
+        changed["reason"]
+            .as_str()
+            .unwrap()
+            .contains("manifest was replaced"),
+        "{changed}"
+    );
+    // Nothing of the entry is removed: the compressed segment and the replacement both stay.
+    let sealed = segments.join(format!("{id}.jsonl.gz"));
+    review_telemetry::segment::reader::read_sealed(&sealed).unwrap();
+    assert_eq!(
+        std::fs::read(&manifest).unwrap(),
+        b"not the manifest the prune inventoried\n"
+    );
+    assert!(
+        pruned["removals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|removal| removal["segment_id"] != id.as_str()),
+        "{pruned}"
+    );
+}
+
+/// ADR-0144 and design §6: a sealed segment's last use is its validated seal record's end time,
+/// never its file's modification time. A segment sealed just now whose files are set a day back
+/// is still used within the last hour: `af storage` reports its seal time, and neither an
+/// applied age prune (`af storage prune --apply`) nor `af telemetry gc --apply` removes it.
+#[test]
+fn telemetry_sealed_last_use_is_the_seal_time() {
+    let machine = Machine::new();
+    let (repo, state) = task_gc::fixture(&machine.root);
+    let output = start(&machine, &repo, &state, "gc-older.json", &[]);
+    assert!(output.status.success(), "{}", text(&output).1);
+    let segments = machine.telemetry().join("v1/segments");
+    let names: Vec<String> = std::fs::read_dir(&segments)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    let sealed: Vec<&String> = names
+        .iter()
+        .filter(|name| name.ends_with(".jsonl.gz"))
+        .collect();
+    let [sealed] = sealed.as_slice() else {
+        panic!("one sealed segment: {names:?}");
+    };
+    let sealed = (*sealed).clone();
+    let id = sealed.trim_end_matches(".jsonl.gz").to_string();
+    let records =
+        review_telemetry::segment::reader::read_sealed(&segments.join(sealed.as_str())).unwrap();
+    let Some(review_telemetry::record::Record::Seal(seal)) = records.last() else {
+        panic!("sealed");
+    };
+    let sealed_ms = u64::try_from(seal.ended_unix_ns.parse::<u128>().unwrap() / 1_000_000).unwrap();
+    let day_back = std::time::SystemTime::now() - std::time::Duration::from_secs(86_400);
+    for name in [sealed.clone(), format!("{id}.refs")] {
+        std::fs::File::open(segments.join(name))
+            .unwrap()
+            .set_modified(day_back)
+            .unwrap();
+    }
+    let off = ("AF_TELEMETRY__LEVEL", "off");
+    let shown = json(&machine.af(&repo, &[off], &["storage", "--json"]));
+    let entry = telemetry_entries(&shown)
+        .into_iter()
+        .find(|entry| entry["segment_id"] == id.as_str())
+        .unwrap_or_else(|| panic!("{shown}"));
+    assert_eq!(entry["last_use_unix_ms"], sealed_ms, "{entry}");
+    for args in [
+        &["storage", "prune", "--apply", "--json"][..],
+        &["telemetry", "gc", "--apply", "--json"][..],
+    ] {
+        let applied = json(&machine.af(&repo, &[off, ("AF_STORAGE__KEEP_DAYS", "0")], args));
+        assert!(
+            applied["removals"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|removal| removal["kind"] != "telemetry"),
+            "{args:?}: {applied}"
+        );
+        assert!(segments.join(sealed.as_str()).exists(), "{args:?}");
+        assert!(segments.join(format!("{id}.refs")).exists(), "{args:?}");
+    }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -1737,6 +2176,52 @@ fn telemetry_totals_name_the_open_execution() {
                 .any(|line| line.contains(second) && line.contains("(open)")),
             "{show_text}"
         );
+        let reindexed = machine.af(&machine.root, &[], &["telemetry", "reindex", "--json"]);
+        assert!(reindexed.status.success(), "{}", text(&reindexed).1);
+        assert_eq!(read(), before, "identical after a reindex");
+    });
+    assert!(looked);
+}
+
+/// Design §5: a run's outcome is its latest execution's own and nothing else. Execution 1
+/// sealed `finished`, execution 2 live with its `af.run` not yet ended: `runs` and `show` print
+/// no outcome for the run — never the earlier execution's — and a `reindex` changes none of it.
+#[test]
+fn telemetry_live_execution_has_no_inherited_outcome() {
+    let machine = Machine::new();
+    let root = machine.telemetry();
+    let first = "1700000000000-4242-0a1b2c3d";
+    let second = "1700000100000-4243-0b1c2d3e";
+    golden_execution(&root, first, 1_700_000_000_000, 1, &mut |_| {});
+    let mut looked = false;
+    golden_execution(&root, second, 1_700_000_100_000, 2, &mut |writer| {
+        if looked {
+            return;
+        }
+        looked = true;
+        writer.flush();
+        let read = || {
+            let runs = json(&machine.af(&machine.root, &[], &["telemetry", "runs", "--json"]));
+            let show = json(&machine.af(
+                &machine.root,
+                &[],
+                &["telemetry", "show", GOLDEN_RUN, "--json"],
+            ));
+            let runs_text = text(&machine.af(&machine.root, &[], &["telemetry", "runs"])).0;
+            (runs, show, runs_text)
+        };
+        let before = read();
+        let (runs, show, runs_text) = &before;
+        crate::schemas::valid(&crate::schemas::validator("telemetry-runs-v1.json"), runs);
+        crate::schemas::valid(&crate::schemas::validator("telemetry-show-v1.json"), show);
+        let run = &runs["runs"][0];
+        let list = run["executions"]["list"].as_array().unwrap();
+        assert_eq!(list[0]["outcome"], "finished", "{run}");
+        assert!(list[1].get("outcome").is_none(), "{run}");
+        assert!(run.get("outcome").is_none(), "no inherited outcome: {run}");
+        assert!(show["run"].get("outcome").is_none(), "{show}");
+        assert!(runs_text.contains("outcome -"), "{runs_text}");
+        assert!(!runs_text.contains("outcome finished"), "{runs_text}");
         let reindexed = machine.af(&machine.root, &[], &["telemetry", "reindex", "--json"]);
         assert!(reindexed.status.success(), "{}", text(&reindexed).1);
         assert_eq!(read(), before, "identical after a reindex");

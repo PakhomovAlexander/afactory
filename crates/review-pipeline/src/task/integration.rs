@@ -15,8 +15,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         host: &'host dyn TaskOperatorHost,
         phase: &RegisteredTaskReviewIntegration,
     ) -> Result<Self, String> {
-        let telemetry =
-            crate::telemetry::RunTelemetry::open(&store.lock().expect("Task Store"), cas, &lease);
+        let telemetry = Self::begin_execution(&store, cas, &lease)?;
         let load = telemetry.authority_load();
         let (plan, projection) = {
             let _loading = load.enter();

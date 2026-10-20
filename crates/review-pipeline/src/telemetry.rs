@@ -166,9 +166,10 @@ impl RunTelemetry {
             };
         }
         let sequence = store.latest_run_sequence(&run_id).ok().flatten();
-        // The execution's number among the run's: one more than the committed leases before
-        // this one that began a kernel run. The lease epoch counts every lease — a plan-only
-        // start, a sweep's housekeeping lease — so it stays only in `af.epoch`.
+        // The execution's number among the run's: one more than the `execution_started`
+        // markers of the leases before this one, which the runtime committed before it opened
+        // this span. The lease epoch counts every lease — a plan-only start, a sweep's
+        // housekeeping lease — so it stays only in `af.epoch`.
         let ordinal = match store.task_run_executions_before(cas, lease.task_id(), lease.epoch()) {
             Ok(before) => before.checked_add(1),
             Err(_) => {

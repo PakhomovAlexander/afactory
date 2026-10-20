@@ -228,8 +228,11 @@ fn telemetry_history_partial_after_eviction() {
     let directory = review_telemetry::budget::Directory::measure(temp.path(), false)
         .unwrap()
         .unwrap();
-    // Evicted once the hour that protects a just-sealed segment has passed.
-    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2 * 3_600);
+    // Evicted once the hour that protects a just-sealed segment has passed: its last use is
+    // its seal time, on the writer's clock.
+    let sealed = std::time::UNIX_EPOCH + std::time::Duration::from_nanos(BASE + 10 * SECOND);
+    let later =
+        sealed.max(std::time::SystemTime::now()) + std::time::Duration::from_secs(2 * 3_600);
     let evicted = review_telemetry::budget::evict(
         temp.path(),
         &directory.target("1800000000000-1-0000000a").unwrap(),

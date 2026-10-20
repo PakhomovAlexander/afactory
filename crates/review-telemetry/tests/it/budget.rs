@@ -177,7 +177,8 @@ fn telemetry_eviction_frees_exactly_the_marginal_bytes() {
     let first = sealed_with(&root, &shared, b"first's own output\n");
     let second = sealed_with(&root, &shared, b"second's own output\n");
     age(&root, Duration::from_secs(2 * 3_600));
-    let now = SystemTime::now();
+    // Once the hour that protects a just-sealed segment (its seal time) has passed.
+    let now = SystemTime::now() + Duration::from_secs(2 * 3_600);
     for id in [&first, &second] {
         let directory = Directory::measure(&root, false).unwrap().unwrap();
         let marginal = directory.marginal(id);

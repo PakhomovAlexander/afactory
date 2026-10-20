@@ -192,6 +192,28 @@ pub struct TaskRuntime<'store, 'host> {
     telemetry: crate::telemetry::RunTelemetry,
 }
 
+/// Deterministic fixtures stop an execution after its marker is committed and its `af.run`
+/// span opened, before any Attempt, as an interrupt there would:
+/// `AF_TEST_TASK_PAUSE_AFTER_RUN_OPENS=DIR` writes `DIR/<pid>.paused` and waits, at most a
+/// minute, for `DIR/<pid>.resume`. Production release binaries never read this setting; no
+/// Worker receives it through the isolated command environment.
+fn pause_after_the_run_opens() {
+    #[cfg(debug_assertions)]
+    {
+        let Some(directory) = std::env::var_os("AF_TEST_TASK_PAUSE_AFTER_RUN_OPENS") else {
+            return;
+        };
+        let directory = std::path::PathBuf::from(directory);
+        let pid = std::process::id();
+        let _ = std::fs::write(directory.join(format!("{pid}.paused")), b"");
+        let resume = directory.join(format!("{pid}.resume"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !resume.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
 fn envelope(cas: &Cas, id: &str) -> Result<ArtifactEnvelope, String> {
     cas.get_artifact(id).map_err(|e| e.to_string())
 }
@@ -236,8 +258,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         authority: &'host dyn TaskAuthority,
         host: &'host dyn TaskOperatorHost,
     ) -> Result<Self, String> {
-        let telemetry =
-            crate::telemetry::RunTelemetry::open(&store.lock().expect("Task Store"), cas, &lease);
+        let telemetry = Self::begin_execution(&store, cas, &lease)?;
         let load = telemetry.authority_load();
         let (plan, projection) = {
             let _loading = load.enter();
@@ -271,6 +292,24 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             None,
             (telemetry, load),
         )
+    }
+
+    /// The lease begins kernel execution: its one `execution_started` marker is committed
+    /// before anything else, at every telemetry level alike (ADR-0153), then the run's
+    /// `af.run` span opens, numbered by the markers before it.
+    fn begin_execution(
+        store: &SharedEventStore<'store>,
+        cas: &'store Cas,
+        lease: &TaskLease,
+    ) -> Result<crate::telemetry::RunTelemetry, String> {
+        let mut locked = store.lock().expect("Task Store");
+        locked
+            .begin_task_execution(cas, lease)
+            .map_err(|e| e.to_string())?;
+        let telemetry = crate::telemetry::RunTelemetry::open(&locked, cas, lease);
+        drop(locked);
+        pause_after_the_run_opens();
+        Ok(telemetry)
     }
 
     #[allow(clippy::too_many_arguments)]

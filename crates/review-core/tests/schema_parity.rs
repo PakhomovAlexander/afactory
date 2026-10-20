@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 170] = [
+const SCHEMAS: [&str; 171] = [
     "task-report-v1.json",
     "provider-models-v1.json",
     "code-task-policy-v1.json",
@@ -147,6 +147,7 @@ const SCHEMAS: [&str; 170] = [
     "task-collected-v1.json",
     "task-gate-cleanup-v1.json",
     "task-storage-sweep-v1.json",
+    "task-execution-started-v1.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
     "legacy-review-task-policy-v4.json",
@@ -2623,6 +2624,63 @@ fn a_storage_sweep_is_one_closed_transition_referencing_no_artifact() {
         ("unknown field", {
             let mut forged = value.clone();
             forged["change"]["sweep"]["push_url"] = json!("https://example.invalid/x.git");
+            forged
+        }),
+    ] {
+        assert_invalid("task-transition-v5.json", &forged, why);
+        assert!(
+            review_core::event::validate_event_payload(EventType::TaskTransitionV5, &forged)
+                .is_err(),
+            "{why}"
+        );
+    }
+}
+
+/// ADR-0153 and ADR-0145: an `execution_started` transition carries `af/TaskExecutionStarted@1`
+/// inline and references no artifact; the schema and the typed contract refuse the same shapes.
+#[test]
+fn an_execution_marker_is_one_closed_transition_referencing_no_artifact() {
+    use review_core::task::event::{TaskChangeV1, TaskTransitionV1};
+    use review_core::task::execution_started::{TASK_EXECUTION_STARTED_V1, TaskExecutionStartedV1};
+    let execution = TaskExecutionStartedV1::new();
+    assert_eq!(execution.schema, TASK_EXECUTION_STARTED_V1);
+    execution.validate().unwrap();
+    let transition = TaskTransitionV1 {
+        writer: "cli-4242".into(),
+        epoch: 2,
+        now_unix_ms: 100,
+        change: TaskChangeV1::ExecutionStarted { execution },
+    };
+    transition.validate().unwrap();
+    assert!(transition.artifact_refs().is_empty(), "references nothing");
+    let value = serde_json::to_value(&transition).unwrap();
+    assert_eq!(
+        value["change"],
+        json!({"kind": "execution_started", "execution": {"schema": "af/TaskExecutionStarted@1"}})
+    );
+    assert_valid("task-transition-v5.json", &value);
+    assert_valid(
+        "task-execution-started-v1.json",
+        &value["change"]["execution"],
+    );
+    review_core::event::validate_event_payload(EventType::TaskTransitionV5, &value).unwrap();
+    for (why, forged) in [
+        ("schema", {
+            let mut forged = value.clone();
+            forged["change"]["execution"]["schema"] = json!("af/TaskExecutionStarted@2");
+            forged
+        }),
+        ("unknown field", {
+            let mut forged = value.clone();
+            forged["change"]["execution"]["level"] = json!("content");
+            forged
+        }),
+        ("no marker", {
+            let mut forged = value.clone();
+            forged["change"]
+                .as_object_mut()
+                .unwrap()
+                .remove("execution");
             forged
         }),
     ] {

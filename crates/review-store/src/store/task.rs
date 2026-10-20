@@ -342,6 +342,9 @@ pub struct TaskProjection {
     /// What every Storage Budget sweep that ended a run of this Task removed, in log order
     /// (ADR-0144).
     pub storage_sweeps: Vec<task::storage_sweep::TaskStorageSweepV1>,
+    /// The epoch of every lease that began kernel execution of the Task: one
+    /// `execution_started` marker each (ADR-0153).
+    pub execution_epochs: BTreeSet<u64>,
 }
 
 /// The light optimizer's final DAG node can only know trial accounting. After every Attempt has
@@ -985,6 +988,14 @@ impl TaskProjection {
                     sweep.validate().map_err(conflict)?;
                     self.storage_sweeps.push(sweep.clone());
                 }
+                // A lease began kernel execution (ADR-0153): once per lease, by its own writer,
+                // never part of the Task's result.
+                TaskChangeV1::ExecutionStarted { execution } => {
+                    execution.validate().map_err(conflict)?;
+                    if !self.execution_epochs.insert(transition.epoch) {
+                        return Err(conflict("A lease begins its execution once"));
+                    }
+                }
                 // A projection stops at the tombstone (ADR-0135); no transition ever applies it.
                 TaskChangeV1::TaskCollected { collected } => {
                     return Err(StoreError::Collected {
@@ -1579,6 +1590,7 @@ impl EventStore {
                     review_handoffs: Vec::new(),
                     gate_cleanups: Vec::new(),
                     storage_sweeps: Vec::new(),
+                    execution_epochs: BTreeSet::new(),
                 });
             } else {
                 return Err(conflict("Task transition precedes genesis"));
@@ -1756,41 +1768,49 @@ impl EventStore {
         })
     }
 
-    /// How many of the Task's committed leases before `epoch` began a kernel run: those under
-    /// which an Attempt was prepared, or the run's own transitions were committed — a run
-    /// report, the Task's result, a resumed recording or a Review Integration phase. A lease
-    /// that only planned (`af task start` without `--execute`), decided, refreshed, recorded a
-    /// storage sweep or cleaned up a gate began none, so it is not counted. Telemetry numbers
-    /// its executions from this (design §5); the lease epoch counts every lease. A read; it
-    /// changes nothing.
+    /// How many of the Task's committed leases before `epoch` began kernel execution: the
+    /// `execution_started` markers of earlier epochs. The Task runtime commits one per lease
+    /// before anything else it does under it, so an execution refused or interrupted before
+    /// its first Attempt is counted too; a lease that only planned (`af task start` without
+    /// `--execute`), decided, refreshed, recorded a storage sweep or cleaned up a gate began
+    /// none. Telemetry numbers its executions from this (design §5); the lease epoch counts
+    /// every lease. A read; it changes nothing.
     pub fn task_run_executions_before(
         &self,
         cas: &Cas,
         task_id: &str,
         epoch: u64,
     ) -> Result<u64, StoreError> {
-        let mut began: BTreeSet<u64> = self
+        Ok(self
             .task_projection(cas, task_id)?
-            .and_then(|state| state.execution)
-            .map(|execution| execution.prepared_epochs())
-            .unwrap_or_default();
-        for event in self.replay(&task_run_id(task_id)?)? {
-            if event.event_type != EventType::TaskTransitionV5 {
-                continue;
-            }
-            let transition = read_task_transition(&event)?;
-            if matches!(
-                transition.change,
-                TaskChangeV1::RunReported { .. }
-                    | TaskChangeV1::Finished { .. }
-                    | TaskChangeV1::RecordingResumed { .. }
-                    | TaskChangeV1::ReviewIntegrationSelected { .. }
-                    | TaskChangeV1::ReviewIntegrationFinished { .. }
-            ) {
-                began.insert(transition.epoch);
-            }
+            .map_or(0, |state| state.execution_epochs.range(..epoch).count()) as u64)
+    }
+
+    /// Record that `lease` begins kernel execution of its Task: the one `execution_started`
+    /// marker of the lease (ADR-0153), committed before anything else the Task runtime does
+    /// under it. A lease that already recorded its marker (a second runtime of the same
+    /// execution) records nothing more. Identical at every telemetry level: the Store never
+    /// learns the level.
+    pub fn begin_task_execution(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+    ) -> Result<Option<RunEvent>, StoreError> {
+        let state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        if state.execution_epochs.contains(&lease.epoch) {
+            return Ok(None);
         }
-        Ok(began.range(..epoch).count() as u64)
+        self.task_change(
+            cas,
+            lease,
+            TaskChangeV1::ExecutionStarted {
+                execution: task::execution_started::TaskExecutionStartedV1::new(),
+            },
+            now()?,
+        )
+        .map(Some)
     }
 
     pub fn take_task_lease(

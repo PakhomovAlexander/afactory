@@ -323,8 +323,10 @@
           "epoch": 1,
           "now_unix_ms": "<ms>",
           "change": {
-            "kind": "execution_recorded",
-            "record_id": "<run:10>"
+            "kind": "execution_started",
+            "execution": {
+              "schema": "af/TaskExecutionStarted@1"
+            }
           }
         }
       },
@@ -336,7 +338,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:11>"
+            "record_id": "<run:10>"
           }
         }
       },
@@ -348,7 +350,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:12>"
+            "record_id": "<run:11>"
           }
         }
       },
@@ -360,7 +362,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:13>"
+            "record_id": "<run:12>"
           }
         }
       },
@@ -372,7 +374,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:14>"
+            "record_id": "<run:13>"
           }
         }
       },
@@ -384,7 +386,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "sha256:305d93a3897113023f000092de0d1a352d6bb6ec471fa5764342e03b27443407"
+            "record_id": "<run:14>"
           }
         }
       },
@@ -396,7 +398,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:15>"
+            "record_id": "sha256:305d93a3897113023f000092de0d1a352d6bb6ec471fa5764342e03b27443407"
           }
         }
       },
@@ -408,7 +410,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:16>"
+            "record_id": "<run:15>"
           }
         }
       },
@@ -420,7 +422,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:17>"
+            "record_id": "<run:16>"
           }
         }
       },
@@ -432,7 +434,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:18>"
+            "record_id": "<run:17>"
           }
         }
       },
@@ -444,7 +446,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:19>"
+            "record_id": "<run:18>"
           }
         }
       },
@@ -456,7 +458,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:20>"
+            "record_id": "<run:19>"
           }
         }
       },
@@ -468,7 +470,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:21>"
+            "record_id": "<run:20>"
           }
         }
       },
@@ -480,7 +482,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:22>"
+            "record_id": "<run:21>"
           }
         }
       },
@@ -492,7 +494,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "sha256:74a6d14bda902c1b681b7aad9e8e1f68cef855fbf1d44576fd84468a5b7506f0"
+            "record_id": "<run:22>"
           }
         }
       },
@@ -504,7 +506,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:23>"
+            "record_id": "sha256:74a6d14bda902c1b681b7aad9e8e1f68cef855fbf1d44576fd84468a5b7506f0"
           }
         }
       },
@@ -516,7 +518,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:24>"
+            "record_id": "<run:23>"
           }
         }
       },
@@ -528,7 +530,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:25>"
+            "record_id": "<run:24>"
           }
         }
       },
@@ -540,7 +542,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:26>"
+            "record_id": "<run:25>"
           }
         }
       },
@@ -552,7 +554,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:27>"
+            "record_id": "<run:26>"
           }
         }
       },
@@ -564,7 +566,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:28>"
+            "record_id": "<run:27>"
           }
         }
       },
@@ -576,7 +578,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "sha256:32c159230623db92f72f0c766c9941dfd43c6d6adb725eddd174e7fc4d0686fa"
+            "record_id": "<run:28>"
           }
         }
       },
@@ -588,7 +590,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:29>"
+            "record_id": "sha256:32c159230623db92f72f0c766c9941dfd43c6d6adb725eddd174e7fc4d0686fa"
           }
         }
       },
@@ -600,7 +602,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:30>"
+            "record_id": "<run:29>"
           }
         }
       },
@@ -612,7 +614,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:31>"
+            "record_id": "<run:30>"
           }
         }
       },
@@ -624,7 +626,7 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:32>"
+            "record_id": "<run:31>"
           }
         }
       },
@@ -636,12 +638,24 @@
           "now_unix_ms": "<ms>",
           "change": {
             "kind": "execution_recorded",
-            "record_id": "<run:33>"
+            "record_id": "<run:32>"
           }
         }
       },
       {
         "sequence": 30,
+        "transition": {
+          "writer": "<run:9>",
+          "epoch": 1,
+          "now_unix_ms": "<ms>",
+          "change": {
+            "kind": "execution_recorded",
+            "record_id": "<run:33>"
+          }
+        }
+      },
+      {
+        "sequence": 31,
         "transition": {
           "writer": "<run:9>",
           "epoch": 1,
@@ -653,7 +667,7 @@
         }
       },
       {
-        "sequence": 31,
+        "sequence": 32,
         "transition": {
           "writer": "<run:9>",
           "epoch": 1,
@@ -665,7 +679,7 @@
         }
       },
       {
-        "sequence": 32,
+        "sequence": 33,
         "transition": {
           "writer": "<run:9>",
           "epoch": 1,
@@ -998,7 +1012,7 @@
         "report": {
           "task_revision_id": "<run:1>",
           "plan_id": "<run:0>",
-          "through_sequence": 30,
+          "through_sequence": 31,
           "nodes": [
             {
               "node": "root.inputs",

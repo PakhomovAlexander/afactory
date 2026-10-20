@@ -16,10 +16,10 @@
 //! attributes: `af.kind` (the span kind), `af.status` (the end status), `af.event` (an event's
 //! name) and `message`; the event name is free text too and the writer judges it whole.
 //!
-//! The process's `af.run` spans drive the consumer thread: the first one opened starts it and
-//! the last one ended stops it within the bounded shutdown ([`Writer::run_started`],
-//! [`Writer::run_ended`]). At `metrics` only the spans that level lists are recorded
-//! ([`METRICS_SPANS`]).
+//! The process's first `af.run` span starts the consumer thread ([`Writer::run_started`]), which
+//! then owns the segment until [`Writer::finish`] seals it or abandons it at the bound; an
+//! `af.run` that ends ([`Writer::run_ended`]) leaves it running. At `metrics` only the spans
+//! that level lists are recorded ([`METRICS_SPANS`]).
 
 use std::collections::HashMap;
 use std::fmt::{Debug, Display};
@@ -43,7 +43,7 @@ const STATUS_FIELD: &str = "af.status";
 const EVENT_FIELD: &str = "af.event";
 const MESSAGE_FIELD: &str = "message";
 
-/// The span a process opens for the time it spends on one run; it starts and stops the
+/// The span a process opens for the time it spends on one run; the first one starts the
 /// consumer thread.
 pub const RUN_SPAN: &str = "af.run";
 
