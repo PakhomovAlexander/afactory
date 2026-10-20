@@ -20,6 +20,11 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
         "The disk af keeps between runs, and the [storage] table",
         STORAGE,
     ),
+    (
+        "telemetry",
+        "What af records about its own work, the four levels, and the [telemetry] table",
+        TELEMETRY,
+    ),
 ];
 
 pub(crate) fn find(name: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
@@ -65,8 +70,9 @@ name them.
   [defaults]  pipeline = \"review\"
 
 The user file is `~/.config/af/config.toml` (XDG on macOS too). It holds what belongs to the
-person and the machine, never to the project: the `[self]` update policy and the `[storage]`
-budget (see `af help storage`). Provider logins and
+person and the machine, never to the project: the `[self]` update policy, the `[storage]`
+budget (see `af help storage`) and the `[telemetry]` level (see `af help telemetry`). Provider
+logins and
 cache policy stay in `providers.toml` and `caches.toml` beside it.
 
 `af config show` prints the effective configuration; `--origin` names the file and line each
@@ -85,15 +91,16 @@ Lowest to highest. Tables deep-merge, scalars last-wins, arrays replace.
   environment AF_<TABLE>__<KEY>, e.g. AF_SELF__AUTO_UPDATE=never
 
 A directory layer's `.af/af.toml` merges into `af config show` for every checkout beneath it.
-`[self]` and `[storage]` are machine-only: a directory, project or local layer that carries one
-is reported and ignored.
+`[self]`, `[storage]` and `[telemetry]` are machine-only: a directory, project or local layer
+that carries one is reported and ignored.
 
 Branch-specific configuration needs no layer: `.af/` is versioned, so the project layer on a
 branch is whatever that branch commits. Each git worktree has its own `.af/` copy and its own
 `af.local.toml`.";
 
 const ENVIRONMENT: &str = "\
-  AF_<TABLE>__<KEY>       override one configuration value (highest layer)
+  AF_<TABLE>__<KEY>       override one configuration value (highest layer), e.g.
+                          AF_TELEMETRY__LEVEL=content for one run
   AF_VERSION              run this installed version regardless of the project's pin
   AF_SELF_OFFLINE=1       never contact a release source: no pin installs, no update checks
   AF_RELEASE_SOURCE       a local directory of releases (<tag>/<asset>) instead of GitHub
@@ -141,7 +148,8 @@ stderr still gets one diagnostic line, so discarding stdout never hides a refusa
 
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape
 change bumps the version rather than reinterpreting an old one. Nothing af prints under --json is
-affected by a TTY, colours, or the update notice (which goes to stderr, and only on a TTY).";
+affected by a TTY, colours, or the update check: its notice goes to stderr, only on a TTY, and
+never under --json.";
 
 const STORAGE: &str = "\
 af keeps a bounded amount of disk between runs (ADR-0144). One budget covers warm build keys,
@@ -178,6 +186,84 @@ it: write scratch files there, never to /tmp. A Store made with --state is recor
 $XDG_STATE_HOME/af/stores.toml so collection reaches it. A Task whose gate leftovers are not
 cleaned up yet is never collected. The sweep that ends `af task run` is recorded on that Task:
 `af task show` prints its `storage sweep:` line.";
+
+const TELEMETRY: &str = "\
+Telemetry records what af does while it works, in its own store, never in a Task or Campaign
+Store (ADR-0153). The kernel's execution authority never reads it: identity, replay, the Ledger,
+budgets, admission and every Worker input are the same whether it is on, off or deleted, and
+nothing it captures reaches a prompt. Nothing leaves the machine unless `sink = \"otlp\"` is set.
+
+Levels
+  off       nothing: no directory, no subscriber
+  metrics   command, run, gate, check, node, Attempt, harness and sweep spans with identity and
+            numeric attributes; failures; resource use
+  spans     every span and event, the configuration record, the Store commit mirror and Finding
+            summaries; sizes and digests of content, never the content (the default)
+  content   spans plus content blobs: Worker inputs, assistant text, reasoning, tool arguments
+            and results, check output (perturbing: not bounded by the overhead gate)
+
+Credential-looking material is withheld at every level, before any bound cuts it: a line that
+looks like a credential becomes `[line withheld: looks like credential material]`, a JSON member
+named like a secret keeps its key and loses its value (`[withheld]`), a configuration row whose
+key is named like a secret or itself looks like a credential loses its value and origin (and
+such a key is withheld too), a line or document too long to judge whole is withheld whole, an
+attribute whose name itself looks like a credential is omitted and counted in `af.redacted`,
+and an attribute or a command-line option named like a secret keeps its name and loses its
+value whatever its shape. Only a kernel identity (a digest, a 16, 32 or 64 hex id, a segment or
+occurrence id, an ordinal) in an identity position (af.run_id, span_id, a digest field, ...)
+escapes these rules; any other value is judged as text. Token and charge counters are exact
+decimal strings: any other number under their names is dropped and counted. A HOME that gives
+no home prefix to replace by `~` is recorded as a problem. A telemetry-only failure (an
+unwritable directory, a full segment) is one problem and the run continues.
+
+  af telemetry status           level, directory, bytes, segments, runs, index, problems
+  af telemetry reindex          recover crashed writers' segments and rebuild the index
+
+The [telemetry] table, machine layers only (built-in, system, user, AF_TELEMETRY__<KEY>); a
+repository's .af/af.toml cannot set it, and a value outside its bound refuses the load naming
+the key:
+
+  [telemetry]
+  level = \"spans\"                      off | metrics | spans | content
+  dir = \"\"                             default $XDG_STATE_HOME/af/telemetry; an absolute path
+                                       that neither contains nor lies inside a Store, a cache
+                                       or another telemetry directory
+  max_bytes = \"4GiB\"                   256MiB to [storage] max_bytes; counted in the budget
+  flush_bytes = \"64KiB\"                4KiB to 16MiB: the buffer written in one write
+  flush_latency_ms = 1000              50 to 10000: the longest a record waits while a run is open
+  observer_queue_bytes = \"4MiB\"        256KiB to 64MiB: the stream queue; full, it drops chunks
+  segment_max_bytes = \"256MiB\"         16MiB to 4GiB: one process's segment, every record kind,
+                                       the last 64 KiB kept for its seal
+  content_max_blob_bytes = \"16MiB\"     64KiB to 256MiB: larger content keeps head and tail
+  content_attempt_max_bytes = \"512MiB\" 16MiB to 8GiB: content one Attempt may keep
+  content_process_max_bytes = \"64MiB\"  4MiB to 1GiB: content outside any Attempt
+  content_native_body_max_chars = 1048576   4096 to 8388608
+  content_reasoning = true             keep thinking blocks and reasoning summaries at content
+  content_tool_io = true               keep tool arguments and results at content
+  content_model_bodies = true          keep raw API bodies at content
+  content_index = true                 maintain the full-text index over text blobs
+  harness_native = false               receive the harness's own telemetry on loopback
+  sink = \"none\"                        none | otlp: push after each run
+  sink_endpoint = \"\"                   an http:// or https:// URL; required with otlp only
+  sink_headers_file = \"\"               one `Name: value` per line, read at push time
+  sink_timeout_ms = 5000               100 to 60000
+
+Layout
+  $XDG_STATE_HOME/af/telemetry/v1/segments/   one JSONL segment per process: live under its
+                                              writer's lock, sealed and compressed at exit
+  $XDG_STATE_HOME/af/telemetry/v1/blobs/      content-addressed, compressed, shared
+  $XDG_STATE_HOME/af/telemetry/v1/index.sqlite   rebuildable; `af telemetry reindex`
+  $XDG_STATE_HOME/af/telemetry-dirs.v1.json   every telemetry directory ever written here
+
+`af telemetry status` accounts every byte beneath the telemetry directory: a file or directory
+that matches none of the above, or a symbolic link anywhere beneath it, is counted once under an
+`unrecognized` entry (its count, its allocated bytes and up to 16 of its names), never read,
+followed or removed. It rechecks each registered directory's overlap: none, overlapping, or
+unknown when the Store registry cannot be read (named among the problems; the exit code is
+unchanged).
+
+There is no telemetry keep_days: collection by age is [storage] keep_days under [storage]
+auto_gc or an applied prune. See docs/telemetry.md.";
 
 const SELF_TOPIC: &str = "\
 Layout
@@ -217,17 +303,30 @@ Updates — `[self]` in ~/.config/af/config.toml
   install_pins = true
   keep_versions = 3
 
-  The check never runs on the hot path: after a command's result is written, on a TTY only,
-  never under CI, --json, or AF_SELF_OFFLINE, af spawns a detached child that refreshes the cache
-  and exits. The next invocation prints one line on stderr. With `always`, the child installs the
-  newer release and retargets the default; the running process and every pinned project are
-  untouched.
+  The check never runs on the hot path. After an eligible command — any but help, --version,
+  `af self`, `af config`, completions and the browser — af spawns a detached child that
+  refreshes the cache and exits, with or without a terminal and under --json too. The child holds
+  none of the command's pipes, and never changes its output or exit status. check_every
+  throttles invocations, a failed attempt included: no timer, daemon or service runs between
+  them. CI, AF_SELF_OFFLINE, update_check = false and auto_update = \"never\" turn the check
+  off. Inside a pinned project the af that dispatches schedules it, once. Only an interactive
+  run — stderr a terminal, no --json — prints the cached notice, one line on stderr; under a
+  pin, the af that dispatches prints it. With `always`, the child installs the newer release
+  and retargets the default, unless `af self update` or `rollback` changed it meanwhile; the
+  running process and every pinned project are untouched. Its \"updated the default\" notice is
+  shown only while the activation it announces stands: one a later update or rollback made
+  stale, even an update back to the same version, is dropped.
 
 Commands
   af self status | update [--check] | rollback | install V | remove V | prune
   af self setup-shell [--write] | uninstall [--purge]
   Update, rollback, remove, prune, and uninstall refuse to touch a binary af did not install.
+  uninstall refuses while a background check runs, since it may be installing a release: run
+  it again when the check has finished. A check that starts after an uninstall writes nothing,
+  and a command that was running during an uninstall --purge recreates none of what it removed.
   From a cargo/source-installed af at the default path, `af self install V` explicitly replaces
   that running executable with the verified release and adopts the self-managed layout. An
   unrelated file at the default path is never replaced.
-  remove and prune keep the default and every version a project seen on this machine pins.";
+  remove and prune keep the default and every version a project seen on this machine pins,
+  read again under the lock every activation holds. A pinned release runs only once its pin is
+  recorded under that lock: when it cannot be, the command fails and says why.";

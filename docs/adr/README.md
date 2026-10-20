@@ -98,6 +98,7 @@ future readers need.
   reviewers](0042-require-provider-bindings-and-isolate-claude-reviewers.md)
 - [0044 — `af` manages itself: dispatch to the pinned release, policy-driven updates, a
   layered configuration](0044-af-manages-itself-and-dispatches-to-the-pinned-release.md)
+  (superseded in part by [ADR-0154](0154-check-for-updates-after-headless-and-json-commands.md))
 - [0045 — One release train, and a pin that binds
   bytes](0045-one-release-train-and-a-pin-that-binds-bytes.md)
 - [0046 — Add versioned Task contracts with exact-plan
@@ -271,6 +272,18 @@ future readers need.
   token](0149-never-wrap-a-suggested-command-inside-a-shell-token.md)
 - [0150 — Name the path a status-line error
   carries](0150-name-the-path-a-status-line-error-carries.md)
+- [0151 — Export a human presentation of a report beside its canonical
+  Markdown](0151-export-a-human-presentation-of-a-report-beside-its-canonical-markdown.md)
+- [0152 — Push the release pin with a deploy key that bypasses main's
+  ruleset](0152-push-the-release-pin-with-a-deploy-key-that-bypasses-mains-ruleset.md)
+- [0153 — Record telemetry in its own store, and never let it
+  steer](0153-record-telemetry-in-its-own-store-and-never-let-it-steer.md)
+- [0154 — Check for updates after headless and `--json`
+  commands](0154-check-for-updates-after-headless-and-json-commands.md)
+- [0155 — Publish a fixture marker whole or not at
+  all](0155-publish-a-fixture-marker-whole-or-not-at-all.md)
+- [0156 — Give every `make test` run a private JUnit
+  store](0156-give-every-make-test-run-a-private-junit-store.md)
 - [0151 — Give a repository one Project identity and register its checkouts as
   Workspaces](0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
 - [0152 — Measure a Project into Surveys with a token-free

@@ -19,13 +19,17 @@ pub const TARGET: &str = env!("AF_TARGET");
 /// it starts `RUSTUP_HOME` and `CARGO_HOME`. A test that sets any of these names itself
 /// afterwards wins, since the last `env` of a name counts.
 ///
-/// It also raises the provider probes' timeouts to [`LOAD_SAFE_PROBE_TIMEOUT_MS`].
+/// It also raises the provider probes' timeouts to [`LOAD_SAFE_PROBE_TIMEOUT_MS`], and sets
+/// `AF_SELF_OFFLINE`: an eligible command spawns the detached update check whether or not it
+/// has a terminal, and that check would ask the real release source over the network. Tests of
+/// the check use [`Sandbox::command`], whose release source is a directory.
 pub fn af() -> Command {
     let mut command = Command::new(AF);
     for (name, value) in private_home_env() {
         command.env(name, value);
     }
     command.env(PROBE_TIMEOUT_SETTING, LOAD_SAFE_PROBE_TIMEOUT_MS);
+    command.env("AF_SELF_OFFLINE", "1");
     command
 }
 
@@ -177,14 +181,38 @@ impl Sandbox {
     /// A release whose `af` is a script reporting `version`, with an unsigned `SHA256SUMS`
     /// (tampered when asked). Returns the archive's real digest.
     pub fn publish(&self, version: &str, tamper: bool) -> String {
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"af {version}\"; exit 0; fi\necho \"fake af {version} $*\"\necho \"from=${{AF_DISPATCHED_FROM:-none}}\"\n"
+        );
+        self.publish_script(version, &script, tamper)
+    }
+
+    /// A release like [`Sandbox::publish`]'s whose `af --version`, the proof an installer runs
+    /// after fetching and verifying the archive, stalls the install: it creates `stall/reached`,
+    /// then waits for the test to create `stall/open`. The wait is bounded: after a minute it
+    /// creates `stall/expired` and fails, so a broken test never leaves an installer behind.
+    pub fn publish_stalled(&self, version: &str, stall: &Path) -> String {
+        std::fs::create_dir_all(stall).unwrap();
+        let (reached, open, expired) = (
+            stall.join("reached"),
+            stall.join("open"),
+            stall.join("expired"),
+        );
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  : > '{reached}'\n  i=0\n  while [ ! -e '{open}' ]; do\n    i=$((i + 1))\n    if [ \"$i\" -gt 600 ]; then : > '{expired}'; exit 1; fi\n    sleep 0.1\n  done\n  echo \"af {version}\"\n  exit 0\nfi\necho \"fake af {version} $*\"\n",
+            reached = reached.display(),
+            open = open.display(),
+            expired = expired.display(),
+        );
+        self.publish_script(version, &script, false)
+    }
+
+    fn publish_script(&self, version: &str, script: &str, tamper: bool) -> String {
         let tag_dir = self.release_dir(version);
         std::fs::create_dir_all(&tag_dir).unwrap();
         let stage = self.path(&format!("stage-{version}"));
         std::fs::create_dir_all(&stage).unwrap();
-        let script = format!(
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"af {version}\"; exit 0; fi\necho \"fake af {version} $*\"\necho \"from=${{AF_DISPATCHED_FROM:-none}}\"\n"
-        );
-        write(&stage.join("af"), &script);
+        write(&stage.join("af"), script);
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(stage.join("af"), std::fs::Permissions::from_mode(0o755))
@@ -250,6 +278,21 @@ impl Sandbox {
             ),
         );
         dir.join("af")
+    }
+
+    /// `binary` running `af self refresh-check` as a command schedules it: the command creates
+    /// the check lock's file first, which the check never creates itself.
+    pub fn refresh_check(&self, binary: &Path) -> Command {
+        let lock = self.path("cache/af/self/latest.lock");
+        std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&lock)
+            .unwrap();
+        let mut command = self.command(binary);
+        command.args(["self", "refresh-check"]);
+        command
     }
 
     /// A lock pinning `version`, with the archive digest for this target when given.

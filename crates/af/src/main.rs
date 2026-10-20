@@ -50,6 +50,7 @@ mod selfmgmt;
 mod storage;
 mod task;
 mod task_execution;
+mod telemetry;
 mod topics;
 mod tui;
 
@@ -1289,6 +1290,14 @@ fn main() {
                 }) => storage::prune(apply, json || prune_json),
             },
         ),
+        cli::Command::Telemetry { command } => match command {
+            cli::TelemetryCommand::Status { json, dir } => {
+                ("af telemetry status", telemetry::status(json, dir))
+            }
+            cli::TelemetryCommand::Reindex { json, dir } => {
+                ("af telemetry reindex", telemetry::reindex(json, dir))
+            }
+        },
         cli::Command::Completions { shell } => (
             "af completions",
             selfmgmt::completion_script(shell).map(|script| {

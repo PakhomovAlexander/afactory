@@ -42,8 +42,14 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   workstream, adopting the `workstreams/` habit), kernel-measured **Surveys** of tree, history,
   contributors, decisions and af activity recorded by a token-free **Surveyor** at onboarding and
   after runs, and bounded **Project Briefs** that a pipeline carries to chosen Workers on a
-  declared port; all behind `af project`. Proposed 2026-10-19; package PJ1 (Project and
-  Workspace) implemented on branch `design/project` with
+  declared port; all behind `af project`. Proposed 2026-10-19; package PJ1, PJ1b, PJ2 and its collection
+  companion implemented on branch `design/project` with
   [ADR-0151](../adr/0151-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
-  and [`../project.md`](../project.md), verified by af Tasks and awaiting merge; PJ2 and the
-  design review in progress, PJ3–PJ5 not started.
+  and [`../project.md`](../project.md), [ADR-0152](../adr/0152-measure-a-project-into-surveys-with-a-token-free-surveyor.md),
+  verified by af Tasks; PJ3 (Project Brief) in progress, PJ4–PJ5 not started.
+- [`telemetry.md`](telemetry.md) — Telemetry: a separate, machine-only, bounded store of spans,
+  events and content-addressed blobs that the kernel writes and never reads — kernel phases,
+  supervised processes with their resource use, harness turns, tool calls and reasoning, the
+  configuration a run ran under, a mirror of the Store's events, failures — with `af telemetry`
+  views, OTLP and Perfetto exports, and an optional loopback receiver for the harnesses' native
+  OpenTelemetry. Packages T1–T6; under review, nothing shipped.

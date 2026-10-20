@@ -6,6 +6,7 @@ pub mod code;
 pub(crate) mod control;
 pub mod document;
 pub mod host;
+pub mod human_document;
 mod integration;
 pub mod lease;
 pub mod optimization;

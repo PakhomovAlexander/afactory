@@ -38,9 +38,20 @@ keep_worker_transcripts = false
 keep_gate_pull_requests = false
 "#;
 
+/// The built-in layer: [`BUILT_IN`] and the `[telemetry]` table with every default, which the
+/// telemetry crate owns with its bounds (ADR-0153).
+fn built_in() -> String {
+    format!("{BUILT_IN}\n{}", review_telemetry::level::built_in_table())
+}
+
 /// The tables only machine layers may set: a repository's `.af/af.toml` can steer neither what
-/// af downloads (`[self]`) nor what it keeps or removes on this machine (`[storage]`).
-const MACHINE_ONLY: [(&str, &str); 2] = [("self", "self"), ("storage", "storage")];
+/// af downloads (`[self]`), nor what it keeps or removes on this machine (`[storage]`), nor what
+/// it records about its own work there (`[telemetry]`, ADR-0153).
+const MACHINE_ONLY: [(&str, &str); 3] = [
+    ("self", "self"),
+    ("storage", "storage"),
+    ("telemetry", "telemetry"),
+];
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct Origin {
@@ -64,8 +75,8 @@ pub(crate) struct Config {
     /// The `[self]` policy — what to download, from where, and whether to exec it — is only ever
     /// taken from such a load, so a repository can never steer it.
     pub(crate) machine_scope: bool,
-    /// `[self]` and `[storage]` tables found in directory, project, or local layers: reported,
-    /// never merged.
+    /// `[self]`, `[storage]` and `[telemetry]` tables found in directory, project, or local
+    /// layers: reported, never merged.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) ignored: Vec<String>,
     /// Every file a layer would read, in ladder order, present or not.
@@ -238,6 +249,34 @@ impl Config {
             keep_worker_transcripts: bool_of("keep_worker_transcripts")?,
             keep_gate_pull_requests: bool_of("keep_gate_pull_requests")?,
         })
+    }
+}
+
+impl Config {
+    /// The `[telemetry]` table, typed and bounded (ADR-0153): a value outside its bound, an
+    /// unknown key, or `sink = "otlp"` without `sink_endpoint` refuses the load, naming the key.
+    /// Only machine layers set it; `max_bytes` is bounded by `[storage] max_bytes`.
+    pub(crate) fn telemetry_policy(&self) -> Result<review_telemetry::level::Settings, String> {
+        use review_telemetry::level::Raw;
+        let table = self
+            .effective
+            .get("telemetry")
+            .and_then(Value::as_table)
+            .ok_or("[telemetry] is missing from the effective configuration")?;
+        let storage = self.storage_policy()?;
+        let names: Vec<String> = table.keys().cloned().collect();
+        review_telemetry::level::Settings::from_values(
+            &names,
+            |name| {
+                table.get(name).map(|value| match value {
+                    Value::String(text) => Raw::String(text.clone()),
+                    Value::Integer(number) => Raw::Integer(*number),
+                    Value::Boolean(flag) => Raw::Bool(*flag),
+                    other => Raw::Other(other.to_string()),
+                })
+            },
+            storage.max_bytes,
+        )
     }
 }
 
@@ -446,7 +485,7 @@ pub(crate) fn load_rooted(
     };
     let toplevel = git_toplevel(&start);
     let mut files = Vec::new();
-    let mut effective = toml::from_str::<Value>(BUILT_IN).expect("built-in defaults parse");
+    let mut effective = toml::from_str::<Value>(&built_in()).expect("built-in defaults parse");
     let mut origins = BTreeMap::new();
     record_origins(
         &effective,
@@ -950,6 +989,87 @@ mod tests {
         );
         assert_eq!(config.origins["storage.max_bytes"].layer, "built-in");
         assert_eq!(config.origins["storage.keep_days"].layer, "environment");
+    }
+
+    /// ADR-0153 clause 4: `[telemetry]` is machine-only like `[self]` and `[storage]`. A
+    /// project, directory or local layer that carries it is reported and ignored; the
+    /// environment form `AF_TELEMETRY__<KEY>` is a machine layer and is honoured; a value
+    /// outside its bound refuses the load naming the key.
+    #[test]
+    fn telemetry_machine_only_table_is_ignored_in_project_layers() {
+        use review_telemetry::level::Level;
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let above = root.join("above");
+        let repo = above.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(repo.join(".af")).unwrap();
+        std::fs::create_dir_all(above.join(".af")).unwrap();
+        std::fs::write(
+            repo.join(".af/af.toml"),
+            "[telemetry]\nlevel = \"content\"\nsink = \"otlp\"\nsink_endpoint = \"https://collector.example\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            repo.join(".af/af.local.toml"),
+            "[telemetry]\nlevel = \"verbose\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            above.join(".af/af.toml"),
+            "[telemetry]\ndir = \"/tmp/elsewhere\"\n",
+        )
+        .unwrap();
+        let roots = |environment: Vec<(String, String)>| MachineRoots {
+            system: root.join("etc"),
+            user: root.join("user"),
+            environment,
+        };
+        let config = load_rooted(Some(&repo), false, &roots(Vec::new())).unwrap();
+        let policy = config.telemetry_policy().unwrap();
+        assert_eq!(policy, review_telemetry::level::Settings::default());
+        for layer in ["project layer", "local layer", "directory layer"] {
+            assert!(
+                config
+                    .ignored
+                    .iter()
+                    .any(|note| note.starts_with("[telemetry] in ")
+                        && note.contains(layer)
+                        && note.contains("af help telemetry")),
+                "{layer}: {:?}",
+                config.ignored
+            );
+        }
+        assert_eq!(config.origins["telemetry.level"].layer, "built-in");
+
+        // The one-run override is a machine layer.
+        let environment = vec![("AF_TELEMETRY__LEVEL".to_string(), "content".to_string())];
+        let config = load_rooted(Some(&repo), false, &roots(environment)).unwrap();
+        assert_eq!(config.telemetry_policy().unwrap().level, Level::Content);
+        assert_eq!(config.origins["telemetry.level"].layer, "environment");
+
+        // A value outside its bound, from a machine layer, refuses the load naming the key.
+        std::fs::create_dir_all(root.join("user")).unwrap();
+        std::fs::write(
+            root.join("user/config.toml"),
+            "[telemetry]\nlevel = \"verbose\"\n",
+        )
+        .unwrap();
+        let config = load_rooted(Some(&repo), false, &roots(Vec::new())).unwrap();
+        let refusal = config.telemetry_policy().unwrap_err();
+        assert!(
+            refusal.starts_with("[telemetry] level = \"verbose\""),
+            "{refusal}"
+        );
+        let environment = vec![(
+            "AF_TELEMETRY__SEGMENT_MAX_BYTES".to_string(),
+            "\"1MiB\"".to_string(),
+        )];
+        std::fs::remove_file(root.join("user/config.toml")).unwrap();
+        let config = load_rooted(Some(&repo), false, &roots(environment)).unwrap();
+        let refusal = config.telemetry_policy().unwrap_err();
+        assert!(refusal.contains("segment_max_bytes"), "{refusal}");
     }
 
     /// A layer that does not parse is refused with the text `load` always gave, and the span

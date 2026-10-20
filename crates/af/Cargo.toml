@@ -25,6 +25,7 @@ review-runner-codex = { path = "../review-runner-codex" }
 review-source-git = { path = "../review-source-git" }
 review-source-task = { path = "../review-source-task" }
 review-store = { path = "../review-store" }
+review-telemetry = { path = "../review-telemetry" }
 review-sandbox = { path = "../review-sandbox" }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 # `termios` drives the `af` browser's raw-mode terminal session (ADR-0119).
@@ -49,6 +50,8 @@ portable-pty = { version = "0.9.0", default-features = false }
 
 [dev-dependencies]
 jsonschema = { version = "0.58.4", default-features = false }
+# A real CommonMark and GFM parser: the human report export is judged by what it renders.
+comrak = { version = "0.55.0", default-features = false }
 # Signs test releases the way the release job signs real ones, so signature verification is
 # exercised end to end without a key on disk.
 minisign = "0.10.0"

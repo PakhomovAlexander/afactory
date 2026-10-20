@@ -68,6 +68,13 @@ _Avoid_: **Document** for it — a Document Task carries no Snapshot identity an
 cannot read the repository. And **Report** — a Report is one reviewer's immutable claim in a
 Campaign; a Report Task's output is a Document.
 
+**Human presentation**:
+The readable Markdown `af task output --format human-markdown` derives from a Document's exact
+draft and sources at export time, with the Task's acceptance and the matching independent review
+in plain words. It is never recorded or reviewed; the Document's canonical text stays the
+accepted bytes ([ADR-0151](docs/adr/0151-export-a-human-presentation-of-a-report-beside-its-canonical-markdown.md)).
+_Avoid_: calling it the report or the Document, or calling it verified.
+
 **Measurement**:
 The kernel's own record of one declared command run a declared number of times against one exact
 Snapshot: every repetition's elapsed time, exit status, output digests and the metrics the
@@ -168,6 +175,17 @@ The kernel-installed, token-free operator that records Surveys: synchronously at
 plumbing under one `max_wall_ms` deadline, and never while the survey key is unchanged.
 _Avoid_: a daemon — it is one call that reads, writes one record and returns; and a Worker — it
 has no Provider, no Attempt and no budget.
+
+**Telemetry**:
+What af records about its own work — spans, events and, at the `content` level, redacted
+content blobs — in per-process segments under the state root's `telemetry/`, never in a Store.
+The kernel's execution authority never reads it and nothing it captures is a Worker input; its
+level is the machine-only `[telemetry] level` (`off`, `metrics`, `spans`, `content`). A
+**Telemetry Run** is the work one kernel run id covers inside one Store, its trace namespaced by
+the Store directory; an **execution** is one process's part of it, identified by its segment
+([ADR-0153](docs/adr/0153-record-telemetry-in-its-own-store-and-never-let-it-steer.md)).
+_Avoid_: "logs" or "the Ledger" — Telemetry is evidence of nothing, and a run id alone does not
+name a Telemetry Run.
 
 **Check runtime**:
 The directory `af-check-<pid>-<random>` af creates for one check and removes after it, holding

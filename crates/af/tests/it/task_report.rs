@@ -18,7 +18,7 @@ use crate::schemas;
 
 const TASK: &str = "starter-report";
 
-fn af(repo: &Path, args: &[&str]) -> Output {
+pub(crate) fn af(repo: &Path, args: &[&str]) -> Output {
     crate::common::af()
         .current_dir(repo)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -27,7 +27,7 @@ fn af(repo: &Path, args: &[&str]) -> Output {
         .unwrap()
 }
 
-fn text(output: &Output) -> String {
+pub(crate) fn text(output: &Output) -> String {
     format!(
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
@@ -35,7 +35,7 @@ fn text(output: &Output) -> String {
     )
 }
 
-fn git(repo: &Path, args: &[&str]) {
+pub(crate) fn git(repo: &Path, args: &[&str]) {
     let output = Command::new("git")
         .current_dir(repo)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -54,7 +54,7 @@ fn git(repo: &Path, args: &[&str]) {
 
 /// The starter, initialized as a repository and committed. Returns the repository and a state
 /// directory beside it.
-fn starter(root: &Path) -> (PathBuf, PathBuf) {
+pub(crate) fn starter(root: &Path) -> (PathBuf, PathBuf) {
     let init = af(
         root,
         &[
@@ -79,7 +79,7 @@ fn starter(root: &Path) -> (PathBuf, PathBuf) {
 }
 
 /// Replace `from` with `to` in one starter Worker's script, re-pin every package and commit.
-fn edit_worker(repo: &Path, worker: &str, from: &str, to: &str) {
+pub(crate) fn edit_worker(repo: &Path, worker: &str, from: &str, to: &str) {
     let path = package(repo, &format!("builtin/{worker}")).join("worker.py");
     let script = std::fs::read_to_string(&path).unwrap();
     assert!(script.contains(from), "{worker}: {from}");
@@ -88,7 +88,7 @@ fn edit_worker(repo: &Path, worker: &str, from: &str, to: &str) {
 }
 
 /// The directory the committed catalog pins `name` to.
-fn package(repo: &Path, name: &str) -> PathBuf {
+pub(crate) fn package(repo: &Path, name: &str) -> PathBuf {
     let catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap())
             .unwrap();
@@ -101,7 +101,7 @@ fn revision_input(cas: &Cas, done: &Value, port: &str) -> Value {
     revision["payload"]["inputs"][port].clone()
 }
 
-fn repin_and_commit(repo: &Path) {
+pub(crate) fn repin_and_commit(repo: &Path) {
     let path = repo.join(".af/task-catalog.toml");
     let mut catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -130,7 +130,7 @@ fn run(repo: &Path, state: &Path, args: &[&str], code: i32) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-fn start(repo: &Path, state: &Path, code: i32) -> Value {
+pub(crate) fn start(repo: &Path, state: &Path, code: i32) -> Value {
     let done = run(
         repo,
         state,
