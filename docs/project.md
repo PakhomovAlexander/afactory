@@ -679,11 +679,20 @@ that plan in `af/storage-prune@2` ([schema](../schemas/storage-prune-v2.json)): 
 removes, in order, with the bytes it frees, its rule (`recovery`, then `collection` and
 `keep_surveys`, then `budget`) and af's total after it, and under `left` every file or Survey it
 leaves with its reason. `--apply` runs that same plan entry by entry and never chooses again: each
-entry says what it freed and the total after it, and a Survey whose job found what the plan did
-not (the lock lost, its record replaced) keeps its place with nothing freed and a `deviation`, for
-the next sweep to plan again. So the bytes of a deletion an interruption left count once: a
-preview that frees them first and then fits the budget stops exactly where the applied sweep
-stops.
+entry says what it freed and the total after it. An entry of any kind whose removal failed (the
+lock lost, what it names replaced since it was measured, an I/O error) keeps its place with
+nothing freed, the total after it unchanged and `outcome` `failed: <reason>`, for the next sweep
+to plan again, so the document's totals are what af then holds. So the bytes of a deletion an
+interruption left count once: a preview that frees them first and then fits the budget stops
+exactly where the applied sweep stops.
+
+The snapshot is the only thing a sweep reads. A removal a process that died left half done (a
+`.af-removing-<pid>-…` claim) and a container a dead Survey collection left empty are in it, each
+a `claim` entry under `recovery` with the bytes it measured, so the preview lists them and the
+applied sweep removes nothing it did not list. Every Survey's record is measured once, with its
+device, inode and bytes: a record another file replaced after that is refused `refused (replaced
+since inventory)` and taken in no way, and the bytes a plan lists are always those of the file it
+measured.
 
 A record is reached, read and deleted only through directory descriptors, the removal boundary of
 [ADR-0144](adr/0144-hold-afs-disk-use-to-a-machine-budget.md): the Project Store from `/`, then
@@ -706,7 +715,10 @@ Store's bytes and never the Survey's, and never deleted by any sweep. Without a 
 file at a collected Survey's name is deleted only when its bytes are the record's (they hash to
 its ID), and is `foreign` otherwise. Anything else under `cas/removing` is listed and left; names
 are read raw, so one that is not UTF-8 is `unreadable_name`, shown lossily in text and in its
-percent-encoded spelling with `path_encoded` in `--json`.
+percent-encoded spelling with `path_encoded` in `--json`. A container's own name is read the same
+way: only one named by a pass ID (32 lowercase hex digits) is a dead pass's, and anything in a
+container whose name is not UTF-8 is `unreadable_name` (otherwise `foreign`) and stays there, with
+the container, whatever it is named.
 
 A symbolic link on the way, or a directory on another device than the Store's, refuses the Survey:
 inventory measures nothing through it and lists it in use, and a sweep reports it as a failure
