@@ -1,6 +1,6 @@
 //! The Surveyor (ADR-0152): the token-free operator that measures a Project into Surveys.
 //!
-//! A Survey is `af/ProjectSurvey@1`, one canonical JSON record of the head: `identity`, `tree`,
+//! A Survey is `af/ProjectSurvey@2`, one canonical JSON record of the head: `identity`, `tree`,
 //! `history`, `contributors`, `decisions`, `vocabulary` and `checks`, every number decimal text,
 //! every section bounded by `[survey]` and marked complete, partial or unavailable. It goes into
 //! the Project Store's CAS and `SurveyRecorded@1` into its log; a Survey that cannot be taken

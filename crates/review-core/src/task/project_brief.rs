@@ -26,7 +26,7 @@ use super::usage::DecimalU64;
 use super::{is_name, present_option, require};
 use crate::is_digest;
 use crate::project::{
-    MAX_SURVEY_ENTRIES, PROJECT_SURVEY_V1, ProjectSurveyV1, SurveyChecksV1, SurveyCompletenessV1,
+    MAX_SURVEY_ENTRIES, PROJECT_SURVEY_V2, ProjectSurveyV2, SurveyChecksV1, SurveyCompletenessV1,
     SurveyContributorsV1, SurveyDecisionV1, SurveyDecisionsV1, SurveyHistoryV1, SurveyHotPathV1,
     SurveyIdentityV1, SurveySectionV1, SurveyTreeV1, SurveyVocabularyV1, is_commit_id,
     is_project_id,
@@ -223,7 +223,7 @@ pub struct ProjectSurveyPinV1 {
 
 impl ProjectSurveyPinV1 {
     /// The pin of the complete Survey `survey_id` names.
-    pub fn of(survey_id: &str, survey: &ProjectSurveyV1) -> Result<Self, String> {
+    pub fn of(survey_id: &str, survey: &ProjectSurveyV2) -> Result<Self, String> {
         let pin = Self {
             schema: PROJECT_SURVEY_PIN_V1.into(),
             survey_id: survey_id.into(),
@@ -240,9 +240,9 @@ impl ProjectSurveyPinV1 {
     }
 
     /// The Survey this pin holds, without its link to the Survey before it.
-    pub fn survey(&self) -> ProjectSurveyV1 {
-        ProjectSurveyV1 {
-            schema: PROJECT_SURVEY_V1.into(),
+    pub fn survey(&self) -> ProjectSurveyV2 {
+        ProjectSurveyV2 {
+            schema: PROJECT_SURVEY_V2.into(),
             completeness: SurveyCompletenessV1::Complete,
             previous_survey_id: None,
             stopped: None,

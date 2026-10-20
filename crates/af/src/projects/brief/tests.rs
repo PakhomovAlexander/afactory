@@ -2,15 +2,15 @@
 //! `tests/it/project_brief.rs` runs them end to end through `af`.
 
 use super::*;
-use review_core::project::ProjectSurveyV1;
+use review_core::project::ProjectSurveyV2;
 use review_core::task::project_brief::{
     MAX_BRIEF_BYTES, MIN_BRIEF_BYTES, PROJECT_BRIEF_CAPTURE_V1, ProjectBriefCaptureV1,
 };
 
 /// A complete Survey the Surveyor recorded for the PJ2 fixture repository.
-fn survey() -> ProjectSurveyV1 {
+fn survey() -> ProjectSurveyV2 {
     let text = include_str!("../../../tests/fixtures/project-survey/expected.json");
-    let survey: ProjectSurveyV1 = serde_json::from_str(text).unwrap();
+    let survey: ProjectSurveyV2 = serde_json::from_str(text).unwrap();
     survey.validate().unwrap();
     survey
 }

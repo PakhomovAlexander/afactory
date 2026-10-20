@@ -1,7 +1,7 @@
 //! The Project Brief's records (ADR-0159) and the pipeline port that asks for one: each schema
 //! accepts what the Rust types write and refuses what they refuse.
 
-use review_core::project::ProjectSurveyV1;
+use review_core::project::ProjectSurveyV2;
 use review_core::task::project_brief::*;
 use serde_json::{Value, json};
 
@@ -18,9 +18,9 @@ fn digest(fill: char) -> String {
 }
 
 /// A complete Survey the Surveyor recorded for the PJ2 fixture repository.
-fn survey() -> ProjectSurveyV1 {
+fn survey() -> ProjectSurveyV2 {
     let text = include_str!("../../../af/tests/fixtures/project-survey/expected.json");
-    let survey: ProjectSurveyV1 = serde_json::from_str(text).unwrap();
+    let survey: ProjectSurveyV2 = serde_json::from_str(text).unwrap();
     survey.validate().unwrap();
     survey
 }
