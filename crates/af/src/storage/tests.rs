@@ -914,7 +914,12 @@ fn a_partial_deletion_reports_the_bytes_it_actually_freed() {
         failed.bytes, freed,
         "what the walk unlinked, accounted from the removal's own start"
     );
-    assert_eq!(failed.total_after, applied.total_before - failed.bytes);
+    // The running total moves by what left the disk and stops at zero: when the walk unlinked
+    // more than inventory measured (the campaign grew since), the total is already spent.
+    assert_eq!(
+        failed.total_after,
+        applied.total_before.saturating_sub(failed.bytes)
+    );
     assert_eq!(applied.total_after, failed.total_after);
     // The schema accepts a failed entry that freed bytes.
     let mut document = serde_json::to_value(&applied).unwrap();
@@ -988,7 +993,10 @@ fn a_failure_at_the_final_rmdir_is_a_partial_removal_with_what_it_freed() {
         "the children it removed: {}",
         failed.bytes
     );
-    assert_eq!(failed.total_after, applied.total_before - failed.bytes);
+    assert_eq!(
+        failed.total_after,
+        applied.total_before.saturating_sub(failed.bytes)
+    );
     std::fs::remove_dir_all(claim).unwrap();
 }
 
