@@ -21,12 +21,12 @@
       "const": "af/ProjectSurveyPin@1"
     },
     "survey_id": {
-      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
     },
     "identity": {
       "allOf": [
         {
-          "$ref": "urn:af:schema:project-survey:1#/properties/identity"
+          "$ref": "urn:af:schema:project-survey:2#/properties/identity"
         },
         {
           "properties": {
@@ -40,7 +40,7 @@
     "tree": {
       "allOf": [
         {
-          "$ref": "urn:af:schema:project-survey:1#/properties/tree"
+          "$ref": "urn:af:schema:project-survey:2#/properties/tree"
         },
         {
           "properties": {
@@ -54,7 +54,7 @@
     "history": {
       "allOf": [
         {
-          "$ref": "urn:af:schema:project-survey:1#/properties/history"
+          "$ref": "urn:af:schema:project-survey:2#/properties/history"
         },
         {
           "properties": {
@@ -68,7 +68,7 @@
     "contributors": {
       "allOf": [
         {
-          "$ref": "urn:af:schema:project-survey:1#/properties/contributors"
+          "$ref": "urn:af:schema:project-survey:2#/properties/contributors"
         },
         {
           "properties": {
@@ -82,7 +82,7 @@
     "decisions": {
       "allOf": [
         {
-          "$ref": "urn:af:schema:project-survey:1#/properties/decisions"
+          "$ref": "urn:af:schema:project-survey:2#/properties/decisions"
         },
         {
           "properties": {
@@ -96,7 +96,7 @@
     "vocabulary": {
       "allOf": [
         {
-          "$ref": "urn:af:schema:project-survey:1#/properties/vocabulary"
+          "$ref": "urn:af:schema:project-survey:2#/properties/vocabulary"
         },
         {
           "properties": {
@@ -110,7 +110,7 @@
     "checks": {
       "allOf": [
         {
-          "$ref": "urn:af:schema:project-survey:1#/properties/checks"
+          "$ref": "urn:af:schema:project-survey:2#/properties/checks"
         },
         {
           "properties": {

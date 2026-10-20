@@ -14,10 +14,10 @@
     },
     "pin_id": {
       "description": "The `af/ProjectSurveyPin@1`.",
-      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
     },
     "source_commit": {
-      "$ref": "urn:af:schema:project-survey:1#/$defs/commit"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/commit"
     },
     "variants": {
       "type": "object",
@@ -41,7 +41,7 @@
       "description": "By Survey head.",
       "type": "object",
       "propertyNames": {
-        "$ref": "urn:af:schema:project-survey:1#/$defs/commit"
+        "$ref": "urn:af:schema:project-survey:2#/$defs/commit"
       },
       "additionalProperties": {
         "$ref": "#/$defs/ancestry"
@@ -109,7 +109,7 @@
             },
             "behind_commits": {
               "description": "`git rev-list --count <head>..<source commit>`, the head being an ancestor of the source commit.",
-              "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+              "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
             }
           }
         },

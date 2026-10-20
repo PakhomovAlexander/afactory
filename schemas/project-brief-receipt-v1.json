@@ -36,10 +36,10 @@
       ]
     },
     "brief_id": {
-      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
     },
     "source_commit": {
-      "$ref": "urn:af:schema:project-survey:1#/$defs/commit"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/commit"
     },
     "staleness": {
       "$ref": "urn:af:schema:project-brief-capture:1#/$defs/ancestry"

@@ -30,7 +30,7 @@
       ]
     },
     "brief_id": {
-      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
     },
     "brief": {
       "$ref": "urn:af:schema:project-brief:1"
@@ -55,18 +55,18 @@
           "pattern": "^port:[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
         },
         "artifact_id": {
-          "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+          "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
         },
         "artifact_type": {
           "const": "af/ProjectBrief@1"
         },
         "rendered_bytes": {
           "description": "The bytes of the Worker value the runner renders.",
-          "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+          "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
         },
         "estimated_tokens": {
           "description": "The runner's estimate: the bytes divided by four, rounded up.",
-          "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+          "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
         }
       }
     }

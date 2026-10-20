@@ -21,7 +21,7 @@
     },
     "survey_id": {
       "description": "The pinned Survey's ID in the Project Store: provenance, never a Task Store object.",
-      "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
     },
     "project_id": {
       "$ref": "urn:af:schema:project-registered:1#/$defs/project_id"
@@ -48,10 +48,10 @@
       ],
       "properties": {
         "commit": {
-          "$ref": "urn:af:schema:project-survey:1#/$defs/commit"
+          "$ref": "urn:af:schema:project-survey:2#/$defs/commit"
         },
         "tree_digest": {
-          "$ref": "urn:af:schema:project-survey:1#/$defs/digest"
+          "$ref": "urn:af:schema:project-survey:2#/$defs/digest"
         }
       }
     },
@@ -60,28 +60,28 @@
       "additionalProperties": false,
       "properties": {
         "identity": {
-          "$ref": "urn:af:schema:project-survey:1#/properties/identity"
+          "$ref": "urn:af:schema:project-survey:2#/properties/identity"
         },
         "tree": {
-          "$ref": "urn:af:schema:project-survey:1#/properties/tree"
+          "$ref": "urn:af:schema:project-survey:2#/properties/tree"
         },
         "history": {
-          "$ref": "urn:af:schema:project-survey:1#/properties/history"
+          "$ref": "urn:af:schema:project-survey:2#/properties/history"
         },
         "contributors": {
-          "$ref": "urn:af:schema:project-survey:1#/properties/contributors"
+          "$ref": "urn:af:schema:project-survey:2#/properties/contributors"
         },
         "decisions": {
-          "$ref": "urn:af:schema:project-survey:1#/properties/decisions"
+          "$ref": "urn:af:schema:project-survey:2#/properties/decisions"
         },
         "vocabulary": {
-          "$ref": "urn:af:schema:project-survey:1#/properties/vocabulary"
+          "$ref": "urn:af:schema:project-survey:2#/properties/vocabulary"
         },
         "checks": {
-          "$ref": "urn:af:schema:project-survey:1#/properties/checks"
+          "$ref": "urn:af:schema:project-survey:2#/properties/checks"
         },
         "hot_paths": {
-          "$ref": "urn:af:schema:project-survey:1#/properties/history/properties/hot_paths"
+          "$ref": "urn:af:schema:project-survey:2#/properties/history/properties/hot_paths"
         }
       }
     },
@@ -121,7 +121,7 @@
     },
     "rendered_bytes": {
       "description": "The byte length of this record's canonical JSON, this field included: what the drop rule held at or under `max_bytes`.",
-      "$ref": "urn:af:schema:project-survey:1#/$defs/decimal"
+      "$ref": "urn:af:schema:project-survey:2#/$defs/decimal"
     }
   },
   "$defs": {
