@@ -200,7 +200,8 @@ fn listings_batches_and_logs_are_read_as_they_stream() {
     );
     let mut entries = Vec::new();
     let ended = read_listing(&mut listing.as_bytes(), &clock(), |entry| {
-        entries.push(entry)
+        entries.push(entry);
+        true
     });
     assert_eq!(ended, Ended::Done);
     assert_eq!(
@@ -237,7 +238,10 @@ fn listings_batches_and_logs_are_read_as_they_stream() {
     std::thread::sleep(std::time::Duration::from_millis(5));
     let mut none = 0;
     assert_eq!(
-        read_listing(&mut listing.as_bytes(), &passed, |_| none += 1),
+        read_listing(&mut listing.as_bytes(), &passed, |_| {
+            none += 1;
+            true
+        }),
         Ended::Deadline
     );
     assert_eq!(none, 0);
@@ -333,15 +337,17 @@ fn no_record_of_a_stream_is_read_past_64_kib_and_no_commit_past_max_paths() {
     let listing = format!("100644 blob {A}      12\tREADME.md\0100644 blob {B} 1\t{long}\0");
     let mut entries = Vec::new();
     assert_eq!(
-        read_listing(&mut listing.as_bytes(), &clock(), |entry| entries
-            .push(entry)),
+        read_listing(&mut listing.as_bytes(), &clock(), |entry| {
+            entries.push(entry);
+            true
+        }),
         Ended::Bound(SurveyReasonV1::MaxRecordBytes)
     );
     assert_eq!(entries.len(), 1, "the entry before it was read");
     let prefix = format!("100644 blob {A} 1\t");
     let exact = format!("{prefix}{}\0", "y".repeat(64 * 1024 - prefix.len()));
     assert_eq!(
-        read_listing(&mut exact.as_bytes(), &clock(), |_| {}),
+        read_listing(&mut exact.as_bytes(), &clock(), |_| true),
         Ended::Done,
         "a record at the bound is read"
     );
@@ -664,7 +670,7 @@ fn trees_count_lines_of_text_blobs_only_and_split_tests_and_directories() {
     let fold = |entries: &[Entry], lines: &BTreeMap<String, Option<u64>>, policy: &Policy| {
         let mut fold = TreeFold::default();
         for entry in entries {
-            fold.add(entry, policy);
+            assert!(fold.add(entry, policy, &clock()));
         }
         let blobs = fold.blobs();
         for oid in blobs {
@@ -1027,7 +1033,7 @@ fn each_file_counts_for_one_language_the_first_configured_pattern_bytewise() {
     assert_eq!(policy.language("data.xyz"), "other", "nothing matches");
     let mut fold = TreeFold::default();
     for path in ["generated/x.rs", "generated/x.txt", "README.md", "data.xyz"] {
-        fold.add(
+        assert!(fold.add(
             &Entry {
                 kind: EntryKind::File,
                 oid: A.into(),
@@ -1035,7 +1041,8 @@ fn each_file_counts_for_one_language_the_first_configured_pattern_bytewise() {
                 path: path.into(),
             },
             &policy,
-        );
+            &clock(),
+        ));
     }
     let tree = fold.finish(4, &policy);
     let languages: Vec<(&str, u64)> = tree
@@ -1159,4 +1166,161 @@ fn the_ceilings_are_only_lowered_and_every_other_value_is_refused_naming_the_key
             );
         }
     }
+}
+
+#[test]
+fn a_blank_or_control_character_name_is_hashed_by_name_under_both_policies() {
+    use SurveyIdentityPolicyV1::{EmailHash, Name};
+    for name in ["", "   ", "Bell\u{7}Name", "Tab\tName"] {
+        let hashed = format!("h:{}", hash16(name));
+        assert_eq!(
+            identity_of(name.as_bytes(), "ada@example.invalid", Name),
+            (hashed.clone(), Some(hashed.clone()), false),
+            "{name:?}"
+        );
+        // Never the email's hash: grouped by the name, as under `name`.
+        assert_eq!(
+            identity_of(name.as_bytes(), "ada@example.invalid", EmailHash),
+            (hashed, None, false),
+            "{name:?}"
+        );
+    }
+    assert_eq!(hash16(""), hash16("   "), "blank is blank");
+    assert_eq!(
+        identity_of(b"Ada", "ada@example.invalid", EmailHash).0,
+        hash16("ada@example.invalid"),
+        "a name a record can hold is keyed by the email under email_hash"
+    );
+}
+
+#[test]
+fn a_decision_date_must_be_a_day_of_the_calendar() {
+    let date = |line: &str| {
+        measure::decision("docs/adr/0001-x.md", Some(&format!("# T\n\n{line}\n"))).date
+    };
+    assert_eq!(date("Status: accepted 2026-02-31"), None);
+    assert_eq!(date("Status: accepted 2025-02-29"), None);
+    assert_eq!(
+        date("Status: accepted 2024-02-29"),
+        Some("2024-02-29".into())
+    );
+    assert_eq!(date("Status: accepted 2026-04-31"), None);
+    assert_eq!(
+        date("Status: accepted 2026-04-30"),
+        Some("2026-04-30".into())
+    );
+}
+
+#[test]
+fn a_deadline_during_language_matching_stops_within_one_match() {
+    let languages: String = (0..64)
+        .map(|n| format!("\"nothing{n:02}/**\" = \"l{n}\"\n"))
+        .collect();
+    let table: toml::Value = toml::from_str(&format!("[languages]\n{languages}")).unwrap();
+    let policy = Policy::from_effective(Some(&table)).unwrap();
+    // The deadline passes during the third pattern's match: nothing after it is matched.
+    let mut asked = 0;
+    let language = policy.language_within("src/lib.rs", || {
+        asked += 1;
+        asked > 3
+    });
+    assert_eq!(language, None, "no language past the deadline");
+    assert_eq!(asked, 4, "three patterns matched, the fourth never begun");
+    let mut asked = 0;
+    assert_eq!(
+        policy
+            .language_within("src/lib.rs", || {
+                asked += 1;
+                false
+            })
+            .as_deref(),
+        Some("rust"),
+        "the built-in fallback is a lookup, after every configured pattern"
+    );
+    assert_eq!(asked, 64);
+    // The tree folds no entry whose language the deadline cut.
+    let mut fold = TreeFold::default();
+    let entry = Entry {
+        kind: EntryKind::File,
+        oid: A.into(),
+        size: 1,
+        path: "src/lib.rs".into(),
+    };
+    assert!(!fold.add(&entry, &policy, &passed()));
+    assert_eq!(fold.files(), 0);
+}
+
+#[test]
+fn a_language_map_is_a_pattern_list_of_at_most_sixty_four() {
+    let load = |count: usize| {
+        let languages: String = (0..count)
+            .map(|n| format!("\"*.x{n}\" = \"l{n}\"\n"))
+            .collect();
+        let table: toml::Value = toml::from_str(&format!("[languages]\n{languages}")).unwrap();
+        Policy::from_effective(Some(&table)).and_then(within_pattern_limits)
+    };
+    assert!(load(64).is_ok());
+    let error = load(65).unwrap_err();
+    assert!(
+        error.contains("[survey.languages] holds 65 patterns, more than 64"),
+        "{error}"
+    );
+}
+
+#[test]
+fn the_ref_observation_yields_the_key_and_the_statistics_from_the_same_lines() {
+    let policy = Policy::default();
+    let mut refs = measure::Refs::default();
+    for line in [
+        format!("refs/heads/main\t{A}\tcommit\t100"),
+        format!("refs/tags/v1\t{B}\ttag\t300"),
+        format!("refs/tags/v0\t{C}\tcommit\t200"),
+        format!("refs/tags/vtree\t{C}\ttree\t"),
+    ] {
+        refs.line(line.as_bytes(), &policy);
+    }
+    let walk = Walk::new(1_000 * DAY, 200_000);
+    let mut history = measure::history_section(&walk, 0, Vec::new(), 0, &BTreeSet::new(), &policy);
+    refs.fill(&mut history, &policy);
+    assert_eq!(history.local_branches.unwrap().get(), 1);
+    let tags = history.tags.unwrap();
+    assert_eq!(tags.count.get(), 3);
+    let release: Vec<&str> = tags.release.iter().map(|tag| tag.name.as_str()).collect();
+    assert_eq!(
+        release,
+        ["v1", "v0", "vtree"],
+        "the tagger time of the annotated tag, the commit's time, an undated tree last"
+    );
+    assert!(measure::REF_FORMAT.contains("%(objecttype)"));
+}
+
+#[test]
+fn every_section_checks_the_clock_after_its_finishing_work() {
+    assert!(!clock().section("tree").finished());
+    assert!(passed().section("tree").finished());
+}
+
+#[test]
+fn every_git_the_surveyor_starts_ends_by_the_lesser_of_its_limit_and_the_survey() {
+    use std::time::Duration;
+    let limit = Duration::from_secs(review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS);
+    assert_eq!(
+        crate::projects::Git::within(Duration::from_millis(1500)),
+        Duration::from_millis(1500)
+    );
+    assert!(crate::projects::Git::within(Duration::from_secs(86_400)) <= limit);
+}
+
+#[test]
+fn a_replay_refusal_names_the_sequence_the_field_and_what_it_differs_from() {
+    let unbound = Unbound {
+        sequence: 7,
+        field: "refs_digest",
+        against: "tombstone SurveyCollected@1 at sequence 9".into(),
+    };
+    assert_eq!(
+        unbound.to_string(),
+        "SurveyRecorded@1 at sequence 7 names a refs_digest its tombstone SurveyCollected@1 at \
+         sequence 9 does not record"
+    );
 }

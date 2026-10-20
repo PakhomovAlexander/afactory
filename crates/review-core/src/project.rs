@@ -329,6 +329,10 @@ pub enum SurveyReasonV1 {
     /// A streamed record (a tree entry, a numstat line, a ref) is longer than
     /// [`MAX_SURVEY_RECORD_BYTES`].
     MaxRecordBytes,
+    /// `identity` only: the Tree Digest stopped at the fixed manifest buffer of 16 MiB.
+    ManifestBytes,
+    /// `identity` only: the Tree Digest stopped at the fixed 256 MiB of temporary manifest data.
+    TempBytes,
 }
 
 impl SurveyReasonV1 {
@@ -340,6 +344,33 @@ impl SurveyReasonV1 {
             Self::MaxEntries => "max_entries",
             Self::MaxFileBytes => "max_file_bytes",
             Self::MaxRecordBytes => "max_record_bytes",
+            Self::ManifestBytes => "manifest_bytes",
+            Self::TempBytes => "temp_bytes",
+        }
+    }
+}
+
+/// Why a Survey's Tree Digest is absent (ADR-0152 clause 9): never the digest of a part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurveyTreeDigestReasonV1 {
+    /// The Survey's deadline, `[survey] max_wall_ms`, passed before the digest was finished.
+    Deadline,
+    /// A record of the head's listing is longer than [`MAX_SURVEY_RECORD_BYTES`].
+    MaxRecordBytes,
+    /// One manifest record does not fit the fixed manifest buffer of 16 MiB.
+    ManifestBytes,
+    /// The manifest would take more than the fixed 256 MiB of temporary storage.
+    TempBytes,
+}
+
+impl SurveyTreeDigestReasonV1 {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Deadline => "deadline",
+            Self::MaxRecordBytes => "max_record_bytes",
+            Self::ManifestBytes => "manifest_bytes",
+            Self::TempBytes => "temp_bytes",
         }
     }
 }
@@ -496,15 +527,17 @@ pub struct SurveyIdentityV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub af_pin: Option<SurveyAfPinV1>,
     pub head: String,
-    /// `sha256:` + hex(SHA-256 of the exact stdout of `git for-each-ref
-    /// --format=%(refname)%09%(objectname) refs/heads refs/tags`): the refs of the survey key.
+    /// `sha256:` + hex(SHA-256 of the exact stdout of the one ref observation, `git for-each-ref
+    /// --format=%(refname)%09%(objectname)%09%(objecttype)%09%(creatordate:unix) refs/heads
+    /// refs/tags`): the refs of the survey key, and of `history`'s tags and branches.
     pub refs_digest: String,
-    /// The Tree Digest of the whole head tree, from its committed capture; absent, with
-    /// `tree_digest_reason`, when the capture did not finish, never the digest of a part.
+    /// The Tree Digest of the whole head tree: the committed capture's content digest, computed
+    /// by the digest-only path; absent, with `tree_digest_reason`, when it did not finish, never
+    /// the digest of a part.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tree_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tree_digest_reason: Option<SurveyReasonV1>,
+    pub tree_digest_reason: Option<SurveyTreeDigestReasonV1>,
     pub cutoff_unix_s: DecimalU64,
     pub policy_digest: String,
     pub surveyor_version: DecimalU64,
@@ -869,16 +902,32 @@ pub struct ProjectSurveyV1 {
     pub checks: SurveySectionV1<SurveyChecksV1>,
 }
 
-fn is_date(value: &str) -> bool {
+/// Whether `value` is a calendar date `YYYY-MM-DD`: shaped so, and a day its month has in its
+/// year (`2024-02-29` is one, `2025-02-29` and `2026-02-31` are not).
+pub fn is_calendar_date(value: &str) -> bool {
     let bytes = value.as_bytes();
-    bytes.len() == 10
+    let shaped = bytes.len() == 10
         && bytes.iter().enumerate().all(|(index, byte)| {
             if matches!(index, 4 | 7) {
                 *byte == b'-'
             } else {
                 byte.is_ascii_digit()
             }
-        })
+        });
+    if !shaped {
+        return false;
+    }
+    let number = |range: std::ops::Range<usize>| value[range].parse::<u32>().unwrap_or(0);
+    let (year, month, day) = (number(0..4), number(5..7), number(8..10));
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return false,
+    };
+    (1..=days).contains(&day)
 }
 
 fn is_top_level(name: &str) -> bool {
@@ -928,6 +977,20 @@ impl ProjectSurveyV1 {
                 "a Survey whose sections fold to {} cannot be {}",
                 folded.as_str(),
                 self.completeness.as_str()
+            ));
+        }
+        // The Tree Digest's ceilings stop identity alone.
+        if let Some((name, _, Some(reason))) =
+            self.sections().into_iter().skip(1).find(|(_, _, reason)| {
+                matches!(
+                    reason,
+                    Some(SurveyReasonV1::ManifestBytes | SurveyReasonV1::TempBytes)
+                )
+            })
+        {
+            return Err(format!(
+                "the Survey section `{name}` cannot stop at {}: a Tree Digest ceiling",
+                reason.as_str()
             ));
         }
         self.identity.validate_with("identity", validate_identity)?;
@@ -1316,7 +1379,10 @@ fn validate_decisions(decisions: &SurveyDecisionsV1) -> Result<(), String> {
             })
             || (unreadable
                 && (decision.title.is_some() || decision.date.is_some() || decision.amended))
-            || decision.date.as_deref().is_some_and(|date| !is_date(date))
+            || decision
+                .date
+                .as_deref()
+                .is_some_and(|date| !is_calendar_date(date))
         {
             return Err(
                 "a decision has a four-digit number, a path, and a title, status and date of \
@@ -1486,6 +1552,26 @@ mod tests {
 
     const ROOT_A: &str = "1111111111111111111111111111111111111111";
     const ROOT_B: &str = "2222222222222222222222222222222222222222";
+
+    #[test]
+    fn a_decision_date_is_a_day_of_the_calendar() {
+        for date in ["2024-02-29", "2026-01-31", "2000-02-29", "2026-12-31"] {
+            assert!(is_calendar_date(date), "{date}");
+        }
+        for date in [
+            "2026-02-31",
+            "2025-02-29",
+            "1900-02-29",
+            "2026-04-31",
+            "2026-13-01",
+            "2026-00-10",
+            "2026-01-00",
+            "2026-1-01",
+            "2026/01/01",
+        ] {
+            assert!(!is_calendar_date(date), "{date}");
+        }
+    }
 
     #[test]
     fn identities_have_one_spelling() {

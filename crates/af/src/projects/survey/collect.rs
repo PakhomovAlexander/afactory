@@ -1884,7 +1884,9 @@ mod tests {
             &basis,
             started,
             super::super::measure::Clock::new(started, basis.policy.max_wall_ms),
-            Arc::clone(&matches)).unwrap();
+            Arc::clone(&matches),
+        )
+        .unwrap();
         (matches.matched() > 0).then_some((sections, matches))
     }
 

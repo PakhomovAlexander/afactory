@@ -202,6 +202,34 @@ enum DiffHead<'a> {
     Synthetic(&'a Manifest, &'a Cas),
 }
 
+/// A kernel-owned bare repository whose only input from the candidate is its resolved object
+/// database ([`Repo::object_repository`]); removed when dropped. A git run in it gets
+/// [`Self::git_dir`] as `--git-dir` and [`Self::environment`] beside its own, and runs from a
+/// directory outside the checkout.
+pub struct ObjectRepository {
+    _administration: tempfile::TempDir,
+    git_dir: PathBuf,
+    object_dir: PathBuf,
+}
+
+impl ObjectRepository {
+    /// The administrative directory, the value of `--git-dir`.
+    pub fn git_dir(&self) -> &Path {
+        &self.git_dir
+    }
+
+    /// The object database it reads and the refusal of replacement refs.
+    pub fn environment(&self) -> Vec<(&'static str, std::ffi::OsString)> {
+        vec![
+            (
+                "GIT_OBJECT_DIRECTORY",
+                self.object_dir.clone().into_os_string(),
+            ),
+            ("GIT_NO_REPLACE_OBJECTS", "1".into()),
+        ]
+    }
+}
+
 /// A repository we may only read.
 pub struct Repo {
     workdir: PathBuf,
@@ -257,6 +285,25 @@ impl Repo {
     pub fn with_deadline(mut self, deadline: Instant) -> Self {
         self.deadline = Some(deadline);
         self
+    }
+
+    /// The one deadline every subprocess ends by, when a caller set one.
+    pub(crate) fn deadline(&self) -> Option<Instant> {
+        self.deadline
+    }
+
+    /// A private bare repository attached only to this repository's resolved object database,
+    /// the administrative directory [`Self::tree_diff`] runs in: no checkout, index, local
+    /// configuration, attribute file, diff driver, ref or replacement ref of the repository
+    /// reaches a git run in it, so what it computes is a function of objects alone.
+    pub fn object_repository(&self) -> Result<ObjectRepository, GitError> {
+        let (administration, object_dir) = self.prepare_tree_diff_repository()?;
+        let git_dir = administration.path().join("repo.git");
+        Ok(ObjectRepository {
+            _administration: administration,
+            git_dir,
+            object_dir,
+        })
     }
 
     /// The timeout of the next subprocess: `timeout`, cut to what remains of the deadline.

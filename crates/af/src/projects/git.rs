@@ -4,7 +4,9 @@
 //! whole group, and in delivery's isolated command (`crate::task::isolated_git`): a cleared
 //! environment, a private empty `HOME`, no system or global configuration, no hooks, no
 //! transport, no prompt. Capture reads the same way through `review_source_git::Repo`, under its
-//! own deadline. No process of these modules is started any other way.
+//! own deadline. No process of these modules is started any other way. The Surveyor's history
+//! runs in a private bare repository attached only to the checkout's object database
+//! ([`Git::objects_within`]), so nothing of the checkout but its objects reaches a count.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -55,6 +57,9 @@ pub(super) fn lowered(production: Duration, setting: Option<&str>) -> Duration {
 pub(crate) struct Git {
     directory: PathBuf,
     home: Arc<tempfile::TempDir>,
+    /// The private bare repository every command runs in instead of the checkout's, when this
+    /// git reads objects alone.
+    objects: Option<Arc<review_source_git::ObjectRepository>>,
 }
 
 impl Git {
@@ -66,6 +71,7 @@ impl Git {
         Ok(Self {
             directory: directory.to_path_buf(),
             home: Arc::new(home),
+            objects: None,
         })
     }
 
@@ -74,7 +80,49 @@ impl Git {
         Self {
             directory: directory.to_path_buf(),
             home: Arc::clone(&self.home),
+            objects: None,
         }
+    }
+
+    /// This repository's objects alone, under `limit`: a git whose every command runs in a
+    /// kernel-owned bare repository attached only to the resolved object database, the
+    /// administrative directory of ADR-0001's tree diffs, from a directory outside the checkout.
+    /// The checkout, its index, its local configuration, its working-tree and `.git/info`
+    /// attributes, its diff drivers, its refs and its replacement refs reach no command of it.
+    pub(crate) fn objects_within(&self, limit: Duration) -> Result<Self, String> {
+        let objects = self
+            .repo_within(limit)
+            .object_repository()
+            .map_err(|error| error.to_string())?;
+        let directory = objects
+            .git_dir()
+            .parent()
+            .unwrap_or_else(|| self.home.path())
+            .to_path_buf();
+        Ok(Self {
+            directory,
+            home: Arc::clone(&self.home),
+            objects: Some(Arc::new(objects)),
+        })
+    }
+
+    /// The deadline of one command the Surveyor starts: the lesser of a git command's own
+    /// limit, the capture deadline of `review_source_git` (or a debug fixture's lower one), and
+    /// what `remaining` of the Survey's one deadline is left (ADR-0152 clause 9).
+    pub(crate) fn within(remaining: Duration) -> Duration {
+        deadline(CAPTURE_DEADLINE).min(remaining)
+    }
+
+    /// The isolated command, in the private bare repository when this git reads objects alone.
+    fn command(&self) -> std::process::Command {
+        let mut command = crate::task::isolated_git(&self.directory, self.home.path());
+        if let Some(objects) = &self.objects {
+            command
+                .arg("--git-dir")
+                .arg(objects.git_dir())
+                .envs(objects.environment());
+        }
+        command
     }
 
     /// Run git; its exit status is the caller's to judge. Only a process that could not be
@@ -109,7 +157,7 @@ impl Git {
             .into_iter()
             .map(|argument| argument.as_ref().to_os_string())
             .collect();
-        let mut command = crate::task::isolated_git(&self.directory, self.home.path());
+        let mut command = self.command();
         command.args(&args);
         run_supervised_with_policy(&mut command, input, limit, ExitPolicy::KillProcessGroup)
             .map_err(|error| match error {
@@ -146,7 +194,7 @@ impl Git {
         F: FnOnce(&mut dyn std::io::Write) -> Result<(), I> + Send,
         G: FnOnce(&mut dyn std::io::Read) -> R + Send,
     {
-        let mut command = crate::task::isolated_git(&self.directory, self.home.path());
+        let mut command = self.command();
         command.args(args);
         run_supervised_duplex(
             &mut command,
@@ -231,10 +279,11 @@ impl Git {
     }
 
     /// The capture boundary under `limit`, every one of its git commands ending by the same
-    /// instant, for a capture inside the Surveyor's deadline.
+    /// instant, each under the lesser of its own limit and what remains of it, for work inside
+    /// the Surveyor's deadline.
     pub(crate) fn repo_within(&self, limit: Duration) -> Repo {
         Repo::open(&self.directory, self.home.path())
-            .with_timeout(limit)
+            .with_timeout(Self::within(limit))
             .with_deadline(std::time::Instant::now() + limit)
     }
 }

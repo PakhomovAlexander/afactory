@@ -1217,7 +1217,11 @@ fn main() {
         ),
         cli::Command::Task { command } => ("af task", task_command(command)),
         cli::Command::Project { command } => {
-            ("af project", projects::survey::collect::run(command))
+            let sections = match &command {
+                cli::ProjectCommand::Survey { json: false } => cli::survey_sections(&argv),
+                _ => Vec::new(),
+            };
+            ("af project", projects::survey::run(command, &sections))
         }
         cli::Command::Config { command } => (
             "af config",

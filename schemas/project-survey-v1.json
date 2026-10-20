@@ -82,16 +82,21 @@
           "$ref": "#/$defs/commit"
         },
         "refs_digest": {
-          "description": "`sha256:` + hex(SHA-256 of the exact stdout of `git for-each-ref --format=%(refname)%09%(objectname) refs/heads refs/tags`): the refs of the survey key.",
+          "description": "`sha256:` + hex(SHA-256 of the exact stdout of the one ref observation, `git for-each-ref --format=%(refname)%09%(objectname)%09%(objecttype)%09%(creatordate:unix) refs/heads refs/tags`): the refs of the survey key and of history's tags and branches.",
           "$ref": "#/$defs/digest"
         },
         "tree_digest": {
-          "description": "The Tree Digest of the whole head tree, from its committed capture, independent of exclude and every maximum.",
+          "description": "The Tree Digest of the whole head tree: the committed capture's content digest, computed by the digest-only path (no blob written, fixed manifest and temporary ceilings), independent of exclude and every maximum.",
           "$ref": "#/$defs/digest"
         },
         "tree_digest_reason": {
-          "description": "Why the Tree Digest is absent: the capture did not finish before the deadline. Never the digest of a part.",
-          "$ref": "#/$defs/reason"
+          "description": "Why the Tree Digest is absent: the deadline passed first, a listing record is over 64 KiB, or a fixed ceiling of the digest-only path stopped it (16 MiB of manifest buffering, 256 MiB of temporary manifest data). Never the digest of a part.",
+          "enum": [
+            "deadline",
+            "max_record_bytes",
+            "manifest_bytes",
+            "temp_bytes"
+          ]
         },
         "cutoff_unix_s": {
           "description": "The clock when the Survey started, in Unix seconds.",
@@ -808,8 +813,8 @@
               },
               "date": {
                 "type": "string",
-                "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
-                "description": "The first YYYY-MM-DD on the status line, when it is a calendar date; absent, unknown, otherwise."
+                "pattern": "^(?:[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)$",
+                "description": "The first YYYY-MM-DD on the status line, when it is a day of the calendar (month lengths and leap years: 2024-02-29 is one, 2025-02-29 and 2026-02-31 are not); absent, unknown, otherwise."
               },
               "amended": {
                 "description": "The status line says `amended`.",
@@ -1082,14 +1087,16 @@
       ]
     },
     "reason": {
-      "description": "The bound a section reached.",
+      "description": "The bound a section reached; manifest_bytes and temp_bytes are identity's alone, the fixed ceilings that stopped its Tree Digest.",
       "enum": [
         "max_wall_ms",
         "max_commits",
         "max_paths",
         "max_entries",
         "max_file_bytes",
-        "max_record_bytes"
+        "max_record_bytes",
+        "manifest_bytes",
+        "temp_bytes"
       ]
     },
     "section_shape": {

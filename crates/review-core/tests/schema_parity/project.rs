@@ -588,7 +588,7 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
     cut_short.completeness = SurveyCompletenessV1::Partial;
     if let Some(identity) = cut_short.identity.body.as_mut() {
         identity.tree_digest = None;
-        identity.tree_digest_reason = Some(SurveyReasonV1::MaxWallMs);
+        identity.tree_digest_reason = Some(SurveyTreeDigestReasonV1::Deadline);
     }
     cut_short.identity.completeness = SurveyCompletenessV1::Partial;
     cut_short.identity.reason = Some(SurveyReasonV1::MaxWallMs);
@@ -623,11 +623,37 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
     assert!(cut_short_value["identity"].get("tree_digest").is_none());
     assert_eq!(
         cut_short_value["identity"]["tree_digest_reason"],
-        "max_wall_ms"
+        "deadline"
     );
+    // Every typed reason of the digest-only path is a reason of the record.
+    for reason in [
+        SurveyTreeDigestReasonV1::MaxRecordBytes,
+        SurveyTreeDigestReasonV1::ManifestBytes,
+        SurveyTreeDigestReasonV1::TempBytes,
+    ] {
+        let mut stopped = cut_short.clone();
+        if let Some(identity) = stopped.identity.body.as_mut() {
+            identity.tree_digest_reason = Some(reason);
+        }
+        stopped.validate().unwrap();
+        let stopped_value = serde_json::to_value(&stopped).unwrap();
+        assert_eq!(
+            stopped_value["identity"]["tree_digest_reason"],
+            reason.as_str()
+        );
+        assert_valid(SCHEMA, &stopped_value);
+    }
     assert_eq!(cut_short_value["tree"]["seen"]["paths"], "200001");
     assert!(cut_short_value["vocabulary"].get("terms").is_none());
     assert_valid(SCHEMA, &cut_short_value);
+    let mut section_reason = cut_short_value.clone();
+    section_reason["identity"]["tree_digest_reason"] = json!("max_wall_ms");
+    assert_invalid(
+        SCHEMA,
+        &section_reason,
+        "the Tree Digest's reasons are the digest-only path's",
+    );
+    assert!(serde_json::from_value::<ProjectSurveyV1>(section_reason).is_err());
     for (broken, why) in [
         {
             let mut both = cut_short.clone();
@@ -739,6 +765,14 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
             "a decision number is four digits",
         ),
         (
+            pointer("/decisions/records/1/date", json!("2026-02-31")),
+            "a decision date is a day of the calendar",
+        ),
+        (
+            pointer("/decisions/records/1/date", json!("2025-02-29")),
+            "February has 29 days only in a leap year",
+        ),
+        (
             pointer("/decisions/records/1/truncated", json!(false)),
             "only a cut string is marked",
         ),
@@ -820,6 +854,12 @@ fn a_survey_is_decimal_text_with_closed_sections_and_never_an_email() {
         unsorted.validate().is_err(),
         "checks are sorted by identity"
     );
+    let mut leap_day = survey.clone();
+    if let Some(decisions) = leap_day.decisions.body.as_mut() {
+        decisions.records[1].date = Some("2024-02-29".into());
+    }
+    leap_day.validate().unwrap();
+    assert_valid(SCHEMA, &serde_json::to_value(&leap_day).unwrap());
     let mut record_bound = survey.clone();
     record_bound.history.reason = Some(SurveyReasonV1::MaxRecordBytes);
     record_bound.validate().unwrap();

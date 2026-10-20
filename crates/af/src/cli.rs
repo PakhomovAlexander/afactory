@@ -1399,6 +1399,41 @@ and model; no Provider label, path, credential, prompt or Worker output is print
 // ------------------------------------------------------------------------------------------
 // project
 
+/// `af project survey --section NAME…`: a text-only option, so it conflicts with `--json`
+/// (usage error 2). It is an argument of the subcommand rather than a field of
+/// [`ProjectCommand::Survey`], whose shape every reader of `af project` matches;
+/// [`survey_sections`] reads it.
+fn survey_section_arg() -> clap::Arg {
+    clap::Arg::new("section")
+        .long("section")
+        .value_name("NAME")
+        .help("Only these sections of the text summary, by name; repeat or separate with commas")
+        .value_parser(crate::projects::survey::SECTION_NAMES)
+        .value_delimiter(',')
+        .action(clap::ArgAction::Append)
+        .conflicts_with("json")
+}
+
+/// The `--section` names `argv`, an `af project survey` command line, gave, in the order given;
+/// empty for every other command.
+pub(crate) fn survey_sections(argv: &[String]) -> Vec<String> {
+    use clap::CommandFactory as _;
+    Af::command()
+        .try_get_matches_from(argv)
+        .ok()
+        .and_then(|matches| {
+            let project = matches.subcommand_matches("project")?;
+            let survey = project.subcommand_matches("survey")?;
+            Some(
+                survey
+                    .get_many::<String>("section")?
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Subcommand)]
 pub(crate) enum ProjectCommand {
     /// Show the Project: identity, name, Store, every Workspace and the newest Survey
@@ -1434,11 +1469,13 @@ Task-file directory. A path this machine's `workspaces.toml` does not know is sh
         long_about = "Show the newest Survey of this checkout's Project: one kernel-measured \
 description of the head (`af/ProjectSurvey@1`) with the sections identity, tree, history, \
 contributors, decisions, vocabulary and checks, each complete, partial or unavailable with the \
-bound it reached. Text is one line per section; --json prints the record's canonical bytes, \
-every number decimal text.\n\nRecords nothing. Fails (exit 1) when the Project has no Survey \
-yet, or when the Storage Budget collected its newest one, and says which; `af project refresh` \
-records one.",
-        after_long_help = "Examples:\n  af project survey\n  af project survey --json | jq '.history.hot_paths[].path'"
+bound it reached. Text is one line per section, and --section picks sections of the text only; \
+--json prints the complete record unchanged, its canonical bytes, every number decimal text, \
+and --section with --json is a usage error (exit 2).\n\nRecords nothing. Fails (exit 1) when \
+the Project has no Survey yet, or when the Storage Budget collected its newest one, and says \
+which; `af project refresh` records one.",
+        after_long_help = "Examples:\n  af project survey\n  af project survey --section tree --section history\n  af project survey --json | jq '.history.hot_paths[].path'",
+        arg = survey_section_arg()
     )]
     Survey {
         /// The `af/ProjectSurvey@1` record on stdout instead of text

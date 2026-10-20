@@ -36,6 +36,10 @@ const EMAILS: [&str; 6] = [
 /// The title of the fixture's third ADR: repository text, recorded as committed.
 const CONTACT: &str = "Contact ada@fixture.invalid";
 const EXPECTED: &str = include_str!("../fixtures/project-survey/expected.json");
+/// The format of the Surveyor's one ref observation, which the survey key and `history`'s tags
+/// and branches share.
+const REF_FORMAT: &str =
+    "--format=%(refname)%09%(objectname)%09%(objecttype)%09%(creatordate:unix)";
 
 struct Machine {
     root: tempfile::TempDir,
@@ -250,6 +254,9 @@ fn commit(repo: &Path, who: (&str, &str), days: u64, message: &[&str]) {
 /// committed; two tags, two branches, several top-level directories, a tests directory, a
 /// binary blob, a blob over `max_file_bytes = 512`, three ADRs and a README beside them, a
 /// CONTEXT.md, a code policy with two checks, a review pipeline with one, and one workflow file.
+/// It pins the walkthrough's disputed cases too: status words in prose before an ADR's status
+/// line, a vocabulary written out of order, a toolchain file of the set beside one that is not,
+/// and two configured language patterns that both match `src/core.rs`.
 fn fixture(root: &Path) -> PathBuf {
     let repo = root.join("survey-fixture");
     std::fs::create_dir_all(&repo).unwrap();
@@ -258,7 +265,8 @@ fn fixture(root: &Path) -> PathBuf {
         &repo,
         ".af/af.toml",
         b"version = 1\n\n[project]\nname = \"survey-fixture\"\nmin_af = \"0.1\"\n\n[defaults]\n\
-          pipeline = \"review\"\n\n[survey]\nmax_file_bytes = 512\n",
+          pipeline = \"review\"\n\n[survey]\nmax_file_bytes = 512\n\n[survey.languages]\n\
+          \"*.rs\" = \"rust\"\n\"src/**\" = \"source\"\n",
     );
     write(&repo, "README.md", b"# Fixture\n\nTwo more lines.\n");
     write(&repo, "src/lib.rs", b"pub fn one() -> u32 {\n    1\n}\n");
@@ -268,12 +276,13 @@ fn fixture(root: &Path) -> PathBuf {
     write(
         &repo,
         "docs/adr/0001-first.md",
-        b"# ADR-0001: First\n\n**Status:** accepted (2026-01-02)\n\nText.\n",
+        b"# ADR-0001: First\n\nThis was proposed once and is superseded by nothing.\n\n\
+          **Status:** accepted (2026-01-02)\n\nText.\n",
     );
     write(
         &repo,
         "CONTEXT.md",
-        b"# Context\n\n**Project**:\nThe repository.\n\n**Survey**:\nOne record.\n",
+        b"# Context\n\n**Survey**:\nOne record.\n\n**Project**:\nThe repository.\n",
     );
     write(
         &repo,
@@ -303,6 +312,9 @@ fn fixture(root: &Path) -> PathBuf {
         "rust-toolchain.toml",
         b"[toolchain]\nchannel = \"1.88\"\n",
     );
+    // A toolchain file of the set and one beside it that is not.
+    write(&repo, ".tool-versions", b"rust 1.88\n");
+    write(&repo, ".go-version", b"1.23\n");
     write(
         &repo,
         "src/lib.rs",
@@ -421,6 +433,35 @@ fn checkout_state(repo: &Path) -> (String, Vec<PathBuf>) {
     (git(repo, &["status", "--porcelain", "--ignored"]), names)
 }
 
+/// `refs_digest` as the Surveyor computes it: SHA-256 of the exact stdout of its one ref
+/// observation.
+fn refs_digest(repo: &Path) -> String {
+    let output = Command::new("git")
+        .current_dir(repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args(["for-each-ref", REF_FORMAT, "refs/heads", "refs/tags"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    format!(
+        "sha256:{}",
+        review_core::hex::encode(&Sha256::digest(&output.stdout))
+    )
+}
+
+/// The content digest of the head's committed capture, the Snapshot capture of every Task.
+fn committed_digest(repo: &Path) -> String {
+    let scratch = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(scratch.path().join("home")).unwrap();
+    let source = review_source_git::Repo::open(repo, scratch.path().join("home"));
+    let cas = review_store::Cas::open(scratch.path().join("cas")).unwrap();
+    review_source_git::Capture::new(&source, &cas)
+        .committed("HEAD")
+        .unwrap()
+        .content_digest
+}
+
 /// The running git's `git --version`, trimmed: what `identity.git_version` records.
 fn git_version() -> String {
     let output = Command::new("git").arg("--version").output().unwrap();
@@ -470,14 +511,17 @@ fn the_fixture_repository_yields_the_checked_in_survey_byte_for_byte() {
 
     // The totals the measurement policy states, so the expected record is not merely recorded.
     let tree = &survey["tree"];
-    assert_eq!(tree["files"], "16");
+    assert_eq!(tree["files"], "18");
     assert_eq!(
         tree["files_without_lines"], "2",
         "the binary and the big blob"
     );
-    assert_eq!(tree["directories"]["."]["files"], "4");
+    assert_eq!(tree["directories"]["."]["files"], "6");
     assert_eq!(tree["tests"]["files"], "1");
+    // `*.rs` and `src/**` both match `src/core.rs`; the bytewise-first, `*.rs`, names it.
     assert_eq!(tree["languages"]["rust"]["lines"], "9");
+    assert_eq!(tree["languages"]["rust"]["files"], "2");
+    assert!(tree["languages"].get("source").is_none(), "{tree}");
     let history = &survey["history"];
     assert_eq!(history["completeness"], "complete");
     assert_eq!(history["commits"], "8", "the merge counts as a commit");
@@ -539,7 +583,9 @@ fn the_fixture_repository_yields_the_checked_in_survey_byte_for_byte() {
         decisions["count"], "3",
         "docs/adr/README.md is not a decision"
     );
+    // The status line decides; the status words of the prose before it name nothing.
     assert_eq!(decisions["by_status"]["accepted"], "2");
+    assert_eq!(decisions["records"][0]["status"], "accepted");
     assert_eq!(decisions["by_status"]["proposed"], "1");
     assert!(decisions.get("newest").is_none());
     let numbers: Vec<&str> = decisions["records"]
@@ -552,7 +598,8 @@ fn the_fixture_repository_yields_the_checked_in_survey_byte_for_byte() {
     assert_eq!(decisions["records"][2]["title"], CONTACT);
     assert_eq!(
         survey["vocabulary"]["terms"],
-        serde_json::json!([{"name": "Project"}, {"name": "Survey"}])
+        serde_json::json!([{"name": "Project"}, {"name": "Survey"}]),
+        "by name, as written out of order"
     );
     let declared = survey["checks"]["declared"].as_array().unwrap();
     assert_eq!(declared.len(), 3);
@@ -562,31 +609,19 @@ fn the_fixture_repository_yields_the_checked_in_survey_byte_for_byte() {
     assert_eq!(survey["checks"]["ci_workflows"], "1");
     assert_eq!(
         survey["checks"]["toolchain"],
-        serde_json::json!(["rust-toolchain.toml"]),
-        "Cargo.toml declares no toolchain"
+        serde_json::json!([".tool-versions", "rust-toolchain.toml"]),
+        "Cargo.toml and .go-version are no toolchain file of the set"
     );
     let identity = &survey["identity"];
     assert_eq!(identity["name"], "survey-fixture");
     assert_eq!(identity["head"], git(&repo, &["rev-parse", "HEAD"]));
     assert_eq!(identity["cutoff_unix_s"], CUTOFF.to_string());
-    assert_eq!(identity["surveyor_version"], "3");
+    assert_eq!(identity["surveyor_version"], "4");
     assert_eq!(identity["git_version"], git_version().as_str());
-    let refs = git(
-        &repo,
-        &[
-            "for-each-ref",
-            "--format=%(refname)%09%(objectname)",
-            "refs/heads",
-            "refs/tags",
-        ],
-    );
-    assert_eq!(
-        identity["refs_digest"],
-        format!(
-            "sha256:{}",
-            review_core::hex::encode(&Sha256::digest(format!("{refs}\n")))
-        )
-    );
+    assert_eq!(identity["refs_digest"], refs_digest(&repo));
+    // The Tree Digest is the committed capture's, from the digest-only path: the blob over
+    // max_file_bytes included.
+    assert_eq!(identity["tree_digest"], committed_digest(&repo));
 
     assert_eq!(
         checkout_state(&repo),
@@ -646,7 +681,7 @@ fn an_unchanged_survey_key_records_nothing_and_prints_the_key() {
     let identity = &survey["identity"];
     let hex16 = |digest: &Value| digest.as_str().unwrap()["sha256:".len()..][..16].to_string();
     let key = format!(
-        "unchanged: head {}, refs {}, policy {}, surveyor 3",
+        "unchanged: head {}, refs {}, policy {}, surveyor 4",
         &identity["head"].as_str().unwrap()[..12],
         hex16(&identity["refs_digest"]),
         hex16(&identity["policy_digest"])
@@ -790,7 +825,7 @@ fn max_wall_ms_records_a_partial_survey_without_a_partial_tree_digest() {
     assert_eq!(identity["completeness"], "partial");
     assert_eq!(identity["reason"], "max_wall_ms");
     assert!(identity.get("tree_digest").is_none(), "{identity}");
-    assert_eq!(identity["tree_digest_reason"], "max_wall_ms");
+    assert_eq!(identity["tree_digest_reason"], "deadline");
     assert_eq!(identity["head"], git(&repo, &["rev-parse", "HEAD"]));
     for section in [
         "tree",
@@ -875,7 +910,7 @@ fn the_fixed_maxima_cut_with_their_reasons_and_identity_strings_stay_exact() {
     assert_eq!(survey["tree"]["completeness"], "partial");
     assert_eq!(survey["tree"]["reason"], "max_paths");
     assert_eq!(survey["tree"]["files"], "3");
-    assert_eq!(survey["tree"]["seen"]["paths"], "16");
+    assert_eq!(survey["tree"]["seen"]["paths"], "18");
     assert_eq!(
         survey["decisions"]["count"], "3",
         "the decisions beyond max_paths are still read"
@@ -895,7 +930,7 @@ fn the_fixed_maxima_cut_with_their_reasons_and_identity_strings_stay_exact() {
     assert_eq!(history["hot_paths"].as_array().unwrap().len(), 2);
     assert_eq!(history["churn_90d"].as_object().unwrap().len(), 2);
     assert_eq!(history["seen"]["churn_90d"], "7");
-    assert_eq!(history["seen"]["hot_paths"], "13");
+    assert_eq!(history["seen"]["hot_paths"], "15");
     assert_eq!(survey["tree"]["reason"], "max_entries");
     assert_eq!(survey["tree"]["seen"]["directories"], "7");
     assert_eq!(survey["contributors"]["seen"]["by_identity"], "4");
@@ -1289,7 +1324,7 @@ fn a_stalled_for_each_ref_fails_the_refresh_within_max_wall_ms() {
         &fake,
         format!(
             "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\nfor argument in \"$@\"; do\n  [ \
-             \"$argument\" = '--format=%(refname)%09%(objectname)' ] && exec sleep 120\ndone\n\
+             \"$argument\" = '{REF_FORMAT}' ] && exec sleep 120\ndone\n\
              exec '{real}' \"$@\"\n"
         ),
     )
@@ -1902,4 +1937,680 @@ fn the_ceilings_are_only_lowered_from_the_project_layer_and_the_environment() {
             0,
         );
     }
+}
+
+/// The real git's path, which a fake git on `PATH` hands every command it does not stop.
+fn real_git() -> String {
+    let real = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    String::from_utf8(real.stdout).unwrap().trim().to_string()
+}
+
+/// A directory holding a fake `git` whose script runs `body` before it hands the command to the
+/// real git; `body` sees the arguments as `$@` and the real git as `$REAL`.
+fn fake_git(machine: &Machine, name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = machine.root().join(name);
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("git");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = warm ] && exit 0\nREAL='{}'\n{body}\nexec \"$REAL\" \"$@\"\n",
+            real_git()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The first exec of a script just written can be slow (macOS scans it): start it once.
+    assert!(Command::new(&fake).arg("warm").status().unwrap().success());
+    bin
+}
+
+/// The sequence of every `SurveyRecorded@1` of the Project Store, oldest first.
+fn recorded_sequences(machine: &Machine) -> Vec<i64> {
+    let log = rusqlite::Connection::open(machine.store().join("events.sqlite")).unwrap();
+    log.prepare("SELECT sequence FROM events WHERE type = 'SurveyRecorded@1' ORDER BY sequence")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// Rewrite the `refs_digest` of the `SurveyRecorded@1` at `sequence`: an otherwise valid event
+/// that no longer describes its record.
+fn mismatch_refs_digest(machine: &Machine, sequence: i64) {
+    let log = rusqlite::Connection::open(machine.store().join("events.sqlite")).unwrap();
+    let payload: String = log
+        .query_row(
+            "SELECT payload FROM events WHERE sequence = ?1 AND type = 'SurveyRecorded@1'",
+            [sequence],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut payload: Value = serde_json::from_str(&payload).unwrap();
+    payload["refs_digest"] = Value::String(format!("sha256:{}", "0".repeat(64)));
+    log.execute(
+        "UPDATE events SET payload = ?1 WHERE sequence = ?2 AND type = 'SurveyRecorded@1'",
+        rusqlite::params![payload.to_string(), sequence],
+    )
+    .unwrap();
+}
+
+#[test]
+fn history_survey_and_refresh_refuse_a_mismatched_event_and_history_an_older_one() {
+    let machine = Machine::new();
+    let repo = fixture(&machine.root());
+    machine.expect(&repo, &[], &["project", "refresh"], 0);
+    machine.expect(&repo, &[], &["project", "refresh", "--force"], 0);
+    let sequences = recorded_sequences(&machine);
+    assert_eq!(sequences.len(), 2);
+    let named =
+        |sequence: i64| format!("SurveyRecorded@1 at sequence {sequence} names a refs_digest");
+
+    // An older event no longer describing its record: the history refuses it, in text and in
+    // JSON, so no mismatched event is printed; the newest Survey is still read.
+    mismatch_refs_digest(&machine, sequences[0]);
+    // Under --json the refusal is the `af/error@1` document, never a history.
+    let refused = |args: &[&str], sequence: i64| {
+        let (stdout, stderr) = machine.expect(&repo, &[], args, 1);
+        let said = if args.contains(&"--json") {
+            let error: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(error["schema"], "af/error@1", "{args:?}: {stdout}");
+            error["error"].as_str().unwrap().to_string()
+        } else {
+            assert!(stdout.is_empty(), "{args:?}: {stdout}");
+            stderr
+        };
+        assert!(said.contains(&named(sequence)), "{args:?}: {said}");
+    };
+    for args in [
+        &["project", "history"][..],
+        &["project", "history", "--json"],
+    ] {
+        refused(args, sequences[0]);
+    }
+    machine.expect(&repo, &[], &["project", "survey", "--json"], 0);
+
+    // The newest one: history, survey and refresh refuse it, naming its sequence and field.
+    mismatch_refs_digest(&machine, sequences[1]);
+    for args in [
+        &["project", "history", "--json"][..],
+        &["project", "survey"],
+        &["project", "survey", "--json"],
+        &["project", "refresh"],
+    ] {
+        refused(args, sequences[1]);
+    }
+}
+
+#[test]
+fn a_deadline_in_any_sections_finishing_step_leaves_it_partial_and_the_rest_unavailable() {
+    const SECTIONS: [&str; 7] = [
+        "identity",
+        "tree",
+        "history",
+        "contributors",
+        "decisions",
+        "vocabulary",
+        "checks",
+    ];
+    let root = tempfile::tempdir().unwrap();
+    let repo = fixture(root.path());
+    let max_wall_ms: u64 = 4000;
+    // Each section's finishing step, after its last item and before it is recorded, lasts
+    // past the deadline on its own machine, all at once.
+    let runs: Vec<_> = SECTIONS
+        .into_iter()
+        .map(|slowed| {
+            let repo = repo.clone();
+            std::thread::spawn(move || {
+                let machine = Machine::new();
+                machine.expect(&repo, &[], &["project", "show"], 0);
+                let started = std::time::Instant::now();
+                machine.expect(
+                    &repo,
+                    &[
+                        ("AF_SURVEY__MAX_WALL_MS", &max_wall_ms.to_string()),
+                        ("AF_TEST_SURVEY_SLOW_FINISH", slowed),
+                    ],
+                    &["project", "refresh"],
+                    0,
+                );
+                let took = started.elapsed();
+                (
+                    slowed,
+                    took,
+                    machine.json(&repo, &[], &["project", "survey", "--json"]),
+                )
+            })
+        })
+        .collect();
+    for run in runs {
+        let (slowed, took, survey) = run.join().unwrap();
+        assert!(
+            took < std::time::Duration::from_millis(max_wall_ms + 2000),
+            "{slowed}: the refresh took {took:?}"
+        );
+        schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+        let at = SECTIONS
+            .iter()
+            .position(|section| *section == slowed)
+            .unwrap();
+        for (index, section) in SECTIONS.iter().enumerate() {
+            let measured = &survey[*section];
+            let expected = match index.cmp(&at) {
+                std::cmp::Ordering::Less => "complete",
+                std::cmp::Ordering::Equal => "partial",
+                std::cmp::Ordering::Greater => "unavailable",
+            };
+            assert_eq!(
+                measured["completeness"], expected,
+                "{slowed}: {section}: {measured}"
+            );
+            if index >= at {
+                assert_eq!(measured["reason"], "max_wall_ms", "{slowed}: {section}");
+            }
+        }
+        // What the section finished is kept.
+        let kept = match slowed {
+            "identity" => "head",
+            "tree" => "files",
+            "history" => "commits",
+            "contributors" => "by_identity",
+            "decisions" => "records",
+            "vocabulary" => "terms",
+            _ => "declared",
+        };
+        assert!(
+            survey[slowed].get(kept).is_some(),
+            "{slowed}: {}",
+            survey[slowed]
+        );
+    }
+}
+
+#[test]
+fn every_declaration_charges_the_clock_oversized_ones_included() {
+    let machine = Machine::new();
+    let repo = machine.root().join("oversized-first");
+    std::fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    let big = format!("# Big\n\nStatus: accepted\n{}\n", "z".repeat(200));
+    for number in 1..=40 {
+        write(
+            &repo,
+            &format!("docs/adr/{number:04}-big.md"),
+            big.as_bytes(),
+        );
+    }
+    write(
+        &repo,
+        "docs/adr/0099-small.md",
+        b"# Small\n\nStatus: accepted\n",
+    );
+    commit(&repo, ADA, 1, &["Decisions"]);
+    machine.expect(&repo, &[], &["project", "show"], 0);
+    let max_wall_ms: u64 = 2500;
+    let started = std::time::Instant::now();
+    machine.expect(
+        &repo,
+        &[
+            ("AF_SURVEY__MAX_WALL_MS", &max_wall_ms.to_string()),
+            ("AF_SURVEY__MAX_FILE_BYTES", "128"),
+            ("AF_TEST_SURVEY_SLOW_ITEM_US", "100000"),
+            ("AF_TEST_SURVEY_SLOW_SECTION", "decisions"),
+        ],
+        &["project", "refresh"],
+        0,
+    );
+    let took = started.elapsed();
+    assert!(
+        took < std::time::Duration::from_millis(max_wall_ms + 2000),
+        "the refresh took {took:?}"
+    );
+    let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
+    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    let decisions = &survey["decisions"];
+    assert_eq!(decisions["completeness"], "partial", "{decisions}");
+    assert_eq!(decisions["reason"], "max_wall_ms");
+    // Each oversized declaration, never read, was one item: the deadline stopped among them,
+    // before the readable one behind them.
+    let reached: usize = decisions["count"].as_str().unwrap().parse().unwrap();
+    assert!(reached > 0 && reached < 40, "reached {reached}");
+    assert_eq!(
+        decisions["by_status"],
+        serde_json::json!({"unreadable": reached.to_string()})
+    );
+    for section in ["vocabulary", "checks"] {
+        assert_eq!(survey[section]["completeness"], "unavailable", "{section}");
+    }
+}
+
+#[test]
+fn an_impossible_calendar_date_is_unknown() {
+    let machine = Machine::new();
+    let repo = repository(
+        &machine.root(),
+        "calendar",
+        &[
+            (
+                "docs/adr/0001-february.md",
+                b"# Thirty-first\n\nStatus: accepted 2026-02-31\n",
+            ),
+            (
+                "docs/adr/0002-common.md",
+                b"# Common year\n\nStatus: accepted 2025-02-29\n",
+            ),
+            (
+                "docs/adr/0003-leap.md",
+                b"# Leap year\n\nStatus: accepted 2024-02-29\n",
+            ),
+        ],
+    );
+    machine.expect(&repo, &[], &["project", "refresh"], 0);
+    let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
+    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    let dates: Vec<(&str, Option<&str>)> = survey["decisions"]["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| (record["number"].as_str().unwrap(), record["date"].as_str()))
+        .collect();
+    assert_eq!(
+        dates,
+        [("0001", None), ("0002", None), ("0003", Some("2024-02-29"))]
+    );
+    assert_eq!(survey["decisions"]["by_status"]["accepted"], "3");
+}
+
+#[test]
+fn a_blank_or_control_character_name_is_its_hash_under_both_identity_policies() {
+    // Names git's porcelain refuses, written with fast-import: blank twice, by two emails, and
+    // one holding a bell.
+    let authors = ["", " ", "Bell\u{7}Name"];
+    for identity in ["name", "email_hash"] {
+        let machine = Machine::new();
+        let repo = machine.root().join("blank");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "-q", "-b", "main"]);
+        let mut stream = Vec::new();
+        for (index, (name, email)) in [
+            (authors[0], "first@fixture.invalid"),
+            (authors[1], "second@fixture.invalid"),
+            (authors[2], "bell@fixture.invalid"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let time = CUTOFF - (3 - index as u64) * DAY;
+            let message = format!("Commit {index}");
+            let file = format!("f{index}.txt");
+            let author = if name.is_empty() {
+                format!("<{email}>")
+            } else {
+                format!("{name} <{email}>")
+            };
+            stream.extend(
+                format!(
+                    "commit refs/heads/main\nmark :{}\nauthor {author} {time} +0000\n\
+                     committer Fixture <fixture@example.invalid> {time} +0000\ndata {}\n{message}\n",
+                    index + 1,
+                    message.len()
+                )
+                .bytes(),
+            );
+            if index > 0 {
+                stream.extend(format!("from :{index}\n").bytes());
+            }
+            stream.extend(format!("M 644 inline {file}\ndata 2\nx\n\n").bytes());
+        }
+        let mut child = Command::new("git")
+            .current_dir(&repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(["fast-import", "--quiet"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        use std::io::Write as _;
+        child.stdin.take().unwrap().write_all(&stream).unwrap();
+        assert!(child.wait().unwrap().success());
+        git(&repo, &["reset", "-q", "--hard", "main"]);
+
+        let env = [("AF_SURVEY__IDENTITY", identity)];
+        let (said, _) = machine.expect(&repo, &env, &["project", "refresh", "--json"], 0);
+        let survey: Value = serde_json::from_str(&said).unwrap();
+        schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+        let contributors = &survey["contributors"];
+        // Both blank names are one identity, by the hash of the name, never by either email.
+        assert_eq!(
+            contributors["identities"], "2",
+            "{identity}: {contributors}"
+        );
+        let blank = name_hash("");
+        assert_eq!(name_hash(" "), blank);
+        assert_eq!(
+            keys(contributors),
+            [blank.clone(), name_hash(authors[2])],
+            "{identity}"
+        );
+        assert_eq!(contributors["by_identity"][0]["commits"], "2", "{identity}");
+        if identity == "name" {
+            assert_eq!(names(contributors), [blank, name_hash(authors[2])]);
+        } else {
+            assert!(contributors["by_identity"][0].get("name").is_none());
+        }
+        let kept = everything_kept(&machine);
+        for email in [
+            "first@fixture.invalid",
+            "second@fixture.invalid",
+            "bell@fixture.invalid",
+        ] {
+            assert!(
+                !kept.contains(email) && !said.contains(email),
+                "{identity}: {email}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_silent_git_ends_with_its_process_group_at_the_survey_deadline() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root(), "silent", &[("README.md", b"# Silent\n")]);
+    machine.expect(&repo, &[], &["project", "show"], 0);
+    let pid_file = machine.root().join("silent.pid");
+    // The tree listing's `ls-tree -l` sleeps and writes nothing; every other command is git's.
+    let bin = fake_git(
+        &machine,
+        "silent-bin",
+        &format!(
+            "for argument in \"$@\"; do\n  if [ \"$argument\" = -l ]; then\n    echo $$ > '{}'\n    \
+             exec sleep 120\n  fi\ndone",
+            pid_file.display()
+        ),
+    );
+    let max_wall_ms: u64 = 2000;
+    let started = std::time::Instant::now();
+    let output = af_with_git(
+        &machine,
+        &repo,
+        &bin,
+        &[("AF_SURVEY__MAX_WALL_MS", &max_wall_ms.to_string())],
+        &["project", "refresh"],
+    );
+    let took = started.elapsed();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    // The grace: the process group's end and the record's write after the deadline.
+    assert!(
+        took < std::time::Duration::from_millis(max_wall_ms + 2000),
+        "the refresh took {took:?}"
+    );
+    let pid = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .to_string();
+    let alive = Command::new("kill")
+        .args(["-0", &pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap()
+        .success();
+    assert!(!alive, "the silent git {pid} still runs");
+    let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
+    schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+    assert_eq!(survey["completeness"], "partial");
+    assert_eq!(survey["identity"]["completeness"], "complete");
+    for section in [
+        "tree",
+        "history",
+        "contributors",
+        "decisions",
+        "vocabulary",
+        "checks",
+    ] {
+        assert_eq!(survey[section]["completeness"], "unavailable", "{section}");
+        assert_eq!(survey[section]["reason"], "max_wall_ms", "{section}");
+    }
+}
+
+#[test]
+fn the_tree_digest_is_the_committed_captures_and_a_ceiling_leaves_it_absent_and_clean() {
+    let machine = Machine::new();
+    let repo = fixture(&machine.root());
+    let committed = committed_digest(&repo);
+    let scratch = machine.root().join("tmp");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let tmpdir = scratch.to_str().unwrap();
+    let digests_left = || {
+        std::fs::read_dir(&scratch)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("af-tree-digest-"))
+            .count()
+    };
+    // A blob above max_file_bytes and a tree beyond max_paths are digested whole.
+    for env in [
+        &[("AF_SURVEY__MAX_FILE_BYTES", "16"), ("TMPDIR", tmpdir)][..],
+        &[("AF_SURVEY__MAX_PATHS", "3"), ("TMPDIR", tmpdir)],
+        // Spilled runs merged: the same digest.
+        &[
+            ("AF_TEST_SURVEY_DIGEST_MANIFEST_BYTES", "300"),
+            ("TMPDIR", tmpdir),
+        ],
+    ] {
+        machine.expect(&repo, env, &["project", "refresh", "--force"], 0);
+        let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
+        assert_eq!(
+            survey["identity"]["tree_digest"],
+            committed.as_str(),
+            "{env:?}"
+        );
+        assert_eq!(survey["identity"]["completeness"], "complete", "{env:?}");
+        assert_eq!(digests_left(), 0, "{env:?}");
+    }
+    // A ceiling that stops the digest: absent with its reason, never a part, nothing left.
+    for (env, reason) in [
+        (
+            &[
+                ("AF_TEST_SURVEY_DIGEST_MANIFEST_BYTES", "20"),
+                ("TMPDIR", tmpdir),
+            ][..],
+            "manifest_bytes",
+        ),
+        (
+            &[
+                ("AF_TEST_SURVEY_DIGEST_MANIFEST_BYTES", "300"),
+                ("AF_TEST_SURVEY_DIGEST_TEMP_BYTES", "400"),
+                ("TMPDIR", tmpdir),
+            ],
+            "temp_bytes",
+        ),
+    ] {
+        machine.expect(&repo, env, &["project", "refresh", "--force"], 0);
+        let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
+        schemas::valid(&schemas::validator("project-survey-v1.json"), &survey);
+        let identity = &survey["identity"];
+        assert!(identity.get("tree_digest").is_none(), "{identity}");
+        assert_eq!(identity["tree_digest_reason"], reason);
+        assert_eq!(identity["completeness"], "partial");
+        assert_eq!(identity["reason"], reason);
+        assert_eq!(
+            survey["tree"]["completeness"], "complete",
+            "a ceiling is no deadline"
+        );
+        assert_eq!(digests_left(), 0, "{reason}");
+    }
+}
+
+#[test]
+fn section_is_text_only_and_json_prints_the_complete_record() {
+    let machine = Machine::new();
+    let repo = fixture(&machine.root());
+    let (record, _) = machine.expect(&repo, &[], &["project", "refresh", "--json"], 0);
+    let (stdout, stderr) = machine.expect(
+        &repo,
+        &[],
+        &["project", "survey", "--section", "tree", "--json"],
+        2,
+    );
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("cannot be used with"), "{stderr}");
+    let (json, _) = machine.expect(&repo, &[], &["project", "survey", "--json"], 0);
+    assert_eq!(json, record, "the complete record, unchanged");
+    let (whole, _) = machine.expect(&repo, &[], &["project", "survey"], 0);
+    let (picked, _) = machine.expect(
+        &repo,
+        &[],
+        &["project", "survey", "--section", "history,tree"],
+        0,
+    );
+    let line = |text: &str, name: &str| {
+        text.lines()
+            .find(|line| line.starts_with(&format!("  {name} ")))
+            .map(str::to_string)
+    };
+    let picked_lines: Vec<&str> = picked.lines().collect();
+    assert_eq!(picked_lines[..4], whole.lines().collect::<Vec<_>>()[..4]);
+    assert_eq!(picked_lines.len(), 6, "{picked}");
+    assert_eq!(line(&picked, "tree"), line(&whole, "tree"));
+    assert_eq!(line(&picked, "history"), line(&whole, "history"));
+    assert!(line(&picked, "checks").is_none(), "{picked}");
+    assert_eq!(
+        picked_lines[4..],
+        [
+            line(&whole, "tree").unwrap(),
+            line(&whole, "history").unwrap()
+        ],
+        "in record order"
+    );
+    machine.expect(&repo, &[], &["project", "survey", "--section", "bogus"], 2);
+}
+
+#[test]
+fn a_language_map_of_sixty_five_patterns_is_refused() {
+    let machine = Machine::new();
+    let languages: String = (0..65)
+        .map(|n| format!("\"*.x{n}\" = \"lang{n}\"\n"))
+        .collect();
+    let repo = repository(
+        &machine.root(),
+        "languages",
+        &[(
+            ".af/af.toml",
+            format!("version = 1\n\n[survey.languages]\n{languages}").as_bytes(),
+        )],
+    );
+    let (_, stderr) = machine.expect(&repo, &[], &["project", "refresh"], 1);
+    assert!(
+        stderr.contains("[survey.languages] holds 65 patterns, more than 64"),
+        "{stderr}"
+    );
+    assert_eq!(machine.events().last().unwrap(), "SurveyFailed@1");
+    assert_eq!(machine.surveys(), 0);
+    // Sixty-four load.
+    let languages: String = (0..64)
+        .map(|n| format!("\"*.x{n}\" = \"lang{n}\"\n"))
+        .collect();
+    write(
+        &repo,
+        ".af/af.toml",
+        format!("version = 1\n\n[survey.languages]\n{languages}").as_bytes(),
+    );
+    machine.expect(&repo, &[], &["project", "refresh"], 0);
+}
+
+#[test]
+fn checkout_attributes_and_diff_drivers_leave_history_counts_unchanged() {
+    let machine = Machine::new();
+    let repo = repository(&machine.root(), "attributes", &[("a.txt", b"one\ntwo\n")]);
+    let measured = |machine: &Machine| {
+        machine.expect(&repo, &[], &["project", "refresh", "--force"], 0);
+        let survey = machine.json(&repo, &[], &["project", "survey", "--json"]);
+        (survey["history"].clone(), survey["contributors"].clone())
+    };
+    let baseline = measured(&machine);
+    assert_eq!(
+        baseline.0["churn_90d"]["."],
+        serde_json::json!({"commits": "1", "added": "2", "removed": "0"})
+    );
+    let numstat = || git(&repo, &["log", "--numstat", "--format="]);
+    assert_eq!(numstat(), "2\t0\ta.txt");
+    // An untracked `.gitattributes`: the checkout's own log counts no lines any more.
+    write(&repo, ".gitattributes", b"*.txt -diff\n");
+    assert_eq!(numstat(), "-\t-\ta.txt");
+    assert_eq!(measured(&machine), baseline, "an untracked .gitattributes");
+    std::fs::remove_file(repo.join(".gitattributes")).unwrap();
+    // `.git/info/attributes`.
+    write(&repo, ".git/info/attributes", b"*.txt -diff\n");
+    assert_eq!(numstat(), "-\t-\ta.txt");
+    assert_eq!(measured(&machine), baseline, ".git/info/attributes");
+    // A local diff driver the attributes select.
+    write(&repo, ".git/info/attributes", b"*.txt diff=opaque\n");
+    git(&repo, &["config", "diff.opaque.binary", "true"]);
+    assert_eq!(numstat(), "-\t-\ta.txt");
+    assert_eq!(measured(&machine), baseline, "a local diff driver");
+}
+
+#[test]
+fn a_tag_created_between_the_key_and_history_is_in_neither() {
+    let machine = Machine::new();
+    let repo = fixture(&machine.root());
+    machine.expect(&repo, &[], &["project", "show"], 0);
+    let digest = refs_digest(&repo);
+    let tagged = machine.root().join("tagged");
+    // The history's `log`, after the key's observation, first tags the head in the checkout.
+    let bin = fake_git(
+        &machine,
+        "tagging-bin",
+        &format!(
+            "for argument in \"$@\"; do\n  if [ \"$argument\" = log ] && [ ! -e '{tagged}' ]; then\n    \
+             : > '{tagged}'\n    env -u GIT_OBJECT_DIRECTORY -u GIT_NO_REPLACE_OBJECTS \"$REAL\" \
+             -C '{repo}' tag v9.9.9 || exit 97\n  fi\ndone",
+            tagged = tagged.display(),
+            repo = repo.display()
+        ),
+    );
+    let output = af_with_git(
+        &machine,
+        &repo,
+        &bin,
+        &[],
+        &["project", "refresh", "--json"],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        tagged.exists(),
+        "the tag was created during the measurement"
+    );
+    assert!(git(&repo, &["tag", "--list"]).contains("v9.9.9"));
+    let survey: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        survey["identity"]["refs_digest"],
+        digest.as_str(),
+        "not in the key"
+    );
+    assert_eq!(
+        survey["history"]["tags"]["count"], "2",
+        "nor in the statistics"
+    );
+    assert_eq!(
+        survey["history"]["tags"]["release"],
+        serde_json::json!([{"name": "v1.0.0"}])
+    );
+    // The next refresh observes it in both.
+    machine.expect(&repo, &[], &["project", "refresh"], 0);
+    let next = machine.json(&repo, &[], &["project", "survey", "--json"]);
+    assert_eq!(next["identity"]["refs_digest"], refs_digest(&repo).as_str());
+    assert_eq!(next["history"]["tags"]["count"], "3");
 }

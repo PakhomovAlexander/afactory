@@ -1,16 +1,19 @@
 //! The seven sections of a Survey, measured from the head through git plumbing (ADR-0152).
 //!
-//! Every git process runs through `projects/git.rs` with what remains of the Survey's one
-//! `max_wall_ms` deadline: `cat-file --batch`, `ls-tree`, `rev-list`, `log` and `for-each-ref`,
-//! and the committed capture for the Tree Digest. None checks anything out, runs a hook, a
-//! filter, a textconv or other project code, or writes inside the checkout. Every stream is read
-//! as it arrives, never buffered whole and never a record over [`MAX_SURVEY_RECORD_BYTES`], and
-//! every loop over its items (tree entries, blobs, commits, numstat lines, decision files, tags
-//! and refs) and every loop after its streams (the tree's aggregation, the ranking of
-//! identities, the reading of decisions, terms and checks) checks the Clock once per item: a
-//! section that reaches the deadline stops at that item and is `partial` with what it reached
-//! (`unavailable` when it reached nothing), every section after it is `unavailable`, and the
-//! Survey is still recorded. Any other git failure fails the Survey.
+//! Every git process runs through `projects/git.rs` under the lesser of its own limit and what
+//! remains of the Survey's one `max_wall_ms` deadline, its process group ended when that passes:
+//! `cat-file --batch`, `ls-tree`, `rev-list`, `log` and the one `for-each-ref` of the survey key,
+//! and the digest-only Tree Digest of `review_source_git::digest`. The history's `rev-list`,
+//! `log` and `ls-tree` run in a private bare repository attached only to the object database,
+//! so they count objects alone. None checks anything out, runs a hook, a filter, a textconv or
+//! other project code, or writes inside the checkout. Every stream is read as it arrives, never
+//! buffered whole and never a record over [`MAX_SURVEY_RECORD_BYTES`], and every loop over its
+//! items (tree entries, blobs, commits, numstat lines, decision files, tags and refs), every
+//! loop after its streams (the tree's aggregation, the ranking of identities, the reading of
+//! decisions, terms and checks, every declaration an item) and every section's finishing step
+//! checks the Clock: a section that reaches the deadline stops there and is `partial` with what
+//! it reached (`unavailable` when it reached nothing), every section after it is `unavailable`,
+//! and the Survey is still recorded. Any other git failure fails the Survey.
 //!
 //! The readers and the folds are pure functions of git's bytes, the policy and the cutoff, so a
 //! Survey is byte-identical for the same head, refs, policy, cutoff and Surveyor version.
@@ -27,8 +30,8 @@ use review_core::project::{
     SurveyChecksV1, SurveyChurnV1, SurveyContributorV1, SurveyContributorsV1, SurveyDecisionV1,
     SurveyDecisionsV1, SurveyDirectoryV1, SurveyHistoryV1, SurveyHotPathV1, SurveyIdentityPolicyV1,
     SurveyIdentityV1, SurveyLanguageV1, SurveyNameV1, SurveyReasonV1, SurveySectionV1,
-    SurveySeenV1, SurveyTagsV1, SurveyTestsV1, SurveyTreeV1, SurveyVocabularyV1, SurveyWindowV1,
-    SurveyWindowsV1, is_email_shaped, is_survey_text,
+    SurveySeenV1, SurveyTagsV1, SurveyTestsV1, SurveyTreeDigestReasonV1, SurveyTreeV1,
+    SurveyVocabularyV1, SurveyWindowV1, SurveyWindowsV1, is_email_shaped, is_survey_text,
 };
 use review_core::task::usage::DecimalU64;
 use sha2::{Digest, Sha256};
@@ -68,6 +71,17 @@ const WORKFLOWS: [&str; 2] = [".github/workflows/*.yml", ".github/workflows/*.ya
 const TEST_SLOW_ITEM_US: &str = "AF_TEST_SURVEY_SLOW_ITEM_US";
 #[cfg(debug_assertions)]
 const TEST_SLOW_SECTION: &str = "AF_TEST_SURVEY_SLOW_SECTION";
+/// A debug build's fixture may make the finishing step of the one section it names (the work
+/// after the section's last item and before it is recorded) last until the deadline has passed,
+/// so a test reaches the deadline there. Release binaries never read it.
+#[cfg(debug_assertions)]
+const TEST_SLOW_FINISH: &str = "AF_TEST_SURVEY_SLOW_FINISH";
+/// A debug build's fixture may lower the fixed ceilings of the digest-only Tree Digest, so a
+/// test reaches them on a small tree. Release binaries never read them, and they only lower.
+#[cfg(debug_assertions)]
+const TEST_DIGEST_MANIFEST_BYTES: &str = "AF_TEST_SURVEY_DIGEST_MANIFEST_BYTES";
+#[cfg(debug_assertions)]
+const TEST_DIGEST_TEMP_BYTES: &str = "AF_TEST_SURVEY_DIGEST_TEMP_BYTES";
 /// The sections, by the names the Clock and [`TEST_SLOW_SECTION`] know them by.
 #[cfg(debug_assertions)]
 const SECTIONS: [&str; 7] = [
@@ -119,6 +133,10 @@ pub(super) struct Clock {
     slow: Duration,
     /// The one section whose items cost `slow`, when a fixture names one.
     only: Option<&'static str>,
+    /// The section these items are of; empty for the survey key's reads.
+    section: &'static str,
+    /// The one section whose finishing step lasts past the deadline, when a fixture names one.
+    slow_finish: Option<&'static str>,
 }
 
 impl Clock {
@@ -127,6 +145,8 @@ impl Clock {
             deadline: started + Duration::from_millis(max_wall_ms),
             slow: slow_item(),
             only: slow_section(),
+            section: "",
+            slow_finish: slow_finish(),
         }
     }
 
@@ -136,7 +156,11 @@ impl Clock {
             Some(only) if only != section => Duration::ZERO,
             _ => self.slow,
         };
-        Self { slow, ..*self }
+        Self {
+            slow,
+            section,
+            ..*self
+        }
     }
 
     fn remaining(&self) -> Option<Duration> {
@@ -144,8 +168,22 @@ impl Clock {
         (now < self.deadline).then(|| self.deadline - now)
     }
 
-    fn passed(&self) -> bool {
+    pub(super) fn passed(&self) -> bool {
         self.remaining().is_none()
+    }
+
+    /// The last check of a section, after its finishing work (the tree's directory and language
+    /// cuts, the history's materialization, the contributors' sort, the decisions' aggregation,
+    /// the checks' ranking) and before it is recorded: whether the deadline passed, in which case
+    /// the section is partial, never complete, and every later one unavailable. One item, like
+    /// every other check.
+    pub(super) fn finished(&self) -> bool {
+        if self.slow_finish == Some(self.section)
+            && let Some(remaining) = self.remaining()
+        {
+            std::thread::sleep(remaining + Duration::from_millis(1));
+        }
+        self.item()
     }
 
     /// One item of a stream or of a loop over what it read: whether the deadline passed before
@@ -173,10 +211,45 @@ fn slow_item() -> Duration {
 /// The section a debug build's fixture slows alone; none otherwise.
 fn slow_section() -> Option<&'static str> {
     #[cfg(debug_assertions)]
-    if let Ok(named) = std::env::var(TEST_SLOW_SECTION) {
-        return SECTIONS.iter().copied().find(|section| *section == named);
-    }
+    return named_section(TEST_SLOW_SECTION);
+    #[cfg(not(debug_assertions))]
     None
+}
+
+/// The section whose finishing step a debug build's fixture makes last past the deadline; none
+/// otherwise.
+fn slow_finish() -> Option<&'static str> {
+    #[cfg(debug_assertions)]
+    return named_section(TEST_SLOW_FINISH);
+    #[cfg(not(debug_assertions))]
+    None
+}
+
+/// The section a debug build's fixture names in `variable`.
+#[cfg(debug_assertions)]
+fn named_section(variable: &str) -> Option<&'static str> {
+    let named = std::env::var(variable).ok()?;
+    SECTIONS.iter().copied().find(|section| *section == named)
+}
+
+/// The ceilings of the digest-only Tree Digest: the fixed ones, or lower ones a debug build's
+/// fixture set.
+fn digest_ceilings() -> review_source_git::digest::Ceilings {
+    #[allow(unused_mut)]
+    let mut ceilings = review_source_git::digest::Ceilings::FIXED;
+    #[cfg(debug_assertions)]
+    {
+        let lowered = |variable: &str, fixed: u64| {
+            std::env::var(variable)
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value >= 1)
+                .map_or(fixed, |value| value.min(fixed))
+        };
+        ceilings.manifest_bytes = lowered(TEST_DIGEST_MANIFEST_BYTES, ceilings.manifest_bytes);
+        ceilings.temp_bytes = lowered(TEST_DIGEST_TEMP_BYTES, ceilings.temp_bytes);
+    }
+    ceilings
 }
 
 /// How a reader of one git stream ended.
@@ -245,7 +318,7 @@ impl Reader<'_> {
         let Some(remaining) = self.clock.remaining() else {
             return Ok(None);
         };
-        match self.git.run_within(args, None, remaining) {
+        match self.git.run_within(args, None, Git::within(remaining)) {
             Ok(output) if output.status.success() => Ok(Some(
                 String::from_utf8_lossy(&output.stdout).trim().to_string(),
             )),
@@ -253,14 +326,16 @@ impl Reader<'_> {
                 what,
                 String::from_utf8_lossy(&output.stderr).trim().to_string(),
             )),
-            Err(stopped) if stopped.deadline => Ok(None),
+            Err(stopped) if stopped.deadline && self.clock.passed() => Ok(None),
             Err(stopped) => Err(Self::failed(what, stopped.message)),
         }
     }
 
-    /// Stream git's stdout through `parse`, with `lines` written to its stdin, under what
-    /// remains of the deadline: `None` when the stream ended in time, `max_wall_ms` when the
-    /// deadline passed before it ended or right after, or the bound that stopped it.
+    /// Stream git's stdout through `parse`, with `lines` written to its stdin, under the lesser
+    /// of git's own limit and what remains of the deadline, its process group ended at that
+    /// limit even while nothing is read: `None` when the stream ended in time, `max_wall_ms`
+    /// when the deadline passed before it ended or right after, or the bound that stopped it. A
+    /// git stopped at its own limit before the Survey's deadline fails the Survey.
     fn stream<P>(
         &self,
         what: &str,
@@ -276,7 +351,7 @@ impl Reader<'_> {
         };
         let streamed = self.git.stream_within(
             args,
-            remaining,
+            Git::within(remaining),
             |stdin| {
                 for line in lines {
                     stdin.write_all(line.as_bytes())?;
@@ -301,7 +376,9 @@ impl Reader<'_> {
                     String::from_utf8_lossy(&output.stderr).trim().to_string(),
                 )),
             },
-            Err(stopped) if stopped.deadline => Ok(Some(SurveyReasonV1::MaxWallMs)),
+            Err(stopped) if stopped.deadline && self.clock.passed() => {
+                Ok(Some(SurveyReasonV1::MaxWallMs))
+            }
             Err(stopped) => Err(Self::failed(what, stopped.message)),
         }
     }
@@ -483,11 +560,12 @@ pub(super) fn parse_entry(record: &[u8]) -> Result<Entry, String> {
     })
 }
 
-/// Read NUL-ended records, one item each, as `ls-tree -z` and its `--name-only` form print them.
+/// Read NUL-ended records, one item each, as `ls-tree -z` and its `--name-only` form print them;
+/// `each` returns `Ok(false)` when the deadline passed while it took one, which stops the stream.
 fn read_records(
     input: &mut dyn BufRead,
     clock: &Clock,
-    mut each: impl FnMut(&[u8]) -> Result<(), String>,
+    mut each: impl FnMut(&[u8]) -> Result<bool, String>,
 ) -> Ended {
     let mut record = Vec::new();
     loop {
@@ -503,22 +581,22 @@ fn read_records(
         if record.is_empty() {
             continue;
         }
-        if let Err(detail) = each(&record) {
-            return Ended::Bad(detail);
+        match each(&record) {
+            Ok(true) => {}
+            Ok(false) => return Ended::Deadline,
+            Err(detail) => return Ended::Bad(detail),
         }
     }
 }
 
-/// Read `ls-tree -r -l -z`, one entry at a time, in tree order.
+/// Read `ls-tree -r -l -z`, one entry at a time, in tree order; `each` returns `false` when the
+/// deadline passed while it took the entry.
 pub(super) fn read_listing(
     input: &mut dyn BufRead,
     clock: &Clock,
-    mut each: impl FnMut(Entry),
+    mut each: impl FnMut(Entry) -> bool,
 ) -> Ended {
-    read_records(input, clock, |record| {
-        each(parse_entry(record)?);
-        Ok(())
-    })
+    read_records(input, clock, |record| Ok(each(parse_entry(record)?)))
 }
 
 /// Read newline-ended lines, one item each, as `for-each-ref` prints them: `each` receives the
@@ -609,10 +687,15 @@ pub(super) struct TreeFold {
 }
 
 impl TreeFold {
-    /// One entry of the listing: a file, a symlink or a submodule.
-    pub(super) fn add(&mut self, entry: &Entry, policy: &Policy) {
+    /// One entry of the listing: a file, a symlink or a submodule. Its language is matched
+    /// against `[survey.languages]` with `clock` checked before each pattern; `false`, and
+    /// nothing folded, when the deadline passed first.
+    pub(super) fn add(&mut self, entry: &Entry, policy: &Policy, clock: &Clock) -> bool {
         let language = match entry.kind {
-            EntryKind::File => policy.language(&entry.path),
+            EntryKind::File => match policy.language_within(&entry.path, || clock.passed()) {
+                Some(language) => language,
+                None => return false,
+            },
             EntryKind::Symlink | EntryKind::Submodule => "other".into(),
         };
         let test = any_match(&policy.tests, &entry.path);
@@ -634,6 +717,7 @@ impl TreeFold {
                 .or_default()
                 .push((directory, language, test));
         }
+        true
     }
 
     /// The blobs whose lines to count, each once.
@@ -764,30 +848,32 @@ fn hex16_of(bytes: &[u8]) -> String {
 
 /// A contributor as a record holds one: its key, its display name under `identity = "name"`, and
 /// whether the name was cut. An author name any whitespace-separated token of which is an email
-/// address, under either policy, is `h:` and the 16-hex hash of the lowercased, trimmed name as
-/// both key and name, decided before any cut and without the email; so is a name a record
-/// cannot hold as text. Otherwise, under `name`, the key is the 16-hex hash of the exact
-/// author-name bytes and the name is cut to [`MAX_SURVEY_TEXT_BYTES`]; under `email_hash`, the
-/// key is the 16-hex hash of the email and there is no name. An email never enters a record.
+/// address, or that is blank or holds a control character (a name a record cannot hold as
+/// text), is under either policy `h:` and the 16-hex hash of the lowercased, trimmed name as its
+/// key and, under `name`, its name, decided before any cut and without the email, so it is
+/// grouped by that key under both policies. Otherwise, under `name`, the key is the 16-hex hash
+/// of the exact author-name bytes and the name is cut to [`MAX_SURVEY_TEXT_BYTES`]; under
+/// `email_hash`, the key is the 16-hex hash of the email and there is no name. An email never
+/// enters a record.
 pub(super) fn identity_of(
     name: &[u8],
     email: &str,
     policy: SurveyIdentityPolicyV1,
 ) -> (String, Option<String>, bool) {
     let text = String::from_utf8_lossy(name);
+    let shown = display(&text).filter(|(kept, _)| !is_email_shaped(kept));
     let hashed = format!("{SURVEY_NAME_HASH_PREFIX}{}", hash16(&text));
-    match policy {
-        _ if is_email_shaped(&text) => match policy {
+    match (policy, shown) {
+        (_, _) if is_email_shaped(&text) => match policy {
             SurveyIdentityPolicyV1::Name => (hashed.clone(), Some(hashed), false),
             SurveyIdentityPolicyV1::EmailHash => (hashed, None, false),
         },
-        SurveyIdentityPolicyV1::Name => match display(&text) {
-            Some((kept, truncated)) if !is_email_shaped(&kept) => {
-                (hex16_of(name), Some(kept), truncated)
-            }
-            _ => (hashed.clone(), Some(hashed), false),
-        },
-        SurveyIdentityPolicyV1::EmailHash => (hash16(email), None, false),
+        (SurveyIdentityPolicyV1::Name, Some((kept, truncated))) => {
+            (hex16_of(name), Some(kept), truncated)
+        }
+        (SurveyIdentityPolicyV1::Name, None) => (hashed.clone(), Some(hashed), false),
+        (SurveyIdentityPolicyV1::EmailHash, Some(_)) => (hash16(email), None, false),
+        (SurveyIdentityPolicyV1::EmailHash, None) => (hashed, None, false),
     }
 }
 
@@ -1168,7 +1254,8 @@ pub(super) fn history_section(
 /// committer time of a lightweight one) newest first, undated last, then by name.
 type TagRank = (bool, std::cmp::Reverse<u64>, String);
 
-/// The refs `history` counts, read from one `for-each-ref` of `refs/heads` and `refs/tags`.
+/// The refs `history` counts, folded from the survey key's one ref observation as it streams:
+/// never read a second time.
 #[derive(Debug, Default)]
 pub(super) struct Refs {
     branches: u64,
@@ -1203,11 +1290,15 @@ impl Refs {
         }
     }
 
-    /// One line of `for-each-ref --format=%(creatordate:unix)%09%(refname)`.
-    fn line(&mut self, line: &[u8], policy: &Policy) {
+    /// One line of the ref observation, [`REF_FORMAT`]: the name, the target, its object type
+    /// and its creator date (the tagger time of an annotated tag, the committer time of a
+    /// commit, none for another object), each resolved from the target the line names.
+    pub(super) fn line(&mut self, line: &[u8], policy: &Policy) {
         let line = String::from_utf8_lossy(line);
-        let (date, refname) = line.split_once('\t').unwrap_or(("", &line));
-        self.add(refname.trim_end(), date.trim().parse().ok(), policy);
+        let mut fields = line.split('\t');
+        let refname = fields.next().unwrap_or_default();
+        let date = fields.nth(2).and_then(|date| date.trim().parse().ok());
+        self.add(refname, date, policy);
     }
 
     /// The tags and the local branch count, and the release tags cut at `max_entries`.
@@ -1290,8 +1381,9 @@ pub(super) fn contributors_section(
     (body, deadline)
 }
 
-/// The first `YYYY-MM-DD` of `line` that no digit touches, when it is a calendar date: a month
-/// of `01` to `12` and a day of `01` to `31`. A malformed first date is no date.
+/// The first `YYYY-MM-DD` of `line` that no digit touches, when it is a day of the calendar:
+/// a month of `01` to `12` and a day that month has in that year, so `2024-02-29` is a date and
+/// `2025-02-29` and `2026-02-31` are not. A malformed or impossible first date is no date.
 fn first_date(line: &str) -> Option<String> {
     let bytes = line.as_bytes();
     let first = (0..bytes.len().saturating_sub(9)).find(|&start| {
@@ -1308,9 +1400,7 @@ fn first_date(line: &str) -> Option<String> {
         shaped && !touched
     })?;
     let date = &line[first..first + 10];
-    let month: u8 = date[5..7].parse().ok()?;
-    let day: u8 = date[8..10].parse().ok()?;
-    ((1..=12).contains(&month) && (1..=31).contains(&day)).then(|| date.to_string())
+    review_core::project::is_calendar_date(date).then(|| date.to_string())
 }
 
 /// The status a status line names: the first, by position, of the closed statuses, each a whole
@@ -1625,9 +1715,10 @@ impl ChecksFold {
 
 /// Hand the declarations `entries` to `each`, in order, as one `cat-file --batch` streams them:
 /// each with its content when it is a text blob, valid UTF-8, at or under `max_file_bytes`, and
-/// `None` otherwise, never decoded lossily. One declaration per item of the reader's Clock;
-/// `each` returns `false` when the deadline passed while it took one. `true` when the deadline
-/// stopped the reading, the declarations before it handed on.
+/// `None` otherwise, never decoded lossily. Every declaration is one item of the reader's Clock,
+/// an oversized one, which is never read, included, charged before it is handed on; `each`
+/// returns `false` when the deadline passed while it took one. `true` when the deadline stopped
+/// the reading, the declarations before it handed on.
 fn each_declaration(
     reader: &Reader,
     entries: &[&Entry],
@@ -1647,10 +1738,11 @@ fn each_declaration(
         let stopped =
             reader.stream("cat-file", &os(&["cat-file", "--batch"]), &names, |input| {
                 read_batch(input, &clock, Some(policy.max_file_bytes), |_, object| {
-                    // The oversized declarations before this one, then this one.
+                    // The oversized declarations before this one, each an item of its own, then
+                    // this one, whose item `read_batch` charged.
                     while let Some(entry) = entries.get(position).filter(|entry| !readable(entry)) {
                         position += 1;
-                        if !each(entry, None) {
+                        if clock.item() || !each(entry, None) {
                             return false;
                         }
                     }
@@ -1761,25 +1853,36 @@ pub(super) fn head(git: &Git, clock: &Clock) -> Result<Option<String>, Failure> 
     )
 }
 
-/// `sha256:` + hex(SHA-256 of the exact stdout of `git for-each-ref
-/// --format=%(refname)%09%(objectname) refs/heads refs/tags`), hashed as it streams under the
-/// Survey's Clock, one ref per item: the refs of the survey key. The error is the bound that
-/// stopped it: `max_wall_ms`, or `max_record_bytes` for a ref longer than
-/// [`MAX_SURVEY_RECORD_BYTES`].
-pub(super) fn refs_digest(
+/// The one ref observation's format: each ref's name, target, the target's object type and its
+/// creator date, so the survey key and `history`'s tags and branches come from one read.
+pub(super) const REF_FORMAT: &str =
+    "--format=%(refname)%09%(objectname)%09%(objecttype)%09%(creatordate:unix)";
+
+/// The one ref observation of a Survey: `refs_digest`, and what `history` counts of the refs.
+#[derive(Debug)]
+pub(super) struct Observed {
+    pub(super) digest: String,
+    pub(super) refs: Refs,
+}
+
+/// Observe the refs once, under the Survey's Clock, one ref per item: `git for-each-ref` of
+/// `refs/heads` and `refs/tags` in [`REF_FORMAT`], hashed as it streams into `refs_digest`
+/// (`sha256:` + hex(SHA-256 of its exact stdout)) and folded as it streams into the tags and
+/// branches of `history`, whose tagger and committer times git resolves through the object IDs
+/// the same lines capture. A ref created after it is in neither. The error is the bound that
+/// stopped it, with which the key cannot be complete: `max_wall_ms`, or `max_record_bytes` for a
+/// ref longer than [`MAX_SURVEY_RECORD_BYTES`].
+pub(super) fn observe_refs(
     git: &Git,
     clock: &Clock,
-) -> Result<Result<String, SurveyReasonV1>, Failure> {
+    policy: &Policy,
+) -> Result<Result<Observed, SurveyReasonV1>, Failure> {
     let reader = Reader { git, clock: *clock };
     let mut hasher = Sha256::new();
+    let mut refs = Refs::default();
     let stopped = reader.stream(
         "for-each-ref",
-        &os(&[
-            "for-each-ref",
-            "--format=%(refname)%09%(objectname)",
-            "refs/heads",
-            "refs/tags",
-        ]),
+        &os(&["for-each-ref", REF_FORMAT, "refs/heads", "refs/tags"]),
         &[],
         |input| {
             read_lines(input, clock, |line, ended| {
@@ -1787,15 +1890,41 @@ pub(super) fn refs_digest(
                 if ended {
                     hasher.update(b"\n");
                 }
+                refs.line(line, policy);
             })
         },
     )?;
     Ok(match stopped {
-        None => Ok(format!(
-            "sha256:{}",
-            review_core::hex::encode(&hasher.finalize())
-        )),
+        None => Ok(Observed {
+            digest: format!("sha256:{}", review_core::hex::encode(&hasher.finalize())),
+            refs,
+        }),
         Some(reason) => Err(reason),
+    })
+}
+
+thread_local! {
+    /// The ref observation of the survey key this thread is measuring, handed from the key to
+    /// the measurement, which takes it once.
+    static OBSERVED: std::cell::RefCell<Option<Observed>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Hand `observed` to the next measurement on this thread whose `refs_digest` it is.
+pub(super) fn hand_over(observed: Observed) {
+    OBSERVED.with(|slot| *slot.borrow_mut() = Some(observed));
+}
+
+/// The ref observation the survey key named `refs_digest` was computed from, taken once.
+fn take_observed(refs_digest: &str) -> Option<Refs> {
+    OBSERVED.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        match slot.take() {
+            Some(observed) if observed.digest == refs_digest => Some(observed.refs),
+            other => {
+                *slot = other;
+                None
+            }
+        }
     })
 }
 
@@ -1820,7 +1949,8 @@ fn section<T>(body: T, reasons: &[(bool, SurveyReasonV1)]) -> SurveySectionV1<T>
 }
 
 /// Measure the head of `git` into the seven sections under the Survey's one deadline, `clock`,
-/// which started before the survey key was computed.
+/// which started before the survey key was computed. Each section's last check comes after its
+/// finishing work: a section is complete only when that check found the deadline ahead.
 pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections, Failure> {
     let policy = basis.policy;
     let reader = |section: &'static str| Reader {
@@ -1828,12 +1958,15 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
         clock: clock.section(section),
     };
     let head = basis.head;
+    // `history`'s tags and branches: the survey key's one ref observation, never read again.
+    let observed = take_observed(basis.refs_digest);
     // Set once the deadline passed: the section it stopped is partial, every later one
     // unavailable.
     let mut halted = false;
 
     // identity: what is known already, the head's declarations, and the Tree Digest.
     let identity_reader = reader("identity");
+    let identity_clock = identity_reader.clock;
     let mut identity = SurveyIdentityV1 {
         project_id: basis.project_id.to_string(),
         repository_id: basis.repository_id.to_string(),
@@ -1843,7 +1976,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
         head: head.to_string(),
         refs_digest: basis.refs_digest.to_string(),
         tree_digest: None,
-        tree_digest_reason: Some(SurveyReasonV1::MaxWallMs),
+        tree_digest_reason: Some(SurveyTreeDigestReasonV1::Deadline),
         cutoff_unix_s: decimal(basis.cutoff),
         policy_digest: basis.policy_digest.to_string(),
         surveyor_version: decimal(basis.surveyor_version),
@@ -1864,15 +1997,32 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
         };
         (identity.name, identity.min_af, identity.af_pin) =
             declarations(basis, content(0), content(1));
-        match tree_digest(git, &identity_reader.clock, head)? {
-            Some(digest) => {
+        match tree_digest(git, &identity_clock, head)? {
+            Ok(digest) => {
                 identity.tree_digest = Some(digest);
                 identity.tree_digest_reason = None;
             }
-            None => halted = true,
+            Err(SurveyTreeDigestReasonV1::Deadline) => halted = true,
+            Err(reason) => identity.tree_digest_reason = Some(reason),
         }
     }
-    let identity = section(identity, &[(halted, SurveyReasonV1::MaxWallMs)]);
+    halted = halted || identity_clock.finished();
+    let digest_short = match identity.tree_digest_reason {
+        Some(SurveyTreeDigestReasonV1::MaxRecordBytes) => Some(SurveyReasonV1::MaxRecordBytes),
+        Some(SurveyTreeDigestReasonV1::ManifestBytes) => Some(SurveyReasonV1::ManifestBytes),
+        Some(SurveyTreeDigestReasonV1::TempBytes) => Some(SurveyReasonV1::TempBytes),
+        Some(SurveyTreeDigestReasonV1::Deadline) | None => None,
+    };
+    let identity = section(
+        identity,
+        &[
+            (halted, SurveyReasonV1::MaxWallMs),
+            (
+                digest_short.is_some(),
+                digest_short.unwrap_or(SurveyReasonV1::MaxWallMs),
+            ),
+        ],
+    );
 
     // tree: folded as the listing, then the blobs' line counts, stream.
     let mut seen_paths = 0_u64;
@@ -1894,7 +2044,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
             |input| {
                 read_listing(input, &tree_clock, |entry| {
                     if any_match(&policy.exclude, &entry.path) {
-                        return;
+                        return true;
                     }
                     seen_paths += 1;
                     if entry.kind == EntryKind::File {
@@ -1907,9 +2057,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
                             declaring.push(entry.clone());
                         }
                     }
-                    if seen_paths <= policy.max_paths {
-                        fold.add(&entry, policy);
-                    }
+                    seen_paths > policy.max_paths || fold.add(&entry, policy, &tree_clock)
                 })
             },
         )?;
@@ -1934,12 +2082,14 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
                 deadline = stopped.is_some();
             }
         }
-        halted |= deadline;
         let cut_paths = seen_paths > fold.files();
         if deadline && fold.files() == 0 {
+            halted = true;
             after_deadline()
         } else {
             let body = fold.finish(seen_paths, policy);
+            deadline = deadline || tree_clock.finished();
+            halted |= deadline;
             let cut_lists = !body.seen.is_empty();
             section(
                 body,
@@ -1953,138 +2103,149 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
         }
     };
 
-    // history, and the walk contributors folds.
+    // history, and the walk contributors folds: from objects alone, in a private bare
+    // repository attached only to the object database.
     let mut walk = Walk::new(basis.cutoff, policy.max_paths);
     let mut reachable = 0;
     // A bound that stopped the walk: `max_paths` or `max_record_bytes`.
     let mut walk_cut = None;
-    let history = if halted || clock.passed() {
-        halted = true;
-        after_deadline()
-    } else {
-        let history_reader = reader("history");
-        let history_clock = history_reader.clock;
-        match history_reader.answer(
-            "rev-list",
-            &["rev-list", "--count", "--end-of-options", head, "--"],
-        )? {
-            None => {
-                halted = true;
-                after_deadline()
+    let objects = match clock.remaining() {
+        Some(remaining) if !halted => match git.objects_within(remaining) {
+            Ok(objects) => Some(objects),
+            Err(_) if clock.passed() => None,
+            Err(detail) => {
+                return Err(Failure::new(
+                    "git could not read the head's objects while surveying it; run `af \
+                     project refresh` again",
+                    detail,
+                ));
             }
-            Some(count) => {
-                reachable = count
-                    .parse::<u64>()
-                    .map_err(|_| unreadable("rev-list --count is not a number".into()))?;
-                let stopped = history_reader.stream(
-                    "log",
-                    &os(&[
-                        "-c",
-                        "log.showRoot=true",
-                        "log",
-                        "--date-order",
-                        "--no-mailmap",
-                        "--no-renames",
-                        "--diff-merges=off",
-                        "--no-textconv",
-                        "--no-ext-diff",
-                        "--no-color",
-                        "--diff-algorithm=myers",
-                        "--numstat",
-                        "-z",
-                        &log_format(policy),
-                        &format!("--max-count={}", policy.max_commits),
-                        "--end-of-options",
-                        head,
-                        "--",
-                    ]),
-                    &[],
-                    |input| read_log(input, &history_clock, policy, |commit| walk.add(commit)),
-                )?;
-                let mut deadline = stopped == Some(SurveyReasonV1::MaxWallMs);
-                walk_cut = stopped.filter(|reason| *reason != SurveyReasonV1::MaxWallMs);
-                if walk.commits == 0 && !deadline && walk_cut.is_none() {
-                    return Err(unreadable("git log reached no commit".into()));
+        },
+        _ => None,
+    };
+    let history = match objects.as_ref() {
+        None => {
+            halted = true;
+            after_deadline()
+        }
+        Some(objects) => {
+            let history_reader = Reader {
+                git: objects,
+                clock: clock.section("history"),
+            };
+            let history_clock = history_reader.clock;
+            match history_reader.answer(
+                "rev-list",
+                &["rev-list", "--count", "--end-of-options", head, "--"],
+            )? {
+                None => {
+                    halted = true;
+                    after_deadline()
                 }
-                if walk.commits == 0 {
-                    halted |= deadline;
-                    SurveySectionV1::unavailable(walk_cut.unwrap_or(SurveyReasonV1::MaxWallMs))
-                } else {
-                    let (hot, distinct) = walk.hot_paths(policy.hot_paths.min(policy.max_entries));
-                    deadline |= history_clock.item();
-                    // The hot paths the head no longer holds, asked of the head itself.
-                    let mut present = BTreeSet::new();
-                    if !deadline && !hot.is_empty() {
-                        let mut args = os(&["ls-tree", "-z", "--full-tree", "--name-only", head]);
-                        args.push("--".into());
-                        args.extend(hot.iter().map(|(path, _)| {
-                            use std::os::unix::ffi::OsStringExt;
-                            OsString::from_vec(review_core::decode_path(path))
-                        }));
-                        deadline |= history_reader
-                            .stream("ls-tree", &args, &[], |input| {
-                                read_records(input, &history_clock, |record| {
-                                    present.insert(review_core::encode_path(record));
-                                    Ok(())
-                                })
-                            })?
-                            .is_some();
+                Some(count) => {
+                    reachable = count
+                        .parse::<u64>()
+                        .map_err(|_| unreadable("rev-list --count is not a number".into()))?;
+                    let stopped = history_reader.stream(
+                        "log",
+                        &os(&[
+                            "-c",
+                            "log.showRoot=true",
+                            "log",
+                            "--date-order",
+                            "--no-mailmap",
+                            "--no-renames",
+                            "--diff-merges=off",
+                            "--no-textconv",
+                            "--no-ext-diff",
+                            "--no-color",
+                            "--diff-algorithm=myers",
+                            "--numstat",
+                            "-z",
+                            &log_format(policy),
+                            &format!("--max-count={}", policy.max_commits),
+                            "--end-of-options",
+                            head,
+                            "--",
+                        ]),
+                        &[],
+                        |input| read_log(input, &history_clock, policy, |commit| walk.add(commit)),
+                    )?;
+                    let mut deadline = stopped == Some(SurveyReasonV1::MaxWallMs);
+                    walk_cut = stopped.filter(|reason| *reason != SurveyReasonV1::MaxWallMs);
+                    if walk.commits == 0 && !deadline && walk_cut.is_none() {
+                        return Err(unreadable("git log reached no commit".into()));
                     }
-                    let absent: BTreeSet<String> = if deadline {
-                        BTreeSet::new()
+                    if walk.commits == 0 {
+                        halted |= deadline;
+                        SurveySectionV1::unavailable(walk_cut.unwrap_or(SurveyReasonV1::MaxWallMs))
                     } else {
-                        hot.iter()
-                            .map(|(path, _)| path.clone())
-                            .filter(|path| !present.contains(path))
-                            .collect()
-                    };
-                    let mut body =
-                        history_section(&walk, reachable, hot, distinct, &absent, policy);
-                    let mut refs_cut = false;
-                    if !deadline {
-                        let mut refs = Refs::default();
-                        let stopped = history_reader.stream(
-                            "for-each-ref",
-                            &os(&[
-                                "for-each-ref",
-                                "--format=%(creatordate:unix)%09%(refname)",
-                                "refs/heads",
-                                "refs/tags",
-                            ]),
-                            &[],
-                            |input| {
-                                read_lines(input, &history_clock, |line, _| refs.line(line, policy))
-                            },
-                        )?;
-                        deadline = stopped == Some(SurveyReasonV1::MaxWallMs);
-                        refs_cut = stopped.is_some() && !deadline;
-                        if stopped.is_none() {
-                            refs.fill(&mut body, policy);
+                        let (hot, distinct) =
+                            walk.hot_paths(policy.hot_paths.min(policy.max_entries));
+                        deadline |= history_clock.item();
+                        // The hot paths the head no longer holds, asked of the head itself.
+                        let mut present = BTreeSet::new();
+                        if !deadline && !hot.is_empty() {
+                            let mut args =
+                                os(&["ls-tree", "-z", "--full-tree", "--name-only", head]);
+                            args.push("--".into());
+                            args.extend(hot.iter().map(|(path, _)| {
+                                use std::os::unix::ffi::OsStringExt;
+                                OsString::from_vec(review_core::decode_path(path))
+                            }));
+                            deadline |= history_reader
+                                .stream("ls-tree", &args, &[], |input| {
+                                    read_records(input, &history_clock, |record| {
+                                        present.insert(review_core::encode_path(record));
+                                        Ok(true)
+                                    })
+                                })?
+                                .is_some();
                         }
+                        let absent: BTreeSet<String> = if deadline {
+                            BTreeSet::new()
+                        } else {
+                            hot.iter()
+                                .map(|(path, _)| path.clone())
+                                .filter(|path| !present.contains(path))
+                                .collect()
+                        };
+                        let mut body =
+                            history_section(&walk, reachable, hot, distinct, &absent, policy);
+                        let Some(refs) = observed else {
+                            return Err(Failure::new(
+                                "the survey key's ref observation was not handed to the \
+                                 measurement; run `af project refresh` again",
+                                "no ref observation for this refs_digest",
+                            ));
+                        };
+                        refs.fill(&mut body, policy);
+                        deadline = deadline || history_clock.finished();
+                        halted |= deadline;
+                        let cut_commits = walk.commits < reachable;
+                        let cut_lists = !body.seen.is_empty();
+                        section(
+                            body,
+                            &[
+                                (deadline, SurveyReasonV1::MaxWallMs),
+                                (
+                                    walk_cut == Some(SurveyReasonV1::MaxRecordBytes),
+                                    SurveyReasonV1::MaxRecordBytes,
+                                ),
+                                (
+                                    walk_cut == Some(SurveyReasonV1::MaxPaths),
+                                    SurveyReasonV1::MaxPaths,
+                                ),
+                                (cut_commits, SurveyReasonV1::MaxCommits),
+                                (cut_lists, SurveyReasonV1::MaxEntries),
+                            ],
+                        )
                     }
-                    halted |= deadline;
-                    let cut_commits = walk.commits < reachable;
-                    let cut_lists = !body.seen.is_empty();
-                    section(
-                        body,
-                        &[
-                            (deadline, SurveyReasonV1::MaxWallMs),
-                            (
-                                refs_cut || walk_cut == Some(SurveyReasonV1::MaxRecordBytes),
-                                SurveyReasonV1::MaxRecordBytes,
-                            ),
-                            (
-                                walk_cut == Some(SurveyReasonV1::MaxPaths),
-                                SurveyReasonV1::MaxPaths,
-                            ),
-                            (cut_commits, SurveyReasonV1::MaxCommits),
-                            (cut_lists, SurveyReasonV1::MaxEntries),
-                        ],
-                    )
                 }
             }
         }
     };
+    drop(objects);
 
     // contributors: the same walk, folded by key and ranked.
     let contributors = if halted || clock.passed() {
@@ -2093,7 +2254,9 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
     } else if walk.commits == 0 {
         SurveySectionV1::unavailable(walk_cut.unwrap_or(SurveyReasonV1::MaxWallMs))
     } else {
-        let (body, deadline) = contributors_section(&walk, policy, &clock.section("contributors"));
+        let contributors_clock = clock.section("contributors");
+        let (body, mut deadline) = contributors_section(&walk, policy, &contributors_clock);
+        deadline = deadline || contributors_clock.finished();
         halted |= deadline;
         let cut_lists = !body.seen.is_empty();
         section(
@@ -2123,6 +2286,7 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
         after_deadline()
     } else {
         let decisions_reader = reader("decisions");
+        let decisions_clock = decisions_reader.clock;
         let mut matched: Vec<&Entry> = declaring
             .iter()
             .filter(|entry| is_decision(&entry.path, policy))
@@ -2131,18 +2295,21 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
             (decision_number(&a.path), &a.path).cmp(&(decision_number(&b.path), &b.path))
         });
         let mut records: Vec<SurveyDecisionV1> = Vec::new();
-        let deadline = each_declaration(&decisions_reader, &matched, policy, |entry, content| {
-            records.push(decision(&entry.path, content.as_deref()));
-            true
-        })?;
-        halted |= deadline;
+        let mut deadline =
+            each_declaration(&decisions_reader, &matched, policy, |entry, content| {
+                records.push(decision(&entry.path, content.as_deref()));
+                true
+            })?;
         if deadline && records.is_empty() && !matched.is_empty() {
+            halted = true;
             after_deadline()
         } else {
             let unread = records
                 .iter()
                 .any(|record| record.status.as_deref() == Some(SURVEY_UNREADABLE));
             let body = decisions_section(records, policy);
+            deadline = deadline || decisions_clock.finished();
+            halted |= deadline;
             let cut_lists = !body.seen.is_empty();
             section(
                 body,
@@ -2184,12 +2351,15 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
                 vocabulary_section(&policy.vocabulary, false, None, policy, &vocabulary_clock);
             read = Some(body);
         }
-        deadline |= clock.passed() && read.is_none();
-        halted |= deadline;
         match read {
             // The deadline passed before the file was read.
-            None => after_deadline(),
+            None => {
+                halted = true;
+                after_deadline()
+            }
             Some(body) => {
+                deadline = deadline || vocabulary_clock.finished();
+                halted |= deadline;
                 let unread = body.terms.is_none();
                 let cut_lists = !body.seen.is_empty();
                 section(
@@ -2216,11 +2386,13 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
             .collect();
         declaring.sort_by(|a, b| a.path.cmp(&b.path));
         let mut fold = ChecksFold::default();
-        let deadline = each_declaration(&checks_reader, &declaring, policy, |entry, content| {
-            fold.add(&entry.path, content.as_deref(), &checks_clock)
-        })?;
+        let mut deadline =
+            each_declaration(&checks_reader, &declaring, policy, |entry, content| {
+                fold.add(&entry.path, content.as_deref(), &checks_clock)
+            })?;
         // The toolchain files and workflows the listing found are reached in any case.
         let body = fold.finish(&found, policy);
+        deadline = deadline || checks_clock.finished();
         let unread = !body.unreadable.is_empty();
         let cut_lists = !body.seen.is_empty();
         section(
@@ -2245,31 +2417,36 @@ pub(super) fn measure(git: &Git, basis: &Basis, clock: Clock) -> Result<Sections
     })
 }
 
-/// The Tree Digest of `head`: the content digest of its committed capture of the whole tree,
-/// the capture every committed Snapshot uses, into a scratch CAS outside the checkout that
-/// lives as long as this call. `None` when the capture did not finish before the deadline:
-/// never the digest of a part.
-fn tree_digest(git: &Git, clock: &Clock, head: &str) -> Result<Option<String>, Failure> {
+/// The Tree Digest of `head`: the content digest its committed capture would have, of the whole
+/// tree, computed by the digest-only path of `review_source_git::digest` under what remains of
+/// the Survey's deadline (every git command of it under the lesser of its own limit and that):
+/// no blob written to any CAS, no listing buffered whole, at most the fixed manifest buffer and
+/// temporary manifest data, in the system's temporary directory and removed on every way out.
+/// The reason when it did not finish: the deadline, a listing record over 64 KiB, or a ceiling.
+fn tree_digest(
+    git: &Git,
+    clock: &Clock,
+    head: &str,
+) -> Result<Result<String, SurveyTreeDigestReasonV1>, Failure> {
+    use review_source_git::digest::Stopped;
     let Some(remaining) = clock.remaining() else {
-        return Ok(None);
+        return Ok(Err(SurveyTreeDigestReasonV1::Deadline));
     };
-    let failed = |detail: String| {
-        Failure::new(
-            "the committed capture of the head failed; run `af project refresh` again",
-            detail,
-        )
-    };
-    let scratch = tempfile::Builder::new()
-        .prefix("af-survey-")
-        .tempdir()
-        .map_err(|error| failed(format!("creating a scratch directory: {error}")))?;
-    let cas = review_store::Cas::open(scratch.path().join("cas"))
-        .map_err(|error| failed(error.to_string()))?;
     let repo = git.repo_within(remaining);
-    match review_source_git::Capture::new(&repo, &cas).committed(head) {
-        Ok(snapshot) if !clock.passed() => Ok(Some(snapshot.content_digest)),
-        Ok(_) => Ok(None),
-        Err(_) if clock.passed() => Ok(None),
-        Err(error) => Err(failed(error.to_string())),
-    }
+    let digested =
+        review_source_git::committed_digest(&repo, head, digest_ceilings(), &std::env::temp_dir());
+    Ok(match digested {
+        Ok(Ok(_)) | Err(_) if clock.passed() => Err(SurveyTreeDigestReasonV1::Deadline),
+        Ok(Ok(digest)) => Ok(digest),
+        Ok(Err(Stopped::Deadline)) => Err(SurveyTreeDigestReasonV1::Deadline),
+        Ok(Err(Stopped::RecordBytes)) => Err(SurveyTreeDigestReasonV1::MaxRecordBytes),
+        Ok(Err(Stopped::ManifestBytes)) => Err(SurveyTreeDigestReasonV1::ManifestBytes),
+        Ok(Err(Stopped::TempBytes)) => Err(SurveyTreeDigestReasonV1::TempBytes),
+        Err(error) => {
+            return Err(Failure::new(
+                "the Tree Digest of the head failed; run `af project refresh` again",
+                error.to_string(),
+            ));
+        }
+    })
 }

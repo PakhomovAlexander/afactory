@@ -1,14 +1,15 @@
 //! The `[survey]` table of `.af/af.toml` (ADR-0152): the bounds and patterns a Survey measures
 //! by. Every pattern is matched by `crate::project::glob_matches`, the one grammar of
-//! `.af/af.toml`: `**` spans segments, `*` a run inside one, `?` one character, and every other
-//! character is literal, brackets included.
+//! `.af/af.toml`: `**` spans segments, `*` a run inside one, `?` one byte of the encoded path,
+//! and every other byte is literal, brackets included.
 //!
 //! The table lives in the project layer and deep-merges like every other table of the
 //! configuration ladder, so the directory layer above every checkout can set it once, and the
 //! generic environment form (`AF_SURVEY__MAX_COMMITS=1`) overrides one key. Every key is typed
 //! and an unknown key is refused, as in the rest of `af.toml`. `max_paths`, `max_entries` and
 //! `max_survey_bytes` are ceilings a layer may only lower. `[survey.languages]` maps patterns to
-//! languages ahead of the built-in extension map: the bytewise-first matching pattern wins.
+//! languages ahead of the built-in extension map: the bytewise-first matching pattern wins, and
+//! like every other pattern list it holds at most 64 patterns where the Surveyor loads it.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -341,14 +342,37 @@ impl Policy {
     /// The language of the file at `path`: the first `[survey.languages]` pattern, bytewise,
     /// that matches it (one without `/` matches the file name, one with `/` the whole path);
     /// else the built-in map by exact name, then by longest extension; else `other`.
+    #[cfg(test)]
     pub(crate) fn language(&self, path: &str) -> String {
+        self.language_within(path, || false)
+            .expect("no deadline passes")
+    }
+
+    /// [`Self::language`] with `passed`, the Survey's deadline, asked before each configured
+    /// pattern is matched: `None` when it passed first, so a deadline overruns the matching by
+    /// at most one pattern (ADR-0152 clause 14). The built-in map is an exact lookup of a name
+    /// or an extension, not a pattern match.
+    pub(crate) fn language_within(
+        &self,
+        path: &str,
+        mut passed: impl FnMut() -> bool,
+    ) -> Option<String> {
         let name = path.rsplit_once('/').map_or(path, |(_, name)| name);
-        if let Some(language) = self.languages.iter().find_map(|(pattern, language)| {
+        for (pattern, language) in &self.languages {
+            if passed() {
+                return None;
+            }
             let text = if pattern.contains('/') { path } else { name };
-            crate::project::glob_matches(pattern, text).then(|| language.clone())
-        }) {
-            return language;
+            if crate::project::glob_matches(pattern, text) {
+                return Some(language.clone());
+            }
         }
+        Some(Self::built_in_language(name))
+    }
+
+    /// The built-in map's language of a file named `name`: by exact name, then by longest
+    /// extension; else `other`.
+    fn built_in_language(name: &str) -> String {
         let built_in = |key: &str| {
             BUILT_IN_LANGUAGES
                 .iter()

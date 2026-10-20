@@ -10,11 +10,13 @@
 //! nothing inside the checkout.
 //!
 //! It runs synchronously at `af onboard --apply` and on `af project refresh`. A complete newest
-//! Survey is reused while its survey key is unchanged: the head commit, the digest of the refs
-//! (`refs/heads` and `refs/tags`, names and targets), the policy digest and the Surveyor version.
+//! Survey is reused while its survey key is unchanged: the head commit, the digest of the one ref
+//! observation (`refs/heads` and `refs/tags`: names, targets, object types and creator dates,
+//! which also give `history` its tags and branches), the policy digest and the Surveyor version.
 //! Then nothing past `rev-parse HEAD`, `for-each-ref`, the policy and the log is read, and
 //! nothing is recorded; a `partial` or `unavailable` newest Survey is measured again, and
-//! `--force` records regardless of the key.
+//! `--force` records regardless of the key. Replay binds every Survey event to its record, or to
+//! its tombstone once collected, before any of its fields is printed or used.
 
 mod measure;
 pub(crate) mod policy;
@@ -26,8 +28,8 @@ use std::time::Instant;
 
 use review_core::EventType;
 use review_core::project::{
-    MAX_SURVEY_BYTES, PROJECT_SURVEY_V1, ProjectSurveyV1, SurveyCompletenessV1,
-    SurveyFailedPayloadV1, SurveyRecordedPayloadV1,
+    MAX_SURVEY_BYTES, PROJECT_SURVEY_V1, ProjectSurveyV1, SurveyCollectedPayloadV1,
+    SurveyCompletenessV1, SurveyFailedPayloadV1, SurveyRecordedPayloadV1,
 };
 use review_store::NewEvent;
 use serde_json::Value;
@@ -41,8 +43,11 @@ use super::{Checkout, Git, Log, ProjectStore, RUN_ID};
 /// grammar, the stated measurement policy and the agent-assisted partition. 3: the deadline
 /// through every section's post-processing and the key, contributor keys and ranking before
 /// every cut, the status-line grammar, the checks discovery set, language patterns, UTF-8
-/// declarations and the bounded walk and records.
-pub(crate) const SURVEYOR_VERSION: u64 = 3;
+/// declarations and the bounded walk and records. 4: one ref observation for the key and the
+/// statistics, history from objects alone, the digest-only Tree Digest, calendar dates, the
+/// clock through every finishing step and every declaration, and name hashing of blank names
+/// under both identity policies.
+pub(crate) const SURVEYOR_VERSION: u64 = 4;
 
 /// Why a refresh whose deadline passed before its survey key existed failed.
 const KEY_DEADLINE: &str = "the survey key could not be computed within max_wall_ms";
@@ -230,13 +235,51 @@ fn unbound_field(
     .find_map(|(field, equal)| (!equal).then_some(field))
 }
 
+/// The first field in which a `SurveyRecorded@1` and the tombstone that bound its Survey's
+/// fields at collection disagree.
+fn untombstoned_field(
+    event: &SurveyRecordedPayloadV1,
+    tombstone: &SurveyCollectedPayloadV1,
+) -> Option<&'static str> {
+    [
+        ("head", event.head == tombstone.head),
+        (
+            "cutoff_unix_s",
+            event.cutoff_unix_s == tombstone.cutoff_unix_s,
+        ),
+        ("completeness", event.completeness == tombstone.completeness),
+    ]
+    .into_iter()
+    .find_map(|(field, equal)| (!equal).then_some(field))
+}
+
+/// A `SurveyRecorded@1` that does not describe the Survey it names: replay refuses it, naming
+/// the event's sequence, the first field that differs and what it differs from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Unbound {
+    pub(crate) sequence: u64,
+    pub(crate) field: &'static str,
+    /// `Survey <id>`, or the tombstone `SurveyCollected@1 at sequence <n>`.
+    pub(crate) against: String,
+}
+
+impl std::fmt::Display for Unbound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SurveyRecorded@1 at sequence {} names a {} its {} does not record",
+            self.sequence, self.field, self.against
+        )
+    }
+}
+
 impl ProjectStore {
-    /// The record `recorded` names, read back from the CAS, validated, and bound to its event:
-    /// an event whose head, refs, cutoff, completeness, policy, Surveyor version or previous
-    /// Survey differs from its record's is a replay error naming the event's sequence and the
-    /// field.
-    pub(crate) fn survey(&self, recorded: &SurveyRecordedPayloadV1) -> Result<Recorded, String> {
-        // Never more than a Survey can hold: the ceiling the writer and collection share.
+    /// The record `recorded` names, read back from the CAS and validated, never more than a
+    /// Survey can hold: the ceiling the writer and collection share.
+    fn read_survey(
+        &self,
+        recorded: &SurveyRecordedPayloadV1,
+    ) -> Result<(ProjectSurveyV1, Vec<u8>), String> {
         let bytes = self
             .cas
             .get_bounded(&recorded.survey_id, MAX_SURVEY_BYTES)
@@ -249,14 +292,30 @@ impl ProjectStore {
         let survey: ProjectSurveyV1 = serde_json::from_slice(&bytes)
             .map_err(|error| format!("Survey {}: {error}", recorded.survey_id))?;
         survey.validate()?;
+        Ok((survey, bytes))
+    }
+
+    fn does_not_replay(&self, unbound: &Unbound) -> String {
+        format!(
+            "the Project Store {} does not replay: {unbound}",
+            self.directory.display()
+        )
+    }
+
+    /// The record `recorded` names, read back from the CAS, validated, and bound to its event:
+    /// an event whose head, refs, cutoff, completeness, policy, Surveyor version or previous
+    /// Survey differs from its record's is a replay error naming the event's sequence and the
+    /// field. Every reader of a record (`af project survey`, `af project show`, the reuse of the
+    /// survey key, a refresh's newest Survey) reads it here.
+    pub(crate) fn survey(&self, recorded: &SurveyRecordedPayloadV1) -> Result<Recorded, String> {
+        let (survey, bytes) = self.read_survey(recorded)?;
         if let Some(field) = unbound_field(recorded, &survey) {
-            let sequence = self.recorded_sequence(recorded)?;
-            return Err(format!(
-                "the Project Store {} does not replay: SurveyRecorded@1 at sequence {sequence} \
-                 names a {field} its Survey {} does not record",
-                self.directory.display(),
-                recorded.survey_id
-            ));
+            let unbound = Unbound {
+                sequence: self.recorded_sequence(recorded)?,
+                field,
+                against: format!("Survey {}", recorded.survey_id),
+            };
+            return Err(self.does_not_replay(&unbound));
         }
         Ok(Recorded {
             event: recorded.clone(),
@@ -267,19 +326,76 @@ impl ProjectStore {
 
     /// The sequence of the newest `SurveyRecorded@1` whose payload is `recorded`.
     fn recorded_sequence(&self, recorded: &SurveyRecordedPayloadV1) -> Result<u64, String> {
+        Ok(self
+            .recorded_events()?
+            .into_iter()
+            .rev()
+            .find(|(_, payload)| payload == recorded)
+            .map_or(0, |(sequence, _)| sequence))
+    }
+
+    /// Every `SurveyRecorded@1` of the log with its sequence, in log order.
+    fn recorded_events(&self) -> Result<Vec<(u64, SurveyRecordedPayloadV1)>, String> {
         let events = self
             .events
             .replay(RUN_ID)
             .map_err(|error| format!("the Project Store {}: {error}", self.directory.display()))?;
-        Ok(events
-            .iter()
-            .rev()
+        events
+            .into_iter()
             .filter(|event| event.event_type == EventType::SurveyRecordedV1)
-            .find(|event| {
-                serde_json::from_value::<SurveyRecordedPayloadV1>(event.payload.clone())
-                    .is_ok_and(|payload| payload == *recorded)
+            .map(|event| {
+                serde_json::from_value::<SurveyRecordedPayloadV1>(event.payload)
+                    .map(|payload| (event.sequence, payload))
+                    .map_err(|error| format!("SurveyRecorded@1: {error}"))
             })
-            .map_or(0, |event| event.sequence))
+            .collect()
+    }
+
+    /// Bind every `SurveyRecorded@1` of the chain, newest first, before `af project history`
+    /// prints any of it: a collected Survey's event to the tombstone that bound its fields at
+    /// collection, every other one to its record, and the first that disagrees is the replay
+    /// error, so no event's fields reach the history unverified. A record the CAS cannot hand
+    /// over (gone, unreadable, corrupt) is no evidence against its event, and the Storage
+    /// Budget's to collect: it refuses nothing here, and every reader of the record refuses it.
+    pub(crate) fn verify_chain(&self) -> Result<(), String> {
+        let mut tombstones: std::collections::BTreeMap<String, (u64, SurveyCollectedPayloadV1)> =
+            std::collections::BTreeMap::new();
+        for event in self
+            .events
+            .replay(collect::COLLECTION_RUN)
+            .map_err(|error| format!("the Survey tombstones: {error}"))?
+        {
+            if event.event_type == EventType::SurveyCollectedV1 {
+                let tombstone: SurveyCollectedPayloadV1 = serde_json::from_value(event.payload)
+                    .map_err(|error| format!("SurveyCollected@1: {error}"))?;
+                tombstones
+                    .entry(tombstone.survey_id.clone())
+                    .or_insert((event.sequence, tombstone));
+            }
+        }
+        for (sequence, recorded) in self.recorded_events()?.into_iter().rev() {
+            let unbound = match tombstones.get(&recorded.survey_id) {
+                Some((at, tombstone)) => {
+                    untombstoned_field(&recorded, tombstone).map(|field| Unbound {
+                        sequence,
+                        field,
+                        against: format!("tombstone SurveyCollected@1 at sequence {at}"),
+                    })
+                }
+                None => match self.read_survey(&recorded) {
+                    Ok((survey, _)) => unbound_field(&recorded, &survey).map(|field| Unbound {
+                        sequence,
+                        field,
+                        against: format!("Survey {}", recorded.survey_id),
+                    }),
+                    Err(_) => None,
+                },
+            };
+            if let Some(unbound) = unbound {
+                return Err(self.does_not_replay(&unbound));
+            }
+        }
+        Ok(())
     }
 
     fn record_survey(
@@ -398,8 +514,9 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
             ));
         }
     };
-    let refs_digest = match measure::refs_digest(&git, &key_clock) {
-        Ok(Ok(digest)) => digest,
+    // One ref observation: the key's `refs_digest` and `history`'s tags and branches.
+    let observed = match measure::observe_refs(&git, &key_clock, &policy) {
+        Ok(Ok(observed)) => observed,
         Ok(Err(reason)) => {
             let reason = match reason {
                 review_core::project::SurveyReasonV1::MaxWallMs => KEY_DEADLINE.to_string(),
@@ -417,6 +534,7 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
             return Err(format!("{}: {}", failure.reason, failure.detail));
         }
     };
+    let refs_digest = observed.digest.clone();
     let store = open(checkout)?;
     let key = Key {
         head: head.clone(),
@@ -455,6 +573,7 @@ pub(crate) fn refresh(checkout: &Checkout, force: bool) -> Result<Refreshed, Str
         surveyor_version: SURVEYOR_VERSION,
         git_version: &git_version,
     };
+    measure::hand_over(observed);
     let measured = collect::measure(&git, &basis, started, clock);
     let mut store = open(checkout)?;
     let sections = match measured {
@@ -536,8 +655,38 @@ pub(crate) fn summary_line(recorded: &Recorded) -> String {
     )
 }
 
+/// The sections of a Survey, in record order: what `af project survey --section` names.
+pub(crate) const SECTION_NAMES: [&str; 7] = [
+    "identity",
+    "tree",
+    "history",
+    "contributors",
+    "decisions",
+    "vocabulary",
+    "checks",
+];
+
 /// The Survey in a few lines, one per section, every number the record's.
 pub(crate) fn summary(recorded: &Recorded) -> Vec<String> {
+    summary_of(recorded, &[])
+}
+
+/// [`summary`] with only the sections `only` names, its first lines and then each named
+/// section's line in record order; every section when `only` is empty.
+pub(crate) fn summary_of(recorded: &Recorded, only: &[String]) -> Vec<String> {
+    let mut lines = all_lines(recorded);
+    let sections = lines.split_off(lines.len() - SECTION_NAMES.len());
+    lines.extend(
+        sections
+            .into_iter()
+            .zip(SECTION_NAMES)
+            .filter(|(_, name)| only.is_empty() || only.iter().any(|named| named == name))
+            .map(|(line, _)| line),
+    );
+    lines
+}
+
+fn all_lines(recorded: &Recorded) -> Vec<String> {
     let survey = &recorded.survey;
     let mut lines = vec![
         format!("Survey {}", recorded.event.survey_id),
@@ -576,7 +725,7 @@ pub(crate) fn summary(recorded: &Recorded) -> Vec<String> {
                     "digest unavailable ({})",
                     identity
                         .tree_digest_reason
-                        .map_or("-", review_core::project::SurveyReasonV1::as_str)
+                        .map_or("-", review_core::project::SurveyTreeDigestReasonV1::as_str)
                 ))
             )
         }),
@@ -700,8 +849,65 @@ pub(crate) fn after_onboard(repo: &Path, json: bool) {
 
 pub(crate) mod collect;
 
+/// `af project`, as `collect::run` answers it, with what replay binds first: `af project
+/// history` verifies every Survey event of the chain against its record or its tombstone before
+/// any of it is printed, and `af project survey --section`, a text-only option, prints the named
+/// sections of the newest Survey's summary. `--section` with `--json` never reaches here: it is
+/// usage error 2.
+pub(crate) fn run(command: crate::cli::ProjectCommand, sections: &[String]) -> Result<i32, String> {
+    use crate::cli::ProjectCommand;
+    match command {
+        ProjectCommand::History { json } => {
+            if let Some(store) = existing_store_here()? {
+                store.verify_chain()?;
+            }
+            collect::run(ProjectCommand::History { json })
+        }
+        ProjectCommand::Survey { json: false } if !sections.is_empty() => survey_sections(sections),
+        other => collect::run(other),
+    }
+}
+
+/// The invoking checkout's Project Store, when it holds a log already; opening it creates
+/// nothing a later `af project` command would not.
+fn existing_store_here() -> Result<Option<ProjectStore>, String> {
+    let checkout = super::require_checkout(Path::new("."))?;
+    let state_home = crate::xdg_state_root()?;
+    let directory = super::store_directory(&state_home, &checkout.project_id);
+    if std::fs::symlink_metadata(directory.join("events.sqlite")).is_err() {
+        return Ok(None);
+    }
+    ProjectStore::open(&state_home, &checkout.project_id).map(Some)
+}
+
+/// `af project survey --section NAME…`: the newest Survey's first lines and the named sections.
+fn survey_sections(sections: &[String]) -> Result<i32, String> {
+    let none = "this Project has no Survey yet; run `af project refresh` to record one";
+    let store = existing_store_here()?.ok_or(none)?;
+    let log = store.log()?;
+    if let Some(newest) = log.newest_survey()
+        && let Some(tombstone) = collect::tombstones(&store.events)?
+            .into_iter()
+            .find(|tombstone| tombstone.survey_id == newest.survey_id)
+    {
+        return Err(format!(
+            "the newest Survey {} of {} was collected at {}; run `af project refresh` to \
+             record one",
+            newest.survey_id,
+            short(&newest.head),
+            review_core::task::collection::collected_time(tombstone.collected_unix_ms.get())
+        ));
+    }
+    let recorded = newest(&store, &log)?.ok_or(none)?;
+    for line in summary_of(&recorded, sections) {
+        println!("{line}");
+    }
+    Ok(0)
+}
+
 /// The pattern limits of ADR-0152 clause 14, where the Surveyor loads its patterns: every
-/// pattern list at most 64 patterns and every pattern at most 256 bytes, refused naming the key.
+/// pattern list, `[survey.languages]` included, at most 64 patterns and every pattern at most
+/// 256 bytes, refused naming the key.
 fn within_pattern_limits(policy: Policy) -> Result<Policy, String> {
     for (key, patterns) in [
         ("exclude", &policy.exclude),
@@ -717,5 +923,9 @@ fn within_pattern_limits(policy: Policy) -> Result<Policy, String> {
     ] {
         collect::check_patterns(key, std::slice::from_ref(pattern))?;
     }
+    // `[survey.languages]` is a pattern list like the others: only the built-in fallback is an
+    // exact lookup.
+    let languages: Vec<String> = policy.languages.keys().cloned().collect();
+    collect::check_patterns("[survey.languages]", &languages)?;
     Ok(policy)
 }
