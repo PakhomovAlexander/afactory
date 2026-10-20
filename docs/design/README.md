@@ -46,7 +46,8 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
   companion implemented on branch `design/project` with
   [ADR-0157](../adr/0157-give-a-repository-one-project-identity-and-register-its-checkouts-as-workspaces.md)
   and [`../project.md`](../project.md), [ADR-0158](../adr/0158-measure-a-project-into-surveys-with-a-token-free-surveyor.md),
-  verified by af Tasks; PJ3 (Project Brief) in progress, PJ4–PJ5 not started.
+  verified by af Tasks, and PJ3 (Project Brief) with
+  [ADR-0159](../adr/0159-carry-a-bounded-project-brief-on-a-declared-port.md); PJ4–PJ5 not started.
 - [`telemetry.md`](telemetry.md) — Telemetry: a separate, machine-only, bounded store of spans,
   events and content-addressed blobs that the kernel writes and never reads — kernel phases,
   supervised processes with their resource use, harness turns, tool calls and reasoning, the
