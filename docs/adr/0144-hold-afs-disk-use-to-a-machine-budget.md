@@ -194,6 +194,26 @@ remote check left two branches and a draft pull request open.
    also removes the af-made project directories in every registered Claude config directory and
    every registered Store, and lists the gate leftovers it could not reach.
 
+**Amended 2026-10-20** (GA-readiness and security audit, findings H2, M6 and L4). A Store is
+created only in a directory that is absent, empty, or already an af Store (nothing in it but af's
+entries: `events.sqlite*`, `cas/`, `git-home/`, lock files, `task-delivery-lock.sqlite*`, a
+removal claim and the owner marker); an explicit `--state` that holds anything else is refused
+before anything is written or registered, and the `--state` help says the directory becomes
+af-owned. A Store made in an absent or empty directory carries the owner marker `.af-store`. `/`
+is no longer a trusted anchor for removing a registered Store whole: the sweep, `af storage prune
+--apply`, `af review gc --state-root` and `af self uninstall --purge` remove a Store outside af's
+own roots whole only while it is marked and holds nothing but af's entries; otherwise they remove
+af's entries alone through the opened directory and report the directory and everything else as
+left in place (`left` in `af/storage-prune@1`). A Store an earlier release made carries no marker
+and is not proven af's, so its directory stays. Such a Store is measured by its af entries alone.
+Every directory af creates for its state (state and telemetry roots, Stores, `cas/`, `git-home/`)
+is `0700` and every file there `0600`, the SQLite database and its `-wal` and `-shm` included,
+whatever the umask; af changes no process umask, and narrows an existing root its effective user
+owns to `0700` when it opens it. A Task cancelled, or abandoned by a writer that died, after its
+gate published is settled once no writer holds its lease: its gate leftovers are listed and
+cleaned up like a finished Task's, and its log records the `gate_cleanup` in whatever phase it
+stopped; a done cleanup covers only the pull requests it closed.
+
 ## Consequences
 
 - af holds a bounded, visible amount of disk: `af storage` shows it, and nothing an operator

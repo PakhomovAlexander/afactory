@@ -520,10 +520,15 @@ pub(crate) fn load_rooted(
     for (layer, path) in planned {
         let present = path.is_file();
         if present {
-            let text = std::fs::read_to_string(&path)
+            let text = read_layer(&path)
                 .map_err(|error| Refusal::naming("reading ", &path, &format!(": {error}")))?;
-            let mut value: Value = toml::from_str(&text)
-                .map_err(|error| Refusal::naming("", &path, &format!(": {}", error.message())))?;
+            let mut value: Value = toml::from_str(&text).map_err(|error| {
+                Refusal::naming(
+                    "",
+                    &path,
+                    &review_config::excerpt::bounded(&format!(": {}", error.message())),
+                )
+            })?;
             if matches!(layer, "directory" | "project" | "local")
                 && let Some(table) = value.as_table_mut()
             {
@@ -586,6 +591,20 @@ pub(crate) fn load_rooted(
         effective,
         origins,
     })
+}
+
+/// One layer file, whole, within [`review_config::lock::MAX_AUTHORITY_FILE_BYTES`]: resolved as
+/// named (a layer may be a link the user keeps elsewhere), then opened without following a link
+/// and read no further than the bound, so an ancestor's or a repository's `.af/af.toml` of
+/// gigabytes is refused, not read (the way `caches.toml` is).
+fn read_layer(path: &Path) -> Result<String, String> {
+    let resolved = std::fs::canonicalize(path).map_err(|error| error.to_string())?;
+    let bytes = review_store::local_fs::read_bounded(
+        &resolved,
+        review_config::lock::MAX_AUTHORITY_FILE_BYTES,
+    )
+    .map_err(|error| error.to_string())?;
+    String::from_utf8(bytes).map_err(|error| error.to_string())
 }
 
 fn conf_d(dir: &Path) -> Vec<PathBuf> {
@@ -1102,6 +1121,43 @@ mod tests {
         let span = refusal.path.clone().unwrap();
         assert_eq!(&refusal.text[span], file.display().to_string());
         assert_eq!(Refusal::from("plain").path, None);
+    }
+
+    /// L10 of the 2026-10-20 audit: a layer file beyond 1 MiB — an ancestor's or the
+    /// repository's `.af/af.toml` — is refused in one line naming it, never read whole; a layer
+    /// kept elsewhere behind a link is still read.
+    #[test]
+    fn an_oversized_layer_is_refused_naming_its_file_and_a_linked_layer_is_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let repo = root.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        std::fs::create_dir_all(repo.join(".af")).unwrap();
+        let file = repo.join(".af/af.toml");
+        std::fs::write(&file, format!("# {}\n", "x".repeat(2 * 1024 * 1024))).unwrap();
+        let roots = MachineRoots {
+            system: root.join("etc"),
+            user: root.join("user"),
+            environment: Vec::new(),
+        };
+        let refusal = load_rooted(Some(&repo), false, &roots).unwrap_err();
+        assert!(
+            refusal
+                .text
+                .starts_with(&format!("reading {}: ", file.display())),
+            "{}",
+            refusal.text
+        );
+        assert!(refusal.text.contains("over the bound of 1048576 bytes"));
+        assert_eq!(refusal.text.lines().count(), 1);
+
+        let kept = root.join("dotfiles/af.toml");
+        std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        std::fs::write(&kept, "[storage]\nkeep_days = 3\n").unwrap();
+        std::fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink(&kept, &file).unwrap();
+        assert!(load_rooted(Some(&repo), false, &roots).is_ok());
     }
 
     #[test]

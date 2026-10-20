@@ -27,6 +27,11 @@ creating storage. A malformed, unreadable, or misplaced entry is reported as a p
 without hiding healthy Campaigns; only root-level failures and a genuine same-Campaign
 legacy/opaque ambiguity fail the whole query.
 
+**Amended 2026-10-20** (GA-readiness and security audit, finding I7). A label is at most 128
+bytes and refuses Unicode format characters (category Cf, the bidi controls among them) and line
+and paragraph separators (Zl, Zp), so no listing can be spoofed by an invisible or reordering
+character.
+
 ## Considered options
 
 - **Continue using the validated label as the directory name.** Rejected because presentation data

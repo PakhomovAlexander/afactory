@@ -103,6 +103,9 @@ impl Options {
             ));
         }
         if self.state.is_some() {
+            // An explicit directory becomes af-owned: one holding anything else is refused
+            // before anything is written or registered (ADR-0144).
+            storage::owned::admit(&state)?;
             storage::registry::record(&state, storage::registry::StoreKind::Review);
         }
         Ok(state)
@@ -166,7 +169,53 @@ fn default_local_state(repository: &Path) -> Result<PathBuf, String> {
         .join(&review_core::hex::encode(&identity)[..16]))
 }
 
+/// The longest Campaign label, in bytes: listings show it whole.
+const MAX_CAMPAIGN_LABEL_BYTES: usize = 128;
+
+/// Whether `character` is a Unicode format character (general category Cf, the bidi controls
+/// among them) or a line or paragraph separator (Zl, Zp): invisible in a listing, or able to
+/// reorder or break the text around it.
+fn is_invisible_or_reordering(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
+}
+
 fn validate_campaign_name(campaign: &str) -> Result<(), String> {
+    if campaign.len() > MAX_CAMPAIGN_LABEL_BYTES {
+        return Err(format!(
+            "campaign name is {} bytes; a campaign name is at most {MAX_CAMPAIGN_LABEL_BYTES} bytes",
+            campaign.len()
+        ));
+    }
+    if let Some(character) = campaign.chars().find(|c| is_invisible_or_reordering(*c)) {
+        return Err(format!(
+            "campaign name {campaign:?} holds U+{:04X}, an invisible format, bidi control or \
+             separator character that could disguise it in a listing",
+            u32::from(character)
+        ));
+    }
     validate_campaign_component(campaign)?;
     if campaign.trim() != campaign
         || campaign
@@ -410,6 +459,7 @@ fn campaign_state(state: &Option<PathBuf>, campaign: &str) -> Result<PathBuf, St
         Some(state) => {
             let state = resolve_filesystem_path(state)?;
             validate_campaign_name(campaign)?;
+            storage::owned::admit(&state)?;
             storage::registry::record(&state, storage::registry::StoreKind::Review);
             Ok(state)
         }
@@ -614,9 +664,20 @@ fn print_gc(options: &GcOptions) -> Result<(), String> {
             };
             // Through descriptors from the root, no link followed, and only while it is still
             // the directory enumerated (ADR-0144).
-            review_sandbox::remove_beneath(&root, &path, Some(identity))
-                .map_err(|error| format!("removing {}: {error}", path.display()))?;
-            reclaimed = reclaimed.saturating_add(campaign.state_bytes.unwrap_or(0));
+            if options.state_root.is_some() {
+                // Below an explicit root, whole only when it is proven af's; otherwise af's
+                // entries alone, and what was left is said.
+                let removed = storage::owned::remove(&root, &path, identity)
+                    .map_err(|error| format!("removing {}: {error}", path.display()))?;
+                if let Some(line) = storage::owned::left_line(&path, &removed.left) {
+                    eprintln!("af review gc: {line}");
+                }
+                reclaimed = reclaimed.saturating_add(removed.bytes);
+            } else {
+                review_sandbox::remove_beneath(&root, &path, Some(identity))
+                    .map_err(|error| format!("removing {}: {error}", path.display()))?;
+                reclaimed = reclaimed.saturating_add(campaign.state_bytes.unwrap_or(0));
+            }
             "removed"
         } else {
             "would remove"
@@ -3895,12 +3956,12 @@ fn provider_doctor(options: &Options) -> Result<i32, String> {
         return Err("provider doctor requires `--campaign NAME` so admission evidence can be reused by review run".into());
     }
     let state = options.resolved_state_dir()?;
-    std::fs::create_dir_all(&state).map_err(|error| error.to_string())?;
+    storage::owned::prepare(&state, options.state.is_some())?;
     let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
     let mut store =
         EventStore::open(state.join("events.sqlite")).map_err(|error| error.to_string())?;
     let git_home = state.join("git-home");
-    std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
+    storage::owned::private_dir(&git_home)?;
     let repo = Repo::open(&options.repo, &git_home)
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
     let campaign = campaign_run_id(options.campaign.as_deref().unwrap_or("local"));
@@ -3935,7 +3996,7 @@ fn sweep_stale_sandboxes_in_background() -> Option<std::thread::JoinHandle<()>> 
 
 fn run(options: &Options) -> Result<RunVerdict, String> {
     let state = options.resolved_state_dir()?;
-    std::fs::create_dir_all(&state).map_err(|error| error.to_string())?;
+    storage::owned::prepare(&state, options.state.is_some())?;
     // Held for the whole run: no sweep and no `af review gc` removes this campaign under it.
     // A run that cannot hold it does not start: unprotected, a sweep could remove its Store.
     let _running = storage::hold_running(&state)?;
@@ -3943,7 +4004,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     let mut store =
         EventStore::open(state.join("events.sqlite")).map_err(|error| error.to_string())?;
     let git_home = state.join("git-home");
-    std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
+    storage::owned::private_dir(&git_home)?;
     let repo = Repo::open(&options.repo, &git_home)
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
     let campaign = campaign_run_id(options.campaign.as_deref().unwrap_or("local"));
@@ -4090,6 +4151,35 @@ mod option_tests {
         for valid in ["heavy", "af-tui", "round_4", "v2.1-audit"] {
             assert!(validate_campaign_name(valid).is_ok());
         }
+    }
+
+    /// A label that a listing could not show truthfully is refused: too long to show whole, or
+    /// holding a character that is invisible or reorders the text around it.
+    #[test]
+    fn campaign_labels_are_bounded_and_refuse_invisible_or_reordering_characters() {
+        assert!(validate_campaign_name(&"a".repeat(128)).is_ok());
+        assert!(validate_campaign_name(&"é".repeat(64)).is_ok());
+        let error = validate_campaign_name(&"a".repeat(129)).unwrap_err();
+        assert!(error.contains("at most 128 bytes"), "{error}");
+        assert!(validate_campaign_name(&"é".repeat(65)).is_err());
+        for hostile in [
+            "audit\u{2028}approved",
+            "audit\u{2029}approved",
+            "audit\u{202E}devorppa",
+            "audit\u{200B}",
+            "\u{2066}isolate\u{2069}",
+            "soft\u{00AD}hyphen",
+            "bom\u{FEFF}",
+            "tag\u{E0041}",
+        ] {
+            let error = validate_campaign_name(hostile).unwrap_err();
+            assert!(error.contains("U+"), "{hostile:?}: {error}");
+            assert!(
+                !error.contains(['\u{2028}', '\u{2029}', '\u{202E}']),
+                "{error}"
+            );
+        }
+        assert!(validate_campaign_name("révision-ünicode-中文").is_ok());
     }
 
     #[test]

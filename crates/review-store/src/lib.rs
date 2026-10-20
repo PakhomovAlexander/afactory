@@ -16,6 +16,7 @@ pub mod canonical;
 pub mod cas;
 pub mod ingest;
 pub mod ledger;
+pub mod local_fs;
 pub mod optimization;
 pub mod shared;
 pub mod store;

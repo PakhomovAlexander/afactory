@@ -316,7 +316,8 @@ pub(crate) struct RunArgs {
     /// the pipeline the project's routes select from the changed paths]
     #[arg(long, value_name = "FILE", help_heading = "Selector")]
     pub(crate) pipeline: Option<PathBuf>,
-    /// Explicit Campaign state directory (outside the repository)
+    /// Explicit Campaign state directory outside the repository: absent, empty or already an
+    /// af Store; it becomes af-owned, and af may remove it whole
     #[arg(long, value_name = "DIR", help_heading = "Selector")]
     pub(crate) state: Option<PathBuf>,
     /// Campaign name; state lives under XDG state by an opaque id
@@ -1109,7 +1110,8 @@ pub(crate) enum TaskCommand {
             help_heading = "Selector"
         )]
         repo: PathBuf,
-        /// Explicit state directory (outside the repository)
+        /// Explicit state directory outside the repository: absent, empty or already an af
+        /// Store; it becomes af-owned, and af may remove it whole
         #[arg(long, value_name = "DIR", help_heading = "Selector")]
         state: Option<PathBuf>,
         /// Source revision (default: HEAD)
@@ -1552,7 +1554,7 @@ pub(crate) enum SelfCommand {
         /// Repository whose pin, source identity and catalog apply
         #[arg(long, value_name = "DIR", default_value = ".")]
         repo: PathBuf,
-        /// Explicit common Task state directory outside the repository
+        /// Explicit common Task state directory outside the repository; it becomes af-owned
         #[arg(long, value_name = "DIR")]
         state: Option<PathBuf>,
         /// One JSON document on stdout

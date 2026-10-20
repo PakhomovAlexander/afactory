@@ -1,4 +1,4 @@
-//! What a finished Task's remote checks left on GitHub, and its removal (ADR-0144): each draft
+//! What a settled Task's remote checks left on GitHub, and its removal (ADR-0144): each draft
 //! gate pull request its evidence recorded is closed and its two `af-gate/<task-id>/` branches
 //! are deleted from the mapping's push target, with the same `gh` and `git` the gate uses, and
 //! only while each still equals the evidence: the recorded repository, refs and commits.
@@ -34,15 +34,33 @@ pub(crate) struct Attempted {
     pub(crate) summary: String,
 }
 
-/// The gate leftovers of a finished Task no done cleanup has removed yet: some remote check
-/// pushed its branches or opened its pull request. `None` for any other Task.
+/// Whether a Task's gate leftovers are due for cleanup: it finished, or it stopped without
+/// finishing — cancelled, or abandoned by a process that died — and no writer holds its lease
+/// now. A Task a live writer holds is still running, and its gate is its own.
+fn settled(phase: &TaskPhaseV1, lease_until_unix_ms: u64, now_unix_ms: u64) -> bool {
+    matches!(phase, TaskPhaseV1::Finished { .. }) || lease_until_unix_ms <= now_unix_ms
+}
+
+/// Whether a recorded cleanup covers `leftovers`: it is done and closed every pull request they
+/// name. A cancelled Task resumed after its cleanup may publish a new gate, which is pending
+/// again.
+fn covers(cleanup: &TaskGateCleanupV1, leftovers: &Leftovers) -> bool {
+    cleanup.outcome == GateCleanupOutcomeV1::Done
+        && leftovers
+            .pull_requests
+            .iter()
+            .all(|number| cleanup.pull_requests.contains(number))
+}
+
+/// The gate leftovers of a settled Task — finished, cancelled or abandoned — no done cleanup has
+/// removed yet: some remote check pushed its branches or opened its pull request. `None` for any
+/// other Task.
 pub(crate) fn pending(cas: &Cas, state: &TaskProjection) -> Result<Option<Leftovers>, String> {
-    if !matches!(state.phase, TaskPhaseV1::Finished { .. })
-        || state
-            .gate_cleanups
-            .last()
-            .is_some_and(|cleanup| cleanup.outcome == GateCleanupOutcomeV1::Done)
-    {
+    if !settled(
+        &state.phase,
+        state.lease_until_unix_ms(),
+        super::now_unix_ms(),
+    ) {
         return Ok(None);
     }
     let evidence = crate::task_execution::remote_check_evidence(cas, state)?;
@@ -75,12 +93,20 @@ pub(crate) fn pending(cas: &Cas, state: &TaskProjection) -> Result<Option<Leftov
         .collect();
     pull_requests.sort_unstable();
     pull_requests.dedup();
-    Ok(Some(Leftovers {
+    let leftovers = Leftovers {
         github: first.github.clone(),
         base_commit: latest(|evidence| &evidence.base_commit),
         head_commit: latest(|evidence| &evidence.head_commit),
         pull_requests,
-    }))
+    };
+    if state
+        .gate_cleanups
+        .last()
+        .is_some_and(|cleanup| covers(cleanup, &leftovers))
+    {
+        return Ok(None);
+    }
+    Ok(Some(leftovers))
 }
 
 /// The push target the mapping names for `github` now, if any.
@@ -207,8 +233,8 @@ pub(crate) fn after_finish(cas: &Cas, store: &mut EventStore, lease: &TaskLease)
     }
 }
 
-/// The sweep's retry: every finished Task of the Store at `state` whose leftovers are still
-/// pending and whose repository the mapping still names is cleaned up under a short lease of
+/// The sweep's retry: every settled Task (finished, cancelled or abandoned) of the Store at
+/// `state` whose leftovers are still pending and whose repository the mapping still names is cleaned up under a short lease of
 /// its own.
 pub(crate) fn retry_in_store(state: &Path) -> Vec<Attempted> {
     let mut attempted = Vec::new();
@@ -234,12 +260,12 @@ pub(crate) fn retry_in_store(state: &Path) -> Vec<Attempted> {
     attempted
 }
 
-/// Whether any finished Task of the Store at `state` still has gate leftovers.
+/// Whether any settled Task of the Store at `state` still has gate leftovers.
 pub(crate) fn has_pending(state: &Path) -> bool {
     !pending_in_store(state).is_empty()
 }
 
-/// The finished Tasks of the Store at `state` with gate leftovers no done cleanup removed,
+/// The settled Tasks of the Store at `state` with gate leftovers no done cleanup removed,
 /// read-only, with their leftovers.
 fn pending_in_store(state: &Path) -> Vec<String> {
     pending_leftovers(state)
@@ -366,7 +392,7 @@ fn retry_one(
     })
 }
 
-/// The gate leftovers finished Tasks of the Store at `state` still have, one line each, for an
+/// The gate leftovers settled Tasks of the Store at `state` still have, one line each, for an
 /// operator to remove by hand: what `af self uninstall --purge` could not reach.
 pub(crate) fn unreached(state: &Path) -> Vec<String> {
     pending_leftovers(state)
@@ -389,4 +415,75 @@ pub(crate) fn unreached(state: &Path) -> Vec<String> {
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cleanup(outcome: GateCleanupOutcomeV1, pull_requests: Vec<u64>) -> TaskGateCleanupV1 {
+        TaskGateCleanupV1 {
+            schema: review_core::task::remote_check::TASK_GATE_CLEANUP_V1.into(),
+            github: "owner/repo".into(),
+            pull_requests,
+            branches: TaskGateCleanupV1::branches_of("t"),
+            outcome,
+            reason: None,
+        }
+    }
+
+    /// L4 of the 2026-10-20 audit: a Task killed or cancelled after its gate published is listed
+    /// for cleanup once no writer holds it, like a finished one; a running Task is not.
+    #[test]
+    fn a_cancelled_or_abandoned_task_is_settled_once_no_writer_holds_it() {
+        let finished = TaskPhaseV1::Finished {
+            result_id: format!("sha256:{}", "a".repeat(64)),
+        };
+        assert!(
+            settled(&finished, 2_000, 1_000),
+            "finished, even under its lease"
+        );
+        for phase in [
+            TaskPhaseV1::Running {},
+            TaskPhaseV1::Ready {},
+            TaskPhaseV1::Waiting {
+                reason: review_core::task::TaskWaitingReasonV1::NeedsHuman,
+            },
+        ] {
+            assert!(
+                settled(&phase, 1_000, 1_000),
+                "{phase:?}: lease released or expired"
+            );
+            assert!(
+                !settled(&phase, 1_001, 1_000),
+                "{phase:?}: a live writer holds it"
+            );
+        }
+    }
+
+    #[test]
+    fn a_done_cleanup_covers_only_the_pull_requests_it_closed() {
+        let leftovers = Leftovers {
+            github: "owner/repo".into(),
+            base_commit: Some("a".repeat(40)),
+            head_commit: Some("b".repeat(40)),
+            pull_requests: vec![12],
+        };
+        assert!(covers(
+            &cleanup(GateCleanupOutcomeV1::Done, vec![12]),
+            &leftovers
+        ));
+        assert!(!covers(
+            &cleanup(GateCleanupOutcomeV1::Failed, vec![12]),
+            &leftovers
+        ));
+        let republished = Leftovers {
+            pull_requests: vec![12, 13],
+            ..leftovers
+        };
+        assert!(!covers(
+            &cleanup(GateCleanupOutcomeV1::Done, vec![12]),
+            &republished
+        ));
+    }
 }

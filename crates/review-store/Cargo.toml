@@ -24,8 +24,10 @@ toml = "1.1.6"
 tempfile = "3.27.0"
 reflink-copy = "0.1.30"
 # fsync(2) without unsafe in this crate: nix wraps the libc call behind a safe API. The CAS
-# must match the log's durability grade (plain fsync), not exceed it — see cas.rs.
-nix = { version = "0.31.3", default-features = false, features = ["fs"] }
+# must match the log's durability grade (plain fsync), not exceed it — see cas.rs. `user` for
+# the effective user a private root must belong to before it is narrowed, `dir` to list a
+# directory through its descriptor (local_fs.rs).
+nix = { version = "0.31.3", default-features = false, features = ["dir", "fs", "user"] }
 
 [lints]
 workspace = true
